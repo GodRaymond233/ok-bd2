@@ -1,0 +1,66 @@
+# Local secrets and runtime data
+my_key.txt
+configs/
+screenshots/
+logs/
+working/
+updates/
+update/
+data/
+data_export/
+data_import/
+click_screenshots/
+probe_outputs/
+thread_dumps.txt
+upstream/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+python/
+*.egg-info/
+.eggs/
+build/
+dist/
+wheels/
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+
+# IDE
+.idea/
+.vscode/
+
+# ok-script local/generated assets
+ok/
+ok
+ok_tasks/
+ok_import/
+custom_chars/
+temp_images/
+working_images/
+paddle_model/
+models/
+fonts/
+*.msgpack
+*.dat
+md5.txt
+update.bat
+
+# Tests
+tests/.tmp/
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# Local media/debug captures
+*.mp4
+*.avi
+*.mov
