@@ -1,0 +1,603 @@
+from dataclasses import dataclass
+from pathlib import Path
+from time import monotonic
+
+import cv2
+import numpy as np
+from qfluentwidgets import FluentIcon
+
+from src.tasks.BaseBD2Task import BaseBD2Task
+
+REFERENCE_WIDTH = 1920
+REFERENCE_HEIGHT = 1080
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+TEMPLATE_DIR = PROJECT_ROOT / "offline-train" / "train-source-screenshots"
+
+
+@dataclass(frozen=True)
+class GachaTemplateSpec:
+    name: str
+    file_name: str
+    threshold_key: str
+    default_threshold: float
+
+
+@dataclass(frozen=True)
+class GachaMatchResult:
+    score: float
+    pixel_score: float
+    position: tuple[int, int]
+    size: tuple[int, int]
+
+
+class FreeGachaTask(BaseBD2Task):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.name = "白嫖抽抽乐"
+        self.description = "领取服装和装备的所有免费抽抽乐。"
+        self.icon = FluentIcon.GAME
+        self.group_name = "日常/周常"
+        self.group_icon = FluentIcon.CALENDAR
+        self.visible = True
+        self._templates: dict[str, np.ndarray] = {}
+        self._missing_template_names: set[str] = set()
+        self._match_error_names: set[str] = set()
+        self._match_pause_until = 0.0
+        self.default_config.update(
+            {
+                "启用": True,
+                "加载页面阈值": 0.72,
+                "返回按钮阈值": 0.76,
+                "主页亮度比例阈值": 0.75,
+                "抽卡 OCR 阈值": 0.2,
+                "loading 出现等待秒数": 6.0,
+                "loading 消失等待秒数": 35.0,
+                "抽卡页面等待秒数": 12.0,
+                "免费抽按钮等待秒数": 3.0,
+                "确认弹窗等待秒数": 8.0,
+                "结果返回等待秒数": 45.0,
+                "主页确认等待秒数": 10.0,
+                "跳过点击间隔秒数": 0.5,
+                "抽卡页面关键词最低命中数": 3,
+                "确认弹窗关键词最低命中数": 2,
+            }
+        )
+        self.config_description.update(
+            {
+                "启用": "是否执行白嫖抽抽乐任务。",
+                "抽卡页面关键词最低命中数": "确认已进入抽卡页所需的 OCR 关键词数量。",
+                "确认弹窗关键词最低命中数": "确认抽抽乐弹窗所需的 OCR 关键词数量。",
+            }
+        )
+
+    def run(self):
+        if not bool(self.config.get("启用", True)):
+            self.info_set("状态", "白嫖抽抽乐已禁用。")
+            self.log_info("白嫖抽抽乐已禁用。")
+            return True
+
+        self.info_set("状态", "启动白嫖抽抽乐。")
+        self._click_reference(162, 986, after_sleep=0.5)
+        loading_state, gacha_found, _ = self._wait_loading_or_gacha_page("进入抽卡页")
+        if loading_state == "stuck":
+            return False
+        if not gacha_found and not self._wait_for_gacha_page("进入抽卡页"):
+            return False
+
+        if not self._run_free_section(
+            "服装抽抽乐",
+            verify_finished=True,
+        ):
+            return False
+
+        self._click_reference(175, 432, after_sleep=0.8)
+        if not self._wait_for_gacha_page("切换装备抽卡"):
+            return False
+
+        if not self._run_free_section(
+            "装备抽抽乐",
+            verify_finished=False,
+        ):
+            return False
+
+        self._click_reference(105, 51, after_sleep=1.0)
+        if not self._wait_loading_or_home_brightness("抽抽乐返回主页"):
+            return False
+
+        self.info_set("状态", "白嫖抽抽乐完成。")
+        self.log_info("白嫖抽抽乐：流程完成。", notify=True)
+        return True
+
+    def _run_free_section(
+        self,
+        section_name: str,
+        verify_finished: bool,
+    ) -> bool:
+        available, _ = self._wait_for_free_gacha(section_name)
+        self.info_set(f"{section_name} 免费抽", "可领取" if available else "无")
+        if not available:
+            self.log_info(f"{section_name}：未检测到所有免费抽抽乐，跳过。")
+            return True
+
+        self._click_reference(347, 973, after_sleep=0.5)
+        if not self._wait_for_confirm_dialog(section_name):
+            return False
+
+        self._click_reference(1045, 649, after_sleep=1.0)
+        if not self._handle_result_until_back(section_name):
+            return False
+
+        if not self._wait_for_gacha_page(f"{section_name} 返回抽卡页"):
+            return False
+
+        if verify_finished:
+            still_available, _ = self._wait_for_free_gacha(
+                section_name,
+                timeout=1.5,
+            )
+            if still_available:
+                self.log_info(f"{section_name}：返回后仍检测到所有免费抽抽乐。")
+                return False
+            self.log_info(f"{section_name}：免费抽已结束。")
+
+        return True
+
+    def _wait_loading_or_gacha_page(
+        self,
+        name: str,
+        interval: float = 0.5,
+    ) -> tuple[str, bool, str]:
+        return self._wait_loading_or_ocr_keywords(
+            name,
+            GACHA_PAGE_KEYWORDS,
+            minimum_matches=int(self.config.get("抽卡页面关键词最低命中数", 3)),
+            ocr_name=f"{name}_gacha_page",
+            interval=interval,
+        )
+
+    def _wait_loading_or_ocr_keywords(
+        self,
+        task_name: str,
+        keywords: list[str],
+        minimum_matches: int,
+        ocr_name: str,
+        interval: float = 0.5,
+    ) -> tuple[str, bool, str]:
+        end_at = monotonic() + float(self.config.get("loading 出现等待秒数", 6.0))
+        last_text = ""
+        while monotonic() <= end_at:
+            frame = self.capture_frame()
+            found, text = self._ocr_keywords_in_frame(
+                frame,
+                keywords,
+                minimum_matches,
+                ocr_name,
+            )
+            last_text = text
+            if found:
+                self.log_info(f"{task_name}：已检测到下一阶段页面。")
+                return "target", True, text
+
+            loading = self._match(frame, LOADING_TEMPLATE)
+            self.info_set(f"{task_name}_loading_appear", f"{loading.score:.3f}")
+            if self._passes(loading, LOADING_TEMPLATE):
+                return self._wait_loading_gone_or_ocr_keywords(
+                    task_name,
+                    keywords,
+                    minimum_matches,
+                    ocr_name,
+                    last_text=last_text,
+                    interval=interval,
+                )
+            self.sleep(interval)
+
+        return "none", False, last_text
+
+    def _wait_loading_gone_or_ocr_keywords(
+        self,
+        task_name: str,
+        keywords: list[str],
+        minimum_matches: int,
+        ocr_name: str,
+        last_text: str = "",
+        interval: float = 0.5,
+    ) -> tuple[str, bool, str]:
+        end_at = monotonic() + float(self.config.get("loading 消失等待秒数", 35.0))
+        while monotonic() <= end_at:
+            frame = self.capture_frame()
+            found, text = self._ocr_keywords_in_frame(
+                frame,
+                keywords,
+                minimum_matches,
+                ocr_name,
+            )
+            last_text = text
+            if found:
+                self.log_info(f"{task_name}：loading 期间已检测到下一阶段页面。")
+                return "target", True, text
+
+            loading = self._match(frame, LOADING_TEMPLATE)
+            self.info_set(f"{task_name}_loading_gone", f"{loading.score:.3f}")
+            if not self._passes(loading, LOADING_TEMPLATE):
+                return "loading", False, last_text
+            self.sleep(interval)
+
+        self.log_info(f"{task_name}：UI_loading_black.png 未在限定时间内消失。")
+        return "stuck", False, last_text
+
+    def _wait_loading_or_home_brightness(
+        self,
+        name: str,
+        interval: float = 0.35,
+    ) -> bool:
+        end_at = monotonic() + float(self.config.get("loading 出现等待秒数", 6.0))
+        while monotonic() <= end_at:
+            frame = self.capture_frame()
+            if self._home_brightness_ok(frame, name):
+                return True
+
+            loading = self._match(frame, LOADING_TEMPLATE)
+            self.info_set(f"{name}_loading_appear", f"{loading.score:.3f}")
+            if self._passes(loading, LOADING_TEMPLATE):
+                return self._wait_loading_gone_or_home_brightness(name, interval=interval)
+            self.sleep(interval)
+
+        self.log_info(f"{name}：未检测到 UI_loading_black.png，继续确认主页。")
+        return self._wait_home_brightness(name, interval=interval)
+
+    def _wait_loading_gone_or_home_brightness(
+        self,
+        name: str,
+        interval: float = 0.35,
+    ) -> bool:
+        end_at = monotonic() + float(self.config.get("loading 消失等待秒数", 35.0))
+        while monotonic() <= end_at:
+            frame = self.capture_frame()
+            if self._home_brightness_ok(frame, name):
+                return True
+
+            loading = self._match(frame, LOADING_TEMPLATE)
+            self.info_set(f"{name}_loading_gone", f"{loading.score:.3f}")
+            if not self._passes(loading, LOADING_TEMPLATE):
+                return self._wait_home_brightness(name, interval=interval)
+            self.sleep(interval)
+
+        self.log_info(f"{name}：UI_loading_black.png 未在限定时间内消失。")
+        return False
+
+    def _wait_for_gacha_page(self, name: str) -> bool:
+        found, text = self._wait_for_ocr_keywords(
+            GACHA_PAGE_KEYWORDS,
+            timeout=float(self.config.get("抽卡页面等待秒数", 12.0)),
+            minimum_matches=int(self.config.get("抽卡页面关键词最低命中数", 3)),
+            name=f"{name}_gacha_page",
+        )
+        self.info_set(f"{name} OCR", text or "-")
+        if found:
+            self.log_info(f"{name}：已确认抽卡页面。")
+            return True
+        self.log_info(f"{name}：未确认抽卡页面。")
+        return False
+
+    def _wait_for_free_gacha(
+        self,
+        section_name: str,
+        timeout: float | None = None,
+    ) -> tuple[bool, str]:
+        found, text = self._wait_for_ocr_keywords(
+            FREE_GACHA_KEYWORDS,
+            timeout=(
+                float(timeout)
+                if timeout is not None
+                else float(self.config.get("免费抽按钮等待秒数", 3.0))
+            ),
+            minimum_matches=1,
+            name=f"{section_name}_free_gacha",
+        )
+        self.info_set(f"{section_name} 免费抽 OCR", text or "-")
+        return found, text
+
+    def _wait_for_confirm_dialog(self, section_name: str) -> bool:
+        found, text = self._wait_for_ocr_keywords(
+            CONFIRM_DIALOG_KEYWORDS,
+            timeout=float(self.config.get("确认弹窗等待秒数", 8.0)),
+            minimum_matches=int(self.config.get("确认弹窗关键词最低命中数", 2)),
+            name=f"{section_name}_confirm",
+        )
+        self.info_set(f"{section_name} 确认 OCR", text or "-")
+        if found:
+            self.log_info(f"{section_name}：检测到确认抽抽乐弹窗。")
+            return True
+        self.log_info(f"{section_name}：未检测到确认抽抽乐弹窗。")
+        return False
+
+    def _handle_result_until_back(self, section_name: str) -> bool:
+        skip_interval = float(self.config.get("跳过点击间隔秒数", 0.5))
+        for _ in range(5):
+            self._click_reference(1770, 60, after_sleep=skip_interval)
+
+        found, text = self._wait_for_ocr_keywords(
+            BACK_PAGE_KEYWORDS,
+            timeout=float(self.config.get("结果返回等待秒数", 45.0)),
+            minimum_matches=2,
+            name=f"{section_name}_result",
+        )
+        self.info_set(f"{section_name} 结果 OCR", text or "-")
+        if found:
+            self._click_reference(105, 51, after_sleep=1.0)
+            self.log_info(f"{section_name}：检测到免费/付费列表，返回抽卡页面。")
+            return True
+
+        self.log_info(f"{section_name}：未在限定时间内回到免费/付费列表。")
+        return False
+
+    def _wait_for_template(
+        self,
+        spec: GachaTemplateSpec,
+        timeout: float,
+        name: str,
+        interval: float = 0.35,
+    ) -> bool:
+        end_at = monotonic() + max(0.0, timeout)
+        last_score = -1.0
+        while monotonic() <= end_at:
+            frame = self.capture_frame()
+            result = self._match(frame, spec)
+            last_score = result.score
+            self.info_set(name, f"{result.score:.3f}")
+            if self._passes(result, spec):
+                return True
+            self.sleep(interval)
+
+        self.info_set(name, f"{last_score:.3f}")
+        return False
+
+    def _wait_for_ocr_keywords(
+        self,
+        keywords: list[str],
+        timeout: float,
+        minimum_matches: int,
+        name: str,
+        interval: float = 0.5,
+    ) -> tuple[bool, str]:
+        end_at = monotonic() + max(0.0, timeout)
+        last_text = ""
+        while monotonic() <= end_at:
+            frame = self.capture_frame()
+            found, text = self._ocr_keywords_in_frame(
+                frame,
+                keywords,
+                minimum_matches,
+                name,
+            )
+            last_text = text
+            if found:
+                return True, text
+            self.sleep(interval)
+        return False, last_text
+
+    def _ocr_keywords_in_frame(
+        self,
+        frame,
+        keywords: list[str],
+        minimum_matches: int,
+        name: str,
+    ) -> tuple[bool, str]:
+        text = self._ocr_text(frame, name=name)
+        count = self._keyword_match_count(text, keywords)
+        self.info_set(f"{name} 关键字", f"{count}/{len(keywords)}")
+        return count >= minimum_matches, text
+
+    def _wait_home_brightness(
+        self,
+        name: str,
+        interval: float = 0.35,
+    ) -> bool:
+        end_at = monotonic() + float(self.config.get("主页确认等待秒数", 10.0))
+        last_ratio = 0.0
+        while monotonic() <= end_at:
+            frame = self.capture_frame()
+            last_ratio = self._home_brightness_ratio(frame)
+            self.info_set(f"{name} 亮度", f"{last_ratio:.3f}")
+            if last_ratio >= self._home_ratio_threshold():
+                return True
+            self.sleep(interval)
+
+        self.log_info(f"{name}：主页亮度未达到阈值，ratio={last_ratio:.3f}")
+        return False
+
+    def _home_brightness_ok(self, frame, name: str) -> bool:
+        ratio = self._home_brightness_ratio(frame)
+        self.info_set(f"{name} 亮度", f"{ratio:.3f}")
+        return ratio >= self._home_ratio_threshold()
+
+    def _home_brightness_ratio(self, frame) -> float:
+        template = self._load_template(HOME_TEMPLATE)
+        frame_gray = self._to_gray(frame)
+        frame_height, frame_width = frame_gray.shape[:2]
+        scale = frame_width / REFERENCE_WIDTH
+        template_height, template_width = template.shape[:2]
+        roi_width = max(8, round(template_width * scale))
+        roi_height = max(8, round(template_height * scale))
+        center_x = round(frame_width * (166 / REFERENCE_WIDTH))
+        center_y = round(frame_height * (158 / REFERENCE_HEIGHT))
+        left = max(0, center_x - roi_width // 2)
+        top = max(0, center_y - roi_height // 2)
+        right = min(frame_width, left + roi_width)
+        bottom = min(frame_height, top + roi_height)
+        region = frame_gray[top:bottom, left:right]
+        if region.size == 0:
+            return 0.0
+
+        template_mean = float(np.mean(template))
+        if template_mean <= 0:
+            return 0.0
+        return float(np.mean(region) / template_mean)
+
+    def _match(self, frame, spec: GachaTemplateSpec) -> GachaMatchResult:
+        empty = GachaMatchResult(score=-1.0, pixel_score=-1.0, position=(0, 0), size=(0, 0))
+        if monotonic() < self._match_pause_until:
+            return empty
+
+        try:
+            template = self._load_template(spec)
+        except RuntimeError as exc:
+            if spec.name not in self._missing_template_names:
+                self._missing_template_names.add(spec.name)
+                self.log_warning(str(exc), notify=True)
+            return empty
+
+        try:
+            frame_gray = self._to_gray(frame)
+            frame_height, frame_width = frame_gray.shape[:2]
+            base_scale = frame_width / REFERENCE_WIDTH
+            best = empty
+
+            for scale in self._candidate_scales(base_scale):
+                scaled_template = self._resize_template(template, scale)
+                height, width = scaled_template.shape[:2]
+                if height < 8 or width < 8 or height > frame_height or width > frame_width:
+                    continue
+
+                result = cv2.matchTemplate(frame_gray, scaled_template, cv2.TM_CCOEFF_NORMED)
+                _, max_value, _, max_location = cv2.minMaxLoc(result)
+                if max_value > best.score:
+                    x, y = int(max_location[0]), int(max_location[1])
+                    region = frame_gray[y : y + height, x : x + width]
+                    best = GachaMatchResult(
+                        score=float(max_value),
+                        pixel_score=self._pixel_similarity(region, scaled_template),
+                        position=(x, y),
+                        size=(int(width), int(height)),
+                    )
+        except (cv2.error, MemoryError) as exc:
+            self._match_pause_until = monotonic() + 2.0
+            message = f"图像匹配内存不足，暂停识别2秒：{spec.name}"
+            self.info_set("匹配错误", message)
+            if spec.name not in self._match_error_names:
+                self._match_error_names.add(spec.name)
+                self.log_warning(f"{message}；{exc}", notify=True)
+            return empty
+
+        return best
+
+    def _load_template(self, spec: GachaTemplateSpec) -> np.ndarray:
+        if spec.name in self._templates:
+            return self._templates[spec.name]
+
+        path = TEMPLATE_DIR / spec.file_name
+        template = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+        if template is None:
+            raise RuntimeError(f"白嫖抽抽乐模板不存在或无法读取：{path}")
+
+        self._templates[spec.name] = template
+        return template
+
+    def _passes(self, result: GachaMatchResult, spec: GachaTemplateSpec) -> bool:
+        threshold = float(self.config.get(spec.threshold_key, spec.default_threshold))
+        return result.score >= threshold
+
+    def _ocr_text(self, frame, name: str) -> str:
+        try:
+            boxes = self.ocr(
+                frame=frame,
+                threshold=float(self.config.get("抽卡 OCR 阈值", 0.2)),
+                target_height=720,
+                log=False,
+                name=name,
+            )
+        except Exception as exc:
+            self.info_set(f"{name} OCR 错误", str(exc))
+            return ""
+
+        return " ".join(box.name for box in boxes if getattr(box, "name", ""))
+
+    def _home_ratio_threshold(self) -> float:
+        return float(self.config.get("主页亮度比例阈值", 0.75))
+
+    def _click_reference(self, x: int, y: int, after_sleep: float = 0.0):
+        self.operate_click(
+            max(0.0, min(1.0, x / REFERENCE_WIDTH)),
+            max(0.0, min(1.0, y / REFERENCE_HEIGHT)),
+            after_sleep=after_sleep,
+        )
+
+    @staticmethod
+    def _keyword_match_count(text: str, keywords: list[str]) -> int:
+        normalized = FreeGachaTask._normalize_text(text)
+        return sum(
+            1 for keyword in keywords if FreeGachaTask._normalize_text(keyword) in normalized
+        )
+
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        return "".join(str(text).lower().split())
+
+    @staticmethod
+    def _candidate_scales(base_scale: float) -> list[float]:
+        offsets = (0.0, -0.08, 0.08, -0.16, 0.16)
+        candidates = [1.0]
+        candidates.extend(max(0.2, base_scale + offset) for offset in offsets)
+
+        unique = []
+        for scale in candidates:
+            rounded = round(scale, 3)
+            if rounded not in unique:
+                unique.append(rounded)
+        return unique
+
+    @staticmethod
+    def _resize_template(template: np.ndarray, scale: float) -> np.ndarray:
+        if abs(scale - 1.0) < 0.001:
+            return template
+        interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC
+        return cv2.resize(template, None, fx=scale, fy=scale, interpolation=interpolation)
+
+    @staticmethod
+    def _to_gray(frame) -> np.ndarray:
+        if len(frame.shape) == 2:
+            return frame
+        if frame.shape[2] == 4:
+            return cv2.cvtColor(frame, cv2.COLOR_BGRA2GRAY)
+        return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+    @staticmethod
+    def _pixel_similarity(region: np.ndarray, template: np.ndarray) -> float:
+        if region.shape != template.shape:
+            return -1.0
+        diff = np.mean(np.abs(region.astype(np.float32) - template.astype(np.float32)))
+        return float(1.0 - diff / 255.0)
+
+
+LOADING_TEMPLATE = GachaTemplateSpec(
+    name="ui_loading_black",
+    file_name="image/UI_loading_black.png",
+    threshold_key="加载页面阈值",
+    default_threshold=0.72,
+)
+
+BACK_TEMPLATE = GachaTemplateSpec(
+    name="back",
+    file_name="back.png",
+    threshold_key="返回按钮阈值",
+    default_threshold=0.76,
+)
+
+HOME_TEMPLATE = GachaTemplateSpec(
+    name="home",
+    file_name="home.png",
+    threshold_key="主页亮度比例阈值",
+    default_threshold=0.75,
+)
+
+GACHA_PAGE_KEYWORDS = [
+    "服装抽抽乐",
+    "服装",
+    "装备",
+    "本抽抽乐的Pickup对象及日程可能会在后续有所变动",
+    "角色和装备在未来可能会通过其他方式重新贩售或发放",
+]
+
+FREE_GACHA_KEYWORDS = ["所有免费抽抽乐"]
+CONFIRM_DIALOG_KEYWORDS = ["确认抽抽乐", "是否全部进行"]
+BACK_PAGE_KEYWORDS = ["免费", "付费"]

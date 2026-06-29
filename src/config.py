@@ -123,6 +123,8 @@ config = {
         "Globals",
     ],
     "onetime_tasks": [
+        ["src.tasks.DailyTask", "DailyTask"],
+        ["src.tasks.FreeGachaTask", "FreeGachaTask"],
         ["src.tasks.BD2InputTestTask", "BD2ShortKeyInputTestTask"],
         ["src.tasks.BD2InputTestTask", "BD2MouseClickInputTestTask"],
         ["src.tasks.BD2InputTestTask", "BD2LongKeyInputTestTask"],
