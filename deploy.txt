@@ -1,12 +1,13 @@
 src
+ok
 main.py
 main_debug.py
 icons
 requirements.txt
-requirements.in
 README.md
 LICENSE
 i18n
+pyappify
 assets
 ok_templates
 pyappify.yml

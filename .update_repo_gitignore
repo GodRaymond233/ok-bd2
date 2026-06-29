@@ -1,4 +1,9 @@
-.git
-configs
-screenshots
-logs
+__pycache__/
+**/__pycache__/
+.venv
+__pycache__
+*.pyc
+configs/
+screenshots/
+logs/
+probe_outputs/

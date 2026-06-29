@@ -1,0 +1,191 @@
+name: Build
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    env:
+      PYTHONIOENCODING: "UTF-8"
+      SIGN_BUILD: "false"
+      SIGN_SETUP: "false"
+      BUILD_EXE: "true"
+      USE_RELEASE: ""
+
+    strategy:
+      matrix:
+        python-version: ["3.12"]
+
+    permissions:
+      actions: write
+      contents: write
+
+    steps:
+      - name: Configure git
+        run: |
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+          git config --global user.email "GodRaymond233@users.noreply.github.com"
+          git config --global user.name "GodRaymond233"
+
+      - uses: actions/checkout@v7
+        with:
+          lfs: true
+          fetch-depth: 0
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set UTF-8 encoding
+        run: |
+          $env:PYTHONIOENCODING = "utf-8"
+          $env:PYTHONLEGACYWINDOWSSTDIO = "utf-8"
+          "PYTHONIOENCODING=utf-8" >> $env:GITHUB_ENV
+          "PYTHONLEGACYWINDOWSSTDIO=utf-8" >> $env:GITHUB_ENV
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Inline ok-script for update repository
+        run: |
+          python -m ok.update.inline_ok_requirements --tag ${{ github.ref_name }}
+
+      - name: Run tests
+        run: |
+          python -m unittest discover tests
+
+      - name: Validate release secrets
+        env:
+          OK_GH: ${{ secrets.OK_GH }}
+          CNB_GH: ${{ secrets.CNB_GH }}
+        run: |
+          $missing = @()
+          if ([string]::IsNullOrWhiteSpace($env:OK_GH)) { $missing += "OK_GH" }
+          if ([string]::IsNullOrWhiteSpace($env:CNB_GH)) { $missing += "CNB_GH" }
+          if ($missing.Count -gt 0) {
+            Write-Error "Missing GitHub Actions secrets: $($missing -join ', ')"
+            exit 1
+          }
+
+      - name: Sync update repositories
+        id: sync
+        uses: ok-oldking/partial-sync-repo@bbd55c1dffbcc1292a12295d949e7807b35ea93e
+        with:
+          repos: |
+            https://cnb:${{ secrets.CNB_GH }}@cnb.cool/GodRaymond233/ok-bd2-update.git
+            https://GodRaymond233:${{ secrets.OK_GH }}@github.com/GodRaymond233/ok-bd2-update.git
+          sync_list: "deploy.txt"
+          tag: ${{ github.ref_name }}
+          gitignore_file: ".update_repo_gitignore"
+          show_author: true
+
+      - name: Check release version
+        id: release-version
+        if: env.BUILD_EXE == 'true'
+        shell: pwsh
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          $tag = $env:REF_NAME
+          $isRelease = $tag -match '^v?\d+\.\d+\.\d+$'
+          "is_release=$($isRelease.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          Write-Host "Release version: $isRelease"
+
+      - name: PyAppify build from previous release
+        id: build-exe-only-use-release
+        uses: ok-oldking/pyappify-action@master
+        if: env.BUILD_EXE == 'true' && steps.release-version.outputs.is_release == 'true' && env.USE_RELEASE != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          use_release: ${{ env.USE_RELEASE }}
+
+      - name: PyAppify build installer
+        id: build-exe
+        uses: ok-oldking/pyappify-action@master
+        if: env.BUILD_EXE == 'true' && steps.release-version.outputs.is_release == 'true' && env.USE_RELEASE == ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          build_exe_only: ${{ env.SIGN_BUILD == 'true' }}
+
+      - name: Upload unsigned EXE artifact
+        if: env.BUILD_EXE == 'true' && steps.release-version.outputs.is_release == 'true' && env.SIGN_BUILD == 'true' && env.USE_RELEASE == ''
+        id: upload-unsigned-artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: to-sign
+          path: ${{ steps.build-exe.outputs.exe-path }}
+
+      - name: Sign EXE
+        if: env.BUILD_EXE == 'true' && steps.release-version.outputs.is_release == 'true' && env.SIGN_BUILD == 'true' && env.USE_RELEASE == ''
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: "${{ secrets.SIGNPATH_API_TOKEN }}"
+          organization-id: "${{ secrets.SIGNPATH_ORGANIZATION_ID }}"
+          project-slug: "ok-bd2"
+          signing-policy-slug: "${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}"
+          artifact-configuration-slug: "single-exe"
+          github-artifact-id: "${{ steps.upload-unsigned-artifact.outputs.artifact-id }}"
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 60000
+          output-artifact-directory: ${{ steps.build-exe.outputs.exe-folder }}
+
+      - name: PyAppify build signed setup EXE
+        if: env.BUILD_EXE == 'true' && steps.release-version.outputs.is_release == 'true' && env.SIGN_BUILD == 'true'
+        id: build-setup-exe
+        uses: ok-oldking/pyappify-action@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload unsigned setup EXE artifact
+        if: env.BUILD_EXE == 'true' && steps.release-version.outputs.is_release == 'true' && env.SIGN_BUILD == 'true' && env.SIGN_SETUP == 'true'
+        id: upload-unsigned-setup-artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: setup-to-sign
+          path: pyappify_dist/*setup.exe
+          if-no-files-found: error
+
+      - name: Sign setup EXEs
+        if: env.BUILD_EXE == 'true' && steps.release-version.outputs.is_release == 'true' && env.SIGN_BUILD == 'true' && env.SIGN_SETUP == 'true'
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: "${{ secrets.SIGNPATH_API_TOKEN }}"
+          organization-id: "${{ secrets.SIGNPATH_ORGANIZATION_ID }}"
+          project-slug: "ok-bd2"
+          signing-policy-slug: "${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}"
+          artifact-configuration-slug: "setupexe"
+          github-artifact-id: "${{ steps.upload-unsigned-setup-artifact.outputs.artifact-id }}"
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 60000
+          output-artifact-directory: "pyappify_dist"
+
+      - name: Release
+        uses: softprops/action-gh-release@v3
+        if: env.BUILD_EXE == 'true' && steps.release-version.outputs.is_release == 'true' && startsWith(github.ref, 'refs/tags/')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          body: |
+            ### 更新日志 ${{ steps.sync.outputs.start_tag }} -> ${{ steps.sync.outputs.end_tag }}
+              ${{ steps.sync.outputs.changes_with_asterisk }}
+
+            ### 下载包说明
+              * [ok-bd2-win32-China-setup.exe](https://github.com/GodRaymond233/ok-bd2/releases/download/${{ github.ref_name }}/ok-bd2-win32-China-setup.exe) 完整安装包，更新使用 CNB。
+              * [ok-bd2-win32-online-setup.exe](https://github.com/GodRaymond233/ok-bd2/releases/download/${{ github.ref_name }}/ok-bd2-win32-online-setup.exe) 在线安装包，首次安装时需要联网下载依赖。
+              * [ok-bd2-win32-Global-setup.exe](https://github.com/GodRaymond233/ok-bd2/releases/download/${{ github.ref_name }}/ok-bd2-win32-Global-setup.exe) full package with dependencies, using GitHub and PyPI as update source.
+              * 不要下载 ok-bd2-win32.zip 或 Source code 压缩包。
+          draft: false
+          prerelease: false
+          make_latest: true
+          files: pyappify_dist/*

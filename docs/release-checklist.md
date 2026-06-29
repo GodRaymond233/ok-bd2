@@ -2,6 +2,9 @@
 
 Use this checklist before publishing `ok-bd2` to GitHub.
 
+For one-time PyAppify/GitHub Actions/CNB setup, see
+`docs/release-setup-guide.zh-CN.md`.
+
 ## Required checks
 
 - Run `python -m unittest discover tests`.
