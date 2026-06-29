@@ -12,7 +12,7 @@
 - 提供实时截图预览和输入测试任务。
 - 启动游戏后自动触发登录流程，不需要在任务栏手动运行自动登录。
 - 支持 BrownDustX Mod 管理器加载页与 Confirm 异常确认。
-- 登录后等待 loading 页面结束，识别主页小屋按钮，并点击清理公告直到主页 UI 亮度恢复。
+- 登录后并行识别 loading 页面和主页小屋按钮；检测到主页按钮时优先进入公告清理和主页亮度确认。
 - 提供“自动登录状态”页面，实时显示阶段、匹配分数、OCR 文本和最后动作。
 
 ## 环境要求
@@ -48,13 +48,13 @@ python main_debug.py
 offline-train/train-source-screenshots/
 ```
 
-当前代码期望这些文件存在，文件名应保持小写 ASCII：
+当前代码期望这些文件存在，文件名应保持 ASCII：
 
 ```text
 browndustx.png
 browndustx-confirm.png
 touch-to-start.png
-loading.png
+image/UI_loading_black.png
 home.png
 guild.png
 ```
@@ -64,7 +64,7 @@ guild.png
 - `browndustx.png` 用于识别 BrownDustX 正在加载 Mod。
 - `browndustx-confirm.png` 只使用底部 Confirm 区域，并结合 OCR 确认 `CONFIRM` 文本。
 - `touch-to-start.png` 用于识别登录页。
-- `loading.png` 用于登录后的过场加载页，代码只裁取中间 logo 区域匹配。
+- `image/UI_loading_black.png` 用于辅助识别登录后的过场加载页；`home.png` 的优先级更高。
 - `home.png` 用于识别主页左侧小屋按钮，并作为亮度判断基准。
 
 ## 调试

@@ -13,6 +13,8 @@ class ProjectStructureTest(unittest.TestCase):
             "pyproject.toml",
             "requirements.txt",
             "src/config.py",
+            "src/tasks/DailyTask.py",
+            "src/tasks/FreeGachaTask.py",
             "src/tasks/BD2ProbeTask.py",
             "src/tasks/BD2OneTimeTask.py",
             "src/tasks/BaseBD2Task.py",

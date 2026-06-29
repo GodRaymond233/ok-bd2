@@ -4,6 +4,7 @@ from time import monotonic
 
 import cv2
 import numpy as np
+from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task
 
@@ -33,9 +34,10 @@ class MatchResult:
 class AutoLoginTask(BaseBD2Task):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.name = "自动登录"
-        self.description = "启动游戏后自动处理登录、BrownDustX Confirm 和登录后公告。"
-        self.visible = False
+        self.name = "自动登录游戏"
+        self.description = "游戏启动后自动登录游戏"
+        self.icon = FluentIcon.ACCEPT
+        self.visible = True
         self.trigger_interval = 1.0
         self.default_config.update(
             {
@@ -62,16 +64,26 @@ class AutoLoginTask(BaseBD2Task):
         self._templates: dict[str, np.ndarray] = {}
         self._state = "waiting"
         self._home_bright_since: float | None = None
+        self._login_clicked_at: float | None = None
         self._waiting_home_since: float | None = None
         self._last_clear_click_at = 0.0
         self._finished = False
         self._missing_template_names: set[str] = set()
+        self._match_error_names: set[str] = set()
+        self._match_pause_until = 0.0
 
     def on_create(self):
-        self._enabled = True
-        self.config["_enabled"] = True
+        self._enabled = bool(self.config.get("_enabled", True))
         self._set_stage("等待登录页")
         self._set_action("自动登录已启用，等待启动游戏后的画面识别。")
+
+    def enable(self):
+        super().enable()
+        self.config["_enabled"] = True
+
+    def disable(self):
+        super().disable()
+        self.config["_enabled"] = False
 
     def run(self):
         frame = self.capture_frame()
@@ -82,24 +94,52 @@ class AutoLoginTask(BaseBD2Task):
                 return False
             self._reset_login_state()
 
-        if self._state in ("clearing", "force_clearing"):
+        if self._state == "browndustx":
+            return self._wait_browndustx_then_login(frame)
+        if self._state == "clearing":
             return self._clear_popups_until_home(frame)
-        if self._state in ("loading", "waiting_home"):
+        if self._state in ("waiting_loading", "loading", "waiting_home"):
             return self._wait_loading_then_home(frame)
 
-        if self._detect_entered_game(frame):
-            return False
-
-        confirm = self._match(frame, CONFIRM_TEMPLATE)
-        touch_to_start = self._match(frame, TOUCH_TO_START_TEMPLATE)
         browndustx = self._match(frame, BROWNDUSTX_TEMPLATE)
-
         self.info_set("BrownDustX", f"{browndustx.score:.3f}")
         self.info_set("BrownDustX 像素", f"{browndustx.pixel_score:.3f}")
+
+        if self._is_browndustx_present(browndustx):
+            self._state = "browndustx"
+            return self._wait_browndustx_then_login(frame, browndustx)
+
+        self.info_set("BrownDustX Confirm", "-")
+        self.info_set("BrownDustX Confirm 像素", "-")
+        self.info_set("BrownDustX Confirm OCR", "-")
+
+        touch_to_start = self._match(frame, TOUCH_TO_START_TEMPLATE)
+        self.info_set("TOUCH TO START", f"{touch_to_start.score:.3f}")
+        self.info_set("加载页面", "-")
+        self.info_set("小屋按钮", "-")
+
+        if self._passes(touch_to_start, TOUCH_TO_START_TEMPLATE):
+            self._click_login_after_touch(touch_to_start)
+            return False
+
+        self._set_stage("等待登录页")
+        self._set_action("等待 BrownDustX 或 TOUCH TO START 画面。")
+
+        return False
+
+    def _wait_browndustx_then_login(
+        self,
+        frame,
+        browndustx: MatchResult | None = None,
+    ) -> bool:
+        if browndustx is None:
+            browndustx = self._match(frame, BROWNDUSTX_TEMPLATE)
+            self.info_set("BrownDustX", f"{browndustx.score:.3f}")
+            self.info_set("BrownDustX 像素", f"{browndustx.pixel_score:.3f}")
+
+        confirm = self._match(frame, CONFIRM_TEMPLATE)
         self.info_set("BrownDustX Confirm", f"{confirm.score:.3f}")
         self.info_set("BrownDustX Confirm 像素", f"{confirm.pixel_score:.3f}")
-        self.info_set("TOUCH TO START", f"{touch_to_start.score:.3f}")
-
         if self._is_browndustx_confirm(frame, confirm):
             self._set_stage("BrownDustX 异常确认")
             self._set_action("检测到 BrownDustX Confirm，点击确认按钮。")
@@ -111,111 +151,99 @@ class AutoLoginTask(BaseBD2Task):
             )
             return False
 
+        touch_to_start = self._match(frame, TOUCH_TO_START_TEMPLATE)
+        self.info_set("TOUCH TO START", f"{touch_to_start.score:.3f}")
+        self.info_set("加载页面", "-")
+        self.info_set("小屋按钮", "-")
         if self._passes(touch_to_start, TOUCH_TO_START_TEMPLATE):
-            self._set_stage("点击登录")
-            self._set_action("检测到 TOUCH TO START，点击登录按钮。")
-            self.log_info(f"自动登录：检测到 TOUCH TO START，score={touch_to_start.score:.3f}")
-            self.operate_click(
-                self._percent_config("登录按钮点击 X 百分比"),
-                self._percent_config("登录按钮点击 Y 百分比"),
-                after_sleep=2.0,
-            )
-            self._state = "loading"
-            self._home_bright_since = None
-            self._waiting_home_since = None
-            self._last_clear_click_at = 0.0
+            self._click_login_after_touch(touch_to_start)
             return False
 
-        if self._is_browndustx_loading(frame, browndustx):
-            self._set_stage("BrownDustX 加载")
-            self._set_action("检测到 BrownDustX，等待 Mod 管理器完成加载。")
-            self.log_info(f"自动登录：BrownDustX 正在加载，score={browndustx.score:.3f}")
-        else:
-            self._set_stage("等待登录页")
-            self._set_action("等待 BrownDustX、Confirm 或 TOUCH TO START 画面。")
+        if self._is_browndustx_present(browndustx):
+            self._record_browndustx_text(frame, browndustx)
 
+        self._set_stage("BrownDustX 加载")
+        self._set_action("等待 BrownDustX Confirm 或 TOUCH TO START。")
+        self.log_info(
+            "自动登录：BrownDustX 等待中，"
+            f"browndustx={browndustx.score:.3f}, confirm={confirm.score:.3f}, "
+            f"touch={touch_to_start.score:.3f}"
+        )
         return False
 
-    def _detect_entered_game(self, frame) -> bool:
-        loading = self._match(frame, LOADING_TEMPLATE)
-        home_button = self._match(frame, HOME_BUTTON_TEMPLATE)
-        self.info_set("加载页面", f"{loading.score:.3f}")
-        self.info_set("小屋按钮", f"{home_button.score:.3f}")
-
-        if self._passes(loading, LOADING_TEMPLATE):
-            self._state = "loading"
-            self._home_bright_since = None
-            self._waiting_home_since = None
-            self._set_stage("登录加载中")
-            self._set_action("已进入登录后加载页，停止 BrownDustX Confirm 判断。")
-            return True
-
-        if self._passes(home_button, HOME_BUTTON_TEMPLATE):
-            self._state = "clearing"
-            self._waiting_home_since = None
-            self._set_stage("清理公告")
-            self._set_action("已检测到 home.png，进入公告清理/主页确认流程。")
-            self._clear_popups_until_home(frame)
-            return True
-
-        return False
+    def _click_login_after_touch(self, touch_to_start: MatchResult) -> None:
+        self._set_stage("点击登录")
+        self._set_action("检测到 TOUCH TO START，点击登录按钮。")
+        self.log_info(f"自动登录：检测到 TOUCH TO START，score={touch_to_start.score:.3f}")
+        self.operate_click(
+            self._percent_config("登录按钮点击 X 百分比"),
+            self._percent_config("登录按钮点击 Y 百分比"),
+            after_sleep=2.0,
+        )
+        self._state = "waiting_loading"
+        self._home_bright_since = None
+        self._login_clicked_at = None
+        self._waiting_home_since = monotonic()
+        self._last_clear_click_at = 0.0
 
     def _wait_loading_then_home(self, frame) -> bool:
-        loading = (
-            MatchResult(score=-1.0, pixel_score=-1.0, position=(0, 0), size=(0, 0))
-            if self._state == "waiting_home"
-            else self._match(frame, LOADING_TEMPLATE)
-        )
+        now = monotonic()
+
+        if self._state == "waiting_loading":
+            self._login_clicked_at = None
+            if self._waiting_home_since is None:
+                self._waiting_home_since = now
+
+        self.info_set("TOUCH TO START", "-")
+
         home_button = self._match(frame, HOME_BUTTON_TEMPLATE)
-        self.info_set("加载页面", f"{loading.score:.3f}")
         self.info_set("小屋按钮", f"{home_button.score:.3f}")
-
-        if self._passes(loading, LOADING_TEMPLATE):
-            self._home_bright_since = None
-            self._waiting_home_since = None
-            self._set_stage("登录加载中")
-            self._set_action("检测到 loading.png，等待过场页面结束。")
-            self.log_info(f"自动登录：登录加载中，score={loading.score:.3f}")
-            return False
-
         if self._passes(home_button, HOME_BUTTON_TEMPLATE):
             self._state = "clearing"
+            self._login_clicked_at = None
             self._waiting_home_since = None
-            return self._clear_popups_until_home(frame)
+            self.info_set("加载页面", "-")
+            return self._clear_popups_until_home(frame, home_button)
+
+        loading = self._match(frame, LOADING_TEMPLATE)
+        self.info_set("加载页面", f"{loading.score:.3f}")
+
+        if self._passes(loading, LOADING_TEMPLATE):
+            self._state = "loading"
+            self._home_bright_since = None
+            self._set_stage("登录加载中")
+            self._set_action("检测到 UI_loading_black.png，同时等待 home.png 出现。")
+            self.log_info(
+                "自动登录：登录加载中，"
+                f"loading={loading.score:.3f}, home={home_button.score:.3f}"
+            )
+            return False
+
+        if self._state in ("waiting_loading", "loading"):
+            self._state = "waiting_home"
 
         self._home_bright_since = None
-        self._state = "waiting_home"
-        now = monotonic()
         if self._waiting_home_since is None:
             self._waiting_home_since = now
 
         grace_seconds = float(self.config.get("主页 UI 等待宽限秒数", 10.0))
         elapsed = now - self._waiting_home_since
-        if elapsed >= grace_seconds:
-            self._state = "force_clearing"
-            self._set_stage("尝试清理公告")
-            self._set_action(
-                f"等待 home.png {elapsed:.1f} 秒仍未出现，开始尝试点击小屋位置清理公告。"
-            )
-            return self._clear_popups_until_home(frame)
 
         self._set_stage("等待主页 UI")
-        self._set_action(
-            f"loading.png 已消失，等待 home.png 出现 {elapsed:.1f}/{grace_seconds:.1f} 秒。"
-        )
-        self.log_info(
-            "自动登录：等待登录加载结束并出现小屋按钮，"
-            f"loading={loading.score:.3f}, home={home_button.score:.3f}"
-        )
+        self._set_action(f"登录后等待 home.png 出现 {elapsed:.1f}/{grace_seconds:.1f} 秒。")
+        self.log_info(f"自动登录：登录后等待小屋按钮出现，home={home_button.score:.3f}")
         return False
 
-    def _clear_popups_until_home(self, frame) -> bool:
-        home_button = self._match(frame, HOME_BUTTON_TEMPLATE)
+    def _clear_popups_until_home(
+        self,
+        frame,
+        home_button: MatchResult | None = None,
+    ) -> bool:
+        home_button = home_button or self._match(frame, HOME_BUTTON_TEMPLATE)
         self.info_set("小屋按钮", f"{home_button.score:.3f}")
-        require_home_match = self._state != "force_clearing"
-        if require_home_match and not self._passes(home_button, HOME_BUTTON_TEMPLATE):
+        if not self._passes(home_button, HOME_BUTTON_TEMPLATE):
             self._home_bright_since = None
-            self._state = "loading"
+            self._state = "waiting_home"
             self._set_stage("等待主页 UI")
             self._set_action("home.png 尚未出现，继续等待。")
             self.log_info(f"自动登录：小屋按钮尚未出现，score={home_button.score:.3f}")
@@ -283,37 +311,50 @@ class AutoLoginTask(BaseBD2Task):
         return float(np.mean(region) / template_mean)
 
     def _match(self, frame, spec: TemplateSpec) -> MatchResult:
+        empty = MatchResult(score=-1.0, pixel_score=-1.0, position=(0, 0), size=(0, 0))
+        if monotonic() < self._match_pause_until:
+            return empty
+
         try:
             template = self._load_template(spec)
         except RuntimeError as exc:
             if spec.name not in self._missing_template_names:
                 self._missing_template_names.add(spec.name)
                 self.log_warning(str(exc), notify=True)
-            return MatchResult(score=-1.0, pixel_score=-1.0, position=(0, 0), size=(0, 0))
+            return empty
 
-        frame_gray = self._to_gray(frame)
-        frame_height, frame_width = frame_gray.shape[:2]
-        base_scale = frame_width / REFERENCE_WIDTH
-        scales = self._candidate_scales(base_scale)
-        best = MatchResult(score=-1.0, pixel_score=-1.0, position=(0, 0), size=(0, 0))
+        try:
+            frame_gray = self._to_gray(frame)
+            frame_height, frame_width = frame_gray.shape[:2]
+            base_scale = frame_width / REFERENCE_WIDTH
+            scales = self._candidate_scales(base_scale)
+            best = empty
 
-        for scale in scales:
-            scaled_template = self._resize_template(template, scale)
-            height, width = scaled_template.shape[:2]
-            if height < 8 or width < 8 or height > frame_height or width > frame_width:
-                continue
+            for scale in scales:
+                scaled_template = self._resize_template(template, scale)
+                height, width = scaled_template.shape[:2]
+                if height < 8 or width < 8 or height > frame_height or width > frame_width:
+                    continue
 
-            result = cv2.matchTemplate(frame_gray, scaled_template, cv2.TM_CCOEFF_NORMED)
-            _, max_value, _, max_location = cv2.minMaxLoc(result)
-            if max_value > best.score:
-                x, y = int(max_location[0]), int(max_location[1])
-                region = frame_gray[y : y + height, x : x + width]
-                best = MatchResult(
-                    score=float(max_value),
-                    pixel_score=self._pixel_similarity(region, scaled_template),
-                    position=(x, y),
-                    size=(int(width), int(height)),
-                )
+                result = cv2.matchTemplate(frame_gray, scaled_template, cv2.TM_CCOEFF_NORMED)
+                _, max_value, _, max_location = cv2.minMaxLoc(result)
+                if max_value > best.score:
+                    x, y = int(max_location[0]), int(max_location[1])
+                    region = frame_gray[y : y + height, x : x + width]
+                    best = MatchResult(
+                        score=float(max_value),
+                        pixel_score=self._pixel_similarity(region, scaled_template),
+                        position=(x, y),
+                        size=(int(width), int(height)),
+                    )
+        except (cv2.error, MemoryError) as exc:
+            self._match_pause_until = monotonic() + 2.0
+            message = f"图像匹配内存不足，暂停识别2秒：{spec.name}"
+            self.info_set("匹配错误", message)
+            if spec.name not in self._match_error_names:
+                self._match_error_names.add(spec.name)
+                self.log_warning(f"{message}；{exc}", notify=True)
+            return empty
 
         return best
 
@@ -345,20 +386,15 @@ class AutoLoginTask(BaseBD2Task):
             return True
         return result.pixel_score >= float(pixel_threshold)
 
-    def _is_browndustx_loading(self, frame, browndustx: MatchResult) -> bool:
-        if not self._passes_strict(browndustx, BROWNDUSTX_TEMPLATE):
-            return False
+    def _is_browndustx_present(self, browndustx: MatchResult) -> bool:
+        if self._passes_strict(browndustx, BROWNDUSTX_TEMPLATE):
+            return True
+        pixel_threshold = float(self.config.get("BrownDustX 像素阈值", 0.86))
+        return browndustx.pixel_score >= pixel_threshold
 
+    def _record_browndustx_text(self, frame, browndustx: MatchResult) -> None:
         text = self._ocr_match_region_text(frame, browndustx, name="browndustx_loading_ocr")
         self.info_set("BrownDustX OCR", text or "-")
-        normalized = self._normalize_ocr_text(text)
-        return (
-            "browndustx" in normalized
-            or "正在加载" in text
-            or "请稍候" in text
-            or "请稍侯" in text
-            or "mod" in normalized
-        )
 
     def _is_browndustx_confirm(
         self,
@@ -366,6 +402,7 @@ class AutoLoginTask(BaseBD2Task):
         confirm: MatchResult,
     ) -> bool:
         if not self._passes_strict(confirm, CONFIRM_TEMPLATE):
+            self.info_set("BrownDustX Confirm OCR", "-")
             return False
 
         button_text = self._ocr_match_region_text(frame, confirm, name="browndustx_confirm_ocr")
@@ -381,6 +418,7 @@ class AutoLoginTask(BaseBD2Task):
     def _reset_login_state(self):
         self._state = "waiting"
         self._home_bright_since = None
+        self._login_clicked_at = None
         self._waiting_home_since = None
         self._last_clear_click_at = 0.0
         self._finished = False
@@ -499,11 +537,10 @@ TOUCH_TO_START_TEMPLATE = TemplateSpec(
 )
 
 LOADING_TEMPLATE = TemplateSpec(
-    name="loading",
-    file_name="loading.png",
+    name="ui_loading_black",
+    file_name="image/UI_loading_black.png",
     threshold_key="加载页面阈值",
     default_threshold=0.72,
-    crop=(0.40, 0.44, 0.61, 0.58),
 )
 
 HOME_BUTTON_TEMPLATE = TemplateSpec(

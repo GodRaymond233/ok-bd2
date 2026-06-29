@@ -4,6 +4,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable
 
+import cv2
+import numpy as np
 from ok import BaseTask, Box, Logger, og
 from PIL import Image
 
@@ -14,6 +16,23 @@ logger = Logger.get_logger(__name__)
 PROBE_OUTPUT_DIR = Path("probe_outputs")
 HOTKEY_CONFIG_NAME = "游戏按键设置"
 HOTKEY_CONFIG_LEGACY_NAME = "Game Hotkey Config"
+GREEN_MASK_TOLERANCE = 0
+
+
+def green_mask_from_template(template: np.ndarray, tolerance: int = GREEN_MASK_TOLERANCE) -> np.ndarray:
+    if template.ndim < 3:
+        return np.full(template.shape[:2], 255, dtype=np.uint8)
+
+    color = template[:, :, :3]
+    tolerance = max(0, int(tolerance))
+    green_pixels = (
+        (color[:, :, 0] <= tolerance)
+        & (color[:, :, 1] >= 255 - tolerance)
+        & (color[:, :, 2] <= tolerance)
+    )
+    if template.shape[2] >= 4:
+        green_pixels |= template[:, :, 3] == 0
+    return np.where(green_pixels, 0, 255).astype(np.uint8)
 
 
 class BaseBD2Task(BaseTask):
@@ -89,6 +108,38 @@ class BaseBD2Task(BaseTask):
         output_path.write_text("\n".join(lines), encoding="utf-8")
         self.info_set(info_label, str(output_path))
         return output_path
+
+    @staticmethod
+    def green_mask(template: np.ndarray, tolerance: int = GREEN_MASK_TOLERANCE) -> np.ndarray:
+        return green_mask_from_template(template, tolerance=tolerance)
+
+    def find_one_green_mask(
+        self,
+        *args,
+        green_tolerance: int = GREEN_MASK_TOLERANCE,
+        match_method=cv2.TM_CCORR_NORMED,
+        **kwargs,
+    ):
+        kwargs["mask_function"] = lambda template: green_mask_from_template(
+            template,
+            tolerance=green_tolerance,
+        )
+        kwargs["match_method"] = match_method
+        return self.find_one(*args, **kwargs)
+
+    def find_green_mask_features(
+        self,
+        *args,
+        green_tolerance: int = GREEN_MASK_TOLERANCE,
+        match_method=cv2.TM_CCORR_NORMED,
+        **kwargs,
+    ):
+        kwargs["mask_function"] = lambda template: green_mask_from_template(
+            template,
+            tolerance=green_tolerance,
+        )
+        kwargs["match_method"] = match_method
+        return self.find_feature(*args, **kwargs)
 
     def click(
         self,
