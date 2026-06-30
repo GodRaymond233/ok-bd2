@@ -19,7 +19,10 @@ HOTKEY_CONFIG_LEGACY_NAME = "Game Hotkey Config"
 GREEN_MASK_TOLERANCE = 0
 
 
-def green_mask_from_template(template: np.ndarray, tolerance: int = GREEN_MASK_TOLERANCE) -> np.ndarray:
+def green_mask_from_template(
+    template: np.ndarray,
+    tolerance: int = GREEN_MASK_TOLERANCE,
+) -> np.ndarray:
     if template.ndim < 3:
         return np.full(template.shape[:2], 255, dtype=np.uint8)
 
