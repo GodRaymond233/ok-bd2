@@ -1,5 +1,10 @@
 # Local secrets and runtime data
 my_key.txt
+pyappify_build/
+pyappify_dist/
+pyappify-*.log
+pyappify-*.pid
+vs-buildtools-install.*
 configs/
 screenshots/
 logs/
