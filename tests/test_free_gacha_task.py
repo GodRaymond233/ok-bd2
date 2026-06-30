@@ -1,5 +1,5 @@
-import unittest
 import importlib
+import unittest
 
 import numpy as np
 
@@ -135,7 +135,10 @@ class FreeGachaTaskHelperTest(unittest.TestCase):
 
         task._click_reference = fake_click
         task._ocr_keywords_in_frame = fake_ocr
-        task.sleep = lambda seconds: (sleeps.append(seconds), now.__setitem__("value", now["value"] + seconds))
+        task.sleep = lambda seconds: (
+            sleeps.append(seconds),
+            now.__setitem__("value", now["value"] + seconds),
+        )
 
         old_monotonic = free_gacha_module.monotonic
         try:
