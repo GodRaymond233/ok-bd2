@@ -145,6 +145,7 @@ class DailyTask(BaseBD2Task):
             self.log_info("公会签到：未检测到 guild.png 或 guild-finished.png，不点击公会按钮。")
             return False
 
+        self._sleep_after_recognition()
         self._click_reference(370, 155, after_sleep=0.5)
         loading_state, success_found, text = self._wait_loading_or_template_or_ocr(
             "公会签到",
@@ -167,6 +168,7 @@ class DailyTask(BaseBD2Task):
         self.info_set("公会签到 OCR", text or "-")
         if success_found:
             self.log_info("公会签到：检测到签到成功提示。")
+            self._sleep_after_recognition()
             self._click_reference(450, 650, after_sleep=0.5)
         else:
             self.log_info("公会签到：未检测到签到成功提示，按流程返回主页。")
@@ -196,6 +198,7 @@ class DailyTask(BaseBD2Task):
             )
         if found:
             self.log_info("小屋签到：已进入小屋页面，返回主页。")
+            self._sleep_after_recognition()
             self._click_reference(100, 50, after_sleep=1.0)
         else:
             self.log_info("小屋签到：未检测到 my-home.png，不执行返回点击。")
@@ -222,6 +225,7 @@ class DailyTask(BaseBD2Task):
             self.log_info("一键收菜：未检测到经营管理弹窗关键字，跳过点击。")
             return False
 
+        self._sleep_after_recognition()
         self._click_reference(1090, 814, after_sleep=3.0)
         self._click_reference(832, 814, after_sleep=1.0)
         self._click_reference(832, 814, after_sleep=1.0)

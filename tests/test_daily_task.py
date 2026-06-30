@@ -88,6 +88,7 @@ class DailyTaskHelperTest(unittest.TestCase):
         task.capture_frame = lambda: np.zeros((10, 10, 3), dtype=np.uint8)
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
+        task.sleep = lambda *_args, **_kwargs: None
         clicks = []
 
         def fake_match(_frame, spec):
@@ -103,6 +104,37 @@ class DailyTaskHelperTest(unittest.TestCase):
 
         self.assertTrue(DailyTask.run_guild_sign_in(task))
         self.assertEqual([(370, 155), (100, 50)], clicks)
+
+    def test_guild_sign_in_waits_before_clicking_success_prompt(self):
+        task = object.__new__(DailyTask)
+        task.config = {"公会未完成阈值": 0.78, "公会已完成阈值": 0.78}
+        task.capture_frame = lambda: np.zeros((10, 10, 3), dtype=np.uint8)
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        clicks = []
+        sleeps = []
+
+        def fake_match(_frame, spec):
+            if spec is GUILD_TEMPLATE:
+                return DailyMatchResult(0.9, 0.9, (0, 0), (1, 1))
+            return DailyMatchResult(-1.0, -1.0, (0, 0), (0, 0))
+
+        task._match = fake_match
+        task._click_reference = lambda x, y, **_kwargs: clicks.append((x, y))
+        task.sleep = lambda seconds: sleeps.append(seconds)
+        task._wait_loading_or_template_or_ocr = lambda *_args, **_kwargs: (
+            "target",
+            True,
+            "签到成功",
+        )
+        task._wait_for_template_or_ocr = lambda *_args, **_kwargs: self.fail(
+            "success already found"
+        )
+        task._wait_home_brightness = lambda *_args, **_kwargs: True
+
+        self.assertTrue(DailyTask.run_guild_sign_in(task))
+        self.assertEqual([1.0, 1.0], sleeps)
+        self.assertEqual([(370, 155), (450, 650), (100, 50)], clicks)
 
     def test_my_home_sign_in_continues_when_loading_is_missing(self):
         task = object.__new__(DailyTask)

@@ -51,7 +51,7 @@ class AutoLoginTask(BaseBD2Task):
                 "加载页面阈值": 0.72,
                 "小屋按钮阈值": 0.78,
                 "小屋亮度比例阈值": 0.75,
-                "主页 UI 等待宽限秒数": 10.0,
+                "主页 UI 等待宽限秒数": 15.0,
                 "主页连续确认秒数": 3.0,
                 "BDXConfirm 点击 X 百分比": 50.0,
                 "BDXConfirm 点击 Y 百分比": 67.5926,
@@ -144,6 +144,7 @@ class AutoLoginTask(BaseBD2Task):
             self._set_stage("BrownDustX 异常确认")
             self._set_action("检测到 BrownDustX Confirm，点击确认按钮。")
             self.log_info(f"自动登录：检测到 BrownDustX Confirm，score={confirm.score:.3f}")
+            self._sleep_after_recognition()
             self.operate_click(
                 self._percent_config("BDXConfirm 点击 X 百分比"),
                 self._percent_config("BDXConfirm 点击 Y 百分比"),
@@ -175,6 +176,7 @@ class AutoLoginTask(BaseBD2Task):
         self._set_stage("点击登录")
         self._set_action("检测到 TOUCH TO START，点击登录按钮。")
         self.log_info(f"自动登录：检测到 TOUCH TO START，score={touch_to_start.score:.3f}")
+        self._sleep_after_recognition()
         self.operate_click(
             self._percent_config("登录按钮点击 X 百分比"),
             self._percent_config("登录按钮点击 Y 百分比"),
@@ -226,7 +228,7 @@ class AutoLoginTask(BaseBD2Task):
         if self._waiting_home_since is None:
             self._waiting_home_since = now
 
-        grace_seconds = float(self.config.get("主页 UI 等待宽限秒数", 10.0))
+        grace_seconds = float(self.config.get("主页 UI 等待宽限秒数", 15.0))
         elapsed = now - self._waiting_home_since
 
         self._set_stage("等待主页 UI")
@@ -279,6 +281,7 @@ class AutoLoginTask(BaseBD2Task):
             self._set_stage("清理公告")
             self._set_action(f"主页亮度不足，点击小屋按钮清理公告，ratio={ratio:.3f}。")
             self.log_info(f"自动登录：主页未恢复，点击小屋按钮清理公告，ratio={ratio:.3f}")
+            self._sleep_after_recognition()
             self.operate_click(
                 self._percent_config("小屋按钮点击 X 百分比"),
                 self._percent_config("小屋按钮点击 Y 百分比"),
