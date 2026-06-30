@@ -7,6 +7,7 @@ opencv-python>=4.13.0.92
 openvino>=2026.1.0
 pillow>=12.0.0
 psutil>=7.2.2
+pydirectinput>=1.0.4
 pynput>=1.8.1
 pyside6==6.9.1
 pyside6-fluent-widgets

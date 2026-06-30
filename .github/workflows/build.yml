@@ -100,6 +100,12 @@ jobs:
           "is_release=$($isRelease.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
           Write-Host "Release version: $isRelease"
 
+      - name: Prepare patched PyAppify launcher
+        if: env.BUILD_EXE == 'true' && steps.release-version.outputs.is_release == 'true' && env.USE_RELEASE == ''
+        shell: pwsh
+        run: |
+          .\scripts\prepare_pyappify_launcher.ps1 -Version v1.1.6
+
       - name: PyAppify build from previous release
         id: build-exe-only-use-release
         uses: ok-oldking/pyappify-action@master
@@ -116,6 +122,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          version: v1.1.6
           build_exe_only: ${{ env.SIGN_BUILD == 'true' }}
 
       - name: Upload unsigned EXE artifact
