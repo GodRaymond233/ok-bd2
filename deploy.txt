@@ -10,4 +10,5 @@ i18n
 pyappify
 assets
 ok_templates
+offline-train/train-source-screenshots
 pyappify.yml
