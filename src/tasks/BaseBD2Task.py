@@ -48,6 +48,16 @@ class BaseBD2Task(BaseTask):
         self.default_box = ScreenPosition(self)
         self._last_interval_action_time = {}
         self._action_interval_lock = threading.Lock()
+        self.default_config.update(
+            {
+                "识别成功后等待秒数": 1.0,
+            }
+        )
+        self.config_description.update(
+            {
+                "识别成功后等待秒数": "识别成功后，执行下一步点击或切换操作前等待多久。",
+            }
+        )
 
     @property
     def thread_pool_executor(self) -> ThreadPoolExecutor | None:
@@ -233,6 +243,11 @@ class BaseBD2Task(BaseTask):
         )
         self.sleep(after_sleep)
         return result
+
+    def _sleep_after_recognition(self) -> None:
+        seconds = float(self.config.get("识别成功后等待秒数", 1.0))
+        if seconds > 0:
+            self.sleep(seconds)
 
     def _check_action_interval(self, action_name: Any, interval: float) -> bool:
         if interval <= 0:

@@ -25,10 +25,11 @@ class AutoLoginSequenceTest(unittest.TestCase):
             "TOUCH TO START 阈值": 0.78,
             "加载页面阈值": 0.72,
             "小屋按钮阈值": 0.78,
-            "主页 UI 等待宽限秒数": 10.0,
+            "主页 UI 等待宽限秒数": 15.0,
         }
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
+        task.sleep = lambda *_args, **_kwargs: None
         task._home_bright_since = None
         task._login_clicked_at = None
         task._waiting_home_since = None

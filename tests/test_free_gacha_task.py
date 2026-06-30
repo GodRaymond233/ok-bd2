@@ -1,4 +1,5 @@
 import unittest
+import importlib
 
 import numpy as np
 
@@ -10,6 +11,8 @@ from src.tasks.FreeGachaTask import (
     FreeGachaTask,
     GachaMatchResult,
 )
+
+free_gacha_module = importlib.import_module("src.tasks.FreeGachaTask")
 
 
 class FreeGachaTaskHelperTest(unittest.TestCase):
@@ -110,31 +113,62 @@ class FreeGachaTaskHelperTest(unittest.TestCase):
 
         self.assertTrue(FreeGachaTask._wait_loading_or_home_brightness(task, "返回主页"))
 
-    def test_result_handler_clicks_skip_five_times_then_checks_free_paid(self):
+    def test_result_skip_clicks_while_checking_ocr_until_keyword(self):
         task = object.__new__(FreeGachaTask)
-        task.config = {"跳过点击间隔秒数": 0.5, "结果返回等待秒数": 45.0}
-        task.info_set = lambda *_args, **_kwargs: None
-        task.log_info = lambda *_args, **_kwargs: None
+        task.config = {
+            "跳过点击间隔秒数": 0.5,
+            "结果跳过连续点击秒数": 3.0,
+            "结果页关键词最低命中数": 1,
+        }
+        task.capture_frame = lambda: np.zeros((10, 10, 3), dtype=np.uint8)
         clicks = []
-        wait_calls = []
+        sleeps = []
+        ocr_calls = []
+        now = {"value": 0.0}
 
         def fake_click(x, y, after_sleep=0):
             clicks.append((x, y, after_sleep))
 
-        def fake_wait(keywords, timeout, minimum_matches, name, **_kwargs):
-            wait_calls.append((keywords, timeout, minimum_matches, name, list(clicks)))
-            return True, "免费 付费"
+        def fake_ocr(_frame, keywords, minimum_matches, name):
+            ocr_calls.append((keywords, minimum_matches, name))
+            return len(ocr_calls) >= 2, "免费" if len(ocr_calls) >= 2 else ""
 
         task._click_reference = fake_click
-        task._wait_for_ocr_keywords = fake_wait
+        task._ocr_keywords_in_frame = fake_ocr
+        task.sleep = lambda seconds: (sleeps.append(seconds), now.__setitem__("value", now["value"] + seconds))
+
+        old_monotonic = free_gacha_module.monotonic
+        try:
+            free_gacha_module.monotonic = lambda: now["value"]
+            found, text = FreeGachaTask._click_skip_until_back_page(task, "服装抽抽乐")
+        finally:
+            free_gacha_module.monotonic = old_monotonic
+
+        self.assertTrue(found)
+        self.assertEqual("免费", text)
+        self.assertEqual([(1770, 60, 0.0), (1770, 60, 0.0)], clicks)
+        self.assertEqual([0.5], sleeps)
+        self.assertEqual(BACK_PAGE_KEYWORDS, ocr_calls[0][0])
+        self.assertEqual(1, ocr_calls[0][1])
+
+    def test_result_handler_waits_then_double_backs_and_verifies_gacha_page(self):
+        task = object.__new__(FreeGachaTask)
+        task.config = {}
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        clicks = []
+        sleeps = []
+        waits = []
+
+        task._click_skip_until_back_page = lambda _section_name: (True, "付费 免费")
+        task._click_reference = lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep))
+        task.sleep = lambda seconds: sleeps.append(seconds)
+        task._wait_for_gacha_page = lambda name: waits.append(name) or True
 
         self.assertTrue(FreeGachaTask._handle_result_until_back(task, "服装抽抽乐"))
-        self.assertEqual([(1770, 60, 0.5)] * 5, clicks[:5])
-        self.assertEqual((105, 51, 1.0), clicks[5])
-        self.assertEqual(1, len(wait_calls))
-        self.assertEqual(BACK_PAGE_KEYWORDS, wait_calls[0][0])
-        self.assertEqual(2, wait_calls[0][2])
-        self.assertEqual([(1770, 60, 0.5)] * 5, wait_calls[0][4])
+        self.assertEqual([1.0], sleeps)
+        self.assertEqual([(105, 51, 0.5), (105, 51, 0.0)], clicks)
+        self.assertEqual(["服装抽抽乐 返回抽卡页"], waits)
 
 
 if __name__ == "__main__":

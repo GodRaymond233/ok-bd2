@@ -55,11 +55,12 @@ class FreeGachaTask(BaseBD2Task):
                 "抽卡页面等待秒数": 12.0,
                 "免费抽按钮等待秒数": 3.0,
                 "确认弹窗等待秒数": 8.0,
-                "结果返回等待秒数": 45.0,
+                "结果跳过连续点击秒数": 3.0,
                 "主页确认等待秒数": 10.0,
                 "跳过点击间隔秒数": 0.5,
                 "抽卡页面关键词最低命中数": 3,
                 "确认弹窗关键词最低命中数": 2,
+                "结果页关键词最低命中数": 1,
             }
         )
         self.config_description.update(
@@ -67,6 +68,8 @@ class FreeGachaTask(BaseBD2Task):
                 "启用": "是否执行白嫖抽抽乐任务。",
                 "抽卡页面关键词最低命中数": "确认已进入抽卡页所需的 OCR 关键词数量。",
                 "确认弹窗关键词最低命中数": "确认抽抽乐弹窗所需的 OCR 关键词数量。",
+                "结果跳过连续点击秒数": "抽卡结果页连续点击跳过按钮的最长时间。",
+                "结果页关键词最低命中数": "抽卡结果页停止连续点击所需的 OCR 关键词数量。",
             }
         )
 
@@ -90,6 +93,7 @@ class FreeGachaTask(BaseBD2Task):
         ):
             return False
 
+        self._sleep_after_recognition()
         self._click_reference(175, 432, after_sleep=0.8)
         if not self._wait_for_gacha_page("切换装备抽卡"):
             return False
@@ -100,6 +104,7 @@ class FreeGachaTask(BaseBD2Task):
         ):
             return False
 
+        self._sleep_after_recognition()
         self._click_reference(105, 51, after_sleep=1.0)
         if not self._wait_loading_or_home_brightness("抽抽乐返回主页"):
             return False
@@ -119,15 +124,14 @@ class FreeGachaTask(BaseBD2Task):
             self.log_info(f"{section_name}：未检测到所有免费抽抽乐，跳过。")
             return True
 
+        self._sleep_after_recognition()
         self._click_reference(347, 973, after_sleep=0.5)
         if not self._wait_for_confirm_dialog(section_name):
             return False
 
+        self._sleep_after_recognition()
         self._click_reference(1045, 649, after_sleep=1.0)
         if not self._handle_result_until_back(section_name):
-            return False
-
-        if not self._wait_for_gacha_page(f"{section_name} 返回抽卡页"):
             return False
 
         if verify_finished:
@@ -312,24 +316,44 @@ class FreeGachaTask(BaseBD2Task):
         return False
 
     def _handle_result_until_back(self, section_name: str) -> bool:
-        skip_interval = float(self.config.get("跳过点击间隔秒数", 0.5))
-        for _ in range(5):
-            self._click_reference(1770, 60, after_sleep=skip_interval)
-
-        found, text = self._wait_for_ocr_keywords(
-            BACK_PAGE_KEYWORDS,
-            timeout=float(self.config.get("结果返回等待秒数", 45.0)),
-            minimum_matches=2,
-            name=f"{section_name}_result",
-        )
+        found, text = self._click_skip_until_back_page(section_name)
         self.info_set(f"{section_name} 结果 OCR", text or "-")
-        if found:
-            self._click_reference(105, 51, after_sleep=1.0)
-            self.log_info(f"{section_name}：检测到免费/付费列表，返回抽卡页面。")
-            return True
+        if not found:
+            self.log_info(f"{section_name}：连续点击跳过期间未检测到抽卡结果页。")
+            return False
 
-        self.log_info(f"{section_name}：未在限定时间内回到免费/付费列表。")
-        return False
+        self.log_info(f"{section_name}：检测到结果页关键词，准备返回抽卡页面。")
+        self._sleep_after_recognition()
+        self._click_reference(105, 51, after_sleep=0.5)
+        self._click_reference(105, 51, after_sleep=0.0)
+        return self._wait_for_gacha_page(f"{section_name} 返回抽卡页")
+
+    def _click_skip_until_back_page(self, section_name: str) -> tuple[bool, str]:
+        duration = max(0.0, float(self.config.get("结果跳过连续点击秒数", 3.0)))
+        interval = max(0.05, float(self.config.get("跳过点击间隔秒数", 0.5)))
+        minimum_matches = max(1, int(self.config.get("结果页关键词最低命中数", 1)))
+        end_at = monotonic() + duration
+        last_text = ""
+
+        while True:
+            self._click_reference(1770, 60, after_sleep=0.0)
+            frame = self.capture_frame()
+            found, text = self._ocr_keywords_in_frame(
+                frame,
+                BACK_PAGE_KEYWORDS,
+                minimum_matches,
+                name=f"{section_name}_result",
+            )
+            last_text = text
+            if found:
+                return True, text
+
+            remaining = end_at - monotonic()
+            if remaining <= 0:
+                break
+            self.sleep(min(interval, remaining))
+
+        return False, last_text
 
     def _wait_for_template(
         self,
@@ -600,4 +624,4 @@ GACHA_PAGE_KEYWORDS = [
 
 FREE_GACHA_KEYWORDS = ["所有免费抽抽乐"]
 CONFIRM_DIALOG_KEYWORDS = ["确认抽抽乐", "是否全部进行"]
-BACK_PAGE_KEYWORDS = ["免费", "付费"]
+BACK_PAGE_KEYWORDS = ["付费", "免费", "抽抽乐券", "查看获取途径"]
