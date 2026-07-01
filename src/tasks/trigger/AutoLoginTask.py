@@ -32,6 +32,42 @@ class MatchResult:
 
 
 class AutoLoginTask(BaseBD2Task):
+    status_keys = [
+        "阶段",
+        "内部状态",
+        "最后动作",
+        "BrownDustX",
+        "BrownDustX 阈值",
+        "BrownDustX 像素",
+        "BrownDustX 像素阈值",
+        "BrownDustX OCR",
+        "BrownDustX Confirm",
+        "BrownDustX Confirm 阈值",
+        "BrownDustX Confirm 像素",
+        "BrownDustX Confirm 像素阈值",
+        "BrownDustX Confirm OCR",
+        "TOUCH TO START",
+        "TOUCH TO START 阈值",
+        "加载页面",
+        "加载页面阈值",
+        "小屋按钮",
+        "小屋按钮阈值",
+        "小屋亮度比例",
+        "小屋亮度比例阈值",
+        "主页 UI 等待宽限秒数",
+        "主页连续确认秒数",
+        "BDXConfirm 点击 X 百分比",
+        "BDXConfirm 点击 Y 百分比",
+        "登录按钮点击 X 百分比",
+        "登录按钮点击 Y 百分比",
+        "小屋按钮点击 X 百分比",
+        "小屋按钮点击 Y 百分比",
+        "匹配错误",
+        "Log",
+        "Warning",
+        "Error",
+    ]
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.name = "自动登录游戏"
