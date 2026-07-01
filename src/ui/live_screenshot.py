@@ -15,6 +15,7 @@ PREVIEW_ASPECT_HEIGHT = 9
 TOP_ROW_MAX_HEIGHT = 240
 CAPTURE_LIST_MAX_HEIGHT = 180
 TOP_CARD_CONTENT_HEIGHT = CAPTURE_LIST_MAX_HEIGHT
+CAPTURE_TIMEOUT_SECONDS = 2.0
 
 
 class LivePreviewLabel(QLabel):
@@ -83,11 +84,10 @@ class LiveScreenshotWidget(QWidget):
 
     def __init__(self):
         super().__init__()
-        self._capture_executor = ThreadPoolExecutor(
-            max_workers=1,
-            thread_name_prefix="LiveScreenshot",
-        )
+        self._capture_executor = self._new_capture_executor()
         self._capture_pending = False
+        self._capture_pending_at = 0.0
+        self._capture_future = None
         self._last_status = ""
         self._last_frame_at = 0.0
         self._active = False
@@ -131,8 +131,13 @@ class LiveScreenshotWidget(QWidget):
             self.timer.stop()
 
     def _request_frame(self):
-        if self._capture_pending or not self._active or not self.isVisible():
+        if not self._active or not self.isVisible():
             return
+        if self._capture_pending:
+            if time.time() - self._capture_pending_at <= CAPTURE_TIMEOUT_SECONDS:
+                return
+            self.status_ready.emit("截图超时，正在重试")
+            self._restart_capture_executor()
 
         try:
             from ok import og
@@ -144,10 +149,14 @@ class LiveScreenshotWidget(QWidget):
             pass
 
         self._capture_pending = True
+        self._capture_pending_at = time.time()
         future = self._capture_executor.submit(self._capture_image)
+        self._capture_future = future
         future.add_done_callback(self._capture_finished)
 
     def _capture_finished(self, future):
+        if future is not self._capture_future:
+            return
         try:
             image, status = future.result()
             if not self._active:
@@ -159,7 +168,10 @@ class LiveScreenshotWidget(QWidget):
         except Exception as exc:
             self.status_ready.emit(f"截图失败：{exc}")
         finally:
-            self._capture_pending = False
+            if future is self._capture_future:
+                self._capture_pending = False
+                self._capture_pending_at = 0.0
+                self._capture_future = None
 
     def _capture_image(self) -> tuple[QImage | None, str]:
         from ok import og
@@ -255,6 +267,21 @@ class LiveScreenshotWidget(QWidget):
     def _shutdown(self):
         self.stop_preview()
         self._capture_executor.shutdown(wait=False, cancel_futures=True)
+
+    @staticmethod
+    def _new_capture_executor():
+        return ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="LiveScreenshot",
+        )
+
+    def _restart_capture_executor(self):
+        old_executor = self._capture_executor
+        self._capture_executor = self._new_capture_executor()
+        self._capture_pending = False
+        self._capture_pending_at = 0.0
+        self._capture_future = None
+        old_executor.shutdown(wait=False, cancel_futures=True)
 
 
 def install_live_screenshot(start_tab) -> None:

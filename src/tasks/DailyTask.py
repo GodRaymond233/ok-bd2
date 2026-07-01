@@ -32,6 +32,71 @@ class DailyMatchResult:
 
 
 class DailyTask(BaseBD2Task):
+    status_keys = [
+        "启用",
+        "状态",
+        "当前任务",
+        "执行公会签到",
+        "公会判断",
+        "公会未完成",
+        "公会未完成阈值",
+        "公会已完成",
+        "公会已完成阈值",
+        "公会签到 loading 状态",
+        "公会签到_loading_appear",
+        "公会签到_loading_gone",
+        "guild_sign_in_early 模板",
+        "guild_sign_in 模板",
+        "公会签到成功",
+        "公会签到成功阈值",
+        "公会签到 OCR",
+        "公会签到返回主页 亮度",
+        "公会签到返回主页结果",
+        "执行小屋签到",
+        "小屋签到 loading 状态",
+        "小屋签到_loading_appear",
+        "小屋签到_loading_gone",
+        "my_home_early",
+        "my_home",
+        "小屋页面检测",
+        "小屋页面阈值",
+        "小屋签到返回主页 亮度",
+        "小屋签到返回主页结果",
+        "执行一键收菜",
+        "business_collect 关键字",
+        "一键收菜弹窗",
+        "一键收菜 OCR",
+        "一键收菜返回主页 亮度",
+        "一键收菜返回主页结果",
+        "加载页面阈值",
+        "主页亮度比例阈值",
+        "日常 OCR 阈值",
+        "loading 出现等待秒数",
+        "loading 消失等待秒数",
+        "公会签到成功等待秒数",
+        "小屋页面等待秒数",
+        "一键收菜菜单等待秒数",
+        "主页确认等待秒数",
+        "完成",
+        "失败",
+        "跳过",
+        "匹配错误",
+        "Log",
+        "Warning",
+        "Error",
+    ]
+    status_key_labels = {
+        "公会签到_loading_appear": "公会 loading 出现",
+        "公会签到_loading_gone": "公会 loading 消失",
+        "guild_sign_in_early 模板": "公会签到成功早期模板",
+        "guild_sign_in 模板": "公会签到成功模板",
+        "小屋签到_loading_appear": "小屋 loading 出现",
+        "小屋签到_loading_gone": "小屋 loading 消失",
+        "my_home_early": "小屋页面早期检测",
+        "my_home": "小屋页面检测分数",
+        "business_collect 关键字": "一键收菜关键字命中",
+    }
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.name = "日常任务"
@@ -79,6 +144,12 @@ class DailyTask(BaseBD2Task):
                 HOTKEY_CONFIG_NAME: {"type": "global"},
             }
         )
+
+    def _status_set(self, key: str, value) -> None:
+        try:
+            self.info_set(key, value)
+        except AttributeError:
+            pass
 
     def run(self):
         if not bool(self.config.get("启用", True)):
@@ -139,12 +210,17 @@ class DailyTask(BaseBD2Task):
         guild_ready = self._passes(guild, GUILD_TEMPLATE)
         finished_ready = self._passes(finished, GUILD_FINISHED_TEMPLATE)
         if finished_ready and (not guild_ready or finished.score >= guild.score):
+            self._status_set("公会判断", "已完成，跳过")
+            self._status_set("公会签到成功", "已完成")
             self.log_info("公会签到：已检测为完成状态，跳过。")
             return True
         if not guild_ready:
+            self._status_set("公会判断", "未识别到公会入口")
+            self._status_set("公会签到成功", "否")
             self.log_info("公会签到：未检测到 guild.png 或 guild-finished.png，不点击公会按钮。")
             return False
 
+        self._status_set("公会判断", "可签到")
         self._sleep_after_recognition()
         self._click_reference(370, 155, after_sleep=0.5)
         loading_state, success_found, text = self._wait_loading_or_template_or_ocr(
@@ -153,7 +229,9 @@ class DailyTask(BaseBD2Task):
             GUILD_SUCCESS_KEYWORDS,
             name="guild_sign_in_early",
         )
+        self._status_set("公会签到 loading 状态", loading_state)
         if loading_state == "stuck":
+            self._status_set("公会签到成功", "否")
             return False
 
         if not success_found:
@@ -166,6 +244,7 @@ class DailyTask(BaseBD2Task):
                 name="guild_sign_in",
             )
         self.info_set("公会签到 OCR", text or "-")
+        self._status_set("公会签到成功", "是" if success_found else "否")
         if success_found:
             self.log_info("公会签到：检测到签到成功提示。")
             self._sleep_after_recognition()
@@ -174,7 +253,9 @@ class DailyTask(BaseBD2Task):
             self.log_info("公会签到：未检测到签到成功提示，按流程返回主页。")
 
         self._click_reference(100, 50, after_sleep=1.0)
-        return self._wait_home_brightness("公会签到返回主页")
+        home_ok = self._wait_home_brightness("公会签到返回主页")
+        self._status_set("公会签到返回主页结果", "通过" if home_ok else "失败")
+        return home_ok
 
     def run_my_home_sign_in(self) -> bool:
         self._click_reference(166, 158, after_sleep=0.5)
@@ -183,7 +264,9 @@ class DailyTask(BaseBD2Task):
             MY_HOME_TEMPLATE,
             name="my_home_early",
         )
+        self._status_set("小屋签到 loading 状态", loading_state)
         if loading_state == "stuck":
+            self._status_set("小屋页面检测", "否")
             return False
         if loading_state == "loading":
             self.sleep(1.0)
@@ -196,15 +279,19 @@ class DailyTask(BaseBD2Task):
                 timeout=float(self.config.get("小屋页面等待秒数", 12.0)),
                 name="my_home",
             )
+        self._status_set("小屋页面检测", "是" if found else "否")
         if found:
             self.log_info("小屋签到：已进入小屋页面，返回主页。")
             self._sleep_after_recognition()
             self._click_reference(100, 50, after_sleep=1.0)
         else:
             self.log_info("小屋签到：未检测到 my-home.png，不执行返回点击。")
+            self._status_set("小屋签到返回主页结果", "未执行")
             return False
 
-        return self._wait_home_brightness("小屋签到返回主页")
+        home_ok = self._wait_home_brightness("小屋签到返回主页")
+        self._status_set("小屋签到返回主页结果", "通过" if home_ok else "失败")
+        return home_ok
 
     def run_business_collect(self) -> bool:
         self._click_reference(165, 260, after_sleep=1.0)
@@ -221,15 +308,19 @@ class DailyTask(BaseBD2Task):
             name="business_collect",
         )
         self.info_set("一键收菜 OCR", text or "-")
+        self._status_set("一键收菜弹窗", "是" if found else "否")
         if not found:
             self.log_info("一键收菜：未检测到经营管理弹窗关键字，跳过点击。")
+            self._status_set("一键收菜返回主页结果", "未执行")
             return False
 
         self._sleep_after_recognition()
         self._click_reference(1090, 814, after_sleep=3.0)
         self._click_reference(832, 814, after_sleep=1.0)
         self._click_reference(832, 814, after_sleep=1.0)
-        return self._wait_home_brightness("一键收菜返回主页")
+        home_ok = self._wait_home_brightness("一键收菜返回主页")
+        self._status_set("一键收菜返回主页结果", "通过" if home_ok else "失败")
+        return home_ok
 
     def _click_reference(self, x: int, y: int, after_sleep: float = 0.0):
         self.operate_click(
