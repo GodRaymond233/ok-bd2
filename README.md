@@ -1,37 +1,100 @@
-# ok-bd2
+<div align="center">
+  <img src="icons/icon.png" alt="ok-bd2 icon" width="180">
 
-`ok-bd2` 是一个基于 `ok-script` 的 BrownDust II 图像识别与 UI 自动化辅助项目。
-当前重点是 Windows PC 客户端的窗口连接、后台截图、输入测试、自动登录和登录后公告清理。
+  <h1>ok-bd2</h1>
 
-> 本项目仅用于个人学习和研究 Python、计算机视觉、OCR 与 UI 自动化。使用自动化工具可能违反游戏或平台服务条款，风险由使用者自行承担。
+  <p>一款基于图像识别的 <strong>BrownDust II</strong> Windows PC 自动化辅助工具。</p>
+  <p>基于 <a href="https://github.com/ok-oldking/ok-script">ok-script</a> 框架开发。</p>
 
-## 功能状态
+  <p>
+    <img src="https://img.shields.io/badge/platform-Windows-blue" alt="platform">
+    <img src="https://img.shields.io/badge/python-3.12-skyblue" alt="python">
+    <a href="https://github.com/GodRaymond233/ok-bd2/releases"><img src="https://img.shields.io/github/v/release/GodRaymond233/ok-bd2" alt="release"></a>
+    <a href="https://github.com/GodRaymond233/ok-bd2/releases"><img src="https://img.shields.io/github/downloads/GodRaymond233/ok-bd2/total" alt="downloads"></a>
+    <a href="./LICENSE"><img src="https://img.shields.io/github/license/GodRaymond233/ok-bd2" alt="license"></a>
+  </p>
+</div>
 
-- 自动寻找或启动 BrownDust II PC 客户端。
-- 支持 WGC / BitBlt 等截图方式。
-- 提供实时截图预览和输入测试任务。
-- 启动游戏后自动触发登录流程，不需要在任务栏手动运行自动登录。
-- 支持 BrownDustX Mod 管理器加载页与 Confirm 异常确认。
-- 登录后并行识别 loading 页面和主页小屋按钮；检测到主页按钮时优先进入公告清理和主页亮度确认。
-- 提供“自动登录状态”页面，实时显示阶段、匹配分数、OCR 文本和最后动作。
+## 免责声明
 
-## 环境要求
+> [!CAUTION]
+> 本软件为开源、免费的外部辅助工具，仅用于个人学习、研究 Python、计算机视觉、OCR 与 UI 自动化。
+>
+> - **工作原理**：程序通过识别用户界面、截图和模拟输入与游戏交互，不读取或修改游戏内存，不修改游戏文件。
+> - **使用风险**：自动化工具可能违反游戏、平台或发行方服务条款。使用本项目产生的账号、数据、收益或其他后果，由使用者自行承担。
+> - **项目关系**：本项目与 BrownDust II 的开发商、发行商及相关平台没有从属、授权、认可或合作关系。
+> - **商业行为**：本项目不提供也不认可代练、售卖脚本、商业托管或其他营利性用途。
 
-- Windows 10/11
-- Python 3.12
-- BrownDust II PC 客户端
-- 建议使用 16:9 游戏画面
+> [!WARNING]
+> 在使用本工具前，请确认你理解并愿意承担第三方自动化工具可能带来的封号、限制登录、收益回收或其他处罚风险。
 
-## 安装与启动
+<details>
+<summary>Disclaimer in English</summary>
+
+This project is a free and open-source external tool intended for personal
+learning and research around Python, computer vision, OCR, and UI automation. It
+interacts with the game through screenshots and simulated input only. It does
+not read or modify game memory and does not modify game files.
+
+Automation tools may violate the game's, platform's, or publisher's terms of
+service. You are solely responsible for any account, data, reward, or other
+consequence caused by using this project. This project is not affiliated with,
+endorsed by, or sponsored by the developers, publishers, or platforms of
+BrownDust II.
+
+</details>
+
+## 主要功能
+
+> [!NOTE]
+> 项目仍处于早期适配阶段，当前重点是 Windows PC 客户端的启动、窗口连接、后台截图、输入验证和自动登录链路。
+
+- **自动寻找或启动游戏**：支持通过配置定位 BrownDust II PC 客户端。
+- **后台截图支持**：支持 WGC / BitBlt 等截图方式，用于窗口识别和自动化判断。
+- **自动登录流程**：启动后自动识别登录页、加载页、确认弹窗和主页状态。
+- **公告与主页处理**：登录后识别主页入口，并尝试完成公告清理和主页亮度确认。
+- **状态查看**：提供自动登录状态页，显示阶段、匹配分数、OCR 文本和最后动作。
+- **调试辅助**：提供截图预览、OCR 探针和输入测试任务，便于排查适配问题。
+
+## 运行环境
+
+| 项目 | 要求 |
+|---|---|
+| 操作系统 | Windows 10 / Windows 11 |
+| 游戏客户端 | BrownDust II PC 客户端 |
+| Python | 从源码运行需要 Python 3.12 |
+| 画面比例 | 强制要求 16:9 |
+| 分辨率 | 1280x960, 1920x1080, 2560x1440, 3840x2160 |
+| UI缩放 | 强制要求 150% |
+
+## 安装指南
+
+### 方式一：使用安装包
+
+适合普通用户。前往
+[Releases](https://github.com/GodRaymond233/ok-bd2/releases)
+下载最新安装包。
+
+- `ok-bd2-win32-China-setup.exe`：完整安装包，默认使用国内更新源。
+- `ok-bd2-win32-Global-setup.exe`：完整安装包，使用 GitHub / PyPI 作为更新源。
+- `ok-bd2-win32-online-setup.exe`：在线安装包，首次运行需要联网下载依赖。
+
+请下载 `setup.exe` 安装包，不要下载 GitHub 自动生成的 `Source code` 压缩包。
+
+### 方式二：从源码运行
+
+适合开发、调试或二次适配。
 
 ```powershell
+git clone https://github.com/GodRaymond233/ok-bd2.git
+cd ok-bd2
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 python main_debug.py
 ```
 
-如果游戏路径或进程名和默认值不同，可以在启动前设置环境变量：
+如果游戏安装路径或窗口信息与默认配置不同，可以在启动前设置环境变量：
 
 ```powershell
 $env:OK_BD2_GAME_PATH = "D:\Path\To\BrownDust II.exe"
@@ -40,70 +103,95 @@ $env:OK_BD2_HWND_CLASS = "UnityWndClass"
 python main_debug.py
 ```
 
-## 自动登录素材
+## 使用前检查
 
-自动登录模板位于：
+> [!IMPORTANT]
+> 为了提高识别稳定性，请在启动自动化前确认以下设置。
 
-```text
-offline-train/train-source-screenshots/
-```
+- 使用游戏UHD画质档位。
+- 使用 16:9 分辨率，推荐 1920x1080 或更高。
+- 关闭显卡滤镜、锐化、帧率显示、录屏悬浮窗等会改变画面的叠加层。
+- 尽量使用默认按键绑定。
+- 程序运行时不要锁屏、息屏或让系统进入睡眠。
+- 游戏窗口可以放在后台，但不能最小化，不能移动游戏窗口到屏幕外。
+- 游戏窗口在后台的时候仅能调用鼠标模拟。
+- 如果使用前台输入方式，请避免在任务执行期间移动鼠标或抢占键盘。
 
-当前代码期望这些文件存在，文件名应保持 ASCII：
+## 使用指南与 FAQ
 
-```text
-browndustx.png
-browndustx-confirm.png
-touch-to-start.png
-image/UI_loading_black.png
-home.png
-guild.png
-```
+### 快速上手
 
-其中：
+1. 启动 BrownDust II PC 客户端，或确认游戏路径配置正确。
+2. 启动 `ok-bd2`。
+3. 在程序界面中选择需要运行的任务。
+4. 如遇识别失败，先查看自动登录状态页和日志，再提交 Issue。
 
-- `browndustx.png` 用于识别 BrownDustX 正在加载 Mod。
-- `browndustx-confirm.png` 只使用底部 Confirm 区域，并结合 OCR 确认 `CONFIRM` 文本。
-- `touch-to-start.png` 用于识别登录页。
-- `image/UI_loading_black.png` 用于辅助识别登录后的过场加载页；`home.png` 的优先级更高。
-- `home.png` 用于识别主页左侧小屋按钮，并作为亮度判断基准。
+### 常见问题
 
-## 调试
+**程序找不到游戏窗口怎么办？**
 
-常用任务：
+确认游戏已经启动，并检查 `OK_BD2_GAME_PATH`、`OK_BD2_GAME_EXE`、
+`OK_BD2_HWND_CLASS` 是否符合你的本机环境。
 
-- `BD2 截图 OCR 探针`：保存当前画面和 OCR 结果到 `probe_outputs/`。
-- `BD2 鼠标单击测试`：按百分比坐标测试点击。
-- `BD2 短按键测试` / `BD2 长按键测试` / `BD2 键盘调试测试`：验证输入方式。
-- `自动登录状态`：查看隐藏自动登录触发任务当前进度。
+**识别结果不稳定怎么办？**
 
-运行测试：
+优先检查分辨率、亮度、语言、显卡滤镜和窗口遮挡情况。截图识别依赖画面稳定，任何叠加层都可能影响结果。
+
+**为什么不建议直接下载 Source code？**
+
+GitHub 的 `Source code` 压缩包只是源码快照，不包含安装器、更新配置和离线依赖。普通用户应下载 `setup.exe`。
+
+## 问题反馈
+
+欢迎通过 [Issues](https://github.com/GodRaymond233/ok-bd2/issues) 反馈问题。
+提交前请尽量提供：
+
+- 问题发生前后的截图或录屏。
+- 程序日志文件。
+- 操作系统版本、游戏分辨率、游戏语言和是否使用后台模式。
+- 具体复现步骤，以及问题是否稳定复现。
+
+提交日志和截图前，请先确认其中不包含账号、路径、聊天记录或其他个人隐私信息。
+
+## 开发者说明
 
 ```powershell
 python -m unittest discover tests
-.\.venv\Scripts\ruff.exe check .
-.\.venv\Scripts\ruff.exe format .
+ruff check .
+ruff format .
 ```
 
-## 仓库发布注意
+更多发布和架构资料见：
 
-默认忽略本地配置、日志、截图、探针输出、虚拟环境和上游参考源码：
+- [架构说明](docs/architecture.md)
+- [发布检查清单](docs/release-checklist.md)
+- [PyAppify 发布流程](docs/pyappify-release-flow.md)
 
-```text
-configs/
-logs/
-screenshots/
-probe_outputs/
-.venv/
-upstream/
-```
+## ok-script 生态
 
-发布前请确认：
+以下项目同样基于
+[ok-script](https://github.com/ok-oldking/ok-script)
+开发，可作为学习和参考资料：
 
-- `configs/` 中没有个人路径、账号或本地配置被提交。
-- `logs/`、`screenshots/`、`probe_outputs/` 没有被提交。
-- 自动登录素材中没有账号信息或个人隐私。
-- `pyappify.yml` 和 `src/config.py` 中的项目链接已替换成你的实际仓库地址。
+- [ok-oldking/ok-wuthering-waves](https://github.com/ok-oldking/ok-wuthering-waves)
+- [BnanZ0/ok-nte](https://github.com/BnanZ0/ok-nte)
+- [BnanZ0/ok-duet-night-abyss](https://github.com/BnanZ0/ok-duet-night-abyss)
+- [Shasnow/ok-starrailassistant](https://github.com/Shasnow/ok-starrailassistant)
+
+## 致谢与开源说明
+
+本项目基于 [ok-script](https://github.com/ok-oldking/ok-script) 开发，并参考了：
+
+- [BnanZ0/ok-nte](https://github.com/BnanZ0/ok-nte)：README 结构、项目布局与 PyAppify 发布形态。
+- [ok-oldking/ok-script-app](https://github.com/ok-oldking/ok-script-app)：ok-script 应用模板、任务示例、i18n 和打包配置。
+- [ok-oldking/ok-wuthering-waves](https://github.com/ok-oldking/ok-wuthering-waves)：成熟项目中的任务注册、自定义页面、日志和更新流程。
+- [sunyink/MFABD2](https://github.com/sunyink/MFABD2)：BrownDust II 自动化思路。
+
+第三方开源依赖、参考项目与打包组件见
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 ## 许可证
 
-本项目代码按仓库内 `LICENSE` 发布。游戏名称、截图、图标与 UI 素材的权利归各自权利方所有。
+本项目代码按仓库内 [LICENSE](LICENSE) 发布。
+
+游戏名称、截图、图标与 UI 素材的权利归各自权利方所有。本项目不主张对这些第三方素材拥有任何权利。

@@ -1,4 +1,5 @@
 ok-script>=1.0.159
+numpy>=2.4.0
 opencc>=1.2.0
 adbutils>=2.8.0
 onnxocr-ppocrv5>=0.0.18
