@@ -6,6 +6,7 @@ icons
 requirements.txt
 README.md
 LICENSE
+THIRD_PARTY_NOTICES.md
 i18n
 pyappify
 assets

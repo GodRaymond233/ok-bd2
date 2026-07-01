@@ -1,6 +1,7 @@
 adbutils>=2.8.0
 comtypes>=1.4.16
 ok-script>=1.0.159
+numpy>=2.4.0
 onnxocr-ppocrv5>=0.0.18
 opencc>=1.2.0
 opencv-python>=4.13.0.92
