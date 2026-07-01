@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from pathlib import Path
 from time import monotonic
 
@@ -12,6 +13,7 @@ REFERENCE_WIDTH = 1920
 REFERENCE_HEIGHT = 1080
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_DIR = PROJECT_ROOT / "offline-train" / "train-source-screenshots"
+KEYWORD_MATCH_RATIO = 0.9
 
 
 @dataclass(frozen=True)
@@ -57,10 +59,10 @@ class FreeGachaTask(BaseBD2Task):
                 "确认弹窗等待秒数": 8.0,
                 "结果跳过连续点击秒数": 3.0,
                 "主页确认等待秒数": 10.0,
-                "跳过点击间隔秒数": 0.5,
+                "跳过点击间隔秒数": 0.2,
                 "抽卡页面关键词最低命中数": 3,
                 "确认弹窗关键词最低命中数": 2,
-                "结果页关键词最低命中数": 1,
+                "结果页关键词最低命中数": 3,
             }
         )
         self.config_description.update(
@@ -69,7 +71,7 @@ class FreeGachaTask(BaseBD2Task):
                 "抽卡页面关键词最低命中数": "确认已进入抽卡页所需的 OCR 关键词数量。",
                 "确认弹窗关键词最低命中数": "确认抽抽乐弹窗所需的 OCR 关键词数量。",
                 "结果跳过连续点击秒数": "抽卡结果页连续点击跳过按钮的最长时间。",
-                "结果页关键词最低命中数": "抽卡结果页停止连续点击所需的 OCR 关键词数量。",
+                "结果页关键词最低命中数": "结果页返回确认使用 3 个固定 OCR 关键词。",
             }
         )
 
@@ -319,41 +321,34 @@ class FreeGachaTask(BaseBD2Task):
         found, text = self._click_skip_until_back_page(section_name)
         self.info_set(f"{section_name} 结果 OCR", text or "-")
         if not found:
-            self.log_info(f"{section_name}：连续点击跳过期间未检测到抽卡结果页。")
+            self.log_info(f"{section_name}：连续点击跳过后未检测到抽卡结果页。")
             return False
 
-        self.log_info(f"{section_name}：检测到结果页关键词，准备返回抽卡页面。")
-        self._sleep_after_recognition()
-        self._click_reference(105, 51, after_sleep=0.5)
+        self.log_info(f"{section_name}：检测到结果页关键词，点击券详情后返回抽卡页面。")
+        self._click_reference(1420, 326, after_sleep=1.0)
         self._click_reference(105, 51, after_sleep=0.0)
         return self._wait_for_gacha_page(f"{section_name} 返回抽卡页")
 
     def _click_skip_until_back_page(self, section_name: str) -> tuple[bool, str]:
         duration = max(0.0, float(self.config.get("结果跳过连续点击秒数", 3.0)))
-        interval = max(0.05, float(self.config.get("跳过点击间隔秒数", 0.5)))
-        minimum_matches = max(1, int(self.config.get("结果页关键词最低命中数", 1)))
+        interval = max(0.05, float(self.config.get("跳过点击间隔秒数", 0.2)))
+        minimum_matches = len(BACK_PAGE_KEYWORDS)
         end_at = monotonic() + duration
-        last_text = ""
 
-        while True:
+        while monotonic() < end_at:
             self._click_reference(1770, 60, after_sleep=0.0)
-            frame = self.capture_frame()
-            found, text = self._ocr_keywords_in_frame(
-                frame,
-                BACK_PAGE_KEYWORDS,
-                minimum_matches,
-                name=f"{section_name}_result",
-            )
-            last_text = text
-            if found:
-                return True, text
-
             remaining = end_at - monotonic()
             if remaining <= 0:
                 break
             self.sleep(min(interval, remaining))
 
-        return False, last_text
+        frame = self.capture_frame()
+        return self._ocr_keywords_in_frame(
+            frame,
+            BACK_PAGE_KEYWORDS,
+            minimum_matches,
+            name=f"{section_name}_result",
+        )
 
     def _wait_for_template(
         self,
@@ -550,8 +545,35 @@ class FreeGachaTask(BaseBD2Task):
     def _keyword_match_count(text: str, keywords: list[str]) -> int:
         normalized = FreeGachaTask._normalize_text(text)
         return sum(
-            1 for keyword in keywords if FreeGachaTask._normalize_text(keyword) in normalized
+            1
+            for keyword in keywords
+            if FreeGachaTask._keyword_matches(
+                normalized,
+                FreeGachaTask._normalize_text(keyword),
+            )
         )
+
+    @staticmethod
+    def _keyword_matches(normalized_text: str, normalized_keyword: str) -> bool:
+        if not normalized_text or not normalized_keyword:
+            return False
+        if normalized_keyword in normalized_text:
+            return True
+
+        keyword_length = len(normalized_keyword)
+        min_window = max(1, round(keyword_length * KEYWORD_MATCH_RATIO))
+        max_window = max(min_window, round(keyword_length / KEYWORD_MATCH_RATIO))
+        for window_length in range(min_window, max_window + 1):
+            if window_length > len(normalized_text):
+                continue
+            for start in range(0, len(normalized_text) - window_length + 1):
+                window = normalized_text[start : start + window_length]
+                if (
+                    SequenceMatcher(None, normalized_keyword, window).ratio()
+                    >= KEYWORD_MATCH_RATIO
+                ):
+                    return True
+        return False
 
     @staticmethod
     def _normalize_text(text: str) -> str:
@@ -624,4 +646,4 @@ GACHA_PAGE_KEYWORDS = [
 
 FREE_GACHA_KEYWORDS = ["所有免费抽抽乐"]
 CONFIRM_DIALOG_KEYWORDS = ["确认抽抽乐", "是否全部进行"]
-BACK_PAGE_KEYWORDS = ["付费", "免费", "抽抽乐券", "查看获取途径"]
+BACK_PAGE_KEYWORDS = ["抽抽乐券", "可免费抽1次的抽抽乐券", "查看获取途径"]
