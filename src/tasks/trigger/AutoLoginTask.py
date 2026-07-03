@@ -21,6 +21,7 @@ class TemplateSpec:
     threshold_key: str
     default_threshold: float
     crop: tuple[float, float, float, float] | None = None
+    green_mask: bool = False
 
 
 @dataclass(frozen=True)
@@ -46,12 +47,14 @@ class AutoLoginTask(BaseBD2Task):
         "BrownDustX Confirm 像素",
         "BrownDustX Confirm 像素阈值",
         "BrownDustX Confirm OCR",
+        "BrownDustX Confirm 点击",
         "TOUCH TO START",
         "TOUCH TO START 阈值",
         "加载页面",
         "加载页面阈值",
         "小屋按钮",
         "小屋按钮阈值",
+        "小屋按钮遮挡阈值",
         "小屋亮度比例",
         "小屋亮度比例阈值",
         "主页 UI 等待宽限秒数",
@@ -86,6 +89,7 @@ class AutoLoginTask(BaseBD2Task):
                 "TOUCH TO START 阈值": 0.78,
                 "加载页面阈值": 0.72,
                 "小屋按钮阈值": 0.78,
+                "小屋按钮遮挡阈值": 0.62,
                 "小屋亮度比例阈值": 0.75,
                 "主页 UI 等待宽限秒数": 15.0,
                 "主页连续确认秒数": 3.0,
@@ -98,6 +102,7 @@ class AutoLoginTask(BaseBD2Task):
             }
         )
         self._templates: dict[str, np.ndarray] = {}
+        self._template_masks: dict[str, np.ndarray | None] = {}
         self._state = "waiting"
         self._home_bright_since: float | None = None
         self._login_clicked_at: float | None = None
@@ -181,11 +186,7 @@ class AutoLoginTask(BaseBD2Task):
             self._set_action("检测到 BrownDustX Confirm，点击确认按钮。")
             self.log_info(f"自动登录：检测到 BrownDustX Confirm，score={confirm.score:.3f}")
             self._sleep_after_recognition()
-            self.operate_click(
-                self._percent_config("BDXConfirm 点击 X 百分比"),
-                self._percent_config("BDXConfirm 点击 Y 百分比"),
-                after_sleep=1.0,
-            )
+            self._click_match_center(confirm, after_sleep=1.0)
             return False
 
         touch_to_start = self._match(frame, TOUCH_TO_START_TEMPLATE)
@@ -234,9 +235,9 @@ class AutoLoginTask(BaseBD2Task):
 
         self.info_set("TOUCH TO START", "-")
 
-        home_button = self._match(frame, HOME_BUTTON_TEMPLATE)
+        home_button, home_spec = self._match_home_button(frame)
         self.info_set("小屋按钮", f"{home_button.score:.3f}")
-        if self._passes(home_button, HOME_BUTTON_TEMPLATE):
+        if self._passes(home_button, home_spec):
             self._state = "clearing"
             self._login_clicked_at = None
             self._waiting_home_since = None
@@ -267,6 +268,21 @@ class AutoLoginTask(BaseBD2Task):
         grace_seconds = float(self.config.get("主页 UI 等待宽限秒数", 15.0))
         elapsed = now - self._waiting_home_since
 
+        if elapsed >= grace_seconds and self._passes_dimmed_home(home_button):
+            self._state = "clearing"
+            self._login_clicked_at = None
+            self._waiting_home_since = None
+            self.info_set("加载页面", "-")
+            self._set_stage("清理公告")
+            self._set_action(
+                f"疑似主页被公告遮挡，home={home_button.score:.3f}，尝试关闭公告。"
+            )
+            self.log_info(
+                "自动登录：疑似主页被公告遮挡，"
+                f"home={home_button.score:.3f}, threshold={self._home_dimmed_threshold():.3f}"
+            )
+            return self._clear_popups_until_home(frame, home_button, allow_dimmed=True)
+
         self._set_stage("等待主页 UI")
         self._set_action(f"登录后等待 home.png 出现 {elapsed:.1f}/{grace_seconds:.1f} 秒。")
         self.log_info(f"自动登录：登录后等待小屋按钮出现，home={home_button.score:.3f}")
@@ -276,10 +292,18 @@ class AutoLoginTask(BaseBD2Task):
         self,
         frame,
         home_button: MatchResult | None = None,
+        allow_dimmed: bool = False,
     ) -> bool:
-        home_button = home_button or self._match(frame, HOME_BUTTON_TEMPLATE)
+        if home_button is None:
+            home_button, home_spec = self._match_home_button(frame)
+        else:
+            home_spec = HOME_BUTTON_TEMPLATE
         self.info_set("小屋按钮", f"{home_button.score:.3f}")
-        if not self._passes(home_button, HOME_BUTTON_TEMPLATE):
+        home_found = self._passes(home_button, home_spec)
+        dimmed_home_found = (
+            (allow_dimmed or self._state == "clearing") and self._passes_dimmed_home(home_button)
+        )
+        if not home_found and not dimmed_home_found:
             self._home_bright_since = None
             self._state = "waiting_home"
             self._set_stage("等待主页 UI")
@@ -315,19 +339,26 @@ class AutoLoginTask(BaseBD2Task):
         now = monotonic()
         if now - self._last_clear_click_at >= 1.0:
             self._set_stage("清理公告")
-            self._set_action(f"主页亮度不足，点击小屋按钮清理公告，ratio={ratio:.3f}。")
-            self.log_info(f"自动登录：主页未恢复，点击小屋按钮清理公告，ratio={ratio:.3f}")
-            self._sleep_after_recognition()
-            self.operate_click(
-                self._percent_config("小屋按钮点击 X 百分比"),
-                self._percent_config("小屋按钮点击 Y 百分比"),
-                after_sleep=0.2,
+            back_key = self._back_key()
+            self._set_action(f"主页亮度不足，按返回键清理公告，ratio={ratio:.3f}。")
+            self.log_info(
+                f"自动登录：主页未恢复，按返回键清理公告，ratio={ratio:.3f}, key={back_key}"
             )
+            self._sleep_after_recognition()
+            self.send_key(back_key, after_sleep=0.5)
             self._last_clear_click_at = now
         return False
 
     def _home_brightness_ratio(self, frame) -> float:
-        template = self._load_template(HOME_TEMPLATE)
+        return max(self._home_brightness_ratio_for_template(frame, spec) for spec in HOME_TEMPLATES)
+
+    def _home_brightness_ratio_for_template(
+        self,
+        frame,
+        spec: TemplateSpec,
+    ) -> float:
+        template = self._load_template(spec)
+        mask = self._load_template_mask(spec)
         frame_gray = self._to_gray(frame)
         frame_height, frame_width = frame_gray.shape[:2]
         scale = frame_width / REFERENCE_WIDTH
@@ -344,18 +375,57 @@ class AutoLoginTask(BaseBD2Task):
         if region.size == 0:
             return 0.0
 
-        template_mean = float(np.mean(template))
+        scaled_template = self._resize_template(template, scale)
+        scaled_mask = self._resize_mask(mask, scale)
+        match_height = min(region.shape[0], scaled_template.shape[0])
+        match_width = min(region.shape[1], scaled_template.shape[1])
+        if match_height <= 0 or match_width <= 0:
+            return 0.0
+        region = region[:match_height, :match_width]
+        scaled_template = scaled_template[:match_height, :match_width]
+        if scaled_mask is not None:
+            scaled_mask = scaled_mask[:match_height, :match_width]
+            valid = scaled_mask > 0
+            if not np.any(valid):
+                return 0.0
+            template_mean = float(np.mean(scaled_template[valid]))
+            region_mean = float(np.mean(region[valid]))
+        else:
+            template_mean = float(np.mean(scaled_template))
+            region_mean = float(np.mean(region))
         if template_mean <= 0:
             return 0.0
-        return float(np.mean(region) / template_mean)
+        return float(region_mean / template_mean)
+
+    @staticmethod
+    def _empty_match() -> MatchResult:
+        return MatchResult(score=-1.0, pixel_score=-1.0, position=(0, 0), size=(0, 0))
+
+    def _match_best(
+        self,
+        frame,
+        specs: tuple[TemplateSpec, ...],
+    ) -> tuple[MatchResult, TemplateSpec]:
+        best = self._empty_match()
+        best_spec = specs[0]
+        for spec in specs:
+            result = self._match(frame, spec)
+            if result.score > best.score:
+                best = result
+                best_spec = spec
+        return best, best_spec
+
+    def _match_home_button(self, frame) -> tuple[MatchResult, TemplateSpec]:
+        return self._match_best(frame, HOME_BUTTON_TEMPLATES)
 
     def _match(self, frame, spec: TemplateSpec) -> MatchResult:
-        empty = MatchResult(score=-1.0, pixel_score=-1.0, position=(0, 0), size=(0, 0))
+        empty = self._empty_match()
         if monotonic() < self._match_pause_until:
             return empty
 
         try:
             template = self._load_template(spec)
+            mask = self._load_template_mask(spec)
         except RuntimeError as exc:
             if spec.name not in self._missing_template_names:
                 self._missing_template_names.add(spec.name)
@@ -371,18 +441,29 @@ class AutoLoginTask(BaseBD2Task):
 
             for scale in scales:
                 scaled_template = self._resize_template(template, scale)
+                scaled_mask = self._resize_mask(mask, scale)
                 height, width = scaled_template.shape[:2]
                 if height < 8 or width < 8 or height > frame_height or width > frame_width:
                     continue
 
-                result = cv2.matchTemplate(frame_gray, scaled_template, cv2.TM_CCOEFF_NORMED)
+                if scaled_mask is None:
+                    result = cv2.matchTemplate(frame_gray, scaled_template, cv2.TM_CCOEFF_NORMED)
+                else:
+                    result = cv2.matchTemplate(
+                        frame_gray,
+                        scaled_template,
+                        cv2.TM_CCORR_NORMED,
+                        mask=scaled_mask,
+                    )
                 _, max_value, _, max_location = cv2.minMaxLoc(result)
+                if not np.isfinite(max_value):
+                    continue
                 if max_value > best.score:
                     x, y = int(max_location[0]), int(max_location[1])
                     region = frame_gray[y : y + height, x : x + width]
                     best = MatchResult(
                         score=float(max_value),
-                        pixel_score=self._pixel_similarity(region, scaled_template),
+                        pixel_score=self._pixel_similarity(region, scaled_template, scaled_mask),
                         position=(x, y),
                         size=(int(width), int(height)),
                     )
@@ -401,16 +482,46 @@ class AutoLoginTask(BaseBD2Task):
         if spec.name in self._templates:
             return self._templates[spec.name]
 
+        template, mask = self._read_template_and_mask(spec)
+        self._templates[spec.name] = template
+        self._template_masks[spec.name] = mask
+        return template
+
+    def _load_template_mask(self, spec: TemplateSpec) -> np.ndarray | None:
+        if spec.name not in self._templates:
+            self._load_template(spec)
+        return self._template_masks.get(spec.name)
+
+    def _read_template_and_mask(self, spec: TemplateSpec) -> tuple[np.ndarray, np.ndarray | None]:
         path = TEMPLATE_DIR / spec.file_name
-        template = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-        if template is None:
+        source = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+        if source is None:
             raise RuntimeError(f"自动登录模板不存在或无法读取：{path}")
 
         if spec.crop is not None:
-            template = self._crop_relative(template, spec.crop)
+            source = self._crop_relative(source, spec.crop)
 
-        self._templates[spec.name] = template
-        return template
+        mask = None
+        if len(source.shape) == 2:
+            template = source
+        else:
+            if source.shape[2] == 4:
+                template = cv2.cvtColor(source, cv2.COLOR_BGRA2GRAY)
+            else:
+                template = cv2.cvtColor(source, cv2.COLOR_BGR2GRAY)
+
+            if spec.green_mask:
+                color = source[:, :, :3]
+                green_pixels = (
+                    (color[:, :, 0] <= 4)
+                    & (color[:, :, 1] >= 251)
+                    & (color[:, :, 2] <= 4)
+                )
+                if source.shape[2] == 4:
+                    green_pixels |= source[:, :, 3] == 0
+                mask = np.where(green_pixels, 0, 255).astype(np.uint8)
+
+        return template, mask
 
     def _passes(self, result: MatchResult, spec: TemplateSpec) -> bool:
         threshold = float(self.config.get(spec.threshold_key, spec.default_threshold))
@@ -451,8 +562,24 @@ class AutoLoginTask(BaseBD2Task):
     def _home_ratio_threshold(self) -> float:
         return float(self.config.get("小屋亮度比例阈值", 0.75))
 
+    def _home_dimmed_threshold(self) -> float:
+        return float(self.config.get("小屋按钮遮挡阈值", 0.62))
+
+    def _passes_dimmed_home(self, home_button: MatchResult) -> bool:
+        return home_button.score >= self._home_dimmed_threshold()
+
     def _percent_config(self, key: str) -> float:
         return max(0.0, min(1.0, float(self.config[key]) / 100.0))
+
+    def _back_key(self) -> str:
+        key_config = getattr(self, "key_config", None) or {}
+        return key_config.get("返回键", key_config.get("Back Key", "esc"))
+
+    def _click_match_center(self, result: MatchResult, after_sleep: float = 0.0) -> None:
+        x = round(result.position[0] + result.size[0] / 2)
+        y = round(result.position[1] + result.size[1] / 2)
+        self.info_set("BrownDustX Confirm 点击", f"{x},{y}")
+        self.operate_click(x, y, after_sleep=after_sleep)
 
     def _reset_login_state(self):
         self._state = "waiting"
@@ -525,6 +652,14 @@ class AutoLoginTask(BaseBD2Task):
         return cv2.resize(template, None, fx=scale, fy=scale, interpolation=interpolation)
 
     @staticmethod
+    def _resize_mask(mask: np.ndarray | None, scale: float) -> np.ndarray | None:
+        if mask is None:
+            return None
+        if abs(scale - 1.0) < 0.001:
+            return mask
+        return cv2.resize(mask, None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST)
+
+    @staticmethod
     def _crop_relative(
         image: np.ndarray,
         crop: tuple[float, float, float, float],
@@ -546,10 +681,21 @@ class AutoLoginTask(BaseBD2Task):
         return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
     @staticmethod
-    def _pixel_similarity(region: np.ndarray, template: np.ndarray) -> float:
+    def _pixel_similarity(
+        region: np.ndarray,
+        template: np.ndarray,
+        mask: np.ndarray | None = None,
+    ) -> float:
         if region.shape != template.shape:
             return -1.0
-        diff = np.mean(np.abs(region.astype(np.float32) - template.astype(np.float32)))
+        diff_image = np.abs(region.astype(np.float32) - template.astype(np.float32))
+        if mask is not None:
+            valid = mask > 0
+            if not np.any(valid):
+                return -1.0
+            diff = np.mean(diff_image[valid])
+        else:
+            diff = np.mean(diff_image)
         return float(1.0 - diff / 255.0)
 
 
@@ -565,7 +711,6 @@ CONFIRM_TEMPLATE = TemplateSpec(
     file_name="browndustx-confirm.png",
     threshold_key="BrownDustX Confirm 阈值",
     default_threshold=0.82,
-    crop=(0.03, 0.80, 0.97, 0.95),
 )
 
 TOUCH_TO_START_TEMPLATE = TemplateSpec(
@@ -589,9 +734,37 @@ HOME_BUTTON_TEMPLATE = TemplateSpec(
     default_threshold=0.78,
 )
 
+HOME_BUTTON_ICE_TEMPLATE = TemplateSpec(
+    name="home_button_ice",
+    file_name="MainHomeIceGE.png",
+    threshold_key="小屋按钮阈值",
+    default_threshold=0.78,
+    green_mask=True,
+)
+
+HOME_BUTTON_RICE_TEMPLATE = TemplateSpec(
+    name="home_button_rice",
+    file_name="MainHomeRIceGE.png",
+    threshold_key="小屋按钮阈值",
+    default_threshold=0.78,
+    green_mask=True,
+)
+
+HOME_BUTTON_TEMPLATES = (
+    HOME_BUTTON_TEMPLATE,
+    HOME_BUTTON_ICE_TEMPLATE,
+    HOME_BUTTON_RICE_TEMPLATE,
+)
+
 HOME_TEMPLATE = TemplateSpec(
     name="home",
     file_name="home.png",
     threshold_key="小屋亮度比例阈值",
     default_threshold=0.75,
+)
+
+HOME_TEMPLATES = (
+    HOME_TEMPLATE,
+    HOME_BUTTON_ICE_TEMPLATE,
+    HOME_BUTTON_RICE_TEMPLATE,
 )

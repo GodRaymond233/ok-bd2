@@ -4,9 +4,13 @@ import numpy as np
 
 from src.tasks.DailyTask import (
     GUILD_FINISHED_TEMPLATE,
+    GUILD_MAIN_ACTIVE_TEMPLATE,
+    GUILD_MAIN_FINISHED_TEMPLATE,
     GUILD_SIGNUP_SUCCESS_TEMPLATE,
     GUILD_SUCCESS_KEYWORDS,
     GUILD_TEMPLATE,
+    HOME_ICE_TEMPLATE,
+    HOME_RICE_TEMPLATE,
     LOADING_TEMPLATE,
     MY_HOME_TEMPLATE,
     REFERENCE_HEIGHT,
@@ -54,7 +58,7 @@ class DailyTaskHelperTest(unittest.TestCase):
 
     def test_guild_sign_in_does_not_click_without_guild_trigger(self):
         task = object.__new__(DailyTask)
-        task.config = {"公会未完成阈值": 0.78, "公会已完成阈值": 0.78}
+        task.config = {"公会入口阈值": 0.78}
         task.capture_frame = lambda: np.zeros((10, 10, 3), dtype=np.uint8)
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
@@ -63,12 +67,14 @@ class DailyTaskHelperTest(unittest.TestCase):
 
         self.assertFalse(DailyTask.run_guild_sign_in(task))
 
-    def test_guild_finished_skips_without_clicking(self):
+    def test_guild_finished_template_still_enters_guild(self):
         task = object.__new__(DailyTask)
-        task.config = {"公会未完成阈值": 0.78, "公会已完成阈值": 0.78}
+        task.config = {"公会入口阈值": 0.78}
         task.capture_frame = lambda: np.zeros((10, 10, 3), dtype=np.uint8)
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
+        task.sleep = lambda *_args, **_kwargs: None
+        clicks = []
 
         def fake_match(_frame, spec):
             if spec is GUILD_FINISHED_TEMPLATE:
@@ -78,13 +84,17 @@ class DailyTaskHelperTest(unittest.TestCase):
             return DailyMatchResult(-1.0, -1.0, (0, 0), (0, 0))
 
         task._match = fake_match
-        task._click_reference = lambda *_args, **_kwargs: self.fail("should not click")
+        task._click_reference = lambda x, y, **_kwargs: clicks.append((x, y))
+        task._wait_loading_or_template_or_ocr = lambda *_args, **_kwargs: ("none", False, "")
+        task._wait_for_template_or_ocr = lambda *_args, **_kwargs: (False, "")
+        task._wait_home_brightness = lambda *_args, **_kwargs: True
 
         self.assertTrue(DailyTask.run_guild_sign_in(task))
+        self.assertEqual([(370, 155), (100, 50)], clicks)
 
     def test_guild_sign_in_continues_when_loading_is_missing(self):
         task = object.__new__(DailyTask)
-        task.config = {"公会未完成阈值": 0.78, "公会已完成阈值": 0.78}
+        task.config = {"公会入口阈值": 0.78}
         task.capture_frame = lambda: np.zeros((10, 10, 3), dtype=np.uint8)
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
@@ -107,7 +117,7 @@ class DailyTaskHelperTest(unittest.TestCase):
 
     def test_guild_sign_in_waits_before_clicking_success_prompt(self):
         task = object.__new__(DailyTask)
-        task.config = {"公会未完成阈值": 0.78, "公会已完成阈值": 0.78}
+        task.config = {"公会入口阈值": 0.78}
         task.capture_frame = lambda: np.zeros((10, 10, 3), dtype=np.uint8)
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
@@ -135,6 +145,71 @@ class DailyTaskHelperTest(unittest.TestCase):
         self.assertTrue(DailyTask.run_guild_sign_in(task))
         self.assertEqual([1.0, 1.0], sleeps)
         self.assertEqual([(370, 155), (450, 650), (100, 50)], clicks)
+
+    def test_guild_sign_in_accepts_main_active_template(self):
+        task = object.__new__(DailyTask)
+        task.config = {"公会入口阈值": 0.78}
+        task.capture_frame = lambda: np.zeros((10, 10, 3), dtype=np.uint8)
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task.sleep = lambda *_args, **_kwargs: None
+        clicks = []
+
+        def fake_match(_frame, spec):
+            if spec is GUILD_MAIN_ACTIVE_TEMPLATE:
+                return DailyMatchResult(0.9, 0.9, (0, 0), (1, 1))
+            return DailyMatchResult(-1.0, -1.0, (0, 0), (0, 0))
+
+        task._match = fake_match
+        task._click_reference = lambda x, y, **_kwargs: clicks.append((x, y))
+        task._wait_loading_or_template_or_ocr = lambda *_args, **_kwargs: ("none", False, "")
+        task._wait_for_template_or_ocr = lambda *_args, **_kwargs: (False, "")
+        task._wait_home_brightness = lambda *_args, **_kwargs: True
+
+        self.assertTrue(DailyTask.run_guild_sign_in(task))
+        self.assertEqual([(370, 155), (100, 50)], clicks)
+
+    def test_guild_entry_uses_best_template_without_finished_skip(self):
+        task = object.__new__(DailyTask)
+        task.config = {"公会入口阈值": 0.78}
+        task.capture_frame = lambda: np.zeros((10, 10, 3), dtype=np.uint8)
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task.sleep = lambda *_args, **_kwargs: None
+        clicks = []
+
+        def fake_match(_frame, spec):
+            if spec is GUILD_MAIN_ACTIVE_TEMPLATE:
+                return DailyMatchResult(0.967, 0.967, (0, 0), (1, 1))
+            if spec is GUILD_MAIN_FINISHED_TEMPLATE:
+                return DailyMatchResult(0.978, 0.978, (0, 0), (1, 1))
+            return DailyMatchResult(-1.0, -1.0, (0, 0), (0, 0))
+
+        task._match = fake_match
+        task._click_reference = lambda x, y, **_kwargs: clicks.append((x, y))
+        task._wait_loading_or_template_or_ocr = lambda *_args, **_kwargs: ("none", False, "")
+        task._wait_for_template_or_ocr = lambda *_args, **_kwargs: (False, "")
+        task._wait_home_brightness = lambda *_args, **_kwargs: True
+
+        self.assertTrue(DailyTask.run_guild_sign_in(task))
+        self.assertEqual([(370, 155), (100, 50)], clicks)
+
+    def test_new_main_templates_use_root_assets_and_green_mask(self):
+        task = object.__new__(DailyTask)
+        task._templates = {}
+        task._template_masks = {}
+
+        for spec in (
+            GUILD_MAIN_ACTIVE_TEMPLATE,
+            GUILD_MAIN_FINISHED_TEMPLATE,
+            HOME_ICE_TEMPLATE,
+            HOME_RICE_TEMPLATE,
+        ):
+            self.assertNotIn("image/", spec.file_name)
+            template = DailyTask._load_template(task, spec)
+            mask = DailyTask._load_template_mask(task, spec)
+            self.assertEqual(template.shape, mask.shape)
+            self.assertGreater(mask.size, int(np.count_nonzero(mask)))
 
     def test_my_home_sign_in_continues_when_loading_is_missing(self):
         task = object.__new__(DailyTask)
@@ -207,6 +282,30 @@ class DailyTaskHelperTest(unittest.TestCase):
                 GUILD_SUCCESS_KEYWORDS,
                 "guild_sign_in",
             ),
+        )
+
+    def test_business_collect_uses_q_script_click_timing(self):
+        task = object.__new__(DailyTask)
+        task.config = {"一键收菜菜单等待秒数": 8.0}
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task._wait_for_ocr_keywords = lambda *_args, **_kwargs: (True, "一键获得 取消")
+        task._wait_home_brightness = lambda *_args, **_kwargs: True
+        clicks = []
+        sleeps = []
+        task._click_reference = lambda x, y, after_sleep=0.0: clicks.append((x, y, after_sleep))
+        task.sleep = lambda seconds: sleeps.append(seconds)
+
+        self.assertTrue(DailyTask.run_business_collect(task))
+        self.assertEqual([0.5], sleeps)
+        self.assertEqual(
+            [
+                (165, 260, 1.0),
+                (1090, 814, 2.0),
+                (832, 814, 1.0),
+                (832, 814, 0.0),
+            ],
+            clicks,
         )
 
     def test_daily_run_stops_after_failed_step(self):
