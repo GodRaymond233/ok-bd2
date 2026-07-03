@@ -125,6 +125,7 @@ config = {
     "onetime_tasks": [
         ["src.tasks.DailyTask", "DailyTask"],
         ["src.tasks.FreeGachaTask", "FreeGachaTask"],
+        ["src.tasks.PVPTask", "PVPTask"],
         ["src.tasks.BD2InputTestTask", "BD2ShortKeyInputTestTask"],
         ["src.tasks.BD2InputTestTask", "BD2MouseClickInputTestTask"],
         ["src.tasks.BD2InputTestTask", "BD2LongKeyInputTestTask"],
