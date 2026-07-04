@@ -226,6 +226,25 @@ class AutoLoginSequenceTest(unittest.TestCase):
         self.assertEqual([("esc", 0.5)], sent_keys)
         self.assertEqual("clearing", task._state)
 
+    def test_clearing_keeps_closing_when_dimmed_home_match_flickers_low(self):
+        task = self._task()
+        task._state = "clearing"
+        task._home_bright_since = monotonic()
+        task._home_brightness_ratio = lambda _frame: 0.235
+        task._sleep_after_recognition = lambda: None
+        sent_keys = []
+        task._match = lambda _frame, _spec: MatchResult(0.40, 0.40, (120, 130), (90, 90))
+        task.send_key = lambda key, after_sleep=0: sent_keys.append((key, after_sleep))
+
+        AutoLoginTask._clear_popups_until_home(
+            task,
+            np.zeros((1440, 2560, 3), dtype=np.uint8),
+        )
+
+        self.assertEqual([("esc", 0.5)], sent_keys)
+        self.assertEqual("clearing", task._state)
+        self.assertIsNone(task._home_bright_since)
+
 
 if __name__ == "__main__":
     unittest.main()
