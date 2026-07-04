@@ -304,6 +304,13 @@ class AutoLoginTask(BaseBD2Task):
             (allow_dimmed or self._state == "clearing") and self._passes_dimmed_home(home_button)
         )
         if not home_found and not dimmed_home_found:
+            if self._state == "clearing":
+                ratio = self._home_brightness_ratio(frame)
+                self.info_set("小屋亮度比例", f"{ratio:.3f}")
+                if ratio < self._home_ratio_threshold():
+                    self._clear_home_popup(ratio)
+                    return False
+
             self._home_bright_since = None
             self._state = "waiting_home"
             self._set_stage("等待主页 UI")
@@ -336,18 +343,25 @@ class AutoLoginTask(BaseBD2Task):
             return False
 
         self._home_bright_since = None
-        now = monotonic()
-        if now - self._last_clear_click_at >= 1.0:
-            self._set_stage("清理公告")
-            back_key = self._back_key()
-            self._set_action(f"主页亮度不足，按返回键清理公告，ratio={ratio:.3f}。")
-            self.log_info(
-                f"自动登录：主页未恢复，按返回键清理公告，ratio={ratio:.3f}, key={back_key}"
-            )
-            self._sleep_after_recognition()
-            self.send_key(back_key, after_sleep=0.5)
-            self._last_clear_click_at = now
+        self._clear_home_popup(ratio)
         return False
+
+    def _clear_home_popup(self, ratio: float) -> None:
+        self._home_bright_since = None
+        now = monotonic()
+        if now - self._last_clear_click_at < 1.0:
+            return
+
+        self._state = "clearing"
+        self._set_stage("清理公告")
+        back_key = self._back_key()
+        self._set_action(f"主页亮度不足，按返回键清理公告，ratio={ratio:.3f}。")
+        self.log_info(
+            f"自动登录：主页未恢复，按返回键清理公告，ratio={ratio:.3f}, key={back_key}"
+        )
+        self._sleep_after_recognition()
+        self.send_key(back_key, after_sleep=0.5)
+        self._last_clear_click_at = now
 
     def _home_brightness_ratio(self, frame) -> float:
         return max(self._home_brightness_ratio_for_template(frame, spec) for spec in HOME_TEMPLATES)

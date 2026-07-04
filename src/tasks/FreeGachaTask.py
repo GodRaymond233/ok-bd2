@@ -60,6 +60,8 @@ class FreeGachaTask(BaseBD2Task):
                 "结果跳过连续点击秒数": 3.0,
                 "主页确认等待秒数": 10.0,
                 "跳过点击间隔秒数": 0.2,
+                "结果页关闭前等待秒数": 2.0,
+                "结果页返回前等待秒数": 2.0,
                 "抽卡页面关键词最低命中数": 3,
                 "确认弹窗关键词最低命中数": 2,
                 "结果页关键词最低命中数": 3,
@@ -71,6 +73,8 @@ class FreeGachaTask(BaseBD2Task):
                 "抽卡页面关键词最低命中数": "确认已进入抽卡页所需的 OCR 关键词数量。",
                 "确认弹窗关键词最低命中数": "确认抽抽乐弹窗所需的 OCR 关键词数量。",
                 "结果跳过连续点击秒数": "抽卡结果页连续点击跳过按钮的最长时间。",
+                "结果页关闭前等待秒数": "识别到抽抽乐券结果页后，点击右上角关闭前等待的时间。",
+                "结果页返回前等待秒数": "点击右上角关闭后，再点击左上角返回前等待的时间。",
                 "结果页关键词最低命中数": "结果页返回确认使用 3 个固定 OCR 关键词。",
             }
         )
@@ -325,14 +329,25 @@ class FreeGachaTask(BaseBD2Task):
             return False
 
         self.log_info(f"{section_name}：检测到结果页关键词，点击券详情后返回抽卡页面。")
-        self._click_reference(1420, 326, after_sleep=1.0)
+        self.sleep(max(0.0, float(self.config.get("结果页关闭前等待秒数", 2.0))))
+        self._click_reference(
+            1420,
+            326,
+            after_sleep=max(0.0, float(self.config.get("结果页返回前等待秒数", 2.0))),
+        )
         self._click_reference(105, 51, after_sleep=0.0)
         return self._wait_for_gacha_page(f"{section_name} 返回抽卡页")
 
     def _click_skip_until_back_page(self, section_name: str) -> tuple[bool, str]:
         duration = max(0.0, float(self.config.get("结果跳过连续点击秒数", 3.0)))
         interval = max(0.05, float(self.config.get("跳过点击间隔秒数", 0.2)))
-        minimum_matches = len(BACK_PAGE_KEYWORDS)
+        minimum_matches = max(
+            1,
+            min(
+                len(BACK_PAGE_KEYWORDS),
+                int(self.config.get("结果页关键词最低命中数", len(BACK_PAGE_KEYWORDS))),
+            ),
+        )
         end_at = monotonic() + duration
 
         while monotonic() < end_at:

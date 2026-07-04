@@ -17,6 +17,16 @@ MFABD2_REFERENCE_HEIGHT = 720
 ENTRY_REFERENCE_WIDTH = 2560
 ENTRY_REFERENCE_HEIGHT = 1440
 FREE_AP_SWITCH_SCREEN_ROI = (1680, 535, 120, 55)
+PVP_RESULT_SCREEN_ROI = (932, 368, 699, 704)
+PVP_RESULT_CLOSE_SCREEN_POINT = (1585, 410)
+PVP_LEAVE_SCREEN_ROI = (928, 1269, 713, 116)
+PVP_LEAVE_BUTTON_SCREEN_POINT = (1411, 1328)
+PVP_CONFIRM_BUTTON_SCREEN_ROI = (1108, 1297, 349, 92)
+PVP_BACK_HOME_REFERENCE_POINT = (100, 54)
+PVP_RANK_DROP_CONFIRM_SCREEN_POINT = (960, 1006)
+PVP_HUB_NOTICE_SCREEN_ROI = (1381, 865, 62, 45)
+PVP_CARD_LIST_SWIPE_COUNT = 1
+PVP_RESULT_BASE_MINUTES = 20.0
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_DIR = PROJECT_ROOT / "offline-train" / "train-source-screenshots"
 
@@ -53,6 +63,8 @@ class PVPTask(BaseBD2Task):
         "PVP 标签 OCR",
         "PVP 快速卡带",
         "PVP 箱庭",
+        "PVP 段位下滑 OCR",
+        "PVP 箱庭感叹号",
         "PVP 舞台",
         "PVP 自动战斗 OCR",
         "PVP 免费AP",
@@ -60,7 +72,10 @@ class PVPTask(BaseBD2Task):
         "PVP 开始战斗 OCR",
         "PVP 战斗中 OCR",
         "PVP 结算 OCR",
+        "PVP 结算命中",
         "PVP 离开 OCR",
+        "PVP 升降级确认 OCR",
+        "PVP 返回主页",
         "PVP AP不足 OCR",
         "匹配错误",
         "Log",
@@ -100,12 +115,15 @@ class PVPTask(BaseBD2Task):
                 "PVP 入场等待秒数": 30.0,
                 "PVP 菜单等待秒数": 12.0,
                 "PVP 战斗开始等待秒数": 30.0,
-                "PVP 结算等待秒数": 90.0,
+                "PVP 结算基准等待分钟": PVP_RESULT_BASE_MINUTES,
                 "PVP 离开等待秒数": 20.0,
+                "PVP 返回箱庭等待秒数": 10.0,
+                "PVP 返回主页等待秒数": 20.0,
                 "PVP 快速卡带阈值": 0.78,
                 "PVP 恶魔城阈值": 0.70,
                 "PVP 入口卡带阈值": 0.78,
                 "PVP 箱庭阈值": 0.78,
+                "PVP 箱庭感叹号阈值": 0.72,
                 "PVP 舞台阈值": 0.72,
                 "PVP 定位修正阈值": 0.76,
                 "loading 出现等待秒数": 6.0,
@@ -115,12 +133,16 @@ class PVPTask(BaseBD2Task):
         self.config_description.update(
             {
                 "竞技场战斗倍数": (
-                    "目标鸡尾酒消耗倍率，支持 1、5、10、20、40。"
+                    "目标鸡尾酒消耗倍率，支持 1、4、5、10、20、40。"
                     "AP 不足时会临时降到 1。"
                 ),
                 "最多战斗轮次": "防止识别异常导致无限循环的最大战斗轮次。",
                 "PVP OCR 阈值": "镜中之战流程 OCR 使用的最低可信度。",
+                "PVP 结算基准等待分钟": "1 倍自动战斗结算最长等待时间，实际等待为该值除以倍率。",
+                "PVP 返回箱庭等待秒数": "离开结算后等待回到 PVP 箱庭的最长时间。",
+                "PVP 返回主页等待秒数": "从 PVP 箱庭返回主页后的主页确认最长时间。",
                 "PVP 恶魔城阈值": "游戏卡珍藏集里定位恶魔城卡带的模板匹配阈值。",
+                "PVP 箱庭感叹号阈值": "进入 PVP 箱庭后识别 tanhaoGE.png 的模板匹配阈值。",
             }
         )
 
@@ -160,11 +182,13 @@ class PVPTask(BaseBD2Task):
                 self.info_set("状态", "未能开始战斗。")
                 return False
 
-            if not self._wait_result_and_leave():
+            if not self._wait_result_and_leave(current_multiplier):
                 self.info_set("状态", "战斗结算或离开失败。")
                 return False
 
-            self.sleep(1.0)
+            self.info_set("状态", "镜中之战完成并返回主页。")
+            self.log_info("镜中之战：自动战斗完成并返回主页。", notify=True)
+            return True
 
         self.info_set("状态", "达到最多战斗轮次。")
         self.log_info(f"镜中之战：达到最多战斗轮次 {max_rounds}，停止。")
@@ -177,6 +201,7 @@ class PVPTask(BaseBD2Task):
             timeout=2.0,
             name="PVP 箱庭",
         ):
+            self._clear_pvp_hub_notice_if_present()
             return True
 
         return self._enter_pvp_from_home()
@@ -206,7 +231,7 @@ class PVPTask(BaseBD2Task):
             return False
 
         self.info_set("当前阶段", "滑动到玩法游戏卡区域")
-        for _ in range(2):
+        for _ in range(PVP_CARD_LIST_SWIPE_COUNT):
             self._drag_entry_reference((94, 1067), (94, 333), duration=0.7, after_sleep=0.5)
 
         cleared, text = self._wait_for_ocr_absent(
@@ -266,14 +291,39 @@ class PVPTask(BaseBD2Task):
             )
 
         self._wait_loading_if_present("PVP 入场")
+        self._confirm_rank_drop_if_present()
         if self._wait_for_template(
             PVP_MEDALS_TEMPLATE,
             timeout=float(self.config.get("PVP 入场等待秒数", 30.0)),
             name="PVP 箱庭",
         ):
+            self._clear_pvp_hub_notice_if_present()
             return True
 
         return False
+
+    def _confirm_rank_drop_if_present(self) -> None:
+        frame = self.capture_frame()
+        text = self._ocr_text(frame, "PVP 段位下滑")
+        self.info_set("PVP 段位下滑 OCR", text or "-")
+        if self._ocr_pattern_match_count(text, [r"段位下滑", r"确认"]) < 2:
+            return
+
+        self.sleep(2.0)
+        self._click_screen_reference(*PVP_RANK_DROP_CONFIRM_SCREEN_POINT, after_sleep=0.0)
+
+    def _clear_pvp_hub_notice_if_present(self) -> None:
+        frame = self.capture_frame()
+        result = self._match(frame, PVP_HUB_NOTICE_TEMPLATE)
+        self.info_set("PVP 箱庭感叹号", f"{result.score:.3f}")
+        if not self._passes(result, PVP_HUB_NOTICE_TEMPLATE):
+            return
+
+        self.sleep(1.0)
+        self._click_screen_reference(
+            *self._screen_reference_roi_center(PVP_HUB_NOTICE_SCREEN_ROI),
+            after_sleep=5.0,
+        )
 
     def _start_auto_battle(self, multiplier: int) -> str:
         self.info_set("当前阶段", "寻找 PVP 舞台")
@@ -411,35 +461,66 @@ class PVPTask(BaseBD2Task):
         self.info_set("PVP 倍率 OCR", text or "-")
         return found
 
-    def _wait_result_and_leave(self) -> bool:
+    def _wait_result_and_leave(self, multiplier: int) -> bool:
         self.info_set("当前阶段", "等待战斗结算")
-        result_found, result_text = self._wait_for_ocr_patterns(
-            [r"反复战斗结果"],
-            timeout=float(self.config.get("PVP 结算等待秒数", 90.0)),
+        result_timeout = self._result_wait_timeout(multiplier)
+        result_found, result_text = self._wait_for_ocr_pattern_majority(
+            self._pvp_result_patterns(multiplier),
+            min_matches=4,
+            timeout=result_timeout,
             name="PVP 结算",
-            roi=self._mf_roi(540, 166, 260, 90),
+            roi=self._screen_reference_roi_to_reference_roi(PVP_RESULT_SCREEN_ROI),
             extra_wait_patterns=[(r"正在进行", self._mf_roi(50, 576, 203, 69), "PVP 战斗中 OCR")],
         )
         self.info_set("PVP 结算 OCR", result_text or "-")
         if not result_found:
             return False
 
-        self._click_reference(1, 1, after_sleep=2.0)
+        self._close_result_page()
         if not self._click_leave_button():
             return False
-        self._confirm_pvp_message()
-        return True
+        if not self._ensure_pvp_hub_after_leave():
+            return False
+        return self._return_home_from_pvp_hub()
+
+    def _close_result_page(self) -> None:
+        self.info_set("当前阶段", "关闭战斗结算")
+        self.sleep(1.0)
+        self._click_screen_reference(*PVP_RESULT_CLOSE_SCREEN_POINT, after_sleep=0.0)
+
+    def _result_wait_timeout(self, multiplier: int) -> float:
+        base_minutes = float(
+            self.config.get("PVP 结算基准等待分钟", PVP_RESULT_BASE_MINUTES)
+        )
+        safe_multiplier = max(1, int(multiplier))
+        return base_minutes * 60.0 / safe_multiplier
+
+    def _pvp_result_patterns(self, multiplier: int) -> list[str]:
+        safe_multiplier = max(1, int(multiplier))
+        completed_count = max(1, round(40 / safe_multiplier))
+        return [
+            r"反复战斗结果",
+            r"胜利分",
+            rf"已完成.*{completed_count}.*次.*战斗",
+            r"攻击成绩",
+            r"积分变化",
+            r"斗魂奖牌.*获得量",
+        ]
 
     def _click_leave_button(self) -> bool:
         end_at = monotonic() + float(self.config.get("PVP 离开等待秒数", 20.0))
         last_text = ""
         while monotonic() <= end_at:
             frame = self.capture_frame()
-            text = self._ocr_text(frame, "pvp_leave", roi=self._mf_roi(1010, 610, 230, 120))
+            text = self._ocr_text(
+                frame,
+                "pvp_leave",
+                roi=self._screen_reference_roi_to_reference_roi(PVP_LEAVE_SCREEN_ROI),
+            )
             last_text = text or last_text
             self.info_set("PVP 离开 OCR", text or "-")
             if self._matches_any(text, [r"离开"]):
-                self._click_screen_reference(2229, 1349, after_sleep=2.0)
+                self._click_screen_reference(*PVP_LEAVE_BUTTON_SCREEN_POINT, after_sleep=2.0)
                 return True
 
             fail_text = self._ocr_text(
@@ -457,16 +538,90 @@ class PVPTask(BaseBD2Task):
         self.info_set("PVP 离开 OCR", last_text or "-")
         return False
 
-    def _confirm_pvp_message(self) -> None:
-        found, text = self._wait_for_ocr_patterns(
-            [r"确认"],
-            timeout=3.0,
-            name="PVP 升降级确认",
-            roi=self._mf_roi(580, 610, 160, 90),
+    def _ensure_pvp_hub_after_leave(self) -> bool:
+        self.info_set("当前阶段", "确认离开结果")
+        timeout = float(self.config.get("PVP 返回箱庭等待秒数", 10.0))
+        state, text = self._wait_for_pvp_hub_or_confirm(timeout=timeout)
+        if state == "hub":
+            return True
+
+        if state == "confirm":
+            self.info_set("PVP 升降级确认 OCR", text or "-")
+        else:
+            self.info_set("PVP 升降级确认 OCR", text or "-")
+            self.info_set("PVP 返回主页", "未确认 PVP 箱庭，尝试确认")
+
+        self._click_screen_reference(
+            *self._screen_reference_roi_center(PVP_CONFIRM_BUTTON_SCREEN_ROI),
+            after_sleep=1.0,
         )
-        if found:
-            self.info_set("PVP 离开 OCR", text)
-            self._click_screen_reference(1280, 1320, after_sleep=1.0)
+        return self._wait_for_template(
+            PVP_MEDALS_TEMPLATE,
+            timeout=timeout,
+            name="PVP 箱庭",
+        )
+
+    def _wait_for_pvp_hub_or_confirm(
+        self,
+        timeout: float,
+        interval: float = 0.5,
+    ) -> tuple[str, str]:
+        end_at = monotonic() + max(0.0, timeout)
+        last_text = ""
+        last_hub_score = -1.0
+        confirm_roi = self._screen_reference_roi_to_reference_roi(PVP_CONFIRM_BUTTON_SCREEN_ROI)
+        while monotonic() <= end_at:
+            frame = self.capture_frame()
+
+            hub = self._match(frame, PVP_MEDALS_TEMPLATE)
+            last_hub_score = hub.score
+            self.info_set("PVP 箱庭", f"{hub.score:.3f}")
+            if self._passes(hub, PVP_MEDALS_TEMPLATE):
+                self.info_set("PVP 返回主页", "已回到 PVP 箱庭")
+                return "hub", last_text
+
+            text = self._ocr_text(frame, "PVP 升降级确认", roi=confirm_roi)
+            last_text = text or last_text
+            self.info_set("PVP 升降级确认 OCR", text or "-")
+            if self._matches_any(text, [r"确认"]):
+                return "confirm", text
+
+            self.sleep(interval)
+
+        self.info_set("PVP 箱庭", f"{last_hub_score:.3f}")
+        return "timeout", last_text
+
+    def _return_home_from_pvp_hub(self) -> bool:
+        self.info_set("当前阶段", "返回主页")
+        in_pvp_hub = self._wait_for_template(
+            PVP_MEDALS_TEMPLATE,
+            timeout=float(self.config.get("PVP 返回箱庭等待秒数", 10.0)),
+            name="PVP 箱庭",
+        )
+        if not in_pvp_hub:
+            self.info_set("PVP 返回主页", "未确认 PVP 箱庭")
+            return self._wait_for_home(
+                timeout=float(self.config.get("PVP 返回主页等待秒数", 20.0))
+            )
+
+        self.info_set("PVP 返回主页", "已确认 PVP 箱庭")
+        self._click_reference(*PVP_BACK_HOME_REFERENCE_POINT, after_sleep=2.0)
+        self._wait_loading_if_present("PVP 返回主页")
+        home_ok = self._wait_for_home(
+            timeout=float(self.config.get("PVP 返回主页等待秒数", 20.0))
+        )
+        self.info_set("PVP 返回主页", "通过" if home_ok else "失败")
+        return home_ok
+
+    def _wait_for_home(self, timeout: float, interval: float = 0.5) -> bool:
+        end_at = monotonic() + max(0.0, timeout)
+        while monotonic() <= end_at:
+            ratio = self._home_brightness_ratio(self.capture_frame())
+            self.info_set("主页亮度", f"{ratio:.3f}")
+            if ratio >= self._home_ratio_threshold():
+                return True
+            self.sleep(interval)
+        return False
 
     def _recover_stage_position(self) -> None:
         if self._click_template_until(
@@ -505,8 +660,13 @@ class PVPTask(BaseBD2Task):
                 self._click_reference(1030, 320, after_sleep=2.0)
                 self._wait_loading_if_present("通行证进入 PVP")
                 return
-            self.scroll(0.5, 0.45, -3)
-            self.sleep(1.0)
+            frame_height, frame_width = frame.shape[:2]
+            self._drag_client(
+                (round(frame_width * 0.5), round(frame_height * 0.72)),
+                (round(frame_width * 0.5), round(frame_height * 0.35)),
+                duration=0.6,
+                after_sleep=1.0,
+            )
 
     def _click_template_until(
         self,
@@ -625,6 +785,37 @@ class PVPTask(BaseBD2Task):
             last_text = text or last_text
             self.info_set(f"{name} OCR", text or "-")
             if self._matches_any(text, patterns):
+                return True, text
+
+            for pattern, extra_roi, info_key in extra_wait_patterns or []:
+                extra_text = self._ocr_text(frame, name=info_key, roi=extra_roi)
+                if self._matches_any(extra_text, [pattern]):
+                    self.info_set(info_key, extra_text)
+                    break
+            self.sleep(interval)
+
+        return False, last_text
+
+    def _wait_for_ocr_pattern_majority(
+        self,
+        patterns: list[str],
+        min_matches: int,
+        timeout: float,
+        name: str,
+        roi: tuple[int, int, int, int] | None = None,
+        interval: float = 0.5,
+        extra_wait_patterns: list[tuple[str, tuple[int, int, int, int], str]] | None = None,
+    ) -> tuple[bool, str]:
+        end_at = monotonic() + max(0.0, timeout)
+        last_text = ""
+        while monotonic() <= end_at:
+            frame = self.capture_frame()
+            text = self._ocr_text(frame, name=name, roi=roi)
+            last_text = text or last_text
+            self.info_set(f"{name} OCR", text or "-")
+            match_count = self._ocr_pattern_match_count(text, patterns)
+            self.info_set("PVP 结算命中", f"{match_count}/{len(patterns)}")
+            if match_count >= min_matches:
                 return True, text
 
             for pattern, extra_roi, info_key in extra_wait_patterns or []:
@@ -964,6 +1155,11 @@ class PVPTask(BaseBD2Task):
             import win32con
 
             interaction = getattr(self.executor, "interaction", None)
+            if interaction is not None and hasattr(interaction, "force_activate"):
+                interaction.force_activate()
+            elif interaction is not None and hasattr(interaction, "try_activate"):
+                interaction.try_activate()
+
             capture = getattr(interaction, "capture", None)
 
             def to_screen(point: tuple[int, int]) -> tuple[int, int]:
@@ -989,6 +1185,48 @@ class PVPTask(BaseBD2Task):
 
         self.operate(action, block=True, restore_cursor=True)
         self.sleep(after_sleep)
+
+    def _post_drag_client(
+        self,
+        start: tuple[int, int],
+        end: tuple[int, int],
+        duration: float = 0.7,
+    ) -> bool:
+        interaction = getattr(getattr(self, "executor", None), "interaction", None)
+        if interaction is None or not hasattr(interaction, "post"):
+            return False
+
+        try:
+            import win32api
+            import win32con
+        except ImportError:
+            return False
+
+        steps = max(6, round(duration / 0.03))
+
+        def post_drag_messages() -> None:
+            start_pos = win32api.MAKELONG(int(start[0]), int(start[1]))
+            interaction.post(win32con.WM_MOUSEMOVE, 0, start_pos)
+            interaction.post(win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, start_pos)
+            try:
+                for index in range(1, steps + 1):
+                    ratio = index / steps
+                    x = round(start[0] + (end[0] - start[0]) * ratio)
+                    y = round(start[1] + (end[1] - start[1]) * ratio)
+                    move_pos = win32api.MAKELONG(x, y)
+                    interaction.post(win32con.WM_MOUSEMOVE, win32con.MK_LBUTTON, move_pos)
+                    time.sleep(duration / steps if duration > 0 else 0)
+            finally:
+                end_pos = win32api.MAKELONG(int(end[0]), int(end[1]))
+                interaction.post(win32con.WM_LBUTTONUP, 0, end_pos)
+
+        lock = getattr(interaction, "_input_lock", None)
+        if lock is None:
+            post_drag_messages()
+        else:
+            with lock:
+                post_drag_messages()
+        return True
 
     def _home_ratio_threshold(self) -> float:
         return float(self.config.get("主页亮度比例阈值", 0.75))
@@ -1032,6 +1270,10 @@ class PVPTask(BaseBD2Task):
             if re.search(normalized_pattern, normalized, flags=re.IGNORECASE):
                 return True
         return False
+
+    @staticmethod
+    def _ocr_pattern_match_count(text: str, patterns: list[str]) -> int:
+        return sum(1 for pattern in patterns if PVPTask._matches_any(text, [pattern]))
 
     @staticmethod
     def _pvp_label_click_point(
@@ -1078,7 +1320,7 @@ class PVPTask(BaseBD2Task):
             multiplier = int(raw)
         except ValueError:
             multiplier = 1
-        return multiplier if multiplier in {1, 5, 10, 20, 40} else 1
+        return multiplier if multiplier in {1, 4, 5, 10, 20, 40} else 1
 
     @staticmethod
     def _candidate_scales(base_scale: float) -> list[float]:
@@ -1157,6 +1399,22 @@ class PVPTask(BaseBD2Task):
         _, _, crop = PVPTask._roi_frame(frame, roi)
         return crop
 
+    @staticmethod
+    def _screen_reference_roi_to_reference_roi(
+        roi: tuple[int, int, int, int],
+    ) -> tuple[int, int, int, int]:
+        x, y, width, height = roi
+        left = round(x * REFERENCE_WIDTH / ENTRY_REFERENCE_WIDTH)
+        top = round(y * REFERENCE_HEIGHT / ENTRY_REFERENCE_HEIGHT)
+        right = round((x + width) * REFERENCE_WIDTH / ENTRY_REFERENCE_WIDTH)
+        bottom = round((y + height) * REFERENCE_HEIGHT / ENTRY_REFERENCE_HEIGHT)
+        return left, top, max(1, right - left), max(1, bottom - top)
+
+    @staticmethod
+    def _screen_reference_roi_center(roi: tuple[int, int, int, int]) -> tuple[int, int]:
+        x, y, width, height = roi
+        return int(x + width / 2 + 0.5), int(y + height / 2 + 0.5)
+
 
 LOADING_TEMPLATE = PVPTemplateSpec(
     name="loading",
@@ -1219,6 +1477,14 @@ PVP_MEDALS_TEMPLATE = PVPTemplateSpec(
     threshold_key="PVP 箱庭阈值",
     default_threshold=0.78,
     roi=(612, 29, 173, 32),
+)
+
+PVP_HUB_NOTICE_TEMPLATE = PVPTemplateSpec(
+    name="pvp_hub_notice",
+    file_name="tanhaoGE.png",
+    threshold_key="PVP 箱庭感叹号阈值",
+    default_threshold=0.72,
+    roi=PVPTask._screen_reference_roi_to_reference_roi(PVP_HUB_NOTICE_SCREEN_ROI),
 )
 
 PVP_STAGE_TEMPLATE = PVPTemplateSpec(

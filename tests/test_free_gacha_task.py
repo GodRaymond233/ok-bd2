@@ -168,7 +168,7 @@ class FreeGachaTaskHelperTest(unittest.TestCase):
         self.assertAlmostEqual(3.0, sum(sleeps), places=6)
         self.assertTrue(all(seconds <= 0.2 for seconds in sleeps))
         self.assertEqual(BACK_PAGE_KEYWORDS, ocr_calls[0][0])
-        self.assertEqual(len(BACK_PAGE_KEYWORDS), ocr_calls[0][1])
+        self.assertEqual(1, ocr_calls[0][1])
 
     def test_result_handler_clicks_ticket_detail_then_backs_and_verifies_gacha_page(self):
         task = object.__new__(FreeGachaTask)
@@ -185,8 +185,8 @@ class FreeGachaTaskHelperTest(unittest.TestCase):
         task._wait_for_gacha_page = lambda name: waits.append(name) or True
 
         self.assertTrue(FreeGachaTask._handle_result_until_back(task, "服装抽抽乐"))
-        self.assertEqual([], sleeps)
-        self.assertEqual([(1420, 326, 1.0), (105, 51, 0.0)], clicks)
+        self.assertEqual([2.0], sleeps)
+        self.assertEqual([(1420, 326, 2.0), (105, 51, 0.0)], clicks)
         self.assertEqual(["服装抽抽乐 返回抽卡页"], waits)
 
 
