@@ -29,8 +29,9 @@ class AutoLoginSequenceTest(unittest.TestCase):
             "小屋按钮遮挡阈值": 0.62,
             "小屋亮度比例阈值": 0.75,
             "主页 UI 等待宽限秒数": 15.0,
+            "小屋按钮点击 X 百分比": 8.6979,
+            "小屋按钮点击 Y 百分比": 14.3519,
         }
-        task.key_config = {"返回键": "esc"}
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
         task.sleep = lambda *_args, **_kwargs: None
@@ -183,13 +184,13 @@ class AutoLoginSequenceTest(unittest.TestCase):
             self.assertEqual(template.shape, mask.shape)
             self.assertGreater(mask.size, int(np.count_nonzero(mask)))
 
-    def test_waiting_home_closes_dimmed_popup_with_back_key_after_grace(self):
+    def test_waiting_home_clicks_home_position_after_grace(self):
         task = self._task()
         task._state = "waiting_home"
         task._waiting_home_since = monotonic() - 20.0
         task._home_brightness_ratio = lambda _frame: 0.235
         task._sleep_after_recognition = lambda: None
-        sent_keys = []
+        clicks = []
 
         def fake_match(_frame, spec):
             if spec in HOME_BUTTON_TEMPLATES:
@@ -199,51 +200,61 @@ class AutoLoginSequenceTest(unittest.TestCase):
             self.fail(f"unexpected match: {spec.name}")
 
         task._match = fake_match
-        task.send_key = lambda key, after_sleep=0: sent_keys.append((key, after_sleep))
+        task.operate_click = lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep))
+        task.send_key = lambda *_args, **_kwargs: self.fail("popup clearing must not send keys")
 
         AutoLoginTask._wait_loading_then_home(
             task,
             np.zeros((1440, 2560, 3), dtype=np.uint8),
         )
 
-        self.assertEqual([("esc", 0.5)], sent_keys)
+        self._assert_home_click(clicks)
         self.assertEqual("clearing", task._state)
 
-    def test_clearing_keeps_closing_dimmed_home_without_rewaiting(self):
+    def test_clearing_keeps_clicking_dimmed_home_without_rewaiting(self):
         task = self._task()
         task._state = "clearing"
         task._home_brightness_ratio = lambda _frame: 0.235
         task._sleep_after_recognition = lambda: None
-        sent_keys = []
+        clicks = []
         task._match = lambda _frame, _spec: MatchResult(0.72, 0.72, (120, 130), (90, 90))
-        task.send_key = lambda key, after_sleep=0: sent_keys.append((key, after_sleep))
+        task.operate_click = lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep))
+        task.send_key = lambda *_args, **_kwargs: self.fail("popup clearing must not send keys")
 
         AutoLoginTask._clear_popups_until_home(
             task,
             np.zeros((1440, 2560, 3), dtype=np.uint8),
         )
 
-        self.assertEqual([("esc", 0.5)], sent_keys)
+        self._assert_home_click(clicks)
         self.assertEqual("clearing", task._state)
 
-    def test_clearing_keeps_closing_when_dimmed_home_match_flickers_low(self):
+    def test_clearing_keeps_clicking_when_dimmed_home_match_flickers_low(self):
         task = self._task()
         task._state = "clearing"
         task._home_bright_since = monotonic()
         task._home_brightness_ratio = lambda _frame: 0.235
         task._sleep_after_recognition = lambda: None
-        sent_keys = []
+        clicks = []
         task._match = lambda _frame, _spec: MatchResult(0.40, 0.40, (120, 130), (90, 90))
-        task.send_key = lambda key, after_sleep=0: sent_keys.append((key, after_sleep))
+        task.operate_click = lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep))
+        task.send_key = lambda *_args, **_kwargs: self.fail("popup clearing must not send keys")
 
         AutoLoginTask._clear_popups_until_home(
             task,
             np.zeros((1440, 2560, 3), dtype=np.uint8),
         )
 
-        self.assertEqual([("esc", 0.5)], sent_keys)
+        self._assert_home_click(clicks)
         self.assertEqual("clearing", task._state)
         self.assertIsNone(task._home_bright_since)
+
+    def _assert_home_click(self, clicks):
+        self.assertEqual(1, len(clicks))
+        x, y, after_sleep = clicks[0]
+        self.assertAlmostEqual(0.086979, x)
+        self.assertAlmostEqual(0.143519, y)
+        self.assertEqual(0.2, after_sleep)
 
 
 if __name__ == "__main__":

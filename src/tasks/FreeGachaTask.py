@@ -8,6 +8,7 @@ import numpy as np
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task
+from src.utils.template_resolution import offline_template_scale
 
 REFERENCE_WIDTH = 1920
 REFERENCE_HEIGHT = 1080
@@ -449,7 +450,7 @@ class FreeGachaTask(BaseBD2Task):
         template = self._load_template(HOME_TEMPLATE)
         frame_gray = self._to_gray(frame)
         frame_height, frame_width = frame_gray.shape[:2]
-        scale = frame_width / REFERENCE_WIDTH
+        scale = offline_template_scale(HOME_TEMPLATE.file_name, frame_width, frame_height)
         template_height, template_width = template.shape[:2]
         roi_width = max(8, round(template_width * scale))
         roi_height = max(8, round(template_height * scale))
@@ -484,7 +485,7 @@ class FreeGachaTask(BaseBD2Task):
         try:
             frame_gray = self._to_gray(frame)
             frame_height, frame_width = frame_gray.shape[:2]
-            base_scale = frame_width / REFERENCE_WIDTH
+            base_scale = offline_template_scale(spec.file_name, frame_width, frame_height)
             best = empty
 
             for scale in self._candidate_scales(base_scale):
@@ -596,16 +597,7 @@ class FreeGachaTask(BaseBD2Task):
 
     @staticmethod
     def _candidate_scales(base_scale: float) -> list[float]:
-        offsets = (0.0, -0.08, 0.08, -0.16, 0.16)
-        candidates = [1.0]
-        candidates.extend(max(0.2, base_scale + offset) for offset in offsets)
-
-        unique = []
-        for scale in candidates:
-            rounded = round(scale, 3)
-            if rounded not in unique:
-                unique.append(rounded)
-        return unique
+        return [round(max(0.2, base_scale), 3)]
 
     @staticmethod
     def _resize_template(template: np.ndarray, scale: float) -> np.ndarray:

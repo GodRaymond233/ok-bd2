@@ -6,19 +6,18 @@ import numpy as np
 from src.tasks.PVPTask import (
     ENTRY_REFERENCE_HEIGHT,
     ENTRY_REFERENCE_WIDTH,
-    EVILCASTLE_CARD_TEMPLATE,
     PVP_BACK_HOME_REFERENCE_POINT,
-    PVP_CARD_LIST_SWIPE_COUNT,
     PVP_CONFIRM_BUTTON_SCREEN_ROI,
-    PVP_ENTRY_CARD_TEMPLATE,
     PVP_HUB_NOTICE_SCREEN_ROI,
     PVP_HUB_NOTICE_TEMPLATE,
     PVP_LEAVE_BUTTON_SCREEN_POINT,
     PVP_LEAVE_SCREEN_ROI,
     PVP_MEDALS_TEMPLATE,
+    PVP_QUICK_SWITCH_POINT,
     PVP_RANK_DROP_CONFIRM_SCREEN_POINT,
     PVP_RESULT_CLOSE_SCREEN_POINT,
     PVP_RESULT_SCREEN_ROI,
+    QUICK_PACK_TEMPLATE,
     REFERENCE_HEIGHT,
     REFERENCE_WIDTH,
     PVPTask,
@@ -60,10 +59,10 @@ class PVPTaskHelperTest(unittest.TestCase):
         self.assertEqual(1307 / ENTRY_REFERENCE_HEIGHT, calls["y"])
         self.assertEqual(1.0, calls["after_sleep"])
 
-    def test_evilcastle_uses_separate_threshold(self):
-        self.assertEqual("PVP 恶魔城阈值", EVILCASTLE_CARD_TEMPLATE.threshold_key)
-        self.assertEqual(0.70, EVILCASTLE_CARD_TEMPLATE.default_threshold)
-        self.assertEqual("PVP 入口卡带阈值", PVP_ENTRY_CARD_TEMPLATE.threshold_key)
+    def test_quick_pack_uses_requested_template(self):
+        self.assertEqual("image/UI_QuickPack_GE.png", QUICK_PACK_TEMPLATE.file_name)
+        self.assertEqual("快速切换按钮阈值", QUICK_PACK_TEMPLATE.threshold_key)
+        self.assertTrue(QUICK_PACK_TEMPLATE.green_mask)
 
     def test_crop_reference_scales_roi_to_frame_size(self):
         frame = np.arange(720 * 1280, dtype=np.int32).reshape((720, 1280))
@@ -85,8 +84,64 @@ class PVPTaskHelperTest(unittest.TestCase):
         task.config = {"竞技场战斗倍数": "3倍"}
         self.assertEqual(1, PVPTask._target_multiplier(task))
 
-    def test_pvp_card_list_swipe_count_is_one(self):
-        self.assertEqual(1, PVP_CARD_LIST_SWIPE_COUNT)
+    def test_common_cartridge_entry_uses_relative_recent_entry_point(self):
+        task = object.__new__(PVPTask)
+        calls = []
+        task.operate_click = lambda x, y, after_sleep=0: calls.append((x, y, after_sleep))
+
+        self.assertTrue(
+            task.open_cartridge_quick_switcher(
+                ensure_home=lambda: True,
+                click_quick_switch=lambda: True,
+            )
+        )
+        self.assertEqual([(0.7875, 0.9111111111111111, 1.0)], calls)
+
+    def test_common_cartridge_entry_stops_when_home_is_not_confirmed(self):
+        task = object.__new__(PVPTask)
+        task.operate_click = lambda *_args, **_kwargs: self.fail("entry must not be clicked")
+
+        self.assertFalse(
+            task.open_cartridge_quick_switcher(
+                ensure_home=lambda: False,
+                click_quick_switch=lambda: self.fail("quick switch must not be searched"),
+            )
+        )
+
+    def test_cartridge_home_requires_button_and_brightness(self):
+        task = object.__new__(PVPTask)
+        task.config = {
+            "主页确认等待秒数": 0.0,
+            "主页小屋按钮阈值": 0.70,
+            "主页亮度比例阈值": 0.75,
+        }
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task._match = lambda *_args, **_kwargs: SimpleNamespace(score=0.80)
+        task._home_brightness_ratio = lambda _frame: 0.74
+        task.sleep = lambda *_args, **_kwargs: None
+
+        self.assertFalse(PVPTask._wait_for_cartridge_home(task))
+
+        task._home_brightness_ratio = lambda _frame: 0.80
+        self.assertTrue(PVPTask._wait_for_cartridge_home(task))
+
+    def test_pvp_entry_uses_relative_quick_switch_point(self):
+        task = object.__new__(PVPTask)
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task.open_cartridge_quick_switcher = lambda **_kwargs: True
+        clicks = []
+        task.operate_click = lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep))
+        task._wait_loading_if_present = lambda *_args, **_kwargs: None
+        task._confirm_rank_drop_if_present = lambda: None
+        task._wait_for_template = lambda *_args, **_kwargs: True
+        task._clear_pvp_hub_notice_if_present = lambda: None
+        task.config = {}
+
+        self.assertTrue(PVPTask._enter_pvp_from_home(task))
+        self.assertEqual([(*PVP_QUICK_SWITCH_POINT, 2.0)], clicks)
 
     def test_matches_any_normalizes_ocr_text(self):
         self.assertTrue(PVPTask._matches_any("战斗 开始", [r"战斗开始"]))

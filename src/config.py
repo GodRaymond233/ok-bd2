@@ -2,32 +2,19 @@
 
 import os
 
-from ok import Box, ConfigOption
+from ok import Box
 
 from src import GAME_EXE, HWND_CLASS
 from src.compat.windows_graphics import enable_windows_10_wgc
 from src.game_path import calculate_pc_exe_path
 from src.interaction.BD2Interaction import BD2Interaction
 from src.process_feature import process_feature
+from src.ui.responsive_task_config import install_responsive_task_config_ui
 
 version = "dev"
 
 enable_windows_10_wgc()
-
-key_config_option = ConfigOption(
-    "游戏按键设置",
-    {
-        "交互键": "f",
-        "确认键": "enter",
-        "返回键": "esc",
-        "使用 QWERTY 物理按键": False,
-    },
-    description="BD2 任务使用的游戏内按键",
-    config_description={
-        "使用 QWERTY 物理按键": ("把字母和数字按键按照美式 QWERTY 键盘的物理位置发送。"),
-    },
-)
-
+install_responsive_task_config_ui()
 
 def blur_area(width, height):
     return Box(width * 0, height * 0.9769, to_x=width * 0.0943, to_y=height * 1)
@@ -38,7 +25,7 @@ config = {
     "debug": False,
     "use_gui": True,
     "config_folder": "configs",
-    "global_configs": [key_config_option],
+    "global_configs": [],
     "blur_area": blur_area,
     "gui_icon": "icons/icon.png",
     "wait_until_before_delay": 0,
@@ -124,16 +111,17 @@ config = {
     ],
     "onetime_tasks": [
         ["src.tasks.DailyTask", "DailyTask"],
+        ["src.tasks.QuickSuppressionTask", "QuickSuppressionTask"],
+        ["src.tasks.SquareGoddessTask", "SquareGoddessTask"],
+        ["src.tasks.MapTradeTask", "MapTradeTask"],
+        ["src.tasks.MapCollectionTask", "MapCollectionTask"],
         ["src.tasks.FreeGachaTask", "FreeGachaTask"],
         ["src.tasks.PVPTask", "PVPTask"],
-        ["src.tasks.BD2InputTestTask", "BD2ShortKeyInputTestTask"],
         ["src.tasks.BD2InputTestTask", "BD2MouseClickInputTestTask"],
-        ["src.tasks.BD2InputTestTask", "BD2LongKeyInputTestTask"],
-        ["src.tasks.BD2InputTestTask", "BD2KeyboardDebugInputTestTask"],
         ["src.tasks.BD2ProbeTask", "BD2ProbeTask"],
         ["src.tasks.BD2OneTimeTask", "BD2OneTimeTask"],
         ["src.tasks.LauncherTask", "LauncherTask"],
-        ["ok", "DiagnosisTask"],
+        ["src.tasks.BD2DiagnosisTask", "BD2DiagnosisTask"],
     ],
     "trigger_tasks": [
         ["src.tasks.trigger.AutoLoginTask", "AutoLoginTask"],
