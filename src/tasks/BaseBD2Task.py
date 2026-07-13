@@ -14,9 +14,8 @@ from src.scene.ScreenPosition import ScreenPosition
 
 logger = Logger.get_logger(__name__)
 PROBE_OUTPUT_DIR = Path("probe_outputs")
-HOTKEY_CONFIG_NAME = "游戏按键设置"
-HOTKEY_CONFIG_LEGACY_NAME = "Game Hotkey Config"
 GREEN_MASK_TOLERANCE = 0
+CARTRIDGE_RECENT_ENTRY_POINT = (0.7875, 0.9111111111111111)
 
 
 def green_mask_from_template(
@@ -45,9 +44,6 @@ class BaseBD2Task(BaseTask):
         super().__init__(*args, **kwargs)
         self.visible = False
         self.scene: BD2Scene | None = None
-        self.key_config = self.get_global_config(HOTKEY_CONFIG_NAME)
-        if self.key_config is None:
-            self.key_config = self.get_global_config(HOTKEY_CONFIG_LEGACY_NAME)
         self.default_box = ScreenPosition(self)
         self._last_interval_action_time = {}
         self._action_interval_lock = threading.Lock()
@@ -193,18 +189,6 @@ class BaseBD2Task(BaseTask):
             vcenter=vcenter,
         )
 
-    def send_key(self, key, down_time=0.02, interval=-1, after_sleep=0, action_name=None) -> Any:
-        if action_name is not None:
-            if not self._check_action_interval(action_name, interval):
-                return False
-            interval = -1
-        return super().send_key(
-            key,
-            down_time=down_time,
-            interval=interval,
-            after_sleep=after_sleep,
-        )
-
     def operate(self, func: Callable, block: bool = True, restore_cursor: bool = True):
         interaction = getattr(self.executor, "interaction", None)
         if interaction is not None and hasattr(interaction, "operate"):
@@ -251,6 +235,18 @@ class BaseBD2Task(BaseTask):
         seconds = float(self.config.get("识别成功后等待秒数", 1.0))
         if seconds > 0:
             self.sleep(seconds)
+
+    def open_cartridge_quick_switcher(
+        self,
+        ensure_home: Callable[[], bool],
+        click_quick_switch: Callable[[], bool],
+    ) -> bool:
+        """Open the common cartridge quick-switch page from a confirmed home screen."""
+        if not ensure_home():
+            return False
+
+        self.operate_click(*CARTRIDGE_RECENT_ENTRY_POINT, after_sleep=1.0)
+        return bool(click_quick_switch())
 
     def _check_action_interval(self, action_name: Any, interval: float) -> bool:
         if interval <= 0:

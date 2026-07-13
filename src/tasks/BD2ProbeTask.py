@@ -11,6 +11,8 @@ class BD2ProbeTask(BaseBD2Task):
         self.name = "BD2 截图 OCR 探针"
         self.description = "后台截图、执行 OCR，并保存探针结果。"
         self.icon = FluentIcon.SEARCH
+        self.group_name = "测试"
+        self.group_icon = FluentIcon.BOOK_SHELF
         self.visible = True
         self.default_config.update(
             {

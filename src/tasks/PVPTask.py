@@ -9,6 +9,7 @@ import numpy as np
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task, green_mask_from_template
+from src.utils.template_resolution import offline_template_scale
 
 REFERENCE_WIDTH = 1920
 REFERENCE_HEIGHT = 1080
@@ -25,7 +26,7 @@ PVP_CONFIRM_BUTTON_SCREEN_ROI = (1108, 1297, 349, 92)
 PVP_BACK_HOME_REFERENCE_POINT = (100, 54)
 PVP_RANK_DROP_CONFIRM_SCREEN_POINT = (960, 1006)
 PVP_HUB_NOTICE_SCREEN_ROI = (1381, 865, 62, 45)
-PVP_CARD_LIST_SWIPE_COUNT = 1
+PVP_QUICK_SWITCH_POINT = (0.078125, 0.899074074074074)
 PVP_RESULT_BASE_MINUTES = 20.0
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_DIR = PROJECT_ROOT / "offline-train" / "train-source-screenshots"
@@ -55,13 +56,9 @@ class PVPTask(BaseBD2Task):
         "状态",
         "当前阶段",
         "目标倍率",
+        "主页小屋按钮",
         "主页亮度",
-        "PVP 选关 OCR",
-        "PVP 左侧滑动 OCR",
-        "PVP 恶魔城",
-        "PVP 入口卡带",
-        "PVP 标签 OCR",
-        "PVP 快速卡带",
+        "快速切换按钮",
         "PVP 箱庭",
         "PVP 段位下滑 OCR",
         "PVP 箱庭感叹号",
@@ -84,7 +81,7 @@ class PVPTask(BaseBD2Task):
     ]
 
     status_key_labels = {
-        "PVP 快速卡带": "PVP 卡带模板",
+        "快速切换按钮": "快速切换按钮模板",
         "PVP 箱庭": "PVP 箱庭模板",
         "PVP 舞台": "PVP 舞台模板",
     }
@@ -109,8 +106,7 @@ class PVPTask(BaseBD2Task):
                 "加载页面阈值": 0.72,
                 "主页亮度比例阈值": 0.75,
                 "PVP OCR 阈值": 0.2,
-                "PVP 选关页等待秒数": 12.0,
-                "PVP 左侧滑动确认秒数": 6.0,
+                "主页确认等待秒数": 10.0,
                 "快速卡带等待秒数": 10.0,
                 "PVP 入场等待秒数": 30.0,
                 "PVP 菜单等待秒数": 12.0,
@@ -119,9 +115,8 @@ class PVPTask(BaseBD2Task):
                 "PVP 离开等待秒数": 20.0,
                 "PVP 返回箱庭等待秒数": 10.0,
                 "PVP 返回主页等待秒数": 20.0,
-                "PVP 快速卡带阈值": 0.78,
-                "PVP 恶魔城阈值": 0.70,
-                "PVP 入口卡带阈值": 0.78,
+                "主页小屋按钮阈值": 0.70,
+                "快速切换按钮阈值": 0.78,
                 "PVP 箱庭阈值": 0.78,
                 "PVP 箱庭感叹号阈值": 0.72,
                 "PVP 舞台阈值": 0.72,
@@ -141,7 +136,8 @@ class PVPTask(BaseBD2Task):
                 "PVP 结算基准等待分钟": "1 倍自动战斗结算最长等待时间，实际等待为该值除以倍率。",
                 "PVP 返回箱庭等待秒数": "离开结算后等待回到 PVP 箱庭的最长时间。",
                 "PVP 返回主页等待秒数": "从 PVP 箱庭返回主页后的主页确认最长时间。",
-                "PVP 恶魔城阈值": "游戏卡珍藏集里定位恶魔城卡带的模板匹配阈值。",
+                "主页小屋按钮阈值": "进入卡带前确认主页小屋按钮存在的模板匹配阈值。",
+                "快速切换按钮阈值": "识别 UI_QuickPack_GE.png 快速切换按钮的模板匹配阈值。",
                 "PVP 箱庭感叹号阈值": "进入 PVP 箱庭后识别 tanhaoGE.png 的模板匹配阈值。",
             }
         )
@@ -207,88 +203,21 @@ class PVPTask(BaseBD2Task):
         return self._enter_pvp_from_home()
 
     def _enter_pvp_from_home(self) -> bool:
-        self.info_set("当前阶段", "确认主页")
-        ratio = self._home_brightness_ratio(self.capture_frame())
-        self.info_set("主页亮度", f"{ratio:.3f}")
-        if ratio < self._home_ratio_threshold():
-            self.log_info(f"镜中之战：当前不在主页或主页亮度不足，ratio={ratio:.3f}。")
+        self.info_set("当前阶段", "打开卡带快速切换")
+        if not self.open_cartridge_quick_switcher(
+            ensure_home=self._wait_for_cartridge_home,
+            click_quick_switch=lambda: self._click_template_until(
+                QUICK_PACK_TEMPLATE,
+                timeout=float(self.config.get("快速卡带等待秒数", 10.0)),
+                name="快速切换按钮",
+                after_sleep=0.0,
+            ),
+        ):
+            self.log_info("镜中之战：未能从主页打开卡带快速切换页面。")
             return False
-
-        self.info_set("当前阶段", "打开游戏卡珍藏集")
-        self._click_entry_reference(2258, 1307, after_sleep=1.0)
-        found_cards, text = self._wait_for_ocr_requirements(
-            [
-                (r"游戏卡珍藏[集级]", 0.90),
-                (r"角色游戏卡", 0.70),
-                (r"玩法游戏卡", 0.70),
-            ],
-            timeout=float(self.config.get("PVP 选关页等待秒数", 12.0)),
-            name="PVP 选关",
-        )
-        self.info_set("PVP 选关 OCR", text or "-")
-        if not found_cards:
-            self.log_info("镜中之战：未确认进入游戏卡选关页面。")
-            return False
-
-        self.info_set("当前阶段", "滑动到玩法游戏卡区域")
-        for _ in range(PVP_CARD_LIST_SWIPE_COUNT):
-            self._drag_entry_reference((94, 1067), (94, 333), duration=0.7, after_sleep=0.5)
-
-        cleared, text = self._wait_for_ocr_absent(
-            [r"店长游戏卡\s*\d+\s*/\s*\d+", r"剧情游戏卡\s*\d+\s*/\s*20"],
-            timeout=float(self.config.get("PVP 左侧滑动确认秒数", 6.0)),
-            name="PVP 左侧滑动",
-        )
-        self.info_set("PVP 左侧滑动 OCR", text or "-")
-        if not cleared:
-            self.log_info("镜中之战：左侧列表仍检测到店长游戏卡或剧情游戏卡分类标题。")
-            return False
-
-        self.info_set("当前阶段", "定位恶魔城卡带")
-        evilcastle, frame_shape = self._find_template_until(
-            EVILCASTLE_CARD_TEMPLATE,
-            timeout=10.0,
-            name="PVP 恶魔城",
-        )
-        if evilcastle is None or frame_shape is None:
-            self.log_info("镜中之战：未检测到 Q_evilcastle.png。")
-            return False
-
-        frame_height, frame_width = frame_shape
-        center_x = evilcastle.position[0] + evilcastle.size[0] // 2
-        center_y = evilcastle.position[1] + evilcastle.size[1] // 2
-        target_x = min(frame_width - 2, center_x + frame_width // 2)
-        self._drag_client((center_x, center_y), (target_x, center_y), duration=0.8, after_sleep=1.0)
 
         self.info_set("当前阶段", "选择 PVP 卡带")
-        pvp_card, frame_shape = self._find_template_until(
-            PVP_ENTRY_CARD_TEMPLATE,
-            timeout=10.0,
-            name="PVP 入口卡带",
-        )
-        if pvp_card is None or frame_shape is None:
-            pvp_label, frame_shape = self._find_pvp_label_until(timeout=5.0, name="PVP 标签")
-            if pvp_label is None or frame_shape is None:
-                self.log_info("镜中之战：未检测到 Q_pvp.png，也未通过 OCR 定位 PvP 标签。")
-                return False
-
-            frame_height, frame_width = frame_shape
-            self._click_client(
-                pvp_label[0],
-                pvp_label[1],
-                frame_width,
-                frame_height,
-                after_sleep=2.0,
-            )
-        else:
-            frame_height, frame_width = frame_shape
-            self._click_client(
-                pvp_card.position[0] + pvp_card.size[0] // 2,
-                pvp_card.position[1] + pvp_card.size[1] // 2,
-                frame_width,
-                frame_height,
-                after_sleep=2.0,
-            )
+        self.operate_click(*PVP_QUICK_SWITCH_POINT, after_sleep=2.0)
 
         self._wait_loading_if_present("PVP 入场")
         self._confirm_rank_drop_if_present()
@@ -300,6 +229,34 @@ class PVPTask(BaseBD2Task):
             self._clear_pvp_hub_notice_if_present()
             return True
 
+        return False
+
+    def _wait_for_cartridge_home(self, interval: float = 0.35) -> bool:
+        self.info_set("当前阶段", "确认主页")
+        end_at = monotonic() + float(self.config.get("主页确认等待秒数", 10.0))
+        last_button_score = -1.0
+        last_ratio = 0.0
+        while monotonic() <= end_at:
+            frame = self.capture_frame()
+            home_button = max(
+                (self._match(frame, spec) for spec in HOME_TEMPLATES),
+                key=lambda result: result.score,
+            )
+            last_button_score = home_button.score
+            last_ratio = self._home_brightness_ratio(frame)
+            self.info_set("主页小屋按钮", f"{last_button_score:.3f}")
+            self.info_set("主页亮度", f"{last_ratio:.3f}")
+            if (
+                last_button_score >= float(self.config.get("主页小屋按钮阈值", 0.70))
+                and last_ratio >= self._home_ratio_threshold()
+            ):
+                return True
+            self.sleep(interval)
+
+        self.log_info(
+            "镜中之战：未确认主页小屋按钮或亮度不足，"
+            f"button={last_button_score:.3f}, ratio={last_ratio:.3f}。"
+        )
         return False
 
     def _confirm_rank_drop_if_present(self) -> None:
@@ -906,7 +863,11 @@ class PVPTask(BaseBD2Task):
             frame_gray = self._to_gray(frame)
             roi_left, roi_top, roi_frame = self._roi_frame(frame_gray, spec.roi)
             frame_height, frame_width = roi_frame.shape[:2]
-            base_scale = frame_gray.shape[1] / REFERENCE_WIDTH
+            base_scale = offline_template_scale(
+                spec.file_name,
+                frame_gray.shape[1],
+                frame_gray.shape[0],
+            )
             best = empty
 
             for scale in self._candidate_scales(base_scale):
@@ -946,7 +907,7 @@ class PVPTask(BaseBD2Task):
         template, mask = self._load_template(spec)
         frame_gray = self._to_gray(frame)
         frame_height, frame_width = frame_gray.shape[:2]
-        scale = frame_width / ENTRY_REFERENCE_WIDTH
+        scale = offline_template_scale(spec.file_name, frame_width, frame_height)
         template_height, template_width = template.shape[:2]
         roi_width = max(8, round(template_width * scale))
         roi_height = max(8, round(template_height * scale))
@@ -1324,16 +1285,7 @@ class PVPTask(BaseBD2Task):
 
     @staticmethod
     def _candidate_scales(base_scale: float) -> list[float]:
-        offsets = (0.0, -0.08, 0.08, -0.16, 0.16)
-        candidates = [1.0]
-        candidates.extend(max(0.2, base_scale + offset) for offset in offsets)
-
-        unique = []
-        for scale in candidates:
-            rounded = round(scale, 3)
-            if rounded not in unique:
-                unique.append(rounded)
-        return unique
+        return [round(max(0.2, base_scale), 3)]
 
     @staticmethod
     def _resize_template(template: np.ndarray, scale: float) -> np.ndarray:
@@ -1448,26 +1400,11 @@ HOME_RICE_TEMPLATE = PVPTemplateSpec(
 
 HOME_TEMPLATES = (HOME_TEMPLATE, HOME_ICE_TEMPLATE, HOME_RICE_TEMPLATE)
 
-EVILCASTLE_CARD_TEMPLATE = PVPTemplateSpec(
-    name="evilcastle_card",
-    file_name="Q_evilcastle.png",
-    threshold_key="PVP 恶魔城阈值",
-    default_threshold=0.70,
-)
-
-PVP_ENTRY_CARD_TEMPLATE = PVPTemplateSpec(
-    name="pvp_entry_card",
-    file_name="Q_pvp.png",
-    threshold_key="PVP 入口卡带阈值",
+QUICK_PACK_TEMPLATE = PVPTemplateSpec(
+    name="quick_pack",
+    file_name="image/UI_QuickPack_GE.png",
+    threshold_key="快速切换按钮阈值",
     default_threshold=0.78,
-)
-
-QUICK_CART_PVP_TEMPLATE = PVPTemplateSpec(
-    name="quick_cart_pvp",
-    file_name="pvp-quick-cart.png",
-    threshold_key="PVP 快速卡带阈值",
-    default_threshold=0.78,
-    roi=(51, 582, 873, 133),
     green_mask=True,
 )
 

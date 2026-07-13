@@ -14,6 +14,9 @@ class ProjectStructureTest(unittest.TestCase):
             "requirements.txt",
             "src/config.py",
             "src/tasks/DailyTask.py",
+            "src/tasks/QuickSuppressionTask.py",
+            "src/tasks/MapTradeTask.py",
+            "src/tasks/MapCollectionTask.py",
             "src/tasks/FreeGachaTask.py",
             "src/tasks/BD2ProbeTask.py",
             "src/tasks/BD2OneTimeTask.py",
@@ -23,6 +26,8 @@ class ProjectStructureTest(unittest.TestCase):
             "src/interaction/BD2Interaction.py",
             "src/ui/BD2StatusTab.py",
             "assets/coco_annotations.json",
+            "assets/map_trade/calendar_sources.json",
+            "assets/map_trade/price_calendar.v1.json",
         ]
         for relative_path in expected:
             with self.subTest(path=relative_path):

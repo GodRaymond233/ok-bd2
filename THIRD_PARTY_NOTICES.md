@@ -62,7 +62,9 @@ licenses and attribution requirements are also preserved.
 | BnanZ0/ok-nte | Reference for current ok-script project layout, README structure, `pyproject.toml`, tasks, scene/interaction layout, and PyAppify release shape | https://github.com/BnanZ0/ok-nte |
 | ok-oldking/ok-script-app | Reference starter template for ok-script applications, example tasks, custom tabs, i18n, tests, and packaging files | https://github.com/ok-oldking/ok-script-app |
 | ok-oldking/ok-wuthering-waves | Reference for mature ok-script game automation structure, trigger task registration, custom tabs, logging, and update packaging | https://github.com/ok-oldking/ok-wuthering-waves |
-| sunyink/MFABD2 | Local ignored upstream reference for BrownDust II automation ideas and README/credit style. Do not copy code or assets without preserving its license notices. | https://github.com/sunyink/MFABD2 |
+| JZPPP/MaaBD2 | Reference for BrownDust II map-collection navigation ideas. | https://github.com/JZPPP/MaaBD2 |
+| sunyink/MFABD2 | Reference for BrownDust II automation ideas; the shop favorite configuration values were adapted from its `Arbitrage_ShopBuy_Data` node. Upstream uses file-by-file MIT / Apache-2.0 licensing; the corresponding license texts are retained under `LICENSES/`. | https://github.com/sunyink/MFABD2 |
+| BD2DB | Public market data used once to seed the bundled 1-28 day price snapshot. The runtime does not query this site. | https://browndust2-db.souseha.com/en/market-data |
 
 ## Game And Platform Materials
 

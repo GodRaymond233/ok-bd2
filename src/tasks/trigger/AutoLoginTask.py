@@ -7,6 +7,7 @@ import numpy as np
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task
+from src.utils.template_resolution import offline_template_scale
 
 REFERENCE_WIDTH = 1920
 REFERENCE_HEIGHT = 1080
@@ -354,13 +355,15 @@ class AutoLoginTask(BaseBD2Task):
 
         self._state = "clearing"
         self._set_stage("清理公告")
-        back_key = self._back_key()
-        self._set_action(f"主页亮度不足，按返回键清理公告，ratio={ratio:.3f}。")
+        home_x = self._percent_config("小屋按钮点击 X 百分比")
+        home_y = self._percent_config("小屋按钮点击 Y 百分比")
+        self._set_action(f"主页亮度不足，点击小屋位置清理公告，ratio={ratio:.3f}。")
         self.log_info(
-            f"自动登录：主页未恢复，按返回键清理公告，ratio={ratio:.3f}, key={back_key}"
+            "自动登录：主页未恢复，点击小屋位置清理公告，"
+            f"ratio={ratio:.3f}, x={home_x:.2%}, y={home_y:.2%}"
         )
         self._sleep_after_recognition()
-        self.send_key(back_key, after_sleep=0.5)
+        self.operate_click(home_x, home_y, after_sleep=0.2)
         self._last_clear_click_at = now
 
     def _home_brightness_ratio(self, frame) -> float:
@@ -375,7 +378,7 @@ class AutoLoginTask(BaseBD2Task):
         mask = self._load_template_mask(spec)
         frame_gray = self._to_gray(frame)
         frame_height, frame_width = frame_gray.shape[:2]
-        scale = frame_width / REFERENCE_WIDTH
+        scale = offline_template_scale(spec.file_name, frame_width, frame_height)
         template_height, template_width = template.shape[:2]
         roi_width = max(8, round(template_width * scale))
         roi_height = max(8, round(template_height * scale))
@@ -449,7 +452,7 @@ class AutoLoginTask(BaseBD2Task):
         try:
             frame_gray = self._to_gray(frame)
             frame_height, frame_width = frame_gray.shape[:2]
-            base_scale = frame_width / REFERENCE_WIDTH
+            base_scale = offline_template_scale(spec.file_name, frame_width, frame_height)
             scales = self._candidate_scales(base_scale)
             best = empty
 
@@ -585,10 +588,6 @@ class AutoLoginTask(BaseBD2Task):
     def _percent_config(self, key: str) -> float:
         return max(0.0, min(1.0, float(self.config[key]) / 100.0))
 
-    def _back_key(self) -> str:
-        key_config = getattr(self, "key_config", None) or {}
-        return key_config.get("返回键", key_config.get("Back Key", "esc"))
-
     def _click_match_center(self, result: MatchResult, after_sleep: float = 0.0) -> None:
         x = round(result.position[0] + result.size[0] / 2)
         y = round(result.position[1] + result.size[1] / 2)
@@ -647,16 +646,7 @@ class AutoLoginTask(BaseBD2Task):
 
     @staticmethod
     def _candidate_scales(base_scale: float) -> list[float]:
-        offsets = (0.0, -0.08, 0.08, -0.16, 0.16)
-        candidates = [1.0]
-        candidates.extend(max(0.2, base_scale + offset) for offset in offsets)
-
-        unique = []
-        for scale in candidates:
-            rounded = round(scale, 3)
-            if rounded not in unique:
-                unique.append(rounded)
-        return unique
+        return [round(max(0.2, base_scale), 3)]
 
     @staticmethod
     def _resize_template(template: np.ndarray, scale: float) -> np.ndarray:

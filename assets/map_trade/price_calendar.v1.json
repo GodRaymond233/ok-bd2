@@ -1,0 +1,1178 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-07-12T21:40:00+08:00",
+  "timezone": "Asia/Shanghai",
+  "source_note": "Initial 1-28 snapshot derived from public BD2DB highPremiumDay/highPremiumshopId data; days 29-31 are explicitly empty and runtime never queries BD2DB.",
+  "source_url": "https://browndust2-db.souseha.com/en/market-data",
+  "days": {
+    "1": [
+      {
+        "item": "生命的木炭",
+        "shop": "E2",
+        "aliases": [
+          "Charcoal of Life"
+        ]
+      },
+      {
+        "item": "风的圣石",
+        "shop": "R7",
+        "aliases": [
+          "風的聖石",
+          "Wind Magic Crystal"
+        ]
+      },
+      {
+        "item": "樱桃",
+        "shop": "S13",
+        "aliases": [
+          "櫻桃",
+          "Cherry"
+        ]
+      },
+      {
+        "item": "蘑菇汤",
+        "shop": "S14",
+        "aliases": [
+          "蘑菇湯",
+          "Mushroom Soup"
+        ]
+      },
+      {
+        "item": "黄铜块",
+        "shop": "S4",
+        "aliases": [
+          "黃銅塊",
+          "Brass ingot"
+        ]
+      }
+    ],
+    "2": [
+      {
+        "item": "水的圣石",
+        "shop": "E1",
+        "aliases": [
+          "水的聖石",
+          "Water Magic Crystal"
+        ]
+      },
+      {
+        "item": "番红花甜茶",
+        "shop": "S19",
+        "aliases": [
+          "番紅花甜茶",
+          "Saffron Punch"
+        ]
+      },
+      {
+        "item": "水果罐头",
+        "shop": "S2",
+        "aliases": [
+          "水果罐頭",
+          "Canned Fruit"
+        ]
+      },
+      {
+        "item": "铁矿石",
+        "shop": "S9",
+        "aliases": [
+          "鐵礦石",
+          "Iron ore"
+        ]
+      }
+    ],
+    "3": [
+      {
+        "item": "黑啤酒炖锅",
+        "shop": "R6",
+        "aliases": [
+          "黑啤酒燉鍋",
+          "Black Beer Stew"
+        ]
+      },
+      {
+        "item": "能量蘑菇",
+        "shop": "S1",
+        "aliases": [
+          "Energy Boost Mushroom"
+        ]
+      },
+      {
+        "item": "暗的圣石",
+        "shop": "S13",
+        "aliases": [
+          "暗的聖石",
+          "Darkness Magic Crystal"
+        ]
+      },
+      {
+        "item": "火烤鱼板棒",
+        "shop": "S17",
+        "aliases": [
+          "火烤魚板棒",
+          "Smoky Fish Cake bar"
+        ]
+      },
+      {
+        "item": "橄榄油义大利面",
+        "shop": "S18",
+        "aliases": [
+          "橄欖油義大利麵",
+          "Aglio e Olio"
+        ]
+      }
+    ],
+    "4": [
+      {
+        "item": "火的圣石",
+        "shop": "R1",
+        "aliases": [
+          "火的聖石",
+          "Fire Magic Crystal"
+        ]
+      },
+      {
+        "item": "番茄",
+        "shop": "S1",
+        "aliases": [
+          "Tomato"
+        ]
+      },
+      {
+        "item": "煤",
+        "shop": "S15",
+        "aliases": [
+          "Coal"
+        ]
+      },
+      {
+        "item": "大麦",
+        "shop": "S18",
+        "aliases": [
+          "大麥",
+          "Barley"
+        ]
+      }
+    ],
+    "5": [
+      {
+        "item": "手作蛋糕",
+        "shop": "E4",
+        "aliases": [
+          "Home-Baked Cake"
+        ]
+      },
+      {
+        "item": "炒马铃薯",
+        "shop": "R4",
+        "aliases": [
+          "炒馬鈴薯",
+          "Fried Potato"
+        ]
+      },
+      {
+        "item": "鱼子酱蛋包饭",
+        "shop": "R7",
+        "aliases": [
+          "魚子醬蛋包飯",
+          "Caviar Omelette"
+        ]
+      },
+      {
+        "item": "桑格利亚酒",
+        "shop": "S11",
+        "aliases": [
+          "桑格利亞酒",
+          "Sangria"
+        ]
+      },
+      {
+        "item": "甜椒",
+        "shop": "S11",
+        "aliases": [
+          "Paprika"
+        ]
+      },
+      {
+        "item": "生蚝",
+        "shop": "S11",
+        "aliases": [
+          "生蠔",
+          "Oyster"
+        ]
+      },
+      {
+        "item": "盐",
+        "shop": "S17",
+        "aliases": [
+          "鹽",
+          "Salt"
+        ]
+      }
+    ],
+    "6": [
+      {
+        "item": "一般皮革",
+        "shop": "R6",
+        "aliases": [
+          "Plain leather"
+        ]
+      },
+      {
+        "item": "美乃滋",
+        "shop": "S1",
+        "aliases": [
+          "Mayonnaise"
+        ]
+      },
+      {
+        "item": "夹板",
+        "shop": "S17",
+        "aliases": [
+          "夾板",
+          "Plywood"
+        ]
+      },
+      {
+        "item": "能量药水",
+        "shop": "S18",
+        "aliases": [
+          "能量藥水",
+          "Energy Boost Potion"
+        ]
+      },
+      {
+        "item": "闪耀西班牙蒜味虾",
+        "shop": "S5",
+        "aliases": [
+          "閃耀西班牙蒜味蝦",
+          "Shiny Gambas"
+        ]
+      }
+    ],
+    "7": [
+      {
+        "item": "卢戈山参",
+        "shop": "R6",
+        "aliases": [
+          "盧戈山蔘",
+          "Lugo Ginseng"
+        ]
+      },
+      {
+        "item": "炒蘑菇",
+        "shop": "R6",
+        "aliases": [
+          "Fried Mushroom"
+        ]
+      },
+      {
+        "item": "咖啡豆",
+        "shop": "S1",
+        "aliases": [
+          "Coffee Bean"
+        ]
+      },
+      {
+        "item": "街头烤鸡串",
+        "shop": "S5",
+        "aliases": [
+          "街頭烤雞串",
+          "Street Grilled Chicken Skewer"
+        ]
+      },
+      {
+        "item": "花椰菜",
+        "shop": "S8",
+        "aliases": [
+          "Broccoli"
+        ]
+      }
+    ],
+    "8": [
+      {
+        "item": "辣椒素",
+        "shop": "R3",
+        "aliases": [
+          "Capsaicin"
+        ]
+      },
+      {
+        "item": "原木",
+        "shop": "R7",
+        "aliases": [
+          "Hardwood"
+        ]
+      },
+      {
+        "item": "包装好的海苔",
+        "shop": "S13",
+        "aliases": [
+          "包裝好的海苔",
+          "Seasoned Seaweed"
+        ]
+      },
+      {
+        "item": "兽肉",
+        "shop": "S3",
+        "aliases": [
+          "獸肉",
+          "Beast Meat"
+        ]
+      },
+      {
+        "item": "胡椒",
+        "shop": "S5",
+        "aliases": [
+          "Pepper"
+        ]
+      },
+      {
+        "item": "永恒龙舌兰酒",
+        "shop": "S9",
+        "aliases": [
+          "永恆龍舌蘭酒",
+          "Eternal Love"
+        ]
+      }
+    ],
+    "9": [
+      {
+        "item": "白金块",
+        "shop": "R4",
+        "aliases": [
+          "白金塊",
+          "Platinum ingot"
+        ]
+      },
+      {
+        "item": "烤蜂蜜苹果",
+        "shop": "S11",
+        "aliases": [
+          "烤蜂蜜蘋果",
+          "Baked Honey Apple"
+        ]
+      },
+      {
+        "item": "能量粉末",
+        "shop": "S11",
+        "aliases": [
+          "Energy Boost Powder"
+        ]
+      },
+      {
+        "item": "橄榄油",
+        "shop": "S18",
+        "aliases": [
+          "橄欖油",
+          "Olive Oil"
+        ]
+      },
+      {
+        "item": "强化夹板",
+        "shop": "S4",
+        "aliases": [
+          "強化夾板",
+          "Reinforced plywood"
+        ]
+      }
+    ],
+    "10": [
+      {
+        "item": "冰品甜点",
+        "shop": "S1",
+        "aliases": [
+          "冰品甜點",
+          "Frozen Dessert"
+        ]
+      },
+      {
+        "item": "汉堡肉便当",
+        "shop": "S1",
+        "aliases": [
+          "漢堡肉便當",
+          "Hamburg Steak Lunch Box"
+        ]
+      },
+      {
+        "item": "玉米",
+        "shop": "S12",
+        "aliases": [
+          "Corn"
+        ]
+      },
+      {
+        "item": "豆奶酱义大利面",
+        "shop": "S17",
+        "aliases": [
+          "豆奶醬義大利麵",
+          "Bean Cream Pasta"
+        ]
+      },
+      {
+        "item": "铜矿石",
+        "shop": "S3",
+        "aliases": [
+          "銅礦石",
+          "Copper ore"
+        ]
+      }
+    ],
+    "11": [
+      {
+        "item": "淡水虾",
+        "shop": "R4",
+        "aliases": [
+          "淡水蝦",
+          "Shrimp"
+        ]
+      },
+      {
+        "item": "猪排盖饭",
+        "shop": "R5",
+        "aliases": [
+          "豬排蓋飯",
+          "Pork Cutlet Rice Bowl"
+        ]
+      },
+      {
+        "item": "鲜血布丁",
+        "shop": "S13",
+        "aliases": [
+          "鮮血布丁",
+          "Rare Bloody Pudding"
+        ]
+      },
+      {
+        "item": "牛奶",
+        "shop": "S7",
+        "aliases": [
+          "Milk"
+        ]
+      },
+      {
+        "item": "马铃薯汤",
+        "shop": "S8",
+        "aliases": [
+          "馬鈴薯湯",
+          "Potato Soup"
+        ]
+      },
+      {
+        "item": "铜块",
+        "shop": "S9",
+        "aliases": [
+          "銅塊",
+          "Copper ingot"
+        ]
+      }
+    ],
+    "12": [
+      {
+        "item": "钢铁块",
+        "shop": "R1",
+        "aliases": [
+          "鋼鐵塊",
+          "Steel ingot"
+        ]
+      },
+      {
+        "item": "泥炭",
+        "shop": "R5",
+        "aliases": [
+          "Peat"
+        ]
+      },
+      {
+        "item": "一般布料",
+        "shop": "S14",
+        "aliases": [
+          "Plain fabric"
+        ]
+      },
+      {
+        "item": "卢戈烤山参串",
+        "shop": "S14",
+        "aliases": [
+          "盧戈烤山蔘串",
+          "Lugo Ginseng Grilled Skewer"
+        ]
+      },
+      {
+        "item": "大蒜",
+        "shop": "S14",
+        "aliases": [
+          "Garlic"
+        ]
+      },
+      {
+        "item": "巧克力",
+        "shop": "S4",
+        "aliases": [
+          "Chocolate"
+        ]
+      }
+    ],
+    "13": [
+      {
+        "item": "巧克力鸡尾酒",
+        "shop": "R5",
+        "aliases": [
+          "巧克力雞尾酒",
+          "Chocolat Cocktail"
+        ]
+      },
+      {
+        "item": "草药",
+        "shop": "S15",
+        "aliases": [
+          "草藥",
+          "Herb"
+        ]
+      },
+      {
+        "item": "烤菇串",
+        "shop": "S6",
+        "aliases": [
+          "Mushroom Skewer"
+        ]
+      },
+      {
+        "item": "鲑鱼",
+        "shop": "S7",
+        "aliases": [
+          "鮭魚",
+          "Salmon"
+        ]
+      },
+      {
+        "item": "蔬菜三明治",
+        "shop": "S8",
+        "aliases": [
+          "Vegetable Sandwich"
+        ]
+      }
+    ],
+    "14": [
+      {
+        "item": "芥末",
+        "shop": "S16",
+        "aliases": [
+          "Wasabi"
+        ]
+      },
+      {
+        "item": "雷瓦汀火腿",
+        "shop": "S18",
+        "aliases": [
+          "Levatein Ham"
+        ]
+      },
+      {
+        "item": "酱炒牛排",
+        "shop": "S2",
+        "aliases": [
+          "醬炒牛排",
+          "Chop Steak"
+        ]
+      },
+      {
+        "item": "红萝卜",
+        "shop": "S7",
+        "aliases": [
+          "紅蘿蔔",
+          "Carrot"
+        ]
+      },
+      {
+        "item": "洋葱",
+        "shop": "S8",
+        "aliases": [
+          "洋蔥",
+          "Onion"
+        ]
+      }
+    ],
+    "15": [
+      {
+        "item": "顶级皮革",
+        "shop": "R2",
+        "aliases": [
+          "頂級皮革",
+          "Top quality leather"
+        ]
+      },
+      {
+        "item": "高级布料",
+        "shop": "S16",
+        "aliases": [
+          "高級布料",
+          "Fine fabric"
+        ]
+      },
+      {
+        "item": "起司",
+        "shop": "S19",
+        "aliases": [
+          "Cheese"
+        ]
+      },
+      {
+        "item": "葡萄",
+        "shop": "S3",
+        "aliases": [
+          "Grape"
+        ]
+      },
+      {
+        "item": "鸡肉卷",
+        "shop": "S6",
+        "aliases": [
+          "雞肉捲",
+          "Chicken Roll"
+        ]
+      }
+    ],
+    "16": [
+      {
+        "item": "维生素B浓缩溶液",
+        "shop": "E1",
+        "aliases": [
+          "維生素B濃縮溶液",
+          "Vita B Concentrated Solution"
+        ]
+      },
+      {
+        "item": "煤炭饼干",
+        "shop": "R7",
+        "aliases": [
+          "煤炭餅乾",
+          "Charcoal Cookie"
+        ]
+      },
+      {
+        "item": "蘑菇烤牛肉火锅",
+        "shop": "S1",
+        "aliases": [
+          "蘑菇烤牛肉火鍋",
+          "Mushroom Bulgogi Stew"
+        ]
+      },
+      {
+        "item": "甜辣鲜虾",
+        "shop": "S13",
+        "aliases": [
+          "甜辣鮮蝦",
+          "Chili Shrimp"
+        ]
+      },
+      {
+        "item": "糖",
+        "shop": "S2",
+        "aliases": [
+          "Sugar"
+        ]
+      }
+    ],
+    "17": [
+      {
+        "item": "凯洛养身汤",
+        "shop": "E1",
+        "aliases": [
+          "凱洛養身湯",
+          "Kailac Health Soup"
+        ]
+      },
+      {
+        "item": "泰瑞丝派",
+        "shop": "R1",
+        "aliases": [
+          "泰瑞絲派",
+          "Teresse Pie"
+        ]
+      },
+      {
+        "item": "马铃薯",
+        "shop": "S16",
+        "aliases": [
+          "馬鈴薯",
+          "Potato"
+        ]
+      },
+      {
+        "item": "金矿石",
+        "shop": "S2",
+        "aliases": [
+          "金礦石",
+          "Gold ore"
+        ]
+      },
+      {
+        "item": "水果冰沙",
+        "shop": "S5",
+        "aliases": [
+          "Fruit Slushy"
+        ]
+      },
+      {
+        "item": "米",
+        "shop": "S5",
+        "aliases": [
+          "Rice"
+        ]
+      }
+    ],
+    "18": [
+      {
+        "item": "萝卜婴",
+        "shop": "R3",
+        "aliases": [
+          "蘿蔔嬰",
+          "Radish"
+        ]
+      },
+      {
+        "item": "番红花",
+        "shop": "S10",
+        "aliases": [
+          "番紅花",
+          "Saffron"
+        ]
+      },
+      {
+        "item": "辣酱",
+        "shop": "S10",
+        "aliases": [
+          "辣醬",
+          "Chili Sauce"
+        ]
+      },
+      {
+        "item": "奶油",
+        "shop": "S2",
+        "aliases": [
+          "Butter"
+        ]
+      },
+      {
+        "item": "魅惑粉末",
+        "shop": "S6",
+        "aliases": [
+          "Charm Powder"
+        ]
+      }
+    ],
+    "19": [
+      {
+        "item": "玉米起司",
+        "shop": "E2",
+        "aliases": [
+          "Corn Cheese"
+        ]
+      },
+      {
+        "item": "杏仁",
+        "shop": "R1",
+        "aliases": [
+          "Almond"
+        ]
+      },
+      {
+        "item": "蜂蜜",
+        "shop": "R3",
+        "aliases": [
+          "Honey"
+        ]
+      },
+      {
+        "item": "哈密瓜",
+        "shop": "R6",
+        "aliases": [
+          "Melon"
+        ]
+      },
+      {
+        "item": "肉桂",
+        "shop": "S11",
+        "aliases": [
+          "Cinnamon"
+        ]
+      }
+    ],
+    "20": [
+      {
+        "item": "洛克菲勒生蚝",
+        "shop": "E4",
+        "aliases": [
+          "洛克菲勒生蠔",
+          "Oysters Rockefeller"
+        ]
+      },
+      {
+        "item": "草药三明治",
+        "shop": "S18",
+        "aliases": [
+          "草藥三明治",
+          "Herb Sandwich"
+        ]
+      },
+      {
+        "item": "灵魂鲜奶油",
+        "shop": "S19",
+        "aliases": [
+          "靈魂鮮奶油",
+          "Soul whipped Cream"
+        ]
+      },
+      {
+        "item": "甜椒义式烘蛋",
+        "shop": "S4",
+        "aliases": [
+          "甜椒義式烘蛋",
+          "Bell Pepper Frittata"
+        ]
+      }
+    ],
+    "21": [
+      {
+        "item": "小麦",
+        "shop": "R2",
+        "aliases": [
+          "小麥",
+          "Wheat"
+        ]
+      },
+      {
+        "item": "香草牛排",
+        "shop": "R2",
+        "aliases": [
+          "Herb Steak"
+        ]
+      },
+      {
+        "item": "地狱火海苔饭卷",
+        "shop": "R5",
+        "aliases": [
+          "地獄火海苔飯捲",
+          "Fire of Hell Kimbab"
+        ]
+      },
+      {
+        "item": "姜黄",
+        "shop": "S12",
+        "aliases": [
+          "薑黃",
+          "Turmeric"
+        ]
+      },
+      {
+        "item": "豆子",
+        "shop": "S12",
+        "aliases": [
+          "Bean"
+        ]
+      },
+      {
+        "item": "铁块",
+        "shop": "S15",
+        "aliases": [
+          "鐵塊",
+          "Iron ingot"
+        ]
+      }
+    ],
+    "22": [
+      {
+        "item": "凯洛药材",
+        "shop": "R2",
+        "aliases": [
+          "凱洛藥材",
+          "Kailac Medicine"
+        ]
+      },
+      {
+        "item": "料酒",
+        "shop": "R5",
+        "aliases": [
+          "Cooking Wine"
+        ]
+      },
+      {
+        "item": "达雷普黑啤酒",
+        "shop": "S13",
+        "aliases": [
+          "達雷普黑啤酒",
+          "Daref Black Beer"
+        ]
+      },
+      {
+        "item": "鲑鱼芥末寿司",
+        "shop": "S5",
+        "aliases": [
+          "鮭魚芥末壽司",
+          "Salmon Wasabi Sushi"
+        ]
+      }
+    ],
+    "23": [
+      {
+        "item": "鱼子酱罐头",
+        "shop": "R2",
+        "aliases": [
+          "魚子醬罐頭",
+          "Canned Caviar"
+        ]
+      },
+      {
+        "item": "蜂蜜奶油杏仁",
+        "shop": "S14",
+        "aliases": [
+          "Honey Butter Almond"
+        ]
+      },
+      {
+        "item": "无烟煤",
+        "shop": "S16",
+        "aliases": [
+          "無煙煤",
+          "Anthracite"
+        ]
+      },
+      {
+        "item": "地狱火酱汁",
+        "shop": "S3",
+        "aliases": [
+          "地獄火醬汁",
+          "Hell's fire Sauce"
+        ]
+      },
+      {
+        "item": "顶级布料",
+        "shop": "S7",
+        "aliases": [
+          "頂級布料",
+          "Top quality fabric"
+        ]
+      }
+    ],
+    "24": [
+      {
+        "item": "甜蜜马卡龙",
+        "shop": "E5",
+        "aliases": [
+          "甜蜜馬卡龍",
+          "Sweet Macaron"
+        ]
+      },
+      {
+        "item": "辣椒",
+        "shop": "R4",
+        "aliases": [
+          "Pepper"
+        ]
+      },
+      {
+        "item": "吐司",
+        "shop": "S15",
+        "aliases": [
+          "Bread"
+        ]
+      },
+      {
+        "item": "闪烁的粉末",
+        "shop": "S15",
+        "aliases": [
+          "閃爍的粉末",
+          "Glittering Powder"
+        ]
+      },
+      {
+        "item": "啤酒花",
+        "shop": "S19",
+        "aliases": [
+          "Hop"
+        ]
+      },
+      {
+        "item": "鸡胸肉袋",
+        "shop": "S4",
+        "aliases": [
+          "雞胸肉袋",
+          "Chicken Breast Pack"
+        ]
+      }
+    ],
+    "25": [
+      {
+        "item": "巧克力面包",
+        "shop": "E1",
+        "aliases": [
+          "巧克力麵包",
+          "Chocolate Bread"
+        ]
+      },
+      {
+        "item": "透明化沙拉",
+        "shop": "E1",
+        "aliases": [
+          "Transparent Salad"
+        ]
+      },
+      {
+        "item": "鸡蛋",
+        "shop": "R1",
+        "aliases": [
+          "雞蛋",
+          "Egg"
+        ]
+      },
+      {
+        "item": "流浪美食家的烤肉",
+        "shop": "S19",
+        "aliases": [
+          "Wandering Gourmet's Barbeque"
+        ]
+      },
+      {
+        "item": "蘑菇",
+        "shop": "S5",
+        "aliases": [
+          "Mushroom"
+        ]
+      }
+    ],
+    "26": [
+      {
+        "item": "三明治便当",
+        "shop": "R7",
+        "aliases": [
+          "三明治便當",
+          "Sandwich Lunch Box"
+        ]
+      },
+      {
+        "item": "光的圣石",
+        "shop": "R7",
+        "aliases": [
+          "光的聖石",
+          "Light Magic Crystal"
+        ]
+      },
+      {
+        "item": "鲔鱼鸡胸肉三明治",
+        "shop": "S10",
+        "aliases": [
+          "鮪魚雞胸肉三明治",
+          "Tuna Chicken Breast Sandwich"
+        ]
+      },
+      {
+        "item": "鲔鱼罐头",
+        "shop": "S12",
+        "aliases": [
+          "鮪魚罐頭",
+          "Canned Tuna"
+        ]
+      },
+      {
+        "item": "哈密瓜雪酪",
+        "shop": "S17",
+        "aliases": [
+          "Melon Sherbet"
+        ]
+      },
+      {
+        "item": "黄金罗勒",
+        "shop": "S6",
+        "aliases": [
+          "黃金羅勒",
+          "Golden Basil"
+        ]
+      }
+    ],
+    "27": [
+      {
+        "item": "三角美乃滋饭团",
+        "shop": "E2",
+        "aliases": [
+          "三角美乃滋飯糰",
+          "Triangle Mayo Rice Ball"
+        ]
+      },
+      {
+        "item": "透明的蘑菇",
+        "shop": "R3",
+        "aliases": [
+          "Transparent Mushroom"
+        ]
+      },
+      {
+        "item": "炸鲑鱼便当",
+        "shop": "R5",
+        "aliases": [
+          "炸鮭魚便當",
+          "Salmon Cutlet Lunchbox"
+        ]
+      },
+      {
+        "item": "穿山甲的鳞片",
+        "shop": "S16",
+        "aliases": [
+          "穿山甲的鱗片",
+          "Pangolin Scale"
+        ]
+      },
+      {
+        "item": "苹果",
+        "shop": "S6",
+        "aliases": [
+          "蘋果",
+          "Apple"
+        ]
+      }
+    ],
+    "28": [
+      {
+        "item": "松露油",
+        "shop": "R1",
+        "aliases": [
+          "Truffle oil"
+        ]
+      },
+      {
+        "item": "喵拿铁",
+        "shop": "R2",
+        "aliases": [
+          "喵拿鐵",
+          "Meow Latte"
+        ]
+      },
+      {
+        "item": "高级皮革",
+        "shop": "S14",
+        "aliases": [
+          "高級皮革",
+          "Fine leather"
+        ]
+      },
+      {
+        "item": "金块",
+        "shop": "S8",
+        "aliases": [
+          "金塊",
+          "Gold ingot"
+        ]
+      },
+      {
+        "item": "秃鹫的羽毛",
+        "shop": "S9",
+        "aliases": [
+          "禿鷲的羽毛",
+          "Eagle's Feather"
+        ]
+      }
+    ],
+    "29": [],
+    "30": [],
+    "31": []
+  }
+}
