@@ -66,6 +66,8 @@ class AutoLoginTask(BaseBD2Task):
         "登录按钮点击 Y 百分比",
         "小屋按钮点击 X 百分比",
         "小屋按钮点击 Y 百分比",
+        "公告清理点击 X 百分比",
+        "公告清理点击 Y 百分比",
         "匹配错误",
         "Log",
         "Warning",
@@ -100,6 +102,8 @@ class AutoLoginTask(BaseBD2Task):
                 "登录按钮点击 Y 百分比": 65.0926,
                 "小屋按钮点击 X 百分比": 8.6979,
                 "小屋按钮点击 Y 百分比": 14.3519,
+                "公告清理点击 X 百分比": 8.8020833333,
+                "公告清理点击 Y 百分比": 56.9444444444,
             }
         )
         self._templates: dict[str, np.ndarray] = {}
@@ -355,15 +359,15 @@ class AutoLoginTask(BaseBD2Task):
 
         self._state = "clearing"
         self._set_stage("清理公告")
-        home_x = self._percent_config("小屋按钮点击 X 百分比")
-        home_y = self._percent_config("小屋按钮点击 Y 百分比")
-        self._set_action(f"主页亮度不足，点击小屋位置清理公告，ratio={ratio:.3f}。")
+        clear_x = self._percent_config("公告清理点击 X 百分比")
+        clear_y = self._percent_config("公告清理点击 Y 百分比")
+        self._set_action(f"主页亮度不足，点击公告清理位置，ratio={ratio:.3f}。")
         self.log_info(
-            "自动登录：主页未恢复，点击小屋位置清理公告，"
-            f"ratio={ratio:.3f}, x={home_x:.2%}, y={home_y:.2%}"
+            "自动登录：主页未恢复，点击公告清理位置，"
+            f"ratio={ratio:.3f}, x={clear_x:.2%}, y={clear_y:.2%}"
         )
         self._sleep_after_recognition()
-        self.operate_click(home_x, home_y, after_sleep=0.2)
+        self.operate_click(clear_x, clear_y, after_sleep=0.2)
         self._last_clear_click_at = now
 
     def _home_brightness_ratio(self, frame) -> float:

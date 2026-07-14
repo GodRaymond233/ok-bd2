@@ -31,6 +31,8 @@ class AutoLoginSequenceTest(unittest.TestCase):
             "主页 UI 等待宽限秒数": 15.0,
             "小屋按钮点击 X 百分比": 8.6979,
             "小屋按钮点击 Y 百分比": 14.3519,
+            "公告清理点击 X 百分比": 8.8020833333,
+            "公告清理点击 Y 百分比": 56.9444444444,
         }
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
@@ -184,7 +186,7 @@ class AutoLoginSequenceTest(unittest.TestCase):
             self.assertEqual(template.shape, mask.shape)
             self.assertGreater(mask.size, int(np.count_nonzero(mask)))
 
-    def test_waiting_home_clicks_home_position_after_grace(self):
+    def test_waiting_home_clicks_notice_clear_position_after_grace(self):
         task = self._task()
         task._state = "waiting_home"
         task._waiting_home_since = monotonic() - 20.0
@@ -208,7 +210,7 @@ class AutoLoginSequenceTest(unittest.TestCase):
             np.zeros((1440, 2560, 3), dtype=np.uint8),
         )
 
-        self._assert_home_click(clicks)
+        self._assert_notice_clear_click(clicks)
         self.assertEqual("clearing", task._state)
 
     def test_clearing_keeps_clicking_dimmed_home_without_rewaiting(self):
@@ -226,7 +228,7 @@ class AutoLoginSequenceTest(unittest.TestCase):
             np.zeros((1440, 2560, 3), dtype=np.uint8),
         )
 
-        self._assert_home_click(clicks)
+        self._assert_notice_clear_click(clicks)
         self.assertEqual("clearing", task._state)
 
     def test_clearing_keeps_clicking_when_dimmed_home_match_flickers_low(self):
@@ -245,15 +247,15 @@ class AutoLoginSequenceTest(unittest.TestCase):
             np.zeros((1440, 2560, 3), dtype=np.uint8),
         )
 
-        self._assert_home_click(clicks)
+        self._assert_notice_clear_click(clicks)
         self.assertEqual("clearing", task._state)
         self.assertIsNone(task._home_bright_since)
 
-    def _assert_home_click(self, clicks):
+    def _assert_notice_clear_click(self, clicks):
         self.assertEqual(1, len(clicks))
         x, y, after_sleep = clicks[0]
-        self.assertAlmostEqual(0.086979, x)
-        self.assertAlmostEqual(0.143519, y)
+        self.assertAlmostEqual(169 / 1920, x)
+        self.assertAlmostEqual(615 / 1080, y)
         self.assertEqual(0.2, after_sleep)
 
 

@@ -45,11 +45,11 @@ class QuickSuppressionTask(BaseBD2Task):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.name = "快速刷压制"
-        self.description = "该功能需要在第一章主线关卡内启动。"
+        self.name = "刷压制等级"
+        self.description = "在第一章战斗地图中开始，同时要求第二章也处于战斗地图中"
         self.icon = FluentIcon.SYNC
-        self.group_name = "日常/周常"
-        self.group_icon = FluentIcon.CALENDAR
+        self.group_name = "自动刷级"
+        self.group_icon = FluentIcon.SYNC
         self.visible = True
         self._loading_template: np.ndarray | None = None
         self.default_config.update(
@@ -89,8 +89,8 @@ class QuickSuppressionTask(BaseBD2Task):
 
     def run(self):
         if not bool(self.config.get("启用", True)):
-            self.info_set("状态", "快速刷压制已禁用。")
-            self.log_info("快速刷压制已禁用。")
+            self.info_set("状态", "刷压制等级已禁用。")
+            self.log_info("刷压制等级已禁用。")
             return True
 
         slot = str(self.config.get("刷几号位", "4号位"))
@@ -100,18 +100,18 @@ class QuickSuppressionTask(BaseBD2Task):
 
         self.info_set("刷几号位", slot)
         self.info_set("完成循环数", 0)
-        self.info_set("状态", "快速刷压制运行中。")
-        self.log_info(f"快速刷压制：启动{slot}循环。")
+        self.info_set("状态", "刷压制等级运行中。")
+        self.log_info(f"刷压制等级：启动{slot}循环。")
         self.sleep(1.0)
 
         completed_cycles = 0
         while True:
             if not self._run_cycle(slot):
-                self.info_set("状态", "快速刷压制确认失败，任务结束。")
+                self.info_set("状态", "刷压制等级确认失败，任务结束。")
                 return False
             completed_cycles += 1
             self.info_set("完成循环数", completed_cycles)
-            self.log_info(f"快速刷压制：已完成 {completed_cycles} 个循环。")
+            self.log_info(f"刷压制等级：已完成 {completed_cycles} 个循环。")
 
     def _run_cycle(self, slot: str) -> bool:
         suppression_point = SUPPRESSION_POINTS[slot]
@@ -134,13 +134,13 @@ class QuickSuppressionTask(BaseBD2Task):
 
         self.sleep(2.0)
         frame = self.capture_frame()
-        text = self._ocr_text(frame, name=f"快速刷压制_{chapter_name}")
+        text = self._ocr_text(frame, name=f"刷压制等级_{chapter_name}")
         self.info_set("卡带确认 OCR", text or "-")
         if self._contains_notice(text):
-            self.log_info(f"快速刷压制：已确认进入{chapter_name}新卡带。")
+            self.log_info(f"刷压制等级：已确认进入{chapter_name}新卡带。")
             return True
 
-        self.log_info(f"快速刷压制：{chapter_name}未识别到“{NEW_CARTRIDGE_NOTICE}”。")
+        self.log_info(f"刷压制等级：{chapter_name}未识别到“{NEW_CARTRIDGE_NOTICE}”。")
         return False
 
     def _wait_for_loading_cycle(self, chapter_name: str) -> bool:
@@ -153,7 +153,7 @@ class QuickSuppressionTask(BaseBD2Task):
                 break
             self.sleep(interval)
         else:
-            self.log_info(f"快速刷压制：切换{chapter_name}时未检测到加载画面。")
+            self.log_info(f"刷压制等级：切换{chapter_name}时未检测到加载画面。")
             return False
 
         disappear_end = monotonic() + float(self.config.get("loading 消失等待秒数", 45.0))
@@ -164,7 +164,7 @@ class QuickSuppressionTask(BaseBD2Task):
                 return True
             self.sleep(interval)
 
-        self.log_info(f"快速刷压制：切换{chapter_name}后加载画面未在限定时间内消失。")
+        self.log_info(f"刷压制等级：切换{chapter_name}后加载画面未在限定时间内消失。")
         return False
 
     def _loading_score(self, frame) -> float:
@@ -199,7 +199,7 @@ class QuickSuppressionTask(BaseBD2Task):
 
         source = cv2.imread(str(TEMPLATE_PATH), cv2.IMREAD_UNCHANGED)
         if source is None:
-            raise RuntimeError(f"快速刷压制模板不存在或无法读取：{TEMPLATE_PATH}")
+            raise RuntimeError(f"刷压制等级模板不存在或无法读取：{TEMPLATE_PATH}")
         self._loading_template = self._to_gray(source)
         return self._loading_template
 
