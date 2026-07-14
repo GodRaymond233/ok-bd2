@@ -14,6 +14,7 @@ class ProjectStructureTest(unittest.TestCase):
             "requirements.txt",
             "src/config.py",
             "src/tasks/DailyTask.py",
+            "src/tasks/BargainLevelTask.py",
             "src/tasks/QuickSuppressionTask.py",
             "src/tasks/MapTradeTask.py",
             "src/tasks/MapCollectionTask.py",

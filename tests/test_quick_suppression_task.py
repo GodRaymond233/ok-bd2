@@ -30,7 +30,12 @@ class QuickSuppressionTaskTest(unittest.TestCase):
             ["4号位", "5号位"],
             task.config_type["刷几号位"]["options"],
         )
-        self.assertEqual("该功能需要在第一章主线关卡内启动。", task.description)
+        self.assertEqual("刷压制等级", task.name)
+        self.assertEqual(
+            "在第一章战斗地图中开始，同时要求第二章也处于战斗地图中",
+            task.description,
+        )
+        self.assertEqual("自动刷级", task.group_name)
 
     def test_reference_points_are_stored_as_ratios(self):
         self.assertEqual((1680 / 1920, 740 / 1080), SUPPRESSION_POINTS["4号位"])
