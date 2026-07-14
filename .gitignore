@@ -1,4 +1,5 @@
 # Local secrets and runtime data
+/AGENTS.md
 my_key.txt
 pyappify_build/
 pyappify_dist/
