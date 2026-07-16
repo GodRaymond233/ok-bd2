@@ -9,7 +9,10 @@ import numpy as np
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task, green_mask_from_template
-from src.utils.template_resolution import offline_template_scale
+from src.utils.template_resolution import (
+    offline_template_requires_green_mask,
+    offline_template_scale,
+)
 
 REFERENCE_WIDTH = 1920
 REFERENCE_HEIGHT = 1080
@@ -681,7 +684,8 @@ class SquareGoddessTask(BaseBD2Task):
         if raw is None:
             raise RuntimeError(f"广场女神像模板不存在或无法读取：{path}")
 
-        mask = green_mask_from_template(raw) if spec.green_mask else None
+        use_green_mask = spec.green_mask or offline_template_requires_green_mask(spec.file_name)
+        mask = green_mask_from_template(raw) if use_green_mask else None
         template = self._to_gray(raw)
         if mask is not None and np.count_nonzero(mask) == mask.size:
             mask = None
@@ -995,7 +999,7 @@ class SquareGoddessTask(BaseBD2Task):
 
 LOADING_TEMPLATE = SquareTemplateSpec(
     name="loading",
-    file_name="loading.png",
+    file_name="image/UI_loading_black.png",
     threshold_key="加载页面阈值",
     default_threshold=0.72,
 )
@@ -1009,7 +1013,7 @@ HOME_TEMPLATE = SquareTemplateSpec(
 
 HOME_ICE_TEMPLATE = SquareTemplateSpec(
     name="home_ice",
-    file_name="MainHomeIceGE.png",
+    file_name="image/green/MainHomeIceGE.png",
     threshold_key="主页亮度比例阈值",
     default_threshold=0.75,
     green_mask=True,
@@ -1017,7 +1021,7 @@ HOME_ICE_TEMPLATE = SquareTemplateSpec(
 
 HOME_RICE_TEMPLATE = SquareTemplateSpec(
     name="home_rice",
-    file_name="MainHomeRIceGE.png",
+    file_name="image/green/MainHomeRIceGE.png",
     threshold_key="主页亮度比例阈值",
     default_threshold=0.75,
     green_mask=True,

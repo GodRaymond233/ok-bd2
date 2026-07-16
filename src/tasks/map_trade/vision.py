@@ -17,7 +17,10 @@ from src.tasks.map_trade.models import (
     MatchResult,
     TemplateSpec,
 )
-from src.utils.template_resolution import offline_template_scale
+from src.utils.template_resolution import (
+    offline_template_requires_green_mask,
+    offline_template_scale,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 TEMPLATE_DIR = PROJECT_ROOT / "offline-train" / "train-source-screenshots"
@@ -117,7 +120,8 @@ class Vision:
         raw = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
         if raw is None:
             raise RuntimeError(f"跑图跑商模板不存在或无法读取：{path}")
-        mask = green_mask_from_template(raw) if spec.green_mask else None
+        use_green_mask = spec.green_mask or offline_template_requires_green_mask(spec.file_name)
+        mask = green_mask_from_template(raw) if use_green_mask else None
         if raw.ndim == 2:
             gray = raw
         elif raw.shape[2] == 4:

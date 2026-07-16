@@ -7,7 +7,10 @@ import numpy as np
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task
-from src.utils.template_resolution import offline_template_scale
+from src.utils.template_resolution import (
+    offline_template_requires_green_mask,
+    offline_template_scale,
+)
 
 REFERENCE_WIDTH = 1920
 REFERENCE_HEIGHT = 1080
@@ -124,21 +127,26 @@ class AutoLoginTask(BaseBD2Task):
         self._set_action("自动登录已启用，等待启动游戏后的画面识别。")
 
     def enable(self):
+        was_enabled = self._enabled
         super().enable()
         self.config["_enabled"] = True
+        if not was_enabled and self._finished:
+            self._reset_login_state("自动登录已重新启用，等待启动游戏后的画面识别。")
 
     def disable(self):
         super().disable()
         self.config["_enabled"] = False
 
-    def run(self):
-        frame = self.capture_frame()
-
+    def should_trigger(self):
         if self._finished:
-            if self._home_brightness_ratio(frame) >= self._home_ratio_threshold():
-                self._set_stage("已完成")
-                return False
-            self._reset_login_state()
+            return False
+        return super().should_trigger()
+
+    def run(self):
+        if self._finished:
+            return False
+
+        frame = self.capture_frame()
 
         if self._state == "browndustx":
             return self._wait_browndustx_then_login(frame)
@@ -531,7 +539,7 @@ class AutoLoginTask(BaseBD2Task):
             else:
                 template = cv2.cvtColor(source, cv2.COLOR_BGR2GRAY)
 
-            if spec.green_mask:
+            if spec.green_mask or offline_template_requires_green_mask(spec.file_name):
                 color = source[:, :, :3]
                 green_pixels = (
                     (color[:, :, 0] <= 4)
@@ -598,7 +606,7 @@ class AutoLoginTask(BaseBD2Task):
         self.info_set("BrownDustX Confirm 点击", f"{x},{y}")
         self.operate_click(x, y, after_sleep=after_sleep)
 
-    def _reset_login_state(self):
+    def _reset_login_state(self, action: str = "重新进入自动登录识别。"):
         self._state = "waiting"
         self._home_bright_since = None
         self._login_clicked_at = None
@@ -606,7 +614,7 @@ class AutoLoginTask(BaseBD2Task):
         self._last_clear_click_at = 0.0
         self._finished = False
         self._set_stage("等待登录页")
-        self._set_action("主页状态变化，重新进入自动登录识别。")
+        self._set_action(action)
 
     def _set_stage(self, stage: str) -> None:
         self.info_set("阶段", stage)
@@ -744,7 +752,7 @@ HOME_BUTTON_TEMPLATE = TemplateSpec(
 
 HOME_BUTTON_ICE_TEMPLATE = TemplateSpec(
     name="home_button_ice",
-    file_name="MainHomeIceGE.png",
+    file_name="image/green/MainHomeIceGE.png",
     threshold_key="小屋按钮阈值",
     default_threshold=0.78,
     green_mask=True,
@@ -752,7 +760,7 @@ HOME_BUTTON_ICE_TEMPLATE = TemplateSpec(
 
 HOME_BUTTON_RICE_TEMPLATE = TemplateSpec(
     name="home_button_rice",
-    file_name="MainHomeRIceGE.png",
+    file_name="image/green/MainHomeRIceGE.png",
     threshold_key="小屋按钮阈值",
     default_threshold=0.78,
     green_mask=True,

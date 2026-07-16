@@ -23,7 +23,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 CALENDAR_DIR = PROJECT_ROOT / "assets" / "map_trade"
 STAR_TEMPLATE = TemplateSpec("收藏星标", "image/Shop/star_gray.png", 0.70, roi=(390, 93, 735, 529))
 COOK_SUBMENU_TEMPLATE = TemplateSpec(
-    "料理子菜单", "image/UI_cooking_submenu.png", 0.72, roi=(670, 540, 230, 180)
+    "料理子菜单",
+    "image/green/UI_cooking_submenu.png",
+    0.72,
+    roi=(670, 540, 230, 180),
 )
 SELL_TYPE_TEMPLATE = TemplateSpec("出售排序类型", "image/UI_Selltype_0.png", 0.72)
 

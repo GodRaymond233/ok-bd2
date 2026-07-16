@@ -61,6 +61,7 @@ update.bat
 
 # Tests
 tests/.tmp/
+/scripts/test_quick_switch_templates.py
 
 # OS
 Thumbs.db
@@ -70,3 +71,5 @@ Desktop.ini
 *.mp4
 *.avi
 *.mov
+/offline-train/train-source-screenshots/QQ????????-??????.png
+/offline-train/train-source-screenshots/*.mp4_*.png

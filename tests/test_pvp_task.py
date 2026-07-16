@@ -1,4 +1,6 @@
 import unittest
+from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -6,18 +8,28 @@ import numpy as np
 from src.tasks.PVPTask import (
     ENTRY_REFERENCE_HEIGHT,
     ENTRY_REFERENCE_WIDTH,
+    GAMEPLAY_CARTRIDGE_POINT,
+    HOME_ICE_TEMPLATE,
+    HOME_RICE_TEMPLATE,
     PVP_BACK_HOME_REFERENCE_POINT,
+    PVP_CARTRIDGE_SLOT_POINT,
     PVP_CONFIRM_BUTTON_SCREEN_ROI,
+    PVP_FAILURE_LEAVE_REFERENCE_POINT,
+    PVP_FAILURE_LEAVE_REFERENCE_ROI,
     PVP_HUB_NOTICE_SCREEN_ROI,
     PVP_HUB_NOTICE_TEMPLATE,
-    PVP_LEAVE_BUTTON_SCREEN_POINT,
-    PVP_LEAVE_SCREEN_ROI,
+    PVP_LOC_RESET_TEMPLATE,
     PVP_MEDALS_TEMPLATE,
-    PVP_QUICK_SWITCH_POINT,
+    PVP_NO_FIND_TEMPLATES,
     PVP_RANK_DROP_CONFIRM_SCREEN_POINT,
     PVP_RESULT_CLOSE_SCREEN_POINT,
     PVP_RESULT_SCREEN_ROI,
+    PVP_STAGE_CLICK_REFERENCE_OFFSET,
+    PVP_STAGE_TEMPLATE,
+    PVP_SUCCESS_LEAVE_REFERENCE_POINT,
+    PVP_SUCCESS_LEAVE_REFERENCE_ROI,
     QUICK_PACK_TEMPLATE,
+    QUICK_SWITCH_PAGE_PATTERNS,
     REFERENCE_HEIGHT,
     REFERENCE_WIDTH,
     PVPTask,
@@ -60,9 +72,94 @@ class PVPTaskHelperTest(unittest.TestCase):
         self.assertEqual(1.0, calls["after_sleep"])
 
     def test_quick_pack_uses_requested_template(self):
-        self.assertEqual("image/UI_QuickPack_GE.png", QUICK_PACK_TEMPLATE.file_name)
+        self.assertEqual("image/green/BusinQuickIcoGE.png", QUICK_PACK_TEMPLATE.file_name)
         self.assertEqual("快速切换按钮阈值", QUICK_PACK_TEMPLATE.threshold_key)
         self.assertTrue(QUICK_PACK_TEMPLATE.green_mask)
+        self.assertEqual((0.25, 0.85, 0.65, 1.0), QUICK_PACK_TEMPLATE.relative_roi)
+        self.assertIn(0.80, QUICK_PACK_TEMPLATE.scale_ratios)
+        self.assertEqual(0.72, QUICK_PACK_TEMPLATE.min_pixel_score)
+
+        task = object.__new__(PVPTask)
+        task._templates = {}
+        unflagged_spec = replace(QUICK_PACK_TEMPLATE, green_mask=False)
+        _template, mask = PVPTask._load_template(task, unflagged_spec)
+        self.assertIsNotNone(mask)
+        self.assertGreater(mask.size, int(np.count_nonzero(mask)))
+
+    def test_quick_pack_clicks_recognized_center(self):
+        task = object.__new__(PVPTask)
+        task.config = {"快速切换按钮阈值": 0.78}
+        task.info_set = lambda *_args, **_kwargs: None
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task._match = lambda _frame, _spec: SimpleNamespace(
+            score=0.90,
+            pixel_score=0.80,
+            position=(815, 962),
+            size=(74, 59),
+        )
+        clicks = []
+        task._click_client = lambda x, y, width, height, after_sleep=0.0: clicks.append(
+            (x, y, width, height, after_sleep)
+        )
+
+        self.assertTrue(
+            PVPTask._click_template_until(
+                task,
+                QUICK_PACK_TEMPLATE,
+                timeout=0.0,
+                name="快速切换按钮",
+            )
+        )
+        self.assertEqual([(852, 991, 1920, 1080, 0.0)], clicks)
+
+    def test_template_click_scales_reference_offset_with_client_resolution(self):
+        task = object.__new__(PVPTask)
+        task.config = {"PVP 舞台阈值": 0.72}
+        task.info_set = lambda *_args, **_kwargs: None
+        task.capture_frame = lambda: np.zeros((720, 1280, 3), dtype=np.uint8)
+        task._match = lambda _frame, _spec: SimpleNamespace(
+            score=0.98,
+            pixel_score=0.97,
+            position=(492, 474),
+            size=(76, 19),
+        )
+        clicks = []
+        task._click_client = lambda x, y, width, height, after_sleep=0.0: clicks.append(
+            (x, y, width, height, after_sleep)
+        )
+
+        self.assertTrue(
+            PVPTask._click_template_until(
+                task,
+                PVP_STAGE_TEMPLATE,
+                timeout=0.0,
+                name="PVP 舞台",
+                target_reference_offset=PVP_STAGE_CLICK_REFERENCE_OFFSET,
+            )
+        )
+        self.assertEqual([(530, 433, 1280, 720, 0.0)], clicks)
+
+    def test_quick_pack_requires_pixel_similarity(self):
+        task = object.__new__(PVPTask)
+        task.config = {"快速切换按钮阈值": 0.78}
+
+        low_pixel = SimpleNamespace(score=0.95, pixel_score=0.60)
+        valid = SimpleNamespace(score=0.90, pixel_score=0.80)
+
+        self.assertFalse(PVPTask._passes(task, low_pixel, QUICK_PACK_TEMPLATE))
+        self.assertTrue(PVPTask._passes(task, valid, QUICK_PACK_TEMPLATE))
+
+    def test_relative_roi_uses_frame_ratios(self):
+        frame = np.arange(1080 * 1920, dtype=np.int32).reshape((1080, 1920))
+
+        left, top, crop = PVPTask._relative_roi_frame(
+            frame,
+            QUICK_PACK_TEMPLATE.relative_roi,
+        )
+
+        self.assertEqual((480, 918), (left, top))
+        self.assertEqual((162, 768), crop.shape)
+        np.testing.assert_array_equal(crop, frame[918:1080, 480:1248])
 
     def test_crop_reference_scales_roi_to_frame_size(self):
         frame = np.arange(720 * 1280, dtype=np.int32).reshape((720, 1280))
@@ -88,14 +185,17 @@ class PVPTaskHelperTest(unittest.TestCase):
         task = object.__new__(PVPTask)
         calls = []
         task.operate_click = lambda x, y, after_sleep=0: calls.append((x, y, after_sleep))
+        stages = []
 
         self.assertTrue(
             task.open_cartridge_quick_switcher(
-                ensure_home=lambda: True,
-                click_quick_switch=lambda: True,
+                ensure_home=lambda: stages.append("home") or True,
+                click_quick_switch=lambda: stages.append("click") or True,
+                confirm_quick_switch_page=lambda: stages.append("confirm") or True,
             )
         )
         self.assertEqual([(0.7875, 0.9111111111111111, 1.0)], calls)
+        self.assertEqual(["home", "click", "confirm"], stages)
 
     def test_common_cartridge_entry_stops_when_home_is_not_confirmed(self):
         task = object.__new__(PVPTask)
@@ -105,8 +205,49 @@ class PVPTaskHelperTest(unittest.TestCase):
             task.open_cartridge_quick_switcher(
                 ensure_home=lambda: False,
                 click_quick_switch=lambda: self.fail("quick switch must not be searched"),
+                confirm_quick_switch_page=lambda: self.fail("page must not be confirmed"),
             )
         )
+
+    def test_common_cartridge_entry_stops_when_quick_switch_click_fails(self):
+        task = object.__new__(PVPTask)
+        task.operate_click = lambda *_args, **_kwargs: None
+
+        self.assertFalse(
+            task.open_cartridge_quick_switcher(
+                ensure_home=lambda: True,
+                click_quick_switch=lambda: False,
+                confirm_quick_switch_page=lambda: self.fail("page must not be confirmed"),
+            )
+        )
+
+    def test_quick_switch_page_requires_all_three_ocr_labels(self):
+        task = object.__new__(PVPTask)
+        task.config = {"卡带选择页确认等待秒数": 1.0}
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        texts = ["最近 剧情游戏卡", "最近 剧情游戏卡 玩法游戏卡"]
+        task._ocr_text = lambda *_args, **_kwargs: texts.pop(0)
+        sleeps = []
+        task.sleep = lambda seconds: sleeps.append(seconds)
+
+        self.assertTrue(PVPTask._wait_for_quick_switch_page(task))
+        self.assertEqual([0.5], sleeps)
+        self.assertEqual((r"最近", r"剧情游戏卡", r"玩法游戏卡"), QUICK_SWITCH_PAGE_PATTERNS)
+
+    def test_quick_switch_page_timeout_stops_entry(self):
+        task = object.__new__(PVPTask)
+        task.config = {"卡带选择页确认等待秒数": 0.0}
+        task.info_set = lambda *_args, **_kwargs: None
+        logs = []
+        task.log_info = lambda message: logs.append(message)
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task._ocr_text = lambda *_args, **_kwargs: "最近 剧情游戏卡"
+        task.sleep = lambda *_args, **_kwargs: None
+
+        self.assertFalse(PVPTask._wait_for_quick_switch_page(task))
+        self.assertIn("未确认卡带选择页", logs[0])
 
     def test_cartridge_home_requires_button_and_brightness(self):
         task = object.__new__(PVPTask)
@@ -127,21 +268,91 @@ class PVPTaskHelperTest(unittest.TestCase):
         task._home_brightness_ratio = lambda _frame: 0.80
         self.assertTrue(PVPTask._wait_for_cartridge_home(task))
 
-    def test_pvp_entry_uses_relative_quick_switch_point(self):
+    def test_pvp_uses_fixed_first_gameplay_cartridge_slot(self):
+        self.assertEqual((152 / 1920, 970 / 1080), PVP_CARTRIDGE_SLOT_POINT)
+
+    def test_pvp_hub_uses_1920_roi_and_calibrated_template_scale(self):
+        self.assertEqual((793, 39, 340, 35), PVP_MEDALS_TEMPLATE.roi)
+        self.assertEqual(1.22, PVP_MEDALS_TEMPLATE.reference_scale)
+        self.assertEqual(0.88, PVP_MEDALS_TEMPLATE.min_pixel_score)
+        self.assertEqual(
+            [1.18, 1.2, 1.22, 1.25, 1.3],
+            PVPTask._candidate_scales(
+                PVP_MEDALS_TEMPLATE.reference_scale,
+                PVP_MEDALS_TEMPLATE.scale_ratios,
+            ),
+        )
+
+        frame = np.zeros((1078, 1918, 3), dtype=np.uint8)
+        left, top, crop = PVPTask._roi_frame(frame, PVP_MEDALS_TEMPLATE.roi)
+        self.assertEqual((792, 39), (left, top))
+        self.assertEqual((35, 340, 3), crop.shape)
+
+    def test_pvp_assets_use_image_folder(self):
+        template_root = Path("offline-train/train-source-screenshots")
+        specs = (
+            HOME_ICE_TEMPLATE,
+            HOME_RICE_TEMPLATE,
+            PVP_MEDALS_TEMPLATE,
+            PVP_STAGE_TEMPLATE,
+            PVP_LOC_RESET_TEMPLATE,
+            *PVP_NO_FIND_TEMPLATES,
+        )
+
+        for spec in specs:
+            self.assertTrue(spec.file_name.startswith("image/"), spec.file_name)
+            self.assertTrue((template_root / spec.file_name).is_file(), spec.file_name)
+
+    def test_pvp_entry_clicks_gameplay_then_fixed_first_slot(self):
         task = object.__new__(PVPTask)
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
         task.open_cartridge_quick_switcher = lambda **_kwargs: True
         clicks = []
+        sleeps = []
         task.operate_click = lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep))
-        task._wait_loading_if_present = lambda *_args, **_kwargs: None
-        task._confirm_rank_drop_if_present = lambda: None
-        task._wait_for_template = lambda *_args, **_kwargs: True
+        task.sleep = lambda seconds: sleeps.append(seconds)
+        task._click_template_until = lambda *_args, **_kwargs: self.fail(
+            "fixed PVP slot selection must not use template matching"
+        )
+        hub_waits = []
+        task._wait_for_pvp_hub_after_cart = lambda timeout: hub_waits.append(timeout) or True
         task._clear_pvp_hub_notice_if_present = lambda: None
         task.config = {}
 
         self.assertTrue(PVPTask._enter_pvp_from_home(task))
-        self.assertEqual([(*PVP_QUICK_SWITCH_POINT, 2.0)], clicks)
+        self.assertEqual([0.5], sleeps)
+        self.assertEqual(
+            [
+                (*GAMEPLAY_CARTRIDGE_POINT, 0.5),
+                (*PVP_CARTRIDGE_SLOT_POINT, 0.0),
+            ],
+            clicks,
+        )
+        self.assertEqual([30.0], hub_waits)
+
+    def test_pvp_entry_stops_when_hub_is_not_confirmed(self):
+        task = object.__new__(PVPTask)
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task.open_cartridge_quick_switcher = lambda **_kwargs: True
+        task.sleep = lambda *_args, **_kwargs: None
+        clicks = []
+        task.operate_click = lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep))
+        task._wait_for_pvp_hub_after_cart = lambda *_args, **_kwargs: False
+        task._clear_pvp_hub_notice_if_present = lambda: self.fail(
+            "hub notice must not be checked before the PVP hub is confirmed"
+        )
+        task.config = {}
+
+        self.assertFalse(PVPTask._enter_pvp_from_home(task))
+        self.assertEqual(
+            [
+                (*GAMEPLAY_CARTRIDGE_POINT, 0.5),
+                (*PVP_CARTRIDGE_SLOT_POINT, 0.0),
+            ],
+            clicks,
+        )
 
     def test_matches_any_normalizes_ocr_text(self):
         self.assertTrue(PVPTask._matches_any("战斗 开始", [r"战斗开始"]))
@@ -317,22 +528,45 @@ class PVPTaskHelperTest(unittest.TestCase):
 
         self.assertFalse(PVPTask._wait_result_and_leave(task, 1))
 
-    def test_confirm_rank_drop_clicks_confirm_after_delay(self):
+    def test_pvp_entry_wait_confirms_rank_drop_before_detecting_hub(self):
         task = object.__new__(PVPTask)
         task.info_set = lambda *_args, **_kwargs: None
         task.capture_frame = lambda: np.zeros((1440, 2560, 3), dtype=np.uint8)
         task._ocr_text = lambda *_args, **_kwargs: "段位下滑。 确认"
-        sleeps = []
         clicks = []
-        task.sleep = lambda seconds: sleeps.append(seconds)
         task._click_screen_reference = lambda x, y, after_sleep=0.0: clicks.append(
             (x, y, after_sleep)
         )
+        matched = []
+        task._match = lambda _frame, spec: matched.append(spec) or SimpleNamespace(score=0.9)
+        task._passes = lambda _result, spec: spec is PVP_MEDALS_TEMPLATE
+        task.sleep = lambda *_args, **_kwargs: self.fail(
+            "rank confirmation and hub detection should not add polling sleep"
+        )
 
-        PVPTask._confirm_rank_drop_if_present(task)
+        self.assertTrue(PVPTask._wait_for_pvp_hub_after_cart(task, timeout=1.0))
 
-        self.assertEqual([2.0], sleeps)
-        self.assertEqual([(*PVP_RANK_DROP_CONFIRM_SCREEN_POINT, 0.0)], clicks)
+        self.assertEqual([(*PVP_RANK_DROP_CONFIRM_SCREEN_POINT, 0.5)], clicks)
+        self.assertEqual([PVP_MEDALS_TEMPLATE], matched)
+
+    def test_pvp_entry_wait_keeps_ocr_active_until_hub_is_detected(self):
+        task = object.__new__(PVPTask)
+        task.info_set = lambda *_args, **_kwargs: None
+        task.capture_frame = lambda: np.zeros((1440, 2560, 3), dtype=np.uint8)
+        ocr_calls = []
+        task._ocr_text = lambda *_args, **_kwargs: ocr_calls.append(True) or "-"
+        scores = iter((0.1, 0.9))
+        task._match = lambda *_args, **_kwargs: SimpleNamespace(score=next(scores))
+        task._passes = lambda result, _spec: result.score >= 0.78
+        sleeps = []
+        task.sleep = lambda seconds: sleeps.append(seconds)
+        task._click_screen_reference = lambda *_args, **_kwargs: self.fail(
+            "rank confirmation must not be clicked without both OCR labels"
+        )
+
+        self.assertTrue(PVPTask._wait_for_pvp_hub_after_cart(task, timeout=1.0))
+        self.assertEqual(2, len(ocr_calls))
+        self.assertEqual([0.5], sleeps)
 
     def test_clear_pvp_hub_notice_clicks_notice_center_and_waits(self):
         task = object.__new__(PVPTask)
@@ -400,33 +634,59 @@ class PVPTaskHelperTest(unittest.TestCase):
         self.assertEqual(["PVP 返回主页"], loading_calls)
         self.assertEqual([20.0], home_calls)
 
-    def test_click_leave_button_uses_screen_reference_roi_and_point(self):
+    def test_click_leave_button_checks_both_regions_and_clicks_failure_target(self):
         task = object.__new__(PVPTask)
         task.config = {}
         task.info_set = lambda *_args, **_kwargs: None
-        task.capture_frame = lambda: np.zeros((1440, 2560, 3), dtype=np.uint8)
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
         ocr_calls = []
         clicks = []
 
         def fake_ocr(_frame, name, roi=None):
             ocr_calls.append((name, roi))
-            return "离开"
+            return "离开" if name == "pvp_leave_failure" else ""
 
         task._ocr_text = fake_ocr
-        task._click_screen_reference = lambda x, y, after_sleep=0.0: clicks.append(
+        task._click_reference = lambda x, y, after_sleep=0.0: clicks.append(
             (x, y, after_sleep)
         )
         task.sleep = lambda *_args, **_kwargs: None
 
         self.assertTrue(PVPTask._click_leave_button(task))
         self.assertEqual(
-            ("pvp_leave", PVPTask._screen_reference_roi_to_reference_roi(PVP_LEAVE_SCREEN_ROI)),
-            ocr_calls[0],
+            [
+                ("pvp_leave_failure", PVP_FAILURE_LEAVE_REFERENCE_ROI),
+                ("pvp_leave_success", PVP_SUCCESS_LEAVE_REFERENCE_ROI),
+            ],
+            ocr_calls,
         )
         self.assertEqual(
-            (*PVP_LEAVE_BUTTON_SCREEN_POINT, 2.0),
+            (*PVP_FAILURE_LEAVE_REFERENCE_POINT, 2.0),
             clicks[0],
         )
+
+    def test_click_leave_button_clicks_success_target(self):
+        task = object.__new__(PVPTask)
+        task.config = {}
+        task.info_set = lambda *_args, **_kwargs: None
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task._ocr_text = lambda _frame, name, roi=None: (
+            "离开" if name == "pvp_leave_success" else ""
+        )
+        clicks = []
+        task._click_reference = lambda x, y, after_sleep=0.0: clicks.append(
+            (x, y, after_sleep)
+        )
+        task.sleep = lambda *_args, **_kwargs: None
+
+        self.assertTrue(PVPTask._click_leave_button(task))
+        self.assertEqual([(*PVP_SUCCESS_LEAVE_REFERENCE_POINT, 2.0)], clicks)
+
+    def test_leave_targets_use_1920_reference_coordinates(self):
+        self.assertEqual((696, 952, 535, 87), PVP_FAILURE_LEAVE_REFERENCE_ROI)
+        self.assertEqual((1058, 996), PVP_FAILURE_LEAVE_REFERENCE_POINT)
+        self.assertEqual((1594, 987, 240, 66), PVP_SUCCESS_LEAVE_REFERENCE_ROI)
+        self.assertEqual((1707, 1021), PVP_SUCCESS_LEAVE_REFERENCE_POINT)
 
     def test_ensure_pvp_hub_after_leave_returns_when_hub_seen(self):
         task = object.__new__(PVPTask)
@@ -538,7 +798,13 @@ class PVPTaskHelperTest(unittest.TestCase):
         task.config = {}
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
-        task._click_template_until = lambda *_args, **_kwargs: True
+        template_clicks = []
+
+        def fake_click_template_until(*args, **kwargs):
+            template_clicks.append((args, kwargs))
+            return True
+
+        task._click_template_until = fake_click_template_until
         task._ensure_free_ap_enabled = lambda: True
         task._ensure_multiplier = lambda _multiplier: None
         task._select_max_battle_count = lambda: None
@@ -559,6 +825,10 @@ class PVPTaskHelperTest(unittest.TestCase):
         task._click_screen_reference = fake_click_screen_reference
 
         self.assertEqual("started", PVPTask._start_auto_battle(task, 1))
+        self.assertEqual(
+            PVP_STAGE_CLICK_REFERENCE_OFFSET,
+            template_clicks[0][1]["target_reference_offset"],
+        )
         self.assertIn((2026, 1291, 1.0), clicks)
         self.assertIn((1381, 1061, 10.0), clicks)
 
