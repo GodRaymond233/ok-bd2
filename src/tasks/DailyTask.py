@@ -7,7 +7,10 @@ import numpy as np
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task
-from src.utils.template_resolution import offline_template_scale
+from src.utils.template_resolution import (
+    offline_template_requires_green_mask,
+    offline_template_scale,
+)
 
 REFERENCE_WIDTH = 1920
 REFERENCE_HEIGHT = 1080
@@ -671,7 +674,7 @@ class DailyTask(BaseBD2Task):
             else:
                 template = cv2.cvtColor(source, cv2.COLOR_BGR2GRAY)
 
-            if spec.green_mask:
+            if spec.green_mask or offline_template_requires_green_mask(spec.file_name):
                 color = source[:, :, :3]
                 green_pixels = (
                     (color[:, :, 0] <= 4)
@@ -783,7 +786,7 @@ GUILD_TEMPLATE = DailyTemplateSpec(
 
 GUILD_MAIN_ACTIVE_TEMPLATE = DailyTemplateSpec(
     name="guild_main_active",
-    file_name="MainBotmUnionAcGE.png",
+    file_name="image/green/MainBotmUnionAcGE.png",
     threshold_key="公会入口阈值",
     default_threshold=0.78,
     green_mask=True,
@@ -798,7 +801,7 @@ GUILD_FINISHED_TEMPLATE = DailyTemplateSpec(
 
 GUILD_MAIN_FINISHED_TEMPLATE = DailyTemplateSpec(
     name="guild_main_finished",
-    file_name="MainBotmUnionGE.png",
+    file_name="image/green/MainBotmUnionGE.png",
     threshold_key="公会入口阈值",
     default_threshold=0.78,
     green_mask=True,
@@ -841,7 +844,7 @@ HOME_TEMPLATE = DailyTemplateSpec(
 
 HOME_ICE_TEMPLATE = DailyTemplateSpec(
     name="home_ice",
-    file_name="MainHomeIceGE.png",
+    file_name="image/green/MainHomeIceGE.png",
     threshold_key="主页亮度比例阈值",
     default_threshold=0.75,
     green_mask=True,
@@ -849,7 +852,7 @@ HOME_ICE_TEMPLATE = DailyTemplateSpec(
 
 HOME_RICE_TEMPLATE = DailyTemplateSpec(
     name="home_rice",
-    file_name="MainHomeRIceGE.png",
+    file_name="image/green/MainHomeRIceGE.png",
     threshold_key="主页亮度比例阈值",
     default_threshold=0.75,
     green_mask=True,

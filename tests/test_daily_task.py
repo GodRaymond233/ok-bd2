@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 
 import numpy as np
 
@@ -194,18 +195,19 @@ class DailyTaskHelperTest(unittest.TestCase):
         self.assertTrue(DailyTask.run_guild_sign_in(task))
         self.assertEqual([(370, 155), (100, 50)], clicks)
 
-    def test_new_main_templates_use_root_assets_and_green_mask(self):
+    def test_new_main_templates_use_720p_assets_and_green_mask(self):
         task = object.__new__(DailyTask)
         task._templates = {}
         task._template_masks = {}
 
-        for spec in (
+        for original_spec in (
             GUILD_MAIN_ACTIVE_TEMPLATE,
             GUILD_MAIN_FINISHED_TEMPLATE,
             HOME_ICE_TEMPLATE,
             HOME_RICE_TEMPLATE,
         ):
-            self.assertNotIn("image/", spec.file_name)
+            spec = replace(original_spec, green_mask=False)
+            self.assertTrue(spec.file_name.startswith("image/green/"))
             template = DailyTask._load_template(task, spec)
             mask = DailyTask._load_template_mask(task, spec)
             self.assertEqual(template.shape, mask.shape)

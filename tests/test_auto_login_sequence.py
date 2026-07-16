@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 from time import monotonic
 
 import numpy as np
@@ -120,6 +121,21 @@ class AutoLoginSequenceTest(unittest.TestCase):
             calls,
         )
 
+    def test_finished_task_is_not_scheduled_or_captured_again(self):
+        task = self._task()
+        task._finished = True
+        task.trigger_interval = 0
+        task.capture_frame = lambda: self.fail("finished auto-login must not capture")
+
+        self.assertFalse(AutoLoginTask.should_trigger(task))
+        self.assertFalse(AutoLoginTask.run(task))
+
+    def test_unfinished_task_remains_schedulable(self):
+        task = self._task()
+        task.trigger_interval = 0
+
+        self.assertTrue(AutoLoginTask.should_trigger(task))
+
     def test_browndustx_pixel_match_keeps_confirm_detection_active(self):
         task = self._task()
         task._state = "waiting"
@@ -174,13 +190,14 @@ class AutoLoginSequenceTest(unittest.TestCase):
 
         self.assertEqual([(1120, 840, 1.0)], clicks)
 
-    def test_home_button_templates_use_root_assets_and_green_mask(self):
+    def test_home_button_templates_use_720p_assets_and_green_mask(self):
         task = self._task()
         task._templates = {}
         task._template_masks = {}
 
-        for spec in HOME_BUTTON_TEMPLATES[1:]:
-            self.assertNotIn("image/", spec.file_name)
+        for original_spec in HOME_BUTTON_TEMPLATES[1:]:
+            spec = replace(original_spec, green_mask=False)
+            self.assertTrue(spec.file_name.startswith("image/green/"))
             template = AutoLoginTask._load_template(task, spec)
             mask = AutoLoginTask._load_template_mask(task, spec)
             self.assertEqual(template.shape, mask.shape)

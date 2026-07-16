@@ -9,7 +9,10 @@ import numpy as np
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task, green_mask_from_template
-from src.utils.template_resolution import offline_template_scale
+from src.utils.template_resolution import (
+    offline_template_requires_green_mask,
+    offline_template_scale,
+)
 
 REFERENCE_WIDTH = 1920
 REFERENCE_HEIGHT = 1080
@@ -20,14 +23,19 @@ ENTRY_REFERENCE_HEIGHT = 1440
 FREE_AP_SWITCH_SCREEN_ROI = (1680, 535, 120, 55)
 PVP_RESULT_SCREEN_ROI = (932, 368, 699, 704)
 PVP_RESULT_CLOSE_SCREEN_POINT = (1585, 410)
-PVP_LEAVE_SCREEN_ROI = (928, 1269, 713, 116)
-PVP_LEAVE_BUTTON_SCREEN_POINT = (1411, 1328)
+PVP_FAILURE_LEAVE_REFERENCE_ROI = (696, 952, 535, 87)
+PVP_FAILURE_LEAVE_REFERENCE_POINT = (1058, 996)
+PVP_SUCCESS_LEAVE_REFERENCE_ROI = (1594, 987, 240, 66)
+PVP_SUCCESS_LEAVE_REFERENCE_POINT = (1707, 1021)
 PVP_CONFIRM_BUTTON_SCREEN_ROI = (1108, 1297, 349, 92)
 PVP_BACK_HOME_REFERENCE_POINT = (100, 54)
 PVP_RANK_DROP_CONFIRM_SCREEN_POINT = (960, 1006)
 PVP_HUB_NOTICE_SCREEN_ROI = (1381, 865, 62, 45)
-PVP_QUICK_SWITCH_POINT = (0.078125, 0.899074074074074)
+GAMEPLAY_CARTRIDGE_POINT = (988 / REFERENCE_WIDTH, 876 / REFERENCE_HEIGHT)
+PVP_CARTRIDGE_SLOT_POINT = (152 / REFERENCE_WIDTH, 970 / REFERENCE_HEIGHT)
+PVP_STAGE_CLICK_REFERENCE_OFFSET = (0, -75)
 PVP_RESULT_BASE_MINUTES = 20.0
+QUICK_SWITCH_PAGE_PATTERNS = (r"最近", r"剧情游戏卡", r"玩法游戏卡")
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_DIR = PROJECT_ROOT / "offline-train" / "train-source-screenshots"
 
@@ -39,7 +47,11 @@ class PVPTemplateSpec:
     threshold_key: str
     default_threshold: float
     roi: tuple[int, int, int, int] | None = None
+    relative_roi: tuple[float, float, float, float] | None = None
     green_mask: bool = False
+    reference_scale: float | None = None
+    scale_ratios: tuple[float, ...] = (1.0,)
+    min_pixel_score: float | None = None
 
 
 @dataclass(frozen=True)
@@ -59,6 +71,8 @@ class PVPTask(BaseBD2Task):
         "主页小屋按钮",
         "主页亮度",
         "快速切换按钮",
+        "卡带选择页 OCR",
+        "卡带选择页 OCR 命中",
         "PVP 箱庭",
         "PVP 段位下滑 OCR",
         "PVP 箱庭感叹号",
@@ -108,6 +122,7 @@ class PVPTask(BaseBD2Task):
                 "PVP OCR 阈值": 0.2,
                 "主页确认等待秒数": 10.0,
                 "快速卡带等待秒数": 10.0,
+                "卡带选择页确认等待秒数": 10.0,
                 "PVP 入场等待秒数": 30.0,
                 "PVP 菜单等待秒数": 12.0,
                 "PVP 战斗开始等待秒数": 30.0,
@@ -137,7 +152,10 @@ class PVPTask(BaseBD2Task):
                 "PVP 返回箱庭等待秒数": "离开结算后等待回到 PVP 箱庭的最长时间。",
                 "PVP 返回主页等待秒数": "从 PVP 箱庭返回主页后的主页确认最长时间。",
                 "主页小屋按钮阈值": "进入卡带前确认主页小屋按钮存在的模板匹配阈值。",
-                "快速切换按钮阈值": "识别 UI_QuickPack_GE.png 快速切换按钮的模板匹配阈值。",
+                "快速切换按钮阈值": "识别 BusinQuickIcoGE.png 快速切换按钮的模板匹配阈值。",
+                "卡带选择页确认等待秒数": (
+                    "点击快速切换按钮后，等待 OCR 同时识别最近、剧情游戏卡和玩法游戏卡的时限。"
+                ),
                 "PVP 箱庭感叹号阈值": "进入 PVP 箱庭后识别 tanhaoGE.png 的模板匹配阈值。",
             }
         )
@@ -212,23 +230,49 @@ class PVPTask(BaseBD2Task):
                 name="快速切换按钮",
                 after_sleep=0.0,
             ),
+            confirm_quick_switch_page=self._wait_for_quick_switch_page,
         ):
             self.log_info("镜中之战：未能从主页打开卡带快速切换页面。")
             return False
 
-        self.info_set("当前阶段", "选择 PVP 卡带")
-        self.operate_click(*PVP_QUICK_SWITCH_POINT, after_sleep=2.0)
+        self.info_set("当前阶段", "选择玩法游戏卡")
+        self.sleep(0.5)
+        self.operate_click(*GAMEPLAY_CARTRIDGE_POINT, after_sleep=0.5)
 
-        self._wait_loading_if_present("PVP 入场")
-        self._confirm_rank_drop_if_present()
-        if self._wait_for_template(
-            PVP_MEDALS_TEMPLATE,
+        self.info_set("当前阶段", "选择 PVP 卡带1号位")
+        self.operate_click(*PVP_CARTRIDGE_SLOT_POINT, after_sleep=0.0)
+
+        if self._wait_for_pvp_hub_after_cart(
             timeout=float(self.config.get("PVP 入场等待秒数", 30.0)),
-            name="PVP 箱庭",
         ):
             self._clear_pvp_hub_notice_if_present()
             return True
 
+        return False
+
+    def _wait_for_quick_switch_page(self, interval: float = 0.5) -> bool:
+        self.info_set("当前阶段", "确认卡带选择页")
+        end_at = monotonic() + float(self.config.get("卡带选择页确认等待秒数", 10.0))
+        last_text = ""
+        while monotonic() <= end_at:
+            frame = self.capture_frame()
+            text = self._ocr_text(frame, name="卡带选择页")
+            last_text = text or last_text
+            match_count = self._ocr_pattern_match_count(text, list(QUICK_SWITCH_PAGE_PATTERNS))
+            self.info_set("卡带选择页 OCR", text or "-")
+            self.info_set(
+                "卡带选择页 OCR 命中",
+                f"{match_count}/{len(QUICK_SWITCH_PAGE_PATTERNS)}",
+            )
+            if match_count == len(QUICK_SWITCH_PAGE_PATTERNS):
+                return True
+            self.sleep(interval)
+
+        self.info_set("卡带选择页 OCR", last_text or "-")
+        self.log_info(
+            "镜中之战：点击快速切换按钮后未确认卡带选择页，"
+            f"OCR={last_text or '-'}。"
+        )
         return False
 
     def _wait_for_cartridge_home(self, interval: float = 0.35) -> bool:
@@ -259,15 +303,49 @@ class PVPTask(BaseBD2Task):
         )
         return False
 
-    def _confirm_rank_drop_if_present(self) -> None:
-        frame = self.capture_frame()
-        text = self._ocr_text(frame, "PVP 段位下滑")
-        self.info_set("PVP 段位下滑 OCR", text or "-")
-        if self._ocr_pattern_match_count(text, [r"段位下滑", r"确认"]) < 2:
-            return
+    def _wait_for_pvp_hub_after_cart(
+        self,
+        timeout: float,
+        interval: float = 0.5,
+    ) -> bool:
+        """Continuously handle rank-drop OCR before accepting the PVP hub."""
+        end_at = monotonic() + max(0.0, timeout)
+        rank_drop_confirmed = False
+        last_text = ""
+        last_hub_score = -1.0
 
-        self.sleep(2.0)
-        self._click_screen_reference(*PVP_RANK_DROP_CONFIRM_SCREEN_POINT, after_sleep=0.0)
+        while monotonic() <= end_at:
+            frame = self.capture_frame()
+
+            if not rank_drop_confirmed:
+                text = self._ocr_text(frame, "PVP 段位下滑")
+                last_text = text or last_text
+                self.info_set("PVP 段位下滑 OCR", text or "-")
+                if self._ocr_pattern_match_count(text, [r"段位下滑", r"确认"]) >= 2:
+                    self.info_set("当前阶段", "确认段位下滑")
+                    self._click_screen_reference(
+                        *PVP_RANK_DROP_CONFIRM_SCREEN_POINT,
+                        after_sleep=0.5,
+                    )
+                    rank_drop_confirmed = True
+                    continue
+
+            self.info_set("当前阶段", "确认 PVP 箱庭")
+            hub = self._match(frame, PVP_MEDALS_TEMPLATE)
+            last_hub_score = hub.score
+            self.info_set("PVP 箱庭", f"{hub.score:.3f}")
+            if self._passes(hub, PVP_MEDALS_TEMPLATE):
+                return True
+
+            self.sleep(interval)
+
+        self.info_set("PVP 段位下滑 OCR", last_text or "-")
+        self.info_set("PVP 箱庭", f"{last_hub_score:.3f}")
+        self.log_info(
+            "镜中之战：点击 PVP 卡带后未确认进入 PVP 箱庭，"
+            f"hub={last_hub_score:.3f}, rank_drop_ocr={last_text or '-'}。"
+        )
+        return False
 
     def _clear_pvp_hub_notice_if_present(self) -> None:
         frame = self.capture_frame()
@@ -288,6 +366,7 @@ class PVPTask(BaseBD2Task):
             PVP_STAGE_TEMPLATE,
             timeout=12.0,
             name="PVP 舞台",
+            target_reference_offset=PVP_STAGE_CLICK_REFERENCE_OFFSET,
             after_sleep=3.0,
         ):
             self._recover_stage_position()
@@ -295,6 +374,7 @@ class PVPTask(BaseBD2Task):
                 PVP_STAGE_TEMPLATE,
                 timeout=8.0,
                 name="PVP 舞台",
+                target_reference_offset=PVP_STAGE_CLICK_REFERENCE_OFFSET,
                 after_sleep=3.0,
             ):
                 self.log_info("镜中之战：未找到 PVP 舞台物件。")
@@ -469,25 +549,35 @@ class PVPTask(BaseBD2Task):
         last_text = ""
         while monotonic() <= end_at:
             frame = self.capture_frame()
-            text = self._ocr_text(
-                frame,
-                "pvp_leave",
-                roi=self._screen_reference_roi_to_reference_roi(PVP_LEAVE_SCREEN_ROI),
+            targets = (
+                (
+                    "失败页",
+                    "pvp_leave_failure",
+                    PVP_FAILURE_LEAVE_REFERENCE_ROI,
+                    PVP_FAILURE_LEAVE_REFERENCE_POINT,
+                ),
+                (
+                    "成功页",
+                    "pvp_leave_success",
+                    PVP_SUCCESS_LEAVE_REFERENCE_ROI,
+                    PVP_SUCCESS_LEAVE_REFERENCE_POINT,
+                ),
             )
-            last_text = text or last_text
-            self.info_set("PVP 离开 OCR", text or "-")
-            if self._matches_any(text, [r"离开"]):
-                self._click_screen_reference(*PVP_LEAVE_BUTTON_SCREEN_POINT, after_sleep=2.0)
-                return True
+            ocr_results = []
+            matched_point = None
+            for page_name, ocr_name, roi, click_point in targets:
+                text = self._ocr_text(frame, ocr_name, roi=roi)
+                ocr_results.append((page_name, text))
+                if matched_point is None and self._matches_any(text, [r"离开"]):
+                    matched_point = click_point
 
-            fail_text = self._ocr_text(
-                frame,
-                "pvp_leave_fail",
-                roi=self._mf_roi(650, 600, 180, 110),
+            combined_text = " | ".join(
+                f"{page_name}:{text or '-'}" for page_name, text in ocr_results
             )
-            if self._matches_any(fail_text, [r"离开"]):
-                self.info_set("PVP 离开 OCR", fail_text)
-                self._click_screen_reference(1440, 1309, after_sleep=2.0)
+            last_text = combined_text or last_text
+            self.info_set("PVP 离开 OCR", combined_text or "-")
+            if matched_point is not None:
+                self._click_reference(*matched_point, after_sleep=2.0)
                 return True
 
             self.sleep(0.5)
@@ -632,6 +722,7 @@ class PVPTask(BaseBD2Task):
         name: str,
         target: tuple[int, int] | None = None,
         target_offset: tuple[int, int] = (0, 0),
+        target_reference_offset: tuple[int, int] = (0, 0),
         after_sleep: float = 0.0,
         interval: float = 0.35,
     ) -> bool:
@@ -646,9 +737,25 @@ class PVPTask(BaseBD2Task):
                 if target is not None:
                     self._click_reference(target[0], target[1], after_sleep=after_sleep)
                 else:
-                    x = result.position[0] + result.size[0] // 2 + target_offset[0]
-                    y = result.position[1] + result.size[1] // 2 + target_offset[1]
                     frame_height, frame_width = frame.shape[:2]
+                    reference_offset_x = round(
+                        target_reference_offset[0] * frame_width / REFERENCE_WIDTH
+                    )
+                    reference_offset_y = round(
+                        target_reference_offset[1] * frame_height / REFERENCE_HEIGHT
+                    )
+                    x = (
+                        result.position[0]
+                        + result.size[0] // 2
+                        + target_offset[0]
+                        + reference_offset_x
+                    )
+                    y = (
+                        result.position[1]
+                        + result.size[1] // 2
+                        + target_offset[1]
+                        + reference_offset_y
+                    )
                     self._click_client(x, y, frame_width, frame_height, after_sleep=after_sleep)
                 return True
             self.sleep(interval)
@@ -861,16 +968,23 @@ class PVPTask(BaseBD2Task):
 
         try:
             frame_gray = self._to_gray(frame)
-            roi_left, roi_top, roi_frame = self._roi_frame(frame_gray, spec.roi)
+            if spec.relative_roi is not None:
+                roi_left, roi_top, roi_frame = self._relative_roi_frame(
+                    frame_gray,
+                    spec.relative_roi,
+                )
+            else:
+                roi_left, roi_top, roi_frame = self._roi_frame(frame_gray, spec.roi)
             frame_height, frame_width = roi_frame.shape[:2]
             base_scale = offline_template_scale(
                 spec.file_name,
                 frame_gray.shape[1],
                 frame_gray.shape[0],
+                reference_scale=spec.reference_scale,
             )
             best = empty
 
-            for scale in self._candidate_scales(base_scale):
+            for scale in self._candidate_scales(base_scale, spec.scale_ratios):
                 scaled_template = self._resize_template(template, scale)
                 scaled_mask = self._resize_mask(mask, scale) if mask is not None else None
                 height, width = scaled_template.shape[:2]
@@ -879,6 +993,7 @@ class PVPTask(BaseBD2Task):
 
                 method = cv2.TM_CCORR_NORMED if scaled_mask is not None else cv2.TM_CCOEFF_NORMED
                 result = cv2.matchTemplate(roi_frame, scaled_template, method, mask=scaled_mask)
+                np.nan_to_num(result, copy=False, nan=-1.0, posinf=-1.0, neginf=-1.0)
                 _, max_value, _, max_location = cv2.minMaxLoc(result)
                 if max_value > best.score:
                     x, y = int(max_location[0]), int(max_location[1])
@@ -907,7 +1022,12 @@ class PVPTask(BaseBD2Task):
         template, mask = self._load_template(spec)
         frame_gray = self._to_gray(frame)
         frame_height, frame_width = frame_gray.shape[:2]
-        scale = offline_template_scale(spec.file_name, frame_width, frame_height)
+        scale = offline_template_scale(
+            spec.file_name,
+            frame_width,
+            frame_height,
+            reference_scale=spec.reference_scale,
+        )
         template_height, template_width = template.shape[:2]
         roi_width = max(8, round(template_width * scale))
         roi_height = max(8, round(template_height * scale))
@@ -952,7 +1072,8 @@ class PVPTask(BaseBD2Task):
         if raw is None:
             raise RuntimeError(f"PVP 模板不存在或无法读取：{path}")
 
-        mask = green_mask_from_template(raw) if spec.green_mask else None
+        use_green_mask = spec.green_mask or offline_template_requires_green_mask(spec.file_name)
+        mask = green_mask_from_template(raw) if use_green_mask else None
         template = self._to_gray(raw)
         if mask is not None and np.count_nonzero(mask) == mask.size:
             mask = None
@@ -962,7 +1083,11 @@ class PVPTask(BaseBD2Task):
 
     def _passes(self, result: PVPMatchResult, spec: PVPTemplateSpec) -> bool:
         threshold = float(self.config.get(spec.threshold_key, spec.default_threshold))
-        return result.score >= threshold
+        if result.score < threshold:
+            return False
+        if spec.min_pixel_score is None:
+            return True
+        return result.pixel_score >= spec.min_pixel_score
 
     def _ocr_text(
         self,
@@ -1284,8 +1409,11 @@ class PVPTask(BaseBD2Task):
         return multiplier if multiplier in {1, 4, 5, 10, 20, 40} else 1
 
     @staticmethod
-    def _candidate_scales(base_scale: float) -> list[float]:
-        return [round(max(0.2, base_scale), 3)]
+    def _candidate_scales(
+        base_scale: float,
+        scale_ratios: tuple[float, ...] = (1.0,),
+    ) -> list[float]:
+        return [round(max(0.2, base_scale * ratio), 3) for ratio in scale_ratios]
 
     @staticmethod
     def _resize_template(template: np.ndarray, scale: float) -> np.ndarray:
@@ -1345,6 +1473,18 @@ class PVPTask(BaseBD2Task):
         return left, top, frame[top:bottom, left:right]
 
     @staticmethod
+    def _relative_roi_frame(
+        frame: np.ndarray,
+        roi: tuple[float, float, float, float],
+    ) -> tuple[int, int, np.ndarray]:
+        height, width = frame.shape[:2]
+        left = max(0, min(width, round(width * roi[0])))
+        top = max(0, min(height, round(height * roi[1])))
+        right = max(left, min(width, round(width * roi[2])))
+        bottom = max(top, min(height, round(height * roi[3])))
+        return left, top, frame[top:bottom, left:right]
+
+    @staticmethod
     def _crop_reference(frame, roi: tuple[int, int, int, int] | None):
         if roi is None:
             return frame
@@ -1370,7 +1510,7 @@ class PVPTask(BaseBD2Task):
 
 LOADING_TEMPLATE = PVPTemplateSpec(
     name="loading",
-    file_name="loading.png",
+    file_name="image/UI_loading_black.png",
     threshold_key="加载页面阈值",
     default_threshold=0.72,
 )
@@ -1384,7 +1524,7 @@ HOME_TEMPLATE = PVPTemplateSpec(
 
 HOME_ICE_TEMPLATE = PVPTemplateSpec(
     name="home_ice",
-    file_name="MainHomeIceGE.png",
+    file_name="image/green/MainHomeIceGE.png",
     threshold_key="主页亮度比例阈值",
     default_threshold=0.75,
     green_mask=True,
@@ -1392,7 +1532,7 @@ HOME_ICE_TEMPLATE = PVPTemplateSpec(
 
 HOME_RICE_TEMPLATE = PVPTemplateSpec(
     name="home_rice",
-    file_name="MainHomeRIceGE.png",
+    file_name="image/green/MainHomeRIceGE.png",
     threshold_key="主页亮度比例阈值",
     default_threshold=0.75,
     green_mask=True,
@@ -1402,23 +1542,29 @@ HOME_TEMPLATES = (HOME_TEMPLATE, HOME_ICE_TEMPLATE, HOME_RICE_TEMPLATE)
 
 QUICK_PACK_TEMPLATE = PVPTemplateSpec(
     name="quick_pack",
-    file_name="image/UI_QuickPack_GE.png",
+    file_name="image/green/BusinQuickIcoGE.png",
     threshold_key="快速切换按钮阈值",
     default_threshold=0.78,
+    relative_roi=(0.25, 0.85, 0.65, 1.0),
     green_mask=True,
+    scale_ratios=(0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.0, 1.05, 1.10),
+    min_pixel_score=0.72,
 )
 
 PVP_MEDALS_TEMPLATE = PVPTemplateSpec(
     name="pvp_medals",
-    file_name="pvp-medals.png",
+    file_name="image/pvp-medals.png",
     threshold_key="PVP 箱庭阈值",
     default_threshold=0.78,
-    roi=(612, 29, 173, 32),
+    roi=(793, 39, 340, 35),
+    reference_scale=1.22,
+    scale_ratios=(0.967213, 0.983607, 1.0, 1.024590, 1.065574),
+    min_pixel_score=0.88,
 )
 
 PVP_HUB_NOTICE_TEMPLATE = PVPTemplateSpec(
     name="pvp_hub_notice",
-    file_name="tanhaoGE.png",
+    file_name="image/green/tanhaoGE.png",
     threshold_key="PVP 箱庭感叹号阈值",
     default_threshold=0.72,
     roi=PVPTask._screen_reference_roi_to_reference_roi(PVP_HUB_NOTICE_SCREEN_ROI),
@@ -1426,7 +1572,7 @@ PVP_HUB_NOTICE_TEMPLATE = PVPTemplateSpec(
 
 PVP_STAGE_TEMPLATE = PVPTemplateSpec(
     name="pvp_stage",
-    file_name="pvp-stage.png",
+    file_name="image/pvp-stage.png",
     threshold_key="PVP 舞台阈值",
     default_threshold=0.72,
     roi=(190, 238, 900, 620),
@@ -1434,7 +1580,7 @@ PVP_STAGE_TEMPLATE = PVPTemplateSpec(
 
 PVP_LOC_RESET_TEMPLATE = PVPTemplateSpec(
     name="pvp_loc_reset",
-    file_name="pvp-loc-reset.png",
+    file_name="image/pvp-loc-reset.png",
     threshold_key="PVP 定位修正阈值",
     default_threshold=0.76,
 )
@@ -1442,43 +1588,43 @@ PVP_LOC_RESET_TEMPLATE = PVPTemplateSpec(
 PVP_NO_FIND_TEMPLATES = [
     PVPTemplateSpec(
         name="pvp_nofind_UT_bk",
-        file_name="pvp-nofind-UT-bk.png",
+        file_name="image/pvp-nofind-UT-bk.png",
         threshold_key="PVP 定位修正阈值",
         default_threshold=0.76,
     ),
     PVPTemplateSpec(
         name="pvp_nofind_ut_bk2",
-        file_name="pvp-nofind-ut-bk2.png",
+        file_name="image/pvp-nofind-ut-bk2.png",
         threshold_key="PVP 定位修正阈值",
         default_threshold=0.76,
     ),
     PVPTemplateSpec(
         name="pvp_nofind_UT_ft",
-        file_name="pvp-nofind-UT-ft.png",
+        file_name="image/pvp-nofind-UT-ft.png",
         threshold_key="PVP 定位修正阈值",
         default_threshold=0.76,
     ),
     PVPTemplateSpec(
         name="pvp_nofind_UT_Rt",
-        file_name="pvp-nofind-UT-Rt.png",
+        file_name="image/pvp-nofind-UT-Rt.png",
         threshold_key="PVP 定位修正阈值",
         default_threshold=0.76,
     ),
     PVPTemplateSpec(
         name="pvp_nofind_twoaudience",
-        file_name="pvp-nofind-twoaudience.png",
+        file_name="image/pvp-nofind-twoaudience.png",
         threshold_key="PVP 定位修正阈值",
         default_threshold=0.76,
     ),
     PVPTemplateSpec(
         name="pvp_nofind_waiter_fr",
-        file_name="pvp-nofind-waiter-fr.png",
+        file_name="image/pvp-nofind-waiter-fr.png",
         threshold_key="PVP 定位修正阈值",
         default_threshold=0.76,
     ),
     PVPTemplateSpec(
         name="pvp_nofind_aman_sit",
-        file_name="pvp-nofind-aman-sit.png",
+        file_name="image/pvp-nofind-aman-sit.png",
         threshold_key="PVP 定位修正阈值",
         default_threshold=0.76,
     ),

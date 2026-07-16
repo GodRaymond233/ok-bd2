@@ -240,13 +240,19 @@ class BaseBD2Task(BaseTask):
         self,
         ensure_home: Callable[[], bool],
         click_quick_switch: Callable[[], bool],
+        confirm_quick_switch_page: Callable[[], bool],
     ) -> bool:
-        """Open the common cartridge quick-switch page from a confirmed home screen."""
+        """Open the recent cartridge, click quick-switch, and confirm its page."""
         if not ensure_home():
             return False
 
+        # Fixed common flow: confirmed home -> recent cartridge -> wait 1 second
+        # -> recognize the quick-switch icon -> click the recognized center
+        # -> confirm the cartridge selection page.
         self.operate_click(*CARTRIDGE_RECENT_ENTRY_POINT, after_sleep=1.0)
-        return bool(click_quick_switch())
+        if not click_quick_switch():
+            return False
+        return bool(confirm_quick_switch_page())
 
     def _check_action_interval(self, action_name: Any, interval: float) -> bool:
         if interval <= 0:

@@ -13,18 +13,26 @@ from src.tasks.map_trade.vision import Vision, normalize_text
 
 HOME_TEMPLATES = (
     TemplateSpec("主页", "home.png", 0.72),
-    TemplateSpec("主页冰淇淋", "MainHomeIceGE.png", 0.72, green_mask=True),
-    TemplateSpec("主页米饭", "MainHomeRIceGE.png", 0.72, green_mask=True),
+    TemplateSpec("主页冰淇淋", "image/green/MainHomeIceGE.png", 0.72, green_mask=True),
+    TemplateSpec("主页米饭", "image/green/MainHomeRIceGE.png", 0.72, green_mask=True),
 )
 SANDBOX_TEMPLATES = (
     TemplateSpec("箱庭图钉", "image/pin.png", 0.76, roi=(1080, 610, 170, 100)),
-    TemplateSpec("箱庭奔跑", "image/Run.png", 0.72, roi=(1120, 590, 150, 125), green_mask=True),
+    TemplateSpec(
+        "箱庭奔跑",
+        "image/green/Run.png",
+        0.72,
+        roi=(1120, 590, 150, 125),
+        green_mask=True,
+    ),
 )
-LOADING_TEMPLATE = TemplateSpec("加载页面", "loading.png", 0.70)
+LOADING_TEMPLATE = TemplateSpec("加载页面", "image/UI_loading_black.png", 0.70)
 MERCHANT_DIALOG_TEMPLATE = TemplateSpec(
     "商人对话", "image/Mer_Dialog_TalMed.png", 0.72, roi=(930, 15, 280, 70)
 )
-MERCHANT_ICON_TEMPLATE = TemplateSpec("商人交互", "image/Merchant_IcoGE.png", 0.74, green_mask=True)
+MERCHANT_ICON_TEMPLATE = TemplateSpec(
+    "商人交互", "image/green/Merchant_IcoGE.png", 0.74, green_mask=True
+)
 MAP_MERCHANT_TEMPLATE = TemplateSpec(
     "小地图商人", "image/Map_Merchant.png", 0.72, roi=(130, 110, 210, 190)
 )
@@ -35,23 +43,30 @@ AUTO_NAV_TEMPLATE = TemplateSpec(
     "自动移动", "image/AutoNvi_ico.png", 0.72, roi=(570, 580, 140, 120)
 )
 HAND_TEMPLATE = TemplateSpec(
-    "传送阵交互", "image/IcoHand.png", 0.74, roi=(790, 470, 190, 180), green_mask=True
+    "传送阵交互",
+    "image/green/IcoHand.png",
+    0.74,
+    roi=(790, 470, 190, 180),
+    green_mask=True,
 )
 NAV_TELEPORT_TEMPLATE = TemplateSpec(
-    "导航图传送阵", "image/Nvi_TpCircleMap.png", 0.72, roi=(150, 45, 570, 620)
+    "导航图传送阵", "image/green/Nvi_TpCircleMap.png", 0.72, roi=(150, 45, 570, 620)
 )
 MAP_LEFT_TEMPLATE = TemplateSpec(
-    "区域图左箭头", "image/TpMapLeft.png", 0.72, roi=(230, 270, 160, 130)
+    "区域图左箭头", "image/green/TpMapLeft.png", 0.72, roi=(230, 270, 160, 130)
 )
 MAP_RIGHT_TEMPLATE = TemplateSpec(
-    "区域图右箭头", "image/TpMapRight.png", 0.72, roi=(800, 270, 470, 140)
+    "区域图右箭头", "image/green/TpMapRight.png", 0.72, roi=(800, 270, 470, 140)
 )
 TELEPORT_MAP_TEMPLATES = (
     TemplateSpec("区域图传送阵绿幕", "image/TpCircleMapGE.png", 0.72, roi=(100, 60, 1080, 560)),
     TemplateSpec("区域图传送阵", "image/TpCircleMap.png", 0.72, roi=(100, 60, 1080, 560)),
 )
 OVERLAP_ARROW_TEMPLATE = TemplateSpec(
-    "传送阵重叠箭头", "image/map_tcArrowGE.png", 0.72, roi=(80, 50, 1160, 580)
+    "传送阵重叠箭头",
+    "image/green/map_tcArrowGE.png",
+    0.72,
+    roi=(80, 50, 1160, 580),
 )
 
 
