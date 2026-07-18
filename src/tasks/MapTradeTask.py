@@ -40,6 +40,20 @@ def _read_config(path: Path) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def _trade_section_migration_values(legacy: dict) -> dict[str, bool]:
+    """Map the previous trade switches to the three top-level sections."""
+
+    migrated: dict[str, bool] = {}
+    trade_enabled = bool(legacy.get("执行跑商", True))
+    if "买" not in legacy and ({"执行跑商", "低价进货"} & legacy.keys()):
+        migrated["买"] = trade_enabled and bool(legacy.get("低价进货", True))
+    if "卖" not in legacy and ({"执行跑商", "最高价出售"} & legacy.keys()):
+        migrated["卖"] = trade_enabled and bool(legacy.get("最高价出售", True))
+    if "制作料理" not in legacy and "制作利润料理" in legacy:
+        migrated["制作料理"] = bool(legacy["制作利润料理"])
+    return migrated
+
+
 def _migrate_collection_config(legacy: dict) -> None:
     """Seed the new weekly card from the previous combined task config once."""
 
@@ -98,7 +112,11 @@ class MapAutomationTaskBase(BaseBD2Task):
         self.info_set("状态", f"{self.task_log_name}启动。")
         try:
             for name, config_key, action in phases:
-                if not bool(self.config.get(config_key, True)):
+                if isinstance(config_key, (tuple, list, set)):
+                    enabled = any(bool(self.config.get(key, True)) for key in config_key)
+                else:
+                    enabled = bool(self.config.get(config_key, True))
+                if not enabled:
                     skipped.append(name)
                     continue
                 self.info_set("当前阶段", name)
@@ -183,6 +201,43 @@ class MapAutomationTaskBase(BaseBD2Task):
         self.operate(action, block=True, restore_cursor=True)
         self.sleep(after_sleep)
 
+    def _scroll_client(
+        self,
+        relative_point: tuple[float, float],
+        scroll_amount: int,
+        count: int = 1,
+        interval: float = 0.1,
+        after_sleep: float = 0.0,
+    ) -> None:
+        """Send foreground mouse-wheel events at a relative client point."""
+
+        frame = self.capture_frame()
+        height, width = frame.shape[:2]
+        x = round(max(0.0, min(1.0, relative_point[0])) * width)
+        y = round(max(0.0, min(1.0, relative_point[1])) * height)
+        wheel_count = max(1, int(count))
+        wheel_interval = max(0.0, float(interval))
+        interaction = getattr(self.executor, "interaction", None)
+        if interaction is None or not hasattr(interaction, "scroll"):
+            raise RuntimeError("当前交互对象不支持鼠标滚轮")
+
+        def action():
+            import win32api
+
+            if hasattr(interaction, "force_activate"):
+                interaction.force_activate()
+            elif hasattr(interaction, "try_activate"):
+                interaction.try_activate()
+            capture = getattr(interaction, "capture", None)
+            if capture is not None and hasattr(capture, "get_abs_cords"):
+                win32api.SetCursorPos(capture.get_abs_cords(x, y))
+            for index in range(wheel_count):
+                interaction.scroll(x, y, int(scroll_amount))
+                if index + 1 < wheel_count:
+                    time.sleep(wheel_interval)
+
+        self.operate(action, block=True, restore_cursor=True)
+        self.sleep(after_sleep)
 
 class MapTradeTask(MapAutomationTaskBase):
     """Daily cooking and merchant task, separated from weekly map collection."""
@@ -196,6 +251,11 @@ class MapTradeTask(MapAutomationTaskBase):
         "状态",
         "当前阶段",
         "导航状态",
+        "剧情角标",
+        "Q_sp6商店点击",
+        "商品卡带页",
+        "商品卡带页确认",
+        "收藏重建进度",
         "价表来源",
         "完成",
         "失败",
@@ -208,7 +268,7 @@ class MapTradeTask(MapAutomationTaskBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.name = "每日跑商"
-        self.description = "每日执行 Q_sp6 商店进货与最高价出售；利润料理按配置周期制作。"
+        self.description = "每日按配置执行买、卖与制作料理。"
         self.icon = FluentIcon.SHOPPING_CART
         self.group_name = "日常/周常"
         self.group_icon = FluentIcon.CALENDAR
@@ -217,15 +277,15 @@ class MapTradeTask(MapAutomationTaskBase):
         self.default_config.update(
             {
                 "启用": True,
-                "执行跑商": True,
-                "制作利润料理": True,
-                "低价进货": True,
-                "最高价出售": True,
+                "买": True,
                 "收藏重建周期": "每周",
+                "卖": True,
+                "使用程序默认价表": True,
                 "使用在线价表": True,
                 "自定义最高价表": _empty_manual_calendar(),
-                "出售保险": True,
+                "出售保险": False,
                 "出售白名单": "，".join(DEFAULT_SALE_WHITELIST),
+                "制作料理": True,
                 "料理制作周期": "每周",
                 "料理保险": True,
                 "5星料理": list(DEFAULT_RECIPES),
@@ -236,20 +296,29 @@ class MapTradeTask(MapAutomationTaskBase):
         )
         self.config_description.update(
             {
-                "执行跑商": "前往 Q_sp6 商人，砍价、低价进货并按最高价白名单出售。",
-                "制作利润料理": "制作选中的五种 5 星利润料理。",
-                "低价进货": "每周对齐一次收藏星标，并购买全部收藏材料。",
-                "最高价出售": "仅出售当天价表和出售白名单的交集。",
-                "收藏重建周期": "每周只重建一次收藏；选择每次可强制重新核对。",
-                "使用在线价表": "先检查作者维护的价表，失败时回退缓存和随包快照。",
+                "买": "进入 Q_sp6 完成砍价，并按本地卡带与灰星坐标表重建收藏。",
+                "收藏重建周期": (
+                    "每周只重建一次收藏；每次会强制重新核对；永不则只购买当前收藏。"
+                ),
+                "卖": "仅出售当天最高价表和出售白名单的交集。",
+                "使用程序默认价表": (
+                    "默认使用随程序附带、由作者确认的价表；关闭后才显示在线价表。"
+                ),
+                "使用在线价表": (
+                    "关闭程序默认价表后使用；在线获取失败时回退本地缓存。"
+                ),
                 "自定义最高价表": (
-                    "关闭在线价表后使用。必须包含 1-31 日，每行格式："
+                    "程序默认价表和在线价表均关闭后使用。必须包含 1-31 日，每行格式："
                     "日期=物品@商店,物品@商店；空日期写成 29=。"
                 ),
-                "出售保险": "开启时每种目标只卖 1 件；关闭时选择 MAX。",
+                "出售保险": (
+                    "开启时每种普通目标只卖最小数量；默认关闭并选择 MAX。"
+                    "价表中带保留量的商品始终优先执行保留规则。"
+                ),
                 "出售白名单": (
                     "用逗号、分号或换行追加物品；五种已选利润料理始终纳入出售白名单。"
                 ),
+                "制作料理": "制作选中的五种 5 星利润料理。",
                 "料理制作周期": "每周制作一次，或每次运行都尝试制作。",
                 "料理保险": "开启时每种料理只做 1 份；关闭时选择 MAX。",
                 "5星料理": "可同时选择多种利润料理。",
@@ -260,25 +329,22 @@ class MapTradeTask(MapAutomationTaskBase):
         )
         self.config_type.update(
             {
-                "执行跑商": {
-                    "sub_configs": {
-                        True: [
-                            "低价进货",
-                            "最高价出售",
-                            "收藏重建周期",
-                            "使用在线价表",
-                            "出售保险",
-                            "出售白名单",
-                        ]
-                    }
-                },
+                "买": {"sub_configs": {True: ["收藏重建周期"]}},
                 "收藏重建周期": {
                     "type": "drop_down",
-                    "options": ["每周", "每次"],
+                    "options": ["每周", "每次", "永不"],
+                },
+                "卖": {
+                    "sub_configs": {
+                        True: ["使用程序默认价表", "出售保险", "出售白名单"]
+                    }
+                },
+                "使用程序默认价表": {
+                    "sub_configs": {False: ["使用在线价表"]}
                 },
                 "使用在线价表": {"sub_configs": {False: ["自定义最高价表"]}},
                 "自定义最高价表": {"type": "text_edit"},
-                "制作利润料理": {
+                "制作料理": {
                     "sub_configs": {True: ["料理制作周期", "料理保险", "5星料理"]}
                 },
                 "料理制作周期": {"type": "drop_down", "options": ["每周", "每次"]},
@@ -291,8 +357,11 @@ class MapTradeTask(MapAutomationTaskBase):
 
     def load_config(self):
         legacy = _read_config(_config_path(self.__class__.__name__))
+        section_values = _trade_section_migration_values(legacy)
         _migrate_collection_config(legacy)
         super().load_config()
+        for key, value in section_values.items():
+            self.config[key] = value
         key_map = {
             LEGACY_VISION_THRESHOLD_KEY: TRADE_VISION_THRESHOLD_KEY,
             LEGACY_OCR_THRESHOLD_KEY: TRADE_OCR_THRESHOLD_KEY,
@@ -306,7 +375,17 @@ class MapTradeTask(MapAutomationTaskBase):
         manual_text = None
         if key == "自定义最高价表":
             manual_text = str(value)
-        elif key == "使用在线价表" and value is False:
+        elif (
+            key == "使用程序默认价表"
+            and value is False
+            and not bool(current_config.get("使用在线价表", True))
+        ):
+            manual_text = str(current_config.get("自定义最高价表", ""))
+        elif (
+            key == "使用在线价表"
+            and value is False
+            and not bool(current_config.get("使用程序默认价表", True))
+        ):
             manual_text = str(current_config.get("自定义最高价表", ""))
         if manual_text is not None:
             try:
@@ -328,7 +407,8 @@ class MapTradeTask(MapAutomationTaskBase):
         return self._run_phases(
             navigator,
             (
-                ("利润料理", "制作利润料理", trader.run_cooking),
-                ("跑商", "执行跑商", trader.run_trade),
+                ("买", "买", trader.run_buy),
+                ("卖", "卖", trader.run_sell),
+                ("制作料理", "制作料理", trader.run_cooking),
             ),
         )

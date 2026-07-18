@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-07-12T21:40:00+08:00",
+  "updated_at": "2026-07-19T00:00:00+08:00",
   "timezone": "Asia/Shanghai",
-  "source_note": "Initial 1-28 snapshot derived from public BD2DB highPremiumDay/highPremiumshopId data; days 29-31 are explicitly empty and runtime never queries BD2DB.",
+  "source_note": "Bundled snapshot; days 17-20 follow the user-confirmed sale table. Rare items remain listed with sell=false and item-specific stock reserves use reserve.",
   "source_url": "https://browndust2-db.souseha.com/en/market-data",
   "days": {
     "1": [
@@ -675,11 +675,19 @@
     ],
     "17": [
       {
-        "item": "凯洛养身汤",
-        "shop": "E1",
+        "item": "米",
+        "shop": "S5",
         "aliases": [
-          "凱洛養身湯",
-          "Kailac Health Soup"
+          "Rice"
+        ]
+      },
+      {
+        "item": "土豆",
+        "shop": "S16",
+        "aliases": [
+          "马铃薯",
+          "馬鈴薯",
+          "Potato"
         ]
       },
       {
@@ -689,147 +697,72 @@
           "泰瑞絲派",
           "Teresse Pie"
         ]
-      },
-      {
-        "item": "马铃薯",
-        "shop": "S16",
-        "aliases": [
-          "馬鈴薯",
-          "Potato"
-        ]
-      },
-      {
-        "item": "金矿石",
-        "shop": "S2",
-        "aliases": [
-          "金礦石",
-          "Gold ore"
-        ]
-      },
-      {
-        "item": "水果冰沙",
-        "shop": "S5",
-        "aliases": [
-          "Fruit Slushy"
-        ]
-      },
-      {
-        "item": "米",
-        "shop": "S5",
-        "aliases": [
-          "Rice"
-        ]
       }
     ],
     "18": [
       {
-        "item": "萝卜婴",
-        "shop": "R3",
-        "aliases": [
-          "蘿蔔嬰",
-          "Radish"
-        ]
-      },
-      {
-        "item": "番红花",
-        "shop": "S10",
-        "aliases": [
-          "番紅花",
-          "Saffron"
-        ]
-      },
-      {
-        "item": "辣酱",
-        "shop": "S10",
-        "aliases": [
-          "辣醬",
-          "Chili Sauce"
-        ]
-      },
-      {
-        "item": "奶油",
+        "item": "黄油",
         "shop": "S2",
         "aliases": [
+          "奶油",
           "Butter"
-        ]
+        ],
+        "reserve": 5500
       },
       {
         "item": "魅惑粉末",
         "shop": "S6",
         "aliases": [
           "Charm Powder"
+        ],
+        "sell": false
+      },
+      {
+        "item": "甜辣酱",
+        "shop": "S10",
+        "aliases": [
+          "辣酱",
+          "辣醬",
+          "Chili Sauce"
+        ]
+      },
+      {
+        "item": "藏红花",
+        "shop": "S10",
+        "aliases": [
+          "番红花",
+          "番紅花",
+          "Saffron"
+        ]
+      },
+      {
+        "item": "萝卜缨",
+        "shop": "R3",
+        "aliases": [
+          "萝卜婴",
+          "蘿蔔嬰",
+          "Radish Greens"
         ]
       }
     ],
     "19": [
-      {
-        "item": "玉米起司",
-        "shop": "E2",
-        "aliases": [
-          "Corn Cheese"
-        ]
-      },
-      {
-        "item": "杏仁",
-        "shop": "R1",
-        "aliases": [
-          "Almond"
-        ]
-      },
-      {
-        "item": "蜂蜜",
-        "shop": "R3",
-        "aliases": [
-          "Honey"
-        ]
-      },
       {
         "item": "哈密瓜",
         "shop": "R6",
         "aliases": [
           "Melon"
         ]
-      },
-      {
-        "item": "肉桂",
-        "shop": "S11",
-        "aliases": [
-          "Cinnamon"
-        ]
       }
     ],
     "20": [
-      {
-        "item": "洛克菲勒生蚝",
-        "shop": "E4",
-        "aliases": [
-          "洛克菲勒生蠔",
-          "Oysters Rockefeller"
-        ]
-      },
-      {
-        "item": "草药三明治",
-        "shop": "S18",
-        "aliases": [
-          "草藥三明治",
-          "Herb Sandwich"
-        ]
-      },
       {
         "item": "灵魂鲜奶油",
         "shop": "S19",
         "aliases": [
           "靈魂鮮奶油",
           "Soul whipped Cream"
-        ]
-      },
-      {
-        "item": "甜椒义式烘蛋",
-        "shop": "S4",
-        "aliases": [
-          "甜椒義式烘蛋",
-          "Bell Pepper Frittata"
-        ]
+        ],
+        "sell": false
       }
     ],
     "21": [

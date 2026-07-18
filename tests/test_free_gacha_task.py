@@ -121,11 +121,13 @@ class FreeGachaTaskHelperTest(unittest.TestCase):
 
         self.assertTrue(FreeGachaTask._wait_loading_or_home_brightness(task, "返回主页"))
 
-    def test_result_skip_clicks_for_duration_then_checks_ocr_once(self):
+    def test_result_skip_clicks_for_duration_then_polls_ocr_until_ticket_page(self):
         task = object.__new__(FreeGachaTask)
         task.config = {
             "跳过点击间隔秒数": 0.2,
             "结果跳过连续点击秒数": 3.0,
+            "结果页 OCR 等待秒数": 1.0,
+            "结果页 OCR 间隔秒数": 0.1,
             "结果页关键词最低命中数": 1,
         }
         clicks = []
@@ -143,6 +145,8 @@ class FreeGachaTaskHelperTest(unittest.TestCase):
 
         def fake_ocr(_frame, keywords, minimum_matches, name):
             ocr_calls.append((keywords, minimum_matches, name))
+            if len(ocr_calls) == 1:
+                return False, "试玩抽抽乐1/1完成"
             return True, "抽抽乐券 可免费抽1次的抽抽乐券 查看获取途径"
 
         task._click_reference = fake_click
@@ -163,9 +167,9 @@ class FreeGachaTaskHelperTest(unittest.TestCase):
         self.assertTrue(found)
         self.assertEqual("抽抽乐券 可免费抽1次的抽抽乐券 查看获取途径", text)
         self.assertEqual([(1770, 60, 0.0)] * 15, clicks)
-        self.assertEqual([15], captures)
-        self.assertEqual(1, len(ocr_calls))
-        self.assertAlmostEqual(3.0, sum(sleeps), places=6)
+        self.assertEqual([15, 15], captures)
+        self.assertEqual(2, len(ocr_calls))
+        self.assertAlmostEqual(3.1, sum(sleeps), places=6)
         self.assertTrue(all(seconds <= 0.2 for seconds in sleeps))
         self.assertEqual(BACK_PAGE_KEYWORDS, ocr_calls[0][0])
         self.assertEqual(1, ocr_calls[0][1])
@@ -185,8 +189,8 @@ class FreeGachaTaskHelperTest(unittest.TestCase):
         task._wait_for_gacha_page = lambda name: waits.append(name) or True
 
         self.assertTrue(FreeGachaTask._handle_result_until_back(task, "服装抽抽乐"))
-        self.assertEqual([2.0], sleeps)
-        self.assertEqual([(1420, 326, 2.0), (105, 51, 0.0)], clicks)
+        self.assertEqual([1.0], sleeps)
+        self.assertEqual([(1420, 326, 1.0), (105, 51, 0.0)], clicks)
         self.assertEqual(["服装抽抽乐 返回抽卡页"], waits)
 
 

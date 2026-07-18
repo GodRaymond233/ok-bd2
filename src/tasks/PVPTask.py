@@ -1557,8 +1557,7 @@ PVP_MEDALS_TEMPLATE = PVPTemplateSpec(
     threshold_key="PVP 箱庭阈值",
     default_threshold=0.78,
     roi=(793, 39, 340, 35),
-    reference_scale=1.22,
-    scale_ratios=(0.967213, 0.983607, 1.0, 1.024590, 1.065574),
+    scale_ratios=(0.944, 0.96, 0.976, 1.0, 1.04),
     min_pixel_score=0.88,
 )
 

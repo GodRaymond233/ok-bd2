@@ -273,12 +273,12 @@ class PVPTaskHelperTest(unittest.TestCase):
 
     def test_pvp_hub_uses_1920_roi_and_calibrated_template_scale(self):
         self.assertEqual((793, 39, 340, 35), PVP_MEDALS_TEMPLATE.roi)
-        self.assertEqual(1.22, PVP_MEDALS_TEMPLATE.reference_scale)
+        self.assertIsNone(PVP_MEDALS_TEMPLATE.reference_scale)
         self.assertEqual(0.88, PVP_MEDALS_TEMPLATE.min_pixel_score)
         self.assertEqual(
             [1.18, 1.2, 1.22, 1.25, 1.3],
             PVPTask._candidate_scales(
-                PVP_MEDALS_TEMPLATE.reference_scale,
+                1.25,
                 PVP_MEDALS_TEMPLATE.scale_ratios,
             ),
         )

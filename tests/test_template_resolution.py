@@ -51,10 +51,14 @@ class OfflineTemplateResolutionTest(unittest.TestCase):
             ),
         )
 
-    def test_scale_uses_captured_client_width_and_height(self):
+    def test_scale_uses_calibrated_baseline_and_client_size(self):
         self.assertAlmostEqual(
-            1078 / 720,
+            1.25 * (1078 / 1080),
             offline_template_scale("image/UI_loading_black.png", 1918, 1078),
+        )
+        self.assertAlmostEqual(
+            1.25,
+            offline_template_scale("image/green/BusinQuickIcoGE.png", 1920, 1080),
         )
         self.assertAlmostEqual(
             1078 / 1080,
@@ -65,9 +69,9 @@ class OfflineTemplateResolutionTest(unittest.TestCase):
             offline_template_scale("home.png", 1280, 720),
         )
 
-    def test_explicit_1080p_reference_scale_overrides_folder_default(self):
+    def test_image_scale_cannot_override_unified_baseline(self):
         self.assertAlmostEqual(
-            1.22,
+            1.25,
             offline_template_scale(
                 "image/pvp-medals.png",
                 1920,
@@ -76,7 +80,7 @@ class OfflineTemplateResolutionTest(unittest.TestCase):
             ),
         )
         self.assertAlmostEqual(
-            1.22 * (1078 / 1080),
+            1.25 * (1078 / 1080),
             offline_template_scale(
                 "image/pvp-medals.png",
                 1918,

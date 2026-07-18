@@ -40,6 +40,10 @@ class TemplateSpec:
     threshold: float = 0.76
     roi: tuple[int, int, int, int] | None = None
     green_mask: bool = False
+    relative_roi: tuple[float, float, float, float] | None = None
+    reference_scale: float | None = None
+    scale_ratios: tuple[float, ...] = (1.0,)
+    min_pixel_score: float | None = None
 
 
 @dataclass(frozen=True)
@@ -47,6 +51,7 @@ class MatchResult:
     score: float
     position: tuple[int, int]
     size: tuple[int, int]
+    pixel_score: float = -1.0
 
     @property
     def center(self) -> tuple[int, int]:
@@ -61,6 +66,8 @@ class CalendarEntry:
     item: str
     shop: str
     aliases: tuple[str, ...] = ()
+    sell: bool = True
+    reserve: int = 0
 
 
 @dataclass(frozen=True)
@@ -171,4 +178,12 @@ DEFAULT_SALE_WHITELIST = (
     "闪闪铁板虾",
     "透明沙拉",
     "地狱火紫菜包饭",
+    "米",
+    "土豆",
+    "泰瑞丝派",
+    "黄油",
+    "甜辣酱",
+    "藏红花",
+    "萝卜缨",
+    "哈密瓜",
 )

@@ -6,6 +6,10 @@ OFFLINE_TEMPLATE_REFERENCE_RESOLUTIONS = {
     "image": (1280, 720),
     "root": (1920, 1080),
 }
+OFFLINE_TEMPLATE_REFERENCE_SCALES = {
+    "image": 1.25,
+    "root": 1.0,
+}
 
 
 def _offline_template_parts(template_path: str | Path) -> tuple[str, ...]:
@@ -13,10 +17,7 @@ def _offline_template_parts(template_path: str | Path) -> tuple[str, ...]:
     return tuple(part.casefold() for part in PurePosixPath(normalized).parts)
 
 
-def offline_template_reference_resolution(
-    template_path: str | Path,
-) -> tuple[int, int]:
-    """Return the source-screen resolution represented by an offline template."""
+def _offline_template_group(template_path: str | Path) -> str:
     folded = _offline_template_parts(template_path)
     root_name = OFFLINE_TEMPLATE_ROOT_NAME.casefold()
 
@@ -28,8 +29,14 @@ def offline_template_reference_resolution(
     else:
         is_image_asset = bool(folded and folded[0] == "image")
 
-    key = "image" if is_image_asset else "root"
-    return OFFLINE_TEMPLATE_REFERENCE_RESOLUTIONS[key]
+    return "image" if is_image_asset else "root"
+
+
+def offline_template_reference_resolution(
+    template_path: str | Path,
+) -> tuple[int, int]:
+    """Return the source-screen resolution represented by an offline template."""
+    return OFFLINE_TEMPLATE_REFERENCE_RESOLUTIONS[_offline_template_group(template_path)]
 
 
 def offline_template_requires_green_mask(template_path: str | Path) -> bool:
@@ -52,16 +59,18 @@ def offline_template_scale(
     frame_height: int,
     reference_scale: float | None = None,
 ) -> float:
-    """Scale a template to the client, honoring an optional 1080p calibrated scale."""
-    if reference_scale is not None:
-        client_scale = min(
-            max(1, int(frame_width)) / 1920,
-            max(1, int(frame_height)) / 1080,
+    """Scale a template from its calibrated 1080p baseline to the client."""
+    group = _offline_template_group(template_path)
+    if group == "image":
+        baseline_scale = OFFLINE_TEMPLATE_REFERENCE_SCALES[group]
+    else:
+        baseline_scale = (
+            max(0.01, float(reference_scale))
+            if reference_scale is not None
+            else OFFLINE_TEMPLATE_REFERENCE_SCALES[group]
         )
-        return max(0.01, float(reference_scale)) * client_scale
-
-    reference_width, reference_height = offline_template_reference_resolution(template_path)
-    return min(
-        max(1, int(frame_width)) / reference_width,
-        max(1, int(frame_height)) / reference_height,
+    client_scale = min(
+        max(1, int(frame_width)) / 1920,
+        max(1, int(frame_height)) / 1080,
     )
+    return baseline_scale * client_scale
