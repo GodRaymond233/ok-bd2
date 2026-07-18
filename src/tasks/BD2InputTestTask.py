@@ -7,6 +7,16 @@ from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task
 
+REFERENCE_WIDTH = 1920
+REFERENCE_HEIGHT = 1080
+DEFAULT_WHEEL_REGION = (
+    228 / REFERENCE_WIDTH,
+    117 / REFERENCE_HEIGHT,
+    463 / REFERENCE_WIDTH,
+    959 / REFERENCE_HEIGHT,
+)
+WHEEL_DIRECTIONS = {"向上": 1, "向下": -1}
+
 
 class _BD2InputProbeTask(BaseBD2Task):
     icon = FluentIcon.GAME
@@ -34,7 +44,7 @@ class _BD2InputProbeTask(BaseBD2Task):
         self,
         action_name: str,
         details: list[str],
-        action: Callable[[], None],
+        action: Callable[[np.ndarray], None],
     ) -> bool:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         step_sleep = float(self._config_value("每步等待秒数", "Step Sleep Seconds", 1.0))
@@ -57,7 +67,7 @@ class _BD2InputProbeTask(BaseBD2Task):
         )
 
         self.log_info(f"输入测试：{self._action_display_name(action_name)}")
-        action()
+        action(before_frame)
         self.sleep(step_sleep)
 
         self._capture_step(
@@ -110,7 +120,12 @@ class _BD2InputProbeTask(BaseBD2Task):
 
     @staticmethod
     def _action_display_name(action_name: str) -> str:
-        return "鼠标单击" if action_name == "mouse_click" else action_name
+        names = {
+            "mouse_click": "鼠标单击",
+            "mouse_wheel_up": "鼠标滚轮向上",
+            "mouse_wheel_down": "鼠标滚轮向下",
+        }
+        return names.get(action_name, action_name)
 
     def _capture_step(
         self,
@@ -167,5 +182,143 @@ class BD2MouseClickInputTestTask(_BD2InputProbeTask):
         return self.run_input_probe(
             "mouse_click",
             [f"click={click_x:.3f},{click_y:.3f}"],
-            lambda: self.operate_click(click_x, click_y),
+            lambda _frame: self.operate_click(click_x, click_y),
         )
+
+
+class BD2MouseWheelInputTestTask(_BD2InputProbeTask):
+    output_prefix = "bd2_mouse_wheel_input_test"
+    output_latest = "bd2_mouse_wheel_input_test_latest.txt"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.name = "BD2 鼠标滚轮测试"
+        self.description = "在指定区域内单击聚焦，并测试向上或向下滚动鼠标滚轮。"
+        self.group_name = "测试"
+        self.group_icon = FluentIcon.BOOK_SHELF
+        left, top, right, bottom = DEFAULT_WHEEL_REGION
+        self.default_config.update(
+            {
+                "滚轮方向": "向上",
+                "滚轮次数": 9,
+                "滚轮间隔秒数": 0.1,
+                "区域左 X 百分比": left * 100,
+                "区域上 Y 百分比": top * 100,
+                "区域右 X 百分比": right * 100,
+                "区域下 Y 百分比": bottom * 100,
+            }
+        )
+        self.config_description.update(
+            {
+                "滚轮方向": "选择向上或向下滚动。",
+                "滚轮次数": "发送独立滚轮事件的次数，默认 9 次。",
+                "滚轮间隔秒数": "相邻滚轮事件之间的等待时间，默认 0.1 秒。",
+                "区域左 X 百分比": "滚轮测试区域左边界相对游戏客户区的横向百分比。",
+                "区域上 Y 百分比": "滚轮测试区域上边界相对游戏客户区的纵向百分比。",
+                "区域右 X 百分比": "滚轮测试区域右边界相对游戏客户区的横向百分比。",
+                "区域下 Y 百分比": "滚轮测试区域下边界相对游戏客户区的纵向百分比。",
+            }
+        )
+        self.config_type.update(
+            {
+                "滚轮方向": {"type": "drop_down", "options": list(WHEEL_DIRECTIONS)},
+                "滚轮次数": {"min": 1, "max": 100, "step": 1},
+                "滚轮间隔秒数": {"min": 0.0, "max": 2.0, "step": 0.05},
+                "区域左 X 百分比": {"min": 0.0, "max": 100.0, "step": 0.1},
+                "区域上 Y 百分比": {"min": 0.0, "max": 100.0, "step": 0.1},
+                "区域右 X 百分比": {"min": 0.0, "max": 100.0, "step": 0.1},
+                "区域下 Y 百分比": {"min": 0.0, "max": 100.0, "step": 0.1},
+            }
+        )
+
+    def run(self):
+        direction_name = str(self.config.get("滚轮方向", "向上"))
+        if direction_name not in WHEEL_DIRECTIONS:
+            direction_name = "向上"
+            self.log_warning("滚轮方向配置无效，已改用向上。")
+        count = max(1, min(100, int(self.config.get("滚轮次数", 9))))
+        interval = max(0.0, min(2.0, float(self.config.get("滚轮间隔秒数", 0.1))))
+        region = self._configured_wheel_region()
+        center = ((region[0] + region[2]) / 2, (region[1] + region[3]) / 2)
+        reference_region = tuple(
+            round(value * (REFERENCE_WIDTH if index % 2 == 0 else REFERENCE_HEIGHT))
+            for index, value in enumerate(region)
+        )
+        reference_center = (
+            round(center[0] * REFERENCE_WIDTH),
+            round(center[1] * REFERENCE_HEIGHT),
+        )
+        action_name = "mouse_wheel_up" if direction_name == "向上" else "mouse_wheel_down"
+        details = [
+            "click_before_scroll=true",
+            "region_reference=" + ",".join(str(value) for value in reference_region),
+            f"scroll_point_reference={reference_center[0]},{reference_center[1]}",
+            f"scroll_point_relative={center[0]:.6f},{center[1]:.6f}",
+            f"scroll_direction={direction_name}",
+            f"scroll_amount={WHEEL_DIRECTIONS[direction_name]}",
+            f"scroll_count={count}",
+            f"scroll_interval_seconds={interval:.3f}",
+        ]
+        return self.run_input_probe(
+            action_name,
+            details,
+            lambda frame: self._perform_wheel_action(
+                frame,
+                center,
+                WHEEL_DIRECTIONS[direction_name],
+                count,
+                interval,
+            ),
+        )
+
+    def _configured_wheel_region(self) -> tuple[float, float, float, float]:
+        defaults = tuple(value * 100 for value in DEFAULT_WHEEL_REGION)
+        values = (
+            self._percent_to_relative(
+                self.config.get("区域左 X 百分比", defaults[0])
+            ),
+            self._percent_to_relative(
+                self.config.get("区域上 Y 百分比", defaults[1])
+            ),
+            self._percent_to_relative(
+                self.config.get("区域右 X 百分比", defaults[2])
+            ),
+            self._percent_to_relative(
+                self.config.get("区域下 Y 百分比", defaults[3])
+            ),
+        )
+        left, right = sorted((values[0], values[2]))
+        top, bottom = sorted((values[1], values[3]))
+        return left, top, right, bottom
+
+    def _perform_wheel_action(
+        self,
+        frame: np.ndarray,
+        relative_point: tuple[float, float],
+        scroll_amount: int,
+        count: int,
+        interval: float,
+    ) -> None:
+        interaction = getattr(self.executor, "interaction", None)
+        if interaction is None or not hasattr(interaction, "scroll"):
+            raise RuntimeError("当前交互对象不支持鼠标滚轮测试")
+
+        height, width = frame.shape[:2]
+        x = round(relative_point[0] * width)
+        y = round(relative_point[1] * height)
+
+        def action() -> None:
+            interaction.click(
+                x,
+                y,
+                move_back=False,
+                name="bd2_mouse_wheel_focus",
+                down_time=0.02,
+                move=True,
+            )
+            for index in range(count):
+                interaction.scroll(x, y, scroll_amount)
+                if index + 1 < count:
+                    self.sleep(interval)
+
+        self.operate(action, block=True, restore_cursor=True)

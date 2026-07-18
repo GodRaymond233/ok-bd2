@@ -142,8 +142,73 @@ class Vision:
         return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
     @staticmethod
-    def _candidate_scales(base_scale: float) -> tuple[float, ...]:
-        return (round(max(0.2, base_scale), 3),)
+    def _candidate_scales(
+        base_scale: float, scale_ratios: tuple[float, ...] = (1.0,)
+    ) -> tuple[float, ...]:
+        return tuple(round(max(0.2, base_scale * ratio), 3) for ratio in scale_ratios)
+
+    @staticmethod
+    def _relative_roi(
+        frame: np.ndarray, roi: tuple[float, float, float, float]
+    ) -> tuple[int, int, np.ndarray]:
+        height, width = frame.shape[:2]
+        left = max(0, min(width, round(width * roi[0])))
+        top = max(0, min(height, round(height * roi[1])))
+        right = max(left, min(width, round(width * roi[2])))
+        bottom = max(top, min(height, round(height * roi[3])))
+        return left, top, frame[top:bottom, left:right]
+
+    @staticmethod
+    def bright_neutral_ratio(
+        frame: np.ndarray,
+        relative_roi: tuple[float, float, float, float],
+        minimum_gray: int = 170,
+        maximum_channel_spread: int = 35,
+    ) -> float:
+        """Measure white/gray highlight pixels inside a relative client region."""
+
+        _left, _top, region = Vision._relative_roi(frame, relative_roi)
+        if region.size == 0:
+            return 0.0
+        if region.ndim == 2:
+            return float(np.mean(region >= minimum_gray))
+        color = region[..., :3].astype(np.int16)
+        channel_min = np.min(color, axis=2)
+        channel_spread = np.max(color, axis=2) - channel_min
+        highlighted = (channel_min >= minimum_gray) & (
+            channel_spread <= maximum_channel_spread
+        )
+        return float(np.mean(highlighted))
+
+    @staticmethod
+    def _pixel_similarity(
+        region: np.ndarray,
+        template: np.ndarray,
+        mask: np.ndarray | None = None,
+    ) -> float:
+        if region.shape != template.shape:
+            return -1.0
+        diff = np.abs(region.astype(np.float32) - template.astype(np.float32))
+        if mask is not None:
+            active = mask > 0
+            if not np.any(active):
+                return -1.0
+            diff = diff[active]
+        return float(1.0 - np.mean(diff) / 255.0)
+
+    @staticmethod
+    def _resize_template(template: np.ndarray, scale: float) -> np.ndarray:
+        if abs(scale - 1.0) < 0.001:
+            return template
+        interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC
+        return cv2.resize(template, None, fx=scale, fy=scale, interpolation=interpolation)
+
+    @staticmethod
+    def _resize_mask(mask: np.ndarray | None, scale: float) -> np.ndarray | None:
+        if mask is None or abs(scale - 1.0) < 0.001:
+            return mask
+        resized = cv2.resize(mask, None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST)
+        return np.where(resized > 0, 255, 0).astype(np.uint8)
 
     def match(self, frame: np.ndarray, spec: TemplateSpec) -> MatchResult:
         template, mask = self._load(spec)
@@ -151,23 +216,24 @@ class Vision:
         frame_height, frame_width = gray.shape[:2]
         left = top = 0
         search = gray
-        if spec.roi is not None:
+        if spec.relative_roi is not None:
+            left, top, search = self._relative_roi(gray, spec.relative_roi)
+        elif spec.roi is not None:
             left, top, width, height = self.reference_roi(spec.roi, frame_width, frame_height)
             search = gray[top : top + height, left : left + width]
         if search.size == 0:
             return EMPTY_MATCH
 
         best = EMPTY_MATCH
-        base_scale = offline_template_scale(spec.file_name, frame_width, frame_height)
-        for scale in self._candidate_scales(base_scale):
-            interpolation = cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC
-            scaled = cv2.resize(template, None, fx=scale, fy=scale, interpolation=interpolation)
-            scaled_mask = None
-            if mask is not None:
-                scaled_mask = cv2.resize(
-                    mask, None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST
-                )
-                scaled_mask = np.where(scaled_mask > 0, 255, 0).astype(np.uint8)
+        base_scale = offline_template_scale(
+            spec.file_name,
+            frame_width,
+            frame_height,
+            reference_scale=spec.reference_scale,
+        )
+        for scale in self._candidate_scales(base_scale, spec.scale_ratios):
+            scaled = self._resize_template(template, scale)
+            scaled_mask = self._resize_mask(mask, scale)
             height, width = scaled.shape[:2]
             if height < 4 or width < 4 or height > search.shape[0] or width > search.shape[1]:
                 continue
@@ -176,14 +242,169 @@ class Vision:
                 result = cv2.matchTemplate(search, scaled, method, mask=scaled_mask)
             except cv2.error:
                 continue
+            np.nan_to_num(result, copy=False, nan=-1.0, posinf=-1.0, neginf=-1.0)
             _min_value, max_value, _min_location, max_location = cv2.minMaxLoc(result)
             if float(max_value) > best.score:
                 best = MatchResult(
                     score=float(max_value),
                     position=(left + int(max_location[0]), top + int(max_location[1])),
                     size=(width, height),
+                    pixel_score=self._pixel_similarity(
+                        search[
+                            int(max_location[1]) : int(max_location[1]) + height,
+                            int(max_location[0]) : int(max_location[0]) + width,
+                        ],
+                        scaled,
+                        scaled_mask,
+                    ),
                 )
         return best
+
+    def match_all(
+        self,
+        frame: np.ndarray,
+        spec: TemplateSpec,
+        minimum_score: float,
+        peak_radius: int = 5,
+        max_results: int = 60,
+    ) -> tuple[MatchResult, ...]:
+        """Return independent local template peaks in full-client coordinates."""
+
+        template, mask = self._load(spec)
+        gray = self._gray(frame)
+        frame_height, frame_width = gray.shape[:2]
+        left = top = 0
+        search = gray
+        if spec.relative_roi is not None:
+            left, top, search = self._relative_roi(gray, spec.relative_roi)
+        elif spec.roi is not None:
+            left, top, width, height = self.reference_roi(
+                spec.roi,
+                frame_width,
+                frame_height,
+            )
+            search = gray[top : top + height, left : left + width]
+        if search.size == 0:
+            return ()
+
+        radius = max(1, int(peak_radius))
+        limit = max(1, int(max_results))
+        score_floor = max(-1.0, min(1.0, float(minimum_score)))
+        kernel = np.ones((radius * 2 + 1, radius * 2 + 1), dtype=np.uint8)
+        candidates: list[MatchResult] = []
+        base_scale = offline_template_scale(
+            spec.file_name,
+            frame_width,
+            frame_height,
+            reference_scale=spec.reference_scale,
+        )
+        for scale in self._candidate_scales(base_scale, spec.scale_ratios):
+            scaled = self._resize_template(template, scale)
+            scaled_mask = self._resize_mask(mask, scale)
+            height, width = scaled.shape[:2]
+            if height < 4 or width < 4 or height > search.shape[0] or width > search.shape[1]:
+                continue
+            method = cv2.TM_CCORR_NORMED if scaled_mask is not None else cv2.TM_CCOEFF_NORMED
+            try:
+                response = cv2.matchTemplate(search, scaled, method, mask=scaled_mask)
+            except cv2.error:
+                continue
+            np.nan_to_num(response, copy=False, nan=-1.0, posinf=-1.0, neginf=-1.0)
+            local_maximum = cv2.dilate(response, kernel)
+            peak_y, peak_x = np.where(
+                (response >= score_floor) & (response >= local_maximum - 1e-7)
+            )
+            locations = sorted(
+                zip(peak_y.tolist(), peak_x.tolist()),
+                key=lambda value: float(response[value[0], value[1]]),
+                reverse=True,
+            )[:limit]
+            for y, x in locations:
+                candidates.append(
+                    MatchResult(
+                        score=float(response[y, x]),
+                        position=(left + x, top + y),
+                        size=(width, height),
+                        pixel_score=self._pixel_similarity(
+                            search[y : y + height, x : x + width],
+                            scaled,
+                            scaled_mask,
+                        ),
+                    )
+                )
+
+        independent: list[MatchResult] = []
+        for candidate in sorted(candidates, key=lambda value: value.score, reverse=True):
+            if any(
+                (candidate.center[0] - kept.center[0]) ** 2
+                + (candidate.center[1] - kept.center[1]) ** 2
+                <= radius**2
+                for kept in independent
+            ):
+                continue
+            independent.append(candidate)
+            if len(independent) >= limit:
+                break
+        return tuple(independent)
+
+    def passes(self, result: MatchResult, spec: TemplateSpec) -> bool:
+        if result.score < self.threshold_for(spec):
+            return False
+        if spec.min_pixel_score is None:
+            return True
+        return result.pixel_score >= spec.min_pixel_score
+
+    def template_brightness_ratio(
+        self,
+        frame: np.ndarray,
+        spec: TemplateSpec,
+        result: MatchResult,
+        minimum_template_gray: int = 0,
+    ) -> float:
+        template, mask = self._load(spec)
+        width, height = result.size
+        if width <= 0 or height <= 0:
+            return 0.0
+        scaled = cv2.resize(template, (width, height), interpolation=cv2.INTER_AREA)
+        scaled_mask = (
+            cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
+            if mask is not None
+            else None
+        )
+        x, y = result.position
+        gray = self._gray(frame)
+        region = gray[max(0, y) : y + height, max(0, x) : x + width]
+        if region.shape != scaled.shape:
+            return 0.0
+        return self.foreground_brightness_ratio(
+            scaled,
+            region,
+            minimum_reference_gray=minimum_template_gray,
+            mask=scaled_mask,
+        )
+
+    @classmethod
+    def foreground_brightness_ratio(
+        cls,
+        reference: np.ndarray,
+        sample: np.ndarray,
+        minimum_reference_gray: int = 0,
+        mask: np.ndarray | None = None,
+    ) -> float:
+        reference_gray = cls._gray(reference)
+        sample_gray = cls._gray(sample)
+        if reference_gray.shape != sample_gray.shape or reference_gray.size == 0:
+            return 0.0
+        active = reference_gray >= max(0, min(255, int(minimum_reference_gray)))
+        if mask is not None:
+            if mask.shape != reference_gray.shape:
+                return 0.0
+            active &= mask > 0
+        if not np.any(active):
+            return 0.0
+        template_mean = float(np.mean(reference_gray[active]))
+        region_mean = float(np.mean(sample_gray[active]))
+        return region_mean / template_mean if template_mean > 0 else 0.0
 
     def find_all(
         self,
@@ -200,7 +421,12 @@ class Vision:
         if spec.roi is not None:
             left, top, width, height = self.reference_roi(spec.roi, frame_width, frame_height)
             search = gray[top : top + height, left : left + width]
-        scale = offline_template_scale(spec.file_name, frame_width, frame_height)
+        scale = offline_template_scale(
+            spec.file_name,
+            frame_width,
+            frame_height,
+            reference_scale=spec.reference_scale,
+        )
         interpolation = cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC
         scaled = cv2.resize(template, None, fx=scale, fy=scale, interpolation=interpolation)
         scaled_mask = None
@@ -240,8 +466,8 @@ class Vision:
         while monotonic() <= end_at:
             frame = self.capture()
             result = self.match(frame, spec)
-            self._status(spec.name, f"{result.score:.3f}")
-            if result.score >= self.threshold_for(spec):
+            self._status(spec.name, f"{result.score:.3f}/{result.pixel_score:.3f}")
+            if self.passes(result, spec):
                 return result
             self.task.sleep(interval)
         return None
@@ -264,13 +490,26 @@ class Vision:
         frame: np.ndarray,
         name: str,
         roi: tuple[int, int, int, int] | None = None,
+        relative_roi: tuple[float, float, float, float] | None = None,
     ) -> list:
         offset_x = offset_y = 0
         target = frame
-        if roi is not None:
+        if roi is not None and relative_roi is not None:
+            raise ValueError("roi and relative_roi cannot be used together")
+        if relative_roi is not None:
+            offset_x, offset_y, target = self._relative_roi(frame, relative_roi)
+        elif roi is not None:
             height, width = frame.shape[:2]
             offset_x, offset_y, roi_width, roi_height = self.reference_roi(roi, width, height)
             target = frame[offset_y : offset_y + roi_height, offset_x : offset_x + roi_width]
+        if target.size == 0:
+            height, width = frame.shape[:2]
+            region = relative_roi if relative_roi is not None else roi
+            self._status(
+                f"{name} OCR错误",
+                f"识别区域超出画面：roi={region}, frame={width}x{height}",
+            )
+            return []
         try:
             key = getattr(self.task, "ocr_threshold_key", "跑图跑商 OCR 阈值")
             boxes = self.task.ocr(
@@ -323,8 +562,17 @@ class Vision:
         frame: np.ndarray,
         name: str,
         roi: tuple[int, int, int, int] | None = None,
+        relative_roi: tuple[float, float, float, float] | None = None,
     ) -> str:
-        values = [str(getattr(box, "name", "")) for box in self.ocr_boxes(frame, name, roi)]
+        values = [
+            str(getattr(box, "name", ""))
+            for box in self.ocr_boxes(
+                frame,
+                name,
+                roi,
+                relative_roi=relative_roi,
+            )
+        ]
         text = " ".join(value for value in values if value)
         self._status(f"{name} OCR", text or "-")
         return text

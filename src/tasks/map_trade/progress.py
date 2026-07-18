@@ -7,11 +7,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
+from src.tasks.map_trade.data import SHOP_PURCHASE_REFERENCES
 from src.tasks.map_trade.models import COLLECTABLE_CARDS, DAILY_SUBMAP_LIMIT, SUBMAPS_PER_CARD
 
 UTC_PLUS_8 = timezone(timedelta(hours=8), name="UTC+8")
 STATE_SCHEMA_VERSION = 1
 VALID_CARD_IDS = frozenset(card.card_id for card in COLLECTABLE_CARDS)
+VALID_FAVORITE_SHOP_IDS = frozenset(SHOP_PURCHASE_REFERENCES)
 
 
 def _effective_time(now: datetime) -> datetime:
@@ -37,6 +39,7 @@ class ProgressState:
     daily_submaps: int = 0
     depleted_today: bool = False
     favorite_week: str = ""
+    favorite_cards: list[str] = field(default_factory=list)
     cooking_week: str = ""
 
     def completed_submaps(self, card_id: str) -> set[int]:
@@ -53,6 +56,10 @@ class ProgressState:
     @property
     def weekly_submap_count(self) -> int:
         return sum(len(self.completed_submaps(card_id)) for card_id in self.cards)
+
+    @property
+    def completed_favorite_cards(self) -> set[str]:
+        return {shop_id for shop_id in self.favorite_cards if shop_id in VALID_FAVORITE_SHOP_IDS}
 
 
 class ProgressStore:
@@ -83,6 +90,7 @@ class ProgressStore:
             daily_submaps=self._safe_nonnegative_int(raw.get("daily_submaps", 0)),
             depleted_today=bool(raw.get("depleted_today", False)),
             favorite_week=str(raw.get("favorite_week", "")),
+            favorite_cards=self._sanitize_favorite_cards(raw.get("favorite_cards", [])),
             cooking_week=str(raw.get("cooking_week", "")),
         )
         if self.state.daily_key != day:
@@ -120,6 +128,12 @@ class ProgressStore:
             cards[str(card)] = sorted(completed)
         return cards
 
+    @staticmethod
+    def _sanitize_favorite_cards(raw_cards) -> list[str]:
+        if not isinstance(raw_cards, list):
+            return []
+        return sorted({str(value) for value in raw_cards} & VALID_FAVORITE_SHOP_IDS)
+
     def _read_json(self) -> dict:
         if not self.path.exists():
             return {}
@@ -146,6 +160,7 @@ class ProgressStore:
             "daily_submaps": self.state.daily_submaps,
             "depleted_today": self.state.depleted_today,
             "favorite_week": self.state.favorite_week,
+            "favorite_cards": sorted(self.state.completed_favorite_cards),
             "cooking_week": self.state.cooking_week,
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -183,8 +198,31 @@ class ProgressStore:
 
     def mark_favorites_built(self) -> None:
         state = self._require_state()
+        if state.completed_favorite_cards != VALID_FAVORITE_SHOP_IDS:
+            raise RuntimeError("favorite cartridge rebuild is incomplete")
         state.favorite_week = state.weekly_key
         self.save()
+
+    def mark_favorite_card(self, shop_id: str) -> bool:
+        if shop_id not in VALID_FAVORITE_SHOP_IDS:
+            raise ValueError(f"invalid favorite shop: {shop_id}")
+        state = self._require_state()
+        completed = state.completed_favorite_cards
+        if shop_id in completed:
+            return False
+        completed.add(shop_id)
+        state.favorite_cards = sorted(completed)
+        self.save()
+        return True
+
+    def clear_favorite_cards(self) -> None:
+        state = self._require_state()
+        state.favorite_cards = []
+        state.favorite_week = ""
+        self.save()
+
+    def favorite_card_complete(self, shop_id: str) -> bool:
+        return shop_id in self._require_state().completed_favorite_cards
 
     def mark_cooking_complete(self) -> None:
         state = self._require_state()
@@ -193,7 +231,11 @@ class ProgressStore:
 
     def should_rebuild_favorites(self, every_run: bool = False) -> bool:
         state = self._require_state()
-        return every_run or state.favorite_week != state.weekly_key
+        return (
+            every_run
+            or state.favorite_week != state.weekly_key
+            or state.completed_favorite_cards != VALID_FAVORITE_SHOP_IDS
+        )
 
     def should_cook(self, every_run: bool = False) -> bool:
         state = self._require_state()

@@ -59,10 +59,12 @@ class FreeGachaTask(BaseBD2Task):
                 "免费抽按钮等待秒数": 3.0,
                 "确认弹窗等待秒数": 8.0,
                 "结果跳过连续点击秒数": 3.0,
+                "结果页 OCR 等待秒数": 5.0,
+                "结果页 OCR 间隔秒数": 0.1,
                 "主页确认等待秒数": 10.0,
                 "跳过点击间隔秒数": 0.2,
-                "结果页关闭前等待秒数": 2.0,
-                "结果页返回前等待秒数": 2.0,
+                "结果页关闭前等待秒数": 1.0,
+                "结果页返回前等待秒数": 1.0,
                 "抽卡页面关键词最低命中数": 3,
                 "确认弹窗关键词最低命中数": 2,
                 "结果页关键词最低命中数": 3,
@@ -74,6 +76,8 @@ class FreeGachaTask(BaseBD2Task):
                 "抽卡页面关键词最低命中数": "确认已进入抽卡页所需的 OCR 关键词数量。",
                 "确认弹窗关键词最低命中数": "确认抽抽乐弹窗所需的 OCR 关键词数量。",
                 "结果跳过连续点击秒数": "抽卡结果页连续点击跳过按钮的最长时间。",
+                "结果页 OCR 等待秒数": "连续点击结束后，持续识别抽抽乐券详情页的最长时间。",
+                "结果页 OCR 间隔秒数": "等待抽抽乐券详情页时的 OCR 识别间隔。",
                 "结果页关闭前等待秒数": "识别到抽抽乐券结果页后，点击右上角关闭前等待的时间。",
                 "结果页返回前等待秒数": "点击右上角关闭后，再点击左上角返回前等待的时间。",
                 "结果页关键词最低命中数": "结果页返回确认使用 3 个固定 OCR 关键词。",
@@ -326,15 +330,15 @@ class FreeGachaTask(BaseBD2Task):
         found, text = self._click_skip_until_back_page(section_name)
         self.info_set(f"{section_name} 结果 OCR", text or "-")
         if not found:
-            self.log_info(f"{section_name}：连续点击跳过后未检测到抽卡结果页。")
+            self.log_info(f"{section_name}：连续点击跳过并持续 OCR 后未检测到抽抽乐券详情页。")
             return False
 
-        self.log_info(f"{section_name}：检测到结果页关键词，点击券详情后返回抽卡页面。")
-        self.sleep(max(0.0, float(self.config.get("结果页关闭前等待秒数", 2.0))))
+        self.log_info(f"{section_name}：已确认抽抽乐券详情页，等待后关闭并返回抽卡页面。")
+        self.sleep(max(0.0, float(self.config.get("结果页关闭前等待秒数", 1.0))))
         self._click_reference(
             1420,
             326,
-            after_sleep=max(0.0, float(self.config.get("结果页返回前等待秒数", 2.0))),
+            after_sleep=max(0.0, float(self.config.get("结果页返回前等待秒数", 1.0))),
         )
         self._click_reference(105, 51, after_sleep=0.0)
         return self._wait_for_gacha_page(f"{section_name} 返回抽卡页")
@@ -358,12 +362,12 @@ class FreeGachaTask(BaseBD2Task):
                 break
             self.sleep(min(interval, remaining))
 
-        frame = self.capture_frame()
-        return self._ocr_keywords_in_frame(
-            frame,
+        return self._wait_for_ocr_keywords(
             BACK_PAGE_KEYWORDS,
-            minimum_matches,
+            timeout=max(0.0, float(self.config.get("结果页 OCR 等待秒数", 5.0))),
+            minimum_matches=minimum_matches,
             name=f"{section_name}_result",
+            interval=max(0.05, float(self.config.get("结果页 OCR 间隔秒数", 0.1))),
         )
 
     def _wait_for_template(

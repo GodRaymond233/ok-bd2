@@ -59,13 +59,30 @@ def parse_calendar_payload(payload: str | bytes | dict, source: str = "payload")
             if not isinstance(raw_aliases, list):
                 raise ValueError(f"第 {day} 日 aliases 必须是数组")
             aliases = tuple(str(value).strip() for value in raw_aliases if str(value).strip())
+            sell = raw.get("sell", True)
+            if not isinstance(sell, bool):
+                raise ValueError(f"第 {day} 日 sell 必须是布尔值")
+            raw_reserve = raw.get("reserve", 0)
+            if isinstance(raw_reserve, bool) or not isinstance(raw_reserve, int):
+                raise ValueError(f"第 {day} 日 reserve 必须是非负整数")
+            reserve = raw_reserve
+            if reserve < 0:
+                raise ValueError(f"第 {day} 日 reserve 必须是非负整数")
             if not item or not shop:
                 raise ValueError(f"第 {day} 日条目缺少 item/shop")
             if shop not in KNOWN_SHOPS and shop not in KNOWN_SHOPS.values():
                 raise ValueError(f"未知商店：{shop}")
             if shop in KNOWN_SHOPS:
                 shop = KNOWN_SHOPS[shop]
-            entries.append(CalendarEntry(item=item, shop=shop, aliases=aliases))
+            entries.append(
+                CalendarEntry(
+                    item=item,
+                    shop=shop,
+                    aliases=aliases,
+                    sell=sell,
+                    reserve=reserve,
+                )
+            )
         days[day] = tuple(entries)
     return LoadedCalendar(days=days, source=source, updated_at=updated_at)
 
@@ -124,7 +141,16 @@ class PriceCalendarClient:
         self.sources_path = sources_path
         self.timeout = timeout
 
-    def load(self, use_online: bool, manual_text: str = "") -> LoadedCalendar:
+    def load(
+        self,
+        use_online: bool = True,
+        manual_text: str = "",
+        use_bundled: bool = True,
+    ) -> LoadedCalendar:
+        if use_bundled:
+            return parse_calendar_payload(
+                self.bundled_path.read_text(encoding="utf-8"), source="bundled"
+            )
         if not use_online:
             return parse_manual_calendar(manual_text)
 
@@ -159,9 +185,7 @@ class PriceCalendarClient:
         cached = self._read_cache()
         if cached is not None:
             return cached
-        return parse_calendar_payload(
-            self.bundled_path.read_text(encoding="utf-8"), source="bundled"
-        )
+        raise RuntimeError("在线价表和本地缓存均不可用")
 
     def _sources(self) -> tuple[str, ...]:
         if self.sources_path is None or not self.sources_path.exists():
