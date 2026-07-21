@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
 from time import monotonic
 
 import numpy as np
 
-from src.tasks.map_trade.calendar import PriceCalendarClient
+from src.tasks.map_trade.calendar import (
+    PURCHASE_STOCK_REFRESH_HOUR,
+    SALE_PRICE_REFRESH_HOUR,
+    PriceCalendarClient,
+    purchase_stock_date,
+    sale_price_calendar_date,
+)
 from src.tasks.map_trade.data import (
     ITEM_ALIASES,
     SHOP_CARTRIDGE_BRIGHTNESS,
@@ -62,6 +69,16 @@ BUY_ALL_FAVORITES_POINT = (
     ((1324 + 1545) / 2) / 1920,
     ((982 + 1029) / 2) / 1080,
 )
+BUY_ALL_FAVORITES_REGION = (
+    1324 / 1920,
+    982 / 1080,
+    1545 / 1920,
+    1029 / 1080,
+)
+BUY_ALL_FAVORITES_KEYWORD = "购买全部收藏"
+BUY_ALL_FAVORITES_STABLE_HITS = 2
+BUY_ALL_FAVORITES_TIMEOUT = 30.0
+BUY_ALL_FAVORITES_INTERVAL = 0.25
 BUY_CONFIRM_DIALOG_REGION = (
     701 / 1920,
     328 / 1080,
@@ -73,15 +90,22 @@ BUY_CONFIRM_KEYWORDS = (
     "一键购买全部收藏",
     "是否购买所有加入收藏的商品",
 )
-BUY_CONFIRM_TIMEOUT = 10.0
+BUY_CONFIRM_TIMEOUT = 30.0
 BUY_CONFIRM_INTERVAL = 0.25
+BUY_CONFIRM_PRE_CLICK_DELAY = 0.8
+BUY_CONFIRM_POST_CLICK_DELAY = 0.8
+BUY_TO_SELL_SOLD_OUT_KEYWORD = "售罄"
+BUY_TO_SELL_TIMEOUT = 30.0
+BUY_TO_SELL_OCR_INTERVAL = 0.25
+BUY_TO_SELL_PRE_CLICK_DELAY = 0.5
+BUY_TO_SELL_POST_CLICK_DELAY = 0.5
 SHOP_MODE_TITLE_REGION = (
     226 / 1920,
     24 / 1080,
     359 / 1920,
     80 / 1080,
 )
-SELL_MODE_POINT = (172 / 1920, 251 / 1080)
+SELL_MODE_POINT = (173 / 1920, 250 / 1080)
 SHOP_MODE_TIMEOUT = 4.0
 SHOP_MODE_INTERVAL = 0.25
 SELL_SORT_MODE_REGION = (
@@ -206,7 +230,11 @@ class Trader:
         self.vision = vision
         self.navigator = navigator
         self.progress = progress
-        self.started_at = progress.now_provider().astimezone(UTC_PLUS_8)
+        self.now_provider = progress.now_provider
+        self.started_at = self._current_market_time()
+        self._buy_completed_in_current_shop = False
+        self._last_sale_unavailable = False
+        self._last_sale_reason = ""
         self.calendar_client = PriceCalendarClient(
             bundled_path=CALENDAR_DIR / "price_calendar.v1.json",
             sources_path=CALENDAR_DIR / "calendar_sources.json",
@@ -288,11 +316,16 @@ class Trader:
         return success
 
     def run_buy(self) -> bool:
+        stock_date = purchase_stock_date(self._current_market_time())
+        self._status("购买库存日期", stock_date.isoformat())
+        self.task.log_info(
+            f"买：按{stock_date.isoformat()}库存批次执行（每日"
+            f"{PURCHASE_STOCK_REFRESH_HOUR:02d}:00刷新）。"
+        )
         entered = self.navigator.enter_q_sp6_buy_flow()
         if not entered.success:
             self.task.log_warning(f"买：{entered.message}")
             return False
-        self.task.sleep(0.5)
         rebuild_cycle = str(self.task.config.get("收藏重建周期", "每周"))
         every_run = rebuild_cycle == "每次"
         if rebuild_cycle == "永不":
@@ -304,18 +337,64 @@ class Trader:
                 self.progress.clear_favorite_cards()
             if not self.rebuild_favorites():
                 return False
-        return self.buy_all_favorites()
+        completed = self.buy_all_favorites()
+        self._buy_completed_in_current_shop = completed
+        return completed
 
     def run_sell(self) -> bool:
-        entered = self.navigator.reach_merchant_shop()
-        if not entered.success:
-            self.task.log_warning(f"卖：{entered.message}")
-            return False
-        if not self._ensure_sell_page():
-            return False
+        if getattr(self, "_buy_completed_in_current_shop", False):
+            self.task.log_info("卖：买卖同时执行，继续使用当前商店并等待购买结果。")
+            if not self._switch_from_completed_buy_to_sell():
+                return False
+        else:
+            entered = self.navigator.reach_merchant_shop()
+            if not entered.success:
+                self.task.log_warning(f"卖：{entered.message}")
+                return False
+            if not self._ensure_sell_page():
+                return False
+        self._buy_completed_in_current_shop = False
         return self.sell_max_price_items()
 
-    def _ensure_sell_page(self, timeout: float = SHOP_MODE_TIMEOUT) -> bool:
+    def _switch_from_completed_buy_to_sell(
+        self,
+        timeout: float = BUY_TO_SELL_TIMEOUT,
+    ) -> bool:
+        end_at = monotonic() + max(0.0, timeout)
+        last_text = ""
+        expected = normalize_text(self.vision.simplify(BUY_TO_SELL_SOLD_OUT_KEYWORD))
+        while True:
+            text = self.vision.ocr_text(
+                self.vision.capture(),
+                "买后售罄确认",
+            )
+            last_text = text or last_text
+            normalized = normalize_text(self.vision.simplify(text))
+            if expected in normalized:
+                self._status("买后售罄确认", "已命中")
+                self.task.log_info(
+                    "卖：整帧OCR命中售罄，等待0.5秒后点击出售入口。"
+                )
+                self.task.sleep(BUY_TO_SELL_PRE_CLICK_DELAY)
+                self.task.operate_click(
+                    *SELL_MODE_POINT,
+                    after_sleep=BUY_TO_SELL_POST_CLICK_DELAY,
+                )
+                return self._ensure_sell_page(allow_switch=False)
+            if monotonic() >= end_at:
+                break
+            self.task.sleep(BUY_TO_SELL_OCR_INTERVAL)
+        self.task.log_warning(
+            f"卖：买后等待售罄OCR超时，未切换出售页，OCR={last_text or '-'}。"
+        )
+        return False
+
+    def _ensure_sell_page(
+        self,
+        timeout: float = SHOP_MODE_TIMEOUT,
+        *,
+        allow_switch: bool = True,
+    ) -> bool:
         end_at = monotonic() + max(0.0, timeout)
         switched = False
         last_text = ""
@@ -331,7 +410,7 @@ class Trader:
             if "出售" in normalized:
                 self._status("商店页面", "出售")
                 return True
-            if "购买" in normalized and not switched:
+            if "购买" in normalized and allow_switch and not switched:
                 self._status("商店页面", "购买→出售")
                 self.task.operate_click(*SELL_MODE_POINT, after_sleep=0.5)
                 switched = True
@@ -831,15 +910,60 @@ class Trader:
         return self._select_shop_cartridge_from_first_page(reference.shop_id)
 
     def buy_all_favorites(self) -> bool:
+        if not self._wait_for_buy_all_favorites_button():
+            self.task.log_warning("买：商店页面未稳定显示一键购买全部收藏按钮。")
+            return False
         self.task.operate_click(*BUY_ALL_FAVORITES_POINT, after_sleep=0.3)
         if not self._wait_for_purchase_confirmation():
             self.task.log_warning(
                 "买：点击一键购买全部收藏后，未同时识别到确认标题和询问文字。"
             )
             return False
-        self.task.operate_click(*BUY_CONFIRM_POINT, after_sleep=0.8)
+        self.task.log_info(
+            f"买：购买确认弹窗OCR完成，等待{BUY_CONFIRM_PRE_CLICK_DELAY:.1f}秒后点击确认。"
+        )
+        self.task.sleep(BUY_CONFIRM_PRE_CLICK_DELAY)
+        self.task.operate_click(
+            *BUY_CONFIRM_POINT,
+            after_sleep=BUY_CONFIRM_POST_CLICK_DELAY,
+        )
         self.task.log_info("买：已确认购买全部收藏商品。")
         return True
+
+    def _wait_for_buy_all_favorites_button(
+        self,
+        timeout: float = BUY_ALL_FAVORITES_TIMEOUT,
+    ) -> bool:
+        end_at = monotonic() + max(0.0, timeout)
+        consecutive_hits = 0
+        last_text = ""
+        expected = normalize_text(self.vision.simplify(BUY_ALL_FAVORITES_KEYWORD))
+        while True:
+            frame = self.vision.capture()
+            text = self.vision.ocr_text(
+                frame,
+                "一键购买全部收藏按钮",
+                relative_roi=BUY_ALL_FAVORITES_REGION,
+            )
+            last_text = text or last_text
+            normalized = normalize_text(self.vision.simplify(text))
+            if expected in normalized:
+                consecutive_hits += 1
+            else:
+                consecutive_hits = 0
+            self._status(
+                "一键购买全部收藏按钮 OCR稳定",
+                f"{consecutive_hits}/{BUY_ALL_FAVORITES_STABLE_HITS}",
+            )
+            if consecutive_hits >= BUY_ALL_FAVORITES_STABLE_HITS:
+                return True
+            if monotonic() >= end_at:
+                break
+            self.task.sleep(BUY_ALL_FAVORITES_INTERVAL)
+        self.task.log_warning(
+            f"买：一键购买全部收藏按钮OCR超时，OCR={last_text or '-'}。"
+        )
+        return False
 
     def _wait_for_purchase_confirmation(
         self,
@@ -876,6 +1000,8 @@ class Trader:
 
     def sell_max_price_items(self) -> bool:
         try:
+            market_now = self._current_market_time()
+            calendar_date = sale_price_calendar_date(market_now)
             calendar = self.calendar_client.load(
                 use_bundled=bool(
                     self.task.config.get("使用程序默认价表", True)
@@ -884,7 +1010,13 @@ class Trader:
                 manual_text=str(self.task.config.get("自定义最高价表", "")),
             )
             self._status("价表来源", calendar.source)
-            entries = list(calendar.entries_for(self.started_at.day))
+            self._status("出售价表日期", calendar_date.isoformat())
+            self.task.log_info(
+                f"卖：当前北京时间{market_now.strftime('%Y-%m-%d %H:%M:%S')}，"
+                f"按{calendar_date.isoformat()}最高价表执行（每日"
+                f"{SALE_PRICE_REFRESH_HOUR:02d}:00刷新）。"
+            )
+            entries = list(calendar.entries_for(calendar_date.day))
         except Exception as exc:
             self.task.log_warning(f"价表加载失败，为避免误卖已停止出售：{exc}")
             return False
@@ -903,16 +1035,32 @@ class Trader:
             return True
 
         failed = []
+        unavailable: list[str] = []
+        not_sold_details: list[str] = []
         selected_shop = ""
         for entry in entries:
             if entry.shop != selected_shop:
                 if not self.select_shop_tab(entry.shop):
                     failed.append(entry)
+                    not_sold_details.append(f"{entry.item}（商店卡带选择失败）")
+                    self._status("未出售商品", "、".join(not_sold_details))
                     selected_shop = ""
                     continue
                 selected_shop = entry.shop
             if not self._sell_selected_entry(entry):
+                if getattr(self, "_last_sale_unavailable", False):
+                    detail = f"{entry.item}（{self._last_sale_reason}）"
+                    unavailable.append(detail)
+                    not_sold_details.append(detail)
+                    self._status("未出售商品", "、".join(not_sold_details))
+                    continue
                 failed.append(entry)
+                not_sold_details.append(f"{entry.item}（出售执行失败）")
+                self._status("未出售商品", "、".join(not_sold_details))
+        if unavailable:
+            self.task.log_warning("未出售商品：" + "、".join(unavailable))
+        if not not_sold_details:
+            self._status("未出售商品", "无")
         if failed:
             self.task.log_warning("最高价出售失败：" + "、".join(entry.item for entry in failed))
         return not failed
@@ -923,6 +1071,8 @@ class Trader:
         return self._sell_selected_entry(entry)
 
     def _sell_selected_entry(self, entry: CalendarEntry) -> bool:
+        self._last_sale_unavailable = False
+        self._last_sale_reason = ""
         list_quantity = self._prepare_first_sale_item(entry)
         if list_quantity is None:
             return False
@@ -997,6 +1147,8 @@ class Trader:
             f"卖：最多点击排序{SALE_SORT_MAX_CLICKS}次后，首格仍未同时识别到"
             f"120%和{entry.item}。"
         )
+        self._last_sale_unavailable = True
+        self._last_sale_reason = "未发现120%，可能无货或已经售出"
         return None
 
     def _first_sale_item_matches(self, text: str, entry: CalendarEntry) -> bool:
@@ -1184,6 +1336,18 @@ class Trader:
 
     def _normal(self, value: str) -> str:
         return normalize_text(self.vision.simplify(value))
+
+    def _current_market_time(self) -> datetime:
+        provider = getattr(self, "now_provider", None)
+        if callable(provider):
+            current = provider()
+        else:
+            current = getattr(self, "started_at", None)
+            if current is None:
+                current = self.progress.now_provider()
+        if current.tzinfo is None:
+            return current.replace(tzinfo=UTC_PLUS_8)
+        return current.astimezone(UTC_PLUS_8)
 
     @staticmethod
     def _box_values(box) -> tuple[float, float, float, float] | None:

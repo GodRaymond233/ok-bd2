@@ -17,9 +17,19 @@ from src.tasks.map_trade.models import (
     MatchResult,
     TemplateSpec,
 )
+from src.utils.image_utils import (
+    candidate_scales,
+    pixel_similarity,
+    relative_roi_frame,
+    resize_mask,
+    resize_template,
+    to_gray,
+)
 from src.utils.template_resolution import (
     offline_template_requires_green_mask,
     offline_template_scale,
+    offline_template_search_region,
+    offline_template_uses_main_region,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -133,30 +143,15 @@ class Vision:
         self._templates[spec.file_name] = (gray, mask)
         return gray, mask
 
-    @staticmethod
-    def _gray(frame: np.ndarray) -> np.ndarray:
-        if frame.ndim == 2:
-            return frame
-        if frame.shape[2] == 4:
-            return cv2.cvtColor(frame, cv2.COLOR_BGRA2GRAY)
-        return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    _gray = staticmethod(to_gray)
 
     @staticmethod
     def _candidate_scales(
         base_scale: float, scale_ratios: tuple[float, ...] = (1.0,)
     ) -> tuple[float, ...]:
-        return tuple(round(max(0.2, base_scale * ratio), 3) for ratio in scale_ratios)
+        return tuple(candidate_scales(base_scale, scale_ratios))
 
-    @staticmethod
-    def _relative_roi(
-        frame: np.ndarray, roi: tuple[float, float, float, float]
-    ) -> tuple[int, int, np.ndarray]:
-        height, width = frame.shape[:2]
-        left = max(0, min(width, round(width * roi[0])))
-        top = max(0, min(height, round(height * roi[1])))
-        right = max(left, min(width, round(width * roi[2])))
-        bottom = max(top, min(height, round(height * roi[3])))
-        return left, top, frame[top:bottom, left:right]
+    _relative_roi = staticmethod(relative_roi_frame)
 
     @staticmethod
     def bright_neutral_ratio(
@@ -180,35 +175,9 @@ class Vision:
         )
         return float(np.mean(highlighted))
 
-    @staticmethod
-    def _pixel_similarity(
-        region: np.ndarray,
-        template: np.ndarray,
-        mask: np.ndarray | None = None,
-    ) -> float:
-        if region.shape != template.shape:
-            return -1.0
-        diff = np.abs(region.astype(np.float32) - template.astype(np.float32))
-        if mask is not None:
-            active = mask > 0
-            if not np.any(active):
-                return -1.0
-            diff = diff[active]
-        return float(1.0 - np.mean(diff) / 255.0)
-
-    @staticmethod
-    def _resize_template(template: np.ndarray, scale: float) -> np.ndarray:
-        if abs(scale - 1.0) < 0.001:
-            return template
-        interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC
-        return cv2.resize(template, None, fx=scale, fy=scale, interpolation=interpolation)
-
-    @staticmethod
-    def _resize_mask(mask: np.ndarray | None, scale: float) -> np.ndarray | None:
-        if mask is None or abs(scale - 1.0) < 0.001:
-            return mask
-        resized = cv2.resize(mask, None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST)
-        return np.where(resized > 0, 255, 0).astype(np.uint8)
+    _pixel_similarity = staticmethod(pixel_similarity)
+    _resize_template = staticmethod(resize_template)
+    _resize_mask = staticmethod(resize_mask)
 
     def match(self, frame: np.ndarray, spec: TemplateSpec) -> MatchResult:
         template, mask = self._load(spec)
@@ -216,7 +185,14 @@ class Vision:
         frame_height, frame_width = gray.shape[:2]
         left = top = 0
         search = gray
-        if spec.relative_roi is not None:
+        if offline_template_uses_main_region(spec.file_name):
+            left, top, right, bottom = offline_template_search_region(
+                spec.file_name,
+                frame_width,
+                frame_height,
+            )
+            search = gray[top:bottom, left:right]
+        elif spec.relative_roi is not None:
             left, top, search = self._relative_roi(gray, spec.relative_roi)
         elif spec.roi is not None:
             left, top, width, height = self.reference_roi(spec.roi, frame_width, frame_height)
@@ -275,7 +251,14 @@ class Vision:
         frame_height, frame_width = gray.shape[:2]
         left = top = 0
         search = gray
-        if spec.relative_roi is not None:
+        if offline_template_uses_main_region(spec.file_name):
+            left, top, right, bottom = offline_template_search_region(
+                spec.file_name,
+                frame_width,
+                frame_height,
+            )
+            search = gray[top:bottom, left:right]
+        elif spec.relative_roi is not None:
             left, top, search = self._relative_roi(gray, spec.relative_roi)
         elif spec.roi is not None:
             left, top, width, height = self.reference_roi(
@@ -481,6 +464,13 @@ class Vision:
         match = self.wait_template(spec, timeout)
         if match is None:
             return False
+        self._status(
+            f"{spec.name}点击中心",
+            (
+                f"center=({match.center[0]},{match.center[1]}), "
+                f"match={match.score:.3f}, pixel={match.pixel_score:.3f}"
+            ),
+        )
         frame = self.capture()
         self.click_client(match.center, frame.shape, after_sleep=after_sleep)
         return True

@@ -212,6 +212,16 @@ class BaseBD2Task(BaseTask):
         action_name = action_name or "operate_click"
         if not self._check_action_interval(action_name, interval):
             return False
+        try:
+            click_log = self._click_log_message(
+                x,
+                y,
+                int(self.width),
+                int(self.height),
+                str(name or action_name),
+            )
+        except Exception:
+            click_log = f"{name or action_name}: target={x!r},{y!r}"
         result = self.operate(
             lambda: self.click(
                 x,
@@ -228,8 +238,27 @@ class BaseBD2Task(BaseTask):
             block=True,
             restore_cursor=restore_cursor,
         )
+        self.info_set("鼠标点击", click_log)
         self.sleep(after_sleep)
         return result
+
+    @staticmethod
+    def _click_log_message(x, y, width: int, height: int, action_name: str) -> str:
+        if isinstance(x, (int, float)) and isinstance(y, (int, float)):
+            if 0 < x < 1 or 0 < y < 1:
+                client_x = int(width * x)
+                client_y = int(height * y)
+                return (
+                    f"{action_name}: client=({client_x},{client_y}), "
+                    f"relative=({float(x):.6f},{float(y):.6f})"
+                )
+            return f"{action_name}: client=({int(x)},{int(y)})"
+
+        if isinstance(x, Box):
+            return f"{action_name}: box={x.name or '-'} {x.box}"
+        if isinstance(x, list):
+            return f"{action_name}: boxes={len(x)}"
+        return f"{action_name}: target={x!r},{y!r}"
 
     def _sleep_after_recognition(self) -> None:
         seconds = float(self.config.get("识别成功后等待秒数", 1.0))
@@ -246,10 +275,13 @@ class BaseBD2Task(BaseTask):
         if not ensure_home():
             return False
 
-        # Fixed common flow: confirmed home -> recent cartridge -> wait 1 second
-        # -> recognize the quick-switch icon -> click the recognized center
-        # -> confirm the cartridge selection page.
+        # Fixed common flow: confirmed home -> recognition settle delay
+        # -> recent cartridge -> wait 1 second -> recognize the quick-switch icon
+        # -> click the recognized center -> confirm the cartridge selection page.
+        self._sleep_after_recognition()
+        self.info_set("当前阶段", "点击最近卡带")
         self.operate_click(*CARTRIDGE_RECENT_ENTRY_POINT, after_sleep=1.0)
+        self.info_set("当前阶段", "寻找快速切换按钮")
         if not click_quick_switch():
             return False
         return bool(confirm_quick_switch_page())

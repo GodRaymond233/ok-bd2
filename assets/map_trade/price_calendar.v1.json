@@ -2,7 +2,7 @@
   "schema_version": 1,
   "updated_at": "2026-07-19T00:00:00+08:00",
   "timezone": "Asia/Shanghai",
-  "source_note": "Bundled snapshot; days 17-20 follow the user-confirmed sale table. Rare items remain listed with sell=false and item-specific stock reserves use reserve.",
+  "source_note": "Bundled snapshot; sale day N becomes active at 23:00 UTC+8 on day N-1. Purchase stock refreshes at 08:00 UTC+8. Days 17-20 follow the user-confirmed sale table. Rare items remain listed with sell=false and item-specific stock reserves use reserve.",
   "source_url": "https://browndust2-db.souseha.com/en/market-data",
   "days": {
     "1": [

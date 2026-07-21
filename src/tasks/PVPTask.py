@@ -9,9 +9,21 @@ import numpy as np
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task, green_mask_from_template
+from src.utils.image_utils import (
+    candidate_scales,
+    pixel_similarity,
+    reference_roi_frame,
+    relative_roi_frame,
+    resize_mask,
+    resize_template,
+    to_gray,
+)
+from src.utils.ocr_utils import normalize_ocr_text
 from src.utils.template_resolution import (
     offline_template_requires_green_mask,
     offline_template_scale,
+    offline_template_search_region,
+    offline_template_uses_main_region,
 )
 
 REFERENCE_WIDTH = 1920
@@ -968,12 +980,20 @@ class PVPTask(BaseBD2Task):
 
         try:
             frame_gray = self._to_gray(frame)
-            if spec.relative_roi is not None:
+            if offline_template_uses_main_region(spec.file_name):
+                frame_height, frame_width = frame_gray.shape[:2]
+                roi_left, roi_top, roi_right, roi_bottom = offline_template_search_region(
+                    spec.file_name,
+                    frame_width,
+                    frame_height,
+                )
+                roi_frame = frame_gray[roi_top:roi_bottom, roi_left:roi_right]
+            elif spec.relative_roi is not None:
                 roi_left, roi_top, roi_frame = self._relative_roi_frame(
                     frame_gray,
                     spec.relative_roi,
                 )
-            else:
+            elif spec.roi is not None:
                 roi_left, roi_top, roi_frame = self._roi_frame(frame_gray, spec.roi)
             frame_height, frame_width = roi_frame.shape[:2]
             base_scale = offline_template_scale(
@@ -1391,9 +1411,7 @@ class PVPTask(BaseBD2Task):
         click_y = int(round(center_y - frame_height * 0.085))
         return center_x, max(0, click_y)
 
-    @staticmethod
-    def _normalize_text(text: str) -> str:
-        return "".join(str(text).lower().split())
+    _normalize_text = staticmethod(normalize_ocr_text)
 
     @staticmethod
     def _normalize_multiplier_text(text: str) -> str:
@@ -1408,88 +1426,24 @@ class PVPTask(BaseBD2Task):
             multiplier = 1
         return multiplier if multiplier in {1, 4, 5, 10, 20, 40} else 1
 
-    @staticmethod
-    def _candidate_scales(
-        base_scale: float,
-        scale_ratios: tuple[float, ...] = (1.0,),
-    ) -> list[float]:
-        return [round(max(0.2, base_scale * ratio), 3) for ratio in scale_ratios]
-
-    @staticmethod
-    def _resize_template(template: np.ndarray, scale: float) -> np.ndarray:
-        if abs(scale - 1.0) < 0.001:
-            return template
-        interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC
-        return cv2.resize(template, None, fx=scale, fy=scale, interpolation=interpolation)
-
-    @staticmethod
-    def _resize_mask(mask: np.ndarray | None, scale: float) -> np.ndarray | None:
-        if mask is None:
-            return None
-        if abs(scale - 1.0) < 0.001:
-            return mask
-        resized = cv2.resize(mask, None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST)
-        return np.where(resized > 0, 255, 0).astype(np.uint8)
-
-    @staticmethod
-    def _to_gray(frame) -> np.ndarray:
-        if len(frame.shape) == 2:
-            return frame
-        if frame.shape[2] == 4:
-            return cv2.cvtColor(frame, cv2.COLOR_BGRA2GRAY)
-        return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-    @staticmethod
-    def _pixel_similarity(
-        region: np.ndarray,
-        template: np.ndarray,
-        mask: np.ndarray | None = None,
-    ) -> float:
-        if region.shape != template.shape:
-            return -1.0
-        diff = np.abs(region.astype(np.float32) - template.astype(np.float32))
-        if mask is not None:
-            active = mask > 0
-            if not np.any(active):
-                return -1.0
-            diff = diff[active]
-        return float(1.0 - np.mean(diff) / 255.0)
+    _candidate_scales = staticmethod(candidate_scales)
+    _resize_template = staticmethod(resize_template)
+    _resize_mask = staticmethod(resize_mask)
+    _to_gray = staticmethod(to_gray)
+    _pixel_similarity = staticmethod(pixel_similarity)
 
     @staticmethod
     def _roi_frame(
         frame: np.ndarray,
         roi: tuple[int, int, int, int] | None,
     ) -> tuple[int, int, np.ndarray]:
-        if roi is None:
-            return 0, 0, frame
-        height, width = frame.shape[:2]
-        x, y, w, h = roi
-        scale_x = width / REFERENCE_WIDTH
-        scale_y = height / REFERENCE_HEIGHT
-        left = max(0, round(x * scale_x))
-        top = max(0, round(y * scale_y))
-        right = min(width, round((x + w) * scale_x))
-        bottom = min(height, round((y + h) * scale_y))
-        return left, top, frame[top:bottom, left:right]
+        return reference_roi_frame(frame, roi, (REFERENCE_WIDTH, REFERENCE_HEIGHT))
 
-    @staticmethod
-    def _relative_roi_frame(
-        frame: np.ndarray,
-        roi: tuple[float, float, float, float],
-    ) -> tuple[int, int, np.ndarray]:
-        height, width = frame.shape[:2]
-        left = max(0, min(width, round(width * roi[0])))
-        top = max(0, min(height, round(height * roi[1])))
-        right = max(left, min(width, round(width * roi[2])))
-        bottom = max(top, min(height, round(height * roi[3])))
-        return left, top, frame[top:bottom, left:right]
+    _relative_roi_frame = staticmethod(relative_roi_frame)
 
     @staticmethod
     def _crop_reference(frame, roi: tuple[int, int, int, int] | None):
-        if roi is None:
-            return frame
-        _, _, crop = PVPTask._roi_frame(frame, roi)
-        return crop
+        return reference_roi_frame(frame, roi, (REFERENCE_WIDTH, REFERENCE_HEIGHT))[2]
 
     @staticmethod
     def _screen_reference_roi_to_reference_roi(

@@ -7,9 +7,19 @@ import numpy as np
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task
+from src.utils.image_utils import (
+    candidate_scales,
+    crop_relative,
+    pixel_similarity,
+    resize_mask,
+    resize_template,
+    to_gray,
+)
+from src.utils.ocr_utils import normalize_ocr_text
 from src.utils.template_resolution import (
     offline_template_requires_green_mask,
     offline_template_scale,
+    offline_template_search_region,
 )
 
 REFERENCE_WIDTH = 1920
@@ -175,6 +185,16 @@ class AutoLoginTask(BaseBD2Task):
         if self._passes(touch_to_start, TOUCH_TO_START_TEMPLATE):
             self._click_login_after_touch(touch_to_start)
             return False
+
+        home_button, home_spec = self._match_home_button(frame)
+        self.info_set("小屋按钮", f"{home_button.score:.3f}")
+        if self._passes(home_button, home_spec):
+            self._state = "clearing"
+            self._waiting_home_since = None
+            self.info_set("加载页面", "-")
+            self._set_stage("检测到主页")
+            self._set_action("等待登录页期间检测到主页，开始确认登录已完成。")
+            return self._clear_popups_until_home(frame, home_button)
 
         self._set_stage("等待登录页")
         self._set_action("等待 BrownDustX 或 TOUCH TO START 画面。")
@@ -463,8 +483,15 @@ class AutoLoginTask(BaseBD2Task):
 
         try:
             frame_gray = self._to_gray(frame)
-            frame_height, frame_width = frame_gray.shape[:2]
-            base_scale = offline_template_scale(spec.file_name, frame_width, frame_height)
+            full_height, full_width = frame_gray.shape[:2]
+            roi_left, roi_top, roi_right, roi_bottom = offline_template_search_region(
+                spec.file_name,
+                full_width,
+                full_height,
+            )
+            search = frame_gray[roi_top:roi_bottom, roi_left:roi_right]
+            frame_height, frame_width = search.shape[:2]
+            base_scale = offline_template_scale(spec.file_name, full_width, full_height)
             scales = self._candidate_scales(base_scale)
             best = empty
 
@@ -476,10 +503,10 @@ class AutoLoginTask(BaseBD2Task):
                     continue
 
                 if scaled_mask is None:
-                    result = cv2.matchTemplate(frame_gray, scaled_template, cv2.TM_CCOEFF_NORMED)
+                    result = cv2.matchTemplate(search, scaled_template, cv2.TM_CCOEFF_NORMED)
                 else:
                     result = cv2.matchTemplate(
-                        frame_gray,
+                        search,
                         scaled_template,
                         cv2.TM_CCORR_NORMED,
                         mask=scaled_mask,
@@ -489,11 +516,11 @@ class AutoLoginTask(BaseBD2Task):
                     continue
                 if max_value > best.score:
                     x, y = int(max_location[0]), int(max_location[1])
-                    region = frame_gray[y : y + height, x : x + width]
+                    region = search[y : y + height, x : x + width]
                     best = MatchResult(
                         score=float(max_value),
                         pixel_score=self._pixel_similarity(region, scaled_template, scaled_mask),
-                        position=(x, y),
+                        position=(roi_left + x, roi_top + y),
                         size=(int(width), int(height)),
                     )
         except (cv2.error, MemoryError) as exc:
@@ -652,67 +679,13 @@ class AutoLoginTask(BaseBD2Task):
 
         return " ".join(box.name for box in boxes if getattr(box, "name", ""))
 
-    @staticmethod
-    def _normalize_ocr_text(text: str) -> str:
-        return "".join(str(text).lower().split())
-
-    @staticmethod
-    def _candidate_scales(base_scale: float) -> list[float]:
-        return [round(max(0.2, base_scale), 3)]
-
-    @staticmethod
-    def _resize_template(template: np.ndarray, scale: float) -> np.ndarray:
-        if abs(scale - 1.0) < 0.001:
-            return template
-        interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC
-        return cv2.resize(template, None, fx=scale, fy=scale, interpolation=interpolation)
-
-    @staticmethod
-    def _resize_mask(mask: np.ndarray | None, scale: float) -> np.ndarray | None:
-        if mask is None:
-            return None
-        if abs(scale - 1.0) < 0.001:
-            return mask
-        return cv2.resize(mask, None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST)
-
-    @staticmethod
-    def _crop_relative(
-        image: np.ndarray,
-        crop: tuple[float, float, float, float],
-    ) -> np.ndarray:
-        height, width = image.shape[:2]
-        left, top, right, bottom = crop
-        x1 = round(width * left)
-        y1 = round(height * top)
-        x2 = round(width * right)
-        y2 = round(height * bottom)
-        return image[y1:y2, x1:x2]
-
-    @staticmethod
-    def _to_gray(frame) -> np.ndarray:
-        if len(frame.shape) == 2:
-            return frame
-        if frame.shape[2] == 4:
-            return cv2.cvtColor(frame, cv2.COLOR_BGRA2GRAY)
-        return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-    @staticmethod
-    def _pixel_similarity(
-        region: np.ndarray,
-        template: np.ndarray,
-        mask: np.ndarray | None = None,
-    ) -> float:
-        if region.shape != template.shape:
-            return -1.0
-        diff_image = np.abs(region.astype(np.float32) - template.astype(np.float32))
-        if mask is not None:
-            valid = mask > 0
-            if not np.any(valid):
-                return -1.0
-            diff = np.mean(diff_image[valid])
-        else:
-            diff = np.mean(diff_image)
-        return float(1.0 - diff / 255.0)
+    _normalize_ocr_text = staticmethod(normalize_ocr_text)
+    _candidate_scales = staticmethod(candidate_scales)
+    _resize_template = staticmethod(resize_template)
+    _resize_mask = staticmethod(resize_mask)
+    _crop_relative = staticmethod(crop_relative)
+    _to_gray = staticmethod(to_gray)
+    _pixel_similarity = staticmethod(pixel_similarity)
 
 
 BROWNDUSTX_TEMPLATE = TemplateSpec(

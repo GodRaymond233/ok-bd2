@@ -185,6 +185,10 @@ class PVPTaskHelperTest(unittest.TestCase):
         task = object.__new__(PVPTask)
         calls = []
         task.operate_click = lambda x, y, after_sleep=0: calls.append((x, y, after_sleep))
+        settle = []
+        task._sleep_after_recognition = lambda: settle.append("settle")
+        status = []
+        task.info_set = lambda key, value: status.append((key, value))
         stages = []
 
         self.assertTrue(
@@ -195,11 +199,22 @@ class PVPTaskHelperTest(unittest.TestCase):
             )
         )
         self.assertEqual([(0.7875, 0.9111111111111111, 1.0)], calls)
+        self.assertEqual(["settle"], settle)
         self.assertEqual(["home", "click", "confirm"], stages)
+        self.assertEqual(
+            [
+                ("当前阶段", "点击最近卡带"),
+                ("当前阶段", "寻找快速切换按钮"),
+            ],
+            status,
+        )
 
     def test_common_cartridge_entry_stops_when_home_is_not_confirmed(self):
         task = object.__new__(PVPTask)
         task.operate_click = lambda *_args, **_kwargs: self.fail("entry must not be clicked")
+        task._sleep_after_recognition = lambda: self.fail(
+            "settle delay must not run before home is confirmed"
+        )
 
         self.assertFalse(
             task.open_cartridge_quick_switcher(
@@ -212,6 +227,9 @@ class PVPTaskHelperTest(unittest.TestCase):
     def test_common_cartridge_entry_stops_when_quick_switch_click_fails(self):
         task = object.__new__(PVPTask)
         task.operate_click = lambda *_args, **_kwargs: None
+        task._sleep_after_recognition = lambda: None
+        status = []
+        task.info_set = lambda key, value: status.append((key, value))
 
         self.assertFalse(
             task.open_cartridge_quick_switcher(
@@ -219,6 +237,13 @@ class PVPTaskHelperTest(unittest.TestCase):
                 click_quick_switch=lambda: False,
                 confirm_quick_switch_page=lambda: self.fail("page must not be confirmed"),
             )
+        )
+        self.assertEqual(
+            [
+                ("当前阶段", "点击最近卡带"),
+                ("当前阶段", "寻找快速切换按钮"),
+            ],
+            status,
         )
 
     def test_quick_switch_page_requires_all_three_ocr_labels(self):

@@ -110,6 +110,7 @@ config = {
         "Globals",
     ],
     "onetime_tasks": [
+        ["src.tasks.DailyBatchTask", "DailyBatchTask"],
         ["src.tasks.DailyTask", "DailyTask"],
         ["src.tasks.BargainLevelTask", "BargainLevelTask"],
         ["src.tasks.QuickSuppressionTask", "QuickSuppressionTask"],
