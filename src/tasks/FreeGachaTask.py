@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from difflib import SequenceMatcher
 from pathlib import Path
 from time import monotonic
 
@@ -8,6 +7,8 @@ import numpy as np
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task
+from src.utils.image_utils import candidate_scales, pixel_similarity, resize_template, to_gray
+from src.utils.ocr_utils import fuzzy_substring_match, keyword_match_count, normalize_ocr_text
 from src.utils.template_resolution import offline_template_scale
 
 REFERENCE_WIDTH = 1920
@@ -563,67 +564,21 @@ class FreeGachaTask(BaseBD2Task):
 
     @staticmethod
     def _keyword_match_count(text: str, keywords: list[str]) -> int:
-        normalized = FreeGachaTask._normalize_text(text)
-        return sum(
-            1
-            for keyword in keywords
-            if FreeGachaTask._keyword_matches(
-                normalized,
-                FreeGachaTask._normalize_text(keyword),
-            )
-        )
+        return keyword_match_count(text, keywords, fuzzy_ratio=KEYWORD_MATCH_RATIO)
 
     @staticmethod
     def _keyword_matches(normalized_text: str, normalized_keyword: str) -> bool:
-        if not normalized_text or not normalized_keyword:
-            return False
-        if normalized_keyword in normalized_text:
-            return True
+        return fuzzy_substring_match(
+            normalized_text,
+            normalized_keyword,
+            KEYWORD_MATCH_RATIO,
+        )
 
-        keyword_length = len(normalized_keyword)
-        min_window = max(1, round(keyword_length * KEYWORD_MATCH_RATIO))
-        max_window = max(min_window, round(keyword_length / KEYWORD_MATCH_RATIO))
-        for window_length in range(min_window, max_window + 1):
-            if window_length > len(normalized_text):
-                continue
-            for start in range(0, len(normalized_text) - window_length + 1):
-                window = normalized_text[start : start + window_length]
-                if (
-                    SequenceMatcher(None, normalized_keyword, window).ratio()
-                    >= KEYWORD_MATCH_RATIO
-                ):
-                    return True
-        return False
-
-    @staticmethod
-    def _normalize_text(text: str) -> str:
-        return "".join(str(text).lower().split())
-
-    @staticmethod
-    def _candidate_scales(base_scale: float) -> list[float]:
-        return [round(max(0.2, base_scale), 3)]
-
-    @staticmethod
-    def _resize_template(template: np.ndarray, scale: float) -> np.ndarray:
-        if abs(scale - 1.0) < 0.001:
-            return template
-        interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC
-        return cv2.resize(template, None, fx=scale, fy=scale, interpolation=interpolation)
-
-    @staticmethod
-    def _to_gray(frame) -> np.ndarray:
-        if len(frame.shape) == 2:
-            return frame
-        if frame.shape[2] == 4:
-            return cv2.cvtColor(frame, cv2.COLOR_BGRA2GRAY)
-        return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-    @staticmethod
-    def _pixel_similarity(region: np.ndarray, template: np.ndarray) -> float:
-        if region.shape != template.shape:
-            return -1.0
-        diff = np.mean(np.abs(region.astype(np.float32) - template.astype(np.float32)))
-        return float(1.0 - diff / 255.0)
+    _normalize_text = staticmethod(normalize_ocr_text)
+    _candidate_scales = staticmethod(candidate_scales)
+    _resize_template = staticmethod(resize_template)
+    _to_gray = staticmethod(to_gray)
+    _pixel_similarity = staticmethod(pixel_similarity)
 
 
 LOADING_TEMPLATE = GachaTemplateSpec(

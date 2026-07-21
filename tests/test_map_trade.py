@@ -2,7 +2,7 @@ import ast
 import json
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -12,11 +12,15 @@ import numpy as np
 
 from src.tasks import MapCollectionTask as map_collection_task_module
 from src.tasks import MapTradeTask as map_trade_task_module
-from src.tasks.BaseBD2Task import green_mask_from_template
+from src.tasks.BaseBD2Task import BaseBD2Task, green_mask_from_template
 from src.tasks.map_trade.calendar import (
+    PURCHASE_STOCK_REFRESH_HOUR,
+    SALE_PRICE_REFRESH_HOUR,
     PriceCalendarClient,
     parse_calendar_payload,
     parse_manual_calendar,
+    purchase_stock_date,
+    sale_price_calendar_date,
 )
 from src.tasks.map_trade.collector import Collector
 from src.tasks.map_trade.data import (
@@ -49,6 +53,10 @@ from src.tasks.map_trade.navigator import (
     DISCOUNT_SHOP_CLOSE_KEYWORDS,
     DISCOUNT_SHOP_CLOSE_POINT,
     DISCOUNT_SHOP_CLOSE_TIMEOUT,
+    FIRST_CARD_CONFIRM_REGION,
+    FIRST_CARD_INSERT_REGION,
+    FIRST_CARD_SKIP_TEMPLATE,
+    Q_SP6_BARGAIN_CONFIRM_DELAY,
     Q_SP6_BARGAIN_OCR_TIMEOUT,
     Q_SP6_BARGAIN_RECHECK_DELAY,
     Q_SP6_SHOP_PAGE_KEYWORDS,
@@ -59,6 +67,13 @@ from src.tasks.map_trade.navigator import (
     Q_SP6_STORY_NUMBER,
     QUICK_SWITCH_CARTRIDGE_REGION,
     QUICK_SWITCH_PAGE_KEYWORDS,
+    QUICK_SWITCH_SCROLL_INTERVAL,
+    QUICK_SWITCH_SCROLL_POINT,
+    QUICK_SWITCH_SCROLL_RESET_AMOUNT,
+    QUICK_SWITCH_SCROLL_RESET_COUNT,
+    QUICK_SWITCH_SCROLL_SETTLE_SECONDS,
+    QUICK_SWITCH_SCROLL_UP_AMOUNT,
+    QUICK_SWITCH_SCROLL_UP_COUNT,
     QUICK_SWITCH_TEMPLATE,
     RETURN_HOME_TIMEOUT,
     STORY_BADGE_MIN_MARGIN,
@@ -80,10 +95,18 @@ from src.tasks.map_trade.progress import (
     weekly_cycle_key,
 )
 from src.tasks.map_trade.trader import (
+    BUY_ALL_FAVORITES_KEYWORD,
     BUY_ALL_FAVORITES_POINT,
+    BUY_ALL_FAVORITES_REGION,
+    BUY_ALL_FAVORITES_STABLE_HITS,
     BUY_CONFIRM_DIALOG_REGION,
     BUY_CONFIRM_KEYWORDS,
     BUY_CONFIRM_POINT,
+    BUY_CONFIRM_PRE_CLICK_DELAY,
+    BUY_CONFIRM_TIMEOUT,
+    BUY_TO_SELL_POST_CLICK_DELAY,
+    BUY_TO_SELL_PRE_CLICK_DELAY,
+    BUY_TO_SELL_SOLD_OUT_KEYWORD,
     FIRST_SALE_ITEM_POINT,
     FIRST_SALE_ITEM_REGION,
     FIRST_SALE_QUANTITY_REGION,
@@ -126,6 +149,7 @@ class FakeTask:
     def __init__(self):
         self.config = {"跑图跑商 OCR 阈值": 0.2}
         self.clicks = []
+        self.infos = []
 
     def operate_click(self, x, y, after_sleep=0):
         self.clicks.append((x, y, after_sleep))
@@ -133,8 +157,8 @@ class FakeTask:
     def capture_frame(self):
         return np.zeros((720, 1280, 3), dtype=np.uint8)
 
-    def info_set(self, *_args):
-        return None
+    def info_set(self, *args):
+        self.infos.append(args)
 
     def sleep(self, *_args):
         return None
@@ -159,6 +183,28 @@ class VisionTest(unittest.TestCase):
 
         self.assertTrue(vision.click_template(TemplateSpec("test", "unused.png")))
         self.assertEqual((120 / 1280, 210 / 720, 0.8), task.clicks[-1])
+        self.assertIn(
+            (
+                "test点击中心",
+                "center=(120,210), match=0.900, pixel=-1.000",
+            ),
+            task.infos,
+        )
+
+    def test_operate_click_log_converts_relative_target_to_client_pixels(self):
+        self.assertEqual(
+            (
+                "快速切换按钮: client=(959,539), "
+                "relative=(0.500000,0.500000)"
+            ),
+            BaseBD2Task._click_log_message(
+                0.5,
+                0.5,
+                1918,
+                1079,
+                "快速切换按钮",
+            ),
+        )
 
     def test_configured_threshold_overrides_template_default(self):
         task = FakeTask()
@@ -781,6 +827,66 @@ class CatalogAndSafetyTest(unittest.TestCase):
             ocr_calls,
         )
 
+    def test_buy_and_sell_switches_current_shop_after_full_frame_sold_out_ocr(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        ocr_calls = []
+        clicks = []
+        sleeps = []
+        trader = object.__new__(Trader)
+        trader.task = SimpleNamespace(
+            operate_click=lambda x, y, after_sleep=0: clicks.append(
+                (x, y, after_sleep)
+            ),
+            sleep=sleeps.append,
+            log_info=lambda *_args: None,
+            log_warning=lambda *_args: None,
+            info_set=lambda *_args: None,
+        )
+
+        def ocr_text(_frame, name, roi=None, relative_roi=None):
+            ocr_calls.append((name, roi, relative_roi))
+            if name == "买后售罄确认":
+                return f"洋葱 {BUY_TO_SELL_SOLD_OUT_KEYWORD}"
+            return "出售"
+
+        trader.vision = SimpleNamespace(
+            capture=lambda: frame,
+            ocr_text=ocr_text,
+            simplify=lambda value: value,
+        )
+
+        self.assertTrue(trader._switch_from_completed_buy_to_sell())
+        self.assertEqual(
+            [(*SELL_MODE_POINT, BUY_TO_SELL_POST_CLICK_DELAY)],
+            clicks,
+        )
+        self.assertEqual([BUY_TO_SELL_PRE_CLICK_DELAY], sleeps)
+        self.assertEqual(
+            ("买后售罄确认", None, None),
+            ocr_calls[0],
+        )
+        self.assertEqual(
+            ("商店买卖页标题", None, SHOP_MODE_TITLE_REGION),
+            ocr_calls[1],
+        )
+
+    def test_run_sell_after_buy_reuses_current_shop_without_home_navigation(self):
+        actions = []
+        trader = object.__new__(Trader)
+        trader._buy_completed_in_current_shop = True
+        trader.task = SimpleNamespace(log_info=lambda *_args: None)
+        trader.navigator = SimpleNamespace(
+            reach_merchant_shop=lambda: self.fail("买卖连续执行时不应重新从主页进商店")
+        )
+        trader._switch_from_completed_buy_to_sell = (
+            lambda: actions.append("switch") or True
+        )
+        trader.sell_max_price_items = lambda: actions.append("sell") or True
+
+        self.assertTrue(trader.run_sell())
+        self.assertEqual(["switch", "sell"], actions)
+        self.assertFalse(trader._buy_completed_in_current_shop)
+
     def test_sell_page_does_not_click_when_already_on_sell(self):
         trader = object.__new__(Trader)
         trader.task = SimpleNamespace(
@@ -935,6 +1041,40 @@ class CatalogAndSafetyTest(unittest.TestCase):
         self.assertEqual([0.5], sleeps)
         self.assertEqual(2, SALE_SORT_MAX_CLICKS)
 
+    def test_first_slot_without_target_120_percent_marks_item_unavailable(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        premium = MatchResult(0.97, (1735, 36), (48, 47), pixel_score=0.96)
+        missing = MatchResult(0.20, (1735, 36), (48, 47), pixel_score=0.20)
+        trader = object.__new__(Trader)
+        trader.task = SimpleNamespace(
+            operate_click=lambda *_args, **_kwargs: None,
+            sleep=lambda *_args: None,
+            log_info=lambda *_args: None,
+            log_warning=lambda *_args: None,
+            info_set=lambda *_args: None,
+        )
+        trader.vision = SimpleNamespace(
+            capture=lambda: frame,
+            match=lambda _frame, spec: (
+                premium if spec is PREMIUM_RATE_TEMPLATE else missing
+            ),
+            passes=lambda result, spec: (
+                result.score >= spec.threshold
+                and result.pixel_score >= spec.min_pixel_score
+            ),
+            ocr_text=lambda *_args, **_kwargs: "120% 其他商品",
+            simplify=lambda value: value,
+        )
+
+        self.assertFalse(
+            trader._sell_selected_entry(CalendarEntry("豆子", "S12:海边天使"))
+        )
+        self.assertTrue(trader._last_sale_unavailable)
+        self.assertEqual(
+            "未发现120%，可能无货或已经售出",
+            trader._last_sale_reason,
+        )
+
     def test_normal_sale_double_clicks_first_slot_then_uses_max_and_sell(self):
         clicks = []
         trader = object.__new__(Trader)
@@ -1049,6 +1189,60 @@ class CatalogAndSafetyTest(unittest.TestCase):
         self.assertEqual(["S10:霍尔蒙克斯"], selected)
         self.assertEqual(["甜辣酱", "藏红花"], sold)
         self.assertIn("卖：魅惑粉末标记为不出售，跳过。", logs)
+
+    def test_missing_120_percent_item_is_reported_and_does_not_stop_next_item(self):
+        statuses = []
+        warnings = []
+        attempted = []
+        entries = (
+            CalendarEntry("豆子", "S12:海边天使"),
+            CalendarEntry("小麦", "S12:海边天使"),
+        )
+        trader = object.__new__(Trader)
+        trader.started_at = datetime(2026, 7, 21, 12, tzinfo=UTC_PLUS_8)
+        trader.calendar_client = SimpleNamespace(
+            load=lambda **_kwargs: SimpleNamespace(
+                source="bundled",
+                entries_for=lambda _day: entries,
+            )
+        )
+        trader.task = SimpleNamespace(
+            config={
+                "使用程序默认价表": True,
+                "使用在线价表": True,
+                "自定义最高价表": "",
+            },
+            log_info=lambda *_args: None,
+            log_warning=warnings.append,
+            info_set=lambda key, value: statuses.append((key, value)),
+        )
+        trader.vision = SimpleNamespace(simplify=lambda value: value)
+        trader._sale_whitelist = lambda: set()
+        trader._entry_allowed = lambda _entry, _whitelist: True
+        trader.select_shop_tab = lambda _shop: True
+
+        def sell(entry):
+            attempted.append(entry.item)
+            trader._last_sale_unavailable = entry.item == "豆子"
+            trader._last_sale_reason = (
+                "未发现120%，可能无货或已经售出"
+                if trader._last_sale_unavailable
+                else ""
+            )
+            return not trader._last_sale_unavailable
+
+        trader._sell_selected_entry = sell
+
+        self.assertTrue(trader.sell_max_price_items())
+        self.assertEqual(["豆子", "小麦"], attempted)
+        self.assertIn(
+            ("未出售商品", "豆子（未发现120%，可能无货或已经售出）"),
+            statuses,
+        )
+        self.assertIn(
+            "未出售商品：豆子（未发现120%，可能无货或已经售出）",
+            warnings,
+        )
 
     def test_map_trade_sources_do_not_call_keyboard_interfaces(self):
         sources = [
@@ -1220,7 +1414,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
             [
                 (*STORY_CATEGORY_POINT, 0.5),
                 (*BARGAIN_POINT, 0.0),
-                (*BARGAIN_CONFIRM_POINT, 0.0),
+                (*BARGAIN_CONFIRM_POINT, Q_SP6_BARGAIN_CONFIRM_DELAY),
             ],
             clicks,
         )
@@ -1280,7 +1474,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         self.assertEqual(
             [
                 (*BARGAIN_POINT, 0.0),
-                (*BARGAIN_CONFIRM_POINT, 0.0),
+                (*BARGAIN_CONFIRM_POINT, Q_SP6_BARGAIN_CONFIRM_DELAY),
             ],
             clicks,
         )
@@ -1485,6 +1679,255 @@ class CatalogAndSafetyTest(unittest.TestCase):
         self.assertIsNone(detection)
         self.assertIn("同一编号出现2个有效位置", reason)
 
+    def test_collection_card_selection_uses_common_quick_switch_and_badge_center(self):
+        clicks = []
+        client_clicks = []
+        template_clicks = []
+        opened_callbacks = []
+        badge_targets = []
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        badge = StoryBadgeDetection(
+            best=StoryBadgeCandidate(
+                1,
+                MatchResult(0.99, (300, 930), (30, 28), pixel_score=0.98),
+            ),
+            runner_up=StoryBadgeCandidate(
+                7,
+                MatchResult(0.80, (301, 930), (31, 31), pixel_score=0.82),
+            ),
+        )
+
+        def open_quick_switcher(**callbacks):
+            opened_callbacks.append(tuple(callbacks))
+            return (
+                callbacks["ensure_home"]()
+                and callbacks["click_quick_switch"]()
+                and callbacks["confirm_quick_switch_page"]()
+            )
+
+        task = SimpleNamespace(
+            config={"加载页面等待秒数": 45.0},
+            operate_click=lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep)),
+            open_cartridge_quick_switcher=open_quick_switcher,
+            log_warning=lambda *_args, **_kwargs: None,
+        )
+        vision = SimpleNamespace(
+            click_template=lambda spec, timeout, after_sleep: template_clicks.append(
+                (spec, timeout, after_sleep)
+            )
+            or True,
+            click_client=lambda point, shape, after_sleep=0: client_clicks.append(
+                (point, shape, after_sleep)
+            ),
+        )
+        navigator = Navigator(task, vision)
+        navigator.return_home = lambda: NavigationResult(True, ScreenState.HOME)
+        navigator._wait_for_cartridge_home = lambda: True
+        navigator._wait_for_quick_switch_page = lambda: True
+        navigator._wait_for_story_category = lambda: True
+        navigator._wait_for_story_badge_with_scroll = lambda number: (
+            badge_targets.append(number) or (frame, badge)
+        )
+        navigator._wait_for_story_sandbox = lambda number: NavigationResult(
+            True,
+            ScreenState.SANDBOX,
+            f"Q_sp{number}",
+        )
+
+        result = navigator.select_card("Q_sp1")
+
+        self.assertTrue(result.success)
+        self.assertEqual("Q_sp1", result.message)
+        self.assertEqual([1], badge_targets)
+        self.assertEqual(
+            [("ensure_home", "click_quick_switch", "confirm_quick_switch_page")],
+            opened_callbacks,
+        )
+        self.assertEqual([(QUICK_SWITCH_TEMPLATE, 10.0, 1.0)], template_clicks)
+        self.assertEqual([(*STORY_CATEGORY_POINT, 0.5)], clicks)
+        self.assertEqual([(badge.best.result.center, frame.shape, 1.0)], client_clicks)
+
+    def test_collection_card_scroll_resets_down_then_scans_up_in_bottom_region(self):
+        scrolls = []
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        detection = StoryBadgeDetection(
+            best=StoryBadgeCandidate(
+                12,
+                MatchResult(0.99, (500, 930), (30, 28), pixel_score=0.98),
+            ),
+            runner_up=StoryBadgeCandidate(
+                2,
+                MatchResult(0.80, (501, 930), (31, 31), pixel_score=0.82),
+            ),
+        )
+        results = iter(
+            (
+                (None, "未达到双阈值，检测目标数=9"),
+                (None, "未达到双阈值，检测目标数=9"),
+                (detection, ""),
+            )
+        )
+        task = SimpleNamespace(
+            _scroll_client=lambda *args, **kwargs: scrolls.append((args, kwargs)),
+            log_warning=lambda *_args, **_kwargs: None,
+        )
+        navigator = Navigator(task, SimpleNamespace(capture=lambda: frame))
+        navigator._find_story_badge = lambda _frame, _number: next(results)
+
+        found = navigator._wait_for_story_badge_with_scroll(12, scan_steps=1)
+
+        self.assertIsNotNone(found)
+        self.assertEqual(detection, found[1])
+        self.assertEqual(
+            [
+                (
+                    (QUICK_SWITCH_SCROLL_POINT, QUICK_SWITCH_SCROLL_RESET_AMOUNT),
+                    {
+                        "count": QUICK_SWITCH_SCROLL_RESET_COUNT,
+                        "interval": QUICK_SWITCH_SCROLL_INTERVAL,
+                        "after_sleep": QUICK_SWITCH_SCROLL_SETTLE_SECONDS,
+                    },
+                ),
+                (
+                    (QUICK_SWITCH_SCROLL_POINT, QUICK_SWITCH_SCROLL_UP_AMOUNT),
+                    {
+                        "count": QUICK_SWITCH_SCROLL_UP_COUNT,
+                        "interval": QUICK_SWITCH_SCROLL_INTERVAL,
+                        "after_sleep": QUICK_SWITCH_SCROLL_SETTLE_SECONDS,
+                    },
+                ),
+            ],
+            scrolls,
+        )
+        self.assertEqual((0.5, 970 / 1080), QUICK_SWITCH_SCROLL_POINT)
+        self.assertEqual(1, QUICK_SWITCH_SCROLL_UP_AMOUNT)
+
+    def test_collection_card_scroll_stops_on_badge_ambiguity(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        warnings = []
+        task = SimpleNamespace(
+            _scroll_client=lambda *_args, **_kwargs: self.fail(
+                "ambiguous badge must stop before scrolling"
+            ),
+            log_warning=warnings.append,
+        )
+        navigator = Navigator(task, SimpleNamespace(capture=lambda: frame))
+        navigator._find_story_badge = lambda _frame, _number: (
+            None,
+            "候选分差不足：0.020<0.050",
+        )
+
+        found = navigator._wait_for_story_badge_with_scroll(12, scan_steps=1)
+
+        self.assertIsNone(found)
+        self.assertIn("存在歧义", warnings[0])
+
+    def test_collection_card_entry_handles_insert_prompt_then_reconfirms_sandbox(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        clicks = []
+        sleeps = []
+        states = iter((ScreenState.UNKNOWN, ScreenState.SANDBOX))
+        task = SimpleNamespace(
+            config={"加载页面等待秒数": 45.0},
+            sleep=lambda seconds: sleeps.append(seconds),
+        )
+
+        def ocr_text(_frame, name, roi=None):
+            if name == "新卡带插入提示":
+                self.assertEqual(FIRST_CARD_INSERT_REGION, roi)
+                return "未插好游戏卡 插入"
+            return ""
+
+        vision = SimpleNamespace(
+            capture=lambda: frame,
+            simplify=lambda value: value,
+            ocr_text=ocr_text,
+            click_ocr=lambda patterns, roi, after_sleep, name: clicks.append(
+                (tuple(patterns), roi, after_sleep, name)
+            )
+            or True,
+            match=lambda _frame, _spec: MatchResult(-1.0, (0, 0), (0, 0)),
+            passes=lambda *_args: False,
+        )
+        navigator = Navigator(task, vision)
+        navigator.classify = lambda _frame=None: next(states)
+
+        result = navigator._wait_for_story_sandbox(12, timeout=2.0, interval=0.0)
+
+        self.assertTrue(result.success)
+        self.assertEqual("Q_sp12", result.message)
+        self.assertEqual(
+            [
+                (
+                    (r"插入", r"未插好游戏卡"),
+                    FIRST_CARD_INSERT_REGION,
+                    0.8,
+                    "新卡带插入",
+                )
+            ],
+            clicks,
+        )
+        self.assertEqual([], sleeps)
+
+    def test_collection_card_entry_handles_skip_and_confirmation_with_mouse(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        client_clicks = []
+        ocr_clicks = []
+        skip_result = MatchResult(0.99, (1500, 20), (100, 40), pixel_score=0.98)
+        task = SimpleNamespace(config={}, sleep=lambda *_args: None)
+        prompts = iter(("", ""))
+        confirmations = iter(("确认",))
+
+        def ocr_text(_frame, name, roi=None):
+            if name == "新卡带插入提示":
+                return next(prompts)
+            if name == "首次卡带确认":
+                self.assertEqual(FIRST_CARD_CONFIRM_REGION, roi)
+                return next(confirmations)
+            return ""
+
+        matches = iter(
+            (
+                skip_result,
+                MatchResult(-1.0, (0, 0), (0, 0)),
+                MatchResult(-1.0, (0, 0), (0, 0)),
+            )
+        )
+        vision = SimpleNamespace(
+            capture=lambda: frame,
+            simplify=lambda value: value,
+            ocr_text=ocr_text,
+            click_ocr=lambda patterns, roi, after_sleep, name: ocr_clicks.append(
+                (tuple(patterns), roi, after_sleep, name)
+            )
+            or True,
+            match=lambda _frame, spec: (
+                self.assertEqual(FIRST_CARD_SKIP_TEMPLATE, spec) or next(matches)
+            ),
+            passes=lambda result, _spec: result.score >= 0.72,
+            click_client=lambda point, shape, after_sleep=0: client_clicks.append(
+                (point, shape, after_sleep)
+            ),
+        )
+        navigator = Navigator(task, vision)
+        states = iter(
+            (
+                ScreenState.UNKNOWN,
+                ScreenState.UNKNOWN,
+                ScreenState.SANDBOX,
+            )
+        )
+        navigator.classify = lambda _frame=None: next(states)
+
+        result = navigator._wait_for_story_sandbox(12, timeout=2.0, interval=0.0)
+
+        self.assertTrue(result.success)
+        self.assertEqual([(skip_result.center, frame.shape, 0.8)], client_clicks)
+        self.assertEqual(
+            [((r"确认",), FIRST_CARD_CONFIRM_REGION, 0.8, "首次卡带确认")],
+            ocr_clicks,
+        )
+
     def test_buy_entry_stops_when_shop_template_is_not_found_after_story_selection(self):
         clicks = []
         client_clicks = []
@@ -1559,6 +2002,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         trader = object.__new__(Trader)
         trader.task = task
         trader.progress = progress
+        trader.now_provider = lambda: datetime(2026, 7, 19, 7, 59, tzinfo=UTC_PLUS_8)
         trader.navigator = SimpleNamespace(
             enter_q_sp6_buy_flow=lambda: NavigationResult(
                 True, ScreenState.MERCHANT_DIALOG
@@ -1569,7 +2013,12 @@ class CatalogAndSafetyTest(unittest.TestCase):
 
         self.assertTrue(trader.run_buy())
         self.assertEqual(
-            [("sleep", 0.5), ("should", False), ("rebuild",), ("buy-all",)],
+            [
+                ("log", "买：按2026-07-18库存批次执行（每日08:00刷新）。"),
+                ("should", False),
+                ("rebuild",),
+                ("buy-all",),
+            ],
             actions,
         )
 
@@ -1581,7 +2030,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         self.assertTrue(trader.run_buy())
         self.assertEqual(
             [
-                ("sleep", 0.5),
+                ("log", "买：按2026-07-18库存批次执行（每日08:00刷新）。"),
                 ("log", "买：收藏重建周期设为永不，跳过收藏调整。"),
                 ("buy-all",),
             ],
@@ -1594,7 +2043,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         self.assertTrue(trader.run_buy())
         self.assertEqual(
             [
-                ("sleep", 0.5),
+                ("log", "买：按2026-07-18库存批次执行（每日08:00刷新）。"),
                 ("log", "买：本周收藏已经按本地表重建，跳过收藏调整。"),
                 ("buy-all",),
             ],
@@ -1610,9 +2059,11 @@ class CatalogAndSafetyTest(unittest.TestCase):
             operate_click=lambda x, y, after_sleep=0: clicks.append(
                 (x, y, after_sleep)
             ),
-            log_info=logs.append,
+            sleep=lambda seconds: logs.append(("sleep", seconds)),
+            log_info=lambda message: logs.append(("log", message)),
             log_warning=warnings.append,
         )
+        trader._wait_for_buy_all_favorites_button = lambda: True
         trader._wait_for_purchase_confirmation = lambda: True
 
         self.assertTrue(trader.buy_all_favorites())
@@ -1632,8 +2083,56 @@ class CatalogAndSafetyTest(unittest.TestCase):
             BUY_CONFIRM_DIALOG_REGION,
         )
         self.assertEqual((1045 / 1920, 697 / 1080), BUY_CONFIRM_POINT)
+        self.assertEqual(30.0, BUY_CONFIRM_TIMEOUT)
         self.assertEqual([], warnings)
-        self.assertEqual(["买：已确认购买全部收藏商品。"], logs)
+        self.assertEqual(
+            [
+                (
+                    "log",
+                    "买：购买确认弹窗OCR完成，等待0.8秒后点击确认。",
+                ),
+                ("sleep", BUY_CONFIRM_PRE_CLICK_DELAY),
+                ("log", "买：已确认购买全部收藏商品。"),
+            ],
+            logs,
+        )
+
+    def test_buy_all_button_requires_two_consecutive_ocr_hits_in_given_region(self):
+        ocr_calls = []
+        sleeps = []
+        statuses = []
+        texts = iter(("一键购买全部收藏", "", "-键购买全部收藏", "一键购买全部收藏"))
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        trader = object.__new__(Trader)
+        trader.task = SimpleNamespace(
+            sleep=sleeps.append,
+            log_warning=lambda *_args, **_kwargs: None,
+            info_set=lambda key, value: statuses.append((key, value)),
+        )
+        trader.vision = SimpleNamespace(
+            capture=lambda: frame,
+            ocr_text=lambda captured, name, relative_roi: ocr_calls.append(
+                (captured.shape, name, relative_roi)
+            )
+            or next(texts),
+            simplify=lambda value: value,
+        )
+
+        self.assertTrue(trader._wait_for_buy_all_favorites_button())
+        self.assertEqual(3, len(sleeps))
+        self.assertEqual(BUY_ALL_FAVORITES_KEYWORD, "购买全部收藏")
+        self.assertEqual(BUY_ALL_FAVORITES_STABLE_HITS, 2)
+        self.assertEqual(
+            (1324 / 1920, 982 / 1080, 1545 / 1920, 1029 / 1080),
+            BUY_ALL_FAVORITES_REGION,
+        )
+        self.assertTrue(
+            all(call[2] == BUY_ALL_FAVORITES_REGION for call in ocr_calls)
+        )
+        self.assertEqual(
+            ("一键购买全部收藏按钮 OCR稳定", "2/2"),
+            statuses[-1],
+        )
 
     def test_purchase_confirmation_requires_both_texts_in_given_region(self):
         ocr_calls = []
@@ -1674,9 +2173,11 @@ class CatalogAndSafetyTest(unittest.TestCase):
             operate_click=lambda x, y, after_sleep=0: clicks.append(
                 (x, y, after_sleep)
             ),
+            sleep=lambda *_args: None,
             log_info=lambda *_args, **_kwargs: None,
             log_warning=warnings.append,
         )
+        trader._wait_for_buy_all_favorites_button = lambda: True
         trader._wait_for_purchase_confirmation = lambda: False
 
         self.assertFalse(trader.buy_all_favorites())
@@ -2023,6 +2524,79 @@ class CatalogAndSafetyTest(unittest.TestCase):
 
 
 class CalendarTest(unittest.TestCase):
+    def test_market_refresh_boundaries_use_utc_plus_8_business_dates(self):
+        self.assertEqual(23, SALE_PRICE_REFRESH_HOUR)
+        self.assertEqual(8, PURCHASE_STOCK_REFRESH_HOUR)
+
+        self.assertEqual(
+            date(2026, 7, 19),
+            sale_price_calendar_date(
+                datetime(2026, 7, 19, 22, 59, 59, tzinfo=UTC_PLUS_8)
+            ),
+        )
+        self.assertEqual(
+            date(2026, 7, 20),
+            sale_price_calendar_date(
+                datetime(2026, 7, 19, 23, 0, 0, tzinfo=UTC_PLUS_8)
+            ),
+        )
+        self.assertEqual(
+            date(2026, 8, 1),
+            sale_price_calendar_date(
+                datetime(2026, 7, 31, 23, 30, tzinfo=UTC_PLUS_8)
+            ),
+        )
+
+        self.assertEqual(
+            date(2026, 7, 18),
+            purchase_stock_date(
+                datetime(2026, 7, 19, 7, 59, 59, tzinfo=UTC_PLUS_8)
+            ),
+        )
+        self.assertEqual(
+            date(2026, 7, 19),
+            purchase_stock_date(
+                datetime(2026, 7, 19, 8, 0, 0, tzinfo=UTC_PLUS_8)
+            ),
+        )
+
+    def test_sell_reads_current_time_when_loading_calendar_after_23(self):
+        selected_days = []
+        statuses = []
+        logs = []
+        trader = object.__new__(Trader)
+        trader.started_at = datetime(2026, 7, 19, 22, 50, tzinfo=UTC_PLUS_8)
+        trader.now_provider = lambda: datetime(
+            2026, 7, 19, 23, 30, tzinfo=UTC_PLUS_8
+        )
+        trader.calendar_client = SimpleNamespace(
+            load=lambda **_kwargs: SimpleNamespace(
+                source="bundled",
+                entries_for=lambda day: selected_days.append(day) or (),
+            )
+        )
+        trader.task = SimpleNamespace(
+            config={
+                "使用程序默认价表": True,
+                "使用在线价表": True,
+                "自定义最高价表": "",
+                "出售白名单": "",
+                "5星料理": [],
+            },
+            info_set=lambda key, value: statuses.append((key, value)),
+            log_info=logs.append,
+        )
+        trader.vision = SimpleNamespace(simplify=lambda value: value)
+
+        self.assertTrue(trader.sell_max_price_items())
+        self.assertEqual([20], selected_days)
+        self.assertIn(("出售价表日期", "2026-07-20"), statuses)
+        self.assertIn(
+            "卖：当前北京时间2026-07-19 23:30:00，"
+            "按2026-07-20最高价表执行（每日23:00刷新）。",
+            logs,
+        )
+
     def test_bundled_calendar_has_version_timezone_and_all_days(self):
         loaded = parse_calendar_payload(BUNDLED_CALENDAR.read_text(encoding="utf-8"), "test")
 

@@ -26,6 +26,8 @@ class MapCollectionTask(MapAutomationTaskBase):
         "当前阶段",
         "导航状态",
         "目标卡带",
+        "剧情角标",
+        "卡带滚轮",
         "采集进度",
         "探查次数",
         "吸取次数",

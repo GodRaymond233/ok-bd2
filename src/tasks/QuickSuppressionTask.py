@@ -6,6 +6,7 @@ import numpy as np
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task
+from src.utils.image_utils import to_gray
 from src.utils.template_resolution import offline_template_scale
 
 REFERENCE_WIDTH = 1920
@@ -226,10 +227,4 @@ class QuickSuppressionTask(BaseBD2Task):
         normalized_notice = "".join(NEW_CARTRIDGE_NOTICE.split())
         return normalized_notice in normalized_text
 
-    @staticmethod
-    def _to_gray(image) -> np.ndarray:
-        if len(image.shape) == 2:
-            return image
-        if image.shape[2] == 4:
-            return cv2.cvtColor(image, cv2.COLOR_BGRA2GRAY)
-        return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    _to_gray = staticmethod(to_gray)

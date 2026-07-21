@@ -5,13 +5,42 @@ import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from src.tasks.map_trade.models import KNOWN_SHOPS, CalendarEntry
 
 CALENDAR_SCHEMA_VERSION = 1
 MAX_CALENDAR_BYTES = 256 * 1024
+UTC_PLUS_8 = timezone(timedelta(hours=8), name="UTC+8")
+SALE_PRICE_REFRESH_HOUR = 23
+PURCHASE_STOCK_REFRESH_HOUR = 8
+
+
+def _china_time(now: datetime) -> datetime:
+    """Return a deterministic UTC+8 time, treating naive inputs as local game time."""
+
+    if now.tzinfo is None:
+        return now.replace(tzinfo=UTC_PLUS_8)
+    return now.astimezone(UTC_PLUS_8)
+
+
+def sale_price_calendar_date(now: datetime) -> date:
+    """Return the sale-table date; the next day's prices start at 23:00 UTC+8."""
+
+    localized = _china_time(now)
+    if localized.hour >= SALE_PRICE_REFRESH_HOUR:
+        localized += timedelta(days=1)
+    return localized.date()
+
+
+def purchase_stock_date(now: datetime) -> date:
+    """Return the active purchase-stock date; new stock starts at 08:00 UTC+8."""
+
+    localized = _china_time(now)
+    if localized.hour < PURCHASE_STOCK_REFRESH_HOUR:
+        localized -= timedelta(days=1)
+    return localized.date()
 
 
 @dataclass(frozen=True)

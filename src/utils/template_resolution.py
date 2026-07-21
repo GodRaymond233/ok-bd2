@@ -10,6 +10,12 @@ OFFLINE_TEMPLATE_REFERENCE_SCALES = {
     "image": 1.25,
     "root": 1.0,
 }
+MAIN_TEMPLATE_RELATIVE_REGION = (
+    120 / 1920,
+    117 / 1080,
+    419 / 1920,
+    326 / 1080,
+)
 
 
 def _offline_template_parts(template_path: str | Path) -> tuple[str, ...]:
@@ -51,6 +57,34 @@ def offline_template_requires_green_mask(template_path: str | Path) -> bool:
         relative_parts = folded
 
     return len(relative_parts) >= 3 and relative_parts[:2] == ("image", green_name)
+
+
+def offline_template_uses_main_region(template_path: str | Path) -> bool:
+    """Return whether a template is subject to the shared Main* search region."""
+    normalized = str(template_path).replace("\\", "/")
+    return PurePosixPath(normalized).name.casefold().startswith("main")
+
+
+def offline_template_search_region(
+    template_path: str | Path,
+    frame_width: int,
+    frame_height: int,
+) -> tuple[int, int, int, int]:
+    """Return the full-client search bounds required for an offline template."""
+    width = max(1, int(frame_width))
+    height = max(1, int(frame_height))
+    if not offline_template_uses_main_region(template_path):
+        return 0, 0, width, height
+
+    left = round(width * MAIN_TEMPLATE_RELATIVE_REGION[0])
+    top = round(height * MAIN_TEMPLATE_RELATIVE_REGION[1])
+    right = round(width * MAIN_TEMPLATE_RELATIVE_REGION[2])
+    bottom = round(height * MAIN_TEMPLATE_RELATIVE_REGION[3])
+    left = max(0, min(width - 1, left))
+    top = max(0, min(height - 1, top))
+    right = max(left + 1, min(width, right))
+    bottom = max(top + 1, min(height, bottom))
+    return left, top, right, bottom
 
 
 def offline_template_scale(

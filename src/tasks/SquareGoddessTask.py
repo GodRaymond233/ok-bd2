@@ -9,9 +9,20 @@ import numpy as np
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task, green_mask_from_template
+from src.utils.image_utils import (
+    candidate_scales,
+    pixel_similarity,
+    reference_roi_frame,
+    resize_mask,
+    resize_template,
+    to_gray,
+)
+from src.utils.ocr_utils import normalize_ocr_text
 from src.utils.template_resolution import (
     offline_template_requires_green_mask,
     offline_template_scale,
+    offline_template_search_region,
+    offline_template_uses_main_region,
 )
 
 REFERENCE_WIDTH = 1920
@@ -21,6 +32,23 @@ MFABD2_REFERENCE_HEIGHT = 720
 ENTRY_REFERENCE_WIDTH = 2560
 ENTRY_REFERENCE_HEIGHT = 1440
 SQUARE_CARD_LIST_SWIPE_COUNT = 1
+GAMEPLAY_CARTRIDGE_POINT = (989 / REFERENCE_WIDTH, 875 / REFERENCE_HEIGHT)
+SQUARE_CARTRIDGE_SLOT_POINT = (1230 / REFERENCE_WIDTH, 970 / REFERENCE_HEIGHT)
+SQUARE_HOME_POINT = (1797 / REFERENCE_WIDTH, 63 / REFERENCE_HEIGHT)
+QUICK_SWITCH_PAGE_PATTERNS = (
+    r"店长游戏卡",
+    r"角色游戏卡",
+    r"玩法游戏卡",
+    r"活动游戏卡",
+)
+GAMEPLAY_CATEGORY_HIGHLIGHT_REGION = (
+    876 / REFERENCE_WIDTH,
+    840 / REFERENCE_HEIGHT,
+    1101 / REFERENCE_WIDTH,
+    915 / REFERENCE_HEIGHT,
+)
+GAMEPLAY_CATEGORY_OCR_ROI = (876, 840, 225, 75)
+GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO = 0.05
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_DIR = PROJECT_ROOT / "offline-train" / "train-source-screenshots"
 
@@ -33,6 +61,8 @@ class SquareTemplateSpec:
     default_threshold: float
     roi: tuple[int, int, int, int] | None = None
     green_mask: bool = False
+    scale_ratios: tuple[float, ...] = (1.0,)
+    min_pixel_score: float | None = None
 
 
 @dataclass(frozen=True)
@@ -48,16 +78,15 @@ class SquareGoddessTask(BaseBD2Task):
         "启用",
         "状态",
         "当前阶段",
+        "主页小屋按钮",
         "主页亮度",
-        "广场选关 OCR",
-        "广场左侧滑动 OCR",
-        "恶魔城卡带",
-        "广场入口卡带",
-        "广场入口小图标",
-        "广场标签 OCR",
-        "广场入场_loading_appear",
-        "广场入场_loading_gone",
+        "快速切换按钮",
+        "卡带选择页 OCR",
+        "卡带选择页 OCR 命中",
+        "玩法游戏卡 OCR",
+        "玩法类别高亮",
         "梦幻广场",
+        "广场感叹号",
         "女神像许愿 OCR",
         "广场每日导航",
         "广场导航文本 OCR",
@@ -70,9 +99,6 @@ class SquareGoddessTask(BaseBD2Task):
     ]
 
     status_key_labels = {
-        "恶魔城卡带": "恶魔城卡带模板",
-        "广场入口卡带": "广场卡带模板",
-        "广场入口小图标": "广场小图标模板",
         "梦幻广场": "梦幻广场模板",
         "广场每日导航": "每日导航模板",
         "广场导航中": "导航中模板",
@@ -81,7 +107,7 @@ class SquareGoddessTask(BaseBD2Task):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.name = "广场女神像"
-        self.description = "复用 PVP 入场链路进入梦幻广场，后续补女神像祈祷。"
+        self.description = "从快速切换页的玩法游戏卡7号位进入梦幻广场并完成女神像许愿。"
         self.icon = FluentIcon.GAME
         self.group_name = "日常/周常"
         self.group_icon = FluentIcon.CALENDAR
@@ -93,33 +119,37 @@ class SquareGoddessTask(BaseBD2Task):
         self.default_config.update(
             {
                 "启用": True,
-                "加载页面阈值": 0.72,
                 "主页亮度比例阈值": 0.75,
+                "主页确认等待秒数": 10.0,
+                "主页小屋按钮阈值": 0.70,
+                "快速卡带等待秒数": 10.0,
+                "快速切换按钮阈值": 0.78,
+                "卡带选择页确认等待秒数": 10.0,
+                "玩法类别高亮确认秒数": 3.0,
+                "玩法类别高亮像素比例": GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO,
                 "广场 OCR 阈值": 0.2,
-                "广场选关页等待秒数": 12.0,
-                "广场左侧滑动确认秒数": 6.0,
                 "广场入场等待秒数": 30.0,
                 "女神像许愿等待秒数": 8.0,
                 "女神像导航入口等待秒数": 8.0,
                 "女神像导航最长等待秒数": 90.0,
                 "女神像许愿最多点击次数": 3,
-                "恶魔城卡带阈值": 0.70,
-                "广场入口卡带阈值": 0.78,
+                "广场返回主页等待秒数": 15.0,
+                "广场感叹号阈值": 0.72,
                 "梦幻广场阈值": 0.78,
                 "广场每日导航阈值": 0.76,
                 "广场导航中阈值": 0.76,
-                "loading 出现等待秒数": 6.0,
-                "loading 消失等待秒数": 35.0,
             }
         )
         self.config_description.update(
             {
                 "广场 OCR 阈值": "广场入场流程 OCR 使用的最低可信度。",
-                "恶魔城卡带阈值": "游戏卡珍藏集里定位恶魔城卡带的模板匹配阈值。",
-                "广场入口卡带阈值": "游戏卡珍藏集里定位广场卡带的模板匹配阈值。",
+                "主页小屋按钮阈值": "从主页进入卡带前确认小屋按钮存在的阈值。",
+                "快速切换按钮阈值": "识别 QuickCartGeadai.png 快速切换按钮的模板匹配阈值。",
+                "玩法类别高亮像素比例": "玩法游戏卡标签确认为高亮状态所需的最低亮色像素占比。",
                 "广场入场等待秒数": "点击广场卡带后等待梦幻广场场景出现的最长时间。",
                 "女神像导航最长等待秒数": "点击每日导航后，等待角色靠近女神像的最长时间。",
                 "女神像许愿最多点击次数": "OCR 仍识别到许愿提示时最多重复点击几次。",
+                "广场返回主页等待秒数": "许愿完成后点击主页按钮并确认回到主页的最长时间。",
             }
         )
 
@@ -149,101 +179,44 @@ class SquareGoddessTask(BaseBD2Task):
 
         self.info_set("状态", "女神像许愿完成。")
         self._status_set("女神像许愿结果", "完成")
+        if not self._return_home_from_square():
+            self.info_set("状态", "女神像许愿完成，但未能返回主页。")
+            return False
+        self.info_set("状态", "女神像许愿完成并返回主页。")
         return True
 
+    def _return_home_from_square(self) -> bool:
+        self.info_set("当前阶段", "广场返回主页")
+        self.operate_click(*SQUARE_HOME_POINT, after_sleep=1.0)
+        return self._wait_for_cartridge_home(
+            timeout=float(self.config.get("广场返回主页等待秒数", 15.0))
+        )
+
     def _enter_square_from_home(self) -> bool:
-        self.info_set("当前阶段", "确认主页")
-        ratio = self._home_brightness_ratio(self.capture_frame())
-        self.info_set("主页亮度", f"{ratio:.3f}")
-        if ratio < self._home_ratio_threshold():
-            self.log_info(f"广场女神像：当前不在主页或主页亮度不足，ratio={ratio:.3f}。")
+        self.info_set("当前阶段", "打开卡带快速切换")
+        if not self.open_cartridge_quick_switcher(
+            ensure_home=self._wait_for_cartridge_home,
+            click_quick_switch=lambda: self._click_template_until(
+                QUICK_SWITCH_TEMPLATE,
+                timeout=float(self.config.get("快速卡带等待秒数", 10.0)),
+                name="快速切换按钮",
+                after_sleep=0.0,
+            ),
+            confirm_quick_switch_page=self._wait_for_quick_switch_page,
+        ):
+            self.log_info("广场女神像：未能从主页打开卡带快速切换页面。")
             return False
 
-        self.info_set("当前阶段", "打开游戏卡珍藏集")
-        self._click_entry_reference(2258, 1307, after_sleep=1.0)
-        found_cards, text = self._wait_for_ocr_requirements(
-            [
-                (r"游戏卡珍藏[集级]", 0.90),
-                (r"角色游戏卡", 0.70),
-                (r"玩法游戏卡", 0.70),
-            ],
-            timeout=float(self.config.get("广场选关页等待秒数", 12.0)),
-            name="广场选关",
-        )
-        self.info_set("广场选关 OCR", text or "-")
-        if not found_cards:
-            self.log_info("广场女神像：未确认进入游戏卡选关页面。")
+        self.info_set("当前阶段", "选择玩法游戏卡")
+        self.sleep(0.5)
+        self.operate_click(*GAMEPLAY_CARTRIDGE_POINT, after_sleep=0.0)
+        if not self._wait_for_gameplay_category():
+            self.log_info("广场女神像：点击后未确认玩法游戏卡类别高亮。")
             return False
 
-        self.info_set("当前阶段", "滑动到玩法游戏卡区域")
-        for _ in range(SQUARE_CARD_LIST_SWIPE_COUNT):
-            self._drag_entry_reference((94, 1067), (94, 333), duration=0.7, after_sleep=0.5)
+        self.info_set("当前阶段", "选择广场卡带7号位")
+        self.operate_click(*SQUARE_CARTRIDGE_SLOT_POINT, after_sleep=0.0)
 
-        cleared, text = self._wait_for_ocr_absent(
-            [r"店长游戏卡\s*\d+\s*/\s*\d+", r"剧情游戏卡\s*\d+\s*/\s*20"],
-            timeout=float(self.config.get("广场左侧滑动确认秒数", 6.0)),
-            name="广场左侧滑动",
-        )
-        self.info_set("广场左侧滑动 OCR", text or "-")
-        if not cleared:
-            self.log_info("广场女神像：左侧列表仍检测到店长游戏卡或剧情游戏卡分类标题。")
-            return False
-
-        self.info_set("当前阶段", "定位恶魔城卡带")
-        reference_card, frame_shape = self._find_template_until(
-            REFERENCE_CARD_TEMPLATE,
-            timeout=10.0,
-            name="恶魔城卡带",
-        )
-        if reference_card is not None and frame_shape is not None:
-            _frame_height, frame_width = frame_shape
-            center_x = reference_card.position[0] + reference_card.size[0] // 2
-            center_y = reference_card.position[1] + reference_card.size[1] // 2
-            target_x = max(1, center_x - frame_width // 2)
-            self._drag_client(
-                (center_x, center_y), (target_x, center_y), duration=0.8, after_sleep=1.0
-            )
-        else:
-            self.log_info("广场女神像：未检测到恶魔城卡带，直接尝试定位广场卡带。")
-
-        self.info_set("当前阶段", "选择广场卡带")
-        square_card, frame_shape = self._find_template_until(
-            SQUARE_ENTRY_CARD_TEMPLATE,
-            timeout=10.0,
-            name="广场入口卡带",
-        )
-        if square_card is None or frame_shape is None:
-            square_card, frame_shape = self._find_template_until(
-                SQUARE_QCARD_TEMPLATE,
-                timeout=5.0,
-                name="广场入口小图标",
-            )
-
-        if square_card is None or frame_shape is None:
-            square_label, frame_shape = self._find_square_label_until(timeout=5.0, name="广场标签")
-            if square_label is None or frame_shape is None:
-                self.log_info("广场女神像：未检测到广场卡带，也未通过 OCR 定位广场标签。")
-                return False
-
-            frame_height, frame_width = frame_shape
-            self._click_client(
-                square_label[0],
-                square_label[1],
-                frame_width,
-                frame_height,
-                after_sleep=2.0,
-            )
-        else:
-            frame_height, frame_width = frame_shape
-            self._click_client(
-                square_card.position[0] + square_card.size[0] // 2,
-                square_card.position[1] + square_card.size[1] // 2,
-                frame_width,
-                frame_height,
-                after_sleep=2.0,
-            )
-
-        self._wait_loading_if_present("广场入场")
         if self._wait_for_template(
             FANTASIA_SQUARE_TEMPLATE,
             timeout=float(self.config.get("广场入场等待秒数", 30.0)),
@@ -253,7 +226,113 @@ class SquareGoddessTask(BaseBD2Task):
 
         return False
 
+    def _wait_for_cartridge_home(
+        self,
+        interval: float = 0.35,
+        timeout: float | None = None,
+    ) -> bool:
+        self.info_set("当前阶段", "确认主页")
+        wait_seconds = (
+            float(self.config.get("主页确认等待秒数", 10.0))
+            if timeout is None
+            else max(0.0, float(timeout))
+        )
+        end_at = monotonic() + wait_seconds
+        last_button_score = -1.0
+        last_ratio = 0.0
+        while monotonic() <= end_at:
+            frame = self.capture_frame()
+            home_button = max(
+                (self._match(frame, spec) for spec in HOME_TEMPLATES),
+                key=lambda result: result.score,
+            )
+            last_button_score = home_button.score
+            last_ratio = self._home_brightness_ratio(frame)
+            self.info_set("主页小屋按钮", f"{last_button_score:.3f}")
+            self.info_set("主页亮度", f"{last_ratio:.3f}")
+            if (
+                self._passes(home_button, HOME_TEMPLATE)
+                and last_ratio >= self._home_ratio_threshold()
+            ):
+                return True
+            self.sleep(interval)
+
+        self.log_info(
+            "广场女神像：未确认主页小屋按钮或亮度不足，"
+            f"button={last_button_score:.3f}, ratio={last_ratio:.3f}。"
+        )
+        return False
+
+    def _wait_for_quick_switch_page(self, interval: float = 0.5) -> bool:
+        self.info_set("当前阶段", "确认卡带选择页")
+        self.sleep(1.0)
+        end_at = monotonic() + float(
+            self.config.get("卡带选择页确认等待秒数", 10.0)
+        )
+        last_text = ""
+        while monotonic() <= end_at:
+            frame = self.capture_frame()
+            text = self._ocr_text(frame, name="卡带选择页")
+            last_text = text or last_text
+            match_count = sum(
+                1 for pattern in QUICK_SWITCH_PAGE_PATTERNS if self._matches_any(text, [pattern])
+            )
+            self.info_set("卡带选择页 OCR", text or "-")
+            self.info_set(
+                "卡带选择页 OCR 命中",
+                f"{match_count}/{len(QUICK_SWITCH_PAGE_PATTERNS)}",
+            )
+            if match_count == len(QUICK_SWITCH_PAGE_PATTERNS):
+                return True
+            self.sleep(interval)
+
+        self.log_info(
+            "广场女神像：点击快速切换后未确认卡带选择页，"
+            f"OCR={last_text or '-'}。"
+        )
+        return False
+
+    def _wait_for_gameplay_category(self, interval: float = 0.5) -> bool:
+        end_at = monotonic() + float(self.config.get("玩法类别高亮确认秒数", 3.0))
+        last_text = ""
+        last_highlight_ratio = 0.0
+        while monotonic() <= end_at:
+            frame = self.capture_frame()
+            text = self._ocr_text(
+                frame,
+                name="玩法游戏卡",
+                roi=GAMEPLAY_CATEGORY_OCR_ROI,
+            )
+            last_text = text or last_text
+            last_highlight_ratio = self._bright_neutral_ratio(
+                frame,
+                GAMEPLAY_CATEGORY_HIGHLIGHT_REGION,
+            )
+            self.info_set("玩法游戏卡 OCR", text or "-")
+            self.info_set("玩法类别高亮", f"{last_highlight_ratio:.3f}")
+            if (
+                self._matches_any(text, [r"玩法游戏卡"])
+                and last_highlight_ratio
+                >= float(
+                    self.config.get(
+                        "玩法类别高亮像素比例",
+                        GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO,
+                    )
+                )
+            ):
+                return True
+            self.sleep(interval)
+
+        self.log_info(
+            "广场女神像：未确认玩法游戏卡类别高亮，"
+            f"highlight={last_highlight_ratio:.3f}, OCR={last_text or '-'}。"
+        )
+        return False
+
     def _pray_at_goddess(self) -> bool:
+        self.info_set("当前阶段", "检查广场感叹号")
+        self._click_square_notice_if_present()
+
         self.info_set("当前阶段", "寻找女神像许愿")
         if self._click_pray_until_gone(timeout=float(self.config.get("女神像许愿等待秒数", 8.0))):
             return True
@@ -282,6 +361,23 @@ class SquareGoddessTask(BaseBD2Task):
 
         self.log_info("广场女神像：等待女神像许愿提示超时。")
         return False
+
+    def _click_square_notice_if_present(self) -> bool:
+        frame = self.capture_frame()
+        frame_height, frame_width = frame.shape[:2]
+        result = self._match(frame, SQUARE_NOTICE_TEMPLATE)
+        self.info_set("广场感叹号", f"{result.score:.3f}")
+        if not self._passes(result, SQUARE_NOTICE_TEMPLATE):
+            return False
+
+        self._click_client(
+            result.position[0] + result.size[0] // 2,
+            result.position[1] + result.size[1] // 2,
+            frame_width,
+            frame_height,
+            after_sleep=1.0,
+        )
+        return True
 
     def _click_pray_until_gone(self, timeout: float) -> bool:
         clicked = False
@@ -559,25 +655,6 @@ class SquareGoddessTask(BaseBD2Task):
 
         return False, last_text
 
-    def _wait_loading_if_present(self, name: str, interval: float = 0.5) -> None:
-        found_loading = self._wait_for_template(
-            LOADING_TEMPLATE,
-            timeout=float(self.config.get("loading 出现等待秒数", 6.0)),
-            name=f"{name}_loading_appear",
-            interval=interval,
-        )
-        if not found_loading:
-            return
-
-        end_at = monotonic() + float(self.config.get("loading 消失等待秒数", 35.0))
-        while monotonic() <= end_at:
-            frame = self.capture_frame()
-            result = self._match(frame, LOADING_TEMPLATE)
-            self.info_set(f"{name}_loading_gone", f"{result.score:.3f}")
-            if not self._passes(result, LOADING_TEMPLATE):
-                return
-            self.sleep(interval)
-
     def _match(self, frame, spec: SquareTemplateSpec) -> SquareMatchResult:
         empty = SquareMatchResult(score=-1.0, pixel_score=-1.0, position=(0, 0), size=(0, 0))
         if monotonic() < self._match_pause_until:
@@ -593,7 +670,16 @@ class SquareGoddessTask(BaseBD2Task):
 
         try:
             frame_gray = self._to_gray(frame)
-            roi_left, roi_top, roi_frame = self._roi_frame(frame_gray, spec.roi)
+            if offline_template_uses_main_region(spec.file_name) or spec.roi is None:
+                frame_height, frame_width = frame_gray.shape[:2]
+                roi_left, roi_top, roi_right, roi_bottom = offline_template_search_region(
+                    spec.file_name,
+                    frame_width,
+                    frame_height,
+                )
+                roi_frame = frame_gray[roi_top:roi_bottom, roi_left:roi_right]
+            else:
+                roi_left, roi_top, roi_frame = self._roi_frame(frame_gray, spec.roi)
             frame_height, frame_width = roi_frame.shape[:2]
             base_scale = offline_template_scale(
                 spec.file_name,
@@ -602,7 +688,7 @@ class SquareGoddessTask(BaseBD2Task):
             )
             best = empty
 
-            for scale in self._candidate_scales(base_scale):
+            for scale in self._candidate_scales(base_scale, spec.scale_ratios):
                 scaled_template = self._resize_template(template, scale)
                 scaled_mask = self._resize_mask(mask, scale) if mask is not None else None
                 height, width = scaled_template.shape[:2]
@@ -611,6 +697,13 @@ class SquareGoddessTask(BaseBD2Task):
 
                 method = cv2.TM_CCORR_NORMED if scaled_mask is not None else cv2.TM_CCOEFF_NORMED
                 result = cv2.matchTemplate(roi_frame, scaled_template, method, mask=scaled_mask)
+                np.nan_to_num(
+                    result,
+                    copy=False,
+                    nan=-1.0,
+                    posinf=-1.0,
+                    neginf=-1.0,
+                )
                 _, max_value, _, max_location = cv2.minMaxLoc(result)
                 if max_value > best.score:
                     x, y = int(max_location[0]), int(max_location[1])
@@ -695,7 +788,11 @@ class SquareGoddessTask(BaseBD2Task):
 
     def _passes(self, result: SquareMatchResult, spec: SquareTemplateSpec) -> bool:
         threshold = float(self.config.get(spec.threshold_key, spec.default_threshold))
-        return result.score >= threshold
+        if result.score < threshold:
+            return False
+        if spec.min_pixel_score is None:
+            return True
+        return result.pixel_score >= spec.min_pixel_score
 
     def _ocr_text(
         self,
@@ -924,110 +1021,85 @@ class SquareGoddessTask(BaseBD2Task):
         click_y = int(round(center_y - frame_height * 0.085))
         return center_x, max(0, click_y)
 
-    @staticmethod
-    def _normalize_text(text: str) -> str:
-        return "".join(str(text).lower().split())
-
-    @staticmethod
-    def _candidate_scales(base_scale: float) -> list[float]:
-        return [round(max(0.2, base_scale), 3)]
-
-    @staticmethod
-    def _resize_template(template: np.ndarray, scale: float) -> np.ndarray:
-        if abs(scale - 1.0) < 0.001:
-            return template
-        interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC
-        return cv2.resize(template, None, fx=scale, fy=scale, interpolation=interpolation)
-
-    @staticmethod
-    def _resize_mask(mask: np.ndarray | None, scale: float) -> np.ndarray | None:
-        if mask is None:
-            return None
-        if abs(scale - 1.0) < 0.001:
-            return mask
-        resized = cv2.resize(mask, None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST)
-        return np.where(resized > 0, 255, 0).astype(np.uint8)
-
-    @staticmethod
-    def _to_gray(frame) -> np.ndarray:
-        if len(frame.shape) == 2:
-            return frame
-        if frame.shape[2] == 4:
-            return cv2.cvtColor(frame, cv2.COLOR_BGRA2GRAY)
-        return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-    @staticmethod
-    def _pixel_similarity(
-        region: np.ndarray,
-        template: np.ndarray,
-        mask: np.ndarray | None = None,
-    ) -> float:
-        if region.shape != template.shape:
-            return -1.0
-        diff = np.abs(region.astype(np.float32) - template.astype(np.float32))
-        if mask is not None:
-            active = mask > 0
-            if not np.any(active):
-                return -1.0
-            diff = diff[active]
-        return float(1.0 - np.mean(diff) / 255.0)
+    _normalize_text = staticmethod(normalize_ocr_text)
+    _candidate_scales = staticmethod(candidate_scales)
+    _resize_template = staticmethod(resize_template)
+    _resize_mask = staticmethod(resize_mask)
+    _to_gray = staticmethod(to_gray)
+    _pixel_similarity = staticmethod(pixel_similarity)
 
     @staticmethod
     def _roi_frame(
         frame: np.ndarray,
         roi: tuple[int, int, int, int] | None,
     ) -> tuple[int, int, np.ndarray]:
-        if roi is None:
-            return 0, 0, frame
-        height, width = frame.shape[:2]
-        x, y, w, h = roi
-        scale_x = width / REFERENCE_WIDTH
-        scale_y = height / REFERENCE_HEIGHT
-        left = max(0, round(x * scale_x))
-        top = max(0, round(y * scale_y))
-        right = min(width, round((x + w) * scale_x))
-        bottom = min(height, round((y + h) * scale_y))
-        return left, top, frame[top:bottom, left:right]
+        return reference_roi_frame(frame, roi, (REFERENCE_WIDTH, REFERENCE_HEIGHT))
 
     @staticmethod
     def _crop_reference(frame, roi: tuple[int, int, int, int] | None):
-        if roi is None:
-            return frame
-        _, _, crop = SquareGoddessTask._roi_frame(frame, roi)
-        return crop
+        return reference_roi_frame(frame, roi, (REFERENCE_WIDTH, REFERENCE_HEIGHT))[2]
 
+    @staticmethod
+    def _bright_neutral_ratio(
+        frame: np.ndarray,
+        relative_roi: tuple[float, float, float, float],
+        minimum_gray: int = 170,
+        maximum_channel_spread: int = 35,
+    ) -> float:
+        frame_height, frame_width = frame.shape[:2]
+        left = max(0, min(frame_width, round(relative_roi[0] * frame_width)))
+        top = max(0, min(frame_height, round(relative_roi[1] * frame_height)))
+        right = max(left, min(frame_width, round(relative_roi[2] * frame_width)))
+        bottom = max(top, min(frame_height, round(relative_roi[3] * frame_height)))
+        region = frame[top:bottom, left:right]
+        if region.size == 0:
+            return 0.0
+        if region.ndim == 2:
+            return float(np.mean(region >= minimum_gray))
+        color = region[..., :3].astype(np.int16)
+        channel_min = np.min(color, axis=2)
+        channel_spread = np.max(color, axis=2) - channel_min
+        highlighted = (channel_min >= minimum_gray) & (
+            channel_spread <= maximum_channel_spread
+        )
+        return float(np.mean(highlighted))
 
-LOADING_TEMPLATE = SquareTemplateSpec(
-    name="loading",
-    file_name="image/UI_loading_black.png",
-    threshold_key="加载页面阈值",
-    default_threshold=0.72,
-)
 
 HOME_TEMPLATE = SquareTemplateSpec(
     name="home",
     file_name="home.png",
-    threshold_key="主页亮度比例阈值",
-    default_threshold=0.75,
+    threshold_key="主页小屋按钮阈值",
+    default_threshold=0.70,
 )
 
 HOME_ICE_TEMPLATE = SquareTemplateSpec(
     name="home_ice",
     file_name="image/green/MainHomeIceGE.png",
-    threshold_key="主页亮度比例阈值",
-    default_threshold=0.75,
+    threshold_key="主页小屋按钮阈值",
+    default_threshold=0.70,
     green_mask=True,
 )
 
 HOME_RICE_TEMPLATE = SquareTemplateSpec(
     name="home_rice",
     file_name="image/green/MainHomeRIceGE.png",
-    threshold_key="主页亮度比例阈值",
-    default_threshold=0.75,
+    threshold_key="主页小屋按钮阈值",
+    default_threshold=0.70,
     green_mask=True,
 )
 
 HOME_TEMPLATES = (HOME_TEMPLATE, HOME_ICE_TEMPLATE, HOME_RICE_TEMPLATE)
+
+QUICK_SWITCH_TEMPLATE = SquareTemplateSpec(
+    name="quick_switch",
+    file_name="image/green/QuickCartGeadai.png",
+    threshold_key="快速切换按钮阈值",
+    default_threshold=0.78,
+    roi=(480, 918, 768, 162),
+    green_mask=True,
+    scale_ratios=(0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.0, 1.05, 1.10),
+    min_pixel_score=0.72,
+)
 
 REFERENCE_CARD_TEMPLATE = SquareTemplateSpec(
     name="reference_card",
@@ -1060,12 +1132,24 @@ FANTASIA_SQUARE_TEMPLATE = SquareTemplateSpec(
     roi=SquareGoddessTask._mf_roi(656, 622, 77, 66),
 )
 
+SQUARE_NOTICE_TEMPLATE = SquareTemplateSpec(
+    name="square_notice",
+    file_name="image/green/tanhaoGE.png",
+    threshold_key="广场感叹号阈值",
+    default_threshold=0.72,
+    roi=(1376, 862, 69, 51),
+    green_mask=True,
+    scale_ratios=(0.90, 0.925, 0.95, 0.975, 1.0),
+    min_pixel_score=0.72,
+)
+
 SQUARE_DAILY_ICON_TEMPLATE = SquareTemplateSpec(
     name="square_daily_icon",
     file_name="image/Square_DailyIco.png",
     threshold_key="广场每日导航阈值",
     default_threshold=0.76,
-    roi=SquareGoddessTask._mf_roi(968, 76, 56, 256),
+    roi=(1548, 203, 26, 25),
+    min_pixel_score=0.72,
 )
 
 SQUARE_MISSION_NAVI_TEMPLATE = SquareTemplateSpec(

@@ -2,13 +2,49 @@ import unittest
 from pathlib import Path
 
 from src.utils.template_resolution import (
+    MAIN_TEMPLATE_RELATIVE_REGION,
     offline_template_reference_resolution,
     offline_template_requires_green_mask,
     offline_template_scale,
+    offline_template_search_region,
+    offline_template_uses_main_region,
 )
 
 
 class OfflineTemplateResolutionTest(unittest.TestCase):
+    def test_main_templates_use_supplied_reference_search_region(self):
+        self.assertTrue(offline_template_uses_main_region("image/green/MainHomeIceGE.png"))
+        self.assertTrue(offline_template_uses_main_region("IMAGE/GREEN/mainBotmUnionAcGE.PNG"))
+        self.assertFalse(offline_template_uses_main_region("image/green/UI_QuickPack_GE.png"))
+        self.assertEqual(
+            (120 / 1920, 117 / 1080, 419 / 1920, 326 / 1080),
+            MAIN_TEMPLATE_RELATIVE_REGION,
+        )
+        self.assertEqual(
+            (120, 117, 419, 326),
+            offline_template_search_region(
+                "image/green/MainHomeIceGE.png",
+                1920,
+                1080,
+            ),
+        )
+        self.assertEqual(
+            (80, 78, 279, 217),
+            offline_template_search_region(
+                "image/green/MainBotmUnionAcGE.png",
+                1280,
+                720,
+            ),
+        )
+        self.assertEqual(
+            (0, 0, 1920, 1080),
+            offline_template_search_region(
+                "image/green/BusinQuickIcoGE.png",
+                1920,
+                1080,
+            ),
+        )
+
     def test_image_subfolder_uses_1280_by_720_source_resolution(self):
         self.assertEqual(
             (1280, 720),

@@ -1,5 +1,6 @@
 import unittest
 from dataclasses import replace
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -310,6 +311,99 @@ class DailyTaskHelperTest(unittest.TestCase):
             clicks,
         )
 
+    def test_mf_reference_click_uses_1280_by_720_ratios(self):
+        task = object.__new__(DailyTask)
+        calls = []
+        task.operate_click = lambda x, y, **kwargs: calls.append((x, y, kwargs))
+
+        task._click_mf_reference(640, 360, after_sleep=0.5)
+
+        self.assertEqual([(0.5, 0.5, {"after_sleep": 0.5})], calls)
+
+    def test_quick_hunt_resource_zero_uses_mf_top_right_roi(self):
+        task = object.__new__(DailyTask)
+        task.info_set = lambda *_args, **_kwargs: None
+        calls = []
+
+        class FakeVision:
+            def ocr_text(self, _frame, name, roi):
+                calls.append((name, roi))
+                return "0 / 60"
+
+        task._quick_vision = lambda: FakeVision()
+        task.capture_frame = lambda: np.zeros((720, 1280, 3), dtype=np.uint8)
+
+        self.assertTrue(task._quick_hunt_resource_empty("米饭"))
+        self.assertEqual([("米饭数量", (1040, 33, 111, 27))], calls)
+
+    def test_quick_hunt_red_dot_returns_scaled_component_center(self):
+        task = object.__new__(DailyTask)
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        frame[172:180, 116:124] = (0, 0, 255)
+
+        point = task._quick_hunt_red_dot(frame)
+
+        self.assertIsNotNone(point)
+        self.assertTrue(116 <= point[0] <= 123)
+        self.assertTrue(167 <= point[1] <= 174)
+
+    def test_quick_hunt_mf_scheduler_falls_back_to_hunting_ground(self):
+        task = object.__new__(DailyTask)
+        task.config = {
+            "快速狩猎狩猎场": True,
+            "快速狩猎冒险航线": True,
+            "快速狩猎米饭分配": "狩猎场x1 / 双倍图MAX",
+        }
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        calls = []
+        task._quick_hunt_resource_empty = lambda _resource: False
+        task._quick_hunt_reset_map = lambda: calls.append("reset") or True
+        task._quick_hunt_select_hunting_ground = lambda: calls.append("hunt") or True
+        task._quick_hunt_select_adventure_route = (
+            lambda: calls.append("adventure-no-double") or False
+        )
+        task._quick_hunt_execute_current_map = (
+            lambda mode, stage: calls.append((stage, mode)) or "done"
+        )
+
+        self.assertTrue(task._quick_hunt_run_rice_scheduler())
+        self.assertEqual(
+            [
+                "hunt",
+                ("狩猎场", "MIN"),
+                "reset",
+                "adventure-no-double",
+                "reset",
+                "hunt",
+                ("狩猎场兜底", "MAX"),
+            ],
+            calls,
+        )
+
+    def test_quick_hunt_run_dispatches_rice_then_crystal_and_returns_home(self):
+        task = object.__new__(DailyTask)
+        task.config = {"快速狩猎圣石洞穴": True}
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        calls = []
+        task._quick_hunt_open_menu = lambda: calls.append("open") or "opened"
+        task._quick_hunt_run_rice_scheduler = lambda: calls.append("rice") or True
+        task._quick_hunt_run_crystal_cave = lambda: calls.append("crystal") or True
+        task._quick_hunt_return_home = lambda: calls.append("home") or True
+
+        self.assertTrue(task.run_quick_hunt())
+        self.assertEqual(["open", "rice", "crystal", "home"], calls)
+
+    def test_quick_hunt_box_enabled_rejects_dark_text(self):
+        box = SimpleNamespace(x=2, y=2, width=6, height=6)
+        dark = np.zeros((10, 10, 3), dtype=np.uint8)
+        light = dark.copy()
+        light[2:8, 2:8] = 255
+
+        self.assertFalse(DailyTask._quick_hunt_box_enabled(dark, box))
+        self.assertTrue(DailyTask._quick_hunt_box_enabled(light, box))
+
     def test_daily_run_stops_after_failed_step(self):
         task = object.__new__(DailyTask)
         task.config = {
@@ -325,6 +419,7 @@ class DailyTaskHelperTest(unittest.TestCase):
         task.run_guild_sign_in = lambda: calls.append("guild") or False
         task.run_my_home_sign_in = lambda: calls.append("home") or True
         task.run_business_collect = lambda: calls.append("business") or True
+        task.run_quick_hunt = lambda: calls.append("hunt") or True
 
         self.assertFalse(DailyTask.run(task))
         self.assertEqual(["guild"], calls)

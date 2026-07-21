@@ -136,6 +136,40 @@ class AutoLoginSequenceTest(unittest.TestCase):
 
         self.assertTrue(AutoLoginTask.should_trigger(task))
 
+    def test_waiting_task_detects_existing_home_and_stops_after_confirmation(self):
+        task = self._task()
+        task._state = "waiting"
+        task.trigger_interval = 0
+        task.capture_frame = lambda: np.zeros((10, 10, 3), dtype=np.uint8)
+        task._home_brightness_ratio = lambda _frame: 1.0
+        logged_in = []
+        task.mark_logged_in = lambda: logged_in.append(True)
+
+        def fake_match(_frame, spec):
+            if spec in (BROWNDUSTX_TEMPLATE, TOUCH_TO_START_TEMPLATE):
+                return MatchResult(-1.0, -1.0, (0, 0), (0, 0))
+            if spec is HOME_BUTTON_TEMPLATE:
+                return MatchResult(0.9, 0.9, (0, 0), (1, 1))
+            if spec in HOME_BUTTON_TEMPLATES:
+                return MatchResult(-1.0, -1.0, (0, 0), (0, 0))
+            self.fail(f"unexpected match: {spec.name}")
+
+        task._match = fake_match
+
+        AutoLoginTask.run(task)
+
+        self.assertEqual("clearing", task._state)
+        self.assertIsNotNone(task._home_bright_since)
+        self.assertFalse(task._finished)
+
+        task._home_bright_since = monotonic() - 4.0
+        AutoLoginTask.run(task)
+
+        self.assertEqual([True], logged_in)
+        self.assertEqual("done", task._state)
+        self.assertTrue(task._finished)
+        self.assertFalse(AutoLoginTask.should_trigger(task))
+
     def test_browndustx_pixel_match_keeps_confirm_detection_active(self):
         task = self._task()
         task._state = "waiting"

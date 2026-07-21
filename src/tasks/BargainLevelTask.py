@@ -3,6 +3,7 @@ from time import monotonic
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task
+from src.utils.ocr_utils import keyword_match_count, normalize_ocr_text
 
 REFERENCE_WIDTH = 1920
 REFERENCE_HEIGHT = 1080
@@ -202,13 +203,8 @@ class BargainLevelTask(BaseBD2Task):
 
     @staticmethod
     def _keyword_match_count(text: str, keywords: list[str]) -> int:
-        normalized_text = BargainLevelTask._normalize_text(text)
-        return sum(
-            1
-            for keyword in keywords
-            if BargainLevelTask._normalize_text(keyword) in normalized_text
-        )
+        return keyword_match_count(text, keywords, alnum_only=True)
 
     @staticmethod
     def _normalize_text(text: str) -> str:
-        return "".join(character for character in str(text).lower() if character.isalnum())
+        return normalize_ocr_text(text, alnum_only=True)
