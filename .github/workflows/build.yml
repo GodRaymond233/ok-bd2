@@ -177,21 +177,72 @@ jobs:
           wait-for-completion-timeout-in-seconds: 60000
           output-artifact-directory: "pyappify_dist"
 
+      - name: Prepare release notes
+        if: env.BUILD_EXE == 'true' && steps.release-version.outputs.is_release == 'true' && startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          START_TAG: ${{ steps.sync.outputs.start_tag }}
+          END_TAG: ${{ steps.sync.outputs.end_tag }}
+          CHANGELOG: ${{ steps.sync.outputs.changes_with_asterisk }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $releaseCommit = git rev-list -n 1 $env:RELEASE_TAG
+          $releaseSubject = git log -1 --format=%s $releaseCommit
+          $expectedSubject = "release: $env:RELEASE_TAG"
+          if ($releaseSubject -ne $expectedSubject) {
+            throw "Tag $env:RELEASE_TAG must point to '$expectedSubject', got '$releaseSubject'."
+          }
+
+          $releaseAuthor = git log -1 --format=%an $releaseCommit
+          $mainEntries = [System.Collections.Generic.List[string]]::new()
+          foreach ($line in @(git log -1 --format=%b $releaseCommit)) {
+            $entry = ($line -replace '^\s*[-*]\s+', '').Trim()
+            if ([string]::IsNullOrWhiteSpace($entry)) {
+              continue
+            }
+            if ($entry -notmatch '^(feat|fix|refactor|perf|docs|test|build|ci|chore|style|revert)(\([^)]+\))?:\s+.+$') {
+              throw "Release detail must use Conventional Commits format: $entry"
+            }
+            if ($entry -notmatch '\s+\([^)]+\)$') {
+              $entry = "$entry ($releaseAuthor)"
+            }
+            $mainEntries.Add("- $entry")
+          }
+          if ($mainEntries.Count -eq 0) {
+            throw "Release commit $releaseCommit has no version details."
+          }
+
+          $changelog = $env:CHANGELOG.Trim()
+          if ([string]::IsNullOrWhiteSpace($changelog)) {
+            throw "The synchronized changelog is empty."
+          }
+
+          $releaseNotes = @(
+            "### 更新日志 $env:START_TAG -> $env:END_TAG"
+            ""
+            $changelog
+            ""
+            "### 版本主要内容 $env:RELEASE_TAG："
+            ""
+            ($mainEntries -join "`n")
+            ""
+            "### 下载包说明"
+            ""
+            "- [ok-bd2-win32-China-setup.exe](https://github.com/GodRaymond233/ok-bd2/releases/download/$env:RELEASE_TAG/ok-bd2-win32-China-setup.exe) 完整安装包，更新使用 CNB。"
+            "- [ok-bd2-win32-online-setup.exe](https://github.com/GodRaymond233/ok-bd2/releases/download/$env:RELEASE_TAG/ok-bd2-win32-online-setup.exe) 在线安装包，首次安装时需要联网下载依赖。"
+            "- [ok-bd2-win32-Global-setup.exe](https://github.com/GodRaymond233/ok-bd2/releases/download/$env:RELEASE_TAG/ok-bd2-win32-Global-setup.exe) full package with dependencies, using GitHub and PyPI as update source."
+            "- 不要下载 ok-bd2-win32.zip 或 Source code 压缩包。"
+          ) -join "`n"
+          Set-Content -LiteralPath release-notes.md -Value $releaseNotes -Encoding utf8
+          Get-Content -LiteralPath release-notes.md
+
       - name: Release
         uses: softprops/action-gh-release@v3
         if: env.BUILD_EXE == 'true' && steps.release-version.outputs.is_release == 'true' && startsWith(github.ref, 'refs/tags/')
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          body: |
-            ### 更新日志 ${{ steps.sync.outputs.start_tag }} -> ${{ steps.sync.outputs.end_tag }}
-              ${{ steps.sync.outputs.changes_with_asterisk }}
-
-            ### 下载包说明
-              * [ok-bd2-win32-China-setup.exe](https://github.com/GodRaymond233/ok-bd2/releases/download/${{ github.ref_name }}/ok-bd2-win32-China-setup.exe) 完整安装包，更新使用 CNB。
-              * [ok-bd2-win32-online-setup.exe](https://github.com/GodRaymond233/ok-bd2/releases/download/${{ github.ref_name }}/ok-bd2-win32-online-setup.exe) 在线安装包，首次安装时需要联网下载依赖。
-              * [ok-bd2-win32-Global-setup.exe](https://github.com/GodRaymond233/ok-bd2/releases/download/${{ github.ref_name }}/ok-bd2-win32-Global-setup.exe) full package with dependencies, using GitHub and PyPI as update source.
-              * 不要下载 ok-bd2-win32.zip 或 Source code 压缩包。
+          body_path: release-notes.md
           draft: false
           prerelease: false
           make_latest: true
