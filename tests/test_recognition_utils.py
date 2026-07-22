@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 
 from src.utils.image_utils import (
+    StableMatchObservation,
     best_pixel_valid_match,
     candidate_scales,
     crop_relative,
@@ -11,6 +12,8 @@ from src.utils.image_utils import (
     pixel_similarity,
     reference_roi_frame,
     resize_mask,
+    stabilize_template_match,
+    stable_match_consensus,
     to_gray,
 )
 from src.utils.ocr_utils import (
@@ -21,6 +24,54 @@ from src.utils.ocr_utils import (
 
 
 class ImageRecognitionUtilsTest(unittest.TestCase):
+    def test_stable_match_consensus_prefers_persistent_cluster_over_peak_score(self):
+        observations = [
+            StableMatchObservation(0, (500, 500), 0.99, 0.99),
+            StableMatchObservation(1, (100, 100), 0.90, 0.91),
+            StableMatchObservation(2, (501, 500), 0.98, 0.98),
+        ]
+        observations.extend(
+            StableMatchObservation(index, (100 + index % 2, 99 + index % 3), 0.91, 0.92)
+            for index in range(3, 11)
+        )
+
+        consensus = stable_match_consensus(
+            observations,
+            sample_count=11,
+            cluster_radius=24,
+            maximum_center_spread=12,
+        )
+
+        self.assertIsNotNone(consensus)
+        self.assertEqual((100, 100), consensus.center)
+        self.assertEqual(9, consensus.hit_count)
+
+    def test_stabilize_template_match_observes_one_second_before_returning(self):
+        class Match:
+            def __init__(self, center):
+                self.score = 0.91
+                self.pixel_score = 0.92
+                self.position = (center[0] - 5, center[1] - 5)
+                self.size = (10, 10)
+
+        sleeps = []
+        centers = iter((101 + index % 2, 200 + index % 3) for index in range(20))
+
+        stabilized = stabilize_template_match(
+            Match((101, 200)),
+            (1080, 1920, 3),
+            sample_match=lambda: (Match(next(centers)), (1080, 1920, 3)),
+            passes=lambda _match: True,
+            sleep=sleeps.append,
+        )
+
+        self.assertIsNotNone(stabilized)
+        consensus, frame_shape = stabilized
+        self.assertEqual((101, 201), consensus.center)
+        self.assertEqual((1080, 1920, 3), frame_shape)
+        self.assertEqual(10, len(sleeps))
+        self.assertTrue(all(seconds == 0.1 for seconds in sleeps))
+
     def test_source_template_matching_is_centralized(self):
         source_root = Path(__file__).resolve().parents[1] / "src"
         violations = []

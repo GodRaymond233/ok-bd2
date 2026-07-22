@@ -54,6 +54,16 @@ class BuildWorkflowTest(unittest.TestCase):
         self.assertIn("[switch]$SkipBuild", script)
         self.assertIn("-Name compression", script)
 
+    def test_launcher_version_is_consistently_pinned(self):
+        script = (ROOT / "scripts" / "prepare_pyappify_launcher.ps1").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn("v1.1.6", self.workflow)
+        self.assertNotIn("v1.1.6", script)
+        self.assertEqual(6, self.workflow.count("v1.1.7"))
+        self.assertIn('[string]$Version = "v1.1.7"', script)
+
 
 if __name__ == "__main__":
     unittest.main()

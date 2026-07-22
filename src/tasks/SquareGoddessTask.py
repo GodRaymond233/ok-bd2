@@ -16,6 +16,7 @@ from src.utils.image_utils import (
     reference_roi_frame,
     resize_mask,
     resize_template,
+    stabilize_template_match,
     template_match_response,
     to_gray,
 )
@@ -205,6 +206,7 @@ class SquareGoddessTask(BaseBD2Task):
                 timeout=float(self.config.get("快速卡带等待秒数", 10.0)),
                 name="快速切换按钮",
                 after_sleep=0.0,
+                stabilize=True,
             ),
             confirm_quick_switch_page=self._wait_for_quick_switch_page,
         ):
@@ -430,6 +432,7 @@ class SquareGoddessTask(BaseBD2Task):
         target_offset_mf: tuple[int, int] = (0, 0),
         after_sleep: float = 0.0,
         interval: float = 0.35,
+        stabilize: bool = False,
     ) -> bool:
         end_at = monotonic() + max(0.0, timeout)
         last_score = -1.0
@@ -438,16 +441,58 @@ class SquareGoddessTask(BaseBD2Task):
             frame_height, frame_width = frame.shape[:2]
             result = self._match(frame, spec)
             last_score = result.score
-            self.info_set(name, f"{result.score:.3f}")
+            self.info_set(name, f"{result.score:.3f}/{result.pixel_score:.3f}")
             if self._passes(result, spec):
+                stable_center = None
+                if stabilize:
+
+                    def sample_match():
+                        sampled_frame = self.capture_frame()
+                        return self._match(sampled_frame, spec), sampled_frame.shape
+
+                    stabilized = stabilize_template_match(
+                        result,
+                        frame.shape,
+                        sample_match=sample_match,
+                        passes=lambda candidate: self._passes(candidate, spec),
+                        sleep=self.sleep,
+                        on_sample=lambda candidate: self.info_set(
+                            name,
+                            f"{candidate.score:.3f}/{candidate.pixel_score:.3f}",
+                        ),
+                    )
+                    if stabilized is None:
+                        self.info_set(f"{name}稳定识别", "未形成稳定位置")
+                        return False
+                    consensus, frame_shape = stabilized
+                    frame_height, frame_width = frame_shape[:2]
+                    stable_center = consensus.center
+                    self.info_set(
+                        f"{name}稳定识别",
+                        (
+                            f"center=({stable_center[0]},{stable_center[1]}), "
+                            f"hits={consensus.hit_count}/{consensus.sample_count}, "
+                            f"match={consensus.average_score:.3f}, "
+                            f"pixel={consensus.average_pixel_score:.3f}, "
+                            f"spread={consensus.center_spread:.1f}"
+                        ),
+                    )
                 offset_x, offset_y = self._mf_offset_for_frame(
                     target_offset_mf[0],
                     target_offset_mf[1],
                     frame_width,
                     frame_height,
                 )
-                x = result.position[0] + result.size[0] // 2 + offset_x
-                y = result.position[1] + result.size[1] // 2 + offset_y
+                center_x, center_y = (
+                    stable_center
+                    if stable_center is not None
+                    else (
+                        result.position[0] + result.size[0] // 2,
+                        result.position[1] + result.size[1] // 2,
+                    )
+                )
+                x = center_x + offset_x
+                y = center_y + offset_y
                 self._click_client(x, y, frame_width, frame_height, after_sleep=after_sleep)
                 return True
             self.sleep(interval)

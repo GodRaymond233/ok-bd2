@@ -7,7 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "adbutils>=2.8.0",
     "comtypes>=1.4.16",
-    "ok-script>=1.0.159",
+    "ok-script==1.0.170",
     "numpy>=2.4.0",
     "onnxocr-ppocrv5>=0.0.18",
     "opencc>=1.2.0",
@@ -17,6 +17,7 @@ dependencies = [
     "psutil>=7.2.2",
     "pydirectinput>=1.0.4",
     "pynput>=1.8.1",
+    "pyappify==1.0.6",
     "pyside6==6.9.1",
     "pyside6-fluent-widgets",
     "pywin32>=306; platform_system == 'Windows'",

@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "v1.1.6",
+    [string]$Version = "v1.1.7",
     [string]$BuildDir = "pyappify_build",
     [ValidateSet("zlib", "lzma")]
     [string]$NsisCompression = "lzma",
