@@ -42,11 +42,12 @@ class DailyBatchTaskTest(unittest.TestCase):
             config["onetime_tasks"][0],
         )
 
-    def test_config_exposes_six_child_switches_in_requested_order(self):
+    def test_config_exposes_seven_child_switches_in_requested_order(self):
         executor = SimpleNamespace(scene=None)
         task = DailyBatchTask(executor, SimpleNamespace())
         expected = [
-            "日常签到",
+            "公会、小屋、酒馆",
+            "快速狩猎",
             "免费抽抽乐",
             "广场女神像",
             "自动PVP",

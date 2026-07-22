@@ -2,6 +2,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from time import monotonic
 from typing import Any, Callable
 
 import cv2
@@ -11,11 +12,14 @@ from PIL import Image
 
 from src.scene.BD2Scene import BD2Scene
 from src.scene.ScreenPosition import ScreenPosition
+from src.utils.ocr_utils import normalize_ocr_text
 
 logger = Logger.get_logger(__name__)
 PROBE_OUTPUT_DIR = Path("probe_outputs")
 GREEN_MASK_TOLERANCE = 0
 CARTRIDGE_RECENT_ENTRY_POINT = (0.7875, 0.9111111111111111)
+RECENT_CARTRIDGE_SPECIAL_PAGE_SECONDS = 3.0
+RECENT_CARTRIDGE_SPECIAL_PAGE_MAX_ACTIONS = 3
 
 
 def green_mask_from_template(
@@ -276,15 +280,120 @@ class BaseBD2Task(BaseTask):
             return False
 
         # Fixed common flow: confirmed home -> recognition settle delay
-        # -> recent cartridge -> wait 1 second -> recognize the quick-switch icon
-        # -> click the recognized center -> confirm the cartridge selection page.
+        # -> recent cartridge -> OCR special pages for 3 seconds, timed from the click
+        # -> recognize the quick-switch icon -> click the recognized center
+        # -> confirm the cartridge selection page.
         self._sleep_after_recognition()
         self.info_set("当前阶段", "点击最近卡带")
-        self.operate_click(*CARTRIDGE_RECENT_ENTRY_POINT, after_sleep=1.0)
+        self.operate_click(*CARTRIDGE_RECENT_ENTRY_POINT, after_sleep=0.0)
+        self._handle_recent_cartridge_special_pages()
         self.info_set("当前阶段", "寻找快速切换按钮")
         if not click_quick_switch():
             return False
         return bool(confirm_quick_switch_page())
+
+    def _handle_recent_cartridge_special_pages(
+        self,
+        timeout: float = RECENT_CARTRIDGE_SPECIAL_PAGE_SECONDS,
+        interval: float = 0.25,
+    ) -> bool:
+        """OCR and dismiss PVP promotion, demotion, and season reward pages."""
+        end_at = monotonic() + max(0.0, float(timeout))
+        handled: set[str] = set()
+        action_count = 0
+
+        while True:
+            boxes = self._recent_cartridge_ocr_boxes()
+            text = " ".join(
+                str(getattr(box, "name", ""))
+                for box in boxes
+                if getattr(box, "name", "")
+            )
+            self.info_set("最近卡带特殊页面 OCR", text or "-")
+            normalized = normalize_ocr_text(text)
+
+            action_name = ""
+            target_box = None
+            if "赛季奖励" in normalized and "点击画面即可返回" in normalized:
+                action_name = "赛季奖励"
+                target_box = self._find_ocr_box(boxes, "点击画面即可返回")
+            elif "恭喜晋级" in normalized and "确认" in normalized:
+                action_name = "恭喜晋级"
+                target_box = self._find_ocr_box(boxes, "确认")
+            elif "段位下滑" in normalized and "确认" in normalized:
+                action_name = "段位下滑"
+                target_box = self._find_ocr_box(boxes, "确认")
+
+            if action_name and action_name not in handled and target_box is not None:
+                point = self._ocr_box_center(target_box)
+                if point is not None:
+                    frame_width = max(1, int(self.width))
+                    frame_height = max(1, int(self.height))
+                    self.info_set("当前阶段", f"处理最近卡带{action_name}")
+                    self.operate_click(
+                        max(0.0, min(1.0, point[0] / frame_width)),
+                        max(0.0, min(1.0, point[1] / frame_height)),
+                        after_sleep=0.5,
+                    )
+                    handled.add(action_name)
+                    action_count += 1
+
+            if (
+                monotonic() >= end_at
+                or action_count >= RECENT_CARTRIDGE_SPECIAL_PAGE_MAX_ACTIONS
+            ):
+                break
+            self.sleep(max(0.0, float(interval)))
+
+        return bool(handled)
+
+    def _recent_cartridge_ocr_boxes(self) -> list:
+        try:
+            frame = self.capture_frame()
+            config = getattr(self, "config", {})
+            threshold = next(
+                (
+                    float(config[key])
+                    for key in (
+                        "PVP OCR 阈值",
+                        "广场 OCR 阈值",
+                        "跑商 OCR 阈值",
+                        "跑图 OCR 阈值",
+                    )
+                    if key in config
+                ),
+                0.2,
+            )
+            boxes = self.ocr(
+                frame=frame,
+                threshold=threshold,
+                target_height=720,
+                log=False,
+                name="最近卡带特殊页面",
+            )
+        except Exception as exc:
+            self.info_set("最近卡带特殊页面 OCR 错误", str(exc))
+            return []
+        return list(boxes)
+
+    @staticmethod
+    def _find_ocr_box(boxes: list, keyword: str):
+        normalized_keyword = normalize_ocr_text(keyword)
+        for box in boxes:
+            if normalized_keyword in normalize_ocr_text(getattr(box, "name", "")):
+                return box
+        return None
+
+    @staticmethod
+    def _ocr_box_center(box) -> tuple[float, float] | None:
+        values = tuple(getattr(box, key, None) for key in ("x", "y", "width", "height"))
+        if any(value is None for value in values):
+            raw_box = getattr(box, "box", None)
+            if raw_box is None or len(raw_box) < 4:
+                return None
+            values = tuple(raw_box[:4])
+        x, y, width, height = (float(value) for value in values)
+        return x + width / 2, y + height / 2
 
     def _check_action_interval(self, action_name: Any, interval: float) -> bool:
         if interval <= 0:

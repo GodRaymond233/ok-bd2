@@ -1,5 +1,4 @@
 import re
-import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from time import monotonic
@@ -12,11 +11,13 @@ from src.tasks.BaseBD2Task import BaseBD2Task
 from src.tasks.map_trade.models import TemplateSpec
 from src.tasks.map_trade.vision import Vision
 from src.utils.image_utils import (
+    best_pixel_valid_match,
     candidate_scales,
     crop_relative,
     pixel_similarity,
     resize_mask,
     resize_template,
+    template_match_response,
     to_gray,
 )
 from src.utils.ocr_utils import keyword_match_count, normalize_ocr_text
@@ -30,6 +31,24 @@ REFERENCE_WIDTH = 1920
 REFERENCE_HEIGHT = 1080
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_DIR = PROJECT_ROOT / "offline-train" / "train-source-screenshots"
+QUICK_HUNT_CHILD_CONFIG_KEYS = (
+    "快速狩猎冒险航线",
+    "快速狩猎狩猎场",
+    "快速狩猎圣石洞穴",
+    "快速狩猎双倍策略",
+    "快速狩猎资源倾向",
+    "快速狩猎米饭分配",
+    "快速狩猎章节图",
+    "快速狩猎模板阈值",
+    "快速狩猎像素相似度阈值",
+    "快速狩猎界面等待秒数",
+    "快速狩猎结算等待秒数",
+    "快速狩猎入口测试",
+    "快速狩猎菜单测试",
+    "快速狩猎圣石测试",
+    "快速狩猎完整测试",
+)
+QUICK_HUNT_CONFIG_KEYS = ("执行快速狩猎", *QUICK_HUNT_CHILD_CONFIG_KEYS)
 
 
 @dataclass(frozen=True)
@@ -51,6 +70,7 @@ class DailyMatchResult:
 
 
 class DailyTask(BaseBD2Task):
+    include_quick_hunt_config = False
     vision_threshold_key = "快速狩猎模板阈值"
     ocr_threshold_key = "日常 OCR 阈值"
 
@@ -89,13 +109,6 @@ class DailyTask(BaseBD2Task):
         "一键收菜 OCR",
         "一键收菜返回主页 亮度",
         "一键收菜返回主页结果",
-        "执行快速狩猎",
-        "快速狩猎入口",
-        "快速狩猎菜单",
-        "快速狩猎米饭",
-        "快速狩猎火把",
-        "快速狩猎当前阶段",
-        "快速狩猎结果",
         "加载页面阈值",
         "主页亮度比例阈值",
         "日常 OCR 阈值",
@@ -127,8 +140,8 @@ class DailyTask(BaseBD2Task):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.name = "日常任务"
-        self.description = "执行公会签到、小屋签到、一键收菜和快速狩猎。"
+        self.name = "公会、小屋、酒馆"
+        self.description = "执行公会签到、小屋签到和酒馆一键收菜。"
         self.icon = FluentIcon.CAR
         self.group_name = "日常/周常"
         self.group_icon = FluentIcon.CALENDAR
@@ -138,7 +151,9 @@ class DailyTask(BaseBD2Task):
         self._missing_template_names: set[str] = set()
         self._match_error_names: set[str] = set()
         self._match_pause_until = 0.0
-        self._quick_hunt_vision: Vision | None = None
+        if self.include_quick_hunt_config:
+            self._quick_hunt_vision: Vision | None = None
+            self._quick_hunt_test_action: str | None = None
         self.default_config.update(
             {
                 "启用": True,
@@ -153,11 +168,14 @@ class DailyTask(BaseBD2Task):
                 "快速狩猎资源倾向": "金币",
                 "快速狩猎米饭分配": "狩猎场x1 / 双倍图MAX",
                 "快速狩猎章节图": "低练度·章节1",
-                "快速狩猎圣石属性": "火",
                 "快速狩猎模板阈值": 0.78,
                 "快速狩猎像素相似度阈值": 0.72,
                 "快速狩猎界面等待秒数": 8.0,
                 "快速狩猎结算等待秒数": 15.0,
+                "快速狩猎入口测试": "",
+                "快速狩猎菜单测试": "",
+                "快速狩猎圣石测试": "",
+                "快速狩猎完整测试": "",
                 "公会入口阈值": 0.78,
                 "公会签到成功阈值": 0.76,
                 "小屋页面阈值": 0.76,
@@ -180,19 +198,36 @@ class DailyTask(BaseBD2Task):
                 "执行快速狩猎": "按 MFABD2 路径消耗免费米饭和火把。",
                 "快速狩猎冒险航线": "消耗米饭扫荡金币或经验冒险航线。",
                 "快速狩猎狩猎场": "消耗米饭扫荡配置的章节狩猎场。",
-                "快速狩猎圣石洞穴": "消耗免费火把扫荡固定属性圣石洞穴。",
+                "快速狩猎圣石洞穴": "读取五种圣石数量并扫荡当前最少的属性洞穴。",
                 "快速狩猎双倍策略": (
-                    "优先双倍只检查首选资源；强制双倍会再检查备选资源；"
-                    "忽视双倍直接扫荡首选资源。"
+                    "优先双倍会检测金币和经验并在都双倍时选择金币；"
+                    "强制双倍优先配置资源；忽视双倍固定选择金币。"
                 ),
-                "快速狩猎资源倾向": "冒险航线首选金币或经验。",
-                "快速狩猎米饭分配": "控制狩猎场与双倍冒险航线分别使用一次或 MAX。",
+                "快速狩猎资源倾向": "强制双倍策略下优先检查金币或经验。",
+                "快速狩猎米饭分配": (
+                    "狩猎场 MIN 时双倍冒险航线使用 MAX；"
+                    "狩猎场 MAX 时跳过冒险航线。"
+                ),
                 "快速狩猎章节图": "选择章节1、章节7或章节9狩猎场。",
-                "快速狩猎圣石属性": "选择固定的火、水、风、光或暗属性。",
                 "快速狩猎模板阈值": "快速狩猎模板匹配最低分数。",
                 "快速狩猎像素相似度阈值": "快速狩猎模板还必须达到的像素相似度。",
                 "快速狩猎界面等待秒数": "等待狩猎菜单、地图和按钮出现的最长时间。",
                 "快速狩猎结算等待秒数": "点击狩猎后等待奖励页或资源不足提示的最长时间。",
+                "快速狩猎入口测试": (
+                    "只读检查不会点击；打开菜单会先确认首页，再检查并点击"
+                    "1920×1080参考点(1782,237)。测试前停留在首页。"
+                ),
+                "快速狩猎菜单测试": (
+                    "只读检查不会点击；执行米饭会按当前配置实际消耗米饭。"
+                    "测试前需要已经打开快速狩猎菜单。"
+                ),
+                "快速狩猎圣石测试": (
+                    "执行圣石会按当前配置实际消耗火把；返回主页仅测试返回流程。"
+                    "测试前需要已经打开快速狩猎菜单。"
+                ),
+                "快速狩猎完整测试": (
+                    "从首页执行完整快速狩猎流程，会实际消耗米饭和火把。"
+                ),
             }
         )
         self.config_type.update(
@@ -207,11 +242,14 @@ class DailyTask(BaseBD2Task):
                             "快速狩猎资源倾向",
                             "快速狩猎米饭分配",
                             "快速狩猎章节图",
-                            "快速狩猎圣石属性",
                             "快速狩猎模板阈值",
                             "快速狩猎像素相似度阈值",
                             "快速狩猎界面等待秒数",
                             "快速狩猎结算等待秒数",
+                            "快速狩猎入口测试",
+                            "快速狩猎菜单测试",
+                            "快速狩猎圣石测试",
+                            "快速狩猎完整测试",
                         ]
                     }
                 },
@@ -225,15 +263,11 @@ class DailyTask(BaseBD2Task):
                 },
                 "快速狩猎米饭分配": {
                     "type": "drop_down",
-                    "options": ["狩猎场x1 / 双倍图MAX", "狩猎场MAX / 双倍图x1"],
+                    "options": ["狩猎场x1 / 双倍图MAX", "狩猎场MAX / 跳过冒险航线"],
                 },
                 "快速狩猎章节图": {
                     "type": "drop_down",
                     "options": ["低练度·章节1", "矿石·章节7", "木材·章节9"],
-                },
-                "快速狩猎圣石属性": {
-                    "type": "drop_down",
-                    "options": ["火", "水", "风", "光", "暗"],
                 },
                 "快速狩猎模板阈值": {"min": 0.5, "max": 0.95, "step": 0.01},
                 "快速狩猎像素相似度阈值": {
@@ -243,8 +277,69 @@ class DailyTask(BaseBD2Task):
                 },
                 "快速狩猎界面等待秒数": {"min": 2.0, "max": 30.0, "step": 1.0},
                 "快速狩猎结算等待秒数": {"min": 5.0, "max": 60.0, "step": 1.0},
+                "快速狩猎入口测试": {
+                    "type": "button",
+                    "buttons": [
+                        {
+                            "text": "只读检查入口",
+                            "callback": lambda _checked=False: self._queue_quick_hunt_test(
+                                "inspect_entry"
+                            ),
+                        },
+                        {
+                            "text": "打开狩猎菜单",
+                            "callback": lambda _checked=False: self._queue_quick_hunt_test(
+                                "open_menu"
+                            ),
+                        },
+                    ],
+                },
+                "快速狩猎菜单测试": {
+                    "type": "button",
+                    "buttons": [
+                        {
+                            "text": "只读检查菜单",
+                            "callback": lambda _checked=False: self._queue_quick_hunt_test(
+                                "inspect_menu"
+                            ),
+                        },
+                        {
+                            "text": "执行米饭(消耗)",
+                            "callback": lambda _checked=False: self._queue_quick_hunt_test(
+                                "rice"
+                            ),
+                        },
+                    ],
+                },
+                "快速狩猎圣石测试": {
+                    "type": "button",
+                    "buttons": [
+                        {
+                            "text": "执行圣石(消耗)",
+                            "callback": lambda _checked=False: self._queue_quick_hunt_test(
+                                "crystal"
+                            ),
+                        },
+                        {
+                            "text": "返回主页",
+                            "callback": lambda _checked=False: self._queue_quick_hunt_test(
+                                "home"
+                            ),
+                        },
+                    ],
+                },
+                "快速狩猎完整测试": {
+                    "type": "button",
+                    "callback": lambda _checked=False: self._queue_quick_hunt_test("full"),
+                    "text": "完整执行(消耗)",
+                },
             }
         )
+        if not self.include_quick_hunt_config:
+            for key in QUICK_HUNT_CONFIG_KEYS:
+                self.default_config.pop(key, None)
+                self.config_description.pop(key, None)
+                self.config_type.pop(key, None)
 
     def _status_set(self, key: str, value) -> None:
         try:
@@ -254,16 +349,15 @@ class DailyTask(BaseBD2Task):
 
     def run(self):
         if not bool(self.config.get("启用", True)):
-            self.info_set("状态", "日常任务已禁用。")
-            self.log_info("日常任务已禁用。")
+            self.info_set("状态", "公会、小屋、酒馆已禁用。")
+            self.log_info("公会、小屋、酒馆已禁用。")
             return True
 
-        self.info_set("状态", "日常任务启动。")
+        self.info_set("状态", "公会、小屋、酒馆启动。")
         steps = [
             ("公会签到", "执行公会签到", self.run_guild_sign_in),
             ("小屋签到", "执行小屋签到", self.run_my_home_sign_in),
             ("一键收菜", "执行一键收菜", self.run_business_collect),
-            ("快速狩猎", "执行快速狩猎", self.run_quick_hunt),
         ]
 
         success = []
@@ -286,7 +380,7 @@ class DailyTask(BaseBD2Task):
                 else:
                     failed.append(name)
                     stop_remaining = True
-                    self.log_info(f"{name} 未满足后续触发条件，停止剩余日常任务。")
+                    self.log_info(f"{name} 未满足后续触发条件，停止剩余子任务。")
             except Exception as exc:
                 failed.append(name)
                 stop_remaining = True
@@ -295,9 +389,9 @@ class DailyTask(BaseBD2Task):
         self.info_set("完成", str(success))
         self.info_set("失败", str(failed))
         self.info_set("跳过", str(skipped))
-        self.info_set("状态", "日常任务结束。")
+        self.info_set("状态", "公会、小屋、酒馆结束。")
         self.log_info(
-            f"日常任务结束：完成={success}, 失败={failed}, 跳过={skipped}",
+            f"公会、小屋、酒馆结束：完成={success}, 失败={failed}, 跳过={skipped}",
             notify=True,
         )
         return not failed
@@ -417,6 +511,155 @@ class DailyTask(BaseBD2Task):
         self._status_set("一键收菜返回主页结果", "通过" if home_ok else "失败")
         return home_ok
 
+    def _queue_quick_hunt_test(self, action: str) -> None:
+        labels = {
+            "inspect_entry": "只读检查入口",
+            "open_menu": "打开狩猎菜单",
+            "inspect_menu": "只读检查菜单",
+            "rice": "执行米饭流程",
+            "crystal": "执行圣石洞穴",
+            "home": "返回主页",
+            "full": "完整快速狩猎",
+        }
+        label = labels.get(action)
+        if label is None:
+            self.log_warning(f"不支持的快速狩猎测试动作：{action}", notify=True)
+            return
+        if self.enabled or self.running:
+            self.log_warning("已有任务正在运行，请停止后再启动快速狩猎测试。", notify=True)
+            return
+
+        self._quick_hunt_test_action = action
+        try:
+            self.start()
+            self._status_set("快速狩猎测试状态", f"已加入队列：{label}")
+        except Exception as exc:
+            self._quick_hunt_test_action = None
+            self.log_error(f"无法启动快速狩猎测试：{label}", exc, notify=True)
+
+    def _run_quick_hunt_test(self, action: str) -> bool:
+        labels = {
+            "inspect_entry": "只读检查入口",
+            "open_menu": "打开狩猎菜单",
+            "inspect_menu": "只读检查菜单",
+            "rice": "执行米饭流程",
+            "crystal": "执行圣石洞穴",
+            "home": "返回主页",
+            "full": "完整快速狩猎",
+        }
+        label = labels.get(action, action)
+        self._status_set("当前任务", f"快速狩猎测试：{label}")
+        self._status_set("快速狩猎测试状态", f"执行中：{label}")
+        try:
+            if action == "inspect_entry":
+                success = self._quick_hunt_inspect_entry()
+                detail = "识别完成"
+            elif action == "open_menu":
+                opened = self._quick_hunt_open_menu()
+                success = opened in {"opened", "skip"}
+                detail = {
+                    "opened": "菜单已打开",
+                    "skip": "未发现入口红点",
+                    "failed": "入口识别或菜单确认失败",
+                }.get(opened, opened)
+            elif action == "inspect_menu":
+                success = self._quick_hunt_inspect_menu()
+                detail = "识别完成"
+            elif action == "rice":
+                success = self._quick_hunt_run_rice_scheduler()
+                detail = "米饭流程完成" if success else "米饭流程失败"
+            elif action == "crystal":
+                success = self._quick_hunt_run_crystal_cave()
+                detail = "圣石流程完成" if success else "圣石流程失败"
+            elif action == "home":
+                success = self._quick_hunt_return_home()
+                detail = "已确认主页" if success else "返回主页失败"
+            elif action == "full":
+                success = self.run_quick_hunt()
+                detail = "完整流程完成" if success else "完整流程失败"
+            else:
+                success = False
+                detail = f"不支持的动作：{action}"
+
+            result = "通过" if success else "失败"
+            self._status_set("快速狩猎测试状态", f"{label}：{result}；{detail}")
+            self.log_info(f"快速狩猎测试结束：{label}，{result}，{detail}", notify=True)
+            return success
+        except Exception as exc:
+            self._status_set("快速狩猎测试状态", f"{label}：异常")
+            self.log_error(f"快速狩猎测试异常：{label}", exc, notify=True)
+            return False
+        finally:
+            self._quick_hunt_test_action = None
+
+    def _quick_hunt_inspect_entry(self) -> bool:
+        """Inspect entry signals without moving the mouse or clicking."""
+
+        frame = self.capture_frame()
+        home_ok, home_button, home_spec, home_ratio, gacha_text = (
+            self._quick_hunt_home_signals(frame)
+        )
+        self._status_set(
+            "快速狩猎首页按钮",
+            f"{home_spec.file_name}={home_button.score:.3f}/{home_button.pixel_score:.3f}"
+            f"({'通过' if home_ok else '未通过'})",
+        )
+        is_red, point, bgr, hsv = self._quick_hunt_entry_red_state(frame)
+        self._status_set(
+            "快速狩猎红点识别",
+            f"point={point}, BGR={bgr}, HSV={hsv}, {'红色' if is_red else '非红色'}",
+        )
+        self._status_set(
+            "快速狩猎主页亮度",
+            f"{home_ratio:.3f}/{self._home_ratio_threshold():.3f}",
+        )
+        self._status_set("快速狩猎主页抽抽乐 OCR", gacha_text or "-")
+        return True
+
+    def _quick_hunt_inspect_menu(self) -> bool:
+        """Inspect menu OCR and templates using one frame without clicking."""
+
+        vision = self._quick_vision()
+        frame = self.capture_frame()
+        ocr_regions = (
+            ("快速狩猎菜单 OCR", "测试-菜单标题", QUICK_HUNT_MENU_TITLE_ROI),
+            ("快速狩猎资源 OCR", "测试-资源数量", QUICK_HUNT_RESOURCE_ROI),
+            ("快速狩猎按钮 OCR", "测试-快速狩猎按钮", QUICK_HUNT_BUTTON_ROI),
+            ("快速狩猎次数 OCR", "测试-次数选择", QUICK_HUNT_COUNT_ROI),
+            ("快速狩猎开始 OCR", "测试-开始狩猎", QUICK_HUNT_START_ROI),
+            ("快速狩猎奖励 OCR", "测试-奖励页面", QUICK_HUNT_REWARD_ROI),
+            ("快速狩猎异常 OCR", "测试-异常弹窗", QUICK_HUNT_DIALOG_ROI),
+            ("快速狩猎地图 OCR", "测试-地图范围", QUICK_HUNT_MAP_SCAN_ROI),
+            ("快速狩猎圣石 OCR", "测试-圣石列表", QUICK_HUNT_STONE_LIST_ROI),
+            ("快速狩猎圣石数量", "测试-圣石数量", QUICK_HUNT_STONE_COUNT_ROI),
+        )
+        for status_key, name, roi in ocr_regions:
+            text = vision.ocr_text(frame, name, relative_roi=roi)
+            self._status_set(status_key, text or "-")
+
+        chapter = str(self.config.get("快速狩猎章节图", "低练度·章节1"))
+        chapter_entry = QUICK_HUNT_HUNTING_GROUNDS.get(chapter)
+        if chapter_entry is None:
+            self._status_set("快速狩猎章节 OCR", f"缺少映射：{chapter}")
+        else:
+            chapter_text = vision.ocr_text(
+                frame,
+                f"测试-{chapter}",
+                relative_roi=QUICK_HUNT_MAP_SCAN_ROI,
+            )
+            self._status_set("快速狩猎章节 OCR", chapter_text or "-")
+
+        collapse = self._quick_spec(QUICK_HUNT_LIST_COLLAPSE_TEMPLATE)
+        collapse_match = vision.match(frame, collapse)
+        self._status_set(
+            "快速狩猎收起模板",
+            f"{collapse_match.score:.3f}/{collapse_match.pixel_score:.3f}"
+            f"({'通过' if vision.passes(collapse_match, collapse) else '未通过'})",
+        )
+
+        self._quick_hunt_double_states(frame)
+        return True
+
     def run_quick_hunt(self) -> bool:
         """Run the MFABD2 quick-hunt scheduler using PC-safe mouse input."""
 
@@ -430,10 +673,11 @@ class DailyTask(BaseBD2Task):
 
         success = True
         try:
-            if not self._quick_hunt_run_rice_scheduler():
-                success = False
-            elif bool(self.config.get("快速狩猎圣石洞穴", True)):
-                success = self._quick_hunt_run_crystal_cave()
+            rice_ok = self._quick_hunt_run_rice_scheduler()
+            success = success and rice_ok
+            if bool(self.config.get("快速狩猎圣石洞穴", True)):
+                crystal_ok = self._quick_hunt_run_crystal_cave()
+                success = success and crystal_ok
         finally:
             home_ok = self._quick_hunt_return_home()
             success = success and home_ok
@@ -441,52 +685,116 @@ class DailyTask(BaseBD2Task):
         self._status_set("快速狩猎结果", "完成" if success else "失败")
         return success
 
-    def _quick_hunt_open_menu(self) -> str:
-        self._status_set("快速狩猎当前阶段", "确认箱庭并打开狩猎菜单")
-        vision = self._quick_vision()
-        frame = self.capture_frame()
-        sandbox_found = False
-        for original_spec in QUICK_HUNT_SANDBOX_TEMPLATES:
-            spec = self._quick_spec(original_spec)
-            result = vision.match(frame, spec)
-            self._status_set(
-                spec.name,
-                f"{result.score:.3f}/{result.pixel_score:.3f}",
+    def _quick_hunt_home_signals(
+        self,
+        frame,
+    ) -> tuple[bool, DailyMatchResult, DailyTemplateSpec, float, str]:
+        home_button, home_spec = self._match_best(frame, HOME_TEMPLATES)
+        home_ratio = self._home_brightness_ratio(frame)
+        gacha_text = self._quick_vision().ocr_text(
+            frame,
+            "快速狩猎主页抽抽乐",
+            relative_roi=QUICK_HUNT_HOME_GACHA_ROI,
+        )
+        confirmed = (
+            self._passes(home_button, home_spec)
+            and home_ratio >= self._home_ratio_threshold()
+            and "抽抽乐" in self._normalize_text(gacha_text)
+        )
+        return confirmed, home_button, home_spec, home_ratio, gacha_text
+
+    def _wait_for_quick_hunt_home(self, interval: float = 0.35) -> bool:
+        end_at = monotonic() + float(self.config.get("主页确认等待秒数", 10.0))
+        last_button = self._empty_match()
+        last_spec = HOME_TEMPLATE
+        last_ratio = 0.0
+        last_gacha_text = ""
+        while monotonic() <= end_at:
+            frame = self.capture_frame()
+            home_ok, last_button, last_spec, last_ratio, last_gacha_text = (
+                self._quick_hunt_home_signals(frame)
             )
-            if vision.passes(result, spec):
-                sandbox_found = True
-                break
-        if not sandbox_found:
-            self._status_set("快速狩猎入口", "未确认箱庭")
-            self.log_info("快速狩猎：未识别到箱庭图钉或奔跑按钮，不点击入口。")
+            self._status_set(
+                "快速狩猎首页按钮",
+                f"{last_spec.file_name}={last_button.score:.3f}/{last_button.pixel_score:.3f}",
+            )
+            self._status_set(
+                "快速狩猎主页亮度",
+                f"{last_ratio:.3f}/{self._home_ratio_threshold():.3f}",
+            )
+            self._status_set(
+                "快速狩猎主页抽抽乐 OCR",
+                last_gacha_text or "-",
+            )
+            if home_ok:
+                return True
+            self.sleep(interval)
+
+        self.log_info(
+            "快速狩猎：未同时确认首页小屋按钮、亮度和抽抽乐文字，"
+            f"template={last_spec.file_name}, "
+            f"button={last_button.score:.3f}/{last_button.pixel_score:.3f}, "
+            f"ratio={last_ratio:.3f}, ocr={last_gacha_text or '-'}。"
+        )
+        return False
+
+    @staticmethod
+    def _quick_hunt_entry_red_state(
+        frame,
+    ) -> tuple[bool, tuple[int, int], tuple[int, int, int], tuple[int, int, int]]:
+        height, width = frame.shape[:2]
+        x = max(0, min(width - 1, round(width * QUICK_HUNT_ENTRY_POINT[0])))
+        y = max(0, min(height - 1, round(height * QUICK_HUNT_ENTRY_POINT[1])))
+        if frame.ndim < 3 or frame.shape[2] < 3:
+            return False, (x, y), (0, 0, 0), (0, 0, 0)
+
+        bgr = tuple(int(value) for value in frame[y, x, :3])
+        hsv_pixel = cv2.cvtColor(np.uint8([[bgr]]), cv2.COLOR_BGR2HSV)[0, 0]
+        hsv = tuple(int(value) for value in hsv_pixel)
+        hue, saturation, value = hsv
+        is_red = (
+            (hue <= 10 or hue >= 170)
+            and saturation >= 140
+            and value >= 150
+        )
+        return is_red, (x, y), bgr, hsv
+
+    def _quick_hunt_open_menu(self) -> str:
+        self._status_set("快速狩猎当前阶段", "确认首页并打开狩猎菜单")
+        if not self._wait_for_quick_hunt_home():
+            self._status_set("快速狩猎入口", "未确认首页")
             return "failed"
 
-        timeout = self._quick_hunt_ui_timeout()
-        for attempt in range(3):
-            frame = self.capture_frame()
-            red_dot = self._quick_hunt_red_dot(frame)
-            if red_dot is None:
-                self._status_set("快速狩猎入口", "未发现红点")
-                return "skip" if attempt == 0 else "failed"
-            vision.click_client(red_dot, frame.shape, after_sleep=1.0)
-            text, _box = self._quick_hunt_wait_ocr(
-                [r"狩猎场"],
-                QUICK_HUNT_MENU_TITLE_ROI,
-                min(timeout, 3.0),
-                name=f"快速狩猎菜单确认{attempt + 1}",
-            )
-            if text:
-                collapse = self._quick_spec(QUICK_HUNT_LIST_COLLAPSE_TEMPLATE)
-                vision.click_template(collapse, timeout=0.8, after_sleep=0.5)
-                self._status_set("快速狩猎入口", "已进入")
-                self._status_set("快速狩猎菜单", "狩猎场")
-                return "opened"
+        self._status_set("快速狩猎入口", "首页已确认")
+        self.sleep(0.5)
+        frame = self.capture_frame()
+        is_red, point, bgr, hsv = self._quick_hunt_entry_red_state(frame)
+        self._status_set(
+            "快速狩猎红点识别",
+            f"point={point}, BGR={bgr}, HSV={hsv}, {'红色' if is_red else '非红色'}",
+        )
+        if not is_red:
+            self._status_set("快速狩猎入口", "入口点不是红色，按已完成跳过")
+            return "skip"
+
+        self.sleep(0.5)
+        self.operate_click(*QUICK_HUNT_ENTRY_POINT, after_sleep=1.0)
+        text, _box = self._quick_hunt_wait_ocr(
+            [r"狩猎场"],
+            QUICK_HUNT_MENU_TITLE_ROI,
+            self._quick_hunt_ui_timeout(),
+            name="快速狩猎菜单确认",
+        )
+        if text:
+            self._status_set("快速狩猎入口", "已进入")
+            self._status_set("快速狩猎菜单", "狩猎场")
+            return "opened"
 
         self._status_set("快速狩猎入口", "点击后未确认菜单")
         return "failed"
 
     def _quick_hunt_run_rice_scheduler(self) -> bool:
-        """Mirror MFABD2: hunting ground -> adventure -> rice recheck."""
+        """Run hunting ground first, then an optional MAX adventure route."""
 
         self._status_set("快速狩猎当前阶段", "米饭调度")
         if self._quick_hunt_resource_empty("米饭"):
@@ -508,9 +816,7 @@ class DailyTask(BaseBD2Task):
                 return True
 
         adventure_selected = False
-        if adventure_enabled:
-            if not self._quick_hunt_reset_map():
-                return False
+        if adventure_enabled and adventure_mode is not None:
             adventure_selected = self._quick_hunt_select_adventure_route()
             if adventure_selected:
                 result = self._quick_hunt_execute_current_map(adventure_mode, "冒险航线")
@@ -520,27 +826,16 @@ class DailyTask(BaseBD2Task):
                     self._status_set("快速狩猎米饭", "已耗尽")
                     return True
 
-        # MFABD2 RiceRecheck: consume any rice left after a skipped/non-double route.
-        if hunting_enabled and not self._quick_hunt_resource_empty("米饭"):
-            self._status_set("快速狩猎当前阶段", "剩余米饭回收")
-            if not self._quick_hunt_reset_map():
-                return False
-            if not self._quick_hunt_select_hunting_ground():
-                return False
-            result = self._quick_hunt_execute_current_map("MAX", "狩猎场兜底")
-            if result == "failed":
-                return False
-
         if not hunting_enabled and not adventure_selected:
             self.log_info("快速狩猎：狩猎场已关闭且没有可执行的冒险航线，保留米饭。")
+        elif adventure_enabled and adventure_mode is None:
+            self.log_info("快速狩猎：狩猎场使用 MAX，按配置跳过金币和经验航线。")
         self._status_set("快速狩猎米饭", "调度结束")
         return True
 
     def _quick_hunt_run_crystal_cave(self) -> bool:
         self._status_set("快速狩猎当前阶段", "圣石洞穴")
-        if not self._quick_hunt_reset_map():
-            return False
-        self._click_mf_reference(138, 355, after_sleep=0.8)
+        self._click_reference(*QUICK_HUNT_CRYSTAL_POINT, after_sleep=0.8)
         text, _box = self._quick_hunt_wait_ocr(
             [r"[火水风光暗].?洞穴"],
             QUICK_HUNT_CRYSTAL_TITLE_ROI,
@@ -554,12 +849,17 @@ class DailyTask(BaseBD2Task):
             self._status_set("快速狩猎火把", "0，跳过")
             return True
 
-        element = str(self.config.get("快速狩猎圣石属性", "火"))
-        if element not in QUICK_HUNT_STONE_ELEMENTS:
-            self.log_info(f"快速狩猎：不支持的圣石属性配置：{element}")
+        stone_counts = self._quick_hunt_stone_counts()
+        if stone_counts is None:
             return False
+        element = min(QUICK_HUNT_STONE_ELEMENTS, key=stone_counts.__getitem__)
+        self._status_set(
+            "快速狩猎圣石数量",
+            "、".join(f"{name}={stone_counts[name]}" for name in QUICK_HUNT_STONE_ELEMENTS)
+            + f"；选择={element}",
+        )
         clicked = self._quick_hunt_click_ocr(
-            [rf"{re.escape(element)}.?洞穴"],
+            [rf"{re.escape(element)}.?之?.?洞穴"],
             QUICK_HUNT_STONE_LIST_ROI,
             self._quick_hunt_ui_timeout(),
             name=f"选择{element}属性洞穴",
@@ -574,22 +874,37 @@ class DailyTask(BaseBD2Task):
 
     def _quick_hunt_select_hunting_ground(self) -> bool:
         chapter = str(self.config.get("快速狩猎章节图", "低练度·章节1"))
-        entry = QUICK_HUNT_HUNTING_GROUNDS.get(chapter)
-        if entry is None:
+        target_pattern = QUICK_HUNT_HUNTING_GROUNDS.get(chapter)
+        if target_pattern is None:
             self.log_info(f"快速狩猎：缺少狩猎场映射：{chapter}")
             return False
-        patterns, roi, swipe = entry
-        if swipe is not None:
-            self._quick_hunt_drag_mf(*swipe, after_sleep=2.0)
-        clicked = self._quick_hunt_click_ocr(
-            patterns,
-            roi,
-            self._quick_hunt_ui_timeout(),
-            name=f"选择狩猎场-{chapter}",
-        )
-        if not clicked:
-            self.log_info(f"快速狩猎：未识别到目标狩猎场：{chapter}")
-        return clicked
+        vision = self._quick_vision()
+        for scroll_index in range(7):
+            frame = self.capture_frame()
+            boxes = vision.ocr_boxes(
+                frame,
+                f"选择狩猎场-{chapter}-滚轮{scroll_index}",
+                relative_roi=QUICK_HUNT_MAP_SCAN_ROI,
+            )
+            recognized = []
+            target_box = None
+            for box in boxes:
+                value = self._normalize_text(getattr(box, "name", ""))
+                for label, pattern in QUICK_HUNT_HUNTING_GROUNDS.items():
+                    if pattern.search(value):
+                        recognized.append(label)
+                if target_pattern.search(value):
+                    target_box = box
+            self._status_set("快速狩猎章节 OCR", "、".join(dict.fromkeys(recognized)) or "-")
+            if target_box is not None:
+                point = self._quick_hunt_box_center(target_box)
+                if point is not None:
+                    vision.click_client(point, frame.shape, after_sleep=0.8)
+                    return True
+            if scroll_index < 6:
+                self._quick_hunt_scroll_map_once()
+        self.log_info(f"快速狩猎：滚轮向下最多6次仍未识别到目标狩猎场：{chapter}")
+        return False
 
     def _quick_hunt_select_adventure_route(self) -> bool:
         preferred = str(self.config.get("快速狩猎资源倾向", "金币"))
@@ -597,44 +912,59 @@ class DailyTask(BaseBD2Task):
             self.log_info(f"快速狩猎：不支持的冒险航线资源：{preferred}")
             return False
         strategy = str(self.config.get("快速狩猎双倍策略", "优先双倍"))
-        self._click_mf_reference(*QUICK_HUNT_ADVENTURE_POINTS[preferred], after_sleep=0.8)
         if strategy == "忽视双倍":
+            self._quick_hunt_click_adventure("金币")
             return True
-
-        state = self._quick_hunt_double_state(preferred)
-        if state is True:
-            return True
+        states = self._quick_hunt_double_states()
         if strategy == "优先双倍":
-            self.log_info(f"快速狩猎：首选{preferred}不是双倍图，回收米饭到狩猎场。")
-            return False
-        if strategy != "强制双倍":
-            self.log_info(f"快速狩猎：不支持的双倍策略：{strategy}")
-            return False
-
-        alternate = "经验" if preferred == "金币" else "金币"
-        self._click_mf_reference(*QUICK_HUNT_ADVENTURE_POINTS[alternate], after_sleep=0.8)
-        if self._quick_hunt_double_state(alternate) is True:
+            selected = "金币" if states["金币"] else "经验" if states["经验"] else None
+            if selected is None:
+                self.log_info("快速狩猎：金币和经验均未识别到双倍，跳过冒险航线。")
+                return False
+            self._quick_hunt_click_adventure(selected)
             return True
-        self.log_info("快速狩猎：金币和经验航线均未确认双倍，回收米饭到狩猎场。")
+        if strategy == "强制双倍":
+            alternate = "经验" if preferred == "金币" else "金币"
+            for resource in (preferred, alternate):
+                if states[resource]:
+                    self._quick_hunt_click_adventure(resource)
+                    return True
+            self.log_info("快速狩猎：首选和备选资源均未识别到双倍，跳过冒险航线。")
+            return False
+        self.log_info(f"快速狩猎：不支持的双倍策略：{strategy}")
         return False
 
-    def _quick_hunt_double_state(self, resource: str) -> bool | None:
+    def _quick_hunt_click_adventure(self, resource: str) -> None:
+        self._click_reference(*QUICK_HUNT_ADVENTURE_POINTS[resource], after_sleep=0.8)
+
+    def _quick_hunt_double_states(self, frame=None) -> dict[str, bool]:
         vision = self._quick_vision()
-        frame = self.capture_frame()
-        positive = self._quick_spec(QUICK_HUNT_DOUBLE_TEMPLATES[resource])
-        positive_match = vision.match(frame, positive)
-        if vision.passes(positive_match, positive):
-            return True
-        negative = self._quick_spec(QUICK_HUNT_NO_DOUBLE_TEMPLATES[resource])
-        negative_match = vision.match(frame, negative)
-        if vision.passes(negative_match, negative):
-            return False
-        self.log_info(
-            f"快速狩猎：{resource}双倍状态不明确，"
-            f"double={positive_match.score:.3f}/{positive_match.pixel_score:.3f}, "
-            f"normal={negative_match.score:.3f}/{negative_match.pixel_score:.3f}"
+        if frame is None:
+            frame = self.capture_frame()
+        spec = self._quick_spec(QUICK_HUNT_DOUBLE_TEMPLATE)
+        matches = vision.match_all(
+            frame,
+            spec,
+            minimum_score=vision.threshold_for(spec),
         )
-        return None
+        split_y = frame.shape[0] * (
+            QUICK_HUNT_DOUBLE_ROI[1] + QUICK_HUNT_DOUBLE_ROI[3]
+        ) / 2
+        states = {"金币": False, "经验": False}
+        details = []
+        for match in matches:
+            resource = "金币" if match.center[1] < split_y else "经验"
+            states[resource] = True
+            details.append(
+                f"{resource}@{match.center}={match.score:.3f}/{match.pixel_score:.3f}"
+            )
+        self._status_set(
+            "快速狩猎双倍识别",
+            f"金币={'双倍' if states['金币'] else '非双倍'}，"
+            f"经验/史莱姆={'双倍' if states['经验'] else '非双倍'}；"
+            + ("；".join(details) or "未命中Double.png"),
+        )
+        return states
 
     def _quick_hunt_execute_current_map(self, count_mode: str, stage: str) -> str:
         self._status_set("快速狩猎当前阶段", stage)
@@ -697,19 +1027,37 @@ class DailyTask(BaseBD2Task):
         self.log_info(f"快速狩猎：{stage}等待结算超时。")
         return "failed"
 
-    def _quick_hunt_reset_map(self) -> bool:
-        for attempt in range(3):
-            self._click_mf_reference(139, 197, after_sleep=0.8)
-            text, _box = self._quick_hunt_wait_ocr(
-                [r"哥布林遗迹"],
-                QUICK_HUNT_MAP_CENTER_ROI,
-                1.5,
-                name=f"快速狩猎地图复位{attempt + 1}",
+    def _quick_hunt_stone_counts(self) -> dict[str, int] | None:
+        frame = self.capture_frame()
+        boxes = self._quick_vision().ocr_boxes(
+            frame,
+            "圣石属性数量",
+            relative_roi=QUICK_HUNT_STONE_COUNT_ROI,
+        )
+        values: list[tuple[float, int]] = []
+        for box in boxes:
+            text = str(getattr(box, "name", ""))
+            digits = re.sub(r"\D", "", text)
+            if not digits:
+                continue
+            center = self._quick_hunt_box_center(box)
+            if center is None:
+                continue
+            values.append((center[1], int(digits)))
+        values.sort(key=lambda item: item[0])
+        if len(values) != len(QUICK_HUNT_STONE_ELEMENTS):
+            self._status_set(
+                "快速狩猎圣石数量",
+                f"需要5个数字，实际识别{len(values)}个",
             )
-            if text:
-                return True
-        self.log_info("快速狩猎：有限次数内无法复位到哥布林遗迹。")
-        return False
+            self.log_info(
+                "快速狩猎：圣石数量区域未从上到下识别出火、水、风、光、暗5个数字。"
+            )
+            return None
+        return {
+            element: value
+            for element, (_center_y, value) in zip(QUICK_HUNT_STONE_ELEMENTS, values)
+        }
 
     def _quick_hunt_resource_empty(self, resource: str) -> bool:
         frame = self.capture_frame()
@@ -719,18 +1067,18 @@ class DailyTask(BaseBD2Task):
         self._status_set(f"快速狩猎{resource}", text or "未识别")
         return empty
 
-    def _quick_hunt_count_modes(self) -> tuple[str, str]:
+    def _quick_hunt_count_modes(self) -> tuple[str, str | None]:
         allocation = str(
             self.config.get("快速狩猎米饭分配", "狩猎场x1 / 双倍图MAX")
         )
-        if allocation == "狩猎场MAX / 双倍图x1":
-            return "MAX", "MIN"
+        if allocation in {"狩猎场MAX / 跳过冒险航线", "狩猎场MAX / 双倍图x1"}:
+            return "MAX", None
         return "MIN", "MAX"
 
     def _quick_hunt_wait_ocr(
         self,
         patterns: list[str],
-        roi: tuple[int, int, int, int],
+        roi: tuple[float, float, float, float],
         timeout: float,
         name: str,
     ) -> tuple[str, object | None]:
@@ -738,7 +1086,7 @@ class DailyTask(BaseBD2Task):
         end_at = monotonic() + max(0.0, timeout)
         while monotonic() <= end_at:
             frame = self.capture_frame()
-            boxes = self._quick_vision().ocr_boxes(frame, name, roi)
+            boxes = self._quick_vision().ocr_boxes(frame, name, relative_roi=roi)
             text = " ".join(str(getattr(box, "name", "")) for box in boxes)
             normalized = self._normalize_text(text)
             for box in boxes:
@@ -753,7 +1101,7 @@ class DailyTask(BaseBD2Task):
     def _quick_hunt_click_ocr(
         self,
         patterns: list[str],
-        roi: tuple[int, int, int, int],
+        roi: tuple[float, float, float, float],
         timeout: float,
         name: str,
         require_enabled: bool = False,
@@ -763,7 +1111,7 @@ class DailyTask(BaseBD2Task):
         vision = self._quick_vision()
         while monotonic() <= end_at:
             frame = self.capture_frame()
-            for box in vision.ocr_boxes(frame, name, roi):
+            for box in vision.ocr_boxes(frame, name, relative_roi=roi):
                 value = self._normalize_text(getattr(box, "name", ""))
                 if not any(pattern.search(value) for pattern in compiled):
                     continue
@@ -781,10 +1129,10 @@ class DailyTask(BaseBD2Task):
     def _quick_hunt_ocr_text(
         self,
         frame,
-        roi: tuple[int, int, int, int],
+        roi: tuple[float, float, float, float],
         name: str,
     ) -> str:
-        return self._quick_vision().ocr_text(frame, name, roi)
+        return self._quick_vision().ocr_text(frame, name, relative_roi=roi)
 
     @staticmethod
     def _quick_hunt_box_center(box) -> tuple[int, int] | None:
@@ -809,42 +1157,25 @@ class DailyTask(BaseBD2Task):
         gray = DailyTask._to_gray(crop)
         return float(np.mean(gray >= 170)) >= 0.02
 
-    def _quick_hunt_red_dot(self, frame) -> tuple[int, int] | None:
-        height, width = frame.shape[:2]
-        left, top, roi_width, roi_height = Vision.reference_roi(
-            QUICK_HUNT_RED_DOT_ROI,
-            width,
-            height,
-        )
-        crop = frame[top : top + roi_height, left : left + roi_width]
-        if crop.size == 0:
-            return None
-        color = crop[:, :, :3] if crop.ndim == 3 else cv2.cvtColor(crop, cv2.COLOR_GRAY2BGR)
-        hsv = cv2.cvtColor(color, cv2.COLOR_BGR2HSV)
-        mask = cv2.inRange(hsv, np.array((0, 140, 150)), np.array((10, 255, 255)))
-        mask |= cv2.inRange(hsv, np.array((170, 140, 150)), np.array((180, 255, 255)))
-        count, _labels, stats, centers = cv2.connectedComponentsWithStats(mask, 8)
-        candidates = [
-            index
-            for index in range(1, count)
-            if int(stats[index, cv2.CC_STAT_AREA]) >= 3
-        ]
-        if not candidates:
-            return None
-        best = max(candidates, key=lambda index: int(stats[index, cv2.CC_STAT_AREA]))
-        center_x, center_y = centers[best]
-        y_offset = round(height * -5 / 720)
-        return round(left + center_x), round(top + center_y + y_offset)
-
     def _quick_hunt_return_home(self) -> bool:
         self._status_set("快速狩猎当前阶段", "返回主页")
         for _attempt in range(4):
             frame = self.capture_frame()
-            if self._home_brightness_ratio(frame) >= self._home_ratio_threshold():
+            home_ok, button, spec, ratio, gacha_text = self._quick_hunt_home_signals(frame)
+            self._status_set(
+                "快速狩猎首页按钮",
+                f"{spec.file_name}={button.score:.3f}/{button.pixel_score:.3f}",
+            )
+            self._status_set(
+                "快速狩猎主页亮度",
+                f"{ratio:.3f}/{self._home_ratio_threshold():.3f}",
+            )
+            self._status_set("快速狩猎主页抽抽乐 OCR", gacha_text or "-")
+            if home_ok:
                 return True
-            self._click_mf_reference(135, 37, after_sleep=1.0)
+            self._click_reference(*QUICK_HUNT_RETURN_POINT, after_sleep=1.0)
         frame = self.capture_frame()
-        return self._home_brightness_ratio(frame) >= self._home_ratio_threshold()
+        return self._quick_hunt_home_signals(frame)[0]
 
     def _quick_vision(self) -> Vision:
         vision = getattr(self, "_quick_hunt_vision", None)
@@ -871,60 +1202,34 @@ class DailyTask(BaseBD2Task):
             after_sleep=after_sleep,
         )
 
-    def _quick_hunt_drag_mf(
-        self,
-        start: tuple[int, int],
-        end: tuple[int, int],
-        after_sleep: float = 0.0,
-    ) -> None:
+    def _quick_hunt_scroll_map_once(self) -> None:
         frame = self.capture_frame()
         frame_height, frame_width = frame.shape[:2]
-        start_client = (
-            round(frame_width * start[0] / 1280),
-            round(frame_height * start[1] / 720),
+        left, top, right, bottom = QUICK_HUNT_MAP_SCAN_ROI
+        point = (
+            round(frame_width * (left + right) / 2),
+            round(frame_height * (top + bottom) / 2),
         )
-        end_client = (
-            round(frame_width * end[0] / 1280),
-            round(frame_height * end[1] / 720),
-        )
+        interaction = getattr(self.executor, "interaction", None)
+        if interaction is None or not hasattr(interaction, "scroll"):
+            raise RuntimeError("当前交互对象不支持鼠标滚轮")
 
         def action():
             import win32api
-            import win32con
 
-            interaction = getattr(self.executor, "interaction", None)
-            if interaction is not None and hasattr(interaction, "force_activate"):
+            if hasattr(interaction, "force_activate"):
                 interaction.force_activate()
-            elif interaction is not None and hasattr(interaction, "try_activate"):
+            elif hasattr(interaction, "try_activate"):
                 interaction.try_activate()
             capture = getattr(interaction, "capture", None)
-
-            def to_screen(point: tuple[int, int]) -> tuple[int, int]:
-                if capture is not None and hasattr(capture, "get_abs_cords"):
-                    return capture.get_abs_cords(point[0], point[1])
-                return point
-
-            start_abs = to_screen(start_client)
-            end_abs = to_screen(end_client)
-            steps = 27
-            win32api.SetCursorPos(start_abs)
-            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-            try:
-                for index in range(1, steps + 1):
-                    ratio = index / steps
-                    win32api.SetCursorPos(
-                        (
-                            round(start_abs[0] + (end_abs[0] - start_abs[0]) * ratio),
-                            round(start_abs[1] + (end_abs[1] - start_abs[1]) * ratio),
-                        )
-                    )
-                    time.sleep(0.8 / steps)
-                time.sleep(0.6)
-            finally:
-                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+            screen_point = point
+            if capture is not None and hasattr(capture, "get_abs_cords"):
+                screen_point = capture.get_abs_cords(point[0], point[1])
+            win32api.SetCursorPos(screen_point)
+            interaction.scroll(point[0], point[1], -1)
 
         self.operate(action, block=True, restore_cursor=True)
-        self.sleep(after_sleep)
+        self.sleep(0.35)
 
     def _click_reference(self, x: int, y: int, after_sleep: float = 0.0):
         self.operate_click(
@@ -1220,6 +1525,9 @@ class DailyTask(BaseBD2Task):
             frame_height, frame_width = search.shape[:2]
             base_scale = offline_template_scale(spec.file_name, full_width, full_height)
             best = empty
+            template_threshold = float(
+                getattr(self, "config", {}).get(spec.threshold_key, spec.default_threshold)
+            )
 
             for scale in self._candidate_scales(base_scale):
                 scaled_template = self._resize_template(template, scale)
@@ -1228,27 +1536,24 @@ class DailyTask(BaseBD2Task):
                 if height < 8 or width < 8 or height > frame_height or width > frame_width:
                     continue
 
-                if scaled_mask is None:
-                    result = cv2.matchTemplate(search, scaled_template, cv2.TM_CCOEFF_NORMED)
-                else:
-                    result = cv2.matchTemplate(
-                        search,
-                        scaled_template,
-                        cv2.TM_CCORR_NORMED,
-                        mask=scaled_mask,
-                    )
-                _, max_value, _, max_location = cv2.minMaxLoc(result)
-                if not np.isfinite(max_value):
+                result = template_match_response(search, scaled_template, scaled_mask)
+                candidate = best_pixel_valid_match(
+                    result,
+                    search,
+                    scaled_template,
+                    scaled_mask,
+                    template_threshold=template_threshold,
+                    pixel_threshold=0.0,
+                )
+                if candidate is None or candidate.score <= best.score:
                     continue
-                if max_value > best.score:
-                    x, y = int(max_location[0]), int(max_location[1])
-                    region = search[y : y + height, x : x + width]
-                    best = DailyMatchResult(
-                        score=float(max_value),
-                        pixel_score=self._pixel_similarity(region, scaled_template, scaled_mask),
-                        position=(roi_left + x, roi_top + y),
-                        size=(int(width), int(height)),
-                    )
+                x, y = candidate.location
+                best = DailyMatchResult(
+                    score=candidate.score,
+                    pixel_score=candidate.pixel_score,
+                    position=(roi_left + x, roi_top + y),
+                    size=(int(width), int(height)),
+                )
         except (cv2.error, MemoryError) as exc:
             self._match_pause_until = monotonic() + 2.0
             message = f"图像匹配内存不足，暂停识别2秒：{spec.name}"
@@ -1281,7 +1586,7 @@ class DailyTask(BaseBD2Task):
         path = TEMPLATE_DIR / spec.file_name
         source = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
         if source is None:
-            raise RuntimeError(f"日常任务模板不存在或无法读取：{path}")
+            raise RuntimeError(f"任务模板不存在或无法读取：{path}")
 
         if spec.crop is not None:
             source = self._crop_relative(source, spec.crop)
@@ -1344,97 +1649,67 @@ class DailyTask(BaseBD2Task):
     _pixel_similarity = staticmethod(pixel_similarity)
 
 
-QUICK_HUNT_RED_DOT_ROI = (100, 163, 45, 44)
-QUICK_HUNT_MENU_TITLE_ROI = (108, 138, 61, 27)
-QUICK_HUNT_RESOURCE_ROI = (1040, 33, 111, 27)
-QUICK_HUNT_BUTTON_ROI = (1029, 632, 89, 33)
-QUICK_HUNT_COUNT_ROI = (408, 301, 462, 64)
-QUICK_HUNT_START_ROI = (622, 492, 161, 111)
-QUICK_HUNT_REWARD_ROI = (457, 600, 413, 110)
-QUICK_HUNT_DIALOG_ROI = (500, 420, 300, 190)
-QUICK_HUNT_MAP_CENTER_ROI = (538, 372, 107, 30)
-QUICK_HUNT_CRYSTAL_TITLE_ROI = (595, 372, 86, 28)
-QUICK_HUNT_STONE_LIST_ROI = (178, 94, 126, 283)
+def _quick_hunt_relative_roi(
+    x1: int,
+    y1: int,
+    x2: int,
+    y2: int,
+) -> tuple[float, float, float, float]:
+    left, right = sorted((x1, x2))
+    top, bottom = sorted((y1, y2))
+    return (
+        left / REFERENCE_WIDTH,
+        top / REFERENCE_HEIGHT,
+        right / REFERENCE_WIDTH,
+        bottom / REFERENCE_HEIGHT,
+    )
+
+
+QUICK_HUNT_ENTRY_POINT = (1782 / REFERENCE_WIDTH, 237 / REFERENCE_HEIGHT)
+QUICK_HUNT_MENU_TITLE_ROI = _quick_hunt_relative_roi(162, 207, 254, 248)
+QUICK_HUNT_RESOURCE_ROI = _quick_hunt_relative_roi(1724, 80, 1602, 38)
+QUICK_HUNT_BUTTON_ROI = _quick_hunt_relative_roi(1720, 1018, 1599, 963)
+QUICK_HUNT_COUNT_ROI = _quick_hunt_relative_roi(1298, 826, 623, 257)
+QUICK_HUNT_START_ROI = _quick_hunt_relative_roi(1136, 805, 963, 764)
+QUICK_HUNT_REWARD_ROI = _quick_hunt_relative_roi(1055, 1019, 857, 965)
+# The exception dialog could not be reproduced in-game. Keep the previous
+# 1280x720-to-1920x1080 conversion until a real screenshot is available.
+QUICK_HUNT_DIALOG_ROI = _quick_hunt_relative_roi(750, 630, 1200, 915)
+QUICK_HUNT_MAP_SCAN_ROI = _quick_hunt_relative_roi(1528, 865, 330, 165)
+QUICK_HUNT_CRYSTAL_TITLE_ROI = _quick_hunt_relative_roi(340, 452, 235, 128)
+QUICK_HUNT_STONE_LIST_ROI = _quick_hunt_relative_roi(267, 141, 456, 566)
+QUICK_HUNT_STONE_COUNT_ROI = _quick_hunt_relative_roi(1794, 288, 1689, 80)
+QUICK_HUNT_DOUBLE_ROI = _quick_hunt_relative_roi(168, 337, 135, 205)
+QUICK_HUNT_HOME_GACHA_ROI = _quick_hunt_relative_roi(110, 993, 205, 1047)
 
 QUICK_HUNT_ADVENTURE_POINTS = {
-    "金币": (138, 200),
-    "经验": (138, 280),
+    "金币": (207, 300),
+    "经验": (207, 420),
 }
-QUICK_HUNT_STONE_ELEMENTS = frozenset({"火", "水", "风", "光", "暗"})
+QUICK_HUNT_CRYSTAL_POINT = (177, 449)
+QUICK_HUNT_RETURN_POINT = (101, 55)
+QUICK_HUNT_STONE_ELEMENTS = ("火", "水", "风", "光", "暗")
 QUICK_HUNT_HUNTING_GROUNDS = {
-    "低练度·章节1": ([r"野猪洞穴"], (847, 156, 80, 23), None),
-    "矿石·章节7": (
-        [r"(?=.*蜥)(?=.*蜴)(?=.*祭坛).{5,}"],
-        (298, 369, 134, 88),
-        ((556, 32), (624, 580)),
-    ),
-    "木材·章节9": (
-        [r"守山人休息处"],
-        (448, 409, 167, 74),
-        ((974, 26), (161, 570)),
-    ),
+    "低练度·章节1": re.compile(r"野猪洞穴"),
+    "矿石·章节7": re.compile(r"蜥.?蜴.?人.?祭坛"),
+    "木材·章节9": re.compile(r"守山人休息处"),
 }
 
-QUICK_HUNT_SANDBOX_PIN_TEMPLATE = TemplateSpec(
-    "快速狩猎箱庭图钉",
-    "image/pin.png",
-    threshold=0.78,
-    roi=(1122, 646, 40, 38),
-    min_pixel_score=0.72,
-)
-QUICK_HUNT_SANDBOX_RUN_TEMPLATE = TemplateSpec(
-    "快速狩猎箱庭奔跑",
-    "image/green/Run.png",
-    threshold=0.78,
-    green_mask=True,
-    min_pixel_score=0.72,
-)
-QUICK_HUNT_SANDBOX_TEMPLATES = (
-    QUICK_HUNT_SANDBOX_PIN_TEMPLATE,
-    QUICK_HUNT_SANDBOX_RUN_TEMPLATE,
-)
 QUICK_HUNT_LIST_COLLAPSE_TEMPLATE = TemplateSpec(
     "快速狩猎资源列表收起",
     "image/green/Battle_ListCollapseGE.png",
     threshold=0.78,
-    roi=(1067, 130, 123, 256),
+    relative_roi=_quick_hunt_relative_roi(1600, 195, 1785, 579),
     green_mask=True,
     min_pixel_score=0.72,
 )
-QUICK_HUNT_DOUBLE_TEMPLATES = {
-    "金币": TemplateSpec(
-        "金币双倍",
-        "image/green/DoubleGold.png",
-        threshold=0.8,
-        roi=(413, 592, 159, 110),
-        green_mask=True,
-        min_pixel_score=0.72,
-    ),
-    "经验": TemplateSpec(
-        "经验双倍",
-        "image/green/DoubleExp.png",
-        threshold=0.8,
-        roi=(413, 592, 159, 110),
-        green_mask=True,
-        min_pixel_score=0.72,
-    ),
-}
-QUICK_HUNT_NO_DOUBLE_TEMPLATES = {
-    "金币": TemplateSpec(
-        "金币非双倍",
-        "image/DoubleNoGold.png",
-        threshold=0.8,
-        roi=(413, 592, 159, 110),
-        min_pixel_score=0.72,
-    ),
-    "经验": TemplateSpec(
-        "经验非双倍",
-        "image/DoubleNoExp.png",
-        threshold=0.8,
-        roi=(413, 592, 159, 110),
-        min_pixel_score=0.72,
-    ),
-}
+QUICK_HUNT_DOUBLE_TEMPLATE = TemplateSpec(
+    "当前航线双倍",
+    "Double.png",
+    threshold=0.8,
+    relative_roi=QUICK_HUNT_DOUBLE_ROI,
+    min_pixel_score=0.72,
+)
 
 
 GUILD_TEMPLATE = DailyTemplateSpec(

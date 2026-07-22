@@ -44,6 +44,8 @@ class TemplateSpec:
     reference_scale: float | None = None
     scale_ratios: tuple[float, ...] = (1.0,)
     min_pixel_score: float | None = None
+    candidate_center_roi: tuple[float, float, float, float] | None = None
+    minimum_safe_threshold: float | None = None
 
 
 @dataclass(frozen=True)

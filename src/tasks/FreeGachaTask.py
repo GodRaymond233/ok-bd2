@@ -7,7 +7,14 @@ import numpy as np
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task
-from src.utils.image_utils import candidate_scales, pixel_similarity, resize_template, to_gray
+from src.utils.image_utils import (
+    best_pixel_valid_match,
+    candidate_scales,
+    pixel_similarity,
+    resize_template,
+    template_match_response,
+    to_gray,
+)
 from src.utils.ocr_utils import fuzzy_substring_match, keyword_match_count, normalize_ocr_text
 from src.utils.template_resolution import offline_template_scale
 
@@ -492,6 +499,9 @@ class FreeGachaTask(BaseBD2Task):
             frame_height, frame_width = frame_gray.shape[:2]
             base_scale = offline_template_scale(spec.file_name, frame_width, frame_height)
             best = empty
+            template_threshold = float(
+                getattr(self, "config", {}).get(spec.threshold_key, spec.default_threshold)
+            )
 
             for scale in self._candidate_scales(base_scale):
                 scaled_template = self._resize_template(template, scale)
@@ -499,17 +509,24 @@ class FreeGachaTask(BaseBD2Task):
                 if height < 8 or width < 8 or height > frame_height or width > frame_width:
                     continue
 
-                result = cv2.matchTemplate(frame_gray, scaled_template, cv2.TM_CCOEFF_NORMED)
-                _, max_value, _, max_location = cv2.minMaxLoc(result)
-                if max_value > best.score:
-                    x, y = int(max_location[0]), int(max_location[1])
-                    region = frame_gray[y : y + height, x : x + width]
-                    best = GachaMatchResult(
-                        score=float(max_value),
-                        pixel_score=self._pixel_similarity(region, scaled_template),
-                        position=(x, y),
-                        size=(int(width), int(height)),
-                    )
+                result = template_match_response(frame_gray, scaled_template)
+                candidate = best_pixel_valid_match(
+                    result,
+                    frame_gray,
+                    scaled_template,
+                    None,
+                    template_threshold=template_threshold,
+                    pixel_threshold=0.0,
+                )
+                if candidate is None or candidate.score <= best.score:
+                    continue
+                x, y = candidate.location
+                best = GachaMatchResult(
+                    score=candidate.score,
+                    pixel_score=candidate.pixel_score,
+                    position=(x, y),
+                    size=(int(width), int(height)),
+                )
         except (cv2.error, MemoryError) as exc:
             self._match_pause_until = monotonic() + 2.0
             message = f"图像匹配内存不足，暂停识别2秒：{spec.name}"

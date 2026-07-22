@@ -112,6 +112,7 @@ config = {
     "onetime_tasks": [
         ["src.tasks.DailyBatchTask", "DailyBatchTask"],
         ["src.tasks.DailyTask", "DailyTask"],
+        ["src.tasks.QuickHuntTask", "QuickHuntTask"],
         ["src.tasks.BargainLevelTask", "BargainLevelTask"],
         ["src.tasks.QuickSuppressionTask", "QuickSuppressionTask"],
         ["src.tasks.SquareGoddessTask", "SquareGoddessTask"],

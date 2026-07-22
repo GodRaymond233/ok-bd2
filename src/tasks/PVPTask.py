@@ -10,12 +10,14 @@ from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task, green_mask_from_template
 from src.utils.image_utils import (
+    best_pixel_valid_match,
     candidate_scales,
     pixel_similarity,
     reference_roi_frame,
     relative_roi_frame,
     resize_mask,
     resize_template,
+    template_match_response,
     to_gray,
 )
 from src.utils.ocr_utils import normalize_ocr_text
@@ -48,6 +50,8 @@ PVP_CARTRIDGE_SLOT_POINT = (152 / REFERENCE_WIDTH, 970 / REFERENCE_HEIGHT)
 PVP_STAGE_CLICK_REFERENCE_OFFSET = (0, -75)
 PVP_RESULT_BASE_MINUTES = 20.0
 QUICK_SWITCH_PAGE_PATTERNS = (r"最近", r"剧情游戏卡", r"玩法游戏卡")
+HOME_GACHA_OCR_ROI = (110, 993, 95, 54)
+HOME_GACHA_PATTERNS = (r"抽抽乐",)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_DIR = PROJECT_ROOT / "offline-train" / "train-source-screenshots"
 
@@ -64,6 +68,8 @@ class PVPTemplateSpec:
     reference_scale: float | None = None
     scale_ratios: tuple[float, ...] = (1.0,)
     min_pixel_score: float | None = None
+    candidate_center_roi: tuple[float, float, float, float] | None = None
+    minimum_safe_threshold: float | None = None
 
 
 @dataclass(frozen=True)
@@ -82,6 +88,7 @@ class PVPTask(BaseBD2Task):
         "目标倍率",
         "主页小屋按钮",
         "主页亮度",
+        "主页抽抽乐 OCR",
         "快速切换按钮",
         "卡带选择页 OCR",
         "卡带选择页 OCR 命中",
@@ -143,7 +150,7 @@ class PVPTask(BaseBD2Task):
                 "PVP 返回箱庭等待秒数": 10.0,
                 "PVP 返回主页等待秒数": 20.0,
                 "主页小屋按钮阈值": 0.70,
-                "快速切换按钮阈值": 0.78,
+                "快速切换按钮阈值": 0.84,
                 "PVP 箱庭阈值": 0.78,
                 "PVP 箱庭感叹号阈值": 0.72,
                 "PVP 舞台阈值": 0.72,
@@ -292,26 +299,24 @@ class PVPTask(BaseBD2Task):
         end_at = monotonic() + float(self.config.get("主页确认等待秒数", 10.0))
         last_button_score = -1.0
         last_ratio = 0.0
+        last_gacha_text = ""
         while monotonic() <= end_at:
             frame = self.capture_frame()
-            home_button = max(
-                (self._match(frame, spec) for spec in HOME_TEMPLATES),
-                key=lambda result: result.score,
+            home_ok, last_button_score, last_ratio, gacha_text = (
+                self._home_confirmation_signals(frame)
             )
-            last_button_score = home_button.score
-            last_ratio = self._home_brightness_ratio(frame)
+            last_gacha_text = gacha_text or last_gacha_text
             self.info_set("主页小屋按钮", f"{last_button_score:.3f}")
             self.info_set("主页亮度", f"{last_ratio:.3f}")
-            if (
-                last_button_score >= float(self.config.get("主页小屋按钮阈值", 0.70))
-                and last_ratio >= self._home_ratio_threshold()
-            ):
+            self.info_set("主页抽抽乐 OCR", gacha_text or "-")
+            if home_ok:
                 return True
             self.sleep(interval)
 
         self.log_info(
-            "镜中之战：未确认主页小屋按钮或亮度不足，"
-            f"button={last_button_score:.3f}, ratio={last_ratio:.3f}。"
+            "镜中之战：未联合确认主页按钮、亮度和抽抽乐文字，"
+            f"button={last_button_score:.3f}, ratio={last_ratio:.3f}, "
+            f"ocr={last_gacha_text or '-'}。"
         )
         return False
 
@@ -675,12 +680,33 @@ class PVPTask(BaseBD2Task):
     def _wait_for_home(self, timeout: float, interval: float = 0.5) -> bool:
         end_at = monotonic() + max(0.0, timeout)
         while monotonic() <= end_at:
-            ratio = self._home_brightness_ratio(self.capture_frame())
+            frame = self.capture_frame()
+            home_ok, button_score, ratio, gacha_text = self._home_confirmation_signals(frame)
+            self.info_set("主页小屋按钮", f"{button_score:.3f}")
             self.info_set("主页亮度", f"{ratio:.3f}")
-            if ratio >= self._home_ratio_threshold():
+            self.info_set("主页抽抽乐 OCR", gacha_text or "-")
+            if home_ok:
                 return True
             self.sleep(interval)
         return False
+
+    def _home_confirmation_signals(self, frame) -> tuple[bool, float, float, str]:
+        home_button = max(
+            (self._match(frame, spec) for spec in HOME_TEMPLATES),
+            key=lambda result: result.score,
+        )
+        ratio = self._home_brightness_ratio(frame)
+        gacha_text = self._ocr_text(
+            frame,
+            name="主页抽抽乐",
+            roi=HOME_GACHA_OCR_ROI,
+        )
+        confirmed = (
+            home_button.score >= float(self.config.get("主页小屋按钮阈值", 0.70))
+            and ratio >= self._home_ratio_threshold()
+            and self._matches_any(gacha_text, list(HOME_GACHA_PATTERNS))
+        )
+        return confirmed, home_button.score, ratio, gacha_text
 
     def _recover_stage_position(self) -> None:
         if self._click_template_until(
@@ -995,6 +1021,10 @@ class PVPTask(BaseBD2Task):
                 )
             elif spec.roi is not None:
                 roi_left, roi_top, roi_frame = self._roi_frame(frame_gray, spec.roi)
+            else:
+                roi_left = 0
+                roi_top = 0
+                roi_frame = frame_gray
             frame_height, frame_width = roi_frame.shape[:2]
             base_scale = offline_template_scale(
                 spec.file_name,
@@ -1003,6 +1033,25 @@ class PVPTask(BaseBD2Task):
                 reference_scale=spec.reference_scale,
             )
             best = empty
+            configured_threshold = float(
+                getattr(self, "config", {}).get(spec.threshold_key, spec.default_threshold)
+            )
+            template_threshold = max(
+                configured_threshold,
+                spec.minimum_safe_threshold
+                if spec.minimum_safe_threshold is not None
+                else configured_threshold,
+            )
+            center_bounds = None
+            if spec.candidate_center_roi is not None:
+                full_height, full_width = frame_gray.shape[:2]
+                left, top, right, bottom = spec.candidate_center_roi
+                center_bounds = (
+                    round(full_width * left) - roi_left,
+                    round(full_height * top) - roi_top,
+                    round(full_width * right) - roi_left,
+                    round(full_height * bottom) - roi_top,
+                )
 
             for scale in self._candidate_scales(base_scale, spec.scale_ratios):
                 scaled_template = self._resize_template(template, scale)
@@ -1011,19 +1060,25 @@ class PVPTask(BaseBD2Task):
                 if height < 5 or width < 5 or height > frame_height or width > frame_width:
                     continue
 
-                method = cv2.TM_CCORR_NORMED if scaled_mask is not None else cv2.TM_CCOEFF_NORMED
-                result = cv2.matchTemplate(roi_frame, scaled_template, method, mask=scaled_mask)
-                np.nan_to_num(result, copy=False, nan=-1.0, posinf=-1.0, neginf=-1.0)
-                _, max_value, _, max_location = cv2.minMaxLoc(result)
-                if max_value > best.score:
-                    x, y = int(max_location[0]), int(max_location[1])
-                    region = roi_frame[y : y + height, x : x + width]
-                    best = PVPMatchResult(
-                        score=float(max_value),
-                        pixel_score=self._pixel_similarity(region, scaled_template, scaled_mask),
-                        position=(roi_left + x, roi_top + y),
-                        size=(int(width), int(height)),
-                    )
+                result = template_match_response(roi_frame, scaled_template, scaled_mask)
+                candidate = best_pixel_valid_match(
+                    result,
+                    roi_frame,
+                    scaled_template,
+                    scaled_mask,
+                    template_threshold=template_threshold,
+                    pixel_threshold=(spec.min_pixel_score or 0.0),
+                    center_bounds=center_bounds,
+                )
+                if candidate is None or candidate.score <= best.score:
+                    continue
+                x, y = candidate.location
+                best = PVPMatchResult(
+                    score=candidate.score,
+                    pixel_score=candidate.pixel_score,
+                    position=(roi_left + x, roi_top + y),
+                    size=(int(width), int(height)),
+                )
         except (cv2.error, MemoryError) as exc:
             self._match_pause_until = monotonic() + 2.0
             message = f"图像匹配内存不足，暂停识别2秒：{spec.name}"
@@ -1103,6 +1158,8 @@ class PVPTask(BaseBD2Task):
 
     def _passes(self, result: PVPMatchResult, spec: PVPTemplateSpec) -> bool:
         threshold = float(self.config.get(spec.threshold_key, spec.default_threshold))
+        if spec.minimum_safe_threshold is not None:
+            threshold = max(threshold, spec.minimum_safe_threshold)
         if result.score < threshold:
             return False
         if spec.min_pixel_score is None:
@@ -1498,11 +1555,13 @@ QUICK_PACK_TEMPLATE = PVPTemplateSpec(
     name="quick_pack",
     file_name="image/green/BusinQuickIcoGE.png",
     threshold_key="快速切换按钮阈值",
-    default_threshold=0.78,
+    default_threshold=0.84,
     relative_roi=(0.25, 0.85, 0.65, 1.0),
     green_mask=True,
-    scale_ratios=(0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.0, 1.05, 1.10),
-    min_pixel_score=0.72,
+    scale_ratios=(0.95, 0.975, 1.0, 1.025, 1.05),
+    min_pixel_score=0.80,
+    candidate_center_roi=(650 / 1920, 950 / 1080, 1050 / 1920, 1045 / 1080),
+    minimum_safe_threshold=0.84,
 )
 
 PVP_MEDALS_TEMPLATE = PVPTemplateSpec(

@@ -15,6 +15,7 @@ class ProjectStructureTest(unittest.TestCase):
             "src/config.py",
             "src/tasks/DailyBatchTask.py",
             "src/tasks/DailyTask.py",
+            "src/tasks/QuickHuntTask.py",
             "src/tasks/BargainLevelTask.py",
             "src/tasks/QuickSuppressionTask.py",
             "src/tasks/MapTradeTask.py",
