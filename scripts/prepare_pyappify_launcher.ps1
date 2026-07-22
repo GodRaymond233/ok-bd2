@@ -1,6 +1,9 @@
 param(
     [string]$Version = "v1.1.6",
-    [string]$BuildDir = "pyappify_build"
+    [string]$BuildDir = "pyappify_build",
+    [ValidateSet("zlib", "lzma")]
+    [string]$NsisCompression = "lzma",
+    [switch]$SkipBuild
 )
 
 $ErrorActionPreference = "Stop"
@@ -119,6 +122,13 @@ $tauriConfPath = Join-Path $buildPath "src-tauri\tauri.conf.json"
 $tauriConf = Get-Content -LiteralPath $tauriConfPath -Raw
 $tauriConf = $tauriConf.Replace('"pyappify"', '"' + $appName + '"')
 $tauriConf = $tauriConf.Replace('"0.0.1"', '"' + $Version.TrimStart("v") + '"')
+$tauriConfObject = $tauriConf | ConvertFrom-Json
+$tauriConfObject.bundle.windows.nsis | Add-Member `
+    -MemberType NoteProperty `
+    -Name compression `
+    -Value $NsisCompression `
+    -Force
+$tauriConf = $tauriConfObject | ConvertTo-Json -Depth 100
 Set-Content -LiteralPath $tauriConfPath -Value $tauriConf -Encoding UTF8
 
 $cargoTomlPath = Join-Path $buildPath "src-tauri\Cargo.toml"
@@ -172,5 +182,9 @@ $appService = $appService.Replace(
 Set-Content -LiteralPath $appServicePath -Value $appService -Encoding UTF8
 
 pnpm install --dir $buildPath
-pnpm --dir $buildPath exec cargo fmt --manifest-path (Join-Path $buildPath "src-tauri\Cargo.toml")
-pnpm --dir $buildPath tauri build
+if ($SkipBuild) {
+    Write-Host "PyAppify source prepared without compiling the launcher."
+} else {
+    pnpm --dir $buildPath exec cargo fmt --manifest-path (Join-Path $buildPath "src-tauri\Cargo.toml")
+    pnpm --dir $buildPath tauri build
+}

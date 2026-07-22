@@ -5,27 +5,31 @@ on:
     tags:
       - "v*"
 
-jobs:
-  build:
-    runs-on: windows-latest
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
 
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: windows-latest
+    outputs:
+      package_mode: ${{ steps.package-mode.outputs.mode }}
+      compression: ${{ steps.package-mode.outputs.compression }}
+      reuse_tag: ${{ steps.launcher-reuse.outputs.reuse_tag }}
+      start_tag: ${{ steps.sync.outputs.start_tag }}
+      end_tag: ${{ steps.sync.outputs.end_tag }}
+      changelog: ${{ steps.sync.outputs.changes_with_asterisk }}
     env:
       PYTHONIOENCODING: "UTF-8"
-      SIGN_BUILD: "false"
-      SIGN_SETUP: "false"
-      BUILD_EXE: "true"
-      USE_RELEASE: ""
-
-    strategy:
-      matrix:
-        python-version: ["3.12"]
-
-    permissions:
-      actions: write
-      contents: write
+      PYTHONLEGACYWINDOWSSTDIO: "UTF-8"
 
     steps:
       - name: Configure git
+        shell: pwsh
         run: |
           [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           git config --global core.autocrlf false
@@ -38,17 +42,28 @@ jobs:
           lfs: true
           fetch-depth: 0
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Resolve package mode
+        id: package-mode
+        shell: pwsh
+        env:
+          REQUESTED_MODE: ${{ vars.PACKAGE_BUILD_MODE }}
+        run: |
+          $mode = $env:REQUESTED_MODE.Trim().ToLowerInvariant()
+          if ([string]::IsNullOrWhiteSpace($mode)) {
+            $mode = "fast"
+          }
+          if ($mode -notin @("fast", "compact")) {
+            throw "PACKAGE_BUILD_MODE must be 'fast' or 'compact', got '$mode'."
+          }
+          $compression = if ($mode -eq "fast") { "zlib" } else { "lzma" }
+          "mode=$mode" >> $env:GITHUB_OUTPUT
+          "compression=$compression" >> $env:GITHUB_OUTPUT
+          Write-Host "Package mode: $mode; NSIS compression: $compression"
+
+      - name: Set up Python 3.12
         uses: actions/setup-python@v6
         with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Set UTF-8 encoding
-        run: |
-          $env:PYTHONIOENCODING = "utf-8"
-          $env:PYTHONLEGACYWINDOWSSTDIO = "utf-8"
-          "PYTHONIOENCODING=utf-8" >> $env:GITHUB_ENV
-          "PYTHONLEGACYWINDOWSSTDIO=utf-8" >> $env:GITHUB_ENV
+          python-version: "3.12"
 
       - name: Install dependencies
         run: |
@@ -64,6 +79,7 @@ jobs:
           python -m unittest discover tests
 
       - name: Validate release secrets
+        shell: pwsh
         env:
           OK_GH: ${{ secrets.OK_GH }}
           CNB_GH: ${{ secrets.CNB_GH }}
@@ -72,8 +88,7 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:OK_GH)) { $missing += "OK_GH" }
           if ([string]::IsNullOrWhiteSpace($env:CNB_GH)) { $missing += "CNB_GH" }
           if ($missing.Count -gt 0) {
-            Write-Error "Missing GitHub Actions secrets: $($missing -join ', ')"
-            exit 1
+            throw "Missing GitHub Actions secrets: $($missing -join ', ')"
           }
 
       - name: Sync update repositories
@@ -88,159 +103,230 @@ jobs:
           gitignore_file: ".update_repo_gitignore"
           show_author: true
 
-      - name: Check release version
-        id: release-version
-        if: env.BUILD_EXE == 'true'
+      - name: Find reusable launcher
+        id: launcher-reuse
         shell: pwsh
         env:
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          $tag = $env:REF_NAME
-          $isRelease = $tag -match '^v?\d+\.\d+\.\d+$'
-          "is_release=$($isRelease.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
-          Write-Host "Release version: $isRelease"
-
-      - name: Prepare patched PyAppify launcher
-        if: env.BUILD_EXE == 'true' && steps.release-version.outputs.is_release == 'true' && env.USE_RELEASE == ''
-        shell: pwsh
-        run: |
-          .\scripts\prepare_pyappify_launcher.ps1 -Version v1.1.6
-
-      - name: PyAppify build from previous release
-        id: build-exe-only-use-release
-        uses: ok-oldking/pyappify-action@master
-        if: env.BUILD_EXE == 'true' && steps.release-version.outputs.is_release == 'true' && env.USE_RELEASE != ''
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          use_release: ${{ env.USE_RELEASE }}
-
-      - name: PyAppify build installer
-        id: build-exe
-        uses: ok-oldking/pyappify-action@master
-        if: env.BUILD_EXE == 'true' && steps.release-version.outputs.is_release == 'true' && env.USE_RELEASE == ''
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          version: v1.1.6
-          build_exe_only: ${{ env.SIGN_BUILD == 'true' }}
-
-      - name: Upload unsigned EXE artifact
-        if: env.BUILD_EXE == 'true' && steps.release-version.outputs.is_release == 'true' && env.SIGN_BUILD == 'true' && env.USE_RELEASE == ''
-        id: upload-unsigned-artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: to-sign
-          path: ${{ steps.build-exe.outputs.exe-path }}
-
-      - name: Sign EXE
-        if: env.BUILD_EXE == 'true' && steps.release-version.outputs.is_release == 'true' && env.SIGN_BUILD == 'true' && env.USE_RELEASE == ''
-        uses: signpath/github-action-submit-signing-request@v2
-        with:
-          api-token: "${{ secrets.SIGNPATH_API_TOKEN }}"
-          organization-id: "${{ secrets.SIGNPATH_ORGANIZATION_ID }}"
-          project-slug: "ok-bd2"
-          signing-policy-slug: "${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}"
-          artifact-configuration-slug: "single-exe"
-          github-artifact-id: "${{ steps.upload-unsigned-artifact.outputs.artifact-id }}"
-          wait-for-completion: true
-          wait-for-completion-timeout-in-seconds: 60000
-          output-artifact-directory: ${{ steps.build-exe.outputs.exe-folder }}
-
-      - name: PyAppify build signed setup EXE
-        if: env.BUILD_EXE == 'true' && steps.release-version.outputs.is_release == 'true' && env.SIGN_BUILD == 'true'
-        id: build-setup-exe
-        uses: ok-oldking/pyappify-action@master
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload unsigned setup EXE artifact
-        if: env.BUILD_EXE == 'true' && steps.release-version.outputs.is_release == 'true' && env.SIGN_BUILD == 'true' && env.SIGN_SETUP == 'true'
-        id: upload-unsigned-setup-artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: setup-to-sign
-          path: pyappify_dist/*setup.exe
-          if-no-files-found: error
-
-      - name: Sign setup EXEs
-        if: env.BUILD_EXE == 'true' && steps.release-version.outputs.is_release == 'true' && env.SIGN_BUILD == 'true' && env.SIGN_SETUP == 'true'
-        uses: signpath/github-action-submit-signing-request@v2
-        with:
-          api-token: "${{ secrets.SIGNPATH_API_TOKEN }}"
-          organization-id: "${{ secrets.SIGNPATH_ORGANIZATION_ID }}"
-          project-slug: "ok-bd2"
-          signing-policy-slug: "${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}"
-          artifact-configuration-slug: "setupexe"
-          github-artifact-id: "${{ steps.upload-unsigned-setup-artifact.outputs.artifact-id }}"
-          wait-for-completion: true
-          wait-for-completion-timeout-in-seconds: 60000
-          output-artifact-directory: "pyappify_dist"
-
-      - name: Prepare release notes
-        if: env.BUILD_EXE == 'true' && steps.release-version.outputs.is_release == 'true' && startsWith(github.ref, 'refs/tags/')
-        shell: pwsh
-        env:
-          START_TAG: ${{ steps.sync.outputs.start_tag }}
-          END_TAG: ${{ steps.sync.outputs.end_tag }}
-          CHANGELOG: ${{ steps.sync.outputs.changes_with_asterisk }}
+          GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          $releaseCommit = git rev-list -n 1 $env:RELEASE_TAG
-          $releaseSubject = git log -1 --format=%s $releaseCommit
-          $expectedSubject = "release: $env:RELEASE_TAG"
-          if ($releaseSubject -ne $expectedSubject) {
-            throw "Tag $env:RELEASE_TAG must point to '$expectedSubject', got '$releaseSubject'."
+          $previousTag = git describe --tags --abbrev=0 "$env:RELEASE_TAG^" 2>$null
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($previousTag)) {
+            "reuse_tag=" >> $env:GITHUB_OUTPUT
+            Write-Host "No previous tag is available; the launcher will be compiled."
+            exit 0
+          }
+          $previousTag = $previousTag.Trim()
+
+          git diff --quiet "$previousTag..$env:RELEASE_TAG" -- `
+            pyappify.yml `
+            icons `
+            scripts/prepare_pyappify_launcher.ps1
+          $diffExitCode = $LASTEXITCODE
+          if ($diffExitCode -gt 1) {
+            throw "Could not compare launcher inputs with $previousTag."
+          }
+          if ($diffExitCode -eq 1) {
+            "reuse_tag=" >> $env:GITHUB_OUTPUT
+            Write-Host "Launcher inputs changed since $previousTag; the launcher will be compiled."
+            exit 0
           }
 
-          $releaseAuthor = git log -1 --format=%an $releaseCommit
-          $mainEntries = [System.Collections.Generic.List[string]]::new()
-          foreach ($line in @(git log -1 --format=%b $releaseCommit)) {
-            $entry = ($line -replace '^\s*[-*]\s+', '').Trim()
-            if ([string]::IsNullOrWhiteSpace($entry)) {
-              continue
-            }
-            if ($entry -notmatch '^(feat|fix|refactor|perf|docs|test|build|ci|chore|style|revert)(\([^)]+\))?:\s+.+$') {
-              throw "Release detail must use Conventional Commits format: $entry"
-            }
-            if ($entry -notmatch '\s+\([^)]+\)$') {
-              $entry = "$entry ($releaseAuthor)"
-            }
-            $mainEntries.Add("- $entry")
-          }
-          if ($mainEntries.Count -eq 0) {
-            throw "Release commit $releaseCommit has no version details."
+          $assetNames = @(gh release view $previousTag `
+            --repo $env:GITHUB_REPOSITORY `
+            --json assets `
+            --jq '.assets[].name' 2>$null)
+          if ($LASTEXITCODE -ne 0 -or $assetNames -notcontains "ok-bd2-win32.zip") {
+            "reuse_tag=" >> $env:GITHUB_OUTPUT
+            Write-Host "Release $previousTag has no reusable launcher asset; the launcher will be compiled."
+            exit 0
           }
 
-          $changelog = $env:CHANGELOG.Trim()
-          if ([string]::IsNullOrWhiteSpace($changelog)) {
-            throw "The synchronized changelog is empty."
+          "reuse_tag=$previousTag" >> $env:GITHUB_OUTPUT
+          Write-Host "Launcher will be reused from $previousTag."
+
+  package-fast:
+    needs: prepare
+    if: needs.prepare.outputs.package_mode == 'fast'
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REUSE_TAG: ${{ needs.prepare.outputs.reuse_tag }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Prepare or restore launcher
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:REUSE_TAG)) {
+            .\scripts\prepare_pyappify_launcher.ps1 -Version v1.1.6 -NsisCompression zlib
+          } else {
+            .\scripts\prepare_pyappify_launcher.ps1 -Version v1.1.6 -NsisCompression zlib -SkipBuild
+            .\scripts\restore_pyappify_launcher.ps1 -ReleaseTag $env:REUSE_TAG
           }
 
-          $releaseNotes = @(
-            "### 更新日志 $env:START_TAG -> $env:END_TAG"
-            ""
-            $changelog
-            ""
-            "### 版本主要内容 $env:RELEASE_TAG："
-            ""
-            ($mainEntries -join "`n")
-            ""
-            "### 下载包说明"
-            ""
-            "- [ok-bd2-win32-China-setup.exe](https://github.com/GodRaymond233/ok-bd2/releases/download/$env:RELEASE_TAG/ok-bd2-win32-China-setup.exe) 完整安装包，更新使用 CNB。"
-            "- [ok-bd2-win32-online-setup.exe](https://github.com/GodRaymond233/ok-bd2/releases/download/$env:RELEASE_TAG/ok-bd2-win32-online-setup.exe) 在线安装包，首次安装时需要联网下载依赖。"
-            "- [ok-bd2-win32-Global-setup.exe](https://github.com/GodRaymond233/ok-bd2/releases/download/$env:RELEASE_TAG/ok-bd2-win32-Global-setup.exe) full package with dependencies, using GitHub and PyPI as update source."
-            "- 不要下载 ok-bd2-win32.zip 或 Source code 压缩包。"
-          ) -join "`n"
-          Set-Content -LiteralPath release-notes.md -Value $releaseNotes -Encoding utf8
-          Get-Content -LiteralPath release-notes.md
-
-      - name: Release
-        uses: softprops/action-gh-release@v3
-        if: env.BUILD_EXE == 'true' && steps.release-version.outputs.is_release == 'true' && startsWith(github.ref, 'refs/tags/')
+      - name: Build fast release assets
+        id: build-assets
+        uses: ok-oldking/pyappify-action@56459bdb910ea3f0db3bbf99ec3d44108f35eb4e
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          version: v1.1.6
+
+      - name: Validate fast release assets
+        shell: pwsh
+        run: |
+          $required = @(
+            "pyappify_dist/ok-bd2-win32-China-setup.exe",
+            "pyappify_dist/ok-bd2-win32-Global-setup.exe",
+            "pyappify_dist/ok-bd2-win32-online-setup.exe",
+            "pyappify_dist/ok-bd2-win32.zip",
+            "pyappify_dist/win32_sha256.txt"
+          )
+          foreach ($path in $required) {
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Missing release asset: $path"
+            }
+          }
+
+      - name: Prepare release notes
+        shell: pwsh
+        env:
+          START_TAG: ${{ needs.prepare.outputs.start_tag }}
+          END_TAG: ${{ needs.prepare.outputs.end_tag }}
+          CHANGELOG: ${{ needs.prepare.outputs.changelog }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          .\scripts\prepare_release_notes.ps1 `
+            -StartTag $env:START_TAG `
+            -EndTag $env:END_TAG `
+            -Changelog $env:CHANGELOG `
+            -ReleaseTag $env:RELEASE_TAG
+
+      - name: Release fast assets
+        uses: softprops/action-gh-release@v3
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          body_path: release-notes.md
+          draft: false
+          prerelease: false
+          make_latest: true
+          files: pyappify_dist/*
+
+  package-compact:
+    needs: prepare
+    if: needs.prepare.outputs.package_mode == 'compact'
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: China
+            artifact_name: release-assets-China
+            asset_paths: |
+              pyappify_dist/ok-bd2-win32-China-setup.exe
+              pyappify_dist/ok-bd2-win32-online-setup.exe
+              pyappify_dist/ok-bd2-win32.zip
+              pyappify_dist/win32_sha256.txt
+          - profile: Global
+            artifact_name: release-assets-Global
+            asset_paths: |
+              pyappify_dist/ok-bd2-win32-Global-setup.exe
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REUSE_TAG: ${{ needs.prepare.outputs.reuse_tag }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Select ${{ matrix.profile }} profile
+        shell: pwsh
+        run: |
+          .\scripts\select_pyappify_profile.ps1 -Profile ${{ matrix.profile }}
+
+      - name: Prepare or restore launcher
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:REUSE_TAG)) {
+            .\scripts\prepare_pyappify_launcher.ps1 -Version v1.1.6 -NsisCompression lzma
+          } else {
+            .\scripts\prepare_pyappify_launcher.ps1 -Version v1.1.6 -NsisCompression lzma -SkipBuild
+            .\scripts\restore_pyappify_launcher.ps1 -ReleaseTag $env:REUSE_TAG
+          }
+
+      - name: Build ${{ matrix.profile }} compact assets
+        uses: ok-oldking/pyappify-action@56459bdb910ea3f0db3bbf99ec3d44108f35eb4e
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          version: v1.1.6
+
+      - name: Upload ${{ matrix.profile }} release assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.asset_paths }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  release-compact:
+    needs:
+      - prepare
+      - package-compact
+    if: needs.prepare.outputs.package_mode == 'compact' && needs.package-compact.result == 'success'
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Download compact release assets
+        uses: actions/download-artifact@v8
+        with:
+          pattern: release-assets-*
+          path: pyappify_dist
+          merge-multiple: true
+
+      - name: Validate compact release assets
+        shell: pwsh
+        run: |
+          $required = @(
+            "pyappify_dist/ok-bd2-win32-China-setup.exe",
+            "pyappify_dist/ok-bd2-win32-Global-setup.exe",
+            "pyappify_dist/ok-bd2-win32-online-setup.exe",
+            "pyappify_dist/ok-bd2-win32.zip",
+            "pyappify_dist/win32_sha256.txt"
+          )
+          foreach ($path in $required) {
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Missing release asset: $path"
+            }
+          }
+
+      - name: Prepare release notes
+        shell: pwsh
+        env:
+          START_TAG: ${{ needs.prepare.outputs.start_tag }}
+          END_TAG: ${{ needs.prepare.outputs.end_tag }}
+          CHANGELOG: ${{ needs.prepare.outputs.changelog }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          .\scripts\prepare_release_notes.ps1 `
+            -StartTag $env:START_TAG `
+            -EndTag $env:END_TAG `
+            -Changelog $env:CHANGELOG `
+            -ReleaseTag $env:RELEASE_TAG
+
+      - name: Release compact assets
+        uses: softprops/action-gh-release@v3
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         with:
           body_path: release-notes.md
           draft: false
