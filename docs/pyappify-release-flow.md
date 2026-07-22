@@ -46,14 +46,31 @@ OK_GH     GitHub token that can push to GodRaymond233/ok-bd2-update
 CNB_GH    CNB token that can push to cnb.cool/GodRaymond233/ok-bd2-update.git
 ```
 
-Signing is disabled by default. If `SIGN_BUILD` or `SIGN_SETUP` is changed to
-`true`, also configure:
+## Packaging modes
 
-```text
-SIGNPATH_API_TOKEN
-SIGNPATH_ORGANIZATION_ID
-SIGNPATH_SIGNING_POLICY_SLUG
-```
+The `Build` workflow supports two modes. Configure the repository Actions
+variable `PACKAGE_BUILD_MODE` to switch between them; a missing or empty value
+defaults to `fast`.
+
+| Value | NSIS compression | China/Global strategy | Intended use |
+|---|---|---|---|
+| `fast` | ZLIB | Built sequentially in one job | Normal releases; prioritizes build speed |
+| `compact` | LZMA | Built in parallel matrix jobs | Smaller installers; accepts more compression time |
+
+Both modes always publish the China full installer, Global full installer,
+online installer, launcher ZIP, and checksum. Global packaging is not optional
+and the workflow fails if its installer is missing.
+
+When launcher inputs have not changed since the previous release, both modes
+reuse the launcher from the previous `ok-bd2-win32.zip`. Changes to
+`pyappify.yml`, `icons/`, or `scripts/prepare_pyappify_launcher.ps1` disable
+reuse automatically and force a fresh launcher compilation. This makes reuse a
+safe optimization instead of a manual release setting.
+
+To switch modes, open the repository's **Settings → Secrets and variables →
+Actions → Variables**, create or edit `PACKAGE_BUILD_MODE`, and set it to
+`fast` or `compact`. The value is read at the start of every tag build, so no
+workflow edit or commit is required when switching.
 
 ## Publishing
 
@@ -71,5 +88,6 @@ The workflow will:
 2. Inline `ok-script` and PyAppify for the update repository.
 3. Run the test suite.
 4. Sync the update repositories using `deploy.txt`.
-5. Build PyAppify installer assets from `pyappify.yml`.
-6. Publish the GitHub Release with `pyappify_dist/*`.
+5. Resolve `PACKAGE_BUILD_MODE` and safely reuse or compile the PyAppify launcher.
+6. Build both China and Global installer assets from `pyappify.yml`.
+7. Validate every required download before publishing the GitHub Release.
