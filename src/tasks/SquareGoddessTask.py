@@ -10,11 +10,13 @@ from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task, green_mask_from_template
 from src.utils.image_utils import (
+    best_pixel_valid_match,
     candidate_scales,
     pixel_similarity,
     reference_roi_frame,
     resize_mask,
     resize_template,
+    template_match_response,
     to_gray,
 )
 from src.utils.ocr_utils import normalize_ocr_text
@@ -63,6 +65,8 @@ class SquareTemplateSpec:
     green_mask: bool = False
     scale_ratios: tuple[float, ...] = (1.0,)
     min_pixel_score: float | None = None
+    candidate_center_roi: tuple[float, float, float, float] | None = None
+    minimum_safe_threshold: float | None = None
 
 
 @dataclass(frozen=True)
@@ -123,7 +127,7 @@ class SquareGoddessTask(BaseBD2Task):
                 "主页确认等待秒数": 10.0,
                 "主页小屋按钮阈值": 0.70,
                 "快速卡带等待秒数": 10.0,
-                "快速切换按钮阈值": 0.78,
+                "快速切换按钮阈值": 0.90,
                 "卡带选择页确认等待秒数": 10.0,
                 "玩法类别高亮确认秒数": 3.0,
                 "玩法类别高亮像素比例": GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO,
@@ -687,6 +691,25 @@ class SquareGoddessTask(BaseBD2Task):
                 frame_gray.shape[0],
             )
             best = empty
+            configured_threshold = float(
+                getattr(self, "config", {}).get(spec.threshold_key, spec.default_threshold)
+            )
+            template_threshold = max(
+                configured_threshold,
+                spec.minimum_safe_threshold
+                if spec.minimum_safe_threshold is not None
+                else configured_threshold,
+            )
+            center_bounds = None
+            if spec.candidate_center_roi is not None:
+                full_height, full_width = frame_gray.shape[:2]
+                left, top, right, bottom = spec.candidate_center_roi
+                center_bounds = (
+                    round(full_width * left) - roi_left,
+                    round(full_height * top) - roi_top,
+                    round(full_width * right) - roi_left,
+                    round(full_height * bottom) - roi_top,
+                )
 
             for scale in self._candidate_scales(base_scale, spec.scale_ratios):
                 scaled_template = self._resize_template(template, scale)
@@ -695,25 +718,25 @@ class SquareGoddessTask(BaseBD2Task):
                 if height < 5 or width < 5 or height > frame_height or width > frame_width:
                     continue
 
-                method = cv2.TM_CCORR_NORMED if scaled_mask is not None else cv2.TM_CCOEFF_NORMED
-                result = cv2.matchTemplate(roi_frame, scaled_template, method, mask=scaled_mask)
-                np.nan_to_num(
+                result = template_match_response(roi_frame, scaled_template, scaled_mask)
+                candidate = best_pixel_valid_match(
                     result,
-                    copy=False,
-                    nan=-1.0,
-                    posinf=-1.0,
-                    neginf=-1.0,
+                    roi_frame,
+                    scaled_template,
+                    scaled_mask,
+                    template_threshold=template_threshold,
+                    pixel_threshold=(spec.min_pixel_score or 0.0),
+                    center_bounds=center_bounds,
                 )
-                _, max_value, _, max_location = cv2.minMaxLoc(result)
-                if max_value > best.score:
-                    x, y = int(max_location[0]), int(max_location[1])
-                    region = roi_frame[y : y + height, x : x + width]
-                    best = SquareMatchResult(
-                        score=float(max_value),
-                        pixel_score=self._pixel_similarity(region, scaled_template, scaled_mask),
-                        position=(roi_left + x, roi_top + y),
-                        size=(int(width), int(height)),
-                    )
+                if candidate is None or candidate.score <= best.score:
+                    continue
+                x, y = candidate.location
+                best = SquareMatchResult(
+                    score=candidate.score,
+                    pixel_score=candidate.pixel_score,
+                    position=(roi_left + x, roi_top + y),
+                    size=(int(width), int(height)),
+                )
         except (cv2.error, MemoryError) as exc:
             self._match_pause_until = monotonic() + 2.0
             message = f"图像匹配内存不足，暂停识别2秒：{spec.name}"
@@ -788,6 +811,8 @@ class SquareGoddessTask(BaseBD2Task):
 
     def _passes(self, result: SquareMatchResult, spec: SquareTemplateSpec) -> bool:
         threshold = float(self.config.get(spec.threshold_key, spec.default_threshold))
+        if spec.minimum_safe_threshold is not None:
+            threshold = max(threshold, spec.minimum_safe_threshold)
         if result.score < threshold:
             return False
         if spec.min_pixel_score is None:
@@ -1094,11 +1119,13 @@ QUICK_SWITCH_TEMPLATE = SquareTemplateSpec(
     name="quick_switch",
     file_name="image/green/QuickCartGeadai.png",
     threshold_key="快速切换按钮阈值",
-    default_threshold=0.78,
+    default_threshold=0.90,
     roi=(480, 918, 768, 162),
     green_mask=True,
-    scale_ratios=(0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.0, 1.05, 1.10),
-    min_pixel_score=0.72,
+    scale_ratios=(0.95, 0.975, 1.0, 1.025, 1.05),
+    min_pixel_score=0.82,
+    candidate_center_roi=(650 / 1920, 950 / 1080, 1050 / 1920, 1045 / 1080),
+    minimum_safe_threshold=0.90,
 )
 
 REFERENCE_CARD_TEMPLATE = SquareTemplateSpec(

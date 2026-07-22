@@ -11,6 +11,7 @@ from src.tasks.FreeGachaTask import FreeGachaTask
 from src.tasks.MapCollectionTask import MapCollectionTask
 from src.tasks.MapTradeTask import MapTradeTask
 from src.tasks.PVPTask import PVPTask
+from src.tasks.QuickHuntTask import QuickHuntTask
 from src.tasks.SquareGoddessTask import SquareGoddessTask
 
 
@@ -21,7 +22,8 @@ class DailyBatchChild:
 
 
 DAILY_BATCH_CHILDREN = (
-    DailyBatchChild("日常签到", DailyTask),
+    DailyBatchChild("公会、小屋、酒馆", DailyTask),
+    DailyBatchChild("快速狩猎", QuickHuntTask),
     DailyBatchChild("免费抽抽乐", FreeGachaTask),
     DailyBatchChild("广场女神像", SquareGoddessTask),
     DailyBatchChild("自动PVP", PVPTask),
@@ -49,7 +51,10 @@ class DailyBatchTask(BaseTask):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.name = "一键完成日常"
-        self.description = "按顺序执行已开启的签到、抽抽乐、广场、PVP、跑图和跑商。"
+        self.description = (
+            "按顺序执行已开启的公会、小屋、酒馆、快速狩猎、抽抽乐、"
+            "广场、PVP、跑图和跑商。"
+        )
         self.icon = FluentIcon.COMPLETED
         self.group_name = "日常/周常"
         self.group_icon = FluentIcon.CALENDAR

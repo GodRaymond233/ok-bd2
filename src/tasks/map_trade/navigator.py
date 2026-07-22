@@ -23,10 +23,12 @@ HOME_TEMPLATES = (
 QUICK_SWITCH_TEMPLATE = TemplateSpec(
     "快速切换按钮",
     "image/green/BusinQuickIcoGE.png",
-    0.78,
+    0.84,
     relative_roi=(0.25, 0.85, 0.65, 1.0),
-    scale_ratios=(0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.0, 1.05, 1.10),
-    min_pixel_score=0.72,
+    scale_ratios=(0.95, 0.975, 1.0, 1.025, 1.05),
+    min_pixel_score=0.80,
+    candidate_center_roi=(650 / 1920, 950 / 1080, 1050 / 1920, 1045 / 1080),
+    minimum_safe_threshold=0.84,
 )
 Q_SP6_SHOP_TEMPLATE = TemplateSpec(
     "Q_sp6商店按钮",

@@ -84,8 +84,11 @@ class SquareGoddessEntryTest(unittest.TestCase):
             QUICK_SWITCH_TEMPLATE.file_name,
         )
         self.assertTrue(QUICK_SWITCH_TEMPLATE.green_mask)
-        self.assertEqual(0.72, QUICK_SWITCH_TEMPLATE.min_pixel_score)
-        self.assertIn(0.80, QUICK_SWITCH_TEMPLATE.scale_ratios)
+        self.assertEqual(0.82, QUICK_SWITCH_TEMPLATE.min_pixel_score)
+        self.assertEqual(0.90, QUICK_SWITCH_TEMPLATE.minimum_safe_threshold)
+        self.assertIn(0.975, QUICK_SWITCH_TEMPLATE.scale_ratios)
+        self.assertNotIn(0.80, QUICK_SWITCH_TEMPLATE.scale_ratios)
+        self.assertIsNotNone(QUICK_SWITCH_TEMPLATE.candidate_center_roi)
 
     def test_masked_match_ignores_non_finite_scores_from_black_regions(self):
         task = object.__new__(SquareGoddessTask)
@@ -123,7 +126,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
                 "src.tasks.SquareGoddessTask.offline_template_scale",
                 return_value=1.0,
             ),
-            patch("src.tasks.SquareGoddessTask.cv2.matchTemplate", return_value=response),
+            patch("src.utils.image_utils.cv2.matchTemplate", return_value=response),
         ):
             result = SquareGoddessTask._match(
                 task,

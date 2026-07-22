@@ -6,7 +6,12 @@ import numpy as np
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task
-from src.utils.image_utils import to_gray
+from src.utils.image_utils import (
+    best_pixel_valid_match,
+    resize_template,
+    template_match_response,
+    to_gray,
+)
 from src.utils.template_resolution import offline_template_scale
 
 REFERENCE_WIDTH = 1920
@@ -176,23 +181,22 @@ class QuickSuppressionTask(BaseBD2Task):
             frame_gray.shape[1],
             frame_gray.shape[0],
         )
-        if abs(scale - 1.0) >= 0.001:
-            interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC
-            template = cv2.resize(
-                template,
-                None,
-                fx=scale,
-                fy=scale,
-                interpolation=interpolation,
-            )
+        template = resize_template(template, scale)
 
         height, width = template.shape[:2]
         if height < 1 or width < 1 or height > frame_gray.shape[0] or width > frame_gray.shape[1]:
             return -1.0
 
-        result = cv2.matchTemplate(frame_gray, template, cv2.TM_CCOEFF_NORMED)
-        _, maximum, _, _ = cv2.minMaxLoc(result)
-        return float(maximum) if np.isfinite(maximum) else -1.0
+        result = template_match_response(frame_gray, template)
+        candidate = best_pixel_valid_match(
+            result,
+            frame_gray,
+            template,
+            None,
+            template_threshold=self._loading_threshold(),
+            pixel_threshold=0.0,
+        )
+        return candidate.score if candidate is not None else -1.0
 
     def _load_loading_template(self) -> np.ndarray:
         if self._loading_template is not None:

@@ -18,11 +18,14 @@ from src.tasks.map_trade.models import (
     TemplateSpec,
 )
 from src.utils.image_utils import (
+    best_pixel_valid_match,
     candidate_scales,
+    independent_pixel_valid_matches,
     pixel_similarity,
     relative_roi_frame,
     resize_mask,
     resize_template,
+    template_match_response,
     to_gray,
 )
 from src.utils.template_resolution import (
@@ -88,7 +91,10 @@ class Vision:
             )
         except (TypeError, ValueError):
             return spec.threshold
-        return max(0.05, min(0.99, value))
+        value = max(0.05, min(0.99, value))
+        if spec.minimum_safe_threshold is not None:
+            value = max(value, spec.minimum_safe_threshold)
+        return value
 
     def click_reference(self, x: float, y: float, after_sleep: float = 0.0) -> None:
         self.task.operate_click(
@@ -201,6 +207,16 @@ class Vision:
             return EMPTY_MATCH
 
         best = EMPTY_MATCH
+        template_threshold = self.threshold_for(spec)
+        center_bounds = None
+        if spec.candidate_center_roi is not None:
+            center_left, center_top, center_right, center_bottom = spec.candidate_center_roi
+            center_bounds = (
+                round(frame_width * center_left) - left,
+                round(frame_height * center_top) - top,
+                round(frame_width * center_right) - left,
+                round(frame_height * center_bottom) - top,
+            )
         base_scale = offline_template_scale(
             spec.file_name,
             frame_width,
@@ -213,27 +229,27 @@ class Vision:
             height, width = scaled.shape[:2]
             if height < 4 or width < 4 or height > search.shape[0] or width > search.shape[1]:
                 continue
-            method = cv2.TM_CCORR_NORMED if scaled_mask is not None else cv2.TM_CCOEFF_NORMED
             try:
-                result = cv2.matchTemplate(search, scaled, method, mask=scaled_mask)
+                result = template_match_response(search, scaled, scaled_mask)
             except cv2.error:
                 continue
-            np.nan_to_num(result, copy=False, nan=-1.0, posinf=-1.0, neginf=-1.0)
-            _min_value, max_value, _min_location, max_location = cv2.minMaxLoc(result)
-            if float(max_value) > best.score:
-                best = MatchResult(
-                    score=float(max_value),
-                    position=(left + int(max_location[0]), top + int(max_location[1])),
-                    size=(width, height),
-                    pixel_score=self._pixel_similarity(
-                        search[
-                            int(max_location[1]) : int(max_location[1]) + height,
-                            int(max_location[0]) : int(max_location[0]) + width,
-                        ],
-                        scaled,
-                        scaled_mask,
-                    ),
-                )
+            candidate = best_pixel_valid_match(
+                result,
+                search,
+                scaled,
+                scaled_mask,
+                template_threshold=template_threshold,
+                pixel_threshold=(spec.min_pixel_score or 0.0),
+                center_bounds=center_bounds,
+            )
+            if candidate is None or candidate.score <= best.score:
+                continue
+            best = MatchResult(
+                score=candidate.score,
+                position=(left + candidate.location[0], top + candidate.location[1]),
+                size=(width, height),
+                pixel_score=candidate.pixel_score,
+            )
         return best
 
     def match_all(
@@ -273,7 +289,6 @@ class Vision:
         radius = max(1, int(peak_radius))
         limit = max(1, int(max_results))
         score_floor = max(-1.0, min(1.0, float(minimum_score)))
-        kernel = np.ones((radius * 2 + 1, radius * 2 + 1), dtype=np.uint8)
         candidates: list[MatchResult] = []
         base_scale = offline_template_scale(
             spec.file_name,
@@ -287,32 +302,28 @@ class Vision:
             height, width = scaled.shape[:2]
             if height < 4 or width < 4 or height > search.shape[0] or width > search.shape[1]:
                 continue
-            method = cv2.TM_CCORR_NORMED if scaled_mask is not None else cv2.TM_CCOEFF_NORMED
             try:
-                response = cv2.matchTemplate(search, scaled, method, mask=scaled_mask)
+                response = template_match_response(search, scaled, scaled_mask)
             except cv2.error:
                 continue
-            np.nan_to_num(response, copy=False, nan=-1.0, posinf=-1.0, neginf=-1.0)
-            local_maximum = cv2.dilate(response, kernel)
-            peak_y, peak_x = np.where(
-                (response >= score_floor) & (response >= local_maximum - 1e-7)
+            scale_candidates = independent_pixel_valid_matches(
+                response,
+                search,
+                scaled,
+                scaled_mask,
+                template_threshold=score_floor,
+                pixel_threshold=(spec.min_pixel_score or 0.0),
+                suppression_radius=radius,
+                max_matches=limit,
             )
-            locations = sorted(
-                zip(peak_y.tolist(), peak_x.tolist()),
-                key=lambda value: float(response[value[0], value[1]]),
-                reverse=True,
-            )[:limit]
-            for y, x in locations:
+            for candidate in scale_candidates:
+                x, y = candidate.location
                 candidates.append(
                     MatchResult(
-                        score=float(response[y, x]),
+                        score=candidate.score,
                         position=(left + x, top + y),
                         size=(width, height),
-                        pixel_score=self._pixel_similarity(
-                            search[y : y + height, x : x + width],
-                            scaled,
-                            scaled_mask,
-                        ),
+                        pixel_score=candidate.pixel_score,
                     )
                 )
 
@@ -410,36 +421,32 @@ class Vision:
             frame_height,
             reference_scale=spec.reference_scale,
         )
-        interpolation = cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC
-        scaled = cv2.resize(template, None, fx=scale, fy=scale, interpolation=interpolation)
-        scaled_mask = None
-        if mask is not None:
-            scaled_mask = cv2.resize(
-                mask, None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST
-            )
+        scaled = self._resize_template(template, scale)
+        scaled_mask = self._resize_mask(mask, scale)
         height, width = scaled.shape[:2]
         if search.size == 0 or height > search.shape[0] or width > search.shape[1]:
             return []
-        method = cv2.TM_CCORR_NORMED if scaled_mask is not None else cv2.TM_CCOEFF_NORMED
-        result = cv2.matchTemplate(search, scaled, method, mask=scaled_mask)
+        result = template_match_response(search, scaled, scaled_mask)
         wanted = self.threshold_for(spec) if threshold is None else threshold
-        candidates = []
-        ys, xs = np.where(result >= wanted)
-        for y, x in zip(ys.tolist(), xs.tolist()):
-            candidates.append((float(result[y, x]), x, y))
-        candidates.sort(reverse=True)
-        matches: list[MatchResult] = []
-        for score, x, y in candidates:
-            center_x, center_y = x + width / 2, y + height / 2
-            if any(
-                abs(center_x - (item.position[0] - left + item.size[0] / 2)) < width * 0.65
-                and abs(center_y - (item.position[1] - top + item.size[1] / 2)) < height * 0.65
-                for item in matches
-            ):
-                continue
-            matches.append(MatchResult(score, (left + x, top + y), (width, height)))
-            if len(matches) >= max_results:
-                break
+        candidates = independent_pixel_valid_matches(
+            result,
+            search,
+            scaled,
+            scaled_mask,
+            template_threshold=wanted,
+            pixel_threshold=(spec.min_pixel_score or 0.0),
+            suppression_radius=(round(width * 0.65), round(height * 0.65)),
+            max_matches=max_results,
+        )
+        matches = [
+            MatchResult(
+                candidate.score,
+                (left + candidate.location[0], top + candidate.location[1]),
+                (width, height),
+                pixel_score=candidate.pixel_score,
+            )
+            for candidate in candidates
+        ]
         return matches
 
     def wait_template(

@@ -1,10 +1,13 @@
 import unittest
+from pathlib import Path
 
 import numpy as np
 
 from src.utils.image_utils import (
+    best_pixel_valid_match,
     candidate_scales,
     crop_relative,
+    independent_pixel_valid_matches,
     pixel_similarity,
     reference_roi_frame,
     resize_mask,
@@ -18,6 +21,16 @@ from src.utils.ocr_utils import (
 
 
 class ImageRecognitionUtilsTest(unittest.TestCase):
+    def test_source_template_matching_is_centralized(self):
+        source_root = Path(__file__).resolve().parents[1] / "src"
+        violations = []
+        for path in source_root.rglob("*.py"):
+            if path.name == "image_utils.py":
+                continue
+            if "cv2.matchTemplate" in path.read_text(encoding="utf-8"):
+                violations.append(str(path.relative_to(source_root)))
+        self.assertEqual([], violations)
+
     def test_candidate_scales_applies_ratios_and_lower_bound(self):
         self.assertEqual(candidate_scales(0.5, (0.5, 1.0, 2.0)), [0.25, 0.5, 1.0])
         self.assertEqual(candidate_scales(0.1), [0.2])
@@ -40,6 +53,71 @@ class ImageRecognitionUtilsTest(unittest.TestCase):
         mask = np.array([[0, 255]], dtype=np.uint8)
         self.assertEqual(pixel_similarity(region, template, mask), 1.0)
         self.assertEqual(pixel_similarity(region[:, :1], template), -1.0)
+
+    def test_pixel_valid_match_skips_higher_template_score_with_bad_pixels(self):
+        template = np.zeros((2, 2), dtype=np.uint8)
+        search = np.array(
+            [[255, 255, 127, 0, 0], [255, 255, 127, 0, 0]],
+            dtype=np.uint8,
+        )
+        response = np.array([[0.99, np.inf, 1.2, 0.90]], dtype=np.float32)
+
+        candidate = best_pixel_valid_match(
+            response,
+            search,
+            template,
+            None,
+            template_threshold=0.78,
+            pixel_threshold=0.80,
+        )
+
+        self.assertIsNotNone(candidate)
+        self.assertEqual((3, 0), candidate.location)
+        self.assertAlmostEqual(0.90, candidate.score)
+        self.assertEqual(1.0, candidate.pixel_score)
+        self.assertTrue(np.isfinite(response).all())
+        self.assertEqual(-1.0, float(response[0, 1]))
+        self.assertEqual(-1.0, float(response[0, 2]))
+
+    def test_pixel_valid_match_honors_candidate_center_bounds(self):
+        template = np.zeros((2, 2), dtype=np.uint8)
+        search = np.zeros((2, 5), dtype=np.uint8)
+        response = np.array([[0.99, 0.80, 0.80, 0.90]], dtype=np.float32)
+
+        candidate = best_pixel_valid_match(
+            response,
+            search,
+            template,
+            None,
+            template_threshold=0.78,
+            pixel_threshold=0.80,
+            center_bounds=(3, 0, 5, 2),
+        )
+
+        self.assertIsNotNone(candidate)
+        self.assertEqual((3, 0), candidate.location)
+
+    def test_independent_matches_filter_pixels_before_final_score_order(self):
+        template = np.zeros((2, 2), dtype=np.uint8)
+        search = np.array(
+            [[255, 255, 127, 0, 0, 127, 0, 0], [255, 255, 127, 0, 0, 127, 0, 0]],
+            dtype=np.uint8,
+        )
+        response = np.array([[0.99, 0.80, 0.79, 0.95, 0.81, 0.80, 0.90]], dtype=np.float32)
+
+        matches = independent_pixel_valid_matches(
+            response,
+            search,
+            template,
+            None,
+            template_threshold=0.78,
+            pixel_threshold=0.80,
+            suppression_radius=1,
+            max_matches=2,
+        )
+
+        self.assertEqual([(3, 0), (6, 0)], [match.location for match in matches])
+        self.assertEqual([0.95, 0.90], [round(match.score, 2) for match in matches])
 
     def test_relative_and_reference_crops_scale_position_and_size(self):
         image = np.arange(100 * 200, dtype=np.int32).reshape(100, 200)

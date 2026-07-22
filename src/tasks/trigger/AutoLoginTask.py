@@ -8,11 +8,13 @@ from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task
 from src.utils.image_utils import (
+    best_pixel_valid_match,
     candidate_scales,
     crop_relative,
     pixel_similarity,
     resize_mask,
     resize_template,
+    template_match_response,
     to_gray,
 )
 from src.utils.ocr_utils import normalize_ocr_text
@@ -494,6 +496,9 @@ class AutoLoginTask(BaseBD2Task):
             base_scale = offline_template_scale(spec.file_name, full_width, full_height)
             scales = self._candidate_scales(base_scale)
             best = empty
+            template_threshold = float(
+                getattr(self, "config", {}).get(spec.threshold_key, spec.default_threshold)
+            )
 
             for scale in scales:
                 scaled_template = self._resize_template(template, scale)
@@ -502,27 +507,24 @@ class AutoLoginTask(BaseBD2Task):
                 if height < 8 or width < 8 or height > frame_height or width > frame_width:
                     continue
 
-                if scaled_mask is None:
-                    result = cv2.matchTemplate(search, scaled_template, cv2.TM_CCOEFF_NORMED)
-                else:
-                    result = cv2.matchTemplate(
-                        search,
-                        scaled_template,
-                        cv2.TM_CCORR_NORMED,
-                        mask=scaled_mask,
-                    )
-                _, max_value, _, max_location = cv2.minMaxLoc(result)
-                if not np.isfinite(max_value):
+                result = template_match_response(search, scaled_template, scaled_mask)
+                candidate = best_pixel_valid_match(
+                    result,
+                    search,
+                    scaled_template,
+                    scaled_mask,
+                    template_threshold=template_threshold,
+                    pixel_threshold=0.0,
+                )
+                if candidate is None or candidate.score <= best.score:
                     continue
-                if max_value > best.score:
-                    x, y = int(max_location[0]), int(max_location[1])
-                    region = search[y : y + height, x : x + width]
-                    best = MatchResult(
-                        score=float(max_value),
-                        pixel_score=self._pixel_similarity(region, scaled_template, scaled_mask),
-                        position=(roi_left + x, roi_top + y),
-                        size=(int(width), int(height)),
-                    )
+                x, y = candidate.location
+                best = MatchResult(
+                    score=candidate.score,
+                    pixel_score=candidate.pixel_score,
+                    position=(roi_left + x, roi_top + y),
+                    size=(int(width), int(height)),
+                )
         except (cv2.error, MemoryError) as exc:
             self._match_pause_until = monotonic() + 2.0
             message = f"图像匹配内存不足，暂停识别2秒：{spec.name}"

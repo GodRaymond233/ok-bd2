@@ -1599,8 +1599,10 @@ class CatalogAndSafetyTest(unittest.TestCase):
         self.assertEqual((1047 / 1920, 652 / 1080), BARGAIN_CONFIRM_POINT)
         self.assertEqual("image/green/BusinQuickIcoGE.png", QUICK_SWITCH_TEMPLATE.file_name)
         self.assertEqual((0.25, 0.85, 0.65, 1.0), QUICK_SWITCH_TEMPLATE.relative_roi)
-        self.assertGreater(len(QUICK_SWITCH_TEMPLATE.scale_ratios), 1)
-        self.assertIsNotNone(QUICK_SWITCH_TEMPLATE.min_pixel_score)
+        self.assertEqual((0.95, 0.975, 1.0, 1.025, 1.05), QUICK_SWITCH_TEMPLATE.scale_ratios)
+        self.assertEqual(0.80, QUICK_SWITCH_TEMPLATE.min_pixel_score)
+        self.assertEqual(0.84, QUICK_SWITCH_TEMPLATE.minimum_safe_threshold)
+        self.assertIsNotNone(QUICK_SWITCH_TEMPLATE.candidate_center_roi)
 
     def test_q_sp6_shop_click_offsets_150_reference_pixels_down(self):
         match_1080 = MatchResult(0.99, (1151, 239), (30, 28), pixel_score=0.98)
