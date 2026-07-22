@@ -90,6 +90,39 @@ class SquareGoddessEntryTest(unittest.TestCase):
         self.assertNotIn(0.80, QUICK_SWITCH_TEMPLATE.scale_ratios)
         self.assertIsNotNone(QUICK_SWITCH_TEMPLATE.candidate_center_roi)
 
+    def test_quick_switch_click_uses_one_second_stable_center(self):
+        task = object.__new__(SquareGoddessTask)
+        task.config = {}
+        task.info_set = lambda *_args, **_kwargs: None
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task._match = lambda _frame, _spec: SquareMatchResult(
+            score=0.95,
+            pixel_score=0.90,
+            position=(760, 960),
+            size=(64, 60),
+        )
+        task._passes = lambda *_args, **_kwargs: True
+        task._mf_offset_for_frame = lambda *_args: (0, 0)
+        sleeps = []
+        task.sleep = sleeps.append
+        clicks = []
+        task._click_client = lambda x, y, width, height, after_sleep=0.0: clicks.append(
+            (x, y, width, height, after_sleep)
+        )
+
+        self.assertTrue(
+            SquareGoddessTask._click_template_until(
+                task,
+                QUICK_SWITCH_TEMPLATE,
+                timeout=0.01,
+                name="快速切换按钮",
+                stabilize=True,
+            )
+        )
+        self.assertEqual([(792, 990, 1920, 1080, 0.0)], clicks)
+        self.assertEqual(10, len(sleeps))
+        self.assertTrue(all(seconds == 0.1 for seconds in sleeps))
+
     def test_masked_match_ignores_non_finite_scores_from_black_regions(self):
         task = object.__new__(SquareGoddessTask)
         task._match_pause_until = 0.0

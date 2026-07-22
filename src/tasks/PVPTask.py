@@ -17,6 +17,7 @@ from src.utils.image_utils import (
     relative_roi_frame,
     resize_mask,
     resize_template,
+    stabilize_template_match,
     template_match_response,
     to_gray,
 )
@@ -248,6 +249,7 @@ class PVPTask(BaseBD2Task):
                 timeout=float(self.config.get("快速卡带等待秒数", 10.0)),
                 name="快速切换按钮",
                 after_sleep=0.0,
+                stabilize=True,
             ),
             confirm_quick_switch_page=self._wait_for_quick_switch_page,
         ):
@@ -763,34 +765,75 @@ class PVPTask(BaseBD2Task):
         target_reference_offset: tuple[int, int] = (0, 0),
         after_sleep: float = 0.0,
         interval: float = 0.35,
+        stabilize: bool = False,
     ) -> bool:
         end_at = monotonic() + max(0.0, timeout)
         last_score = -1.0
         while monotonic() <= end_at:
             frame = self.capture_frame()
+            frame_height, frame_width = frame.shape[:2]
             result = self._match(frame, spec)
             last_score = result.score
-            self.info_set(name, f"{result.score:.3f}")
+            self.info_set(name, f"{result.score:.3f}/{result.pixel_score:.3f}")
             if self._passes(result, spec):
+                stable_center = None
+                if stabilize:
+
+                    def sample_match():
+                        sampled_frame = self.capture_frame()
+                        return self._match(sampled_frame, spec), sampled_frame.shape
+
+                    stabilized = stabilize_template_match(
+                        result,
+                        frame.shape,
+                        sample_match=sample_match,
+                        passes=lambda candidate: self._passes(candidate, spec),
+                        sleep=self.sleep,
+                        on_sample=lambda candidate: self.info_set(
+                            name,
+                            f"{candidate.score:.3f}/{candidate.pixel_score:.3f}",
+                        ),
+                    )
+                    if stabilized is None:
+                        self.info_set(f"{name}稳定识别", "未形成稳定位置")
+                        return False
+                    consensus, frame_shape = stabilized
+                    frame_height, frame_width = frame_shape[:2]
+                    stable_center = consensus.center
+                    self.info_set(
+                        f"{name}稳定识别",
+                        (
+                            f"center=({stable_center[0]},{stable_center[1]}), "
+                            f"hits={consensus.hit_count}/{consensus.sample_count}, "
+                            f"match={consensus.average_score:.3f}, "
+                            f"pixel={consensus.average_pixel_score:.3f}, "
+                            f"spread={consensus.center_spread:.1f}"
+                        ),
+                    )
                 if target is not None:
                     self._click_reference(target[0], target[1], after_sleep=after_sleep)
                 else:
-                    frame_height, frame_width = frame.shape[:2]
                     reference_offset_x = round(
                         target_reference_offset[0] * frame_width / REFERENCE_WIDTH
                     )
                     reference_offset_y = round(
                         target_reference_offset[1] * frame_height / REFERENCE_HEIGHT
                     )
+                    center_x, center_y = (
+                        stable_center
+                        if stable_center is not None
+                        else (
+                            result.position[0] + result.size[0] // 2,
+                            result.position[1] + result.size[1] // 2,
+                        )
+                    )
                     x = (
-                        result.position[0]
-                        + result.size[0] // 2
+                        center_x
                         + target_offset[0]
                         + reference_offset_x
                     )
                     y = (
-                        result.position[1]
-                        + result.size[1] // 2
+                        center_y
                         + target_offset[1]
                         + reference_offset_y
                     )
@@ -1559,7 +1602,7 @@ QUICK_PACK_TEMPLATE = PVPTemplateSpec(
     relative_roi=(0.25, 0.85, 0.65, 1.0),
     green_mask=True,
     scale_ratios=(0.95, 0.975, 1.0, 1.025, 1.05),
-    min_pixel_score=0.80,
+    min_pixel_score=0.72,
     candidate_center_roi=(650 / 1920, 950 / 1080, 1050 / 1920, 1045 / 1080),
     minimum_safe_threshold=0.84,
 )

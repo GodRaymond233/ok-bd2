@@ -162,9 +162,9 @@ jobs:
         shell: pwsh
         run: |
           if ([string]::IsNullOrWhiteSpace($env:REUSE_TAG)) {
-            .\scripts\prepare_pyappify_launcher.ps1 -Version v1.1.6 -NsisCompression zlib
+            .\scripts\prepare_pyappify_launcher.ps1 -Version v1.1.7 -NsisCompression zlib
           } else {
-            .\scripts\prepare_pyappify_launcher.ps1 -Version v1.1.6 -NsisCompression zlib -SkipBuild
+            .\scripts\prepare_pyappify_launcher.ps1 -Version v1.1.7 -NsisCompression zlib -SkipBuild
             .\scripts\restore_pyappify_launcher.ps1 -ReleaseTag $env:REUSE_TAG
           }
 
@@ -174,7 +174,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         with:
-          version: v1.1.6
+          version: v1.1.7
 
       - name: Validate fast release assets
         shell: pwsh
@@ -252,9 +252,9 @@ jobs:
         shell: pwsh
         run: |
           if ([string]::IsNullOrWhiteSpace($env:REUSE_TAG)) {
-            .\scripts\prepare_pyappify_launcher.ps1 -Version v1.1.6 -NsisCompression lzma
+            .\scripts\prepare_pyappify_launcher.ps1 -Version v1.1.7 -NsisCompression lzma
           } else {
-            .\scripts\prepare_pyappify_launcher.ps1 -Version v1.1.6 -NsisCompression lzma -SkipBuild
+            .\scripts\prepare_pyappify_launcher.ps1 -Version v1.1.7 -NsisCompression lzma -SkipBuild
             .\scripts\restore_pyappify_launcher.ps1 -ReleaseTag $env:REUSE_TAG
           }
 
@@ -263,7 +263,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         with:
-          version: v1.1.6
+          version: v1.1.7
 
       - name: Upload ${{ matrix.profile }} release assets
         uses: actions/upload-artifact@v7

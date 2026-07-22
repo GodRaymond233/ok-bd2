@@ -1,5 +1,6 @@
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from statistics import fmean, median
 
 import cv2
 import numpy as np
@@ -12,6 +13,187 @@ class PixelValidMatch:
     score: float
     pixel_score: float
     location: tuple[int, int]
+
+
+@dataclass(frozen=True)
+class StableMatchObservation:
+    """One valid template hit within a temporal stabilization window."""
+
+    sample_index: int
+    center: tuple[int, int]
+    score: float
+    pixel_score: float
+
+
+@dataclass(frozen=True)
+class StableMatchConsensus:
+    """A spatially stable cluster selected from multiple captured frames."""
+
+    center: tuple[int, int]
+    hit_count: int
+    sample_count: int
+    average_score: float
+    average_pixel_score: float
+    center_spread: float
+
+
+STABLE_MATCH_SAMPLE_INTERVAL = 0.1
+STABLE_MATCH_WINDOW_SAMPLES = 11
+STABLE_MATCH_MAX_SAMPLES = 21
+STABLE_MATCH_MINIMUM_HITS = 6
+STABLE_MATCH_TRAILING_HITS = 3
+STABLE_MATCH_CLUSTER_RADIUS_REFERENCE = 24.0
+STABLE_MATCH_MAXIMUM_SPREAD_REFERENCE = 12.0
+
+
+def stable_match_consensus(
+    observations: Iterable[StableMatchObservation],
+    *,
+    sample_count: int,
+    cluster_radius: float,
+    maximum_center_spread: float,
+    minimum_hits: int = 6,
+    required_trailing_hits: int = 3,
+) -> StableMatchConsensus | None:
+    """Choose a persistent, high-confidence and spatially stable match cluster."""
+
+    total_samples = max(0, int(sample_count))
+    values = tuple(observations)
+    if total_samples <= 0 or not values:
+        return None
+
+    clusters: list[list[StableMatchObservation]] = []
+    for observation in sorted(values, key=lambda value: value.sample_index):
+        nearest = None
+        nearest_distance = float("inf")
+        for cluster in clusters:
+            center_x = float(median(value.center[0] for value in cluster))
+            center_y = float(median(value.center[1] for value in cluster))
+            distance = max(
+                abs(observation.center[0] - center_x),
+                abs(observation.center[1] - center_y),
+            )
+            if distance <= cluster_radius and distance < nearest_distance:
+                nearest = cluster
+                nearest_distance = distance
+        if nearest is None:
+            clusters.append([observation])
+        else:
+            nearest.append(observation)
+
+    trailing_start = max(0, total_samples - max(0, int(required_trailing_hits)))
+    required_indexes = set(range(trailing_start, total_samples))
+    candidates: list[tuple[tuple[float, ...], StableMatchConsensus]] = []
+    for cluster in clusters:
+        if len(cluster) < max(1, int(minimum_hits)):
+            continue
+        indexes = {value.sample_index for value in cluster}
+        if not required_indexes.issubset(indexes):
+            continue
+        center_x = float(median(value.center[0] for value in cluster))
+        center_y = float(median(value.center[1] for value in cluster))
+        spread = max(
+            max(abs(value.center[0] - center_x), abs(value.center[1] - center_y))
+            for value in cluster
+        )
+        if spread > maximum_center_spread:
+            continue
+        average_score = fmean(value.score for value in cluster)
+        pixel_scores = [value.pixel_score for value in cluster if value.pixel_score >= 0]
+        average_pixel = fmean(pixel_scores) if pixel_scores else average_score
+        consensus = StableMatchConsensus(
+            center=(round(center_x), round(center_y)),
+            hit_count=len(cluster),
+            sample_count=total_samples,
+            average_score=average_score,
+            average_pixel_score=average_pixel,
+            center_spread=float(spread),
+        )
+        candidates.append(
+            (
+                (
+                    float(consensus.hit_count),
+                    (average_score + average_pixel) / 2,
+                    -consensus.center_spread,
+                ),
+                consensus,
+            )
+        )
+
+    if not candidates:
+        return None
+    return max(candidates, key=lambda value: value[0])[1]
+
+
+def stabilize_template_match(
+    initial_match,
+    initial_frame_shape: tuple[int, ...],
+    *,
+    sample_match: Callable[[], tuple[object, tuple[int, ...]]],
+    passes: Callable[[object], bool],
+    sleep: Callable[[float], None],
+    on_sample: Callable[[object], None] | None = None,
+    sample_interval: float = STABLE_MATCH_SAMPLE_INTERVAL,
+    window_samples: int = STABLE_MATCH_WINDOW_SAMPLES,
+    maximum_samples: int = STABLE_MATCH_MAX_SAMPLES,
+) -> tuple[StableMatchConsensus, tuple[int, ...]] | None:
+    """Observe a first valid match until a stable rolling one-second window exists."""
+
+    wanted_window = max(2, int(window_samples))
+    wanted_maximum = max(wanted_window, int(maximum_samples))
+    samples: list[tuple[object, tuple[int, ...]] | None] = [
+        (initial_match, initial_frame_shape)
+    ]
+    last_shape = initial_frame_shape
+    if on_sample is not None:
+        on_sample(initial_match)
+
+    for _sample_index in range(1, wanted_maximum):
+        sleep(max(0.0, float(sample_interval)))
+        result, frame_shape = sample_match()
+        last_shape = frame_shape
+        if on_sample is not None:
+            on_sample(result)
+        samples.append((result, frame_shape) if passes(result) else None)
+        if len(samples) < wanted_window:
+            continue
+
+        window = samples[-wanted_window:]
+        observations = []
+        for index, value in enumerate(window):
+            if value is None:
+                continue
+            match, _shape = value
+            center = (
+                int(match.position[0] + match.size[0] // 2),
+                int(match.position[1] + match.size[1] // 2),
+            )
+            observations.append(
+                StableMatchObservation(
+                    sample_index=index,
+                    center=center,
+                    score=float(match.score),
+                    pixel_score=float(getattr(match, "pixel_score", -1.0)),
+                )
+            )
+
+        frame_height, frame_width = last_shape[:2]
+        client_scale = min(frame_width / 1920, frame_height / 1080)
+        consensus = stable_match_consensus(
+            observations,
+            sample_count=len(window),
+            cluster_radius=max(2.0, STABLE_MATCH_CLUSTER_RADIUS_REFERENCE * client_scale),
+            maximum_center_spread=max(
+                1.0,
+                STABLE_MATCH_MAXIMUM_SPREAD_REFERENCE * client_scale,
+            ),
+            minimum_hits=STABLE_MATCH_MINIMUM_HITS,
+            required_trailing_hits=STABLE_MATCH_TRAILING_HITS,
+        )
+        if consensus is not None:
+            return consensus, last_shape
+
+    return None
 
 
 def sanitize_template_response(response: np.ndarray) -> np.ndarray:

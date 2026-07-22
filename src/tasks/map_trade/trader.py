@@ -1028,10 +1028,33 @@ class Trader:
                 continue
             sellable.append(entry)
 
-        whitelist = self._sale_whitelist()
-        entries = [entry for entry in sellable if self._entry_allowed(entry, whitelist)]
+        use_whitelist = bool(self.task.config.get("使用出售白名单", True))
+        self._status("出售白名单", "开启" if use_whitelist else "关闭")
+        if use_whitelist:
+            whitelist = self._sale_whitelist()
+            entries = [entry for entry in sellable if self._entry_allowed(entry, whitelist)]
+        else:
+            entries = sellable
+            self.task.log_info("卖：出售白名单已关闭，执行价表中全部允许出售的商品。")
+
+        use_blacklist = bool(self.task.config.get("使用出售黑名单", False))
+        self._status("出售黑名单", "开启" if use_blacklist else "关闭")
+        if use_blacklist:
+            blacklist = self._sale_blacklist()
+            allowed_entries = []
+            for entry in entries:
+                if self._entry_allowed(entry, blacklist):
+                    self.task.log_info(f"卖：{entry.item}命中出售黑名单，跳过。")
+                    continue
+                allowed_entries.append(entry)
+            entries = allowed_entries
         if not entries:
-            self.task.log_info("跑商：今天没有白名单内的最高价物品。")
+            if use_blacklist:
+                self.task.log_info("跑商：筛选后没有可出售的最高价物品。")
+            elif use_whitelist:
+                self.task.log_info("跑商：今天没有白名单内的最高价物品。")
+            else:
+                self.task.log_info("跑商：今天没有允许出售的最高价物品。")
             return True
 
         failed = []
@@ -1325,6 +1348,13 @@ class Trader:
             | set(split_items(selected_recipes))
             | set(split_items(raw))
         )
+        expanded = set(configured)
+        for item in configured:
+            expanded.update(ITEM_ALIASES.get(item, ()))
+        return {self._normal(value) for value in expanded}
+
+    def _sale_blacklist(self) -> set[str]:
+        configured = set(split_items(self.task.config.get("出售黑名单", "")))
         expanded = set(configured)
         for item in configured:
             expanded.update(ITEM_ALIASES.get(item, ()))

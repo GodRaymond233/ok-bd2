@@ -115,7 +115,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         self.assertEqual((0.25, 0.85, 0.65, 1.0), QUICK_PACK_TEMPLATE.relative_roi)
         self.assertIn(0.975, QUICK_PACK_TEMPLATE.scale_ratios)
         self.assertNotIn(0.80, QUICK_PACK_TEMPLATE.scale_ratios)
-        self.assertEqual(0.80, QUICK_PACK_TEMPLATE.min_pixel_score)
+        self.assertEqual(0.72, QUICK_PACK_TEMPLATE.min_pixel_score)
         self.assertEqual(0.84, QUICK_PACK_TEMPLATE.minimum_safe_threshold)
         self.assertIsNotNone(QUICK_PACK_TEMPLATE.candidate_center_roi)
 
@@ -141,6 +141,8 @@ class PVPTaskHelperTest(unittest.TestCase):
         task._click_client = lambda x, y, width, height, after_sleep=0.0: clicks.append(
             (x, y, width, height, after_sleep)
         )
+        sleeps = []
+        task.sleep = sleeps.append
 
         self.assertTrue(
             PVPTask._click_template_until(
@@ -148,9 +150,12 @@ class PVPTaskHelperTest(unittest.TestCase):
                 QUICK_PACK_TEMPLATE,
                 timeout=0.0,
                 name="快速切换按钮",
+                stabilize=True,
             )
         )
         self.assertEqual([(852, 991, 1920, 1080, 0.0)], clicks)
+        self.assertEqual(10, len(sleeps))
+        self.assertTrue(all(seconds == 0.1 for seconds in sleeps))
 
     def test_template_click_scales_reference_offset_with_client_resolution(self):
         task = object.__new__(PVPTask)
@@ -296,7 +301,7 @@ class PVPTaskHelperTest(unittest.TestCase):
             status,
         )
 
-    def test_common_cartridge_entry_does_not_scan_special_pages_after_quick_timeout(self):
+    def test_common_cartridge_entry_rescans_special_pages_after_quick_timeout(self):
         task = object.__new__(PVPTask)
         task.operate_click = lambda *_args, **_kwargs: None
         task._sleep_after_recognition = lambda: None
@@ -315,7 +320,31 @@ class PVPTaskHelperTest(unittest.TestCase):
                 ),
             )
         )
-        self.assertEqual(["dialog", "quick"], calls)
+        self.assertEqual(["dialog", "quick", "dialog"], calls)
+
+    def test_common_cartridge_entry_retries_quick_switch_after_late_special_page(self):
+        task = object.__new__(PVPTask)
+        task.operate_click = lambda *_args, **_kwargs: None
+        task._sleep_after_recognition = lambda: None
+        task.info_set = lambda *_args, **_kwargs: None
+        special_pages = iter((False, True))
+        clicks = iter((False, True))
+        calls = []
+        task._handle_recent_cartridge_special_pages = (
+            lambda: calls.append("dialog") or next(special_pages)
+        )
+
+        self.assertTrue(
+            task.open_cartridge_quick_switcher(
+                ensure_home=lambda: True,
+                click_quick_switch=lambda: calls.append("quick") or next(clicks),
+                confirm_quick_switch_page=lambda: calls.append("confirm") or True,
+            )
+        )
+        self.assertEqual(
+            ["dialog", "quick", "dialog", "quick", "confirm"],
+            calls,
+        )
 
     def test_recent_pvp_special_pages_click_detected_action_box_center(self):
         cases = (

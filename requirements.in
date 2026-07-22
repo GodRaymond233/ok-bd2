@@ -1,4 +1,5 @@
-ok-script>=1.0.159
+ok-script==1.0.170
+pyappify==1.0.6
 numpy>=2.4.0
 opencc>=1.2.0
 adbutils>=2.8.0

@@ -16,9 +16,21 @@ from src.tasks.map_trade.models import (
 from src.tasks.map_trade.vision import Vision, normalize_text
 
 HOME_TEMPLATES = (
-    TemplateSpec("主页", "home.png", 0.72),
-    TemplateSpec("主页冰淇淋", "image/green/MainHomeIceGE.png", 0.72, green_mask=True),
-    TemplateSpec("主页米饭", "image/green/MainHomeRIceGE.png", 0.72, green_mask=True),
+    TemplateSpec("主页", "home.png", 0.72, min_pixel_score=0.80),
+    TemplateSpec(
+        "主页冰淇淋",
+        "image/green/MainHomeIceGE.png",
+        0.72,
+        green_mask=True,
+        min_pixel_score=0.80,
+    ),
+    TemplateSpec(
+        "主页米饭",
+        "image/green/MainHomeRIceGE.png",
+        0.72,
+        green_mask=True,
+        min_pixel_score=0.80,
+    ),
 )
 QUICK_SWITCH_TEMPLATE = TemplateSpec(
     "快速切换按钮",
@@ -26,7 +38,7 @@ QUICK_SWITCH_TEMPLATE = TemplateSpec(
     0.84,
     relative_roi=(0.25, 0.85, 0.65, 1.0),
     scale_ratios=(0.95, 0.975, 1.0, 1.025, 1.05),
-    min_pixel_score=0.80,
+    min_pixel_score=0.72,
     candidate_center_roi=(650 / 1920, 950 / 1080, 1050 / 1920, 1045 / 1080),
     minimum_safe_threshold=0.84,
 )
@@ -380,7 +392,10 @@ class Navigator:
             spec, result = max(candidates, key=lambda value: value[1].score)
             last_score = result.score
             last_brightness = self.vision.template_brightness_ratio(frame, spec, result)
-            self._status("主页小屋按钮", f"{last_score:.3f}")
+            self._status(
+                "主页小屋按钮",
+                f"{last_score:.3f}/{result.pixel_score:.3f}",
+            )
             self._status("主页亮度", f"{last_brightness:.3f}")
             if self.vision.passes(result, spec) and last_brightness >= HOME_BRIGHTNESS_THRESHOLD:
                 return True
@@ -401,7 +416,7 @@ class Navigator:
     def _open_story_quick_switcher(self) -> NavigationResult:
         opened = self.task.open_cartridge_quick_switcher(
             ensure_home=self._wait_for_cartridge_home,
-            click_quick_switch=lambda: self.vision.click_template(
+            click_quick_switch=lambda: self.vision.click_stable_template(
                 QUICK_SWITCH_TEMPLATE,
                 timeout=10.0,
                 after_sleep=1.0,
@@ -777,7 +792,7 @@ class Navigator:
             return returned
         opened = self.task.open_cartridge_quick_switcher(
             ensure_home=self._wait_for_cartridge_home,
-            click_quick_switch=lambda: self.vision.click_template(
+            click_quick_switch=lambda: self.vision.click_stable_template(
                 QUICK_SWITCH_TEMPLATE,
                 timeout=10.0,
                 after_sleep=1.0,

@@ -289,7 +289,12 @@ class BaseBD2Task(BaseTask):
         self._handle_recent_cartridge_special_pages()
         self.info_set("当前阶段", "寻找快速切换按钮")
         if not click_quick_switch():
-            return False
+            handled_after_timeout = self._handle_recent_cartridge_special_pages()
+            if not handled_after_timeout:
+                return False
+            self.info_set("当前阶段", "特殊页面后重试快速切换按钮")
+            if not click_quick_switch():
+                return False
         return bool(confirm_quick_switch_page())
 
     def _handle_recent_cartridge_special_pages(

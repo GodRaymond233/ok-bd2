@@ -25,6 +25,7 @@ from src.utils.image_utils import (
     relative_roi_frame,
     resize_mask,
     resize_template,
+    stabilize_template_match,
     template_match_response,
     to_gray,
 )
@@ -481,6 +482,56 @@ class Vision:
         frame = self.capture()
         self.click_client(match.center, frame.shape, after_sleep=after_sleep)
         return True
+
+    def click_stable_template(
+        self,
+        spec: TemplateSpec,
+        timeout: float = 2.0,
+        after_sleep: float = 0.8,
+    ) -> bool:
+        """Click a template only after its center stabilizes across about one second."""
+
+        end_at = monotonic() + max(0.0, timeout)
+        while monotonic() <= end_at:
+            frame = self.capture()
+            result = self.match(frame, spec)
+            if not self.passes(result, spec):
+                self._status(spec.name, f"{result.score:.3f}/{result.pixel_score:.3f}")
+                self.task.sleep(0.35)
+                continue
+
+            def sample_match():
+                sampled_frame = self.capture()
+                return self.match(sampled_frame, spec), sampled_frame.shape
+
+            stabilized = stabilize_template_match(
+                result,
+                frame.shape,
+                sample_match=sample_match,
+                passes=lambda candidate: self.passes(candidate, spec),
+                sleep=self.task.sleep,
+                on_sample=lambda candidate: self._status(
+                    spec.name,
+                    f"{candidate.score:.3f}/{candidate.pixel_score:.3f}",
+                ),
+            )
+            if stabilized is None:
+                self._status(f"{spec.name}稳定识别", "未形成稳定位置")
+                return False
+            consensus, frame_shape = stabilized
+            self._status(
+                f"{spec.name}稳定识别",
+                (
+                    f"center=({consensus.center[0]},{consensus.center[1]}), "
+                    f"hits={consensus.hit_count}/{consensus.sample_count}, "
+                    f"match={consensus.average_score:.3f}, "
+                    f"pixel={consensus.average_pixel_score:.3f}, "
+                    f"spread={consensus.center_spread:.1f}"
+                ),
+            )
+            self.click_client(consensus.center, frame_shape, after_sleep=after_sleep)
+            return True
+        return False
 
     def ocr_boxes(
         self,

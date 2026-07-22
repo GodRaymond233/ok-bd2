@@ -56,6 +56,7 @@ from src.tasks.map_trade.navigator import (
     FIRST_CARD_CONFIRM_REGION,
     FIRST_CARD_INSERT_REGION,
     FIRST_CARD_SKIP_TEMPLATE,
+    HOME_TEMPLATES,
     Q_SP6_BARGAIN_CONFIRM_DELAY,
     Q_SP6_BARGAIN_OCR_TIMEOUT,
     Q_SP6_BARGAIN_RECHECK_DELAY,
@@ -190,6 +191,26 @@ class VisionTest(unittest.TestCase):
             ),
             task.infos,
         )
+
+    def test_stable_template_click_waits_for_temporal_consensus(self):
+        task = FakeTask()
+        sleeps = []
+        task.sleep = sleeps.append
+        vision = Vision(task)
+        result = MatchResult(0.91, (100, 200), (40, 20), pixel_score=0.92)
+        vision.match = lambda *_args, **_kwargs: result
+        vision.passes = lambda *_args, **_kwargs: True
+
+        self.assertTrue(
+            vision.click_stable_template(
+                TemplateSpec("stable", "unused.png"),
+                timeout=0.01,
+            )
+        )
+        self.assertEqual((120 / 1280, 210 / 720, 0.8), task.clicks[-1])
+        self.assertEqual(10, len(sleeps))
+        self.assertTrue(all(seconds == 0.1 for seconds in sleeps))
+        self.assertTrue(any(key == "stable稳定识别" for key, _value in task.infos))
 
     def test_operate_click_log_converts_relative_target_to_client_pixels(self):
         self.assertEqual(
@@ -1190,6 +1211,81 @@ class CatalogAndSafetyTest(unittest.TestCase):
         self.assertEqual(["甜辣酱", "藏红花"], sold)
         self.assertIn("卖：魅惑粉末标记为不出售，跳过。", logs)
 
+    def test_disabled_sale_whitelist_sells_all_allowed_calendar_entries(self):
+        sold = []
+        logs = []
+        statuses = []
+        entries = (
+            CalendarEntry("番茄", "S1:血骑士"),
+            CalendarEntry("魅惑粉末", "S6:异教塔", sell=False),
+            CalendarEntry("大麦", "S18:救赎"),
+        )
+        trader = object.__new__(Trader)
+        trader.started_at = datetime(2026, 7, 4)
+        trader.calendar_client = SimpleNamespace(
+            load=lambda **_kwargs: SimpleNamespace(
+                source="bundled",
+                entries_for=lambda _day: entries,
+            )
+        )
+        trader.task = SimpleNamespace(
+            config={
+                "使用程序默认价表": True,
+                "使用在线价表": True,
+                "自定义最高价表": "",
+                "使用出售白名单": False,
+                "出售白名单": "番茄",
+            },
+            log_info=logs.append,
+            log_warning=lambda *_args: None,
+            info_set=lambda key, value: statuses.append((key, value)),
+        )
+        trader.select_shop_tab = lambda _shop: True
+        trader._sell_selected_entry = lambda entry: sold.append(entry.item) or True
+
+        self.assertTrue(trader.sell_max_price_items())
+        self.assertEqual(["番茄", "大麦"], sold)
+        self.assertIn(("出售白名单", "关闭"), statuses)
+        self.assertIn("卖：出售白名单已关闭，执行价表中全部允许出售的商品。", logs)
+
+    def test_enabled_sale_blacklist_excludes_matching_allowed_entry(self):
+        sold = []
+        logs = []
+        statuses = []
+        entries = (
+            CalendarEntry("番茄", "S1:血骑士"),
+            CalendarEntry("大麦", "S18:救赎"),
+        )
+        trader = object.__new__(Trader)
+        trader.started_at = datetime(2026, 7, 4)
+        trader.calendar_client = SimpleNamespace(
+            load=lambda **_kwargs: SimpleNamespace(
+                source="bundled",
+                entries_for=lambda _day: entries,
+            )
+        )
+        trader.task = SimpleNamespace(
+            config={
+                "使用程序默认价表": True,
+                "使用在线价表": True,
+                "自定义最高价表": "",
+                "使用出售白名单": False,
+                "使用出售黑名单": True,
+                "出售黑名单": "大麦",
+            },
+            log_info=logs.append,
+            log_warning=lambda *_args: None,
+            info_set=lambda key, value: statuses.append((key, value)),
+        )
+        trader.vision = SimpleNamespace(simplify=lambda value: value)
+        trader.select_shop_tab = lambda _shop: True
+        trader._sell_selected_entry = lambda entry: sold.append(entry.item) or True
+
+        self.assertTrue(trader.sell_max_price_items())
+        self.assertEqual(["番茄"], sold)
+        self.assertIn(("出售黑名单", "开启"), statuses)
+        self.assertIn("卖：大麦命中出售黑名单，跳过。", logs)
+
     def test_missing_120_percent_item_is_reported_and_does_not_stop_next_item(self):
         statuses = []
         warnings = []
@@ -1363,7 +1459,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
             template_clicks.append((spec, timeout, after_sleep))
             return True
 
-        vision.click_template = click_template
+        vision.click_stable_template = click_template
         vision.click_client = (
             lambda point, frame_shape, after_sleep=0: client_clicks.append(
                 (point, frame_shape, after_sleep)
@@ -1600,9 +1696,10 @@ class CatalogAndSafetyTest(unittest.TestCase):
         self.assertEqual("image/green/BusinQuickIcoGE.png", QUICK_SWITCH_TEMPLATE.file_name)
         self.assertEqual((0.25, 0.85, 0.65, 1.0), QUICK_SWITCH_TEMPLATE.relative_roi)
         self.assertEqual((0.95, 0.975, 1.0, 1.025, 1.05), QUICK_SWITCH_TEMPLATE.scale_ratios)
-        self.assertEqual(0.80, QUICK_SWITCH_TEMPLATE.min_pixel_score)
+        self.assertEqual(0.72, QUICK_SWITCH_TEMPLATE.min_pixel_score)
         self.assertEqual(0.84, QUICK_SWITCH_TEMPLATE.minimum_safe_threshold)
         self.assertIsNotNone(QUICK_SWITCH_TEMPLATE.candidate_center_roi)
+        self.assertTrue(all(spec.min_pixel_score == 0.80 for spec in HOME_TEMPLATES))
 
     def test_q_sp6_shop_click_offsets_150_reference_pixels_down(self):
         match_1080 = MatchResult(0.99, (1151, 239), (30, 28), pixel_score=0.98)
@@ -1714,7 +1811,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
             log_warning=lambda *_args, **_kwargs: None,
         )
         vision = SimpleNamespace(
-            click_template=lambda spec, timeout, after_sleep: template_clicks.append(
+            click_stable_template=lambda spec, timeout, after_sleep: template_clicks.append(
                 (spec, timeout, after_sleep)
             )
             or True,
@@ -2417,11 +2514,28 @@ class CatalogAndSafetyTest(unittest.TestCase):
             trade.config_type["收藏重建周期"]["options"],
         )
         self.assertEqual(
-            ["使用程序默认价表", "出售保险", "出售白名单"],
+            [
+                "使用程序默认价表",
+                "出售保险",
+                "使用出售白名单",
+                "使用出售黑名单",
+            ],
             trade.config_type["卖"]["sub_configs"][True],
         )
         self.assertTrue(trade.default_config["使用程序默认价表"])
         self.assertFalse(trade.default_config["出售保险"])
+        self.assertTrue(trade.default_config["使用出售白名单"])
+        self.assertEqual(
+            ["出售白名单"],
+            trade.config_type["使用出售白名单"]["sub_configs"][True],
+        )
+        self.assertFalse(trade.default_config["使用出售黑名单"])
+        self.assertEqual("", trade.default_config["出售黑名单"])
+        self.assertEqual(
+            ["出售黑名单"],
+            trade.config_type["使用出售黑名单"]["sub_configs"][True],
+        )
+        self.assertEqual("text_edit", trade.config_type["出售黑名单"]["type"])
         self.assertEqual(
             ["使用在线价表"],
             trade.config_type["使用程序默认价表"]["sub_configs"][False],
