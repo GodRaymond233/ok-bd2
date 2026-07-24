@@ -84,7 +84,7 @@ class BuildWorkflowTest(unittest.TestCase):
 
     def test_build_tests_do_not_receive_release_credentials(self):
         run_tests = self.workflow.split("      - name: Run tests", 1)[1].split(
-            "      - name: Validate release secrets", 1
+            "      - name: Inline ok-script for update repository", 1
         )[0]
         for variable in (
             "GITHUB_TOKEN",
@@ -99,6 +99,26 @@ class BuildWorkflowTest(unittest.TestCase):
             with self.subTest(variable=variable):
                 self.assertIn(f'{variable}: ""', run_tests)
                 self.assertIn(f'"{variable}"', run_tests)
+
+    def test_build_tests_run_before_inlining_dependencies(self):
+        run_tests = self.workflow.index("      - name: Run tests")
+        inline_dependencies = self.workflow.index(
+            "      - name: Inline ok-script for update repository"
+        )
+        validate_inline = self.workflow.index(
+            "      - name: Validate inlined update repository"
+        )
+
+        self.assertLess(run_tests, inline_dependencies)
+        self.assertLess(inline_dependencies, validate_inline)
+        self.assertIn(
+            'Test-Path -LiteralPath "ok" -PathType Container',
+            self.workflow,
+        )
+        self.assertIn(
+            "requirements.txt still contains ok-script after inlining.",
+            self.workflow,
+        )
 
 
 if __name__ == "__main__":

@@ -79,10 +79,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Inline ok-script for update repository
-        run: |
-          python -m ok.update.inline_ok_requirements --tag ${{ github.ref_name }}
-
       - name: Run tests
         shell: pwsh
         env:
@@ -109,6 +105,22 @@ jobs:
           }
 
           python -m unittest discover -s tests -v
+
+      - name: Inline ok-script for update repository
+        run: |
+          python -m ok.update.inline_ok_requirements --tag ${{ github.ref_name }}
+
+      - name: Validate inlined update repository
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath "ok" -PathType Container)) {
+            throw "Inlined ok-script package folder is missing."
+          }
+
+          $runtimeRequirements = Get-Content -LiteralPath "requirements.txt" -Raw
+          if ($runtimeRequirements -match '(?im)^\s*ok-script\b') {
+            throw "requirements.txt still contains ok-script after inlining."
+          }
 
       - name: Validate release secrets
         shell: pwsh
