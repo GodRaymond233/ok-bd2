@@ -3,12 +3,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILD_WORKFLOW = ROOT / ".github" / "workflows" / "build.yml"
+TEST_WORKFLOW = ROOT / ".github" / "workflows" / "test.yml"
+PYAPPIFY_CONFIG = ROOT / "pyappify.yml"
 
 
 class BuildWorkflowTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.workflow = BUILD_WORKFLOW.read_text(encoding="utf-8")
+        cls.test_workflow = TEST_WORKFLOW.read_text(encoding="utf-8")
+        cls.pyappify_config = PYAPPIFY_CONFIG.read_text(encoding="utf-8")
 
     def test_hot_switch_defaults_to_fast_and_accepts_compact(self):
         self.assertIn("REQUESTED_MODE: ${{ vars.PACKAGE_BUILD_MODE }}", self.workflow)
@@ -37,8 +41,10 @@ class BuildWorkflowTest(unittest.TestCase):
 
     def test_required_workflow_scripts_are_packaged(self):
         scripts = (
+            "check_dependency_exports.ps1",
             "prepare_pyappify_launcher.ps1",
             "prepare_release_notes.ps1",
+            "refresh_dependencies.ps1",
             "restore_pyappify_launcher.ps1",
             "select_pyappify_profile.ps1",
         )
@@ -63,6 +69,36 @@ class BuildWorkflowTest(unittest.TestCase):
         self.assertNotIn("v1.1.6", script)
         self.assertEqual(6, self.workflow.count("v1.1.7"))
         self.assertIn('[string]$Version = "v1.1.7"', script)
+
+    def test_launcher_uses_project_icon(self):
+        self.assertIn('icon: "icons/icon.png"', self.pyappify_config)
+        self.assertTrue((ROOT / "icons" / "icon.png").is_file())
+
+    def test_workflows_validate_uv_lock_and_exports(self):
+        action = "astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b"
+        for workflow in (self.workflow, self.test_workflow):
+            with self.subTest(workflow=workflow[:20]):
+                self.assertIn(action, workflow)
+                self.assertIn('version: "0.11.21"', workflow)
+                self.assertIn(r".\scripts\check_dependency_exports.ps1", workflow)
+
+    def test_build_tests_do_not_receive_release_credentials(self):
+        run_tests = self.workflow.split("      - name: Run tests", 1)[1].split(
+            "      - name: Validate release secrets", 1
+        )[0]
+        for variable in (
+            "GITHUB_TOKEN",
+            "GH_TOKEN",
+            "CNB_GH",
+            "OK_GH",
+            "SIGNPATH_API_TOKEN",
+            "MirrorChyanUploadToken",
+            "ACTIONS_RUNTIME_TOKEN",
+            "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+        ):
+            with self.subTest(variable=variable):
+                self.assertIn(f'{variable}: ""', run_tests)
+                self.assertIn(f'"{variable}"', run_tests)
 
 
 if __name__ == "__main__":

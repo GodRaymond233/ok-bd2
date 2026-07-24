@@ -12,6 +12,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.21"
+      - name: Validate dependency lock and exports
+        shell: pwsh
+        run: .\scripts\check_dependency_exports.ps1
       - run: python -m pip install -r requirements-dev.txt
       - run: ruff check .
-      - run: python -m unittest discover tests
+      - run: python -m unittest discover -s tests -v

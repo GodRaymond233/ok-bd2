@@ -1,16 +1,110 @@
-adbutils>=2.8.0
-comtypes>=1.4.16
-ok-script==1.0.170
-numpy>=2.4.0
-onnxocr-ppocrv5>=0.0.18
-opencc>=1.2.0
-opencv-python>=4.13.0.92
-openvino>=2026.1.0
-pillow>=12.0.0
-psutil>=7.2.2
-pydirectinput>=1.0.4
-pynput>=1.8.1
-pyappify==1.0.6
-pyside6==6.9.1
-pyside6-fluent-widgets
-pywin32>=306; platform_system == "Windows"
+adbutils==2.12.0 ; sys_platform == 'win32'
+    # via ok-bd2
+certifi==2026.7.22 ; sys_platform == 'win32'
+    # via requests
+charset-normalizer==3.4.9 ; sys_platform == 'win32'
+    # via requests
+comtypes==1.4.16 ; sys_platform == 'win32'
+    # via
+    #   ok-bd2
+    #   pycaw
+darkdetect==0.8.0 ; sys_platform == 'win32'
+    # via pyside6-fluent-widgets
+decorator==5.3.1 ; sys_platform == 'win32'
+    # via retry2
+deprecation==2.1.0 ; sys_platform == 'win32'
+    # via adbutils
+evdev==1.9.3 ; sys_platform == 'win32' and 'linux' in sys_platform
+    # via pynput
+idna==3.18 ; sys_platform == 'win32'
+    # via requests
+mouse==0.7.1 ; sys_platform == 'win32'
+    # via ok-script
+numpy==2.4.6 ; sys_platform == 'win32'
+    # via
+    #   ok-bd2
+    #   opencv-python
+    #   openvino
+    #   shapely
+ok-script==1.0.174 ; sys_platform == 'win32'
+    # via ok-bd2
+onnxocr-ppocrv5==0.0.18 ; sys_platform == 'win32'
+    # via ok-bd2
+opencc==1.4.1 ; sys_platform == 'win32'
+    # via ok-bd2
+opencv-python==5.0.0.93 ; sys_platform == 'win32'
+    # via ok-bd2
+openvino==2026.2.1 ; sys_platform == 'win32'
+    # via ok-bd2
+openvino-telemetry==2025.2.0 ; sys_platform == 'win32'
+    # via openvino
+packaging==26.2 ; sys_platform == 'win32'
+    # via deprecation
+pillow==12.3.0 ; sys_platform == 'win32'
+    # via
+    #   adbutils
+    #   ok-bd2
+    #   onnxocr-ppocrv5
+psutil==7.2.2 ; sys_platform == 'win32'
+    # via
+    #   ok-bd2
+    #   ok-script
+    #   pycaw
+pyappify==1.0.6 ; sys_platform == 'win32'
+    # via
+    #   ok-bd2
+    #   ok-script
+pycaw==20240210 ; sys_platform == 'win32'
+    # via ok-script
+pyclipper==1.4.0 ; sys_platform == 'win32'
+    # via onnxocr-ppocrv5
+pydirectinput==1.0.4 ; sys_platform == 'win32'
+    # via
+    #   ok-bd2
+    #   ok-script
+pynput==1.8.2 ; sys_platform == 'win32'
+    # via ok-bd2
+pyside6==6.9.1 ; sys_platform == 'win32'
+    # via
+    #   ok-bd2
+    #   pyside6-fluent-widgets
+pyside6-addons==6.9.1 ; sys_platform == 'win32'
+    # via pyside6
+pyside6-essentials==6.9.1 ; sys_platform == 'win32'
+    # via
+    #   pyside6
+    #   pyside6-addons
+pyside6-fluent-widgets==1.11.2 ; sys_platform == 'win32'
+    # via
+    #   ok-bd2
+    #   ok-script
+pysidesix-frameless-window==0.8.1 ; sys_platform == 'win32'
+    # via pyside6-fluent-widgets
+python-xlib==0.33 ; sys_platform == 'win32' and 'linux' in sys_platform
+    # via pynput
+pywin32==312 ; sys_platform == 'win32'
+    # via
+    #   ok-bd2
+    #   ok-script
+    #   pysidesix-frameless-window
+requests==2.34.2 ; sys_platform == 'win32'
+    # via
+    #   adbutils
+    #   ok-script
+retry2==0.9.5 ; sys_platform == 'win32'
+    # via adbutils
+shapely==2.1.2 ; sys_platform == 'win32'
+    # via onnxocr-ppocrv5
+shiboken6==6.9.1 ; sys_platform == 'win32'
+    # via
+    #   pyside6
+    #   pyside6-addons
+    #   pyside6-essentials
+six==1.17.0 ; sys_platform == 'win32'
+    # via
+    #   pynput
+    #   python-xlib
+typing-extensions==4.16.0 ; sys_platform == 'win32'
+    # via ok-script
+urllib3==2.7.0 ; sys_platform == 'win32'
+    # via requests

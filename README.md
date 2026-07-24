@@ -97,6 +97,15 @@ pip install -r requirements.txt
 python main_debug.py
 ```
 
+项目依赖以 `pyproject.toml` 和 `uv.lock` 为唯一锁定来源，
+`requirements.txt` 与 `requirements-dev.txt` 均由 uv 导出，不应手工编辑。
+维护依赖时运行：
+
+```powershell
+.\scripts\refresh_dependencies.ps1
+.\scripts\check_dependency_exports.ps1
+```
+
 如果游戏安装路径或窗口信息与默认配置不同，可以在启动前设置环境变量：
 
 ```powershell
