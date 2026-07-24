@@ -167,6 +167,8 @@ def install_responsive_task_config_ui():
         )
 
     def responsive_set_expand(self, is_expand):
+        if is_expand and not getattr(self, "_expand_enabled", True):
+            return
         if self.isExpand == is_expand:
             return
 

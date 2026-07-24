@@ -38,6 +38,7 @@ class QuickHuntTask(DailyTask):
         "快速狩猎红点识别",
         "快速狩猎主页亮度",
         "快速狩猎主页抽抽乐 OCR",
+        "快速狩猎返回位置 OCR",
         "快速狩猎菜单 OCR",
         "快速狩猎资源 OCR",
         "快速狩猎按钮 OCR",

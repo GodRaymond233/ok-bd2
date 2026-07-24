@@ -143,6 +143,27 @@ class ResponsiveTaskConfigUiTest(unittest.TestCase):
         self.assertEqual(card.height(), wide_height)
         card.close()
 
+    def test_empty_config_card_keeps_upstream_expansion_guard(self):
+        card = ConfigCard(
+            _TaskStub(),
+            "无配置任务",
+            _ConfigStub({}),
+            "空配置卡不应响应展开操作。",
+            {},
+            {},
+            {},
+            FluentIcon.INFO,
+        )
+        card.show()
+        self.app.processEvents()
+
+        self.assertFalse(card.isExpand)
+        self.assertFalse(card._expand_enabled)
+        card.setExpand(True)
+        self.app.processEvents()
+        self.assertFalse(card.isExpand)
+        card.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7,7 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "adbutils>=2.8.0",
     "comtypes>=1.4.16",
-    "ok-script==1.0.170",
+    "ok-script==1.0.174",
     "numpy>=2.4.0",
     "onnxocr-ppocrv5>=0.0.18",
     "opencc>=1.2.0",
@@ -36,3 +36,8 @@ select = ["E", "F", "I"]
 
 [tool.ruff.format]
 quote-style = "double"
+
+[tool.uv]
+environments = [
+    "sys_platform == 'win32'",
+]
