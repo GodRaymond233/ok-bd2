@@ -109,14 +109,14 @@ class PVPTaskHelperTest(unittest.TestCase):
         self.assertEqual(1.0, calls["after_sleep"])
 
     def test_quick_pack_uses_requested_template(self):
-        self.assertEqual("image/green/BusinQuickIcoGE.png", QUICK_PACK_TEMPLATE.file_name)
+        self.assertEqual("image/green/QuickSwitchPlayIco.png", QUICK_PACK_TEMPLATE.file_name)
         self.assertEqual("快速切换按钮阈值", QUICK_PACK_TEMPLATE.threshold_key)
         self.assertTrue(QUICK_PACK_TEMPLATE.green_mask)
         self.assertEqual((0.25, 0.85, 0.65, 1.0), QUICK_PACK_TEMPLATE.relative_roi)
         self.assertIn(0.975, QUICK_PACK_TEMPLATE.scale_ratios)
         self.assertNotIn(0.80, QUICK_PACK_TEMPLATE.scale_ratios)
-        self.assertEqual(0.72, QUICK_PACK_TEMPLATE.min_pixel_score)
-        self.assertEqual(0.84, QUICK_PACK_TEMPLATE.minimum_safe_threshold)
+        self.assertEqual(0.85, QUICK_PACK_TEMPLATE.min_pixel_score)
+        self.assertEqual(0.88, QUICK_PACK_TEMPLATE.minimum_safe_threshold)
         self.assertIsNotNone(QUICK_PACK_TEMPLATE.candidate_center_roi)
 
         task = object.__new__(PVPTask)
@@ -133,7 +133,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
         task._match = lambda _frame, _spec: SimpleNamespace(
             score=0.90,
-            pixel_score=0.80,
+            pixel_score=0.90,
             position=(815, 962),
             size=(74, 59),
         )
@@ -189,7 +189,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         task.config = {"快速切换按钮阈值": 0.78}
 
         low_pixel = SimpleNamespace(score=0.95, pixel_score=0.60)
-        valid = SimpleNamespace(score=0.90, pixel_score=0.80)
+        valid = SimpleNamespace(score=0.90, pixel_score=0.90)
         unsafe_template_score = SimpleNamespace(score=0.83, pixel_score=0.95)
 
         self.assertFalse(PVPTask._passes(task, low_pixel, QUICK_PACK_TEMPLATE))
