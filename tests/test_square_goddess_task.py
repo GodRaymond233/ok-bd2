@@ -80,12 +80,12 @@ class SquareGoddessEntryTest(unittest.TestCase):
 
     def test_quick_switch_uses_green_template_and_pixel_threshold(self):
         self.assertEqual(
-            "image/green/QuickCartGeadai.png",
+            "image/green/QuickSwitchPlayIco.png",
             QUICK_SWITCH_TEMPLATE.file_name,
         )
         self.assertTrue(QUICK_SWITCH_TEMPLATE.green_mask)
-        self.assertEqual(0.82, QUICK_SWITCH_TEMPLATE.min_pixel_score)
-        self.assertEqual(0.90, QUICK_SWITCH_TEMPLATE.minimum_safe_threshold)
+        self.assertEqual(0.85, QUICK_SWITCH_TEMPLATE.min_pixel_score)
+        self.assertEqual(0.88, QUICK_SWITCH_TEMPLATE.minimum_safe_threshold)
         self.assertIn(0.975, QUICK_SWITCH_TEMPLATE.scale_ratios)
         self.assertNotIn(0.80, QUICK_SWITCH_TEMPLATE.scale_ratios)
         self.assertIsNotNone(QUICK_SWITCH_TEMPLATE.candidate_center_roi)

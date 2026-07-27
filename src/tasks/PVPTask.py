@@ -151,7 +151,7 @@ class PVPTask(BaseBD2Task):
                 "PVP 返回箱庭等待秒数": 10.0,
                 "PVP 返回主页等待秒数": 20.0,
                 "主页小屋按钮阈值": 0.70,
-                "快速切换按钮阈值": 0.84,
+                "快速切换按钮阈值": 0.88,
                 "PVP 箱庭阈值": 0.78,
                 "PVP 箱庭感叹号阈值": 0.72,
                 "PVP 舞台阈值": 0.72,
@@ -172,7 +172,7 @@ class PVPTask(BaseBD2Task):
                 "PVP 返回箱庭等待秒数": "离开结算后等待回到 PVP 箱庭的最长时间。",
                 "PVP 返回主页等待秒数": "从 PVP 箱庭返回主页后的主页确认最长时间。",
                 "主页小屋按钮阈值": "进入卡带前确认主页小屋按钮存在的模板匹配阈值。",
-                "快速切换按钮阈值": "识别 BusinQuickIcoGE.png 快速切换按钮的模板匹配阈值。",
+                "快速切换按钮阈值": "识别 QuickSwitchPlayIco.png 快速切换按钮的模板匹配阈值。",
                 "卡带选择页确认等待秒数": (
                     "点击快速切换按钮后，等待 OCR 同时识别最近、剧情游戏卡和玩法游戏卡的时限。"
                 ),
@@ -1596,15 +1596,15 @@ HOME_TEMPLATES = (HOME_TEMPLATE, HOME_ICE_TEMPLATE, HOME_RICE_TEMPLATE)
 
 QUICK_PACK_TEMPLATE = PVPTemplateSpec(
     name="quick_pack",
-    file_name="image/green/BusinQuickIcoGE.png",
+    file_name="image/green/QuickSwitchPlayIco.png",
     threshold_key="快速切换按钮阈值",
-    default_threshold=0.84,
+    default_threshold=0.88,
     relative_roi=(0.25, 0.85, 0.65, 1.0),
     green_mask=True,
     scale_ratios=(0.95, 0.975, 1.0, 1.025, 1.05),
-    min_pixel_score=0.72,
+    min_pixel_score=0.85,
     candidate_center_roi=(650 / 1920, 950 / 1080, 1050 / 1920, 1045 / 1080),
-    minimum_safe_threshold=0.84,
+    minimum_safe_threshold=0.88,
 )
 
 PVP_MEDALS_TEMPLATE = PVPTemplateSpec(

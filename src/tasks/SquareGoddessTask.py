@@ -128,7 +128,7 @@ class SquareGoddessTask(BaseBD2Task):
                 "主页确认等待秒数": 10.0,
                 "主页小屋按钮阈值": 0.70,
                 "快速卡带等待秒数": 10.0,
-                "快速切换按钮阈值": 0.90,
+                "快速切换按钮阈值": 0.88,
                 "卡带选择页确认等待秒数": 10.0,
                 "玩法类别高亮确认秒数": 3.0,
                 "玩法类别高亮像素比例": GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO,
@@ -149,7 +149,7 @@ class SquareGoddessTask(BaseBD2Task):
             {
                 "广场 OCR 阈值": "广场入场流程 OCR 使用的最低可信度。",
                 "主页小屋按钮阈值": "从主页进入卡带前确认小屋按钮存在的阈值。",
-                "快速切换按钮阈值": "识别 QuickCartGeadai.png 快速切换按钮的模板匹配阈值。",
+                "快速切换按钮阈值": "识别 QuickSwitchPlayIco.png 快速切换按钮的模板匹配阈值。",
                 "玩法类别高亮像素比例": "玩法游戏卡标签确认为高亮状态所需的最低亮色像素占比。",
                 "广场入场等待秒数": "点击广场卡带后等待梦幻广场场景出现的最长时间。",
                 "女神像导航最长等待秒数": "点击每日导航后，等待角色靠近女神像的最长时间。",
@@ -1162,15 +1162,15 @@ HOME_TEMPLATES = (HOME_TEMPLATE, HOME_ICE_TEMPLATE, HOME_RICE_TEMPLATE)
 
 QUICK_SWITCH_TEMPLATE = SquareTemplateSpec(
     name="quick_switch",
-    file_name="image/green/QuickCartGeadai.png",
+    file_name="image/green/QuickSwitchPlayIco.png",
     threshold_key="快速切换按钮阈值",
-    default_threshold=0.90,
+    default_threshold=0.88,
     roi=(480, 918, 768, 162),
     green_mask=True,
     scale_ratios=(0.95, 0.975, 1.0, 1.025, 1.05),
-    min_pixel_score=0.82,
+    min_pixel_score=0.85,
     candidate_center_roi=(650 / 1920, 950 / 1080, 1050 / 1920, 1045 / 1080),
-    minimum_safe_threshold=0.90,
+    minimum_safe_threshold=0.88,
 )
 
 REFERENCE_CARD_TEMPLATE = SquareTemplateSpec(
