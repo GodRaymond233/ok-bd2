@@ -7,6 +7,10 @@ import numpy as np
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task
+from src.utils.home_confirmation import (
+    HOME_GACHA_OCR_RELATIVE_ROI,
+    home_confirmation_passes,
+)
 from src.utils.image_utils import (
     best_pixel_valid_match,
     candidate_scales,
@@ -73,6 +77,8 @@ class AutoLoginTask(BaseBD2Task):
         "小屋按钮遮挡阈值",
         "小屋亮度比例",
         "小屋亮度比例阈值",
+        "主页抽抽乐 OCR",
+        "主页 OCR 阈值",
         "主页 UI 等待宽限秒数",
         "主页连续确认秒数",
         "BDXConfirm 点击 X 百分比",
@@ -109,6 +115,7 @@ class AutoLoginTask(BaseBD2Task):
                 "小屋按钮阈值": 0.78,
                 "小屋按钮遮挡阈值": 0.62,
                 "小屋亮度比例阈值": 0.75,
+                "主页 OCR 阈值": 0.2,
                 "主页 UI 等待宽限秒数": 15.0,
                 "主页连续确认秒数": 3.0,
                 "BDXConfirm 点击 X 百分比": 50.0,
@@ -167,19 +174,20 @@ class AutoLoginTask(BaseBD2Task):
             return False
 
         if self._state == "waiting":
-            home_button, home_spec = self._match_home_button(frame)
-            self.info_set("小屋按钮", f"{home_button.score:.3f}")
-            if self._passes(home_button, home_spec):
-                ratio = self._home_brightness_ratio(frame)
-                self.info_set("小屋亮度比例", f"{ratio:.3f}")
-                if ratio >= self._home_ratio_threshold():
-                    self.mark_logged_in()
-                    self._finished = True
-                    self._state = "done"
-                    self._set_stage("已完成")
-                    self._set_action("游戏已在主页且亮度正常，跳过自动登录。")
-                    self.log_info("自动登录：游戏已在主页，跳过登录流程。", notify=True)
-                    return False
+            confirmed, _button, _spec, _ratio, _gacha_text = (
+                self._home_confirmation_signals(frame)
+            )
+            if confirmed:
+                self.mark_logged_in()
+                self._finished = True
+                self._state = "done"
+                self._set_stage("已完成")
+                self._set_action("主页三项信号已确认，跳过自动登录。")
+                self.log_info(
+                    "自动登录：主页按钮、亮度和抽抽乐 OCR 已同时命中，跳过登录流程。",
+                    notify=True,
+                )
+                return False
 
         if self._state == "browndustx":
             return self._wait_browndustx_then_login(frame)
@@ -208,16 +216,6 @@ class AutoLoginTask(BaseBD2Task):
         if self._passes(touch_to_start, TOUCH_TO_START_TEMPLATE):
             self._click_login_after_touch(touch_to_start)
             return False
-
-        home_button, home_spec = self._match_home_button(frame)
-        self.info_set("小屋按钮", f"{home_button.score:.3f}")
-        if self._passes(home_button, home_spec):
-            self._state = "clearing"
-            self._waiting_home_since = None
-            self.info_set("加载页面", "-")
-            self._set_stage("检测到主页")
-            self._set_action("等待登录页期间检测到主页，开始确认登录已完成。")
-            return self._clear_popups_until_home(frame, home_button)
 
         self._set_stage("等待登录页")
         self._set_action("等待 BrownDustX 或 TOUCH TO START 画面。")
@@ -298,7 +296,7 @@ class AutoLoginTask(BaseBD2Task):
             self._login_clicked_at = None
             self._waiting_home_since = None
             self.info_set("加载页面", "-")
-            return self._clear_popups_until_home(frame, home_button)
+            return self._clear_popups_until_home(frame, home_button, home_spec)
 
         loading = self._match(frame, LOADING_TEMPLATE)
         self.info_set("加载页面", f"{loading.score:.3f}")
@@ -337,7 +335,12 @@ class AutoLoginTask(BaseBD2Task):
                 "自动登录：疑似主页被公告遮挡，"
                 f"home={home_button.score:.3f}, threshold={self._home_dimmed_threshold():.3f}"
             )
-            return self._clear_popups_until_home(frame, home_button, allow_dimmed=True)
+            return self._clear_popups_until_home(
+                frame,
+                home_button,
+                home_spec,
+                allow_dimmed=True,
+            )
 
         self._set_stage("等待主页 UI")
         self._set_action(f"登录后等待 home.png 出现 {elapsed:.1f}/{grace_seconds:.1f} 秒。")
@@ -348,12 +351,14 @@ class AutoLoginTask(BaseBD2Task):
         self,
         frame,
         home_button: MatchResult | None = None,
+        home_spec: TemplateSpec | None = None,
         allow_dimmed: bool = False,
     ) -> bool:
         if home_button is None:
             home_button, home_spec = self._match_home_button(frame)
-        else:
+        elif home_spec is None:
             home_spec = HOME_BUTTON_TEMPLATE
+        assert home_spec is not None
         self.info_set("小屋按钮", f"{home_button.score:.3f}")
         home_found = self._passes(home_button, home_spec)
         dimmed_home_found = (
@@ -376,31 +381,77 @@ class AutoLoginTask(BaseBD2Task):
 
         ratio = self._home_brightness_ratio(frame)
         self.info_set("小屋亮度比例", f"{ratio:.3f}")
+        gacha_text = self._home_gacha_ocr_text(frame)
+        self.info_set("主页抽抽乐 OCR", gacha_text or "-")
 
-        if ratio >= self._home_ratio_threshold():
+        confirmed = home_confirmation_passes(
+            button_found=home_found,
+            brightness_ratio=ratio,
+            brightness_threshold=self._home_ratio_threshold(),
+            gacha_ocr_text=gacha_text,
+        )
+        if confirmed:
             now = monotonic()
             if self._home_bright_since is None:
                 self._home_bright_since = now
                 self._set_stage("主页确认中")
-                self._set_action("home.png 亮度已恢复，开始连续确认。")
+                self._set_action("主页三项信号已命中，开始连续确认。")
                 return False
 
             stable_seconds = float(self.config.get("主页连续确认秒数", 3.0))
             elapsed = now - self._home_bright_since
             self._set_stage("主页确认中")
-            self._set_action(f"主页亮度持续正常 {elapsed:.1f}/{stable_seconds:.1f} 秒。")
+            self._set_action(f"主页三项信号持续正常 {elapsed:.1f}/{stable_seconds:.1f} 秒。")
             if now - self._home_bright_since >= stable_seconds:
                 self.mark_logged_in()
                 self._finished = True
                 self._state = "done"
                 self._set_stage("已完成")
-                self._set_action("主页亮度已连续确认，自动登录流程结束。")
-                self.log_info("自动登录：主页亮度已连续确认，流程结束。", notify=True)
+                self._set_action("主页三项信号已连续确认，自动登录流程结束。")
+                self.log_info(
+                    "自动登录：主页按钮、亮度和抽抽乐 OCR 已连续确认，流程结束。",
+                    notify=True,
+                )
             return False
 
         self._home_bright_since = None
         self._clear_home_popup(ratio)
         return False
+
+    def _home_confirmation_signals(
+        self,
+        frame,
+    ) -> tuple[bool, MatchResult, TemplateSpec, float, str]:
+        home_button, home_spec = self._match_home_button(frame)
+        ratio = self._home_brightness_ratio(frame)
+        gacha_text = self._home_gacha_ocr_text(frame)
+        self.info_set("小屋按钮", f"{home_button.score:.3f}")
+        self.info_set("小屋亮度比例", f"{ratio:.3f}")
+        self.info_set("主页抽抽乐 OCR", gacha_text or "-")
+        confirmed = home_confirmation_passes(
+            button_found=self._passes(home_button, home_spec),
+            brightness_ratio=ratio,
+            brightness_threshold=self._home_ratio_threshold(),
+            gacha_ocr_text=gacha_text,
+        )
+        return confirmed, home_button, home_spec, ratio, gacha_text
+
+    def _home_gacha_ocr_text(self, frame) -> str:
+        crop = self._crop_relative(frame, HOME_GACHA_OCR_RELATIVE_ROI)
+        if crop.size == 0:
+            return ""
+        try:
+            boxes = self.ocr(
+                frame=crop,
+                threshold=float(self.config.get("主页 OCR 阈值", 0.2)),
+                target_height=720,
+                log=False,
+                name="主页抽抽乐",
+            )
+        except Exception as exc:
+            self.info_set("主页抽抽乐 OCR 错误", str(exc))
+            return ""
+        return " ".join(box.name for box in boxes if getattr(box, "name", ""))
 
     def _clear_home_popup(self, ratio: float) -> None:
         self._home_bright_since = None
@@ -412,9 +463,9 @@ class AutoLoginTask(BaseBD2Task):
         self._set_stage("清理公告")
         clear_x = self._percent_config("公告清理点击 X 百分比")
         clear_y = self._percent_config("公告清理点击 Y 百分比")
-        self._set_action(f"主页亮度不足，点击公告清理位置，ratio={ratio:.3f}。")
+        self._set_action(f"主页三项信号未齐全，点击公告清理位置，ratio={ratio:.3f}。")
         self.log_info(
-            "自动登录：主页未恢复，点击公告清理位置，"
+            "自动登录：主页三项信号未齐全，点击公告清理位置，"
             f"ratio={ratio:.3f}, x={clear_x:.2%}, y={clear_y:.2%}"
         )
         self._sleep_after_recognition()

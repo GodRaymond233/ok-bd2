@@ -8,12 +8,18 @@ import numpy as np
 from src.tasks.map_trade.models import (
     CARD_BY_ID,
     MERCHANT_CARD_ID,
+    CardSpec,
+    CollectionMapTarget,
     MatchResult,
     NavigationResult,
     ScreenState,
     TemplateSpec,
 )
 from src.tasks.map_trade.vision import Vision, normalize_text
+from src.utils.home_confirmation import (
+    HOME_GACHA_OCR_RELATIVE_ROI,
+    home_confirmation_passes,
+)
 
 HOME_TEMPLATES = (
     TemplateSpec("主页", "home.png", 0.72, min_pixel_score=0.80),
@@ -166,32 +172,51 @@ class StoryBadgeDetection:
         return self.best.result.score - self.runner_up.result.score
 
 
+@dataclass(frozen=True)
+class AreaMapContext:
+    frame_shape: tuple[int, ...]
+    raw_text: str
+    normalized_text: str
+    is_area_map: bool
+    candidate_target_keys: tuple[str, ...]
+    resolved_target_key: str | None
+    left_arrow: MatchResult | None
+    right_arrow: MatchResult | None
+    teleports: tuple[MatchResult, ...]
+    overlap_arrow: MatchResult | None
+    back_button: MatchResult | None
+
+
 HAND_TEMPLATE = TemplateSpec(
     "传送阵交互",
     "image/green/IcoHand.png",
     0.74,
-    roi=(790, 470, 190, 180),
     green_mask=True,
 )
 NAV_TELEPORT_TEMPLATE = TemplateSpec(
-    "导航图传送阵", "image/green/Nvi_TpCircleMap.png", 0.72, roi=(150, 45, 570, 620)
+    "导航图传送阵", "image/green/Nvi_TpCircleMap.png", 0.72
 )
 MAP_LEFT_TEMPLATE = TemplateSpec(
-    "区域图左箭头", "image/green/TpMapLeft.png", 0.72, roi=(230, 270, 160, 130)
+    "区域图左箭头", "image/green/TpMapLeft.png", 0.72
 )
 MAP_RIGHT_TEMPLATE = TemplateSpec(
-    "区域图右箭头", "image/green/TpMapRight.png", 0.72, roi=(800, 270, 470, 140)
+    "区域图右箭头", "image/green/TpMapRight.png", 0.72
 )
 TELEPORT_MAP_TEMPLATES = (
-    TemplateSpec("区域图传送阵绿幕", "image/TpCircleMapGE.png", 0.72, roi=(100, 60, 1080, 560)),
-    TemplateSpec("区域图传送阵", "image/TpCircleMap.png", 0.72, roi=(100, 60, 1080, 560)),
+    TemplateSpec("区域图传送阵绿幕", "image/TpCircleMapGE.png", 0.72),
+    TemplateSpec("区域图传送阵", "image/TpCircleMap.png", 0.72),
 )
 OVERLAP_ARROW_TEMPLATE = TemplateSpec(
     "传送阵重叠箭头",
     "image/green/map_tcArrowGE.png",
     0.72,
-    roi=(80, 50, 1160, 580),
 )
+AREA_MAP_BACK_TEMPLATE = TemplateSpec("区域图返回", "back.png", 0.78)
+AREA_MAP_SCAN_LIMIT = 24
+AREA_MAP_CHANGE_TIMEOUT = 3.0
+AREA_MAP_CHANGE_INTERVAL = 0.25
+AREA_MAP_CLICK_SETTLE_SECONDS = 0.5
+AREA_MAP_TELEPORT_CLUSTER_RADIUS = 24
 FIRST_CARD_INSERT_REGION = (413, 481, 440, 132)
 FIRST_CARD_SKIP_TEMPLATE = TemplateSpec(
     "首次卡带跳过",
@@ -209,9 +234,8 @@ class Navigator:
 
     def classify(self, frame=None) -> ScreenState:
         frame = self.vision.capture() if frame is None else frame
-        for spec in HOME_TEMPLATES:
-            if self.vision.match(frame, spec).score >= self.vision.threshold_for(spec):
-                return ScreenState.HOME
+        if self._home_confirmation_signals(frame)[0]:
+            return ScreenState.HOME
         if self.vision.match(frame, MERCHANT_DIALOG_TEMPLATE).score >= self.vision.threshold_for(
             MERCHANT_DIALOG_TEMPLATE
         ):
@@ -386,26 +410,56 @@ class Navigator:
     def _wait_for_cartridge_home(self, timeout: float = 10.0, interval: float = 0.35) -> bool:
         end_at = monotonic() + max(0.0, timeout)
         last_score = -1.0
+        last_pixel_score = -1.0
         last_brightness = 0.0
+        last_gacha_text = ""
         while monotonic() <= end_at:
             frame = self.vision.capture()
-            candidates = [(spec, self.vision.match(frame, spec)) for spec in HOME_TEMPLATES]
-            spec, result = max(candidates, key=lambda value: value[1].score)
-            last_score = result.score
-            last_brightness = self.vision.template_brightness_ratio(frame, spec, result)
-            self._status(
-                "主页小屋按钮",
-                f"{last_score:.3f}/{result.pixel_score:.3f}",
-            )
-            self._status("主页亮度", f"{last_brightness:.3f}")
-            if self.vision.passes(result, spec) and last_brightness >= HOME_BRIGHTNESS_THRESHOLD:
+            (
+                confirmed,
+                last_score,
+                last_pixel_score,
+                last_brightness,
+                last_gacha_text,
+            ) = self._home_confirmation_signals(frame)
+            if confirmed:
                 return True
             self.task.sleep(interval)
         self.task.log_warning(
-            "跑商：未确认主页小屋按钮或亮度不足，"
-            f"button={last_score:.3f}, brightness={last_brightness:.3f}。"
+            "跑商：未同时确认主页按钮、亮度和抽抽乐文字，"
+            f"button={last_score:.3f}/{last_pixel_score:.3f}, "
+            f"brightness={last_brightness:.3f}, ocr={last_gacha_text or '-'}。"
         )
         return False
+
+    def _home_confirmation_signals(
+        self,
+        frame: np.ndarray,
+    ) -> tuple[bool, float, float, float, str]:
+        candidates = [(spec, self.vision.match(frame, spec)) for spec in HOME_TEMPLATES]
+        spec, result = max(candidates, key=lambda value: value[1].score)
+        brightness = self.vision.template_brightness_ratio(frame, spec, result)
+        button_found = self.vision.passes(result, spec)
+        gacha_text = ""
+        if button_found and brightness >= HOME_BRIGHTNESS_THRESHOLD:
+            gacha_text = self.vision.ocr_text(
+                frame,
+                "主页抽抽乐",
+                relative_roi=HOME_GACHA_OCR_RELATIVE_ROI,
+            )
+        self._status(
+            "主页小屋按钮",
+            f"{result.score:.3f}/{result.pixel_score:.3f}",
+        )
+        self._status("主页亮度", f"{brightness:.3f}")
+        self._status("主页抽抽乐 OCR", gacha_text or "-")
+        confirmed = home_confirmation_passes(
+            button_found=button_found,
+            brightness_ratio=brightness,
+            brightness_threshold=HOME_BRIGHTNESS_THRESHOLD,
+            gacha_ocr_text=gacha_text,
+        )
+        return confirmed, result.score, result.pixel_score, brightness, gacha_text
 
     def _wait_for_quick_switch_page(self, timeout: float = 10.0) -> bool:
         return self._wait_for_ocr_keywords(
@@ -943,42 +997,316 @@ class Navigator:
 
         self.vision.click_reference(148, 119, after_sleep=0.8)
         if self.vision.click_template(NAV_TELEPORT_TEMPLATE, timeout=5, after_sleep=0.7):
-            self.vision.click_ocr([r"确认", r"生成"], roi=(550, 300, 320, 260), name="传送阵导航")
+            self.vision.click_ocr([r"确认", r"生成"], name="传送阵导航")
             self._wait_auto_navigation(90)
             if self.vision.click_template(HAND_TEMPLATE, timeout=10, after_sleep=0.8):
                 if self.wait_state({ScreenState.AREA_MAP}, 8) == ScreenState.AREA_MAP:
                     return NavigationResult(True, ScreenState.AREA_MAP)
         return NavigationResult(False, self.classify(), "无法打开传送地图")
 
-    def enter_collection_submap(self, submap_index: int) -> NavigationResult:
+    def _optional_match(self, frame: np.ndarray, spec: TemplateSpec) -> MatchResult | None:
+        result = self.vision.match(frame, spec)
+        return result if self.vision.passes(result, spec) else None
+
+    def _area_map_teleports(self, frame: np.ndarray) -> tuple[MatchResult, ...]:
+        height, width = frame.shape[:2]
+        cluster_radius = max(
+            6,
+            round(
+                AREA_MAP_TELEPORT_CLUSTER_RADIUS
+                * min(width / 1920, height / 1080)
+            ),
+        )
+        candidates: list[MatchResult] = []
+        for spec in TELEPORT_MAP_TEMPLATES:
+            candidates.extend(
+                result
+                for result in self.vision.match_all(
+                    frame,
+                    spec,
+                    minimum_score=self.vision.threshold_for(spec),
+                    peak_radius=cluster_radius,
+                )
+                if self.vision.passes(result, spec)
+            )
+        independent: list[MatchResult] = []
+        for candidate in sorted(candidates, key=lambda value: value.score, reverse=True):
+            if any(
+                (candidate.center[0] - kept.center[0]) ** 2
+                + (candidate.center[1] - kept.center[1]) ** 2
+                <= cluster_radius**2
+                for kept in independent
+            ):
+                continue
+            independent.append(candidate)
+        return tuple(sorted(independent, key=lambda value: value.center))
+
+    @staticmethod
+    def _target_keys_in_text(card: CardSpec, normalized_text: str) -> tuple[str, ...]:
+        matches: list[tuple[int, str]] = []
+        for target in card.targets:
+            title_lengths = [
+                len(normalized_title)
+                for title in target.titles
+                if (normalized_title := normalize_text(title))
+                and normalized_title in normalized_text
+            ]
+            if title_lengths:
+                matches.append((max(title_lengths), target.key))
+        if not matches:
+            return ()
+        longest = max(length for length, _key in matches)
+        return tuple(sorted({key for length, key in matches if length == longest}))
+
+    def _area_map_context(self, frame: np.ndarray, card: CardSpec) -> AreaMapContext:
+        raw_text = self.vision.simplify(self.vision.ocr_text(frame, "区域地图"))
+        normalized_text = normalize_text(raw_text)
+        target_keys = self._target_keys_in_text(card, normalized_text)
+        context = AreaMapContext(
+            frame_shape=frame.shape,
+            raw_text=raw_text,
+            normalized_text=normalized_text,
+            is_area_map=normalize_text("移动魔法阵") in normalized_text,
+            candidate_target_keys=target_keys,
+            resolved_target_key=target_keys[0] if len(target_keys) == 1 else None,
+            left_arrow=self._optional_match(frame, MAP_LEFT_TEMPLATE),
+            right_arrow=self._optional_match(frame, MAP_RIGHT_TEMPLATE),
+            teleports=self._area_map_teleports(frame),
+            overlap_arrow=self._optional_match(frame, OVERLAP_ARROW_TEMPLATE),
+            back_button=self._optional_match(frame, AREA_MAP_BACK_TEMPLATE),
+        )
+        self._status(
+            "区域地图",
+            (
+                f"target={context.resolved_target_key or '-'}, "
+                f"candidates={','.join(context.candidate_target_keys) or '-'}, "
+                f"left={context.left_arrow is not None}, "
+                f"right={context.right_arrow is not None}, "
+                f"teleports={len(context.teleports)}, "
+                f"ocr={context.raw_text or '-'}"
+            ),
+        )
+        return context
+
+    def _capture_area_map_context(self, card: CardSpec) -> AreaMapContext:
+        return self._area_map_context(self.vision.capture(), card)
+
+    def _wait_for_area_map_change(
+        self,
+        card: CardSpec,
+        previous: AreaMapContext,
+    ) -> AreaMapContext | None:
+        end_at = monotonic() + AREA_MAP_CHANGE_TIMEOUT
+        while monotonic() <= end_at:
+            current = self._capture_area_map_context(card)
+            if current.is_area_map and (
+                current.normalized_text != previous.normalized_text
+                or current.candidate_target_keys != previous.candidate_target_keys
+            ):
+                return current
+            self.task.sleep(AREA_MAP_CHANGE_INTERVAL)
+        return None
+
+    def _move_area_map(
+        self,
+        card: CardSpec,
+        context: AreaMapContext,
+        direction: str,
+    ) -> AreaMapContext | None:
+        arrow = context.right_arrow if direction == "right" else context.left_arrow
+        if arrow is None:
+            return None
+        self.vision.click_client(
+            arrow.center,
+            context.frame_shape,
+            after_sleep=AREA_MAP_CLICK_SETTLE_SECONDS,
+        )
+        return self._wait_for_area_map_change(card, context)
+
+    def _scan_area_map_direction(
+        self,
+        card: CardSpec,
+        target: CollectionMapTarget,
+        context: AreaMapContext,
+        direction: str,
+    ) -> tuple[AreaMapContext, bool, bool]:
+        current = context
+        moved = False
+        visited = {current.normalized_text}
+        for _step in range(AREA_MAP_SCAN_LIMIT):
+            if current.resolved_target_key == target.key:
+                return current, moved, False
+            arrow = current.right_arrow if direction == "right" else current.left_arrow
+            if arrow is None:
+                return current, moved, False
+            changed = self._move_area_map(card, current, direction)
+            if changed is None or changed.normalized_text in visited:
+                return current, moved, True
+            current = changed
+            moved = True
+            visited.add(current.normalized_text)
+            if len(current.candidate_target_keys) > 1:
+                return current, moved, True
+        return current, moved, True
+
+    def _locate_collection_target(
+        self,
+        card: CardSpec,
+        target: CollectionMapTarget,
+        initial: AreaMapContext,
+    ) -> tuple[AreaMapContext | None, bool, str]:
+        if not initial.is_area_map:
+            return None, False, "未在同一帧确认移动魔法阵区域地图"
+        if len(initial.candidate_target_keys) > 1:
+            return None, False, "当前地图标题同时命中多个目标"
+        if initial.resolved_target_key == target.key:
+            return initial, False, ""
+
+        current, moved_right, failed = self._scan_area_map_direction(
+            card,
+            target,
+            initial,
+            "right",
+        )
+        if current.resolved_target_key == target.key:
+            return current, moved_right, ""
+        if failed:
+            return None, moved_right, "向右翻页后未确认页面变化或出现标题歧义"
+
+        current, moved_left, failed = self._scan_area_map_direction(
+            card,
+            target,
+            current,
+            "left",
+        )
+        if current.resolved_target_key == target.key:
+            return current, moved_right or moved_left, ""
+        if failed:
+            return None, moved_right or moved_left, "向左复位时未确认页面变化或出现标题歧义"
+
+        current, moved_again, failed = self._scan_area_map_direction(
+            card,
+            target,
+            current,
+            "right",
+        )
+        if current.resolved_target_key == target.key:
+            return current, moved_right or moved_left or moved_again, ""
+        if failed:
+            return None, True, "从最左页扫描时未确认页面变化或出现标题歧义"
+        return None, moved_right or moved_left or moved_again, (
+            f"到达区域图边界仍未找到{target.title}"
+        )
+
+    def _close_area_map(self, context: AreaMapContext) -> NavigationResult:
+        if context.back_button is None:
+            return NavigationResult(False, ScreenState.AREA_MAP, "未识别到区域地图返回按钮")
+        self.vision.click_client(
+            context.back_button.center,
+            context.frame_shape,
+            after_sleep=AREA_MAP_CLICK_SETTLE_SECONDS,
+        )
+        state = self.wait_state({ScreenState.SANDBOX}, 8)
+        return NavigationResult(
+            state == ScreenState.SANDBOX,
+            state,
+            "" if state == ScreenState.SANDBOX else "关闭区域地图后未确认箱庭",
+        )
+
+    def _confirm_collection_arrival(
+        self,
+        card: CardSpec,
+        target: CollectionMapTarget,
+    ) -> NavigationResult:
         area = self.ensure_area_map()
         if not area.success:
-            return area
-        for _ in range(5):
-            if not self.vision.click_template(MAP_LEFT_TEMPLATE, timeout=0.7, after_sleep=0.25):
-                break
-        for _ in range(submap_index + 1):
-            if not self.vision.click_template(MAP_RIGHT_TEMPLATE, timeout=2.0, after_sleep=0.35):
-                return NavigationResult(False, self.classify(), "区域图无法向右切换")
-
-        clicked = any(
-            self.vision.click_template(spec, timeout=1.5, after_sleep=0.5)
-            for spec in TELEPORT_MAP_TEMPLATES
-        )
-        if not clicked and self.vision.click_template(
-            OVERLAP_ARROW_TEMPLATE, timeout=1.0, after_sleep=0.4
-        ):
-            clicked = any(
-                self.vision.click_template(spec, timeout=1.5, after_sleep=0.5)
-                for spec in TELEPORT_MAP_TEMPLATES
+            return NavigationResult(False, area.state, f"到达后无法复核区域地图：{area.message}")
+        context = self._capture_area_map_context(card)
+        if context.resolved_target_key != target.key:
+            actual = context.resolved_target_key or context.raw_text or "未知"
+            return NavigationResult(
+                False,
+                ScreenState.AREA_MAP,
+                f"到达后地图不符：目标={target.title}，实际={actual}",
             )
-        if not clicked:
-            return NavigationResult(False, self.classify(), "区域图未找到目标传送阵")
-        self.vision.click_ocr([r"确认", r"生成"], roi=(540, 300, 350, 280), name="传送确认")
+        closed = self._close_area_map(context)
+        if not closed.success:
+            return closed
+        return NavigationResult(
+            True,
+            ScreenState.SANDBOX,
+            f"{card.card_id}/{target.key}/{target.title}",
+        )
+
+    def _click_collection_teleport(
+        self,
+        card: CardSpec,
+        target: CollectionMapTarget,
+        context: AreaMapContext,
+    ) -> NavigationResult:
+        if not context.teleports and context.overlap_arrow is not None:
+            self.vision.click_client(
+                context.overlap_arrow.center,
+                context.frame_shape,
+                after_sleep=AREA_MAP_CLICK_SETTLE_SECONDS,
+            )
+            expanded = self._capture_area_map_context(card)
+            if expanded.resolved_target_key != target.key:
+                return NavigationResult(
+                    False,
+                    ScreenState.AREA_MAP,
+                    "展开传送阵后目标地图标题发生变化",
+                )
+            context = expanded
+        if len(context.teleports) != 1:
+            return NavigationResult(
+                False,
+                ScreenState.AREA_MAP,
+                f"{target.title}需要唯一传送阵，实际识别到{len(context.teleports)}个",
+            )
+
+        self.vision.click_client(
+            context.teleports[0].center,
+            context.frame_shape,
+            after_sleep=AREA_MAP_CLICK_SETTLE_SECONDS,
+        )
+        self.vision.click_ocr([r"确认", r"生成"], name="传送确认")
         state = self.wait_state({ScreenState.SANDBOX, ScreenState.LOADING}, 8)
         if state == ScreenState.LOADING:
             state = self.wait_state({ScreenState.SANDBOX}, self._loading_timeout())
-        return NavigationResult(state == ScreenState.SANDBOX, state, "传送小图超时")
+        if state != ScreenState.SANDBOX:
+            return NavigationResult(False, state, f"传送到{target.title}超时")
+        return self._confirm_collection_arrival(card, target)
+
+    def enter_collection_map(
+        self,
+        card_id: str,
+        target: CollectionMapTarget,
+    ) -> NavigationResult:
+        card = CARD_BY_ID.get(card_id)
+        if card is None or target.key not in {value.key for value in card.targets}:
+            return NavigationResult(
+                False,
+                ScreenState.UNKNOWN,
+                f"未知采集目标：{card_id}/{target.key}",
+            )
+        area = self.ensure_area_map()
+        if not area.success:
+            return area
+        initial = self._capture_area_map_context(card)
+        located, moved, reason = self._locate_collection_target(card, target, initial)
+        if located is None:
+            return NavigationResult(False, ScreenState.AREA_MAP, reason)
+        if not moved:
+            closed = self._close_area_map(located)
+            if not closed.success:
+                return closed
+            return NavigationResult(
+                True,
+                ScreenState.SANDBOX,
+                f"{card.card_id}/{target.key}/{target.title}",
+            )
+        return self._click_collection_teleport(card, target, located)
 
     def return_home(self) -> NavigationResult:
         state = self.classify()

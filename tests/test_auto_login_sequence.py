@@ -43,6 +43,8 @@ class AutoLoginSequenceTest(unittest.TestCase):
         task._waiting_home_since = None
         task._last_clear_click_at = 0.0
         task._finished = False
+        task._home_brightness_ratio = lambda _frame: 0.0
+        task._home_gacha_ocr_text = lambda _frame: ""
         return task
 
     def test_waiting_loading_checks_home_before_loading(self):
@@ -146,6 +148,7 @@ class AutoLoginSequenceTest(unittest.TestCase):
         task.trigger_interval = 0
         task.capture_frame = lambda: np.zeros((10, 10, 3), dtype=np.uint8)
         task._home_brightness_ratio = lambda _frame: 1.0
+        task._home_gacha_ocr_text = lambda _frame: "抽抽乐"
         logged_in = []
         task.mark_logged_in = lambda: logged_in.append(True)
 
@@ -166,6 +169,24 @@ class AutoLoginSequenceTest(unittest.TestCase):
         self.assertEqual([True], logged_in)
         self.assertTrue(task._finished)
         self.assertFalse(AutoLoginTask.should_trigger(task))
+
+    def test_waiting_task_does_not_accept_home_without_gacha_ocr(self):
+        task = self._task()
+        task._state = "waiting"
+        task.capture_frame = lambda: np.zeros((10, 10, 3), dtype=np.uint8)
+        task._home_brightness_ratio = lambda _frame: 1.0
+
+        def fake_match(_frame, spec):
+            if spec is HOME_BUTTON_TEMPLATE:
+                return MatchResult(0.9, 0.9, (0, 0), (1, 1))
+            return MatchResult(-1.0, -1.0, (0, 0), (0, 0))
+
+        task._match = fake_match
+
+        AutoLoginTask.run(task)
+
+        self.assertEqual("waiting", task._state)
+        self.assertFalse(task._finished)
 
     def test_browndustx_pixel_match_keeps_confirm_detection_active(self):
         task = self._task()

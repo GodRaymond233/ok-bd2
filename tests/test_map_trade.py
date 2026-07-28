@@ -33,12 +33,15 @@ from src.tasks.map_trade.data import (
     shop_purchase_reference,
 )
 from src.tasks.map_trade.models import (
+    CARD_BY_ID,
     COLLECTABLE_CARDS,
     DEFAULT_SALE_WHITELIST,
     PINNED_CARD_IDS,
     RECIPE_TEMPLATES,
     STORY_CARDS,
+    STORY_COLLECTION_MAPS,
     CalendarEntry,
+    CollectionMapRole,
     CollectionResult,
     MatchResult,
     NavigationResult,
@@ -46,6 +49,7 @@ from src.tasks.map_trade.models import (
     TemplateSpec,
 )
 from src.tasks.map_trade.navigator import (
+    AREA_MAP_BACK_TEMPLATE,
     BARGAIN_CONFIRM_POINT,
     BARGAIN_POINT,
     CHAPTER_HOME_POINT,
@@ -84,11 +88,13 @@ from src.tasks.map_trade.navigator import (
     STORY_CATEGORY_HIGHLIGHT_MIN_RATIO,
     STORY_CATEGORY_HIGHLIGHT_REGION,
     STORY_CATEGORY_POINT,
+    AreaMapContext,
     Navigator,
     StoryBadgeCandidate,
     StoryBadgeDetection,
 )
 from src.tasks.map_trade.progress import (
+    STATE_SCHEMA_VERSION,
     UTC_PLUS_8,
     VALID_FAVORITE_SHOP_IDS,
     ProgressStore,
@@ -816,10 +822,117 @@ class CatalogAndSafetyTest(unittest.TestCase):
     def test_catalog_excludes_pinned_cards(self):
         ids = {card.card_id for card in COLLECTABLE_CARDS}
 
-        self.assertEqual(18, len(ids))
+        self.assertEqual(17, len(ids))
         self.assertTrue(PINNED_CARD_IDS.isdisjoint(ids))
         self.assertNotIn("Q_sp6", ids)
+        self.assertNotIn("Q_sp18", ids)
         self.assertNotIn("Q_sp20", ids)
+        self.assertEqual(
+            set(STORY_COLLECTION_MAPS),
+            {card.number for card in COLLECTABLE_CARDS},
+        )
+        for card in COLLECTABLE_CARDS:
+            with self.subTest(card=card.card_id):
+                self.assertEqual(
+                    [
+                        CollectionMapRole.MAIN_AREA,
+                        CollectionMapRole.BATTLE_AREA_1,
+                        CollectionMapRole.BATTLE_AREA_2,
+                    ],
+                    [target.role for target in card.targets],
+                )
+                self.assertEqual(
+                    STORY_COLLECTION_MAPS[card.number],
+                    tuple(target.title for target in card.targets),
+                )
+
+    @staticmethod
+    def _area_context(
+        text: str,
+        target_key: str | None = None,
+        *,
+        left: bool = False,
+        right: bool = False,
+        candidate_keys: tuple[str, ...] | None = None,
+    ) -> AreaMapContext:
+        match = MatchResult(0.99, (100, 100), (30, 30), pixel_score=0.98)
+        keys = candidate_keys if candidate_keys is not None else (
+            (target_key,) if target_key else ()
+        )
+        return AreaMapContext(
+            frame_shape=(1080, 1920, 3),
+            raw_text=f"移动魔法阵 {text}",
+            normalized_text=f"移动魔法阵{text}",
+            is_area_map=True,
+            candidate_target_keys=keys,
+            resolved_target_key=target_key if len(keys) == 1 else None,
+            left_arrow=match if left else None,
+            right_arrow=match if right else None,
+            teleports=(),
+            overlap_arrow=None,
+            back_button=match,
+        )
+
+    def test_area_map_title_resolution_prefers_longest_nested_story_title(self):
+        card = CARD_BY_ID["Q_sp1"]
+
+        self.assertEqual(
+            (CollectionMapRole.BATTLE_AREA_2.value,),
+            Navigator._target_keys_in_text(
+                card,
+                "移动魔法阵卢戈森林深处",
+            ),
+        )
+
+    def test_area_map_scan_skips_unknown_pages_and_confirms_target(self):
+        card = CARD_BY_ID["Q_sp1"]
+        target = card.targets[1]
+        contexts = iter(
+            (
+                self._area_context("额外安全图", left=True, right=True),
+                self._area_context(
+                    target.title,
+                    target.key,
+                    left=True,
+                    right=True,
+                ),
+            )
+        )
+        navigator = Navigator(SimpleNamespace(), SimpleNamespace())
+        navigator._move_area_map = lambda *_args: next(contexts)
+
+        located, moved, reason = navigator._locate_collection_target(
+            card,
+            target,
+            self._area_context("主城区外页", right=True),
+        )
+
+        self.assertTrue(moved)
+        self.assertEqual("", reason)
+        self.assertEqual(target.key, located.resolved_target_key)
+
+    def test_area_map_scan_stops_on_ambiguous_target_title(self):
+        card = CARD_BY_ID["Q_sp1"]
+        target = card.targets[1]
+        ambiguous = self._area_context(
+            "标题歧义",
+            right=True,
+            candidate_keys=(
+                CollectionMapRole.BATTLE_AREA_1.value,
+                CollectionMapRole.BATTLE_AREA_2.value,
+            ),
+        )
+        navigator = Navigator(SimpleNamespace(), SimpleNamespace())
+
+        located, moved, reason = navigator._locate_collection_target(card, target, ambiguous)
+
+        self.assertIsNone(located)
+        self.assertFalse(moved)
+        self.assertIn("多个目标", reason)
+
+    def test_area_map_back_template_uses_recognition_center_without_external_roi(self):
+        self.assertEqual("back.png", AREA_MAP_BACK_TEMPLATE.file_name)
+        self.assertIsNone(AREA_MAP_BACK_TEMPLATE.roi)
 
     def test_sale_whitelist_allows_only_intersection(self):
         trader = object.__new__(Trader)
@@ -2306,7 +2419,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
             warnings,
         )
 
-    def test_buy_home_confirmation_requires_button_and_brightness(self):
+    def test_buy_home_confirmation_requires_button_brightness_and_ocr(self):
         task = SimpleNamespace(
             config={},
             sleep=lambda *_args: None,
@@ -2319,12 +2432,37 @@ class CatalogAndSafetyTest(unittest.TestCase):
             match=lambda *_args: result,
             passes=lambda *_args: True,
             template_brightness_ratio=lambda *_args: brightness["value"],
+            ocr_text=lambda *_args, **_kwargs: "抽抽乐",
         )
         navigator = Navigator(task, vision)
 
         self.assertFalse(navigator._wait_for_cartridge_home(timeout=0.0))
         brightness["value"] = 0.80
         self.assertTrue(navigator._wait_for_cartridge_home(timeout=0.0))
+        vision.ocr_text = lambda *_args, **_kwargs: ""
+        self.assertFalse(navigator._wait_for_cartridge_home(timeout=0.0))
+
+    def test_screen_classification_only_reports_home_after_all_three_signals(self):
+        task = SimpleNamespace(
+            config={},
+            info_set=lambda *_args, **_kwargs: None,
+        )
+        result = MatchResult(0.80, (10, 10), (20, 20), pixel_score=0.90)
+        gacha_text = {"value": ""}
+        vision = SimpleNamespace(
+            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
+            match=lambda *_args: result,
+            passes=lambda *_args: True,
+            threshold_for=lambda spec: spec.threshold,
+            template_brightness_ratio=lambda *_args: 0.80,
+            ocr_text=lambda *_args, **_kwargs: gacha_text["value"],
+            simplify=lambda value: value,
+        )
+        navigator = Navigator(task, vision)
+
+        self.assertNotEqual(ScreenState.HOME, navigator.classify())
+        gacha_text["value"] = "抽抽乐"
+        self.assertEqual(ScreenState.HOME, navigator.classify())
 
     def test_return_home_from_shop_closes_discount_shop_then_uses_home_button(self):
         actions = []
@@ -2643,12 +2781,12 @@ class CatalogAndSafetyTest(unittest.TestCase):
             depleted_today=False,
             daily_submaps=0,
             weekly_submap_count=0,
-            completed_submaps=lambda _card: set(),
+            completed_targets=lambda _card: set(),
         )
         progress.load = lambda: progress.state
         navigator = SimpleNamespace(
             select_card=lambda _card: NavigationResult(True, ScreenState.SANDBOX),
-            enter_collection_submap=lambda _index: NavigationResult(
+            enter_collection_map=lambda _card, _target: NavigationResult(
                 False, ScreenState.UNKNOWN, "failed"
             ),
         )
@@ -2976,8 +3114,8 @@ class ProgressTest(unittest.TestCase):
             store = ProgressStore(path, lambda: datetime(2026, 7, 12, 12, tzinfo=UTC_PLUS_8))
             store.load()
             for card in COLLECTABLE_CARDS[:7]:
-                for submap in range(3):
-                    self.assertTrue(store.mark_submap(card.card_id, submap))
+                for target in card.targets:
+                    self.assertTrue(store.mark_target(card.card_id, target.key))
                     self.assertTrue(path.exists())
                     self.assertFalse(path.with_suffix(".json.tmp").exists())
 
@@ -2985,7 +3123,8 @@ class ProgressTest(unittest.TestCase):
             self.assertTrue(store.state.depleted_today)
             self.assertEqual(21, store.state.weekly_submap_count)
             with self.assertRaisesRegex(RuntimeError, "daily collection limit"):
-                store.mark_submap(COLLECTABLE_CARDS[7].card_id, 0)
+                next_card = COLLECTABLE_CARDS[7]
+                store.mark_target(next_card.card_id, next_card.targets[0].key)
 
     def test_progress_rejects_pinned_collection_cards(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2996,7 +3135,7 @@ class ProgressTest(unittest.TestCase):
             store.load()
 
             with self.assertRaisesRegex(ValueError, "invalid collection card"):
-                store.mark_submap("Q_sp6", 0)
+                store.mark_target("Q_sp6", CollectionMapRole.MAIN_AREA.value)
 
     def test_daily_reset_preserves_weekly_submaps(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -3004,12 +3143,15 @@ class ProgressTest(unittest.TestCase):
             now = [datetime(2026, 7, 12, 3, 59, tzinfo=UTC_PLUS_8)]
             store = ProgressStore(path, lambda: now[0])
             store.load()
-            store.mark_submap("Q_sp1", 0)
+            store.mark_target("Q_sp1", CollectionMapRole.MAIN_AREA.value)
             now[0] = datetime(2026, 7, 12, 4, 0, tzinfo=UTC_PLUS_8)
 
             state = ProgressStore(path, lambda: now[0]).load()
 
-            self.assertEqual({0}, state.completed_submaps("Q_sp1"))
+            self.assertEqual(
+                {CollectionMapRole.MAIN_AREA.value},
+                state.completed_targets("Q_sp1"),
+            )
             self.assertEqual(0, state.daily_submaps)
             self.assertFalse(state.depleted_today)
 
@@ -3018,7 +3160,7 @@ class ProgressTest(unittest.TestCase):
             path = Path(temp_dir) / "progress.json"
             store = ProgressStore(path, lambda: datetime(2026, 7, 13, 3, 59, tzinfo=UTC_PLUS_8))
             store.load()
-            store.mark_submap("Q_sp1", 0)
+            store.mark_target("Q_sp1", CollectionMapRole.MAIN_AREA.value)
 
             state = ProgressStore(
                 path, lambda: datetime(2026, 7, 13, 4, 0, tzinfo=UTC_PLUS_8)
@@ -3027,7 +3169,7 @@ class ProgressTest(unittest.TestCase):
             self.assertEqual({}, state.cards)
             self.assertEqual(0, state.weekly_submap_count)
 
-    def test_all_eighteen_cards_make_fifty_four_weekly_submaps(self):
+    def test_all_seventeen_cards_make_fifty_one_weekly_targets(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             now = [datetime(2026, 7, 13, 12, tzinfo=UTC_PLUS_8)]
             store = ProgressStore(
@@ -3039,10 +3181,40 @@ class ProgressTest(unittest.TestCase):
                 if card_index in {7, 14}:
                     now[0] = now[0].replace(day=now[0].day + 1)
                     store.load()
-                for submap in range(3):
-                    store.mark_submap(card.card_id, submap)
+                for target in card.targets:
+                    store.mark_target(card.card_id, target.key)
 
-            self.assertEqual(54, store.state.weekly_submap_count)
+            self.assertEqual(51, store.state.weekly_submap_count)
+
+    def test_schema_one_collection_progress_resets_without_losing_other_progress(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "progress.json"
+            now = datetime(2026, 7, 13, 12, tzinfo=UTC_PLUS_8)
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "weekly_key": weekly_cycle_key(now),
+                        "daily_key": daily_cycle_key(now),
+                        "cards": {"Q_sp1": [0, 1]},
+                        "daily_submaps": 5,
+                        "depleted_today": False,
+                        "favorite_week": weekly_cycle_key(now),
+                        "favorite_cards": ["S1"],
+                        "cooking_week": weekly_cycle_key(now),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            state = ProgressStore(path, lambda: now).load()
+            saved = json.loads(path.read_text(encoding="utf-8"))
+
+            self.assertEqual({}, state.cards)
+            self.assertEqual(5, state.daily_submaps)
+            self.assertEqual({"S1"}, state.completed_favorite_cards)
+            self.assertEqual(weekly_cycle_key(now), state.cooking_week)
+            self.assertEqual(STATE_SCHEMA_VERSION, saved["schema_version"])
 
     def test_corrupt_file_recovers_and_keeps_backup(self):
         with tempfile.TemporaryDirectory() as temp_dir:

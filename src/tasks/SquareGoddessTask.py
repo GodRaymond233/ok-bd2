@@ -9,6 +9,10 @@ import numpy as np
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task, green_mask_from_template
+from src.utils.home_confirmation import (
+    HOME_GACHA_OCR_REFERENCE_ROI,
+    home_confirmation_passes,
+)
 from src.utils.image_utils import (
     best_pixel_valid_match,
     candidate_scales,
@@ -87,6 +91,7 @@ class SquareGoddessTask(BaseBD2Task):
         "当前阶段",
         "主页小屋按钮",
         "主页亮度",
+        "主页抽抽乐 OCR",
         "快速切换按钮",
         "卡带选择页 OCR",
         "卡带选择页 OCR 命中",
@@ -136,9 +141,11 @@ class SquareGoddessTask(BaseBD2Task):
                 "玩法类别高亮像素比例": GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO,
                 "广场 OCR 阈值": 0.2,
                 "广场入场等待秒数": 30.0,
+                "广场感叹号等待秒数": 3.0,
                 "女神像许愿等待秒数": 8.0,
                 "女神像导航入口等待秒数": 8.0,
                 "女神像导航最长等待秒数": 90.0,
+                "女神像完成确认等待秒数": 8.0,
                 "女神像许愿最多点击次数": 3,
                 "广场返回主页等待秒数": 15.0,
                 "广场感叹号阈值": 0.72,
@@ -154,7 +161,10 @@ class SquareGoddessTask(BaseBD2Task):
                 "快速切换按钮阈值": "识别 QuickSwitchPlayIco.png 快速切换按钮的模板匹配阈值。",
                 "玩法类别高亮像素比例": "玩法游戏卡标签确认为高亮状态所需的最低亮色像素占比。",
                 "广场入场等待秒数": "点击广场卡带后等待梦幻广场场景出现的最长时间。",
+                "广场感叹号等待秒数": "进入广场后等待并点击感叹号小任务的最长时间。",
+                "女神像许愿等待秒数": "等待许愿 OCR；超时后尝试固定祈祷位置的间隔。",
                 "女神像导航最长等待秒数": "点击每日导航后，等待角色靠近女神像的最长时间。",
+                "女神像完成确认等待秒数": "点击许愿后等待每日导航文字消失的最长时间。",
                 "女神像许愿最多点击次数": "OCR 仍识别到许愿提示时最多重复点击几次。",
                 "广场返回主页等待秒数": "许愿完成后点击主页按钮并确认回到主页的最长时间。",
             }
@@ -247,27 +257,37 @@ class SquareGoddessTask(BaseBD2Task):
         )
         end_at = monotonic() + wait_seconds
         last_button_score = -1.0
+        last_button_pixel = -1.0
         last_ratio = 0.0
+        last_gacha_text = ""
         while monotonic() <= end_at:
             frame = self.capture_frame()
-            home_button = max(
-                (self._match(frame, spec) for spec in HOME_TEMPLATES),
-                key=lambda result: result.score,
-            )
+            candidates = [(spec, self._match(frame, spec)) for spec in HOME_TEMPLATES]
+            home_spec, home_button = max(candidates, key=lambda value: value[1].score)
             last_button_score = home_button.score
+            last_button_pixel = home_button.pixel_score
             last_ratio = self._home_brightness_ratio(frame)
+            last_gacha_text = self._ocr_text(
+                frame,
+                name="主页抽抽乐",
+                roi=HOME_GACHA_OCR_REFERENCE_ROI,
+            )
             self.info_set("主页小屋按钮", f"{last_button_score:.3f}")
             self.info_set("主页亮度", f"{last_ratio:.3f}")
-            if (
-                self._passes(home_button, HOME_TEMPLATE)
-                and last_ratio >= self._home_ratio_threshold()
+            self.info_set("主页抽抽乐 OCR", last_gacha_text or "-")
+            if home_confirmation_passes(
+                button_found=self._passes(home_button, home_spec),
+                brightness_ratio=last_ratio,
+                brightness_threshold=self._home_ratio_threshold(),
+                gacha_ocr_text=last_gacha_text,
             ):
                 return True
             self.sleep(interval)
 
         self.log_info(
-            "广场女神像：未确认主页小屋按钮或亮度不足，"
-            f"button={last_button_score:.3f}, ratio={last_ratio:.3f}。"
+            "广场女神像：未同时确认主页按钮、亮度和抽抽乐文字，"
+            f"button={last_button_score:.3f}/{last_button_pixel:.3f}, "
+            f"ratio={last_ratio:.3f}, ocr={last_gacha_text or '-'}。"
         )
         return False
 
@@ -339,92 +359,168 @@ class SquareGoddessTask(BaseBD2Task):
 
     def _pray_at_goddess(self) -> bool:
         self.info_set("当前阶段", "检查广场感叹号")
-        self._click_square_notice_if_present()
+        self._click_square_notice_if_present(
+            timeout=float(self.config.get("广场感叹号等待秒数", 3.0))
+        )
 
-        self.info_set("当前阶段", "寻找女神像许愿")
-        if self._click_pray_until_gone(timeout=float(self.config.get("女神像许愿等待秒数", 8.0))):
-            return True
-
-        self.info_set("当前阶段", "启动女神像导航")
-        if not self._start_goddess_navigation(
+        self.info_set("当前阶段", "检查女神像每日导航")
+        if not self._click_goddess_daily_navigation_until(
             timeout=float(self.config.get("女神像导航入口等待秒数", 8.0))
         ):
-            self.log_info("广场女神像：未找到女神像每日导航入口。")
-            return False
+            self.info_set("女神像许愿 OCR", "每日导航信号未出现，按今日已完成处理")
+            self.log_info("广场女神像：每日导航图标与文字未同时出现，按今日已完成处理。")
+            return True
 
-        end_at = monotonic() + float(self.config.get("女神像导航最长等待秒数", 90.0))
-        while monotonic() <= end_at:
-            if self._click_pray_until_gone(timeout=2.0):
-                return True
-
-            if self._wait_for_template(
-                SQUARE_MISSION_NAVI_TEMPLATE,
-                timeout=2.0,
-                name="广场导航中",
-            ):
-                self.sleep(5.0)
-                continue
-
-            self._start_goddess_navigation(timeout=2.0)
-
-        self.log_info("广场女神像：等待女神像许愿提示超时。")
-        return False
-
-    def _click_square_notice_if_present(self) -> bool:
-        frame = self.capture_frame()
-        frame_height, frame_width = frame.shape[:2]
-        result = self._match(frame, SQUARE_NOTICE_TEMPLATE)
-        self.info_set("广场感叹号", f"{result.score:.3f}")
-        if not self._passes(result, SQUARE_NOTICE_TEMPLATE):
-            return False
-
-        self._click_client(
-            result.position[0] + result.size[0] // 2,
-            result.position[1] + result.size[1] // 2,
-            frame_width,
-            frame_height,
-            after_sleep=1.0,
-        )
-        return True
-
-    def _click_pray_until_gone(self, timeout: float) -> bool:
-        clicked = False
-        max_clicks = max(1, int(self.config.get("女神像许愿最多点击次数", 3)))
-        for click_index in range(max_clicks):
-            point, frame_shape, text = self._find_ocr_click_point_until(
-                GODDESS_PRAY_PATTERNS,
-                timeout=timeout if click_index == 0 else 1.0,
-                name="女神像许愿",
-                roi=GODDESS_PRAY_OCR_ROI,
-            )
-            self.info_set("女神像许愿 OCR", text or "-")
-            if point is None or frame_shape is None:
-                return clicked
-
-            frame_height, frame_width = frame_shape
-            self._click_client(point[0], point[1], frame_width, frame_height, after_sleep=2.0)
-            clicked = True
-
-        return clicked
-
-    def _start_goddess_navigation(self, timeout: float) -> bool:
-        if self._click_template_until(
-            SQUARE_DAILY_ICON_TEMPLATE,
-            timeout=timeout,
-            name="广场每日导航",
-            target_offset_mf=(3, 0),
-            after_sleep=2.0,
+        self.info_set("当前阶段", "等待并完成女神像许愿")
+        if self._wait_for_goddess_prayer_completion(
+            timeout=float(self.config.get("女神像导航最长等待秒数", 90.0))
         ):
             return True
 
-        return self._click_ocr_pattern_until(
-            GODDESS_NAVIGATION_PATTERNS,
-            timeout=timeout,
-            name="广场导航文本",
-            roi=GODDESS_NAVIGATION_OCR_ROI,
-            target_offset_mf=(3, 0),
-            after_sleep=2.0,
+        self.log_info("广场女神像：等待许愿或每日导航文字消失超时。")
+        return False
+
+    def _click_square_notice_if_present(
+        self,
+        timeout: float = 3.0,
+        interval: float = 0.35,
+    ) -> bool:
+        end_at = monotonic() + max(0.0, timeout)
+        last_score = -1.0
+        while monotonic() <= end_at:
+            frame = self.capture_frame()
+            frame_height, frame_width = frame.shape[:2]
+            result = self._match(frame, SQUARE_NOTICE_TEMPLATE)
+            last_score = result.score
+            self.info_set("广场感叹号", f"{result.score:.3f}")
+            if self._passes(result, SQUARE_NOTICE_TEMPLATE):
+                self._click_client(
+                    result.position[0] + result.size[0] // 2,
+                    result.position[1] + result.size[1] // 2,
+                    frame_width,
+                    frame_height,
+                    after_sleep=1.0,
+                )
+                return True
+            self.sleep(interval)
+
+        self.info_set("广场感叹号", f"{last_score:.3f}")
+        return False
+
+    def _click_goddess_daily_navigation_until(
+        self,
+        timeout: float,
+        interval: float = 0.35,
+    ) -> bool:
+        end_at = monotonic() + max(0.0, timeout)
+        last_score = -1.0
+        last_pixel_score = -1.0
+        last_text = ""
+        while monotonic() <= end_at:
+            frame = self.capture_frame()
+            frame_height, frame_width = frame.shape[:2]
+            result = self._match(frame, SQUARE_DAILY_ICON_TEMPLATE)
+            point, text = self._goddess_navigation_click_point(
+                frame,
+                name="广场导航文本",
+            )
+            last_score = result.score
+            last_pixel_score = result.pixel_score
+            last_text = text or last_text
+            self.info_set("广场每日导航", f"{result.score:.3f}/{result.pixel_score:.3f}")
+            self.info_set("广场导航文本 OCR", text or "-")
+            if self._passes(result, SQUARE_DAILY_ICON_TEMPLATE) and point is not None:
+                self._click_client(
+                    point[0],
+                    point[1],
+                    frame_width,
+                    frame_height,
+                    after_sleep=2.0,
+                )
+                return True
+            self.sleep(interval)
+
+        self.info_set("广场每日导航", f"{last_score:.3f}/{last_pixel_score:.3f}")
+        self.info_set("广场导航文本 OCR", last_text or "-")
+        return False
+
+    def _wait_for_goddess_prayer_completion(
+        self,
+        timeout: float,
+        interval: float = 0.5,
+    ) -> bool:
+        end_at = monotonic() + max(0.0, timeout)
+        fallback_interval = max(
+            0.5,
+            float(self.config.get("女神像许愿等待秒数", 8.0)),
         )
+        next_fallback_at = monotonic() + fallback_interval
+        max_clicks = max(1, int(self.config.get("女神像许愿最多点击次数", 3)))
+        click_count = 0
+
+        while monotonic() <= end_at:
+            frame = self.capture_frame()
+            frame_height, frame_width = frame.shape[:2]
+            point, text = self._ocr_pattern_click_point(
+                frame,
+                GODDESS_PRAY_PATTERNS,
+                name="女神像许愿",
+                roi=None,
+            )
+            self.info_set("女神像许愿 OCR", text or "-")
+
+            should_click_fallback = point is None and monotonic() >= next_fallback_at
+            if point is not None and click_count < max_clicks:
+                self._click_client(
+                    point[0],
+                    point[1],
+                    frame_width,
+                    frame_height,
+                    after_sleep=2.0,
+                )
+                click_count += 1
+            elif should_click_fallback and click_count < max_clicks:
+                self.operate_click(*GODDESS_PRAY_FALLBACK_POINT, after_sleep=2.0)
+                click_count += 1
+            else:
+                self.sleep(interval)
+                continue
+
+            if self._wait_for_daily_navigation_to_disappear(
+                timeout=float(self.config.get("女神像完成确认等待秒数", 8.0))
+            ):
+                return True
+            next_fallback_at = monotonic() + fallback_interval
+
+        return False
+
+    def _wait_for_daily_navigation_to_disappear(
+        self,
+        timeout: float,
+        interval: float = 0.5,
+    ) -> bool:
+        end_at = monotonic() + max(0.0, timeout)
+        last_text = ""
+        while monotonic() <= end_at:
+            frame = self.capture_frame()
+            point, text = self._goddess_navigation_click_point(
+                frame,
+                name="广场导航完成确认",
+            )
+            last_text = text or last_text
+            self.info_set("广场导航文本 OCR", text or "-")
+            if point is None:
+                return True
+            self.sleep(interval)
+
+        self.info_set("广场导航文本 OCR", last_text or "-")
+        return False
+
+    def _click_pray_until_gone(self, timeout: float) -> bool:
+        return self._wait_for_goddess_prayer_completion(timeout=timeout)
+
+    def _start_goddess_navigation(self, timeout: float) -> bool:
+        return self._click_goddess_daily_navigation_until(timeout=timeout)
 
     def _click_template_until(
         self,
@@ -596,6 +692,64 @@ class SquareGoddessTask(BaseBD2Task):
         center_x = int(round(left + float(x) + float(width) / 2))
         center_y = int(round(top + float(y) + float(height) / 2))
         return (center_x, center_y), text
+
+    def _goddess_navigation_click_point(
+        self,
+        frame,
+        name: str,
+    ) -> tuple[tuple[int, int] | None, str]:
+        left, top, _crop = self._roi_frame(frame, GODDESS_DAILY_REGION)
+        boxes = self._ocr_boxes(
+            frame,
+            name=name,
+            roi=GODDESS_DAILY_REGION,
+        )
+        text = " ".join(
+            getattr(box, "name", "")
+            for box in boxes
+            if getattr(box, "name", "")
+        )
+        if not all(
+            self._matches_any(text, [term])
+            for term in GODDESS_NAVIGATION_TERMS
+        ):
+            return None, text
+
+        relevant_boxes = [
+            box
+            for box in boxes
+            if any(
+                self._matches_any(getattr(box, "name", ""), [term])
+                for term in GODDESS_NAVIGATION_TERMS
+            )
+        ]
+        geometries = []
+        for box in relevant_boxes:
+            x = getattr(box, "x", None)
+            y = getattr(box, "y", None)
+            width = getattr(box, "width", None)
+            height = getattr(box, "height", None)
+            if None in (x, y, width, height):
+                continue
+            geometries.append(
+                (
+                    float(x),
+                    float(y),
+                    float(x) + float(width),
+                    float(y) + float(height),
+                )
+            )
+        if not geometries:
+            return None, text
+
+        text_left = min(geometry[0] for geometry in geometries)
+        text_top = min(geometry[1] for geometry in geometries)
+        text_right = max(geometry[2] for geometry in geometries)
+        text_bottom = max(geometry[3] for geometry in geometries)
+        return (
+            int(round(left + (text_left + text_right) / 2)),
+            int(round(top + (text_top + text_bottom) / 2)),
+        ), text
 
     def _find_template_until(
         self,
@@ -1216,18 +1370,20 @@ SQUARE_NOTICE_TEMPLATE = SquareTemplateSpec(
     file_name="image/green/tanhaoGE.png",
     threshold_key="广场感叹号阈值",
     default_threshold=0.72,
-    roi=(1376, 862, 69, 51),
+    roi=(1380, 863, 62, 46),
     green_mask=True,
     scale_ratios=(0.90, 0.925, 0.95, 0.975, 1.0),
     min_pixel_score=0.72,
 )
+
+GODDESS_DAILY_REGION = (1546, 199, 311, 63)
 
 SQUARE_DAILY_ICON_TEMPLATE = SquareTemplateSpec(
     name="square_daily_icon",
     file_name="image/Square_DailyIco.png",
     threshold_key="广场每日导航阈值",
     default_threshold=0.76,
-    roi=(1548, 203, 26, 25),
+    roi=GODDESS_DAILY_REGION,
     min_pixel_score=0.72,
 )
 
@@ -1239,7 +1395,9 @@ SQUARE_MISSION_NAVI_TEMPLATE = SquareTemplateSpec(
     roi=SquareGoddessTask._mf_roi(1168, 106, 69, 247),
 )
 
-GODDESS_NAVIGATION_OCR_ROI = SquareGoddessTask._mf_roi(968, 76, 203, 256)
-GODDESS_PRAY_OCR_ROI = SquareGoddessTask._mf_roi(545, 75, 201, 91)
-GODDESS_NAVIGATION_PATTERNS = [r"(?=.*移动至)(?=.*艾力克史)(?=.*温女)"]
+GODDESS_NAVIGATION_TERMS = (r"移动至", r"艾力克史", r"温女")
 GODDESS_PRAY_PATTERNS = [r"向女神像许愿|女神像许愿|许愿"]
+GODDESS_PRAY_FALLBACK_POINT = (
+    1412 / REFERENCE_WIDTH,
+    884 / REFERENCE_HEIGHT,
+)

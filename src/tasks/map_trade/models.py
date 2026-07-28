@@ -8,7 +8,7 @@ MF_REFERENCE_HEIGHT = 720
 DAILY_SUBMAP_LIMIT = 21
 SUBMAPS_PER_CARD = 3
 MERCHANT_CARD_ID = "Q_sp6"
-PINNED_CARD_IDS = frozenset({"Q_sp6", "Q_sp20"})
+PINNED_CARD_IDS = frozenset({"Q_sp6", "Q_sp18", "Q_sp20"})
 
 
 class ScreenState(str, Enum):
@@ -23,6 +23,35 @@ class ScreenState(str, Enum):
     UNKNOWN = "unknown"
 
 
+class CollectionMapRole(str, Enum):
+    MAIN_AREA = "main_area"
+    BATTLE_AREA_1 = "battle_area_1"
+    BATTLE_AREA_2 = "battle_area_2"
+
+    @property
+    def label(self) -> str:
+        return {
+            CollectionMapRole.MAIN_AREA: "主城区",
+            CollectionMapRole.BATTLE_AREA_1: "战斗区域1",
+            CollectionMapRole.BATTLE_AREA_2: "战斗区域2",
+        }[self]
+
+
+@dataclass(frozen=True)
+class CollectionMapTarget:
+    role: CollectionMapRole
+    title: str
+    aliases: tuple[str, ...] = ()
+
+    @property
+    def key(self) -> str:
+        return self.role.value
+
+    @property
+    def titles(self) -> tuple[str, ...]:
+        return (self.title, *self.aliases)
+
+
 @dataclass(frozen=True)
 class CardSpec:
     card_id: str
@@ -31,6 +60,7 @@ class CardSpec:
     template: str
     shop_label: str
     collectable: bool = True
+    targets: tuple[CollectionMapTarget, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -112,6 +142,37 @@ STORY_CARD_NAMES = (
     "剧情游戏卡20",
 )
 
+STORY_COLLECTION_MAPS = {
+    1: ("卢戈镇", "卢戈森林", "卢戈森林深处"),
+    2: ("达雷普镇", "封锁矿山", "禁地矿山"),
+    3: ("布伦城", "布伦下水道", "布伦下水道深处"),
+    4: ("凯洛镇", "凯洛山", "凯洛山中心处"),
+    5: ("亚拉里克城", "亚拉里克遗迹", "亚拉里克遗迹深处"),
+    7: ("拉勒凯镇", "洞穴神殿", "隐藏神殿"),
+    8: ("罗戴夫镇", "贫民区", "盗贼据点"),
+    9: ("雷瓦汀基地", "加尔顿山前段", "加尔顿山后段"),
+    10: ("埃兰城", "官邸地下", "官邸大殿"),
+    11: ("罗坦王城", "罗坦城门", "城下小镇"),
+    12: ("埃克夏城", "埃克夏森林", "埃克夏森林深处"),
+    13: ("华特波尔镇", "华特波尔雪山", "记忆裂缝"),
+    14: ("阿尔卡迪亚居住区域", "剑之神殿中央回廊", "剑之神殿左侧回廊"),
+    15: ("科库托斯研究设施", "血刻印量产设施", "重要保管区域"),
+    16: ("迪尔索特港口城市", "迪尔索特黑市", "黑市深处"),
+    17: ("古代遗迹前哨基地", "试炼之路", "封印祭坛"),
+    19: ("亡者安息处", "亡灵游地", "通往神殿之路"),
+}
+
+
+def _story_collection_targets(number: int) -> tuple[CollectionMapTarget, ...]:
+    titles = STORY_COLLECTION_MAPS.get(number)
+    if titles is None:
+        return ()
+    return tuple(
+        CollectionMapTarget(role, title)
+        for role, title in zip(CollectionMapRole, titles, strict=True)
+    )
+
+
 STORY_CARDS = tuple(
     CardSpec(
         card_id=f"Q_sp{number}",
@@ -119,7 +180,8 @@ STORY_CARDS = tuple(
         name=name,
         template=f"image/Cartridges/Q_sp{number}.png",
         shop_label=f"S{number}:{name}",
-        collectable=number not in {6, 20},
+        collectable=number in STORY_COLLECTION_MAPS,
+        targets=_story_collection_targets(number),
     )
     for number, name in enumerate(STORY_CARD_NAMES, start=1)
 )

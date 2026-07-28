@@ -8,11 +8,14 @@ from pathlib import Path
 from typing import Callable
 
 from src.tasks.map_trade.data import SHOP_PURCHASE_REFERENCES
-from src.tasks.map_trade.models import COLLECTABLE_CARDS, DAILY_SUBMAP_LIMIT, SUBMAPS_PER_CARD
+from src.tasks.map_trade.models import COLLECTABLE_CARDS, DAILY_SUBMAP_LIMIT
 
 UTC_PLUS_8 = timezone(timedelta(hours=8), name="UTC+8")
-STATE_SCHEMA_VERSION = 1
+STATE_SCHEMA_VERSION = 2
 VALID_CARD_IDS = frozenset(card.card_id for card in COLLECTABLE_CARDS)
+VALID_TARGET_KEYS = {
+    card.card_id: frozenset(target.key for target in card.targets) for card in COLLECTABLE_CARDS
+}
 VALID_FAVORITE_SHOP_IDS = frozenset(SHOP_PURCHASE_REFERENCES)
 
 
@@ -35,27 +38,20 @@ def weekly_cycle_key(now: datetime) -> str:
 class ProgressState:
     weekly_key: str
     daily_key: str
-    cards: dict[str, list[int]] = field(default_factory=dict)
+    cards: dict[str, list[str]] = field(default_factory=dict)
     daily_submaps: int = 0
     depleted_today: bool = False
     favorite_week: str = ""
     favorite_cards: list[str] = field(default_factory=list)
     cooking_week: str = ""
 
-    def completed_submaps(self, card_id: str) -> set[int]:
-        completed = set()
-        for value in self.cards.get(card_id, []):
-            try:
-                number = int(value)
-            except (TypeError, ValueError):
-                continue
-            if 0 <= number < SUBMAPS_PER_CARD:
-                completed.add(number)
-        return completed
+    def completed_targets(self, card_id: str) -> set[str]:
+        allowed = VALID_TARGET_KEYS.get(card_id, frozenset())
+        return {str(value) for value in self.cards.get(card_id, []) if str(value) in allowed}
 
     @property
     def weekly_submap_count(self) -> int:
-        return sum(len(self.completed_submaps(card_id)) for card_id in self.cards)
+        return sum(len(self.completed_targets(card_id)) for card_id in self.cards)
 
     @property
     def completed_favorite_cards(self) -> set[str]:
@@ -78,8 +74,25 @@ class ProgressStore:
         day = daily_cycle_key(now)
         raw = self._read_json()
 
-        if raw.get("schema_version") != STATE_SCHEMA_VERSION or raw.get("weekly_key") != week:
+        if raw.get("weekly_key") != week:
             self.state = ProgressState(weekly_key=week, daily_key=day)
+            self.save()
+            return self.state
+
+        if raw.get("schema_version") != STATE_SCHEMA_VERSION:
+            self.state = ProgressState(
+                weekly_key=week,
+                daily_key=str(raw.get("daily_key", day)),
+                daily_submaps=self._safe_nonnegative_int(raw.get("daily_submaps", 0)),
+                depleted_today=bool(raw.get("depleted_today", False)),
+                favorite_week=str(raw.get("favorite_week", "")),
+                favorite_cards=self._sanitize_favorite_cards(raw.get("favorite_cards", [])),
+                cooking_week=str(raw.get("cooking_week", "")),
+            )
+            if self.state.daily_key != day:
+                self.state.daily_key = day
+                self.state.daily_submaps = 0
+                self.state.depleted_today = False
             self.save()
             return self.state
 
@@ -108,7 +121,7 @@ class ProgressStore:
             return 0
 
     @classmethod
-    def _sanitize_cards(cls, raw_cards) -> dict[str, list[int]]:
+    def _sanitize_cards(cls, raw_cards) -> dict[str, list[str]]:
         if not isinstance(raw_cards, dict):
             return {}
         cards = {}
@@ -117,14 +130,8 @@ class ProgressStore:
                 continue
             if not isinstance(values, list):
                 continue
-            completed = set()
-            for value in values:
-                try:
-                    number = int(value)
-                except (TypeError, ValueError):
-                    continue
-                if 0 <= number < SUBMAPS_PER_CARD:
-                    completed.add(number)
+            allowed = VALID_TARGET_KEYS[str(card)]
+            completed = {str(value) for value in values if str(value) in allowed}
             cards[str(card)] = sorted(completed)
         return cards
 
@@ -171,20 +178,21 @@ class ProgressStore:
         )
         temp_path.replace(self.path)
 
-    def mark_submap(self, card_id: str, submap_index: int) -> bool:
+    def mark_target(self, card_id: str, target_key: str) -> bool:
         state = self._require_state()
         if card_id not in VALID_CARD_IDS:
             raise ValueError(f"invalid collection card: {card_id}")
-        if not 0 <= submap_index < SUBMAPS_PER_CARD:
-            raise ValueError(f"invalid submap index: {submap_index}")
-        completed = state.completed_submaps(card_id)
-        if submap_index in completed:
+        target_key = str(target_key)
+        if target_key not in VALID_TARGET_KEYS[card_id]:
+            raise ValueError(f"invalid collection target: {card_id}/{target_key}")
+        completed = state.completed_targets(card_id)
+        if target_key in completed:
             return False
         if state.daily_submaps >= DAILY_SUBMAP_LIMIT:
             state.depleted_today = True
             self.save()
             raise RuntimeError("daily collection limit reached")
-        completed.add(submap_index)
+        completed.add(target_key)
         state.cards[card_id] = sorted(completed)
         state.daily_submaps += 1
         if state.daily_submaps >= DAILY_SUBMAP_LIMIT:
