@@ -79,8 +79,9 @@ class WrappingFlowLayout(QLayout):
 
 
 class ResponsiveFlowWidget(QWidget):
-    def __init__(self):
+    def __init__(self, alignment=Qt.AlignLeft):
         super().__init__()
+        self.alignment = alignment
         self.flow_layout = WrappingFlowLayout(self)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 

@@ -7,7 +7,7 @@ from ok import og
 from ok.gui.tasks.ConfigCard import ConfigCard
 from ok.gui.tasks.LabelAndSwitchButton import LabelAndSwitchButton
 from ok.gui.tasks.LabelAndTextEdit import LabelAndTextEdit
-from PySide6.QtCore import QRect
+from PySide6.QtCore import QRect, Qt
 from PySide6.QtWidgets import QApplication, QPushButton
 from qfluentwidgets import FluentIcon
 
@@ -96,6 +96,12 @@ class ResponsiveTaskConfigUiTest(unittest.TestCase):
         self.assertEqual(buttons[0].geometry().y(), buttons[1].geometry().y())
         self.assertGreater(buttons[2].geometry().y(), buttons[0].geometry().y())
         self.assertGreater(buttons[4].geometry().y(), buttons[2].geometry().y())
+
+    def test_multi_selection_flow_accepts_upstream_alignment_argument(self):
+        widget = ResponsiveFlowWidget(alignment=Qt.AlignRight)
+
+        self.assertEqual(Qt.AlignRight, widget.alignment)
+        widget.close()
 
     def test_expanded_config_card_height_tracks_its_current_width(self):
         values = {
