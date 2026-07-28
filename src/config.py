@@ -135,4 +135,12 @@ config = {
         ["src.ui.AutoLoginStatusTab", "AutoLoginStatusTab"],
     ],
     "scene": ["src.scene.BD2Scene", "BD2Scene"],
+    "update_pyappify": {
+        "to_version": "1.1.9",
+        "zip_url": (
+            "https://github.com/GodRaymond233/ok-bd2/releases/download/"
+            "v0.1.14/ok-bd2-win32.zip"
+        ),
+        "sha256": "9f9537587e2cf2925bd182a245710da554a0571a3504c77ac4043fbd2247a6d0",
+    },
 }
