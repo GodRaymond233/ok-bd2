@@ -10,6 +10,10 @@ from qfluentwidgets import FluentIcon
 from src.tasks.BaseBD2Task import BaseBD2Task
 from src.tasks.map_trade.models import TemplateSpec
 from src.tasks.map_trade.vision import Vision
+from src.utils.home_confirmation import (
+    HOME_GACHA_OCR_RELATIVE_ROI,
+    home_confirmation_passes,
+)
 from src.utils.image_utils import (
     best_pixel_valid_match,
     candidate_scales,
@@ -91,7 +95,9 @@ class DailyTask(BaseBD2Task):
         "公会签到成功",
         "公会签到成功阈值",
         "公会签到 OCR",
+        "公会签到返回主页 小屋按钮",
         "公会签到返回主页 亮度",
+        "公会签到返回主页 抽抽乐 OCR",
         "公会签到返回主页结果",
         "执行小屋签到",
         "小屋签到 loading 状态",
@@ -101,13 +107,17 @@ class DailyTask(BaseBD2Task):
         "my_home",
         "小屋页面检测",
         "小屋页面阈值",
+        "小屋签到返回主页 小屋按钮",
         "小屋签到返回主页 亮度",
+        "小屋签到返回主页 抽抽乐 OCR",
         "小屋签到返回主页结果",
         "执行一键收菜",
         "business_collect 关键字",
         "一键收菜弹窗",
         "一键收菜 OCR",
+        "一键收菜返回主页 小屋按钮",
         "一键收菜返回主页 亮度",
+        "一键收菜返回主页 抽抽乐 OCR",
         "一键收菜返回主页结果",
         "加载页面阈值",
         "主页亮度比例阈值",
@@ -442,7 +452,7 @@ class DailyTask(BaseBD2Task):
             self.log_info("公会签到：未检测到签到成功提示，按流程返回主页。")
 
         self._click_reference(100, 50, after_sleep=1.0)
-        home_ok = self._wait_home_brightness("公会签到返回主页")
+        home_ok = self._wait_for_home_confirmation("公会签到返回主页")
         self._status_set("公会签到返回主页结果", "通过" if home_ok else "失败")
         return home_ok
 
@@ -478,7 +488,7 @@ class DailyTask(BaseBD2Task):
             self._status_set("小屋签到返回主页结果", "未执行")
             return False
 
-        home_ok = self._wait_home_brightness("小屋签到返回主页")
+        home_ok = self._wait_for_home_confirmation("小屋签到返回主页")
         self._status_set("小屋签到返回主页结果", "通过" if home_ok else "失败")
         return home_ok
 
@@ -507,7 +517,7 @@ class DailyTask(BaseBD2Task):
         self._click_reference(1090, 814, after_sleep=2.0)
         self._click_reference(832, 814, after_sleep=1.0)
         self._click_reference(832, 814)
-        home_ok = self._wait_home_brightness("一键收菜返回主页")
+        home_ok = self._wait_for_home_confirmation("一键收菜返回主页")
         self._status_set("一键收菜返回主页结果", "通过" if home_ok else "失败")
         return home_ok
 
@@ -689,17 +699,25 @@ class DailyTask(BaseBD2Task):
         self,
         frame,
     ) -> tuple[bool, DailyMatchResult, DailyTemplateSpec, float, str]:
+        return self._home_confirmation_signals(frame, "快速狩猎主页抽抽乐")
+
+    def _home_confirmation_signals(
+        self,
+        frame,
+        ocr_name: str,
+    ) -> tuple[bool, DailyMatchResult, DailyTemplateSpec, float, str]:
         home_button, home_spec = self._match_best(frame, HOME_TEMPLATES)
         home_ratio = self._home_brightness_ratio(frame)
         gacha_text = self._quick_vision().ocr_text(
             frame,
-            "快速狩猎主页抽抽乐",
-            relative_roi=QUICK_HUNT_HOME_GACHA_ROI,
+            ocr_name,
+            relative_roi=HOME_GACHA_OCR_RELATIVE_ROI,
         )
-        confirmed = (
-            self._passes(home_button, home_spec)
-            and home_ratio >= self._home_ratio_threshold()
-            and "抽抽乐" in self._normalize_text(gacha_text)
+        confirmed = home_confirmation_passes(
+            button_found=self._passes(home_button, home_spec),
+            brightness_ratio=home_ratio,
+            brightness_threshold=self._home_ratio_threshold(),
+            gacha_ocr_text=gacha_text,
         )
         return confirmed, home_button, home_spec, home_ratio, gacha_text
 
@@ -821,14 +839,27 @@ class DailyTask(BaseBD2Task):
         if adventure_enabled and adventure_mode is not None:
             adventure_selected = self._quick_hunt_select_adventure_route()
             if adventure_selected:
+                expected_map_pattern = QUICK_HUNT_ADVENTURE_MAP_PATTERNS[
+                    adventure_selected
+                ]
                 result = self._quick_hunt_execute_current_map(
                     adventure_mode,
                     "冒险航线",
-                    expected_map_pattern=QUICK_HUNT_ADVENTURE_MAP_PATTERNS[
-                        adventure_selected
-                    ],
+                    expected_map_pattern=expected_map_pattern,
                 )
-                if result == "failed":
+                if result == "wrong_map":
+                    self.log_info(
+                        f"快速狩猎：{adventure_selected}航线首次选择未生效，"
+                        "重新 OCR 选择一次。"
+                    )
+                    if not self._quick_hunt_click_adventure(adventure_selected):
+                        return False
+                    result = self._quick_hunt_execute_current_map(
+                        adventure_mode,
+                        "冒险航线重试",
+                        expected_map_pattern=expected_map_pattern,
+                    )
+                if result in {"failed", "wrong_map"}:
                     return False
                 if result == "depleted" or self._quick_hunt_resource_empty("米饭"):
                     self._status_set("快速狩猎米饭", "已耗尽")
@@ -916,35 +947,39 @@ class DailyTask(BaseBD2Task):
 
     def _quick_hunt_select_adventure_route(self) -> str | None:
         preferred = str(self.config.get("快速狩猎资源倾向", "金币"))
-        if preferred not in QUICK_HUNT_ADVENTURE_POINTS:
+        if preferred not in QUICK_HUNT_ADVENTURE_LABEL_PATTERNS:
             self.log_info(f"快速狩猎：不支持的冒险航线资源：{preferred}")
             return None
         strategy = str(self.config.get("快速狩猎双倍策略", "优先双倍"))
         if strategy == "忽视双倍":
-            self._quick_hunt_click_adventure("金币")
-            return "金币"
+            return "金币" if self._quick_hunt_click_adventure("金币") else None
         states = self._quick_hunt_double_states()
         if strategy == "优先双倍":
             selected = "金币" if states["金币"] else "经验" if states["经验"] else None
             if selected is None:
                 self.log_info("快速狩猎：金币和经验均未识别到双倍，跳过冒险航线。")
                 return None
-            self._quick_hunt_click_adventure(selected)
-            return selected
+            return selected if self._quick_hunt_click_adventure(selected) else None
         if strategy == "强制双倍":
             alternate = "经验" if preferred == "金币" else "金币"
             for resource in (preferred, alternate):
                 if states[resource]:
-                    self._quick_hunt_click_adventure(resource)
-                    return resource
+                    return resource if self._quick_hunt_click_adventure(resource) else None
             self.log_info("快速狩猎：首选和备选资源均未识别到双倍，跳过冒险航线。")
             return None
         self.log_info(f"快速狩猎：不支持的双倍策略：{strategy}")
         return None
 
-    def _quick_hunt_click_adventure(self, resource: str) -> str:
-        self._click_reference(*QUICK_HUNT_ADVENTURE_POINTS[resource], after_sleep=0.8)
-        return resource
+    def _quick_hunt_click_adventure(self, resource: str) -> bool:
+        pattern = QUICK_HUNT_ADVENTURE_LABEL_PATTERNS.get(resource)
+        if pattern is None:
+            return False
+        return self._quick_hunt_click_ocr(
+            [pattern],
+            QUICK_HUNT_ADVENTURE_LIST_ROI,
+            self._quick_hunt_ui_timeout(),
+            name=f"选择{resource}航线",
+        )
 
     def _quick_hunt_double_states(self, frame=None) -> dict[str, bool]:
         vision = self._quick_vision()
@@ -991,24 +1026,22 @@ class DailyTask(BaseBD2Task):
         ):
             return "failed"
         if expected_map_pattern is not None:
-            map_text, _box = self._quick_hunt_wait_ocr(
-                [expected_map_pattern],
-                QUICK_HUNT_COUNT_ROI,
-                self._quick_hunt_ui_timeout(),
+            map_state, map_text, actual_map = self._quick_hunt_wait_map_confirmation(
+                expected_map_pattern,
                 name=f"{stage}-地图确认",
             )
-            if not map_text:
+            if map_state != "matched":
                 self.log_info(
                     f"快速狩猎：{stage}未确认目标地图 {expected_map_pattern}，"
-                    "取消本次快速狩猎。"
+                    f"当前={actual_map or map_text or '-'}，取消本次快速狩猎。"
                 )
-                self._quick_hunt_click_ocr(
+                cancelled = self._quick_hunt_click_ocr(
                     [r"取消"],
                     QUICK_HUNT_COUNT_ROI,
                     min(2.0, self._quick_hunt_ui_timeout()),
                     name=f"{stage}-取消错误地图",
                 )
-                return "failed"
+                return "wrong_map" if cancelled else "failed"
         if count_mode not in {"MIN", "MAX"}:
             self.log_info(f"快速狩猎：不支持的次数模式：{count_mode}")
             return "failed"
@@ -1136,6 +1169,46 @@ class DailyTask(BaseBD2Task):
             f"快速狩猎：{name} 超时，最后一次 OCR={last_text or '-'}。"
         )
         return "", None
+
+    def _quick_hunt_wait_map_confirmation(
+        self,
+        expected_pattern: str,
+        name: str,
+    ) -> tuple[str, str, str | None]:
+        expected = re.compile(expected_pattern, re.IGNORECASE)
+        end_at = monotonic() + self._quick_hunt_ui_timeout()
+        last_text = ""
+        while monotonic() <= end_at:
+            frame = self.capture_frame()
+            boxes = self._quick_vision().ocr_boxes(
+                frame,
+                name,
+                relative_roi=QUICK_HUNT_COUNT_ROI,
+            )
+            text = " ".join(str(getattr(box, "name", "")) for box in boxes)
+            last_text = text
+            self._status_set(f"{name} OCR", text or "-")
+            normalized = self._normalize_text(text)
+            if expected.search(normalized):
+                return "matched", text, None
+            actual_map = next(
+                (
+                    label
+                    for label, pattern in QUICK_HUNT_EXECUTION_MAP_PATTERNS
+                    if pattern.search(normalized)
+                ),
+                None,
+            )
+            if actual_map is not None:
+                self.log_info(
+                    f"快速狩猎：{name}明确识别到错误地图 {actual_map}。"
+                )
+                return "wrong", text, actual_map
+            self.sleep(0.4)
+        self.log_info(
+            f"快速狩猎：{name}超时，最后一次 OCR={last_text or '-'}。"
+        )
+        return "timeout", last_text, None
 
     def _quick_hunt_click_ocr(
         self,
@@ -1485,22 +1558,41 @@ class DailyTask(BaseBD2Task):
             self.sleep(interval)
         return False, last_text
 
-    def _wait_home_brightness(
+    def _wait_for_home_confirmation(
         self,
         name: str,
         interval: float = 0.35,
     ) -> bool:
         end_at = monotonic() + float(self.config.get("主页确认等待秒数", 10.0))
+        last_button = self._empty_match()
+        last_spec = HOME_TEMPLATE
         last_ratio = 0.0
+        last_gacha_text = ""
         while monotonic() <= end_at:
             frame = self.capture_frame()
-            last_ratio = self._home_brightness_ratio(frame)
+            (
+                confirmed,
+                last_button,
+                last_spec,
+                last_ratio,
+                last_gacha_text,
+            ) = self._home_confirmation_signals(frame, f"{name} 抽抽乐")
+            self.info_set(
+                f"{name} 小屋按钮",
+                f"{last_spec.file_name}={last_button.score:.3f}/{last_button.pixel_score:.3f}",
+            )
             self.info_set(f"{name} 亮度", f"{last_ratio:.3f}")
-            if last_ratio >= self._home_ratio_threshold():
+            self.info_set(f"{name} 抽抽乐 OCR", last_gacha_text or "-")
+            if confirmed:
                 return True
             self.sleep(interval)
 
-        self.log_info(f"{name}：主页亮度未达到阈值，ratio={last_ratio:.3f}")
+        self.log_info(
+            f"{name}：未同时确认主页按钮、亮度和抽抽乐文字，"
+            f"template={last_spec.file_name}, "
+            f"button={last_button.score:.3f}/{last_button.pixel_score:.3f}, "
+            f"ratio={last_ratio:.3f}, ocr={last_gacha_text or '-'}。"
+        )
         return False
 
     def _home_brightness_ratio(self, frame) -> float:
@@ -1749,11 +1841,11 @@ QUICK_HUNT_CRYSTAL_TITLE_ROI = _quick_hunt_relative_roi(340, 452, 235, 128)
 QUICK_HUNT_STONE_LIST_ROI = QUICK_HUNT_CRYSTAL_TITLE_ROI
 QUICK_HUNT_STONE_COUNT_ROI = _quick_hunt_relative_roi(1794, 288, 1689, 80)
 QUICK_HUNT_DOUBLE_ROI = _quick_hunt_relative_roi(168, 337, 135, 205)
-QUICK_HUNT_HOME_GACHA_ROI = _quick_hunt_relative_roi(110, 993, 205, 1047)
+QUICK_HUNT_ADVENTURE_LIST_ROI = _quick_hunt_relative_roi(228, 504, 128, 116)
 
-QUICK_HUNT_ADVENTURE_POINTS = {
-    "金币": (177, 255),
-    "经验": (176, 354),
+QUICK_HUNT_ADVENTURE_LABEL_PATTERNS = {
+    "金币": r"^金币$",
+    "经验": r"^史莱姆$",
 }
 QUICK_HUNT_ADVENTURE_MAP_PATTERNS = {
     "金币": r"哥布林遗迹",
@@ -1775,6 +1867,7 @@ QUICK_HUNT_RETURN_MAP_PATTERNS = (
     ("史莱姆王国", re.compile(r"史莱姆王国")),
     ("属性洞穴", re.compile(r"[火水风光暗].?之?.?洞穴")),
 )
+QUICK_HUNT_EXECUTION_MAP_PATTERNS = QUICK_HUNT_RETURN_MAP_PATTERNS
 
 QUICK_HUNT_LIST_COLLAPSE_TEMPLATE = TemplateSpec(
     "快速狩猎资源列表收起",

@@ -5,6 +5,7 @@ import numpy as np
 
 from src.tasks.FreeGachaTask import (
     BACK_PAGE_KEYWORDS,
+    HOME_BUTTON_TEMPLATES,
     LOADING_TEMPLATE,
     REFERENCE_HEIGHT,
     REFERENCE_WIDTH,
@@ -52,19 +53,6 @@ class FreeGachaTaskHelperTest(unittest.TestCase):
         self.assertEqual(973 / REFERENCE_HEIGHT, calls["y"])
         self.assertEqual(0.5, calls["after_sleep"])
 
-    def test_home_brightness_ratio_uses_home_button_region(self):
-        task = object.__new__(FreeGachaTask)
-        task.config = {"主页亮度比例阈值": 0.75}
-        template = np.full((20, 20), 100, dtype=np.uint8)
-        task._load_template = lambda _spec: template
-
-        frame = np.zeros((REFERENCE_HEIGHT, REFERENCE_WIDTH, 3), dtype=np.uint8)
-        center_x = 166
-        center_y = 158
-        frame[center_y - 10 : center_y + 10, center_x - 10 : center_x + 10] = 100
-
-        self.assertAlmostEqual(1.0, task._home_brightness_ratio(frame), places=2)
-
     def test_loading_wait_prioritizes_gacha_page_ocr(self):
         task = object.__new__(FreeGachaTask)
         task.config = {
@@ -93,7 +81,7 @@ class FreeGachaTaskHelperTest(unittest.TestCase):
             FreeGachaTask._wait_loading_or_gacha_page(task, "进入抽卡页"),
         )
 
-    def test_loading_wait_prioritizes_home_brightness(self):
+    def test_loading_wait_prioritizes_complete_home_confirmation(self):
         task = object.__new__(FreeGachaTask)
         task.config = {
             "加载页面阈值": 0.72,
@@ -114,12 +102,57 @@ class FreeGachaTaskHelperTest(unittest.TestCase):
             return GachaMatchResult(-1.0, -1.0, (0, 0), (0, 0))
 
         task._match = fake_match
-        task._home_brightness_ratio = lambda _frame: 1.0 if loading_seen["value"] else 0.0
-        task._wait_home_brightness = lambda *_args, **_kwargs: self.fail(
+        task._home_confirmation_ok = (
+            lambda _frame, _name: loading_seen["value"]
+        )
+        task._wait_for_home_confirmation = lambda *_args, **_kwargs: self.fail(
             "home should be accepted before waiting for loading to disappear"
         )
 
-        self.assertTrue(FreeGachaTask._wait_loading_or_home_brightness(task, "返回主页"))
+        self.assertTrue(
+            FreeGachaTask._wait_loading_or_home_confirmation(task, "返回主页")
+        )
+
+    def test_home_confirmation_requires_button_brightness_and_gacha_ocr(self):
+        task = object.__new__(FreeGachaTask)
+        task.config = {"主页亮度比例阈值": 0.75}
+        task.info_set = lambda *_args, **_kwargs: None
+        result = type(
+            "Result",
+            (),
+            {"score": 0.9, "pixel_score": 0.9},
+        )()
+        brightness = {"value": 0.8}
+        gacha_text = {"value": "抽抽乐"}
+        button_found = {"value": True}
+
+        class FakeVision:
+            def match(self, _frame, _spec):
+                return result
+
+            def template_brightness_ratio(self, _frame, _spec, _result):
+                return brightness["value"]
+
+            def ocr_text(self, _frame, _name, relative_roi=None):
+                self.relative_roi = relative_roi
+                return gacha_text["value"]
+
+            def passes(self, _result, _spec):
+                return button_found["value"]
+
+        task._home_vision = lambda: FakeVision()
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+
+        self.assertTrue(task._home_confirmation_signals(frame, "返回主页")[0])
+        button_found["value"] = False
+        self.assertFalse(task._home_confirmation_signals(frame, "返回主页")[0])
+        button_found["value"] = True
+        brightness["value"] = 0.74
+        self.assertFalse(task._home_confirmation_signals(frame, "返回主页")[0])
+        brightness["value"] = 0.8
+        gacha_text["value"] = ""
+        self.assertFalse(task._home_confirmation_signals(frame, "返回主页")[0])
+        self.assertEqual(3, len(HOME_BUTTON_TEMPLATES))
 
     def test_result_skip_clicks_for_duration_then_polls_ocr_until_ticket_page(self):
         task = object.__new__(FreeGachaTask)

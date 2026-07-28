@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -8,6 +9,8 @@ from src.tasks.SquareGoddessTask import (
     GAMEPLAY_CARTRIDGE_POINT,
     GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO,
     GAMEPLAY_CATEGORY_HIGHLIGHT_REGION,
+    GODDESS_DAILY_REGION,
+    GODDESS_PRAY_FALLBACK_POINT,
     QUICK_SWITCH_PAGE_PATTERNS,
     QUICK_SWITCH_TEMPLATE,
     REFERENCE_HEIGHT,
@@ -23,6 +26,32 @@ from src.tasks.SquareGoddessTask import (
 
 
 class SquareGoddessEntryTest(unittest.TestCase):
+    def test_home_requires_button_brightness_and_gacha_ocr(self):
+        task = object.__new__(SquareGoddessTask)
+        task.config = {
+            "主页确认等待秒数": 0.0,
+            "主页亮度比例阈值": 0.75,
+        }
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task.sleep = lambda *_args, **_kwargs: None
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        match = SquareMatchResult(0.9, 0.9, (0, 0), (10, 10))
+        task._match = lambda *_args, **_kwargs: match
+        task._passes = lambda *_args, **_kwargs: True
+        task._home_brightness_ratio = lambda _frame: 0.8
+        gacha_text = {"value": ""}
+        task._ocr_text = lambda *_args, **_kwargs: gacha_text["value"]
+
+        self.assertFalse(SquareGoddessTask._wait_for_cartridge_home(task))
+        gacha_text["value"] = "抽抽乐"
+        self.assertTrue(SquareGoddessTask._wait_for_cartridge_home(task))
+        task._home_brightness_ratio = lambda _frame: 0.74
+        self.assertFalse(SquareGoddessTask._wait_for_cartridge_home(task))
+        task._home_brightness_ratio = lambda _frame: 0.8
+        task._passes = lambda *_args, **_kwargs: False
+        self.assertFalse(SquareGoddessTask._wait_for_cartridge_home(task))
+
     def test_entry_uses_quick_switch_gameplay_and_fixed_seventh_slot(self):
         task = object.__new__(SquareGoddessTask)
         task.config = {}
@@ -214,20 +243,41 @@ class SquareGoddessEntryTest(unittest.TestCase):
         self.assertTrue(SquareGoddessTask._wait_for_gameplay_category(task))
         self.assertEqual(0.05, GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO)
 
-    def test_goddess_flow_checks_square_notice_before_pray_ocr(self):
+    def test_goddess_flow_uses_notice_joint_daily_signal_then_prayer(self):
         task = object.__new__(SquareGoddessTask)
-        task.config = {"女神像许愿等待秒数": 0.0}
+        task.config = {}
         task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
         stages = []
         task._click_square_notice_if_present = (
-            lambda: stages.append("notice") or False
+            lambda **_kwargs: stages.append("notice") or False
         )
-        task._click_pray_until_gone = (
+        task._click_goddess_daily_navigation_until = (
+            lambda **_kwargs: stages.append("navigation") or True
+        )
+        task._wait_for_goddess_prayer_completion = (
             lambda **_kwargs: stages.append("pray") or True
         )
 
         self.assertTrue(SquareGoddessTask._pray_at_goddess(task))
-        self.assertEqual(["notice", "pray"], stages)
+        self.assertEqual(["notice", "navigation", "pray"], stages)
+
+    def test_missing_joint_daily_signal_is_treated_as_already_completed(self):
+        task = object.__new__(SquareGoddessTask)
+        task.config = {}
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        stages = []
+        task._click_square_notice_if_present = lambda **_kwargs: False
+        task._click_goddess_daily_navigation_until = (
+            lambda **_kwargs: stages.append("navigation") or False
+        )
+        task._wait_for_goddess_prayer_completion = (
+            lambda **_kwargs: stages.append("pray") or True
+        )
+
+        self.assertTrue(SquareGoddessTask._pray_at_goddess(task))
+        self.assertEqual(["navigation"], stages)
 
     def test_successful_run_returns_home_after_prayer(self):
         task = object.__new__(SquareGoddessTask)
@@ -263,7 +313,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
 
     def test_square_notice_uses_requested_region_and_clicks_match_center(self):
         self.assertEqual("image/green/tanhaoGE.png", SQUARE_NOTICE_TEMPLATE.file_name)
-        self.assertEqual((1376, 862, 69, 51), SQUARE_NOTICE_TEMPLATE.roi)
+        self.assertEqual((1380, 863, 62, 46), SQUARE_NOTICE_TEMPLATE.roi)
         self.assertTrue(SQUARE_NOTICE_TEMPLATE.green_mask)
         self.assertEqual(0.72, SQUARE_NOTICE_TEMPLATE.min_pixel_score)
 
@@ -273,8 +323,8 @@ class SquareGoddessEntryTest(unittest.TestCase):
         task._match = lambda _frame, spec: SquareMatchResult(
             score=0.90,
             pixel_score=0.90,
-            position=(1380, 865),
-            size=(60, 44),
+            position=(1380, 863),
+            size=(62, 46),
         )
         task._passes = lambda _result, spec: spec is SQUARE_NOTICE_TEMPLATE
         clicks = []
@@ -282,14 +332,141 @@ class SquareGoddessEntryTest(unittest.TestCase):
 
         self.assertTrue(SquareGoddessTask._click_square_notice_if_present(task))
         self.assertEqual(
-            [((1410, 887, 1920, 1080), {"after_sleep": 1.0})],
+            [((1411, 886, 1920, 1080), {"after_sleep": 1.0})],
             clicks,
         )
 
-    def test_daily_navigation_icon_uses_requested_region(self):
+    def test_daily_navigation_uses_requested_joint_region(self):
         self.assertEqual("image/Square_DailyIco.png", SQUARE_DAILY_ICON_TEMPLATE.file_name)
-        self.assertEqual((1548, 203, 26, 25), SQUARE_DAILY_ICON_TEMPLATE.roi)
+        self.assertEqual((1546, 199, 311, 63), GODDESS_DAILY_REGION)
+        self.assertEqual(GODDESS_DAILY_REGION, SQUARE_DAILY_ICON_TEMPLATE.roi)
         self.assertEqual(0.72, SQUARE_DAILY_ICON_TEMPLATE.min_pixel_score)
+
+        task = object.__new__(SquareGoddessTask)
+        task.info_set = lambda *_args, **_kwargs: None
+        task.sleep = lambda *_args, **_kwargs: None
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task._match = lambda _frame, _spec: SquareMatchResult(
+            score=0.90,
+            pixel_score=0.90,
+            position=(1550, 203),
+            size=(24, 24),
+        )
+        task._passes = lambda *_args, **_kwargs: True
+        ocr_calls = []
+
+        def find_navigation(_frame, name):
+            ocr_calls.append((name, GODDESS_DAILY_REGION))
+            return (1700, 230), "移动至艾力克史温女"
+
+        task._goddess_navigation_click_point = find_navigation
+        clicks = []
+        task._click_client = lambda *args, **kwargs: clicks.append((args, kwargs))
+
+        self.assertTrue(
+            SquareGoddessTask._click_goddess_daily_navigation_until(
+                task,
+                timeout=0.1,
+            )
+        )
+        self.assertEqual([("广场导航文本", GODDESS_DAILY_REGION)], ocr_calls)
+        self.assertEqual(
+            [((1700, 230, 1920, 1080), {"after_sleep": 2.0})],
+            clicks,
+        )
+
+    def test_navigation_ocr_clicks_only_the_matching_text_union_center(self):
+        task = object.__new__(SquareGoddessTask)
+        task.config = {"广场 OCR 阈值": 0.2}
+        task.info_set = lambda *_args, **_kwargs: None
+        task._ocr_boxes = lambda *_args, **_kwargs: [
+            SimpleNamespace(name="每日奖励", x=0, y=0, width=60, height=18),
+            SimpleNamespace(name="移动至", x=40, y=20, width=50, height=20),
+            SimpleNamespace(name="艾力克史温女", x=90, y=20, width=100, height=20),
+        ]
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+
+        point, text = SquareGoddessTask._goddess_navigation_click_point(
+            task,
+            frame,
+            name="广场导航文本",
+        )
+
+        self.assertEqual((1661, 229), point)
+        self.assertIn("每日奖励", text)
+        self.assertIn("移动至", text)
+
+    def test_prayer_prefers_ocr_center_and_confirms_navigation_disappeared(self):
+        self.assertEqual(
+            (1412 / REFERENCE_WIDTH, 884 / REFERENCE_HEIGHT),
+            GODDESS_PRAY_FALLBACK_POINT,
+        )
+
+        task = object.__new__(SquareGoddessTask)
+        task.config = {
+            "女神像许愿等待秒数": 8.0,
+            "女神像许愿最多点击次数": 3,
+            "女神像完成确认等待秒数": 8.0,
+        }
+        task.info_set = lambda *_args, **_kwargs: None
+        task.sleep = lambda *_args, **_kwargs: None
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task._ocr_pattern_click_point = (
+            lambda _frame, _patterns, name, roi: (
+                ((1410, 880), "向女神像许愿") if name == "女神像许愿" else (None, "")
+            )
+        )
+        clicks = []
+        task._click_client = lambda *args, **kwargs: clicks.append((args, kwargs))
+        task.operate_click = lambda *_args, **_kwargs: self.fail("不应使用固定点")
+        task._wait_for_daily_navigation_to_disappear = (
+            lambda **_kwargs: True
+        )
+
+        self.assertTrue(
+            SquareGoddessTask._wait_for_goddess_prayer_completion(
+                task,
+                timeout=0.1,
+            )
+        )
+        self.assertEqual(
+            [((1410, 880, 1920, 1080), {"after_sleep": 2.0})],
+            clicks,
+        )
+
+    def test_prayer_uses_relative_fallback_when_ocr_is_not_found(self):
+        task = object.__new__(SquareGoddessTask)
+        task.config = {
+            "女神像许愿等待秒数": 0.5,
+            "女神像许愿最多点击次数": 1,
+            "女神像完成确认等待秒数": 8.0,
+        }
+        task.info_set = lambda *_args, **_kwargs: None
+        task.sleep = lambda *_args, **_kwargs: None
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task._ocr_pattern_click_point = (
+            lambda _frame, _patterns, name, roi: (None, "")
+        )
+        task._click_client = lambda *_args, **_kwargs: self.fail("没有 OCR 中心可点击")
+        clicks = []
+        task.operate_click = lambda *args, **kwargs: clicks.append((args, kwargs))
+        task._wait_for_daily_navigation_to_disappear = lambda **_kwargs: True
+
+        with patch(
+            "src.tasks.SquareGoddessTask.monotonic",
+            side_effect=(0.0, 0.0, 0.5, 0.5),
+        ):
+            self.assertTrue(
+                SquareGoddessTask._wait_for_goddess_prayer_completion(
+                    task,
+                    timeout=10.0,
+                )
+            )
+
+        self.assertEqual(
+            [((*GODDESS_PRAY_FALLBACK_POINT,), {"after_sleep": 2.0})],
+            clicks,
+        )
 
 
 if __name__ == "__main__":

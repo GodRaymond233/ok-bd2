@@ -25,10 +25,14 @@ class MapCollectionTask(MapAutomationTaskBase):
         "状态",
         "当前阶段",
         "导航状态",
+        "主页小屋按钮",
+        "主页亮度",
+        "主页抽抽乐 OCR",
         "目标卡带",
         "剧情角标",
         "卡带滚轮",
         "采集进度",
+        "区域地图",
         "探查次数",
         "吸取次数",
         "召集次数",
@@ -43,7 +47,7 @@ class MapCollectionTask(MapAutomationTaskBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.name = "每周跑图"
-        self.description = "按周进度采集 18 张剧情卡带；通常在周初几天按每日额度完成。"
+        self.description = "按周进度采集 17 张剧情卡带；每张处理主城区和战斗区域1、2。"
         self.icon = FluentIcon.GLOBE
         self.group_name = "日常/周常"
         self.group_icon = FluentIcon.CALENDAR
@@ -61,7 +65,7 @@ class MapCollectionTask(MapAutomationTaskBase):
         )
         self.config_description.update(
             {
-                "执行地图采集": "按周进度遍历 18 张可采集剧情卡带的三个小图。",
+                "执行地图采集": "按周进度遍历 17 张剧情卡带的主城区和战斗区域1、2。",
                 MAP_VISION_THRESHOLD_KEY: "卡带、导航与采集技能模板的最低匹配可信度。",
                 MAP_OCR_THRESHOLD_KEY: "技能次数和按钮识别的最低可信度。",
                 "加载页面等待秒数": "进入卡带或传送后等待加载完成的最长秒数。",

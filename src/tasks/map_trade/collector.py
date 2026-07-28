@@ -56,15 +56,19 @@ class Collector:
         state = self.progress.load()
         if state.depleted_today or state.daily_submaps >= DAILY_SUBMAP_LIMIT:
             return CollectionResult(True, depleted=True, message="今日采集技能额度已用尽")
-        if state.weekly_submap_count >= len(COLLECTABLE_CARDS) * 3:
-            return CollectionResult(True, message="本周 54 个小图已经全部完成")
+        weekly_target_count = sum(len(card.targets) for card in COLLECTABLE_CARDS)
+        if state.weekly_submap_count >= weekly_target_count:
+            return CollectionResult(
+                True,
+                message=f"本周 {weekly_target_count} 张目标地图已经全部完成",
+            )
 
         completed_this_run = 0
         consecutive_card_failures = 0
         card_retries = max(1, int(self.task.config.get("卡带单步重试次数", 2)))
         for card in COLLECTABLE_CARDS:
-            completed = state.completed_submaps(card.card_id)
-            if len(completed) >= 3:
+            completed = state.completed_targets(card.card_id)
+            if len(completed) >= len(card.targets):
                 continue
             if state.depleted_today or state.daily_submaps >= DAILY_SUBMAP_LIMIT:
                 self.progress.mark_depleted_today()
@@ -92,8 +96,8 @@ class Collector:
                 continue
 
             card_failed = False
-            for submap_index in range(3):
-                if submap_index in completed:
+            for target in card.targets:
+                if target.key in completed:
                     continue
                 if state.daily_submaps >= DAILY_SUBMAP_LIMIT:
                     self.progress.mark_depleted_today()
@@ -103,11 +107,15 @@ class Collector:
                         completed_submaps=completed_this_run,
                         message="达到每日 21 个小图保护上限",
                     )
-                self._status("采集进度", f"{card.card_id} 小图{submap_index + 1}/3")
-                arrived = self.navigator.enter_collection_submap(submap_index)
+                self._status(
+                    "采集进度",
+                    f"{card.card_id} {target.role.label}：{target.title}",
+                )
+                arrived = self.navigator.enter_collection_map(card.card_id, target)
                 if not arrived.success:
                     self.task.log_warning(
-                        f"地图采集：{card.card_id} 小图{submap_index + 1} 传送失败。"
+                        f"地图采集：{card.card_id} {target.role.label}"
+                        f"（{target.title}）进入失败：{arrived.message or '-'}。"
                     )
                     card_failed = True
                     break
@@ -118,7 +126,7 @@ class Collector:
                         completed_submaps=completed_this_run,
                         message=f"{card.card_id} 技能操作失败",
                     )
-                self.progress.mark_submap(card.card_id, submap_index)
+                self.progress.mark_target(card.card_id, target.key)
                 state = self.progress.state
                 completed_this_run += 1
                 if depleted:

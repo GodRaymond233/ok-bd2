@@ -16,8 +16,9 @@ from src.tasks.DailyTask import (
     HOME_RICE_TEMPLATE,
     LOADING_TEMPLATE,
     MY_HOME_TEMPLATE,
+    QUICK_HUNT_ADVENTURE_LABEL_PATTERNS,
+    QUICK_HUNT_ADVENTURE_LIST_ROI,
     QUICK_HUNT_ADVENTURE_MAP_PATTERNS,
-    QUICK_HUNT_ADVENTURE_POINTS,
     QUICK_HUNT_BUTTON_ROI,
     QUICK_HUNT_COUNT_ROI,
     QUICK_HUNT_CRYSTAL_POINT,
@@ -267,7 +268,7 @@ class DailyTaskHelperTest(unittest.TestCase):
         task._click_reference = lambda x, y, **_kwargs: clicks.append((x, y))
         task._wait_loading_or_template_or_ocr = lambda *_args, **_kwargs: ("none", False, "")
         task._wait_for_template_or_ocr = lambda *_args, **_kwargs: (False, "")
-        task._wait_home_brightness = lambda *_args, **_kwargs: True
+        task._wait_for_home_confirmation = lambda *_args, **_kwargs: True
 
         self.assertTrue(DailyTask.run_guild_sign_in(task))
         self.assertEqual([(370, 155), (100, 50)], clicks)
@@ -290,7 +291,7 @@ class DailyTaskHelperTest(unittest.TestCase):
         task._click_reference = lambda x, y, **_kwargs: clicks.append((x, y))
         task._wait_loading_or_template_or_ocr = lambda *_args, **_kwargs: ("none", False, "")
         task._wait_for_template_or_ocr = lambda *_args, **_kwargs: (False, "")
-        task._wait_home_brightness = lambda *_args, **_kwargs: True
+        task._wait_for_home_confirmation = lambda *_args, **_kwargs: True
 
         self.assertTrue(DailyTask.run_guild_sign_in(task))
         self.assertEqual([(370, 155), (100, 50)], clicks)
@@ -320,7 +321,7 @@ class DailyTaskHelperTest(unittest.TestCase):
         task._wait_for_template_or_ocr = lambda *_args, **_kwargs: self.fail(
             "success already found"
         )
-        task._wait_home_brightness = lambda *_args, **_kwargs: True
+        task._wait_for_home_confirmation = lambda *_args, **_kwargs: True
 
         self.assertTrue(DailyTask.run_guild_sign_in(task))
         self.assertEqual([1.0, 1.0], sleeps)
@@ -344,7 +345,7 @@ class DailyTaskHelperTest(unittest.TestCase):
         task._click_reference = lambda x, y, **_kwargs: clicks.append((x, y))
         task._wait_loading_or_template_or_ocr = lambda *_args, **_kwargs: ("none", False, "")
         task._wait_for_template_or_ocr = lambda *_args, **_kwargs: (False, "")
-        task._wait_home_brightness = lambda *_args, **_kwargs: True
+        task._wait_for_home_confirmation = lambda *_args, **_kwargs: True
 
         self.assertTrue(DailyTask.run_guild_sign_in(task))
         self.assertEqual([(370, 155), (100, 50)], clicks)
@@ -369,7 +370,7 @@ class DailyTaskHelperTest(unittest.TestCase):
         task._click_reference = lambda x, y, **_kwargs: clicks.append((x, y))
         task._wait_loading_or_template_or_ocr = lambda *_args, **_kwargs: ("none", False, "")
         task._wait_for_template_or_ocr = lambda *_args, **_kwargs: (False, "")
-        task._wait_home_brightness = lambda *_args, **_kwargs: True
+        task._wait_for_home_confirmation = lambda *_args, **_kwargs: True
 
         self.assertTrue(DailyTask.run_guild_sign_in(task))
         self.assertEqual([(370, 155), (100, 50)], clicks)
@@ -401,7 +402,7 @@ class DailyTaskHelperTest(unittest.TestCase):
         task._click_reference = lambda x, y, **_kwargs: clicks.append((x, y))
         task._wait_loading_or_template = lambda *_args, **_kwargs: ("none", False)
         task._wait_for_template = lambda *_args, **_kwargs: True
-        task._wait_home_brightness = lambda *_args, **_kwargs: True
+        task._wait_for_home_confirmation = lambda *_args, **_kwargs: True
 
         self.assertTrue(DailyTask.run_my_home_sign_in(task))
         self.assertEqual([(166, 158), (100, 50)], clicks)
@@ -471,7 +472,7 @@ class DailyTaskHelperTest(unittest.TestCase):
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
         task._wait_for_ocr_keywords = lambda *_args, **_kwargs: (True, "一键获得 取消")
-        task._wait_home_brightness = lambda *_args, **_kwargs: True
+        task._wait_for_home_confirmation = lambda *_args, **_kwargs: True
         clicks = []
         sleeps = []
         task._click_reference = lambda x, y, after_sleep=0.0: clicks.append((x, y, after_sleep))
@@ -555,7 +556,14 @@ class DailyTaskHelperTest(unittest.TestCase):
             (1689 / 1920, 80 / 1080, 1794 / 1920, 288 / 1080),
             QUICK_HUNT_STONE_COUNT_ROI,
         )
-        self.assertEqual({"金币": (177, 255), "经验": (176, 354)}, QUICK_HUNT_ADVENTURE_POINTS)
+        self.assertEqual(
+            (128 / 1920, 116 / 1080, 228 / 1920, 504 / 1080),
+            QUICK_HUNT_ADVENTURE_LIST_ROI,
+        )
+        self.assertEqual(
+            {"金币": r"^金币$", "经验": r"^史莱姆$"},
+            QUICK_HUNT_ADVENTURE_LABEL_PATTERNS,
+        )
         self.assertEqual(
             {"金币": r"哥布林遗迹", "经验": r"史莱姆王国"},
             QUICK_HUNT_ADVENTURE_MAP_PATTERNS,
@@ -579,7 +587,7 @@ class DailyTaskHelperTest(unittest.TestCase):
         self.assertEqual((0, 0, 255), bgr)
         self.assertEqual((0, 255, 255), hsv)
 
-    def test_quick_hunt_home_requires_button_and_brightness(self):
+    def test_quick_hunt_home_requires_button_brightness_and_gacha_ocr(self):
         task = object.__new__(QuickHuntTask)
         task.config = {"主页亮度比例阈值": 0.75}
         match = DailyMatchResult(0.9, 0.85, (0, 0), (10, 10))
@@ -834,7 +842,9 @@ class DailyTaskHelperTest(unittest.TestCase):
         }
         task._quick_hunt_double_states = lambda: {"金币": True, "经验": True}
         clicks = []
-        task._quick_hunt_click_adventure = lambda resource: clicks.append(resource)
+        task._quick_hunt_click_adventure = (
+            lambda resource: clicks.append(resource) or True
+        )
         task.log_info = lambda *_args, **_kwargs: None
 
         self.assertTrue(task._quick_hunt_select_adventure_route())
@@ -850,7 +860,9 @@ class DailyTaskHelperTest(unittest.TestCase):
             "ignore-double mode must not inspect the template"
         )
         clicks = []
-        task._quick_hunt_click_adventure = lambda resource: clicks.append(resource)
+        task._quick_hunt_click_adventure = (
+            lambda resource: clicks.append(resource) or True
+        )
         task.log_info = lambda *_args, **_kwargs: None
 
         self.assertTrue(task._quick_hunt_select_adventure_route())
@@ -881,6 +893,39 @@ class DailyTaskHelperTest(unittest.TestCase):
                 "hunt",
                 ("狩猎场", "MIN"),
                 "adventure-no-double",
+            ],
+            calls,
+        )
+
+    def test_quick_hunt_adventure_wrong_map_reselects_by_ocr_once(self):
+        task = object.__new__(QuickHuntTask)
+        task.config = {
+            "快速狩猎狩猎场": False,
+            "快速狩猎冒险航线": True,
+            "快速狩猎米饭分配": "狩猎场x1 / 双倍图MAX",
+        }
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task._quick_hunt_resource_empty = lambda _resource: False
+        task._quick_hunt_select_adventure_route = lambda: "金币"
+        calls = []
+        task._quick_hunt_click_adventure = (
+            lambda resource: calls.append(("reselect", resource)) or True
+        )
+        results = iter(("wrong_map", "done"))
+        task._quick_hunt_execute_current_map = (
+            lambda mode, stage, expected_map_pattern=None: calls.append(
+                (stage, mode, expected_map_pattern)
+            )
+            or next(results)
+        )
+
+        self.assertTrue(task._quick_hunt_run_rice_scheduler())
+        self.assertEqual(
+            [
+                ("冒险航线", "MAX", r"哥布林遗迹"),
+                ("reselect", "金币"),
+                ("冒险航线重试", "MAX", r"哥布林遗迹"),
             ],
             calls,
         )
@@ -981,12 +1026,10 @@ class DailyTaskHelperTest(unittest.TestCase):
             )
             or True
         )
-        wait_calls = []
-        task._quick_hunt_wait_ocr = (
-            lambda patterns, roi, timeout, name: wait_calls.append(
-                (patterns, roi, timeout, name)
-            )
-            or ("哥布林遗迹极难", SimpleNamespace())
+        map_calls = []
+        task._quick_hunt_wait_map_confirmation = (
+            lambda pattern, name: map_calls.append((pattern, name))
+            or ("matched", "哥布林遗迹极难", None)
         )
         task._quick_hunt_wait_result = lambda _stage: "done"
 
@@ -999,8 +1042,8 @@ class DailyTaskHelperTest(unittest.TestCase):
             ),
         )
         self.assertEqual(
-            [([r"哥布林遗迹"], QUICK_HUNT_COUNT_ROI, 8.0, "冒险航线-地图确认")],
-            wait_calls,
+            [(r"哥布林遗迹", "冒险航线-地图确认")],
+            map_calls,
         )
         self.assertEqual("冒险航线-MAX", click_calls[1][3])
         self.assertEqual("冒险航线-开始狩猎", click_calls[2][3])
@@ -1017,13 +1060,19 @@ class DailyTaskHelperTest(unittest.TestCase):
             )
             or True
         )
-        task._quick_hunt_wait_ocr = lambda *_args, **_kwargs: ("", None)
+        task._quick_hunt_wait_map_confirmation = (
+            lambda *_args, **_kwargs: (
+                "wrong",
+                "野猪洞穴极难",
+                "野猪洞穴",
+            )
+        )
         task._quick_hunt_wait_result = lambda _stage: self.fail(
             "错误地图不得开始狩猎"
         )
 
         self.assertEqual(
-            "failed",
+            "wrong_map",
             task._quick_hunt_execute_current_map(
                 "MAX",
                 "冒险航线",
@@ -1032,6 +1081,55 @@ class DailyTaskHelperTest(unittest.TestCase):
         )
         self.assertEqual("冒险航线-取消错误地图", click_calls[1][3])
         self.assertEqual([r"取消"], click_calls[1][0])
+
+    def test_quick_hunt_adventure_click_uses_requested_ocr_region_and_center(self):
+        task = object.__new__(QuickHuntTask)
+        task.config = {"快速狩猎界面等待秒数": 8.0}
+        calls = []
+        task._quick_hunt_click_ocr = (
+            lambda patterns, roi, timeout, name: calls.append(
+                (patterns, roi, timeout, name)
+            )
+            or True
+        )
+
+        self.assertTrue(task._quick_hunt_click_adventure("金币"))
+        self.assertEqual(
+            [
+                (
+                    [r"^金币$"],
+                    QUICK_HUNT_ADVENTURE_LIST_ROI,
+                    8.0,
+                    "选择金币航线",
+                )
+            ],
+            calls,
+        )
+
+    def test_quick_hunt_map_confirmation_rejects_known_wrong_map_immediately(self):
+        task = object.__new__(QuickHuntTask)
+        task.config = {"快速狩猎界面等待秒数": 8.0}
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task.sleep = lambda _seconds: self.fail("明确错误地图不应继续等待")
+
+        class FakeVision:
+            def ocr_boxes(self, _frame, _name, relative_roi=None):
+                self.relative_roi = relative_roi
+                return [SimpleNamespace(name="野猪洞穴极难")]
+
+        vision = FakeVision()
+        task._quick_vision = lambda: vision
+
+        self.assertEqual(
+            ("wrong", "野猪洞穴极难", "野猪洞穴"),
+            task._quick_hunt_wait_map_confirmation(
+                r"哥布林遗迹",
+                "冒险航线-地图确认",
+            ),
+        )
+        self.assertEqual(QUICK_HUNT_COUNT_ROI, vision.relative_roi)
 
     def test_quick_hunt_run_dispatches_rice_then_crystal_and_returns_home(self):
         task = object.__new__(QuickHuntTask)

@@ -9,6 +9,10 @@ import numpy as np
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task, green_mask_from_template
+from src.utils.home_confirmation import (
+    HOME_GACHA_OCR_REFERENCE_ROI,
+    home_confirmation_passes,
+)
 from src.utils.image_utils import (
     best_pixel_valid_match,
     candidate_scales,
@@ -51,8 +55,7 @@ PVP_CARTRIDGE_SLOT_POINT = (152 / REFERENCE_WIDTH, 970 / REFERENCE_HEIGHT)
 PVP_STAGE_CLICK_REFERENCE_OFFSET = (0, -75)
 PVP_RESULT_BASE_MINUTES = 20.0
 QUICK_SWITCH_PAGE_PATTERNS = (r"最近", r"剧情游戏卡", r"玩法游戏卡")
-HOME_GACHA_OCR_ROI = (110, 993, 95, 54)
-HOME_GACHA_PATTERNS = (r"抽抽乐",)
+HOME_GACHA_OCR_ROI = HOME_GACHA_OCR_REFERENCE_ROI
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_DIR = PROJECT_ROOT / "offline-train" / "train-source-screenshots"
 
@@ -703,12 +706,14 @@ class PVPTask(BaseBD2Task):
         gacha_text = self._ocr_text(
             frame,
             name="主页抽抽乐",
-            roi=HOME_GACHA_OCR_ROI,
+            roi=HOME_GACHA_OCR_REFERENCE_ROI,
         )
-        confirmed = (
-            home_button.score >= float(self.config.get("主页小屋按钮阈值", 0.70))
-            and ratio >= self._home_ratio_threshold()
-            and self._matches_any(gacha_text, list(HOME_GACHA_PATTERNS))
+        confirmed = home_confirmation_passes(
+            button_found=home_button.score
+            >= float(self.config.get("主页小屋按钮阈值", 0.70)),
+            brightness_ratio=ratio,
+            brightness_threshold=self._home_ratio_threshold(),
+            gacha_ocr_text=gacha_text,
         )
         return confirmed, home_button.score, ratio, gacha_text
 
