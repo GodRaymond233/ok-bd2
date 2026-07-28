@@ -9,6 +9,7 @@ from src.utils.image_utils import (
     candidate_scales,
     crop_relative,
     independent_pixel_valid_matches,
+    masked_zncc,
     pixel_similarity,
     reference_roi_frame,
     resize_mask,
@@ -105,6 +106,25 @@ class ImageRecognitionUtilsTest(unittest.TestCase):
         self.assertEqual(pixel_similarity(region, template, mask), 1.0)
         self.assertEqual(pixel_similarity(region[:, :1], template), -1.0)
 
+    def test_masked_zncc_ignores_background_and_brightness_offset(self):
+        template = np.array([[255, 50, 100], [0, 150, 200]], dtype=np.uint8)
+        region = np.array([[0, 80, 130], [255, 180, 230]], dtype=np.uint8)
+        mask = np.array([[0, 255, 255], [0, 255, 255]], dtype=np.uint8)
+
+        self.assertAlmostEqual(1.0, masked_zncc(region, template, mask))
+        self.assertLess(pixel_similarity(region, template, mask), 0.89)
+
+    def test_masked_zncc_rejects_inverse_and_degenerate_inputs(self):
+        template = np.array([[0, 50], [100, 150]], dtype=np.uint8)
+        inverse = np.array([[150, 100], [50, 0]], dtype=np.uint8)
+        uniform = np.full((2, 2), 100, dtype=np.uint8)
+        empty_mask = np.zeros((2, 2), dtype=np.uint8)
+
+        self.assertAlmostEqual(-1.0, masked_zncc(inverse, template))
+        self.assertEqual(-1.0, masked_zncc(uniform, template))
+        self.assertEqual(-1.0, masked_zncc(template, template, empty_mask))
+        self.assertEqual(-1.0, masked_zncc(template[:, :1], template))
+
     def test_pixel_valid_match_skips_higher_template_score_with_bad_pixels(self):
         template = np.zeros((2, 2), dtype=np.uint8)
         search = np.array(
@@ -147,6 +167,28 @@ class ImageRecognitionUtilsTest(unittest.TestCase):
 
         self.assertIsNotNone(candidate)
         self.assertEqual((3, 0), candidate.location)
+
+    def test_pixel_valid_match_can_require_masked_zncc(self):
+        template = np.array([[0, 50], [100, 150]], dtype=np.uint8)
+        search = np.array(
+            [[150, 100, 127, 0, 50], [50, 0, 127, 100, 150]],
+            dtype=np.uint8,
+        )
+        response = np.array([[0.99, 0.80, 0.79, 0.90]], dtype=np.float32)
+
+        candidate = best_pixel_valid_match(
+            response,
+            search,
+            template,
+            np.full((2, 2), 255, dtype=np.uint8),
+            template_threshold=0.78,
+            pixel_threshold=0.0,
+            zncc_threshold=0.85,
+        )
+
+        self.assertIsNotNone(candidate)
+        self.assertEqual((3, 0), candidate.location)
+        self.assertAlmostEqual(1.0, candidate.zncc_score)
 
     def test_independent_matches_filter_pixels_before_final_score_order(self):
         template = np.zeros((2, 2), dtype=np.uint8)

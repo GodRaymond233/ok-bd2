@@ -41,6 +41,7 @@ QUICK_SWITCH_TEMPLATE = TemplateSpec(
     min_pixel_score=0.85,
     candidate_center_roi=(650 / 1920, 950 / 1080, 1050 / 1920, 1045 / 1080),
     minimum_safe_threshold=0.88,
+    min_zncc_score=0.85,
 )
 Q_SP6_SHOP_TEMPLATE = TemplateSpec(
     "Q_sp6商店按钮",

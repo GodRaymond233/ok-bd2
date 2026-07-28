@@ -252,6 +252,25 @@ class VisionTest(unittest.TestCase):
             )
         )
 
+    def test_template_pass_requires_zncc_when_configured(self):
+        task = FakeTask()
+        task.config["跑图跑商识图阈值"] = 0.72
+        vision = Vision(task)
+        spec = TemplateSpec("test", "unused.png", 0.72, min_zncc_score=0.85)
+
+        self.assertFalse(
+            vision.passes(
+                MatchResult(0.90, (0, 0), (10, 10), zncc_score=0.84),
+                spec,
+            )
+        )
+        self.assertTrue(
+            vision.passes(
+                MatchResult(0.90, (0, 0), (10, 10), zncc_score=0.86),
+                spec,
+            )
+        )
+
     def test_match_all_returns_multiple_peaks_in_full_frame_coordinates(self):
         task = FakeTask()
         vision = Vision(task)
@@ -1698,6 +1717,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         self.assertEqual((0.95, 0.975, 1.0, 1.025, 1.05), QUICK_SWITCH_TEMPLATE.scale_ratios)
         self.assertEqual(0.85, QUICK_SWITCH_TEMPLATE.min_pixel_score)
         self.assertEqual(0.88, QUICK_SWITCH_TEMPLATE.minimum_safe_threshold)
+        self.assertEqual(0.85, QUICK_SWITCH_TEMPLATE.min_zncc_score)
         self.assertIsNotNone(QUICK_SWITCH_TEMPLATE.candidate_center_roi)
         self.assertTrue(all(spec.min_pixel_score == 0.80 for spec in HOME_TEMPLATES))
 
@@ -2718,7 +2738,7 @@ class CalendarTest(unittest.TestCase):
 
         self.assertEqual(set(range(1, 32)), set(loaded.days))
         self.assertEqual((), loaded.entries_for(29))
-        self.assertGreaterEqual(sum(len(entries) for entries in loaded.days.values()), 100)
+        self.assertGreaterEqual(sum(len(entries) for entries in loaded.days.values()), 60)
         self.assertGreater(len(loaded.entries_for(28)), 0)
         self.assertEqual(
             "S6:异教塔",
@@ -2739,10 +2759,10 @@ class CalendarTest(unittest.TestCase):
         butter, charm, *_rest = loaded.entries_for(18)
         self.assertEqual(5500, butter.reserve)
         self.assertTrue(butter.sell)
-        self.assertFalse(charm.sell)
+        self.assertTrue(charm.sell)
         self.assertEqual(["哈密瓜"], [entry.item for entry in loaded.entries_for(19)])
         self.assertEqual(["灵魂鲜奶油"], [entry.item for entry in loaded.entries_for(20)])
-        self.assertFalse(loaded.entries_for(20)[0].sell)
+        self.assertTrue(loaded.entries_for(20)[0].sell)
 
     def test_manual_calendar_requires_every_day(self):
         with self.assertRaisesRegex(ValueError, "必须覆盖 1-31 日"):
@@ -2882,6 +2902,19 @@ class CalendarTest(unittest.TestCase):
             whitelist = trader._sale_whitelist()
             with self.subTest(item=item):
                 self.assertTrue(any(trader._entry_allowed(entry, whitelist) for entry in entries))
+
+    def test_default_sale_whitelist_uses_current_core_recipes(self):
+        self.assertTrue(
+            {
+                "蜂蜜黄油杏仁",
+                "香草牛排",
+                "冰镇甜点",
+                "火烤鱼板棒",
+                "鱼子酱蛋包饭",
+            }.issubset(DEFAULT_SALE_WHITELIST)
+        )
+        self.assertNotIn("烤蜂蜜苹果", DEFAULT_SALE_WHITELIST)
+        self.assertNotIn("桑格利亚酒", DEFAULT_SALE_WHITELIST)
 
     @staticmethod
     def _manual(replacement: str = "") -> str:

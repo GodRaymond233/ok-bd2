@@ -241,6 +241,7 @@ class Vision:
                 scaled_mask,
                 template_threshold=template_threshold,
                 pixel_threshold=(spec.min_pixel_score or 0.0),
+                zncc_threshold=spec.min_zncc_score,
                 center_bounds=center_bounds,
             )
             if candidate is None or candidate.score <= best.score:
@@ -250,6 +251,7 @@ class Vision:
                 position=(left + candidate.location[0], top + candidate.location[1]),
                 size=(width, height),
                 pixel_score=candidate.pixel_score,
+                zncc_score=float(getattr(candidate, "zncc_score", -1.0)),
             )
         return best
 
@@ -314,6 +316,7 @@ class Vision:
                 scaled_mask,
                 template_threshold=score_floor,
                 pixel_threshold=(spec.min_pixel_score or 0.0),
+                zncc_threshold=spec.min_zncc_score,
                 suppression_radius=radius,
                 max_matches=limit,
             )
@@ -325,6 +328,7 @@ class Vision:
                         position=(left + x, top + y),
                         size=(width, height),
                         pixel_score=candidate.pixel_score,
+                        zncc_score=float(getattr(candidate, "zncc_score", -1.0)),
                     )
                 )
 
@@ -345,9 +349,11 @@ class Vision:
     def passes(self, result: MatchResult, spec: TemplateSpec) -> bool:
         if result.score < self.threshold_for(spec):
             return False
-        if spec.min_pixel_score is None:
-            return True
-        return result.pixel_score >= spec.min_pixel_score
+        if spec.min_pixel_score is not None and result.pixel_score < spec.min_pixel_score:
+            return False
+        if spec.min_zncc_score is not None and result.zncc_score < spec.min_zncc_score:
+            return False
+        return True
 
     def template_brightness_ratio(
         self,
@@ -436,6 +442,7 @@ class Vision:
             scaled_mask,
             template_threshold=wanted,
             pixel_threshold=(spec.min_pixel_score or 0.0),
+            zncc_threshold=spec.min_zncc_score,
             suppression_radius=(round(width * 0.65), round(height * 0.65)),
             max_matches=max_results,
         )
@@ -445,6 +452,7 @@ class Vision:
                 (left + candidate.location[0], top + candidate.location[1]),
                 (width, height),
                 pixel_score=candidate.pixel_score,
+                zncc_score=float(getattr(candidate, "zncc_score", -1.0)),
             )
             for candidate in candidates
         ]

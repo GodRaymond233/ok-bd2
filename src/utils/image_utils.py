@@ -13,6 +13,7 @@ class PixelValidMatch:
     score: float
     pixel_score: float
     location: tuple[int, int]
+    zncc_score: float = -1.0
 
 
 @dataclass(frozen=True)
@@ -274,6 +275,46 @@ def pixel_similarity(
     return float(1.0 - np.mean(difference) / 255.0)
 
 
+def masked_zncc(
+    region: np.ndarray,
+    template: np.ndarray,
+    mask: np.ndarray | None = None,
+) -> float:
+    """Return zero-mean normalized correlation under an optional binary mask."""
+
+    if region.shape != template.shape:
+        return -1.0
+
+    region_values = region.astype(np.float64, copy=False)
+    template_values = template.astype(np.float64, copy=False)
+    if mask is not None:
+        if mask.shape != region.shape:
+            return -1.0
+        active = mask > 0
+        if np.count_nonzero(active) < 2:
+            return -1.0
+        region_values = region_values[active]
+        template_values = template_values[active]
+    else:
+        region_values = region_values.reshape(-1)
+        template_values = template_values.reshape(-1)
+        if region_values.size < 2:
+            return -1.0
+
+    region_centered = region_values - np.mean(region_values)
+    template_centered = template_values - np.mean(template_values)
+    denominator = float(
+        np.linalg.norm(region_centered) * np.linalg.norm(template_centered)
+    )
+    if not np.isfinite(denominator) or denominator <= np.finfo(np.float64).eps:
+        return -1.0
+
+    score = float(np.dot(region_centered, template_centered) / denominator)
+    if not np.isfinite(score):
+        return -1.0
+    return float(np.clip(score, -1.0, 1.0))
+
+
 def best_pixel_valid_match(
     response: np.ndarray,
     search: np.ndarray,
@@ -282,6 +323,7 @@ def best_pixel_valid_match(
     *,
     template_threshold: float,
     pixel_threshold: float,
+    zncc_threshold: float | None = None,
     center_bounds: tuple[int, int, int, int] | None = None,
     max_independent_candidates: int = 128,
 ) -> PixelValidMatch | None:
@@ -300,6 +342,7 @@ def best_pixel_valid_match(
         mask,
         template_threshold=template_threshold,
         pixel_threshold=pixel_threshold,
+        zncc_threshold=zncc_threshold,
         center_bounds=center_bounds,
         max_matches=1,
         max_independent_candidates=max_independent_candidates,
@@ -315,6 +358,7 @@ def independent_pixel_valid_matches(
     *,
     template_threshold: float,
     pixel_threshold: float,
+    zncc_threshold: float | None = None,
     center_bounds: tuple[int, int, int, int] | None = None,
     suppression_radius: int | tuple[int, int] | None = None,
     max_matches: int = 60,
@@ -359,12 +403,20 @@ def independent_pixel_valid_matches(
         x, y = int(location[0]), int(location[1])
         region = search[y : y + height, x : x + width]
         candidate_pixel_score = pixel_similarity(region, template, mask)
-        if candidate_pixel_score >= pixel_threshold:
+        candidate_zncc_score = (
+            masked_zncc(region, template, mask)
+            if zncc_threshold is not None
+            else -1.0
+        )
+        if candidate_pixel_score >= pixel_threshold and (
+            zncc_threshold is None or candidate_zncc_score >= zncc_threshold
+        ):
             matches.append(
                 PixelValidMatch(
                     score=float(score),
                     pixel_score=float(candidate_pixel_score),
                     location=(x, y),
+                    zncc_score=float(candidate_zncc_score),
                 )
             )
             if len(matches) >= max(1, int(max_matches)):
