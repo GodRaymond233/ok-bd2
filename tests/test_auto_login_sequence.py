@@ -106,6 +106,8 @@ class AutoLoginSequenceTest(unittest.TestCase):
                 return MatchResult(-1.0, -1.0, (0, 0), (0, 0))
             if spec is TOUCH_TO_START_TEMPLATE:
                 return MatchResult(-1.0, -1.0, (0, 0), (0, 0))
+            if spec in HOME_BUTTON_TEMPLATES:
+                return MatchResult(-1.0, -1.0, (0, 0), (0, 0))
             self.fail(f"unexpected match: {spec.name}")
 
         task._match = fake_match
@@ -114,6 +116,8 @@ class AutoLoginSequenceTest(unittest.TestCase):
 
         self.assertEqual(
             [
+                spec.name for spec in HOME_BUTTON_TEMPLATES
+            ] + [
                 BROWNDUSTX_TEMPLATE.name,
                 CONFIRM_TEMPLATE.name,
                 TOUCH_TO_START_TEMPLATE.name,
@@ -158,15 +162,8 @@ class AutoLoginSequenceTest(unittest.TestCase):
 
         AutoLoginTask.run(task)
 
-        self.assertEqual("clearing", task._state)
-        self.assertIsNotNone(task._home_bright_since)
-        self.assertFalse(task._finished)
-
-        task._home_bright_since = monotonic() - 4.0
-        AutoLoginTask.run(task)
-
-        self.assertEqual([True], logged_in)
         self.assertEqual("done", task._state)
+        self.assertEqual([True], logged_in)
         self.assertTrue(task._finished)
         self.assertFalse(AutoLoginTask.should_trigger(task))
 
@@ -185,6 +182,8 @@ class AutoLoginSequenceTest(unittest.TestCase):
                 return MatchResult(-1.0, -1.0, (0, 0), (0, 0))
             if spec is TOUCH_TO_START_TEMPLATE:
                 return MatchResult(-1.0, -1.0, (0, 0), (0, 0))
+            if spec in HOME_BUTTON_TEMPLATES:
+                return MatchResult(-1.0, -1.0, (0, 0), (0, 0))
             self.fail(f"unexpected match: {spec.name}")
 
         task._match = fake_match
@@ -193,6 +192,8 @@ class AutoLoginSequenceTest(unittest.TestCase):
 
         self.assertEqual(
             [
+                spec.name for spec in HOME_BUTTON_TEMPLATES
+            ] + [
                 BROWNDUSTX_TEMPLATE.name,
                 CONFIRM_TEMPLATE.name,
                 TOUCH_TO_START_TEMPLATE.name,

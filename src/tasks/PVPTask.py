@@ -71,6 +71,7 @@ class PVPTemplateSpec:
     min_pixel_score: float | None = None
     candidate_center_roi: tuple[float, float, float, float] | None = None
     minimum_safe_threshold: float | None = None
+    min_zncc_score: float | None = None
 
 
 @dataclass(frozen=True)
@@ -79,6 +80,7 @@ class PVPMatchResult:
     pixel_score: float
     position: tuple[int, int]
     size: tuple[int, int]
+    zncc_score: float = -1.0
 
 
 class PVPTask(BaseBD2Task):
@@ -1111,6 +1113,7 @@ class PVPTask(BaseBD2Task):
                     scaled_mask,
                     template_threshold=template_threshold,
                     pixel_threshold=(spec.min_pixel_score or 0.0),
+                    zncc_threshold=spec.min_zncc_score,
                     center_bounds=center_bounds,
                 )
                 if candidate is None or candidate.score <= best.score:
@@ -1121,6 +1124,7 @@ class PVPTask(BaseBD2Task):
                     pixel_score=candidate.pixel_score,
                     position=(roi_left + x, roi_top + y),
                     size=(int(width), int(height)),
+                    zncc_score=float(getattr(candidate, "zncc_score", -1.0)),
                 )
         except (cv2.error, MemoryError) as exc:
             self._match_pause_until = monotonic() + 2.0
@@ -1205,9 +1209,11 @@ class PVPTask(BaseBD2Task):
             threshold = max(threshold, spec.minimum_safe_threshold)
         if result.score < threshold:
             return False
-        if spec.min_pixel_score is None:
-            return True
-        return result.pixel_score >= spec.min_pixel_score
+        if spec.min_pixel_score is not None and result.pixel_score < spec.min_pixel_score:
+            return False
+        if spec.min_zncc_score is not None and result.zncc_score < spec.min_zncc_score:
+            return False
+        return True
 
     def _ocr_text(
         self,
@@ -1605,6 +1611,7 @@ QUICK_PACK_TEMPLATE = PVPTemplateSpec(
     min_pixel_score=0.85,
     candidate_center_roi=(650 / 1920, 950 / 1080, 1050 / 1920, 1045 / 1080),
     minimum_safe_threshold=0.88,
+    min_zncc_score=0.85,
 )
 
 PVP_MEDALS_TEMPLATE = PVPTemplateSpec(

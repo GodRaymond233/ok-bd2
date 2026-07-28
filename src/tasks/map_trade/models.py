@@ -46,6 +46,7 @@ class TemplateSpec:
     min_pixel_score: float | None = None
     candidate_center_roi: tuple[float, float, float, float] | None = None
     minimum_safe_threshold: float | None = None
+    min_zncc_score: float | None = None
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,7 @@ class MatchResult:
     position: tuple[int, int]
     size: tuple[int, int]
     pixel_score: float = -1.0
+    zncc_score: float = -1.0
 
     @property
     def center(self) -> tuple[int, int]:
@@ -167,12 +169,12 @@ RECIPE_TEMPLATES = {
 }
 
 DEFAULT_SALE_WHITELIST = (
-    "烤蜂蜜苹果",
     "蜂蜜黄油杏仁",
+    "香草牛排",
+    "冰镇甜点",
     "三角美乃滋饭团",
     "鱼子酱蛋包饭",
     "炸三文鱼便当",
-    "桑格利亚酒",
     "巧克力鸡尾酒",
     "火烤鱼板棒",
     "卢戈山参烤串",

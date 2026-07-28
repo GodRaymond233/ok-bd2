@@ -117,6 +117,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         self.assertNotIn(0.80, QUICK_PACK_TEMPLATE.scale_ratios)
         self.assertEqual(0.85, QUICK_PACK_TEMPLATE.min_pixel_score)
         self.assertEqual(0.88, QUICK_PACK_TEMPLATE.minimum_safe_threshold)
+        self.assertEqual(0.85, QUICK_PACK_TEMPLATE.min_zncc_score)
         self.assertIsNotNone(QUICK_PACK_TEMPLATE.candidate_center_roi)
 
         task = object.__new__(PVPTask)
@@ -134,6 +135,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         task._match = lambda _frame, _spec: SimpleNamespace(
             score=0.90,
             pixel_score=0.90,
+            zncc_score=0.90,
             position=(815, 962),
             size=(74, 59),
         )
@@ -184,15 +186,21 @@ class PVPTaskHelperTest(unittest.TestCase):
         )
         self.assertEqual([(530, 433, 1280, 720, 0.0)], clicks)
 
-    def test_quick_pack_requires_pixel_similarity(self):
+    def test_quick_pack_requires_pixel_similarity_and_zncc(self):
         task = object.__new__(PVPTask)
         task.config = {"快速切换按钮阈值": 0.78}
 
-        low_pixel = SimpleNamespace(score=0.95, pixel_score=0.60)
-        valid = SimpleNamespace(score=0.90, pixel_score=0.90)
-        unsafe_template_score = SimpleNamespace(score=0.83, pixel_score=0.95)
+        low_pixel = SimpleNamespace(score=0.95, pixel_score=0.60, zncc_score=0.95)
+        low_zncc = SimpleNamespace(score=0.95, pixel_score=0.95, zncc_score=0.60)
+        valid = SimpleNamespace(score=0.90, pixel_score=0.90, zncc_score=0.90)
+        unsafe_template_score = SimpleNamespace(
+            score=0.83,
+            pixel_score=0.95,
+            zncc_score=0.95,
+        )
 
         self.assertFalse(PVPTask._passes(task, low_pixel, QUICK_PACK_TEMPLATE))
+        self.assertFalse(PVPTask._passes(task, low_zncc, QUICK_PACK_TEMPLATE))
         self.assertTrue(PVPTask._passes(task, valid, QUICK_PACK_TEMPLATE))
         self.assertFalse(PVPTask._passes(task, unsafe_template_score, QUICK_PACK_TEMPLATE))
 

@@ -158,7 +158,28 @@ class AutoLoginTask(BaseBD2Task):
         if self._finished:
             return False
 
-        frame = self.capture_frame()
+        try:
+            frame = self.capture_frame()
+        except RuntimeError:
+            if self._state == "waiting":
+                self._set_stage("等待游戏启动")
+                self._set_action("游戏窗口尚未就绪，等待脚本自动启动游戏。")
+            return False
+
+        if self._state == "waiting":
+            home_button, home_spec = self._match_home_button(frame)
+            self.info_set("小屋按钮", f"{home_button.score:.3f}")
+            if self._passes(home_button, home_spec):
+                ratio = self._home_brightness_ratio(frame)
+                self.info_set("小屋亮度比例", f"{ratio:.3f}")
+                if ratio >= self._home_ratio_threshold():
+                    self.mark_logged_in()
+                    self._finished = True
+                    self._state = "done"
+                    self._set_stage("已完成")
+                    self._set_action("游戏已在主页且亮度正常，跳过自动登录。")
+                    self.log_info("自动登录：游戏已在主页，跳过登录流程。", notify=True)
+                    return False
 
         if self._state == "browndustx":
             return self._wait_browndustx_then_login(frame)

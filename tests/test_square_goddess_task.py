@@ -86,6 +86,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
         self.assertTrue(QUICK_SWITCH_TEMPLATE.green_mask)
         self.assertEqual(0.85, QUICK_SWITCH_TEMPLATE.min_pixel_score)
         self.assertEqual(0.88, QUICK_SWITCH_TEMPLATE.minimum_safe_threshold)
+        self.assertEqual(0.85, QUICK_SWITCH_TEMPLATE.min_zncc_score)
         self.assertIn(0.975, QUICK_SWITCH_TEMPLATE.scale_ratios)
         self.assertNotIn(0.80, QUICK_SWITCH_TEMPLATE.scale_ratios)
         self.assertIsNotNone(QUICK_SWITCH_TEMPLATE.candidate_center_roi)
@@ -100,6 +101,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
             pixel_score=0.90,
             position=(760, 960),
             size=(64, 60),
+            zncc_score=0.90,
         )
         task._passes = lambda *_args, **_kwargs: True
         task._mf_offset_for_frame = lambda *_args: (0, 0)
