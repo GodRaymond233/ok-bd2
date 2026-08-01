@@ -16,6 +16,9 @@ DEFAULT_WHEEL_REGION = (
     959 / REFERENCE_HEIGHT,
 )
 WHEEL_DIRECTIONS = {"向上": 1, "向下": -1}
+REFERENCE_POINT_MODE_KEY = "点击单个点位置坐标"
+REFERENCE_POINT_X_KEY = "单点横坐标像素"
+REFERENCE_POINT_Y_KEY = "单点纵坐标像素"
 
 
 class _BD2InputProbeTask(BaseBD2Task):
@@ -115,6 +118,45 @@ class _BD2InputProbeTask(BaseBD2Task):
     def _percent_to_relative(value) -> float:
         return max(0.0, min(1.0, float(value) / 100.0))
 
+    def _add_reference_point_config(self, default_x: int, default_y: int) -> None:
+        self.default_config.update(
+            {
+                REFERENCE_POINT_MODE_KEY: False,
+                REFERENCE_POINT_X_KEY: default_x,
+                REFERENCE_POINT_Y_KEY: default_y,
+            }
+        )
+        self.config_description.update(
+            {
+                REFERENCE_POINT_MODE_KEY: (
+                    "开启后使用下面的1920×1080参考像素点；关闭时继续使用原百分比配置。"
+                ),
+                REFERENCE_POINT_X_KEY: "1920×1080参考分辨率下的横坐标，运行时自动换算。",
+                REFERENCE_POINT_Y_KEY: "1920×1080参考分辨率下的纵坐标，运行时自动换算。",
+            }
+        )
+        self.config_type.update(
+            {
+                REFERENCE_POINT_X_KEY: {"min": 0, "max": REFERENCE_WIDTH, "step": 1},
+                REFERENCE_POINT_Y_KEY: {"min": 0, "max": REFERENCE_HEIGHT, "step": 1},
+            }
+        )
+
+    def _configured_reference_point(
+        self,
+        default_x: int,
+        default_y: int,
+    ) -> tuple[float, float]:
+        x = max(
+            0,
+            min(REFERENCE_WIDTH, int(self.config.get(REFERENCE_POINT_X_KEY, default_x))),
+        )
+        y = max(
+            0,
+            min(REFERENCE_HEIGHT, int(self.config.get(REFERENCE_POINT_Y_KEY, default_y))),
+        )
+        return x / REFERENCE_WIDTH, y / REFERENCE_HEIGHT
+
     def _config_value(self, chinese_key: str, legacy_key: str, default):
         return self.config.get(chinese_key, self.config.get(legacy_key, default))
 
@@ -171,17 +213,26 @@ class BD2MouseClickInputTestTask(_BD2InputProbeTask):
                 "点击 Y 百分比": "鼠标点击位置的纵向百分比，范围 0 到 100。",
             }
         )
+        self._add_reference_point_config(173, 54)
 
     def run(self):
-        click_x = self._percent_to_relative(
-            self._config_value("点击 X 百分比", "Click X Percent", 9)
-        )
-        click_y = self._percent_to_relative(
-            self._config_value("点击 Y 百分比", "Click Y Percent", 5)
-        )
+        use_reference_point = bool(self.config.get(REFERENCE_POINT_MODE_KEY, False))
+        if use_reference_point:
+            click_x, click_y = self._configured_reference_point(173, 54)
+        else:
+            click_x = self._percent_to_relative(
+                self._config_value("点击 X 百分比", "Click X Percent", 9)
+            )
+            click_y = self._percent_to_relative(
+                self._config_value("点击 Y 百分比", "Click Y Percent", 5)
+            )
         return self.run_input_probe(
             "mouse_click",
-            [f"click={click_x:.3f},{click_y:.3f}"],
+            [
+                "coordinate_mode="
+                + ("reference_pixel_point" if use_reference_point else "percent_point"),
+                f"click={click_x:.6f},{click_y:.6f}",
+            ],
             lambda _frame: self.operate_click(click_x, click_y),
         )
 
@@ -230,6 +281,7 @@ class BD2MouseWheelInputTestTask(_BD2InputProbeTask):
                 "区域下 Y 百分比": {"min": 0.0, "max": 100.0, "step": 0.1},
             }
         )
+        self._add_reference_point_config(960, 1067)
 
     def run(self):
         direction_name = str(self.config.get("滚轮方向", "向上"))
@@ -239,7 +291,11 @@ class BD2MouseWheelInputTestTask(_BD2InputProbeTask):
         count = max(1, min(100, int(self.config.get("滚轮次数", 9))))
         interval = max(0.0, min(2.0, float(self.config.get("滚轮间隔秒数", 0.1))))
         region = self._configured_wheel_region()
-        center = ((region[0] + region[2]) / 2, (region[1] + region[3]) / 2)
+        use_reference_point = bool(self.config.get(REFERENCE_POINT_MODE_KEY, False))
+        if use_reference_point:
+            center = self._configured_reference_point(960, 1067)
+        else:
+            center = ((region[0] + region[2]) / 2, (region[1] + region[3]) / 2)
         reference_region = tuple(
             round(value * (REFERENCE_WIDTH if index % 2 == 0 else REFERENCE_HEIGHT))
             for index, value in enumerate(region)
@@ -251,6 +307,8 @@ class BD2MouseWheelInputTestTask(_BD2InputProbeTask):
         action_name = "mouse_wheel_up" if direction_name == "向上" else "mouse_wheel_down"
         details = [
             "click_before_scroll=true",
+            "coordinate_mode="
+            + ("reference_pixel_point" if use_reference_point else "percent_region_center"),
             "region_reference=" + ",".join(str(value) for value in reference_region),
             f"scroll_point_reference={reference_center[0]},{reference_center[1]}",
             f"scroll_point_relative={center[0]:.6f},{center[1]:.6f}",

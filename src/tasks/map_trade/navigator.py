@@ -92,7 +92,8 @@ STORY_CATEGORY_HIGHLIGHT_REGION = (
 )
 STORY_CATEGORY_HIGHLIGHT_MIN_RATIO = 0.05
 QUICK_SWITCH_CARTRIDGE_REGION = (0.0, 908 / 1080, 1.0, 1.0)
-QUICK_SWITCH_SCROLL_POINT = (960 / 1920, 970 / 1080)
+QUICK_SWITCH_SCROLL_FOCUS_POINT = (43 / 1920, 974 / 1080)
+QUICK_SWITCH_SCROLL_POINT = QUICK_SWITCH_SCROLL_FOCUS_POINT
 QUICK_SWITCH_SCROLL_RESET_AMOUNT = -1
 QUICK_SWITCH_SCROLL_RESET_COUNT = 24
 QUICK_SWITCH_SCROLL_UP_AMOUNT = 1
@@ -100,7 +101,7 @@ QUICK_SWITCH_SCROLL_UP_COUNT = 2
 QUICK_SWITCH_SCROLL_SCAN_STEPS = 16
 QUICK_SWITCH_SCROLL_INTERVAL = 0.08
 QUICK_SWITCH_SCROLL_SETTLE_SECONDS = 0.35
-PROBE_QUICK_SWITCH_SCROLL_POINT = (960 / 1920, 1067 / 1080)
+PROBE_QUICK_SWITCH_SCROLL_POINT = QUICK_SWITCH_SCROLL_FOCUS_POINT
 PROBE_QUICK_SWITCH_SCROLL_AMOUNT = 1
 PROBE_QUICK_SWITCH_SCROLL_COUNT = 1
 PROBE_QUICK_SWITCH_SCROLL_STEPS = QUICK_SWITCH_SCROLL_SCAN_STEPS
@@ -649,9 +650,7 @@ class Navigator:
                 "无法从主页打开快速切换卡带页面",
             )
 
-        self._status("导航状态", "选择剧情游戏卡")
-        self.task.operate_click(*STORY_CATEGORY_POINT, after_sleep=0.5)
-        if not self._wait_for_story_category():
+        if not self._select_story_category():
             return NavigationResult(
                 False,
                 self.classify(),
@@ -684,6 +683,22 @@ class Navigator:
             f"highlight={last_highlight_ratio:.3f}, OCR={last_text or '-'}。"
         )
         return False
+
+    def _select_story_category(self) -> bool:
+        """Click and confirm the category before any quick-bar focus or scroll."""
+
+        self._status("导航状态", "选择剧情游戏卡")
+        self.task.operate_click(*STORY_CATEGORY_POINT, after_sleep=0.5)
+        return self._wait_for_story_category()
+
+    def _focus_quick_switch_for_scroll(self) -> None:
+        """Focus the selected cartridge bar at the user-calibrated safe point."""
+
+        self._status(
+            "卡带滚轮聚焦",
+            "已选择卡带类型，点击参考点(43,974)后开始滚动",
+        )
+        self.task.operate_click(*QUICK_SWITCH_SCROLL_FOCUS_POINT, after_sleep=0.0)
 
     def _story_badge_detections(
         self,
@@ -982,6 +997,7 @@ class Navigator:
             )
             return None
 
+        self._focus_quick_switch_for_scroll()
         # The quick selector runs horizontally. A downward wheel moves toward
         # larger card numbers, so first reset to that edge. Scanning then uses
         # the user-calibrated upward wheel: cards move right, large to small.
@@ -1039,6 +1055,7 @@ class Navigator:
 
         steps = max(0, int(scan_steps))
         last_reason = "未执行识别"
+        scroll_focused = False
         for step in range(steps + 1):
             frame = self.vision.capture()
             badge, last_reason = self._find_story_badge(frame, card.number)
@@ -1115,6 +1132,9 @@ class Navigator:
 
             if step >= steps:
                 break
+            if not scroll_focused:
+                self._focus_quick_switch_for_scroll()
+                scroll_focused = True
             self._status("卡带滚轮", f"后续卡带扫描 {step + 1}/{steps}")
             self.task._scroll_client(
                 PROBE_QUICK_SWITCH_SCROLL_POINT,
@@ -1759,9 +1779,7 @@ class Navigator:
                 "点击快速切换按钮后未确认卡带选择页",
             )
 
-        self._status("导航状态", "选择剧情游戏卡")
-        self.task.operate_click(*STORY_CATEGORY_POINT, after_sleep=0.5)
-        if not self._wait_for_story_category():
+        if not self._select_story_category():
             return NavigationResult(
                 False,
                 self.classify(),

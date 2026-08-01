@@ -111,6 +111,7 @@ from src.tasks.map_trade.navigator import (
     Q_SP6_STORY_NUMBER,
     QUICK_SWITCH_CARTRIDGE_REGION,
     QUICK_SWITCH_PAGE_KEYWORDS,
+    QUICK_SWITCH_SCROLL_FOCUS_POINT,
     QUICK_SWITCH_SCROLL_INTERVAL,
     QUICK_SWITCH_SCROLL_POINT,
     QUICK_SWITCH_SCROLL_RESET_AMOUNT,
@@ -3290,6 +3291,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
 
     def test_collection_card_scroll_resets_down_then_scans_up_in_bottom_region(self):
         scrolls = []
+        clicks = []
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         detection = StoryBadgeDetection(
             best=StoryBadgeCandidate(
@@ -3310,6 +3312,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         )
         task = SimpleNamespace(
             _scroll_client=lambda *args, **kwargs: scrolls.append((args, kwargs)),
+            operate_click=lambda *args, **kwargs: clicks.append((args, kwargs)),
             log_warning=lambda *_args, **_kwargs: None,
         )
         navigator = Navigator(task, SimpleNamespace(capture=lambda: frame))
@@ -3340,7 +3343,12 @@ class CatalogAndSafetyTest(unittest.TestCase):
             ],
             scrolls,
         )
-        self.assertEqual((0.5, 970 / 1080), QUICK_SWITCH_SCROLL_POINT)
+        self.assertEqual((43 / 1920, 974 / 1080), QUICK_SWITCH_SCROLL_POINT)
+        self.assertEqual(
+            [((QUICK_SWITCH_SCROLL_FOCUS_POINT), {"after_sleep": 0.0})],
+            clicks,
+        )
+        self.assertEqual((43 / 1920, 974 / 1080), QUICK_SWITCH_SCROLL_FOCUS_POINT)
         self.assertEqual(1, QUICK_SWITCH_SCROLL_UP_AMOUNT)
 
     def test_collection_card_scroll_stops_on_badge_ambiguity(self):
@@ -3397,9 +3405,11 @@ class CatalogAndSafetyTest(unittest.TestCase):
             complete_region=True,
         )
         scrolls = []
+        clicks = []
         sleeps = []
         task = SimpleNamespace(
             _scroll_client=lambda *args, **kwargs: scrolls.append((args, kwargs)),
+            operate_click=lambda *args, **kwargs: clicks.append((args, kwargs)),
             sleep=sleeps.append,
             info_set=lambda *_args: None,
             log_warning=lambda *_args: None,
@@ -3438,10 +3448,14 @@ class CatalogAndSafetyTest(unittest.TestCase):
             ],
             scrolls,
         )
-        self.assertEqual((0.5, 1067 / 1080), PROBE_QUICK_SWITCH_SCROLL_POINT)
+        self.assertEqual((43 / 1920, 974 / 1080), PROBE_QUICK_SWITCH_SCROLL_POINT)
         self.assertEqual(1, PROBE_QUICK_SWITCH_SCROLL_AMOUNT)
         self.assertEqual(1, PROBE_QUICK_SWITCH_SCROLL_COUNT)
         self.assertEqual(0.4, PROBE_QUICK_SWITCH_SCROLL_SETTLE_SECONDS)
+        self.assertEqual(
+            [((QUICK_SWITCH_SCROLL_FOCUS_POINT), {"after_sleep": 0.0})],
+            clicks,
+        )
         self.assertEqual([PROBE_STORY_BADGE_CONFIRM_SECONDS], sleeps)
         self.assertEqual(
             [
@@ -3489,8 +3503,10 @@ class CatalogAndSafetyTest(unittest.TestCase):
             complete_region=True,
         )
         scrolls = []
+        clicks = []
         task = SimpleNamespace(
             _scroll_client=lambda *args, **kwargs: scrolls.append((args, kwargs)),
+            operate_click=lambda *args, **kwargs: clicks.append((args, kwargs)),
             sleep=lambda *_args: None,
             info_set=lambda *_args: None,
             log_warning=lambda *_args: None,
@@ -3507,6 +3523,10 @@ class CatalogAndSafetyTest(unittest.TestCase):
         self.assertIs(centered_badge, result.located.badge)
         self.assertIs(complete, result.completion)
         self.assertEqual(1, len(scrolls))
+        self.assertEqual(
+            [((QUICK_SWITCH_SCROLL_FOCUS_POINT), {"after_sleep": 0.0})],
+            clicks,
+        )
 
     def test_probe_story_card_ambiguity_stops_without_scrolling(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -3573,9 +3593,11 @@ class CatalogAndSafetyTest(unittest.TestCase):
     def test_probe_story_card_scan_limit_is_bounded_without_reset(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         scrolls = []
+        clicks = []
         captures = []
         task = SimpleNamespace(
             _scroll_client=lambda *args, **kwargs: scrolls.append((args, kwargs)),
+            operate_click=lambda *args, **kwargs: clicks.append((args, kwargs)),
             sleep=lambda *_args: None,
             info_set=lambda *_args: None,
             log_warning=lambda *_args: None,
@@ -3591,6 +3613,10 @@ class CatalogAndSafetyTest(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(3, len(captures))
         self.assertEqual(2, len(scrolls))
+        self.assertEqual(
+            [((QUICK_SWITCH_SCROLL_FOCUS_POINT), {"after_sleep": 0.0})],
+            clicks,
+        )
         self.assertTrue(
             all(
                 call[0]

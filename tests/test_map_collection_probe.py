@@ -11,6 +11,8 @@ import numpy as np
 from src.config import config
 from src.tasks.BD2MapCollectionProbeTask import (
     ALL_COLLECTION_CARDS_OPTION,
+    DEFAULT_COLLECTION_END,
+    DEFAULT_COLLECTION_START,
     TELEPORT_MAP_BACKWARD_CLICK_LIMIT,
     TELEPORT_MAP_FORWARD_CLICK_INTERVAL,
     TELEPORT_MAP_FORWARD_CLICK_LIMIT,
@@ -35,6 +37,7 @@ from src.tasks.map_trade.models import (
 )
 from src.tasks.map_trade.navigator import (
     PROBE_QUICK_SWITCH_SCROLL_POINT,
+    QUICK_SWITCH_SCROLL_FOCUS_POINT,
     SANDBOX_MAP_TITLE_OCR_RELATIVE_ROI,
     TELEPORT_MAP_BACKWARD_TEMPLATE,
     TELEPORT_MAP_FORWARD_TEMPLATE,
@@ -158,9 +161,30 @@ class MapCollectionProbeTaskTest(unittest.TestCase):
             TELEPORT_MAP_TITLE_OCR_RELATIVE_ROI,
         )
         self.assertEqual((135 / 1920, 51 / 1080), TELEPORT_MAP_RETURN_RELATIVE_POINT)
-        self.assertEqual((960 / 1920, 1067 / 1080), PROBE_QUICK_SWITCH_SCROLL_POINT)
+        self.assertEqual((43 / 1920, 974 / 1080), PROBE_QUICK_SWITCH_SCROLL_POINT)
+        self.assertEqual((43 / 1920, 974 / 1080), QUICK_SWITCH_SCROLL_FOCUS_POINT)
 
-    def test_probe_can_limit_calibration_to_one_card(self):
+    def test_probe_can_select_one_card_or_an_inclusive_range(self):
+        task = object.__new__(BD2MapCollectionProbeTask)
+        task.config = {"测试起始卡带": "Q_sp14", "测试终止卡带": "Q_sp14"}
+        self.assertEqual(("Q_sp14",), tuple(card.card_id for card in task._selected_cards()))
+
+        task.config = {"测试起始卡带": "Q_sp8", "测试终止卡带": "Q_sp11"}
+        self.assertEqual(
+            ("Q_sp8", "Q_sp9", "Q_sp10", "Q_sp11"),
+            tuple(card.card_id for card in task._selected_cards()),
+        )
+
+        task.config = {
+            "测试起始卡带": DEFAULT_COLLECTION_START,
+            "测试终止卡带": DEFAULT_COLLECTION_END,
+        }
+        self.assertEqual(17, len(task._selected_cards()))
+
+        task.config = {"测试起始卡带": "Q_sp14", "测试终止卡带": "Q_sp8"}
+        self.assertEqual((), task._selected_cards())
+
+    def test_probe_reads_retired_single_range_configuration(self):
         task = object.__new__(BD2MapCollectionProbeTask)
         task.config = {"测试卡带范围": "Q_sp14"}
         self.assertEqual(("Q_sp14",), tuple(card.card_id for card in task._selected_cards()))
