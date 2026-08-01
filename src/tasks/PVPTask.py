@@ -57,7 +57,7 @@ PVP_RESULT_BASE_MINUTES = 20.0
 QUICK_SWITCH_PAGE_PATTERNS = (r"最近", r"剧情游戏卡", r"玩法游戏卡")
 HOME_GACHA_OCR_ROI = HOME_GACHA_OCR_REFERENCE_ROI
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-TEMPLATE_DIR = PROJECT_ROOT / "offline-train" / "train-source-screenshots"
+TEMPLATE_DIR = PROJECT_ROOT / "recognition-assets" / "template-assets"
 
 
 @dataclass(frozen=True)

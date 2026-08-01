@@ -62,7 +62,7 @@ class OfflineTemplateResolutionTest(unittest.TestCase):
         self.assertTrue(
             offline_template_requires_green_mask(
                 Path(
-                    "offline-train/train-source-screenshots/image/green/BusinQuickIcoGE.png"
+                    "recognition-assets/template-assets/image/green/BusinQuickIcoGE.png"
                 )
             )
         )
@@ -71,7 +71,7 @@ class OfflineTemplateResolutionTest(unittest.TestCase):
         self.assertEqual(
             (1280, 720),
             offline_template_reference_resolution(
-                Path("offline-train/train-source-screenshots/image/UI_loading_black.png")
+                Path("recognition-assets/template-assets/image/UI_loading_black.png")
             ),
         )
 
@@ -83,7 +83,7 @@ class OfflineTemplateResolutionTest(unittest.TestCase):
         self.assertEqual(
             (1920, 1080),
             offline_template_reference_resolution(
-                Path("offline-train/train-source-screenshots/home.png")
+                Path("recognition-assets/template-assets/home.png")
             ),
         )
 

@@ -538,7 +538,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         self.assertEqual((35, 340, 3), crop.shape)
 
     def test_pvp_assets_use_image_folder(self):
-        template_root = Path("offline-train/train-source-screenshots")
+        template_root = Path("recognition-assets/template-assets")
         specs = (
             HOME_ICE_TEMPLATE,
             HOME_RICE_TEMPLATE,

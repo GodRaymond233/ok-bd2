@@ -57,7 +57,7 @@ GAMEPLAY_CATEGORY_HIGHLIGHT_REGION = (
 GAMEPLAY_CATEGORY_OCR_ROI = (876, 840, 225, 75)
 GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO = 0.05
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-TEMPLATE_DIR = PROJECT_ROOT / "offline-train" / "train-source-screenshots"
+TEMPLATE_DIR = PROJECT_ROOT / "recognition-assets" / "template-assets"
 
 
 @dataclass(frozen=True)

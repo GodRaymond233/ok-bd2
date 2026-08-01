@@ -17,8 +17,8 @@ from src.utils.template_resolution import offline_template_scale
 REFERENCE_WIDTH = 1920
 TEMPLATE_PATH = (
     Path(__file__).resolve().parents[2]
-    / "offline-train"
-    / "train-source-screenshots"
+    / "recognition-assets"
+    / "template-assets"
     / "image"
     / "UI_loading_black.png"
 )
