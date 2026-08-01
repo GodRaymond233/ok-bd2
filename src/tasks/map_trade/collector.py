@@ -2,6 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from src.tasks.map_trade.action_icons import (
+    ABSORB_ICON,
+    SEARCH_ICON,
+    SUMMON_ICON,
+    ActionIconDetection,
+    ActionIconDetector,
+    ActionIconSpec,
+    ActionIconState,
+)
+from src.tasks.map_trade.card_status import CollectionCardSelectionOutcome
 from src.tasks.map_trade.models import (
     COLLECTABLE_CARDS,
     DAILY_SUBMAP_LIMIT,
@@ -12,13 +22,9 @@ from src.tasks.map_trade.navigator import Navigator
 from src.tasks.map_trade.progress import ProgressStore
 from src.tasks.map_trade.vision import Vision, parse_used_limit
 
-SKILL_MENU_TEMPLATE = TemplateSpec("探查技能", "image/Skill1-1.png", 0.72, roi=(930, 590, 140, 120))
-ABSORB_SKILL_TEMPLATE = TemplateSpec(
-    "吸取技能", "image/Skill1-2~5.png", 0.70, roi=(900, 500, 150, 120)
-)
-SUMMON_SKILL_TEMPLATE = TemplateSpec(
-    "召集技能", "image/Skill2-1-2.png", 0.70, roi=(930, 405, 150, 125)
-)
+SKILL_MENU_TEMPLATE = SEARCH_ICON.template
+ABSORB_SKILL_TEMPLATE = ABSORB_ICON.template
+SUMMON_SKILL_TEMPLATE = SUMMON_ICON.template
 SKILL_NOTHING_TEMPLATE = TemplateSpec(
     "空技能", "image/Skill-Nothing.png", 0.72, roi=(900, 390, 180, 230)
 )
@@ -27,15 +33,25 @@ SKILL_NOTHING_TEMPLATE = TemplateSpec(
 @dataclass(frozen=True)
 class SkillAction:
     name: str
-    template: TemplateSpec
-    fallback_point: tuple[int, int]
+    icon: ActionIconSpec
     count_roi: tuple[int, int, int, int]
+
+    @property
+    def template(self) -> TemplateSpec:
+        return self.icon.template
+
+
+@dataclass(frozen=True)
+class SkillExecutionResult:
+    completed: bool
+    depleted: bool = False
+    message: str = ""
 
 
 SKILL_ACTIONS = (
-    SkillAction("探查", SKILL_MENU_TEMPLATE, (1002, 651), (958, 645, 82, 55)),
-    SkillAction("吸取", ABSORB_SKILL_TEMPLATE, (970, 562), (930, 548, 85, 55)),
-    SkillAction("召集", SUMMON_SKILL_TEMPLATE, (1006, 480), (960, 465, 92, 55)),
+    SkillAction("探查", SEARCH_ICON, (958, 645, 82, 55)),
+    SkillAction("吸收", ABSORB_ICON, (930, 548, 85, 55)),
+    SkillAction("召集", SUMMON_ICON, (960, 465, 92, 55)),
 )
 
 
@@ -51,6 +67,7 @@ class Collector:
         self.vision = vision
         self.navigator = navigator
         self.progress = progress
+        self.action_icons = ActionIconDetector(vision)
 
     def run(self) -> CollectionResult:
         state = self.progress.load()
@@ -79,12 +96,12 @@ class Collector:
                     message="达到每日 21 个小图保护上限",
                 )
 
-            entered = None
+            selected = None
             for _attempt in range(card_retries):
-                entered = self.navigator.select_card(card.card_id)
-                if entered.success:
+                selected = self.navigator.select_collection_card(card.card_id)
+                if selected.success:
                     break
-            if entered is None or not entered.success:
+            if selected is None or not selected.success:
                 consecutive_card_failures += 1
                 self.task.log_warning(f"地图采集：跳过未能进入的卡带 {card.card_id}。")
                 if consecutive_card_failures >= 3:
@@ -93,6 +110,13 @@ class Collector:
                         completed_submaps=completed_this_run,
                         message="连续三张卡带进入失败",
                     )
+                continue
+            if selected.outcome == CollectionCardSelectionOutcome.VISUALLY_COMPLETE:
+                consecutive_card_failures = 0
+                self._status(
+                    "卡带完成度",
+                    f"{card.card_id}：吸取与压制均已完成，本轮跳过",
+                )
                 continue
 
             card_failed = False
@@ -119,17 +143,28 @@ class Collector:
                     )
                     card_failed = True
                     break
-                skill_success, depleted = self._use_skills()
-                if not skill_success:
+                skill_result = self._use_skills()
+                if not skill_result.completed:
+                    if skill_result.depleted:
+                        self.progress.mark_depleted_today()
+                        return CollectionResult(
+                            True,
+                            depleted=True,
+                            completed_submaps=completed_this_run,
+                            message=skill_result.message or "采集技能已达到上限",
+                        )
                     return CollectionResult(
                         False,
                         completed_submaps=completed_this_run,
-                        message=f"{card.card_id} 技能操作失败",
+                        message=(
+                            f"{card.card_id} 技能操作失败"
+                            + (f"：{skill_result.message}" if skill_result.message else "")
+                        ),
                     )
                 self.progress.mark_target(card.card_id, target.key)
                 state = self.progress.state
                 completed_this_run += 1
-                if depleted:
+                if skill_result.depleted:
                     self.progress.mark_depleted_today()
                     return CollectionResult(
                         True,
@@ -155,35 +190,88 @@ class Collector:
             message="本周可采集卡带已经处理完毕",
         )
 
-    def _use_skills(self) -> tuple[bool, bool]:
+    def _use_skills(self) -> SkillExecutionResult:
         self.vision.click_reference(1203, 664, after_sleep=0.8)
         if self.vision.wait_template(SKILL_MENU_TEMPLATE, 5) is None:
-            return False, False
+            return SkillExecutionResult(False, message="未识别到探查图标，技能栏未确认")
         frame = self.vision.capture()
-        if self.vision.match(frame, SKILL_NOTHING_TEMPLATE).score >= self.vision.threshold_for(
-            SKILL_NOTHING_TEMPLATE
-        ):
+        empty_match = self.vision.match(frame, SKILL_NOTHING_TEMPLATE)
+        if self.vision.passes(empty_match, SKILL_NOTHING_TEMPLATE):
             self.task.log_warning("地图采集：技能栏存在空技能，停止以避免误点。")
-            return False, False
+            return SkillExecutionResult(False, message="技能栏存在空技能")
 
+        depleted = False
         for action in SKILL_ACTIONS:
-            before = self._read_count(action)
-            if before is not None and before[0] >= before[1]:
-                return True, True
             frame = self.vision.capture()
-            match = self.vision.match(frame, action.template)
-            if match.score >= self.vision.threshold_for(action.template):
-                self.vision.click_client(match.center, frame.shape, after_sleep=2.0)
-            else:
-                # The fallback remains proportional and is only used after the
-                # skill menu itself was positively identified.
-                self.vision.click_reference(*action.fallback_point, after_sleep=2.0)
+            detection = self.action_icons.detect(frame, action.icon)
+            self._report_icon_detection(action, detection)
+            if detection.state is ActionIconState.ABSENT:
+                return SkillExecutionResult(False, depleted, f"未识别到{action.name}图标")
+            if detection.state is ActionIconState.UNKNOWN:
+                return SkillExecutionResult(
+                    False,
+                    depleted,
+                    f"{action.name}图标亮度处于未知区间",
+                )
+
+            before = self._read_count(action)
+            if before is None:
+                return SkillExecutionResult(False, depleted, f"{action.name}次数 OCR 失败")
+            self._status(f"{action.name}次数", f"{before[0]}/{before[1]}")
+            if detection.state is ActionIconState.USED:
+                self._status(f"{action.name}状态", "已使用")
+                depleted = depleted or before[0] >= before[1]
+                continue
+            if before[0] >= before[1]:
+                return SkillExecutionResult(
+                    False,
+                    True,
+                    f"{action.name}次数已达到 {before[0]}/{before[1]}，当前小图未完成",
+                )
+
+            self.vision.click_client(detection.match.center, frame.shape, after_sleep=2.0)
             after = self._read_count(action)
-            if after is not None:
-                self._status(f"{action.name}次数", f"{after[0]}/{after[1]}")
-                if after[0] >= after[1]:
-                    return True, True
-        return True, False
+            if after is None:
+                return SkillExecutionResult(False, depleted, f"{action.name}次数 OCR 失败")
+            self._status(f"{action.name}次数", f"{after[0]}/{after[1]}")
+            if after[0] <= before[0]:
+                if not action.icon.dimmed_means_used:
+                    return SkillExecutionResult(
+                        False,
+                        depleted,
+                        f"{action.name}次数未增加，无法确认执行成功",
+                    )
+                post_frame = self.vision.capture()
+                post_detection = self.action_icons.detect(post_frame, action.icon)
+                self._report_icon_detection(action, post_detection)
+                if post_detection.state is not ActionIconState.USED:
+                    return SkillExecutionResult(
+                        False,
+                        depleted,
+                        f"{action.name}次数未增加且图标未变为已使用",
+                    )
+            depleted = depleted or after[0] >= after[1]
+        return SkillExecutionResult(True, depleted)
+
+    def _report_icon_detection(
+        self,
+        action: SkillAction,
+        detection: ActionIconDetection,
+    ) -> None:
+        match = detection.match
+        brightness = (
+            "-"
+            if detection.bright_core_ratio is None
+            else f"{detection.bright_core_ratio:.3f}"
+        )
+        self._status(
+            f"{action.name}图标",
+            (
+                f"{detection.state.value}; match={match.score:.3f}; "
+                f"pixel={match.pixel_score:.3f}; zncc={match.zncc_score:.3f}; "
+                f"bright={brightness}"
+            ),
+        )
 
     def _read_count(self, action: SkillAction) -> tuple[int, int] | None:
         for _attempt in range(2):
