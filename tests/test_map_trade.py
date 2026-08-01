@@ -1832,7 +1832,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         self.assertEqual(0.85, spec.min_zncc_score)
         self.assertEqual(0.95, spec.minimum_safe_threshold)
 
-        path = ROOT / "offline-train/train-source-screenshots" / spec.file_name
+        path = ROOT / "recognition-assets/template-assets" / spec.file_name
         template = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
         self.assertIsNotNone(template)
         self.assertEqual((42, 42, 4), template.shape)
@@ -2798,7 +2798,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
             )
         )
         self.assertTrue(all(spec.scale_ratios == (1.0,) for _, spec in STORY_BADGE_SPECS))
-        template_root = ROOT / "offline-train" / "train-source-screenshots"
+        template_root = ROOT / "recognition-assets" / "template-assets"
         for _number, spec in STORY_BADGE_SPECS:
             template = cv2.imread(
                 str(template_root / spec.file_name),
@@ -2835,7 +2835,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         )
 
     def test_story_card_state_templates_are_packaged_with_alpha_masks(self):
-        template_root = ROOT / "offline-train" / "train-source-screenshots"
+        template_root = ROOT / "recognition-assets" / "template-assets"
         expected_shapes = {
             "image/green/StoryAbsorbAvailableGE.png": (29, 29, 4),
             "image/green/StoryAbsorbCompletedGE.png": (29, 31, 4),
