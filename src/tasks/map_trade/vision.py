@@ -25,6 +25,7 @@ from src.utils.image_utils import (
     relative_roi_frame,
     resize_mask,
     resize_template,
+    scale_reference_roi,
     stabilize_template_match,
     template_match_response,
     to_gray,
@@ -73,10 +74,12 @@ class Vision:
     def reference_roi(
         roi: tuple[int, int, int, int], width: int, height: int
     ) -> tuple[int, int, int, int]:
-        x, y, roi_width, roi_height = roi
-        left, top = Vision.reference_point(x, y, width, height)
-        right, bottom = Vision.reference_point(x + roi_width, y + roi_height, width, height)
-        return left, top, max(1, right - left), max(1, bottom - top)
+        left, top, roi_width, roi_height = scale_reference_roi(
+            roi,
+            (width, height),
+            (MF_REFERENCE_WIDTH, MF_REFERENCE_HEIGHT),
+        )
+        return left, top, max(1, roi_width), max(1, roi_height)
 
     def capture(self):
         return self.task.capture_frame()

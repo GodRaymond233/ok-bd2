@@ -142,6 +142,7 @@ class SquareGoddessTask(BaseBD2Task):
                 "广场 OCR 阈值": 0.2,
                 "广场入场等待秒数": 30.0,
                 "广场感叹号等待秒数": 3.0,
+                "祈祷完成后感叹号等待秒数": 5.0,
                 "女神像许愿等待秒数": 8.0,
                 "女神像导航入口等待秒数": 8.0,
                 "女神像导航最长等待秒数": 90.0,
@@ -162,6 +163,9 @@ class SquareGoddessTask(BaseBD2Task):
                 "玩法类别高亮像素比例": "玩法游戏卡标签确认为高亮状态所需的最低亮色像素占比。",
                 "广场入场等待秒数": "点击广场卡带后等待梦幻广场场景出现的最长时间。",
                 "广场感叹号等待秒数": "进入广场后等待并点击感叹号小任务的最长时间。",
+                "祈祷完成后感叹号等待秒数": (
+                    "确认祈祷完成或今日已完成后，再次等待并点击感叹号小任务的最长时间。"
+                ),
                 "女神像许愿等待秒数": "等待许愿 OCR；超时后尝试固定祈祷位置的间隔。",
                 "女神像导航最长等待秒数": "点击每日导航后，等待角色靠近女神像的最长时间。",
                 "女神像完成确认等待秒数": "点击许愿后等待每日导航文字消失的最长时间。",
@@ -377,16 +381,19 @@ class SquareGoddessTask(BaseBD2Task):
         ):
             self.info_set("女神像许愿 OCR", "每日导航信号未出现，按今日已完成处理")
             self.log_info("广场女神像：每日导航图标与文字未同时出现，按今日已完成处理。")
-            return True
+        else:
+            self.info_set("当前阶段", "等待并完成女神像许愿")
+            if not self._wait_for_goddess_prayer_completion(
+                timeout=float(self.config.get("女神像导航最长等待秒数", 90.0))
+            ):
+                self.log_info("广场女神像：等待许愿或每日导航文字消失超时。")
+                return False
 
-        self.info_set("当前阶段", "等待并完成女神像许愿")
-        if self._wait_for_goddess_prayer_completion(
-            timeout=float(self.config.get("女神像导航最长等待秒数", 90.0))
-        ):
-            return True
-
-        self.log_info("广场女神像：等待许愿或每日导航文字消失超时。")
-        return False
+        self.info_set("当前阶段", "祈祷完成后检查广场感叹号")
+        self._click_square_notice_if_present(
+            timeout=float(self.config.get("祈祷完成后感叹号等待秒数", 5.0))
+        )
+        return True
 
     def _click_square_notice_if_present(
         self,
@@ -717,18 +724,25 @@ class SquareGoddessTask(BaseBD2Task):
             for box in boxes
             if getattr(box, "name", "")
         )
-        if not all(
-            self._matches_any(text, [term])
-            for term in GODDESS_NAVIGATION_TERMS
-        ):
+        normalized_text = self._normalize_text(text)
+        matched_characters = {
+            character
+            for character in GODDESS_NAVIGATION_TARGET
+            if character in normalized_text
+        }
+        self.info_set(
+            "广场导航文字命中",
+            f"{len(matched_characters)}/{len(GODDESS_NAVIGATION_TARGET)}",
+        )
+        if len(matched_characters) < GODDESS_NAVIGATION_MINIMUM_HITS:
             return None, text
 
         relevant_boxes = [
             box
             for box in boxes
             if any(
-                self._matches_any(getattr(box, "name", ""), [term])
-                for term in GODDESS_NAVIGATION_TERMS
+                character in self._normalize_text(getattr(box, "name", ""))
+                for character in GODDESS_NAVIGATION_TARGET
             )
         ]
         geometries = []
@@ -1378,7 +1392,7 @@ SQUARE_NOTICE_TEMPLATE = SquareTemplateSpec(
     file_name="image/green/tanhaoGE.png",
     threshold_key="广场感叹号阈值",
     default_threshold=0.72,
-    roi=(1380, 863, 62, 46),
+    roi=(1376, 862, 66, 51),
     green_mask=True,
     scale_ratios=(0.90, 0.925, 0.95, 0.975, 1.0),
     min_pixel_score=0.72,
@@ -1403,7 +1417,8 @@ SQUARE_MISSION_NAVI_TEMPLATE = SquareTemplateSpec(
     roi=SquareGoddessTask._mf_roi(1168, 106, 69, 247),
 )
 
-GODDESS_NAVIGATION_TERMS = (r"移动至", r"艾力克史", r"温女")
+GODDESS_NAVIGATION_TARGET = "移动至艾力克史温女"
+GODDESS_NAVIGATION_MINIMUM_HITS = 7
 GODDESS_PRAY_PATTERNS = [r"向女神像许愿|女神像许愿|许愿"]
 GODDESS_PRAY_FALLBACK_POINT = (
     1412 / REFERENCE_WIDTH,
