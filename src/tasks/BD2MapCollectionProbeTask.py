@@ -34,10 +34,9 @@ from src.tasks.MapTradeTask import (
 )
 
 ALL_COLLECTION_CARDS_OPTION = "全部17张"
-COLLECTION_CARD_OPTIONS = (
-    ALL_COLLECTION_CARDS_OPTION,
-    *(card.card_id for card in COLLECTABLE_CARDS),
-)
+COLLECTION_CARD_OPTIONS = tuple(card.card_id for card in COLLECTABLE_CARDS)
+DEFAULT_COLLECTION_START = COLLECTION_CARD_OPTIONS[0]
+DEFAULT_COLLECTION_END = COLLECTION_CARD_OPTIONS[-1]
 TELEPORT_MAP_FORWARD_CLICK_LIMIT = 7
 TELEPORT_MAP_BACKWARD_CLICK_LIMIT = 7
 TELEPORT_MAP_FORWARD_CLICK_INTERVAL = 0.2
@@ -269,7 +268,8 @@ class BD2MapCollectionProbeTask(MapAutomationTaskBase):
         self.default_config.update(
             {
                 "自动从主页打开剧情卡带页": True,
-                "测试卡带范围": ALL_COLLECTION_CARDS_OPTION,
+                "测试起始卡带": DEFAULT_COLLECTION_START,
+                "测试终止卡带": DEFAULT_COLLECTION_END,
                 "目标角标最大滚轮次数": PROBE_QUICK_SWITCH_SCROLL_STEPS,
                 "传送阵地图名 OCR 重试次数": 3,
                 "保存完成度截图": False,
@@ -284,7 +284,8 @@ class BD2MapCollectionProbeTask(MapAutomationTaskBase):
                 "自动从主页打开剧情卡带页": (
                     "开启时复用标准主页入口；关闭时要求人工已停在剧情游戏卡快速选择页。"
                 ),
-                "测试卡带范围": "默认按1、2、3、4、5、7…19遍历，也可先用单章实机标定。",
+                "测试起始卡带": "选择本次测试的第一张卡带；与终止卡带相同即只测试一张。",
+                "测试终止卡带": "选择本次测试的最后一张卡带；起止范围包含两端。",
                 "目标角标最大滚轮次数": (
                     "目标不在当前快速选择画面时，在画面底部每次向上滚轮一次并等待0.4秒。"
                 ),
@@ -298,7 +299,11 @@ class BD2MapCollectionProbeTask(MapAutomationTaskBase):
         )
         self.config_type.update(
             {
-                "测试卡带范围": {
+                "测试起始卡带": {
+                    "type": "drop_down",
+                    "options": list(COLLECTION_CARD_OPTIONS),
+                },
+                "测试终止卡带": {
                     "type": "drop_down",
                     "options": list(COLLECTION_CARD_OPTIONS),
                 },
@@ -311,13 +316,29 @@ class BD2MapCollectionProbeTask(MapAutomationTaskBase):
         )
 
     def _selected_cards(self) -> tuple[CardSpec, ...]:
-        selected = str(self.config.get("测试卡带范围", ALL_COLLECTION_CARDS_OPTION))
-        if selected == ALL_COLLECTION_CARDS_OPTION:
-            return tuple(COLLECTABLE_CARDS)
-        card = CARD_BY_ID.get(selected)
-        if card is None or not card.collectable:
+        start_value = self.config.get("测试起始卡带")
+        end_value = self.config.get("测试终止卡带")
+
+        # Read old saved configurations without exposing the retired single selector.
+        if start_value is None and end_value is None:
+            legacy = str(self.config.get("测试卡带范围", ALL_COLLECTION_CARDS_OPTION))
+            if legacy == ALL_COLLECTION_CARDS_OPTION:
+                return tuple(COLLECTABLE_CARDS)
+            legacy_card = CARD_BY_ID.get(legacy)
+            if legacy_card is None or not legacy_card.collectable:
+                return ()
+            return (legacy_card,)
+
+        start_id = str(start_value or DEFAULT_COLLECTION_START)
+        end_id = str(end_value or DEFAULT_COLLECTION_END)
+        try:
+            start_index = COLLECTION_CARD_OPTIONS.index(start_id)
+            end_index = COLLECTION_CARD_OPTIONS.index(end_id)
+        except ValueError:
             return ()
-        return (card,)
+        if start_index > end_index:
+            return ()
+        return tuple(COLLECTABLE_CARDS[start_index : end_index + 1])
 
     def _read_teleport_map_title(
         self,
@@ -482,14 +503,14 @@ class BD2MapCollectionProbeTask(MapAutomationTaskBase):
             return navigator._open_story_quick_switcher()
         if not navigator._wait_for_quick_switch_page():
             return NavigationResult(False, navigator.classify(), "当前画面不是快速选择卡带页")
-        if not navigator._wait_for_story_category():
+        if not navigator._select_story_category():
             return NavigationResult(False, navigator.classify(), "未确认剧情游戏卡类别高亮")
         return NavigationResult(True, navigator.classify(), "当前剧情快速选择页已确认")
 
     def run(self):
         cards = self._selected_cards()
         if not cards:
-            self.info_set("状态", "未执行：测试卡带范围无效")
+            self.info_set("状态", "未执行：测试卡带起止范围无效")
             return False
 
         vision = Vision(self)
