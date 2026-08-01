@@ -453,6 +453,40 @@ def relative_roi_frame(
     return left, top, image[top:bottom, left:right]
 
 
+def scale_reference_roi(
+    roi: tuple[int, int, int, int],
+    target_size: tuple[int, int],
+    reference_size: tuple[int, int],
+) -> tuple[int, int, int, int]:
+    """Scale and clamp a reference x/y/width/height ROI to a target frame.
+
+    Horizontal position and width are scaled by the target/reference width;
+    vertical position and height are scaled independently by height.  Keeping
+    this calculation centralized prevents OCR callers from scaling only the
+    crop size while accidentally retaining a fixed-pixel origin.
+    """
+
+    target_width, target_height = target_size
+    reference_width, reference_height = reference_size
+    if target_width < 0 or target_height < 0:
+        raise ValueError("Target dimensions cannot be negative.")
+    if reference_width <= 0 or reference_height <= 0:
+        raise ValueError("Reference dimensions must be positive.")
+
+    x, y, roi_width, roi_height = roi
+    left = max(0, min(target_width, round(x * target_width / reference_width)))
+    top = max(0, min(target_height, round(y * target_height / reference_height)))
+    right = max(
+        left,
+        min(target_width, round((x + roi_width) * target_width / reference_width)),
+    )
+    bottom = max(
+        top,
+        min(target_height, round((y + roi_height) * target_height / reference_height)),
+    )
+    return left, top, right - left, bottom - top
+
+
 def reference_roi_frame(
     image: np.ndarray,
     roi: tuple[int, int, int, int] | None,
@@ -462,14 +496,12 @@ def reference_roi_frame(
     if roi is None:
         return 0, 0, image
 
-    reference_width, reference_height = reference_size
-    if reference_width <= 0 or reference_height <= 0:
-        raise ValueError("Reference dimensions must be positive.")
-
     height, width = image.shape[:2]
-    x, y, roi_width, roi_height = roi
-    left = max(0, min(width, round(x * width / reference_width)))
-    top = max(0, min(height, round(y * height / reference_height)))
-    right = max(left, min(width, round((x + roi_width) * width / reference_width)))
-    bottom = max(top, min(height, round((y + roi_height) * height / reference_height)))
+    left, top, roi_width, roi_height = scale_reference_roi(
+        roi,
+        (width, height),
+        reference_size,
+    )
+    right = left + roi_width
+    bottom = top + roi_height
     return left, top, image[top:bottom, left:right]

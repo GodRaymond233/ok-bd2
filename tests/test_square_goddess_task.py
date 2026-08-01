@@ -255,9 +255,9 @@ class SquareGoddessEntryTest(unittest.TestCase):
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
         stages = []
-        task._click_square_notice_if_present = (
-            lambda **_kwargs: stages.append("notice") or False
-        )
+        task._click_square_notice_if_present = lambda **kwargs: stages.append(
+            ("notice", kwargs["timeout"])
+        ) or False
         task._click_goddess_daily_navigation_until = (
             lambda **_kwargs: stages.append("navigation") or True
         )
@@ -266,7 +266,30 @@ class SquareGoddessEntryTest(unittest.TestCase):
         )
 
         self.assertTrue(SquareGoddessTask._pray_at_goddess(task))
-        self.assertEqual(["notice", "navigation", "pray"], stages)
+        self.assertEqual(
+            [("notice", 3.0), "navigation", "pray", ("notice", 5.0)],
+            stages,
+        )
+
+    def test_post_prayer_notice_hit_or_timeout_both_continue_to_home(self):
+        for post_notice_found in (False, True):
+            with self.subTest(post_notice_found=post_notice_found):
+                task = object.__new__(SquareGoddessTask)
+                task.config = {"祈祷完成后感叹号等待秒数": 5.0}
+                task.info_set = lambda *_args, **_kwargs: None
+                task.log_info = lambda *_args, **_kwargs: None
+                notice_calls = []
+
+                def click_notice(**kwargs):
+                    notice_calls.append(kwargs["timeout"])
+                    return len(notice_calls) == 2 and post_notice_found
+
+                task._click_square_notice_if_present = click_notice
+                task._click_goddess_daily_navigation_until = lambda **_kwargs: True
+                task._wait_for_goddess_prayer_completion = lambda **_kwargs: True
+
+                self.assertTrue(SquareGoddessTask._pray_at_goddess(task))
+                self.assertEqual([3.0, 5.0], notice_calls)
 
     def test_missing_joint_daily_signal_is_treated_as_already_completed(self):
         task = object.__new__(SquareGoddessTask)
@@ -274,7 +297,9 @@ class SquareGoddessEntryTest(unittest.TestCase):
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
         stages = []
-        task._click_square_notice_if_present = lambda **_kwargs: False
+        task._click_square_notice_if_present = lambda **kwargs: stages.append(
+            ("notice", kwargs["timeout"])
+        ) or False
         task._click_goddess_daily_navigation_until = (
             lambda **_kwargs: stages.append("navigation") or False
         )
@@ -283,7 +308,10 @@ class SquareGoddessEntryTest(unittest.TestCase):
         )
 
         self.assertTrue(SquareGoddessTask._pray_at_goddess(task))
-        self.assertEqual(["navigation"], stages)
+        self.assertEqual(
+            [("notice", 3.0), "navigation", ("notice", 5.0)],
+            stages,
+        )
 
     def test_successful_run_returns_home_after_prayer(self):
         task = object.__new__(SquareGoddessTask)
@@ -319,7 +347,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
 
     def test_square_notice_uses_requested_region_and_clicks_match_center(self):
         self.assertEqual("image/green/tanhaoGE.png", SQUARE_NOTICE_TEMPLATE.file_name)
-        self.assertEqual((1380, 863, 62, 46), SQUARE_NOTICE_TEMPLATE.roi)
+        self.assertEqual((1376, 862, 66, 51), SQUARE_NOTICE_TEMPLATE.roi)
         self.assertTrue(SQUARE_NOTICE_TEMPLATE.green_mask)
         self.assertEqual(0.72, SQUARE_NOTICE_TEMPLATE.min_pixel_score)
 
@@ -329,8 +357,8 @@ class SquareGoddessEntryTest(unittest.TestCase):
         task._match = lambda _frame, spec: SquareMatchResult(
             score=0.90,
             pixel_score=0.90,
-            position=(1380, 863),
-            size=(62, 46),
+            position=(1376, 862),
+            size=(66, 51),
         )
         task._passes = lambda _result, spec: spec is SQUARE_NOTICE_TEMPLATE
         clicks = []
@@ -338,7 +366,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
 
         self.assertTrue(SquareGoddessTask._click_square_notice_if_present(task))
         self.assertEqual(
-            [((1411, 886, 1920, 1080), {"after_sleep": 1.0})],
+            [((1409, 887, 1920, 1080), {"after_sleep": 1.0})],
             clicks,
         )
 
@@ -401,6 +429,100 @@ class SquareGoddessEntryTest(unittest.TestCase):
         self.assertEqual((1661, 229), point)
         self.assertIn("每日奖励", text)
         self.assertIn("移动至", text)
+
+    def test_navigation_ocr_accepts_name_missing_li_and_trailing_characters(self):
+        task = object.__new__(SquareGoddessTask)
+        task.config = {"广场 OCR 阈值": 0.2}
+        task.info_set = lambda *_args, **_kwargs: None
+        task._ocr_boxes = lambda *_args, **_kwargs: [
+            SimpleNamespace(name="每日奖励", x=0, y=0, width=60, height=18),
+            SimpleNamespace(name="移动至艾克史温", x=40, y=20, width=150, height=20),
+        ]
+        frame = np.zeros((1079, 1918, 3), dtype=np.uint8)
+
+        point, text = SquareGoddessTask._goddess_navigation_click_point(
+            task,
+            frame,
+            name="广场导航文本",
+        )
+
+        self.assertEqual((1659, 229), point)
+        self.assertIn("移动至艾克史温", text)
+
+    def test_navigation_ocr_accepts_exactly_seven_target_characters(self):
+        task = object.__new__(SquareGoddessTask)
+        task.config = {"广场 OCR 阈值": 0.2}
+        task.info_set = lambda *_args, **_kwargs: None
+        task._ocr_boxes = lambda *_args, **_kwargs: [
+            SimpleNamespace(name="移动至艾力克史", x=40, y=20, width=140, height=20),
+        ]
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+
+        point, _text = SquareGoddessTask._goddess_navigation_click_point(
+            task,
+            frame,
+            name="广场导航文本",
+        )
+
+        self.assertEqual((1656, 229), point)
+
+    def test_navigation_ocr_rejects_only_six_target_characters(self):
+        task = object.__new__(SquareGoddessTask)
+        task.config = {"广场 OCR 阈值": 0.2}
+        task.info_set = lambda *_args, **_kwargs: None
+        task._ocr_boxes = lambda *_args, **_kwargs: [
+            SimpleNamespace(name="移动至艾力克", x=40, y=20, width=120, height=20),
+        ]
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+
+        point, _text = SquareGoddessTask._goddess_navigation_click_point(
+            task,
+            frame,
+            name="广场导航文本",
+        )
+
+        self.assertIsNone(point)
+
+    def test_navigation_ocr_rejects_another_destination(self):
+        task = object.__new__(SquareGoddessTask)
+        task.config = {"广场 OCR 阈值": 0.2}
+        task.info_set = lambda *_args, **_kwargs: None
+        task._ocr_boxes = lambda *_args, **_kwargs: [
+            SimpleNamespace(name="移动至其他任务", x=40, y=20, width=150, height=20),
+        ]
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+
+        point, text = SquareGoddessTask._goddess_navigation_click_point(
+            task,
+            frame,
+            name="广场导航文本",
+        )
+
+        self.assertIsNone(point)
+        self.assertEqual("移动至其他任务", text)
+
+    def test_navigation_ocr_roi_scales_position_and_size_with_client(self):
+        task = object.__new__(SquareGoddessTask)
+        task.config = {"广场 OCR 阈值": 0.2}
+        task.info_set = lambda *_args, **_kwargs: None
+        observed_shapes = []
+        task.ocr = lambda **kwargs: observed_shapes.append(kwargs["frame"].shape) or []
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+
+        left, top, crop = SquareGoddessTask._roi_frame(
+            frame,
+            GODDESS_DAILY_REGION,
+        )
+        SquareGoddessTask._ocr_boxes(
+            task,
+            frame,
+            name="广场导航文本",
+            roi=GODDESS_DAILY_REGION,
+        )
+
+        self.assertEqual((1031, 133), (left, top))
+        self.assertEqual((42, 207, 3), crop.shape)
+        self.assertEqual([(42, 207, 3)], observed_shapes)
 
     def test_prayer_prefers_ocr_center_and_confirms_navigation_disappeared(self):
         self.assertEqual(
