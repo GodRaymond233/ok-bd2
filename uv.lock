@@ -172,7 +172,7 @@ requires-dist = [
     { name = "adbutils", specifier = ">=2.8.0" },
     { name = "comtypes", specifier = ">=1.4.16" },
     { name = "numpy", specifier = ">=2.4.0" },
-    { name = "ok-script", specifier = "==1.0.179" },
+    { name = "ok-script", specifier = "==1.0.180" },
     { name = "onnxocr-ppocrv5", specifier = ">=0.0.18" },
     { name = "opencc", specifier = ">=1.2.0" },
     { name = "opencv-python", specifier = ">=4.13.0.92" },
@@ -192,7 +192,7 @@ dev = [{ name = "ruff", specifier = ">=0.13.0" }]
 
 [[package]]
 name = "ok-script"
-version = "1.0.179"
+version = "1.0.180"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "mouse", marker = "sys_platform == 'win32'" },
@@ -205,9 +205,9 @@ dependencies = [
     { name = "requests", marker = "sys_platform == 'win32'" },
     { name = "typing-extensions", marker = "sys_platform == 'win32'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/da/2e/00dd93a62dcfd63187c56ee816c2d178b57937f61147ab2f6ba5c07c15f5/ok_script-1.0.179.tar.gz", hash = "sha256:4ea440980a1963c767c4f84a6447e1ea25cad7cf4a536e544cea43f3753ec0e8", size = 649620, upload-time = "2026-07-28T08:42:14.577Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/bd/17/82e44549181193cf5e0536706298674cf36db5ea5d8242f35edb71904778/ok_script-1.0.180.tar.gz", hash = "sha256:80b363c2c4acd51587c6567177ab60f3c4accd81fc767978c48766dd93dd76fc", size = 649920, upload-time = "2026-07-31T11:49:13.726Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/42/a8/552c6900003a900d8e03de9616926090e44e0ee612918a81f8cf871b0d0f/ok_script-1.0.179-py3-none-any.whl", hash = "sha256:7ad1dfd6d09373bd2bf1ef213350637b949dc1898a43f8a2f9d52bd4f68b4ea4", size = 720886, upload-time = "2026-07-28T08:40:29.616Z" },
+    { url = "https://files.pythonhosted.org/packages/97/4b/a0b9058fa1632923c074673123ac083a1f3ef27b27aa2d06fbfd6dddadb1/ok_script-1.0.180-py3-none-any.whl", hash = "sha256:ab5fe9008e364da7a991de75de694ea4b5db59d252b27a89bdd637c79a397a5e", size = 721167, upload-time = "2026-07-31T11:49:11.809Z" },
 ]
 
 [[package]]
