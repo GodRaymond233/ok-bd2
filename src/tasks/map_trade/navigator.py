@@ -1,10 +1,20 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
+from collections.abc import Iterable
+from dataclasses import dataclass, replace
 from time import monotonic
 
+import cv2
 import numpy as np
 
+from src.tasks.map_trade.card_status import (
+    CardActionState,
+    CardStatusDetector,
+    CollectionCardSelectionOutcome,
+    CollectionCardSelectionResult,
+    StoryCardCompletion,
+)
 from src.tasks.map_trade.models import (
     CARD_BY_ID,
     MERCHANT_CARD_ID,
@@ -90,10 +100,25 @@ QUICK_SWITCH_SCROLL_UP_COUNT = 2
 QUICK_SWITCH_SCROLL_SCAN_STEPS = 16
 QUICK_SWITCH_SCROLL_INTERVAL = 0.08
 QUICK_SWITCH_SCROLL_SETTLE_SECONDS = 0.35
+PROBE_QUICK_SWITCH_SCROLL_POINT = (960 / 1920, 1067 / 1080)
+PROBE_QUICK_SWITCH_SCROLL_AMOUNT = 1
+PROBE_QUICK_SWITCH_SCROLL_COUNT = 1
+PROBE_QUICK_SWITCH_SCROLL_STEPS = QUICK_SWITCH_SCROLL_SCAN_STEPS
+PROBE_QUICK_SWITCH_SCROLL_SETTLE_SECONDS = 0.4
+PROBE_STORY_BADGE_CONFIRM_SECONDS = 0.4
 STORY_BADGE_TEMPLATE_SCORE = 0.95
 STORY_BADGE_PIXEL_SCORE = 0.95
 STORY_BADGE_MIN_MARGIN = 0.05
 STORY_BADGE_CANDIDATE_SCORE = 0.70
+STORY_BADGE_CANDIDATE_PIXEL_SCORE = 0.70
+STORY_BADGE_CANDIDATE_ZNCC_SCORE = 0.50
+STORY_BADGE_OCR_MIN_CONFIDENCE = 0.75
+STORY_BADGE_CENTER_REGION = (0.0, 919 / 1080, 1.0, 953 / 1080)
+STORY_BADGE_OCR_INNER_RADIUS_RATIO = 12.5 / 29
+STORY_BADGE_OCR_BINARY_THRESHOLD = 140
+STORY_BADGE_OCR_INNER_HEIGHT = 208
+STORY_BADGE_OCR_VERTICAL_BORDER = 32
+STORY_BADGE_OCR_HORIZONTAL_BORDER = 40
 STORY_BADGE_CLUSTER_RADIUS = 12
 Q_SP6_STORY_NUMBER = 6
 STORY_BADGE_SPECS = tuple(
@@ -101,12 +126,12 @@ STORY_BADGE_SPECS = tuple(
         number,
         TemplateSpec(
             name=f"剧情游戏卡{number}角标",
-            file_name=(
-                f"quick_switch_cartridges/story_cartridge_badge_{number:02d}.png"
-            ),
+            file_name=(f"quick_switch_cartridges/story_cartridge_badge_{number:02d}.png"),
             threshold=STORY_BADGE_TEMPLATE_SCORE,
             relative_roi=QUICK_SWITCH_CARTRIDGE_REGION,
-            min_pixel_score=STORY_BADGE_PIXEL_SCORE,
+            min_pixel_score=STORY_BADGE_CANDIDATE_PIXEL_SCORE,
+            min_zncc_score=STORY_BADGE_CANDIDATE_ZNCC_SCORE,
+            candidate_center_roi=STORY_BADGE_CENTER_REGION,
         ),
     )
     for number in range(1, 21)
@@ -132,14 +157,15 @@ CHAPTER_HOME_POINT = (1797 / 1920, 63 / 1080)
 DISCOUNT_SHOP_CLOSE_TIMEOUT = 5.0
 RETURN_HOME_TIMEOUT = 10.0
 HOME_BRIGHTNESS_THRESHOLD = 0.75
+STORY_SANDBOX_STABLE_HITS = 2
 SANDBOX_TEMPLATES = (
-    TemplateSpec("箱庭图钉", "image/pin.png", 0.76, roi=(1080, 610, 170, 100)),
     TemplateSpec(
-        "箱庭奔跑",
-        "image/green/Run.png",
-        0.72,
-        roi=(1120, 590, 150, 125),
-        green_mask=True,
+        "箱庭小地图缩放按钮",
+        "image/UI_miniMap_B.png",
+        0.90,
+        min_pixel_score=0.90,
+        minimum_safe_threshold=0.90,
+        min_zncc_score=0.90,
     ),
 )
 LOADING_TEMPLATE = TemplateSpec("加载页面", "image/UI_loading_black.png", 0.70)
@@ -165,17 +191,38 @@ class StoryBadgeCandidate:
     number: int
     result: MatchResult
 
+    @property
+    def discrimination_score(self) -> float:
+        if self.result.zncc_score > -1.0:
+            return self.result.zncc_score
+        return self.result.score
+
 
 @dataclass(frozen=True)
 class StoryBadgeDetection:
     best: StoryBadgeCandidate
     runner_up: StoryBadgeCandidate | None
+    ocr_text: str = ""
+    ocr_number: int | None = None
 
     @property
     def margin(self) -> float:
         if self.runner_up is None:
             return -1.0
-        return self.best.result.score - self.runner_up.result.score
+        return self.best.discrimination_score - self.runner_up.discrimination_score
+
+
+@dataclass(frozen=True)
+class LocatedStoryCard:
+    card: CardSpec
+    frame: np.ndarray
+    badge: StoryBadgeDetection
+
+
+@dataclass(frozen=True)
+class ProbedStoryCard:
+    located: LocatedStoryCard
+    completion: StoryCardCompletion
 
 
 @dataclass(frozen=True)
@@ -191,27 +238,59 @@ class AreaMapContext:
     teleports: tuple[MatchResult, ...]
     overlap_arrow: MatchResult | None
     back_button: MatchResult | None
+    confirmation_text: str = ""
 
 
 HAND_TEMPLATE = TemplateSpec(
-    "传送阵交互",
+    "传送阵交互按钮",
     "image/green/IcoHand.png",
-    0.74,
+    0.95,
     green_mask=True,
+    min_pixel_score=0.90,
+    minimum_safe_threshold=0.95,
+    min_zncc_score=0.85,
 )
 NAV_TELEPORT_TEMPLATE = TemplateSpec(
-    "导航图传送阵", "image/green/Nvi_TpCircleMap.png", 0.72
+    "箱庭地图传送阵",
+    "image/green/Nvi_TpCircleMap.png",
+    0.72,
 )
-MAP_LEFT_TEMPLATE = TemplateSpec(
-    "区域图左箭头", "image/green/TpMapLeft.png", 0.72
+TELEPORT_MAP_FORWARD_TEMPLATE = TemplateSpec(
+    "传送阵地图向前",
+    "image/green/TpMapLeft.png",
+    0.95,
+    min_pixel_score=0.85,
+    minimum_safe_threshold=0.95,
+    min_zncc_score=0.90,
 )
-MAP_RIGHT_TEMPLATE = TemplateSpec(
-    "区域图右箭头", "image/green/TpMapRight.png", 0.72
+TELEPORT_MAP_BACKWARD_TEMPLATE = TemplateSpec(
+    "传送阵地图向后",
+    "image/green/TpMapRight.png",
+    0.95,
+    min_pixel_score=0.85,
+    minimum_safe_threshold=0.95,
+    min_zncc_score=0.90,
 )
-TELEPORT_MAP_TEMPLATES = (
-    TemplateSpec("区域图传送阵绿幕", "image/TpCircleMapGE.png", 0.72),
-    TemplateSpec("区域图传送阵", "image/TpCircleMap.png", 0.72),
+# Compatibility names used by the existing collection-map navigator. In the
+# teleport-map UI, "forward" is the left-facing arrow and "backward" is the
+# right-facing arrow.
+MAP_LEFT_TEMPLATE = TELEPORT_MAP_FORWARD_TEMPLATE
+MAP_RIGHT_TEMPLATE = TELEPORT_MAP_BACKWARD_TEMPLATE
+# Two 1920×1080 enabled samples bottomed out at 0.984/0.942/0.931.
+# The disabled marker at its annotated center scored 0.836/0.734/0.004.
+SANDBOX_MAP_TELEPORT_TEMPLATES = (
+    TemplateSpec(
+        "箱庭地图已开启传送阵",
+        "image/green/TpCircleMapGE.png",
+        0.95,
+        min_pixel_score=0.90,
+        minimum_safe_threshold=0.95,
+        min_zncc_score=0.85,
+    ),
 )
+# Backward-compatible export for callers that have not yet adopted the
+# clarified sandbox-map terminology.
+TELEPORT_MAP_TEMPLATES = SANDBOX_MAP_TELEPORT_TEMPLATES
 OVERLAP_ARROW_TEMPLATE = TemplateSpec(
     "传送阵重叠箭头",
     "image/green/map_tcArrowGE.png",
@@ -223,6 +302,43 @@ AREA_MAP_CHANGE_TIMEOUT = 3.0
 AREA_MAP_CHANGE_INTERVAL = 0.25
 AREA_MAP_CLICK_SETTLE_SECONDS = 0.5
 AREA_MAP_TELEPORT_CLUSTER_RADIUS = 24
+SANDBOX_MAP_SETTLE_SECONDS = 0.5
+SANDBOX_MAP_TELEPORT_TIMEOUT = 30.0
+TELEPORT_INTERACTION_TIMEOUT = 30.0
+TELEPORT_INTERACTION_CLICK_DELAY = 0.5
+TELEPORT_INTERACTION_POLL_INTERVAL = 0.4
+AREA_MAP_REFERENCE_SIZE = (1920, 1080)
+AREA_MAP_OPEN_REFERENCE_POINT = (289, 253)
+AREA_MAP_OPEN_RELATIVE_POINT = (
+    AREA_MAP_OPEN_REFERENCE_POINT[0] / AREA_MAP_REFERENCE_SIZE[0],
+    AREA_MAP_OPEN_REFERENCE_POINT[1] / AREA_MAP_REFERENCE_SIZE[1],
+)
+SANDBOX_MAP_TITLE_OCR_REFERENCE_ROI = (222, 8, 878, 96)
+SANDBOX_MAP_TITLE_OCR_RELATIVE_ROI = (
+    SANDBOX_MAP_TITLE_OCR_REFERENCE_ROI[0] / AREA_MAP_REFERENCE_SIZE[0],
+    SANDBOX_MAP_TITLE_OCR_REFERENCE_ROI[1] / AREA_MAP_REFERENCE_SIZE[1],
+    SANDBOX_MAP_TITLE_OCR_REFERENCE_ROI[2] / AREA_MAP_REFERENCE_SIZE[0],
+    SANDBOX_MAP_TITLE_OCR_REFERENCE_ROI[3] / AREA_MAP_REFERENCE_SIZE[1],
+)
+TELEPORT_MAP_TITLE_OCR_REFERENCE_ROI = (654, 946, 1268, 1021)
+TELEPORT_MAP_TITLE_OCR_RELATIVE_ROI = (
+    TELEPORT_MAP_TITLE_OCR_REFERENCE_ROI[0] / AREA_MAP_REFERENCE_SIZE[0],
+    TELEPORT_MAP_TITLE_OCR_REFERENCE_ROI[1] / AREA_MAP_REFERENCE_SIZE[1],
+    TELEPORT_MAP_TITLE_OCR_REFERENCE_ROI[2] / AREA_MAP_REFERENCE_SIZE[0],
+    TELEPORT_MAP_TITLE_OCR_REFERENCE_ROI[3] / AREA_MAP_REFERENCE_SIZE[1],
+)
+TELEPORT_MAP_RETURN_REFERENCE_POINT = (135, 51)
+TELEPORT_MAP_RETURN_RELATIVE_POINT = (
+    TELEPORT_MAP_RETURN_REFERENCE_POINT[0] / AREA_MAP_REFERENCE_SIZE[0],
+    TELEPORT_MAP_RETURN_REFERENCE_POINT[1] / AREA_MAP_REFERENCE_SIZE[1],
+)
+# Compatibility aliases now refer to the actual teleport-map title region.
+AREA_MAP_TITLE_OCR_REFERENCE_ROI = TELEPORT_MAP_TITLE_OCR_REFERENCE_ROI
+AREA_MAP_TITLE_OCR_RELATIVE_ROI = TELEPORT_MAP_TITLE_OCR_RELATIVE_ROI
+AREA_MAP_TELEPORT_BRIGHT_RADIUS_RATIO = 24 / 52
+AREA_MAP_TELEPORT_BRIGHT_MINIMUM_GRAY = 200
+AREA_MAP_TELEPORT_BRIGHT_MAXIMUM_SPREAD = 35
+AREA_MAP_TELEPORT_BRIGHT_NEUTRAL_RATIO = 0.10
 FIRST_CARD_INSERT_REGION = (413, 481, 440, 132)
 FIRST_CARD_SKIP_TEMPLATE = TemplateSpec(
     "首次卡带跳过",
@@ -237,6 +353,7 @@ class Navigator:
     def __init__(self, task, vision: Vision) -> None:
         self.task = task
         self.vision = vision
+        self.card_status = CardStatusDetector(vision)
 
     def classify(self, frame=None) -> ScreenState:
         frame = self.vision.capture() if frame is None else frame
@@ -259,10 +376,13 @@ class Navigator:
         ):
             return ScreenState.LOADING
         for spec in SANDBOX_TEMPLATES:
-            if self.vision.match(frame, spec).score >= self.vision.threshold_for(spec):
+            result = self.vision.match(frame, spec)
+            if self.vision.passes(result, spec):
                 return ScreenState.SANDBOX
 
         text = normalize_text(self.vision.simplify(self.vision.ocr_text(frame, "界面分类")))
+        if "browndust" in text:
+            return ScreenState.LOADING
         if self._shop_page_text(text):
             return ScreenState.SHOP
         if "移动魔法阵" in text:
@@ -320,7 +440,9 @@ class Navigator:
                     f"{badge.best.result.center[1]}), "
                     f"match={badge.best.result.score:.3f}, "
                     f"pixel={badge.best.result.pixel_score:.3f}, "
-                    f"margin={badge.margin:.3f}"
+                    f"zncc={badge.best.result.zncc_score:.3f}, "
+                    f"margin={badge.margin:.3f}, "
+                    f"ocr={badge.ocr_number if badge.ocr_number is not None else '-'}"
                 ),
             )
             self.vision.click_client(
@@ -446,7 +568,10 @@ class Navigator:
                 last_pixel_score,
                 last_brightness,
                 last_gacha_text,
-            ) = self._home_confirmation_signals(frame)
+            ) = self._home_confirmation_signals(
+                frame,
+                clear_context="跑商/跑图确认主页",
+            )
             if confirmed:
                 return True
             self.task.sleep(interval)
@@ -460,13 +585,14 @@ class Navigator:
     def _home_confirmation_signals(
         self,
         frame: np.ndarray,
+        clear_context: str | None = None,
     ) -> tuple[bool, float, float, float, str]:
         candidates = [(spec, self.vision.match(frame, spec)) for spec in HOME_TEMPLATES]
         spec, result = max(candidates, key=lambda value: value[1].score)
         brightness = self.vision.template_brightness_ratio(frame, spec, result)
         button_found = self.vision.passes(result, spec)
         gacha_text = ""
-        if button_found and brightness >= HOME_BRIGHTNESS_THRESHOLD:
+        if button_found:
             gacha_text = self.vision.ocr_text(
                 frame,
                 "主页抽抽乐",
@@ -484,6 +610,19 @@ class Navigator:
             brightness_threshold=HOME_BRIGHTNESS_THRESHOLD,
             gacha_ocr_text=gacha_text,
         )
+        clear_announcement = getattr(
+            self.task,
+            "clear_temporary_home_announcement_if_needed",
+            None,
+        )
+        if clear_context is not None and not confirmed and callable(clear_announcement):
+            clear_announcement(
+                button_found=button_found,
+                brightness_ratio=brightness,
+                brightness_threshold=HOME_BRIGHTNESS_THRESHOLD,
+                gacha_ocr_text=gacha_text,
+                context=clear_context,
+            )
         return confirmed, result.score, result.pixel_score, brightness, gacha_text
 
     def _wait_for_quick_switch_page(self, timeout: float = 10.0) -> bool:
@@ -567,16 +706,13 @@ class Navigator:
         clusters: list[list[StoryBadgeCandidate]] = []
         for candidate in sorted(
             candidates,
-            key=lambda value: value.result.score,
+            key=lambda value: value.discrimination_score,
             reverse=True,
         ):
             for cluster in clusters:
                 anchor = cluster[0].result.center
                 center = candidate.result.center
-                if (
-                    (center[0] - anchor[0]) ** 2 + (center[1] - anchor[1]) ** 2
-                    <= cluster_radius**2
-                ):
+                if (center[0] - anchor[0]) ** 2 + (center[1] - anchor[1]) ** 2 <= cluster_radius**2:
                     cluster.append(candidate)
                     break
             else:
@@ -587,11 +723,11 @@ class Navigator:
             best_by_number: dict[int, StoryBadgeCandidate] = {}
             for candidate in cluster:
                 current = best_by_number.get(candidate.number)
-                if current is None or candidate.result.score > current.result.score:
+                if current is None or candidate.discrimination_score > current.discrimination_score:
                     best_by_number[candidate.number] = candidate
             ranked = sorted(
                 best_by_number.values(),
-                key=lambda value: value.result.score,
+                key=lambda value: value.discrimination_score,
                 reverse=True,
             )
             if not ranked:
@@ -602,9 +738,92 @@ class Navigator:
                     runner_up=ranked[1] if len(ranked) > 1 else None,
                 )
             )
-        return tuple(
-            sorted(detections, key=lambda value: value.best.result.center[0])
+        return tuple(sorted(detections, key=lambda value: value.best.result.center[0]))
+
+    @staticmethod
+    def _story_badge_ocr_frame(
+        frame: np.ndarray,
+        result: MatchResult,
+    ) -> np.ndarray:
+        """Prepare one tiny badge as a padded text line for the shared OCR engine."""
+
+        height, width = frame.shape[:2]
+        left = max(0, result.position[0])
+        top = max(0, result.position[1])
+        right = min(width, result.position[0] + result.size[0])
+        bottom = min(height, result.position[1] + result.size[1])
+        crop = frame[top:bottom, left:right]
+        if crop.size == 0:
+            return np.empty((0, 0, 3), dtype=np.uint8)
+        if crop.ndim == 2:
+            gray = crop.copy()
+        elif crop.shape[2] == 4:
+            gray = cv2.cvtColor(crop, cv2.COLOR_BGRA2GRAY)
+        else:
+            gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+
+        crop_height, crop_width = gray.shape[:2]
+        center_x = (crop_width - 1) / 2
+        center_y = (crop_height - 1) / 2
+        inner_radius = max(
+            2.0,
+            min(crop_width, crop_height) * STORY_BADGE_OCR_INNER_RADIUS_RATIO,
         )
+        y, x = np.mgrid[:crop_height, :crop_width]
+        gray[(x - center_x) ** 2 + (y - center_y) ** 2 > inner_radius**2] = 0
+        _threshold, crop = cv2.threshold(
+            gray,
+            STORY_BADGE_OCR_BINARY_THRESHOLD,
+            255,
+            cv2.THRESH_BINARY,
+        )
+
+        target_height = STORY_BADGE_OCR_INNER_HEIGHT
+        target_width = max(
+            1,
+            round(crop.shape[1] * target_height / max(1, crop.shape[0])),
+        )
+        enlarged = cv2.resize(
+            crop,
+            (target_width, target_height),
+            interpolation=cv2.INTER_CUBIC,
+        )
+        enlarged = cv2.cvtColor(enlarged, cv2.COLOR_GRAY2BGR)
+        return cv2.copyMakeBorder(
+            enlarged,
+            STORY_BADGE_OCR_VERTICAL_BORDER,
+            STORY_BADGE_OCR_VERTICAL_BORDER,
+            STORY_BADGE_OCR_HORIZONTAL_BORDER,
+            STORY_BADGE_OCR_HORIZONTAL_BORDER,
+            cv2.BORDER_CONSTANT,
+            value=(20, 20, 20),
+        )
+
+    def _story_badge_ocr_number(
+        self,
+        frame: np.ndarray,
+        result: MatchResult,
+    ) -> tuple[int | None, str]:
+        prepared = self._story_badge_ocr_frame(frame, result)
+        if prepared.size == 0:
+            return None, ""
+        text = self.vision.ocr_text(
+            prepared,
+            "剧情角标数字辅助",
+            target_height=0,
+            minimum_threshold=STORY_BADGE_OCR_MIN_CONFIDENCE,
+        )
+        numbers = {
+            int(value)
+            for value in re.findall(r"(?<!\d)\d{1,2}(?!\d)", str(text))
+            if 1 <= int(value) <= 20
+        }
+        number = next(iter(numbers)) if len(numbers) == 1 else None
+        self._status(
+            "剧情角标 OCR",
+            f"number={number if number is not None else '-'}, text={text or '-'}",
+        )
+        return number, text
 
     def _find_story_badge(
         self,
@@ -612,6 +831,35 @@ class Navigator:
         target_number: int,
     ) -> tuple[StoryBadgeDetection | None, str]:
         detections = self._story_badge_detections(frame)
+        return self._find_story_badge_from_detections(
+            frame,
+            target_number,
+            detections,
+        )
+
+    def inspect_story_badges(
+        self,
+        frame: np.ndarray,
+        target_numbers: Iterable[int],
+    ) -> dict[int, tuple[StoryBadgeDetection | None, str]]:
+        """Strictly inspect several badge numbers with one shared template scan."""
+
+        detections = self._story_badge_detections(frame)
+        return {
+            int(number): self._find_story_badge_from_detections(
+                frame,
+                int(number),
+                detections,
+            )
+            for number in dict.fromkeys(target_numbers)
+        }
+
+    def _find_story_badge_from_detections(
+        self,
+        frame: np.ndarray,
+        target_number: int,
+        detections: tuple[StoryBadgeDetection, ...],
+    ) -> tuple[StoryBadgeDetection | None, str]:
         target_detections = [
             value
             for value in detections
@@ -620,7 +868,15 @@ class Navigator:
             and value.best.result.pixel_score >= STORY_BADGE_PIXEL_SCORE
         ]
         if not target_detections:
-            return None, f"未达到双阈值，检测目标数={len(detections)}"
+            return (
+                None,
+                (
+                    "未达到角标双阈值："
+                    f"match>={STORY_BADGE_TEMPLATE_SCORE:.3f}, "
+                    f"pixel>={STORY_BADGE_PIXEL_SCORE:.3f}, "
+                    f"检测目标数={len(detections)}"
+                ),
+            )
         if len(target_detections) > 1:
             return None, f"同一编号出现{len(target_detections)}个有效位置"
         detection = target_detections[0]
@@ -629,7 +885,24 @@ class Navigator:
         if detection.margin < STORY_BADGE_MIN_MARGIN:
             return (
                 None,
-                f"候选分差不足：{detection.margin:.3f}<{STORY_BADGE_MIN_MARGIN:.3f}",
+                (f"候选分差不足（ZNCC）：{detection.margin:.3f}<{STORY_BADGE_MIN_MARGIN:.3f}"),
+            )
+        ocr_number, ocr_text = self._story_badge_ocr_number(
+            frame,
+            detection.best.result,
+        )
+        detection = replace(
+            detection,
+            ocr_text=ocr_text,
+            ocr_number=ocr_number,
+        )
+        if ocr_number is not None and ocr_number != target_number:
+            return (
+                None,
+                (
+                    "角标OCR数字冲突："
+                    f"模板={target_number}, OCR={ocr_number}, text={ocr_text or '-'}"
+                ),
             )
         return detection, ""
 
@@ -650,7 +923,9 @@ class Navigator:
                     (
                         f"{target_number}: match={detection.best.result.score:.3f}, "
                         f"pixel={detection.best.result.pixel_score:.3f}, "
-                        f"margin={detection.margin:.3f}"
+                        f"zncc={detection.best.result.zncc_score:.3f}, "
+                        f"margin={detection.margin:.3f}, "
+                        f"ocr={detection.ocr_number if detection.ocr_number is not None else '-'}"
                     ),
                 )
                 return frame, detection
@@ -666,6 +941,7 @@ class Navigator:
                 "同一编号出现",
                 "缺少同位置次优编号",
                 "候选分差不足",
+                "角标OCR数字冲突",
             )
         )
 
@@ -690,7 +966,9 @@ class Navigator:
                 (
                     f"{target_number}: match={detection.best.result.score:.3f}, "
                     f"pixel={detection.best.result.pixel_score:.3f}, "
-                    f"margin={detection.margin:.3f}"
+                    f"zncc={detection.best.result.zncc_score:.3f}, "
+                    f"margin={detection.margin:.3f}, "
+                    f"ocr={detection.ocr_number if detection.ocr_number is not None else '-'}"
                 ),
             )
             return frame, detection
@@ -738,10 +1016,140 @@ class Navigator:
             )
 
         self.task.log_warning(
-            f"跑图跑商：滚动快速选择栏后仍未确认剧情游戏卡{target_number}角标："
-            f"{last_reason}。"
+            f"跑图跑商：滚动快速选择栏后仍未确认剧情游戏卡{target_number}角标：{last_reason}。"
         )
         return None
+
+    def locate_probe_story_card(
+        self,
+        card_id: str,
+        scan_steps: int = QUICK_SWITCH_SCROLL_SCAN_STEPS,
+    ) -> ProbedStoryCard | None:
+        """Locate and read one card in an already-open story quick selector.
+
+        This probe-only path preserves the current horizontal viewport.  It
+        advances toward later cards one wheel notch at a time and never uses
+        the formal selector's reset-to-edge operation.
+        """
+
+        card = CARD_BY_ID.get(card_id)
+        if card is None:
+            self.task.log_warning(f"剧情卡带合并测试：未知卡带：{card_id}。")
+            return None
+
+        steps = max(0, int(scan_steps))
+        last_reason = "未执行识别"
+        for step in range(steps + 1):
+            frame = self.vision.capture()
+            badge, last_reason = self._find_story_badge(frame, card.number)
+            if badge is None:
+                self._status("剧情角标", f"{card.number}: {last_reason}")
+                if self._story_badge_reason_is_ambiguous(last_reason):
+                    self.task.log_warning(
+                        f"剧情卡带合并测试：剧情游戏卡{card.number}"
+                        f"角标存在歧义：{last_reason}。"
+                    )
+                    return None
+            else:
+                try:
+                    completion = self.card_status.detect(
+                        frame,
+                        badge.best.result.center,
+                    )
+                except (RuntimeError, ValueError, cv2.error) as error:
+                    self.task.log_warning(
+                        f"剧情卡带合并测试：{card_id}完成度识别异常：{error}。"
+                    )
+                    return None
+                if completion.complete_region:
+                    self.task.sleep(PROBE_STORY_BADGE_CONFIRM_SECONDS)
+                    confirmed_frame = self.vision.capture()
+                    confirmed_badge, confirmed_reason = self._find_story_badge(
+                        confirmed_frame,
+                        card.number,
+                    )
+                    if confirmed_badge is None:
+                        last_reason = f"等待0.4秒后角标复核失败：{confirmed_reason}"
+                        self._status("剧情角标", f"{card.number}: {last_reason}")
+                        self.task.log_warning(
+                            f"剧情卡带合并测试：剧情游戏卡{card.number}"
+                            f"角标在点击前复核失败：{confirmed_reason}。"
+                        )
+                        return None
+                    else:
+                        try:
+                            confirmed_completion = self.card_status.detect(
+                                confirmed_frame,
+                                confirmed_badge.best.result.center,
+                            )
+                        except (RuntimeError, ValueError, cv2.error) as error:
+                            self.task.log_warning(
+                                f"剧情卡带合并测试：{card_id}复核帧完成度"
+                                f"识别异常：{error}。"
+                            )
+                            return None
+                        if confirmed_completion.complete_region:
+                            located = LocatedStoryCard(
+                                card,
+                                confirmed_frame,
+                                confirmed_badge,
+                            )
+                            self._status(
+                                "目标卡带",
+                                (
+                                    f"{card_id}: center="
+                                    f"({confirmed_badge.best.result.center[0]},"
+                                    f"{confirmed_badge.best.result.center[1]}), "
+                                    f"match={confirmed_badge.best.result.score:.3f}, "
+                                    f"pixel={confirmed_badge.best.result.pixel_score:.3f}, "
+                                    f"zncc={confirmed_badge.best.result.zncc_score:.3f}, "
+                                    f"margin={confirmed_badge.margin:.3f}"
+                                ),
+                            )
+                            return ProbedStoryCard(located, confirmed_completion)
+                        last_reason = "角标复核帧的吸取/压制区域被客户区边缘截断"
+                        self._status("卡带完成度", last_reason)
+                else:
+                    last_reason = "角标已命中，但吸取/压制区域被客户区边缘截断"
+                    self._status("卡带完成度", last_reason)
+
+            if step >= steps:
+                break
+            self._status("卡带滚轮", f"后续卡带扫描 {step + 1}/{steps}")
+            self.task._scroll_client(
+                PROBE_QUICK_SWITCH_SCROLL_POINT,
+                PROBE_QUICK_SWITCH_SCROLL_AMOUNT,
+                count=PROBE_QUICK_SWITCH_SCROLL_COUNT,
+                interval=0.0,
+                after_sleep=PROBE_QUICK_SWITCH_SCROLL_SETTLE_SECONDS,
+            )
+
+        self.task.log_warning(
+            f"剧情卡带合并测试：向上逐步滚动后仍未确认"
+            f"剧情游戏卡{card.number}：{last_reason}。"
+        )
+        return None
+
+    def locate_story_card_for_probe(
+        self,
+        card_id: str,
+        scan_steps: int = PROBE_QUICK_SWITCH_SCROLL_STEPS,
+    ) -> ProbedStoryCard | NavigationResult:
+        """Compatibility wrapper returning an explicit failure to probe tasks."""
+
+        located = self.locate_probe_story_card(card_id, scan_steps=scan_steps)
+        if located is not None:
+            return located
+        return NavigationResult(
+            False,
+            ScreenState.CARD_MENU,
+            f"未确认剧情游戏卡{card_id}角标及完整完成度区域",
+        )
+
+    def enter_probe_story_card(self, probed: ProbedStoryCard) -> NavigationResult:
+        """Click the revalidated probe center and confirm a stable sandbox."""
+
+        return self._enter_located_story_card(probed.located)
 
     def _handle_story_card_intermediate(self, frame: np.ndarray) -> bool:
         prompt = normalize_text(
@@ -800,20 +1208,61 @@ class Navigator:
             self._loading_timeout() if timeout is None else float(timeout),
         )
         last_state = ScreenState.UNKNOWN
+        sandbox_hits = 0
         while monotonic() <= end_at:
             frame = self.vision.capture()
             last_state = self.classify(frame)
             self._status("导航状态", last_state.value)
             if last_state == ScreenState.SANDBOX:
-                return NavigationResult(True, last_state, f"Q_sp{target_number}")
-            if last_state != ScreenState.LOADING and self._handle_story_card_intermediate(frame):
+                sandbox_hits += 1
+                self._status(
+                    "箱庭稳定确认",
+                    f"{sandbox_hits}/{STORY_SANDBOX_STABLE_HITS}",
+                )
+                if sandbox_hits >= STORY_SANDBOX_STABLE_HITS:
+                    return NavigationResult(True, last_state, f"Q_sp{target_number}")
+            else:
+                sandbox_hits = 0
+            if last_state not in {
+                ScreenState.LOADING,
+                ScreenState.SANDBOX,
+            } and self._handle_story_card_intermediate(frame):
                 continue
-            self.task.sleep(max(0.0, interval))
+            if interval > 0:
+                self.task.sleep(interval)
         return NavigationResult(
             False,
             last_state,
             f"剧情游戏卡{target_number}入场确认超时",
         )
+
+    def _wait_for_current_sandbox(
+        self,
+        timeout: float = 3.0,
+        interval: float = 0.5,
+    ) -> NavigationResult:
+        """Confirm the current story sandbox on consecutive captured frames."""
+
+        end_at = monotonic() + max(0.0, timeout)
+        last_state = ScreenState.UNKNOWN
+        sandbox_hits = 0
+        while monotonic() <= end_at:
+            frame = self.vision.capture()
+            last_state = self.classify(frame)
+            self._status("导航状态", last_state.value)
+            if last_state == ScreenState.SANDBOX:
+                sandbox_hits += 1
+                self._status(
+                    "箱庭稳定确认",
+                    f"{sandbox_hits}/{STORY_SANDBOX_STABLE_HITS}",
+                )
+                if sandbox_hits >= STORY_SANDBOX_STABLE_HITS:
+                    return NavigationResult(True, last_state, "已稳定确认剧情卡带箱庭")
+            else:
+                sandbox_hits = 0
+            if interval > 0:
+                self.task.sleep(interval)
+        return NavigationResult(False, last_state, "未稳定确认当前剧情卡带箱庭")
 
     def _wait_for_ocr_keywords(
         self,
@@ -847,9 +1296,7 @@ class Navigator:
         name: str,
         relative_roi: tuple[float, float, float, float] | None = None,
     ) -> tuple[bool, str]:
-        required = tuple(
-            normalize_text(self.vision.simplify(value)) for value in keywords
-        )
+        required = tuple(normalize_text(self.vision.simplify(value)) for value in keywords)
         if relative_roi is None:
             text = self.vision.ocr_text(frame, name)
         else:
@@ -925,7 +1372,10 @@ class Navigator:
             return NavigationResult(True, ScreenState.CARD_MENU)
         return NavigationResult(False, self.classify(), "无法从主页打开快速切换卡带页面")
 
-    def select_card(self, card_id: str) -> NavigationResult:
+    def _locate_story_card(
+        self,
+        card_id: str,
+    ) -> LocatedStoryCard | NavigationResult:
         card = CARD_BY_ID.get(card_id)
         if card is None:
             return NavigationResult(False, ScreenState.UNKNOWN, f"未知卡带：{card_id}")
@@ -950,9 +1400,20 @@ class Navigator:
             (
                 f"{card_id}: match={badge.best.result.score:.3f}, "
                 f"pixel={badge.best.result.pixel_score:.3f}, "
-                f"margin={badge.margin:.3f}"
+                f"zncc={badge.best.result.zncc_score:.3f}, "
+                f"margin={badge.margin:.3f}, "
+                f"ocr={badge.ocr_number if badge.ocr_number is not None else '-'}"
             ),
         )
+        return LocatedStoryCard(card, badge_frame, badge)
+
+    def _enter_located_story_card(
+        self,
+        located: LocatedStoryCard,
+    ) -> NavigationResult:
+        card = located.card
+        badge_frame = located.frame
+        badge = located.badge
         self._status(
             f"剧情游戏卡{card.number}角标点击中心",
             (
@@ -960,7 +1421,9 @@ class Navigator:
                 f"{badge.best.result.center[1]}), "
                 f"match={badge.best.result.score:.3f}, "
                 f"pixel={badge.best.result.pixel_score:.3f}, "
-                f"margin={badge.margin:.3f}"
+                f"zncc={badge.best.result.zncc_score:.3f}, "
+                f"margin={badge.margin:.3f}, "
+                f"ocr={badge.ocr_number if badge.ocr_number is not None else '-'}"
             ),
         )
         self.vision.click_client(
@@ -970,8 +1433,80 @@ class Navigator:
         )
         arrival = self._wait_for_story_sandbox(card.number)
         if arrival.success:
-            return NavigationResult(True, arrival.state, card_id)
+            return NavigationResult(True, arrival.state, card.card_id)
         return arrival
+
+    def select_card(self, card_id: str) -> NavigationResult:
+        located = self._locate_story_card(card_id)
+        if isinstance(located, NavigationResult):
+            return located
+        return self._enter_located_story_card(located)
+
+    def select_collection_card(
+        self,
+        card_id: str,
+    ) -> CollectionCardSelectionResult:
+        card = CARD_BY_ID.get(card_id)
+        if card is None or not card.collectable:
+            navigation = NavigationResult(
+                False,
+                ScreenState.UNKNOWN,
+                f"非跑图剧情卡带：{card_id}",
+            )
+            return CollectionCardSelectionResult(
+                CollectionCardSelectionOutcome.FAILED,
+                navigation,
+            )
+
+        located = self._locate_story_card(card_id)
+        if isinstance(located, NavigationResult):
+            return CollectionCardSelectionResult(
+                CollectionCardSelectionOutcome.FAILED,
+                located,
+            )
+
+        completion = None
+        try:
+            completion = self.card_status.detect(
+                located.frame,
+                located.badge.best.result.center,
+            )
+        except (RuntimeError, ValueError, cv2.error) as error:
+            self.task.log_warning(f"地图采集：{card_id}完成度识别异常，按未知继续进入：{error}。")
+
+        if completion is not None:
+            self._status(
+                "吸取状态",
+                f"{completion.absorb.state.value}: {completion.absorb.reason}",
+            )
+            self._status(
+                "压制状态",
+                f"{completion.suppress.state.value}: {completion.suppress.reason}",
+            )
+            self._status("卡带完成度", completion.state.value)
+            if completion.state == CardActionState.COMPLETED:
+                navigation = NavigationResult(
+                    True,
+                    ScreenState.CARD_MENU,
+                    f"{card_id}视觉确认吸取与压制均完成",
+                )
+                return CollectionCardSelectionResult(
+                    CollectionCardSelectionOutcome.VISUALLY_COMPLETE,
+                    navigation,
+                    completion,
+                )
+
+        navigation = self._enter_located_story_card(located)
+        outcome = (
+            CollectionCardSelectionOutcome.ENTERED
+            if navigation.success
+            else CollectionCardSelectionOutcome.FAILED
+        )
+        return CollectionCardSelectionResult(
+            outcome,
+            navigation,
+            completion,
+        )
 
     def ensure_sandbox(self, card_id: str | None = None) -> NavigationResult:
         if self.classify() == ScreenState.SANDBOX and card_id is None:
@@ -1052,6 +1587,188 @@ class Navigator:
                 return
             self.task.sleep(0.5)
 
+    def open_teleport_map_from_sandbox(
+        self,
+        map_open_point: tuple[float, float] = AREA_MAP_OPEN_RELATIVE_POINT,
+    ) -> NavigationResult:
+        """Open the teleport map through the user-confirmed sandbox routes."""
+
+        frame = self.vision.capture()
+        interaction = self.vision.match(frame, HAND_TEMPLATE)
+        self._status(
+            "箱庭交互按钮",
+            (
+                f"match={interaction.score:.3f}, "
+                f"pixel={interaction.pixel_score:.3f}, "
+                f"zncc={interaction.zncc_score:.3f}"
+            ),
+        )
+        if self.vision.passes(interaction, HAND_TEMPLATE):
+            self.vision.click_client(
+                interaction.center,
+                frame.shape,
+                after_sleep=SANDBOX_MAP_SETTLE_SECONDS,
+            )
+            return NavigationResult(
+                True,
+                ScreenState.UNKNOWN,
+                "已点击箱庭交互按钮，等待确认传送阵地图",
+            )
+
+        self._status("导航状态", "打开箱庭地图界面")
+        self.task.operate_click(
+            *map_open_point,
+            after_sleep=SANDBOX_MAP_SETTLE_SECONDS,
+        )
+        self._status("导航状态", "箱庭地图界面：持续识别传送阵")
+        teleport_deadline = monotonic() + SANDBOX_MAP_TELEPORT_TIMEOUT
+        teleport_frame = None
+        teleport = None
+        last_teleport_count = 0
+        while monotonic() <= teleport_deadline:
+            frame = self.vision.capture()
+            teleports = self._sandbox_map_teleports(frame)
+            last_teleport_count = len(teleports)
+            self._status(
+                "箱庭地图已开启传送阵",
+                f"count={last_teleport_count}, centers={[value.center for value in teleports]}",
+            )
+            if len(teleports) == 1:
+                teleport_frame = frame
+                teleport = teleports[0]
+                break
+            if len(teleports) > 1:
+                return NavigationResult(
+                    False,
+                    ScreenState.UNKNOWN,
+                    f"箱庭地图界面识别到{len(teleports)}个已开启传送阵，无法唯一点击",
+                )
+            self.task.sleep(TELEPORT_INTERACTION_POLL_INTERVAL)
+        if teleport is None or teleport_frame is None:
+            return NavigationResult(
+                False,
+                ScreenState.UNKNOWN,
+                (
+                    "箱庭地图界面未在30秒内唯一识别到已开启传送阵："
+                    f"count={last_teleport_count}"
+                ),
+            )
+
+        self.vision.click_client(
+            teleport.center,
+            teleport_frame.shape,
+            after_sleep=0.0,
+        )
+        teleport_clicked_at = monotonic()
+        self._status(
+            "箱庭地图传送阵点击中心",
+            (
+                f"center={teleport.center}, match={teleport.score:.3f}, "
+                f"pixel={teleport.pixel_score:.3f}, "
+                f"zncc={teleport.zncc_score:.3f}"
+            ),
+        )
+
+        interaction_deadline = teleport_clicked_at + TELEPORT_INTERACTION_TIMEOUT
+        last_interaction = MatchResult(-1.0, (0, 0), (0, 0))
+        while monotonic() <= interaction_deadline:
+            frame = self.vision.capture()
+            last_interaction = self.vision.match(frame, HAND_TEMPLATE)
+            self._status(
+                "导航后交互按钮",
+                (
+                    f"match={last_interaction.score:.3f}, "
+                    f"pixel={last_interaction.pixel_score:.3f}, "
+                    f"zncc={last_interaction.zncc_score:.3f}"
+                ),
+            )
+            if self.vision.passes(last_interaction, HAND_TEMPLATE):
+                if monotonic() > interaction_deadline:
+                    break
+                self._status("导航后交互按钮", "已识别，等待0.5秒后点击")
+                self.task.sleep(TELEPORT_INTERACTION_CLICK_DELAY)
+                self.vision.click_client(
+                    last_interaction.center,
+                    frame.shape,
+                    after_sleep=SANDBOX_MAP_SETTLE_SECONDS,
+                )
+                return NavigationResult(
+                    True,
+                    ScreenState.UNKNOWN,
+                    "已点击导航后交互按钮，等待确认传送阵地图",
+                )
+            self.task.sleep(TELEPORT_INTERACTION_POLL_INTERVAL)
+
+        return NavigationResult(
+            False,
+            ScreenState.SANDBOX,
+            (
+                "点击箱庭地图传送阵后30秒内未识别到交互按钮："
+                f"match={last_interaction.score:.3f}, "
+                f"pixel={last_interaction.pixel_score:.3f}, "
+                f"zncc={last_interaction.zncc_score:.3f}"
+            ),
+        )
+
+    def return_teleport_map_to_sandbox(self, card_number: int) -> NavigationResult:
+        """Close the teleport map at the user-confirmed point and confirm the sandbox."""
+
+        self._status("导航状态", "从传送阵地图返回卡带箱庭")
+        self.task.operate_click(
+            *TELEPORT_MAP_RETURN_RELATIVE_POINT,
+            after_sleep=SANDBOX_MAP_SETTLE_SECONDS,
+        )
+        confirmed = self._wait_for_story_sandbox(int(card_number))
+        if confirmed.success:
+            return NavigationResult(
+                True,
+                ScreenState.SANDBOX,
+                f"Q_sp{int(card_number)}箱庭已稳定确认",
+            )
+        return NavigationResult(
+            False,
+            confirmed.state,
+            (
+                f"从传送阵地图返回后未确认剧情游戏卡{int(card_number)}箱庭："
+                f"{confirmed.message}"
+            ),
+        )
+
+    def open_story_quick_switcher_from_sandbox(self) -> NavigationResult:
+        """Open the story quick-switch page without detouring through the global home."""
+
+        sandbox = self._wait_for_current_sandbox()
+        if not sandbox.success:
+            return sandbox
+
+        self._status("导航状态", "从卡带箱庭识别快速切换按钮")
+        if not self.vision.click_stable_template(
+            QUICK_SWITCH_TEMPLATE,
+            timeout=10.0,
+            after_sleep=1.0,
+        ):
+            return NavigationResult(
+                False,
+                ScreenState.SANDBOX,
+                "卡带箱庭内未稳定识别到快速切换按钮",
+            )
+        if not self._wait_for_quick_switch_page():
+            return NavigationResult(
+                False,
+                self.classify(),
+                "点击快速切换按钮后未确认卡带选择页",
+            )
+
+        self._status("导航状态", "选择剧情游戏卡")
+        self.task.operate_click(*STORY_CATEGORY_POINT, after_sleep=0.5)
+        if not self._wait_for_story_category():
+            return NavigationResult(
+                False,
+                self.classify(),
+                "点击后未确认剧情游戏卡类别高亮",
+            )
+        return NavigationResult(True, ScreenState.CARD_MENU, "剧情游戏卡类别已确认")
+
     def ensure_area_map(self) -> NavigationResult:
         state = self.classify()
         if state == ScreenState.AREA_MAP:
@@ -1062,7 +1779,10 @@ class Navigator:
             if self.wait_state({ScreenState.AREA_MAP}, 8) == ScreenState.AREA_MAP:
                 return NavigationResult(True, ScreenState.AREA_MAP)
 
-        self.vision.click_reference(148, 119, after_sleep=0.8)
+        self.task.operate_click(
+            *AREA_MAP_OPEN_RELATIVE_POINT,
+            after_sleep=0.8,
+        )
         if self.vision.click_template(NAV_TELEPORT_TEMPLATE, timeout=5, after_sleep=0.7):
             self.vision.click_ocr([r"确认", r"生成"], name="传送阵导航")
             self._wait_auto_navigation(90)
@@ -1075,27 +1795,78 @@ class Navigator:
         result = self.vision.match(frame, spec)
         return result if self.vision.passes(result, spec) else None
 
-    def _area_map_teleports(self, frame: np.ndarray) -> tuple[MatchResult, ...]:
+    @staticmethod
+    def _area_map_teleport_bright_neutral_ratio(
+        frame: np.ndarray,
+        result: MatchResult,
+    ) -> float:
+        left, top = result.position
+        width, height = result.size
+        right = left + width
+        bottom = top + height
+        if (
+            width <= 0
+            or height <= 0
+            or left < 0
+            or top < 0
+            or right > frame.shape[1]
+            or bottom > frame.shape[0]
+        ):
+            return 0.0
+        crop = frame[top:bottom, left:right]
+        if crop.ndim == 2:
+            color = np.repeat(crop[:, :, None], 3, axis=2)
+        else:
+            color = crop[:, :, :3]
+        pixels = color.astype(np.int16)
+        channel_min = np.min(pixels, axis=2)
+        channel_spread = np.max(pixels, axis=2) - channel_min
+        center_x = (width - 1) / 2
+        center_y = (height - 1) / 2
+        radius = min(width, height) * AREA_MAP_TELEPORT_BRIGHT_RADIUS_RATIO
+        y, x = np.ogrid[:height, :width]
+        circle = (x - center_x) ** 2 + (y - center_y) ** 2 < radius**2
+        if not np.any(circle):
+            return 0.0
+        bright_neutral = (channel_min >= AREA_MAP_TELEPORT_BRIGHT_MINIMUM_GRAY) & (
+            channel_spread <= AREA_MAP_TELEPORT_BRIGHT_MAXIMUM_SPREAD
+        )
+        return float(np.mean(bright_neutral[circle]))
+
+    def _sandbox_map_teleports(self, frame: np.ndarray) -> tuple[MatchResult, ...]:
         height, width = frame.shape[:2]
         cluster_radius = max(
             6,
-            round(
-                AREA_MAP_TELEPORT_CLUSTER_RADIUS
-                * min(width / 1920, height / 1080)
-            ),
+            round(AREA_MAP_TELEPORT_CLUSTER_RADIUS * min(width / 1920, height / 1080)),
         )
         candidates: list[MatchResult] = []
-        for spec in TELEPORT_MAP_TEMPLATES:
-            candidates.extend(
-                result
-                for result in self.vision.match_all(
+        for spec in SANDBOX_MAP_TELEPORT_TEMPLATES:
+            for result in self.vision.match_all(
+                frame,
+                spec,
+                minimum_score=self.vision.threshold_for(spec),
+                peak_radius=cluster_radius,
+            ):
+                bright_ratio = self._area_map_teleport_bright_neutral_ratio(
                     frame,
-                    spec,
-                    minimum_score=self.vision.threshold_for(spec),
-                    peak_radius=cluster_radius,
+                    result,
                 )
-                if self.vision.passes(result, spec)
-            )
+                accepted = (
+                    self.vision.passes(result, spec)
+                    and bright_ratio >= AREA_MAP_TELEPORT_BRIGHT_NEUTRAL_RATIO
+                )
+                self._status(
+                    "箱庭地图传送阵候选",
+                    (
+                        f"center={result.center}, match={result.score:.3f}, "
+                        f"pixel={result.pixel_score:.3f}, "
+                        f"zncc={result.zncc_score:.3f}, "
+                        f"bright={bright_ratio:.3f}, "
+                        f"accepted={accepted}"
+                    ),
+                )
+                if accepted:
+                    candidates.append(result)
         independent: list[MatchResult] = []
         for candidate in sorted(candidates, key=lambda value: value.score, reverse=True):
             if any(
@@ -1107,6 +1878,11 @@ class Navigator:
                 continue
             independent.append(candidate)
         return tuple(sorted(independent, key=lambda value: value.center))
+
+    def _area_map_teleports(self, frame: np.ndarray) -> tuple[MatchResult, ...]:
+        """Compatibility alias for the clarified sandbox-map detector."""
+
+        return self._sandbox_map_teleports(frame)
 
     @staticmethod
     def _target_keys_in_text(card: CardSpec, normalized_text: str) -> tuple[str, ...]:
@@ -1126,21 +1902,29 @@ class Navigator:
         return tuple(sorted({key for length, key in matches if length == longest}))
 
     def _area_map_context(self, frame: np.ndarray, card: CardSpec) -> AreaMapContext:
-        raw_text = self.vision.simplify(self.vision.ocr_text(frame, "区域地图"))
+        confirmation_text = self.vision.simplify(self.vision.ocr_text(frame, "区域地图确认"))
+        raw_text = self.vision.simplify(
+            self.vision.ocr_text(
+                frame,
+                "传送阵地图名",
+                relative_roi=TELEPORT_MAP_TITLE_OCR_RELATIVE_ROI,
+            )
+        )
         normalized_text = normalize_text(raw_text)
         target_keys = self._target_keys_in_text(card, normalized_text)
         context = AreaMapContext(
             frame_shape=frame.shape,
             raw_text=raw_text,
             normalized_text=normalized_text,
-            is_area_map=normalize_text("移动魔法阵") in normalized_text,
+            is_area_map=normalize_text("移动魔法阵") in normalize_text(confirmation_text),
             candidate_target_keys=target_keys,
             resolved_target_key=target_keys[0] if len(target_keys) == 1 else None,
-            left_arrow=self._optional_match(frame, MAP_LEFT_TEMPLATE),
-            right_arrow=self._optional_match(frame, MAP_RIGHT_TEMPLATE),
+            left_arrow=self._optional_match(frame, TELEPORT_MAP_FORWARD_TEMPLATE),
+            right_arrow=self._optional_match(frame, TELEPORT_MAP_BACKWARD_TEMPLATE),
             teleports=self._area_map_teleports(frame),
             overlap_arrow=self._optional_match(frame, OVERLAP_ARROW_TEMPLATE),
             back_button=self._optional_match(frame, AREA_MAP_BACK_TEMPLATE),
+            confirmation_text=confirmation_text,
         )
         self._status(
             "区域地图",
@@ -1150,7 +1934,8 @@ class Navigator:
                 f"left={context.left_arrow is not None}, "
                 f"right={context.right_arrow is not None}, "
                 f"teleports={len(context.teleports)}, "
-                f"ocr={context.raw_text or '-'}"
+                f"title_ocr={context.raw_text or '-'}, "
+                f"confirmation_ocr={context.confirmation_text or '-'}"
             ),
         )
         return context
@@ -1261,8 +2046,10 @@ class Navigator:
             return current, moved_right or moved_left or moved_again, ""
         if failed:
             return None, True, "从最左页扫描时未确认页面变化或出现标题歧义"
-        return None, moved_right or moved_left or moved_again, (
-            f"到达区域图边界仍未找到{target.title}"
+        return (
+            None,
+            moved_right or moved_left or moved_again,
+            (f"到达区域图边界仍未找到{target.title}"),
         )
 
     def _close_area_map(self, context: AreaMapContext) -> NavigationResult:
@@ -1381,20 +2168,28 @@ class Navigator:
             return NavigationResult(True, state)
         if state == ScreenState.SHOP:
             return self._return_home_from_discount_shop()
-
-        for _ in range(6):
-            state = self.classify()
+        if state == ScreenState.LOADING:
+            state = self.wait_state(
+                {ScreenState.HOME, ScreenState.SANDBOX},
+                self._loading_timeout(),
+            )
             if state == ScreenState.HOME:
                 return NavigationResult(True, state)
-            if state == ScreenState.LOADING:
-                self.wait_state(
-                    {ScreenState.HOME, ScreenState.SANDBOX, ScreenState.CARD_MENU},
-                    self._loading_timeout(),
-                )
-                continue
-            self.vision.click_reference(82, 36, after_sleep=0.8)
-        state = self.classify()
-        return NavigationResult(state == ScreenState.HOME, state, "返回章节主页失败")
+        if state != ScreenState.SANDBOX:
+            return NavigationResult(
+                False,
+                state,
+                "当前页面没有已确认的安全返回路径，未执行点击",
+            )
+
+        self.task.operate_click(*CHAPTER_HOME_POINT, after_sleep=0.0)
+        if self._wait_for_cartridge_home(timeout=RETURN_HOME_TIMEOUT):
+            return NavigationResult(True, ScreenState.HOME, "已从箱庭返回主页")
+        return NavigationResult(
+            False,
+            self.classify(),
+            "点击一次箱庭主页按钮后未在10秒内确认主页",
+        )
 
     def _return_home_from_discount_shop(self) -> NavigationResult:
         self.vision.click_reference(82, 36, after_sleep=0.0)
