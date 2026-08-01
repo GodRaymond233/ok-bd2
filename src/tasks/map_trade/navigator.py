@@ -58,7 +58,10 @@ Q_SP6_SHOP_TEMPLATE = TemplateSpec(
 )
 Q_SP6_SHOP_VERTICAL_OFFSET = 150 / 1080
 Q_SP6_SHOP_PRIORITY_TIMEOUT = 3.0
-Q_SP6_SHOP_PAGE_KEYWORDS = ("仓库", "严加管理")
+# 折扣商店页专有页签 OCR 信号：在商店页整帧 OCR 中已验证稳定命中
+# （“仓库”单独可能出现在 NPC 名“仓库管理石怪”里，必须与“严加管理”成对出现）。
+SHOP_PAGE_OCR_KEYWORDS = ("仓库", "严加管理")
+Q_SP6_SHOP_PAGE_KEYWORDS = SHOP_PAGE_OCR_KEYWORDS
 Q_SP6_SHOP_PAGE_OCR_INTERVAL = 0.25
 Q_SP6_BARGAIN_RECHECK_DELAY = 0.5
 Q_SP6_BARGAIN_OCR_TIMEOUT = 10.0
@@ -110,7 +113,10 @@ STORY_BADGE_SPECS = tuple(
 )
 BARGAIN_POINT = (191 / 1920, 900 / 1080)
 BARGAIN_CONFIRM_POINT = (1047 / 1920, 652 / 1080)
-Q_SP6_BARGAIN_CONFIRM_DELAY = 1.0
+# 砍价确认后必须等待商店页 OCR 稳定出现，不能依赖固定延时。砍价弹窗未关闭时
+# 整帧 OCR 仍会读到“仓库/严加管理”，因此同时排除砍价弹窗专有文字。
+BARGAIN_SHOP_CONFIRM_POPUP_KEYWORD = "砍价成功率"
+BARGAIN_SHOP_CONFIRM_STABLE_HITS = 2
 DISCOUNT_SHOP_CLOSE_DIALOG_REGION = (
     700 / 1920,
     382 / 1080,
@@ -239,6 +245,14 @@ class Navigator:
         if self.vision.match(frame, MERCHANT_DIALOG_TEMPLATE).score >= self.vision.threshold_for(
             MERCHANT_DIALOG_TEMPLATE
         ):
+            # 折扣商店页的标题牌与商人对话共用 UI 框架，模板会同时命中
+            # （720p 实机商店页模板分 0.753 ≥ 0.72）。因此模板命中后仍须用
+            # 同一帧 OCR 确认商店页特征；命中则判 SHOP，否则才是商人对话。
+            text = normalize_text(
+                self.vision.simplify(self.vision.ocr_text(frame, "界面分类"))
+            )
+            if self._shop_page_text(text):
+                return ScreenState.SHOP
             return ScreenState.MERCHANT_DIALOG
         if self.vision.match(frame, LOADING_TEMPLATE).score >= self.vision.threshold_for(
             LOADING_TEMPLATE
@@ -249,7 +263,7 @@ class Navigator:
                 return ScreenState.SANDBOX
 
         text = normalize_text(self.vision.simplify(self.vision.ocr_text(frame, "界面分类")))
-        if "购买" in text and "出售" in text:
+        if self._shop_page_text(text):
             return ScreenState.SHOP
         if "移动魔法阵" in text:
             return ScreenState.AREA_MAP
@@ -258,6 +272,14 @@ class Navigator:
         if "所需材料" in text and "料理" in text:
             return ScreenState.COOKING
         return ScreenState.UNKNOWN
+
+    @staticmethod
+    def _shop_page_text(text: str) -> bool:
+        """Judge the discount shop page from one frame's normalized OCR text."""
+        return (
+            all(keyword in text for keyword in SHOP_PAGE_OCR_KEYWORDS)
+            or ("购买" in text and "出售" in text)
+        )
 
     def wait_state(self, wanted: set[ScreenState], timeout: float) -> ScreenState:
         end_at = monotonic() + max(0.0, timeout)
@@ -274,7 +296,7 @@ class Navigator:
         return max(10.0, float(self.task.config.get("加载页面等待秒数", 45.0)))
 
     def enter_q_sp6_buy_flow(self) -> NavigationResult:
-        """Run the user-confirmed buy entry flow and stop after bargain confirmation."""
+        """Run the buy entry flow and stop after the discounted shop page is confirmed."""
 
         self._status("导航状态", "优先识别Q_sp6商店按钮")
         shop_opened = self._enter_q_sp6_shop(
@@ -327,11 +349,14 @@ class Navigator:
         bargain_tip = "使用砍价技能后可享受商店折扣价"
         if not self._wait_for_ocr_keywords((bargain_tip,), 10.0, "砍价说明"):
             return NavigationResult(False, self.classify(), "未识别到砍价技能折扣说明")
-        self.task.operate_click(
-            *BARGAIN_CONFIRM_POINT,
-            after_sleep=Q_SP6_BARGAIN_CONFIRM_DELAY,
-        )
-        return NavigationResult(True, ScreenState.MERCHANT_DIALOG, "已点击砍价确认")
+        self.task.operate_click(*BARGAIN_CONFIRM_POINT, after_sleep=0.0)
+        if not self._wait_for_bargain_shop_confirmation():
+            return NavigationResult(
+                False,
+                self.classify(),
+                "砍价确认后未通过OCR确认商店页面",
+            )
+        return NavigationResult(True, ScreenState.SHOP, "已通过OCR确认商店页面")
 
     def _enter_q_sp6_shop(
         self,
@@ -837,6 +862,48 @@ class Navigator:
         matched = sum(value in normalized for value in required)
         self._status(f"{name} OCR命中", f"{matched}/{len(required)}")
         return matched == len(required), text
+
+    def _wait_for_bargain_shop_confirmation(self, timeout: float | None = None) -> bool:
+        """Wait until the discounted shop page is confirmed by stable OCR.
+
+        The bargain popup itself still exposes the shop keywords, so a frame only
+        counts when the shop keywords are present and the popup-specific marker is
+        absent on consecutive captures.
+        """
+
+        timeout = self._loading_timeout() if timeout is None else float(timeout)
+        end_at = monotonic() + max(0.0, timeout)
+        consecutive_hits = 0
+        last_text = ""
+        popup_marker = normalize_text(
+            self.vision.simplify(BARGAIN_SHOP_CONFIRM_POPUP_KEYWORD)
+        )
+        while True:
+            frame = self.vision.capture()
+            matched, text = self._ocr_keywords_in_frame(
+                frame,
+                Q_SP6_SHOP_PAGE_KEYWORDS,
+                "砍价后商店页面",
+            )
+            last_text = text or last_text
+            normalized = normalize_text(self.vision.simplify(text))
+            if matched and popup_marker not in normalized:
+                consecutive_hits += 1
+            else:
+                consecutive_hits = 0
+            self._status(
+                "砍价后商店页面 OCR稳定",
+                f"{consecutive_hits}/{BARGAIN_SHOP_CONFIRM_STABLE_HITS}",
+            )
+            if consecutive_hits >= BARGAIN_SHOP_CONFIRM_STABLE_HITS:
+                return True
+            if monotonic() >= end_at:
+                break
+            self.task.sleep(Q_SP6_SHOP_PAGE_OCR_INTERVAL)
+        self.task.log_warning(
+            f"跑商：砍价确认后未通过OCR确认商店页面，OCR={last_text or '-'}。"
+        )
+        return False
 
     def ensure_card_menu(self) -> NavigationResult:
         state = self.classify()

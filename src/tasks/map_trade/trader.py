@@ -30,6 +30,7 @@ from src.tasks.map_trade.models import (
     RECIPE_TEMPLATES,
     CalendarEntry,
     MatchResult,
+    ScreenState,
     TemplateSpec,
 )
 from src.tasks.map_trade.navigator import Navigator
@@ -59,12 +60,18 @@ SHOP_FIRST_PAGE_MAX_UP_SCROLLS = 40
 SHOP_UP_SCROLL_RECOGNITION_INTERVAL = 0.5
 SHOP_DOWN_SCROLL_INTERVAL = 0.1
 STAR_TEMPLATE_FILE = "shop/cartridges/star_gray.png"
-STAR_ROI_HALF_SIZE = 15
+# 灰星搜索区域按 1920×1080 参考像素定义并转为相对比例，随客户端分辨率同比缩放。
+# 720p 实机测量中灰星中心相对标定点偏移约 (-7,+13) 客户端像素，因此区域必须明显大于
+# 旧 ±15 参考像素；4K 下同一相对偏移约 (-21,+38) 像素，相对比例可同时覆盖 720p 与 4K。
+STAR_ROI_HALF_SIZE_X = 42
+STAR_ROI_HALF_SIZE_Y = 52
 STAR_TEMPLATE_THRESHOLD = 0.82
 STAR_PIXEL_THRESHOLD = 0.90
 STAR_VERIFY_ATTEMPTS = 5
 STAR_VERIFY_INTERVAL = 0.25
 STAR_POST_CLICK_DELAY = 1.0
+STAR_REMOVE_TOAST_KEYWORD = "从收藏中移除"
+STAR_ADD_TOAST_KEYWORD = "加入收藏"
 BUY_ALL_FAVORITES_POINT = (
     ((1324 + 1545) / 2) / 1920,
     ((982 + 1029) / 2) / 1080,
@@ -325,6 +332,11 @@ class Trader:
         entered = self.navigator.enter_q_sp6_buy_flow()
         if not entered.success:
             self.task.log_warning(f"买：{entered.message}")
+            return False
+        if entered.state != ScreenState.SHOP:
+            self.task.log_warning(
+                f"买：砍价后状态为{entered.state.value}，未确认商店页，停止购买。"
+            )
             return False
         rebuild_cycle = str(self.task.config.get("收藏重建周期", "每周"))
         every_run = rebuild_cycle == "每次"
@@ -854,7 +866,9 @@ class Trader:
             self._status(f"{shop_id} 空收藏#{slot}", "点击取消收藏")
             self.task.operate_click(*point, after_sleep=STAR_POST_CLICK_DELAY)
             if not self._wait_for_gray_star(slot, point):
-                self.task.log_warning(f"买：{reference.label} #{slot} 点击后仍未识别到灰星。")
+                self.task.log_warning(
+                    f"买：{reference.label} #{slot} 点击后未确认灰星或移除提示。"
+                )
                 return False
         return True
 
@@ -863,12 +877,25 @@ class Trader:
         slot: int,
         point: tuple[float, float],
     ) -> bool:
+        toast_seen = False
         for attempt in range(STAR_VERIFY_ATTEMPTS):
-            if self._gray_star_present(self.vision.capture(), slot, point):
+            frame = self.vision.capture()
+            if self._gray_star_present(frame, slot, point):
                 return True
+            if not toast_seen:
+                text = self.vision.ocr_text(frame, "取消收藏成功提示")
+                normalized = normalize_text(self.vision.simplify(text))
+                self._status(f"{slot} 取消收藏提示", normalized or "-")
+                if STAR_ADD_TOAST_KEYWORD in normalized:
+                    self.task.log_warning(
+                        f"买：收藏位#{slot} 点击后出现加入收藏提示，取消收藏未生效。"
+                    )
+                    return False
+                if STAR_REMOVE_TOAST_KEYWORD in normalized:
+                    toast_seen = True
             if attempt + 1 < STAR_VERIFY_ATTEMPTS:
                 self.task.sleep(STAR_VERIFY_INTERVAL)
-        return False
+        return toast_seen
 
     def _gray_star_present(
         self,
@@ -876,8 +903,8 @@ class Trader:
         slot: int,
         point: tuple[float, float],
     ) -> bool:
-        half_x = STAR_ROI_HALF_SIZE / 1920
-        half_y = STAR_ROI_HALF_SIZE / 1080
+        half_x = STAR_ROI_HALF_SIZE_X / 1920
+        half_y = STAR_ROI_HALF_SIZE_Y / 1080
         spec = TemplateSpec(
             name=f"灰星#{slot}",
             file_name=STAR_TEMPLATE_FILE,
