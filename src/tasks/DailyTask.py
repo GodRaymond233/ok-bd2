@@ -746,6 +746,13 @@ class DailyTask(BaseBD2Task):
             )
             if home_ok:
                 return True
+            self.clear_temporary_home_announcement_if_needed(
+                button_found=self._passes(last_button, last_spec),
+                brightness_ratio=last_ratio,
+                brightness_threshold=self._home_ratio_threshold(),
+                gacha_ocr_text=last_gacha_text,
+                context="快速狩猎确认主页",
+            )
             self.sleep(interval)
 
         self.log_info(
@@ -777,6 +784,22 @@ class DailyTask(BaseBD2Task):
         )
         return is_red, (x, y), bgr, hsv
 
+    def _quick_hunt_wait_entry_red(self) -> bool:
+        for sample_index in range(1, QUICK_HUNT_ENTRY_RED_SAMPLE_COUNT + 1):
+            frame = self.capture_frame()
+            is_red, point, bgr, hsv = self._quick_hunt_entry_red_state(frame)
+            self._status_set(
+                "快速狩猎红点识别",
+                f"sample={sample_index}/{QUICK_HUNT_ENTRY_RED_SAMPLE_COUNT}, "
+                f"point={point}, BGR={bgr}, HSV={hsv}, "
+                f"{'红色' if is_red else '非红色'}",
+            )
+            if is_red:
+                return True
+            if sample_index < QUICK_HUNT_ENTRY_RED_SAMPLE_COUNT:
+                self.sleep(QUICK_HUNT_ENTRY_RED_SAMPLE_INTERVAL)
+        return False
+
     def _quick_hunt_open_menu(self) -> str:
         self._status_set("快速狩猎当前阶段", "确认首页并打开狩猎菜单")
         if not self._wait_for_quick_hunt_home():
@@ -785,14 +808,12 @@ class DailyTask(BaseBD2Task):
 
         self._status_set("快速狩猎入口", "首页已确认")
         self.sleep(0.5)
-        frame = self.capture_frame()
-        is_red, point, bgr, hsv = self._quick_hunt_entry_red_state(frame)
-        self._status_set(
-            "快速狩猎红点识别",
-            f"point={point}, BGR={bgr}, HSV={hsv}, {'红色' if is_red else '非红色'}",
-        )
-        if not is_red:
-            self._status_set("快速狩猎入口", "入口点不是红色，按已完成跳过")
+        if not self._quick_hunt_wait_entry_red():
+            self._status_set(
+                "快速狩猎入口",
+                f"连续{QUICK_HUNT_ENTRY_RED_SAMPLE_COUNT}帧未识别到红色，"
+                "按已完成跳过",
+            )
             return "skip"
 
         self.sleep(0.5)
@@ -1129,7 +1150,15 @@ class DailyTask(BaseBD2Task):
         frame = self.capture_frame()
         text = self._quick_hunt_ocr_text(frame, QUICK_HUNT_RESOURCE_ROI, name=f"{resource}数量")
         normalized = self._normalize_text(text).replace("：", ":")
-        empty = re.search(r"(?:^|\D)0[/：:|\-~][1-9]\d*", normalized) is not None
+        expected_capacity = QUICK_HUNT_RESOURCE_CAPACITIES.get(resource)
+        if expected_capacity is None:
+            pattern = r"(?:^|\D)0[/：:|\-~][1-9]\d*(?:\D|$)"
+        else:
+            pattern = (
+                rf"(?:^|\D)0[/：:|\-~]{expected_capacity}"
+                rf"(?:\D|$)"
+            )
+        empty = re.search(pattern, normalized) is not None
         self._status_set(f"快速狩猎{resource}", text or "未识别")
         return empty
 
@@ -1289,6 +1318,15 @@ class DailyTask(BaseBD2Task):
             self._status_set("快速狩猎主页抽抽乐 OCR", gacha_text or "-")
             if home_ok:
                 return True
+            if self.clear_temporary_home_announcement_if_needed(
+                button_found=self._passes(button, spec),
+                brightness_ratio=ratio,
+                brightness_threshold=self._home_ratio_threshold(),
+                gacha_ocr_text=gacha_text,
+                context="快速狩猎返回主页",
+            ):
+                self.sleep(0.35)
+                continue
             self._click_reference(*QUICK_HUNT_RETURN_POINT, after_sleep=2.0)
         frame = self.capture_frame()
         return self._quick_hunt_home_signals(frame)[0]
@@ -1585,6 +1623,13 @@ class DailyTask(BaseBD2Task):
             self.info_set(f"{name} 抽抽乐 OCR", last_gacha_text or "-")
             if confirmed:
                 return True
+            self.clear_temporary_home_announcement_if_needed(
+                button_found=self._passes(last_button, last_spec),
+                brightness_ratio=last_ratio,
+                brightness_threshold=self._home_ratio_threshold(),
+                gacha_ocr_text=last_gacha_text,
+                context=name,
+            )
             self.sleep(interval)
 
         self.log_info(
@@ -1828,6 +1873,9 @@ def _quick_hunt_relative_roi(
 
 
 QUICK_HUNT_ENTRY_POINT = (1782 / REFERENCE_WIDTH, 237 / REFERENCE_HEIGHT)
+QUICK_HUNT_ENTRY_RED_SAMPLE_COUNT = 9
+QUICK_HUNT_ENTRY_RED_SAMPLE_INTERVAL = 0.25
+QUICK_HUNT_RESOURCE_CAPACITIES = {"米饭": 90}
 QUICK_HUNT_RESOURCE_ROI = _quick_hunt_relative_roi(1724, 80, 1602, 38)
 QUICK_HUNT_BUTTON_ROI = _quick_hunt_relative_roi(1720, 1018, 1599, 963)
 QUICK_HUNT_COUNT_ROI = _quick_hunt_relative_roi(1298, 826, 623, 257)

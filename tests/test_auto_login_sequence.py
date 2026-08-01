@@ -1,6 +1,7 @@
 import unittest
 from dataclasses import replace
 from time import monotonic
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -24,6 +25,7 @@ class AutoLoginSequenceTest(unittest.TestCase):
             "BrownDustX 像素阈值": 0.86,
             "BrownDustX Confirm 阈值": 0.82,
             "BrownDustX Confirm 像素阈值": 0.86,
+            "BrownDustX OCR 阈值": 0.2,
             "TOUCH TO START 阈值": 0.78,
             "加载页面阈值": 0.72,
             "小屋按钮阈值": 0.78,
@@ -34,14 +36,19 @@ class AutoLoginSequenceTest(unittest.TestCase):
             "小屋按钮点击 Y 百分比": 14.3519,
             "公告清理点击 X 百分比": 8.8020833333,
             "公告清理点击 Y 百分比": 56.9444444444,
+            "登录按钮点击 X 百分比": 72.2396,
+            "登录按钮点击 Y 百分比": 65.0926,
         }
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
         task.sleep = lambda *_args, **_kwargs: None
+        task.ocr = lambda *_args, **_kwargs: []
         task._home_bright_since = None
         task._login_clicked_at = None
         task._waiting_home_since = None
         task._last_clear_click_at = 0.0
+        task._last_confirm_click_at = 0.0
+        task._last_download_click_at = 0.0
         task._finished = False
         task._home_brightness_ratio = lambda _frame: 0.0
         task._home_gacha_ocr_text = lambda _frame: ""
@@ -245,6 +252,208 @@ class AutoLoginSequenceTest(unittest.TestCase):
         AutoLoginTask.run(task)
 
         self.assertEqual([(1120, 840, 1.0)], clicks)
+        self.assertEqual("waiting_update", task._state)
+
+    def test_confirm_is_checked_even_when_browndustx_parent_does_not_match(self):
+        task = self._task()
+        task._state = "waiting"
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task._is_browndustx_confirm = lambda _frame, _confirm: True
+        task._sleep_after_recognition = lambda: None
+        clicks = []
+        confirm = MatchResult(0.99, 0.99, (650, 685), (606, 76))
+
+        def fake_match(_frame, spec):
+            if spec is CONFIRM_TEMPLATE:
+                return confirm
+            return MatchResult(-1.0, -1.0, (0, 0), (0, 0))
+
+        task._match = fake_match
+        task.operate_click = lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep))
+
+        AutoLoginTask.run(task)
+
+        self.assertEqual([(953, 723, 1.0)], clicks)
+        self.assertEqual("waiting_update", task._state)
+
+    def test_browndustx_candidate_threshold_keeps_pixel_fallback_reachable(self):
+        task = self._task()
+
+        self.assertEqual(
+            0.0,
+            AutoLoginTask._candidate_template_threshold(task, BROWNDUSTX_TEMPLATE),
+        )
+        self.assertEqual(
+            0.82,
+            AutoLoginTask._candidate_template_threshold(task, CONFIRM_TEMPLATE),
+        )
+
+    def test_confirm_ocr_fallback_clicks_exact_confirm_with_browndustx_context(self):
+        task = self._task()
+        task._state = "waiting"
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task._sleep_after_recognition = lambda: None
+        task._match = lambda _frame, _spec: MatchResult(
+            -1.0,
+            -1.0,
+            (0, 0),
+            (0, 0),
+        )
+        task.ocr = lambda *_args, **_kwargs: [
+            self._ocr_box("~ BrownDustX 2.28.13 ~", 800, 350, 280, 40),
+            self._ocr_box("CONFIRM", 900, 735, 110, 35),
+        ]
+        clicks = []
+        task.operate_click = lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep))
+
+        AutoLoginTask.run(task)
+
+        self.assertEqual([(955, 752, 1.0)], clicks)
+        self.assertEqual("waiting_update", task._state)
+
+    def test_update_prompt_clicks_download_box_right_of_cancel(self):
+        task = self._task()
+        task._state = "waiting_update"
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task._sleep_after_recognition = lambda: None
+        task._match = lambda _frame, _spec: MatchResult(
+            -1.0,
+            -1.0,
+            (0, 0),
+            (0, 0),
+        )
+        task.ocr = lambda *_args, **_kwargs: [
+            self._ocr_box("下载", 930, 300, 65, 38),
+            self._ocr_box("将下载游戏所需数据。", 850, 360, 200, 30),
+            self._ocr_box("下载容量", 680, 560, 90, 30),
+            self._ocr_box("可用空间 224,592 MB", 825, 680, 270, 34),
+            self._ocr_box("取消", 850, 755, 50, 32),
+            self._ocr_box("下载", 1025, 755, 48, 32),
+        ]
+        clicks = []
+        task.operate_click = lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep))
+
+        AutoLoginTask.run(task)
+
+        self.assertEqual([(1049, 771, 1.0)], clicks)
+        self.assertEqual("downloading", task._state)
+
+    def test_update_prompt_does_not_click_download_title_without_cancel_pair(self):
+        task = self._task()
+        boxes = [
+            self._ocr_box("下载", 930, 300, 65, 38),
+            self._ocr_box("下载容量", 680, 560, 90, 30),
+            self._ocr_box("可用空间 224,592 MB", 825, 680, 270, 34),
+        ]
+
+        self.assertIsNone(AutoLoginTask._find_update_download_button(task, boxes))
+
+    def test_update_prompt_requires_capacity_and_available_space_context(self):
+        task = self._task()
+        boxes = [
+            self._ocr_box("下载容量", 680, 560, 90, 30),
+            self._ocr_box("取消", 850, 755, 50, 32),
+            self._ocr_box("下载", 1025, 755, 48, 32),
+        ]
+
+        self.assertIsNone(AutoLoginTask._find_update_download_button(task, boxes))
+
+    def test_download_progress_waits_without_clicking(self):
+        task = self._task()
+        task._state = "downloading"
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task._match = lambda _frame, _spec: MatchResult(
+            -1.0,
+            -1.0,
+            (0, 0),
+            (0, 0),
+        )
+        task.ocr = lambda *_args, **_kwargs: [
+            self._ocr_box("正在下载", 100, 960, 90, 30),
+            self._ocr_box("0.11%", 1740, 965, 75, 30),
+        ]
+        clicks = []
+        task.operate_click = lambda *args, **kwargs: clicks.append((args, kwargs))
+
+        AutoLoginTask.run(task)
+
+        self.assertEqual([], clicks)
+        self.assertEqual("downloading", task._state)
+
+    def test_download_progress_blocks_template_checks(self):
+        task = self._task()
+        task._state = "downloading"
+        task.ocr = lambda *_args, **_kwargs: [
+            self._ocr_box("正在下载", 100, 960, 90, 30),
+            self._ocr_box("62.5%", 1740, 965, 75, 30),
+        ]
+        task._match = lambda *_args, **_kwargs: self.fail(
+            "download progress must block template checks"
+        )
+
+        AutoLoginTask._wait_browndustx_then_login(
+            task,
+            np.zeros((1080, 1920, 3), dtype=np.uint8),
+        )
+
+        self.assertEqual("downloading", task._state)
+
+    def test_download_progress_requires_percentage(self):
+        task = self._task()
+        boxes = [
+            self._ocr_box("正在下载", 100, 960, 90, 30),
+        ]
+
+        self.assertEqual("", AutoLoginTask._download_progress_text(task, boxes))
+
+    def test_download_confirmation_background_is_not_progress(self):
+        task = self._task()
+        boxes = [
+            self._ocr_box("正在确认下载容量 100%", 1275, 695, 230, 28),
+        ]
+
+        self.assertEqual("", AutoLoginTask._download_progress_text(task, boxes))
+
+    def test_touch_to_start_resumes_after_download_finishes(self):
+        task = self._task()
+        task._state = "downloading"
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task._sleep_after_recognition = lambda: None
+
+        def fake_match(_frame, spec):
+            if spec is TOUCH_TO_START_TEMPLATE:
+                return MatchResult(0.92, 0.92, (700, 600), (400, 80))
+            return MatchResult(-1.0, -1.0, (0, 0), (0, 0))
+
+        task._match = fake_match
+        clicks = []
+        task.operate_click = lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep))
+
+        AutoLoginTask.run(task)
+
+        self.assertEqual(1, len(clicks))
+        self.assertAlmostEqual(0.722396, clicks[0][0])
+        self.assertAlmostEqual(0.650926, clicks[0][1])
+        self.assertEqual(2.0, clicks[0][2])
+        self.assertEqual("waiting_loading", task._state)
+
+    def test_login_page_ocr_error_keeps_task_schedulable(self):
+        task = self._task()
+        task._state = "waiting"
+        task.trigger_interval = 0
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task.ocr = lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("ocr failed"))
+        task._match = lambda _frame, _spec: MatchResult(
+            -1.0,
+            -1.0,
+            (0, 0),
+            (0, 0),
+        )
+
+        AutoLoginTask.run(task)
+
+        self.assertFalse(task._finished)
+        self.assertTrue(AutoLoginTask.should_trigger(task))
 
     def test_home_button_templates_use_720p_assets_and_green_mask(self):
         task = self._task()
@@ -330,6 +539,17 @@ class AutoLoginSequenceTest(unittest.TestCase):
         self.assertAlmostEqual(169 / 1920, x)
         self.assertAlmostEqual(615 / 1080, y)
         self.assertEqual(0.2, after_sleep)
+
+    @staticmethod
+    def _ocr_box(name, x, y, width, height):
+        return SimpleNamespace(
+            name=name,
+            x=x,
+            y=y,
+            width=width,
+            height=height,
+            confidence=1.0,
+        )
 
 
 if __name__ == "__main__":

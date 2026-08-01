@@ -27,7 +27,10 @@ from src.tasks.DailyTask import (
     QUICK_HUNT_DOUBLE_ROI,
     QUICK_HUNT_DOUBLE_TEMPLATE,
     QUICK_HUNT_ENTRY_POINT,
+    QUICK_HUNT_ENTRY_RED_SAMPLE_COUNT,
+    QUICK_HUNT_ENTRY_RED_SAMPLE_INTERVAL,
     QUICK_HUNT_MAP_SCAN_ROI,
+    QUICK_HUNT_RESOURCE_CAPACITIES,
     QUICK_HUNT_RESOURCE_ROI,
     QUICK_HUNT_RETURN_POINT,
     QUICK_HUNT_REWARD_ROI,
@@ -499,21 +502,30 @@ class DailyTaskHelperTest(unittest.TestCase):
 
         self.assertEqual([(0.5, 0.5, {"after_sleep": 0.5})], calls)
 
-    def test_quick_hunt_resource_zero_uses_calibrated_1920_roi(self):
+    def test_quick_hunt_rice_zero_uses_new_90_capacity_and_calibrated_roi(self):
         task = object.__new__(QuickHuntTask)
         task.info_set = lambda *_args, **_kwargs: None
         calls = []
+        text = ["0 / 90"]
 
         class FakeVision:
             def ocr_text(self, _frame, name, relative_roi=None):
                 calls.append((name, relative_roi))
-                return "0 / 60"
+                return text[0]
 
         task._quick_vision = lambda: FakeVision()
         task.capture_frame = lambda: np.zeros((720, 1280, 3), dtype=np.uint8)
 
+        self.assertEqual({"米饭": 90}, QUICK_HUNT_RESOURCE_CAPACITIES)
         self.assertTrue(task._quick_hunt_resource_empty("米饭"))
-        self.assertEqual([("米饭数量", QUICK_HUNT_RESOURCE_ROI)], calls)
+        text[0] = "0 / 60"
+        self.assertFalse(task._quick_hunt_resource_empty("米饭"))
+        text[0] = "18 / 90"
+        self.assertFalse(task._quick_hunt_resource_empty("米饭"))
+        self.assertEqual(
+            [("米饭数量", QUICK_HUNT_RESOURCE_ROI)] * 3,
+            calls,
+        )
 
     def test_quick_hunt_regions_preserve_all_supplied_1920_calibrations(self):
         self.assertEqual(
@@ -653,6 +665,40 @@ class DailyTaskHelperTest(unittest.TestCase):
         self.assertEqual("快速狩猎菜单确认", ocr_calls[0][3])
         self.assertEqual("狩猎场", statuses["快速狩猎菜单"])
 
+    def test_quick_hunt_entry_red_detection_accepts_any_red_sample(self):
+        task = object.__new__(QuickHuntTask)
+        frames = iter(
+            (
+                np.full((1080, 1920, 3), 1, dtype=np.uint8),
+                np.full((1080, 1920, 3), 2, dtype=np.uint8),
+                np.full((1080, 1920, 3), 3, dtype=np.uint8),
+            )
+        )
+        task.capture_frame = lambda: next(frames)
+        states = iter(
+            (
+                (False, (1782, 237), (40, 40, 40), (0, 0, 40)),
+                (False, (1782, 237), (41, 41, 41), (0, 0, 41)),
+                (True, (1782, 237), (54, 73, 212), (4, 190, 212)),
+            )
+        )
+        task._quick_hunt_entry_red_state = lambda _frame: next(states)
+        sleeps = []
+        statuses = []
+        task.sleep = lambda seconds: sleeps.append(seconds)
+        task.info_set = lambda key, value: statuses.append((key, value))
+
+        self.assertTrue(task._quick_hunt_wait_entry_red())
+        self.assertEqual(
+            [QUICK_HUNT_ENTRY_RED_SAMPLE_INTERVAL] * 2,
+            sleeps,
+        )
+        self.assertIn(
+            f"sample=3/{QUICK_HUNT_ENTRY_RED_SAMPLE_COUNT}",
+            statuses[-1][1],
+        )
+        self.assertIn("红色", statuses[-1][1])
+
     def test_quick_hunt_wait_ocr_scans_full_frame_and_reports_text(self):
         task = object.__new__(QuickHuntTask)
         task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -718,7 +764,12 @@ class DailyTaskHelperTest(unittest.TestCase):
         task.info_set = lambda *_args, **_kwargs: None
 
         self.assertEqual("skip", task._quick_hunt_open_menu())
-        self.assertEqual([0.5], sleeps)
+        self.assertEqual(
+            [0.5]
+            + [QUICK_HUNT_ENTRY_RED_SAMPLE_INTERVAL]
+            * (QUICK_HUNT_ENTRY_RED_SAMPLE_COUNT - 1),
+            sleeps,
+        )
 
     def test_quick_hunt_map_scan_scrolls_down_at_most_six_times_and_clicks_ocr_center(self):
         task = object.__new__(QuickHuntTask)
@@ -1188,6 +1239,34 @@ class DailyTaskHelperTest(unittest.TestCase):
 
         self.assertTrue(task._quick_hunt_return_home())
         self.assertEqual([(101, 55, {"after_sleep": 2.0})], clicks)
+
+    def test_quick_hunt_return_home_clears_announcement_before_clicking_back(self):
+        task = object.__new__(QuickHuntTask)
+        task.config = {"主页亮度比例阈值": 0.75}
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task.info_set = lambda *_args, **_kwargs: None
+        match = DailyMatchResult(0.9, 0.85, (0, 0), (10, 10))
+        signals = iter(
+            (
+                (False, match, HOME_RICE_TEMPLATE, 0.419, "抽抽乐"),
+                (True, match, HOME_RICE_TEMPLATE, 0.8, "抽抽乐"),
+            )
+        )
+        task._quick_hunt_home_signals = lambda _frame: next(signals)
+        task._quick_hunt_current_map_context = lambda _frame: "野猪洞穴"
+        task._passes = lambda *_args, **_kwargs: True
+        announcement_signals = []
+        task.clear_temporary_home_announcement_if_needed = (
+            lambda **values: announcement_signals.append(values) or True
+        )
+        task._click_reference = lambda *_args, **_kwargs: self.fail(
+            "temporary announcement must be cleared before another back click"
+        )
+        task.sleep = lambda *_args, **_kwargs: None
+
+        self.assertTrue(task._quick_hunt_return_home())
+        self.assertEqual(1, len(announcement_signals))
+        self.assertEqual("快速狩猎返回主页", announcement_signals[0]["context"])
 
     def test_quick_hunt_return_context_uses_full_frame_and_top_left_match(self):
         task = object.__new__(QuickHuntTask)

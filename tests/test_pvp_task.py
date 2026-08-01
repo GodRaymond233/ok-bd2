@@ -25,7 +25,6 @@ from src.tasks.PVPTask import (
     PVP_LOC_RESET_TEMPLATE,
     PVP_MEDALS_TEMPLATE,
     PVP_NO_FIND_TEMPLATES,
-    PVP_RANK_DROP_CONFIRM_SCREEN_POINT,
     PVP_RESULT_CLOSE_SCREEN_POINT,
     PVP_RESULT_SCREEN_ROI,
     PVP_STAGE_CLICK_REFERENCE_OFFSET,
@@ -489,8 +488,14 @@ class PVPTaskHelperTest(unittest.TestCase):
             ocr_calls.append((name, roi)) or "抽抽乐"
         )
         task.sleep = lambda *_args, **_kwargs: None
+        task._sleep_after_recognition = lambda: None
+        announcement_clicks = []
+        task.operate_click = lambda x, y, after_sleep=0.0: announcement_clicks.append(
+            (x, y, after_sleep)
+        )
 
         self.assertFalse(PVPTask._wait_for_cartridge_home(task))
+        self.assertEqual([(169 / 1920, 615 / 1080, 0.2)], announcement_clicks)
 
         task._home_brightness_ratio = lambda _frame: 0.80
         task._ocr_text = lambda *_args, **_kwargs: ""
@@ -777,13 +782,29 @@ class PVPTaskHelperTest(unittest.TestCase):
 
         self.assertFalse(PVPTask._wait_result_and_leave(task, 1))
 
-    def test_pvp_entry_wait_confirms_rank_drop_before_detecting_hub(self):
+    def test_pvp_entry_wait_clicks_rank_drop_ocr_center_before_detecting_hub(self):
         task = object.__new__(PVPTask)
-        task.info_set = lambda *_args, **_kwargs: None
-        task.capture_frame = lambda: np.zeros((1440, 2560, 3), dtype=np.uint8)
-        task._ocr_text = lambda *_args, **_kwargs: "段位下滑。 确认"
+        status = []
+        task.info_set = lambda key, value: status.append((key, value))
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        screens = iter(
+            (
+                [
+                    SimpleNamespace(
+                        name="段位下滑。",
+                        x=820,
+                        y=690,
+                        width=280,
+                        height=50,
+                    ),
+                    SimpleNamespace(name="确认", x=900, y=980, width=120, height=40),
+                ],
+                [],
+            )
+        )
+        task._ocr_boxes = lambda *_args, **_kwargs: next(screens)
         clicks = []
-        task._click_screen_reference = lambda x, y, after_sleep=0.0: clicks.append(
+        task.operate_click = lambda x, y, after_sleep=0.0: clicks.append(
             (x, y, after_sleep)
         )
         matched = []
@@ -795,21 +816,54 @@ class PVPTaskHelperTest(unittest.TestCase):
 
         self.assertTrue(PVPTask._wait_for_pvp_hub_after_cart(task, timeout=1.0))
 
-        self.assertEqual([(*PVP_RANK_DROP_CONFIRM_SCREEN_POINT, 0.5)], clicks)
+        self.assertEqual([(0.5, 1000 / 1080, 0.5)], clicks)
         self.assertEqual([PVP_MEDALS_TEMPLATE], matched)
+        self.assertIn(
+            ("PVP 段位下滑确认", "确认页已消失，共点击1次"),
+            status,
+        )
+
+    def test_pvp_entry_wait_does_not_repeat_rank_drop_click_while_page_remains(self):
+        task = object.__new__(PVPTask)
+        status = []
+        task.info_set = lambda key, value: status.append((key, value))
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        rank_page = [
+            SimpleNamespace(name="段位下滑。", x=820, y=690, width=280, height=50),
+            SimpleNamespace(name="确认", x=900, y=980, width=120, height=40),
+        ]
+        screens = iter((rank_page, rank_page, []))
+        task._ocr_boxes = lambda *_args, **_kwargs: next(screens)
+        clicks = []
+        task.operate_click = lambda x, y, after_sleep=0.0: clicks.append(
+            (x, y, after_sleep)
+        )
+        task._match = lambda *_args, **_kwargs: SimpleNamespace(score=0.9)
+        task._passes = lambda *_args, **_kwargs: True
+        task.sleep = lambda *_args, **_kwargs: None
+
+        self.assertTrue(PVPTask._wait_for_pvp_hub_after_cart(task, timeout=1.0))
+        self.assertEqual(
+            [(0.5, 1000 / 1080, 0.5)],
+            clicks,
+        )
+        self.assertIn(
+            ("PVP 段位下滑确认", "点击后确认页仍存在，不再重复点击"),
+            status,
+        )
 
     def test_pvp_entry_wait_keeps_ocr_active_until_hub_is_detected(self):
         task = object.__new__(PVPTask)
         task.info_set = lambda *_args, **_kwargs: None
         task.capture_frame = lambda: np.zeros((1440, 2560, 3), dtype=np.uint8)
         ocr_calls = []
-        task._ocr_text = lambda *_args, **_kwargs: ocr_calls.append(True) or "-"
+        task._ocr_boxes = lambda *_args, **_kwargs: ocr_calls.append(True) or []
         scores = iter((0.1, 0.9))
         task._match = lambda *_args, **_kwargs: SimpleNamespace(score=next(scores))
         task._passes = lambda result, _spec: result.score >= 0.78
         sleeps = []
         task.sleep = lambda seconds: sleeps.append(seconds)
-        task._click_screen_reference = lambda *_args, **_kwargs: self.fail(
+        task.operate_click = lambda *_args, **_kwargs: self.fail(
             "rank confirmation must not be clicked without both OCR labels"
         )
 

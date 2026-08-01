@@ -275,13 +275,21 @@ class SquareGoddessTask(BaseBD2Task):
             self.info_set("主页小屋按钮", f"{last_button_score:.3f}")
             self.info_set("主页亮度", f"{last_ratio:.3f}")
             self.info_set("主页抽抽乐 OCR", last_gacha_text or "-")
+            button_found = self._passes(home_button, home_spec)
             if home_confirmation_passes(
-                button_found=self._passes(home_button, home_spec),
+                button_found=button_found,
                 brightness_ratio=last_ratio,
                 brightness_threshold=self._home_ratio_threshold(),
                 gacha_ocr_text=last_gacha_text,
             ):
                 return True
+            self.clear_temporary_home_announcement_if_needed(
+                button_found=button_found,
+                brightness_ratio=last_ratio,
+                brightness_threshold=self._home_ratio_threshold(),
+                gacha_ocr_text=last_gacha_text,
+                context="广场女神像返回主页",
+            )
             self.sleep(interval)
 
         self.log_info(
