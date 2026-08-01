@@ -130,10 +130,18 @@ class MapAutomationTaskBase(BaseBD2Task):
                     (completed if success else failed).append(name)
                     if not success:
                         self._save_diagnostic(f"{self.diagnostic_prefix}_{name}_failed")
+                        self.log_warning(
+                            f"{self.task_log_name}：{name}失败，停止后续阶段。"
+                        )
+                        break
                 except Exception as exc:
                     failed.append(name)
                     self.log_error(f"{self.task_log_name}子流程失败：{name}。", exc)
                     self._save_diagnostic(f"{self.diagnostic_prefix}_{name}_error")
+                    self.log_warning(
+                        f"{self.task_log_name}：{name}异常，停止后续阶段。"
+                    )
+                    break
         finally:
             self.info_set("当前阶段", "返回章节主页")
             returned = navigator.return_home()

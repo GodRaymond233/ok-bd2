@@ -61,7 +61,7 @@ from src.tasks.map_trade.navigator import (
     FIRST_CARD_INSERT_REGION,
     FIRST_CARD_SKIP_TEMPLATE,
     HOME_TEMPLATES,
-    Q_SP6_BARGAIN_CONFIRM_DELAY,
+    MERCHANT_DIALOG_TEMPLATE,
     Q_SP6_BARGAIN_OCR_TIMEOUT,
     Q_SP6_BARGAIN_RECHECK_DELAY,
     Q_SP6_SHOP_PAGE_KEYWORDS,
@@ -133,6 +133,8 @@ from src.tasks.map_trade.trader import (
     SHOP_MODE_TITLE_REGION,
     STAR_PIXEL_THRESHOLD,
     STAR_POST_CLICK_DELAY,
+    STAR_ROI_HALF_SIZE_X,
+    STAR_ROI_HALF_SIZE_Y,
     STAR_TEMPLATE_THRESHOLD,
     Trader,
 )
@@ -621,7 +623,9 @@ class CatalogAndSafetyTest(unittest.TestCase):
         trader = object.__new__(Trader)
         trader.task = task
         trader.vision = SimpleNamespace(
-            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
+            ocr_text=lambda *_args, **_kwargs: "",
+            simplify=lambda value: value,
         )
         states = iter((False, True))
         trader._gray_star_present = lambda _frame, _slot, _point: next(states)
@@ -630,7 +634,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         self.assertEqual([(*SHOP_FAVORITE_POINTS[6], STAR_POST_CLICK_DELAY)], clicks)
         self.assertEqual(1.0, STAR_POST_CLICK_DELAY)
 
-    def test_gray_star_detection_anchors_30_square_at_supplied_point(self):
+    def test_gray_star_detection_anchors_enlarged_region_at_supplied_point(self):
         captured = []
         point = SHOP_FAVORITE_POINTS[6]
         result = MatchResult(0.99, (900, 240), (24, 24), pixel_score=0.98)
@@ -663,12 +667,80 @@ class CatalogAndSafetyTest(unittest.TestCase):
         self.assertEqual(STAR_PIXEL_THRESHOLD, spec.min_pixel_score)
         self.assertEqual(
             (
-                point[0] - 15 / 1920,
-                point[1] - 15 / 1080,
-                point[0] + 15 / 1920,
-                point[1] + 15 / 1080,
+                point[0] - STAR_ROI_HALF_SIZE_X / 1920,
+                point[1] - STAR_ROI_HALF_SIZE_Y / 1080,
+                point[0] + STAR_ROI_HALF_SIZE_X / 1920,
+                point[1] + STAR_ROI_HALF_SIZE_Y / 1080,
             ),
             spec.relative_roi,
+        )
+
+    def test_gray_star_search_region_scales_to_cover_offset_at_720p_and_4k(self):
+        point = SHOP_FAVORITE_POINTS[6]
+        rel_roi = (
+            point[0] - STAR_ROI_HALF_SIZE_X / 1920,
+            point[1] - STAR_ROI_HALF_SIZE_Y / 1080,
+            point[0] + STAR_ROI_HALF_SIZE_X / 1920,
+            point[1] + STAR_ROI_HALF_SIZE_Y / 1080,
+        )
+        # 720p 实机测量：实际灰星中心约 (601,180)，对应标定点 (608,167)。
+        offset = (601 / 1280, 180 / 720)
+        for size in ((1080, 1920), (720, 1280), (2160, 3840)):
+            with self.subTest(size=size):
+                frame = np.zeros((size[0], size[1], 3), dtype=np.uint8)
+                left, top, region = Vision._relative_roi(frame, rel_roi)
+                right = left + region.shape[1]
+                bottom = top + region.shape[0]
+                expected = (round(size[1] * point[0]), round(size[0] * point[1]))
+                actual = (round(size[1] * offset[0]), round(size[0] * offset[1]))
+                self.assertTrue(left <= expected[0] < right and top <= expected[1] < bottom)
+                self.assertTrue(left <= actual[0] < right and top <= actual[1] < bottom)
+
+    def test_gray_star_wait_accepts_removal_toast_confirmation(self):
+        statuses = []
+        task = SimpleNamespace(
+            config={},
+            sleep=lambda *_args: None,
+            log_warning=lambda *_args, **_kwargs: None,
+            info_set=lambda key, value: statuses.append((key, value)),
+        )
+        texts = iter(("已将商品甜椒从收藏中移除", ""))
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        vision = SimpleNamespace(
+            capture=lambda: frame,
+            ocr_text=lambda _frame, _name: next(texts),
+            simplify=lambda value: value,
+        )
+        trader = object.__new__(Trader)
+        trader.task = task
+        trader.vision = vision
+        trader._gray_star_present = lambda *_args: False
+
+        self.assertTrue(trader._wait_for_gray_star(6, SHOP_FAVORITE_POINTS[6]))
+        self.assertIn(("6 取消收藏提示", "已将商品甜椒从收藏中移除"), statuses)
+
+    def test_gray_star_wait_fails_when_toast_reports_added_to_favorites(self):
+        warnings = []
+        task = SimpleNamespace(
+            config={},
+            sleep=lambda *_args: None,
+            log_warning=warnings.append,
+            info_set=lambda *_args: None,
+        )
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        vision = SimpleNamespace(
+            capture=lambda: frame,
+            ocr_text=lambda _frame, _name: "已将商品甜椒加入收藏",
+            simplify=lambda value: value,
+        )
+        trader = object.__new__(Trader)
+        trader.task = task
+        trader.vision = vision
+        trader._gray_star_present = lambda *_args: False
+
+        self.assertFalse(trader._wait_for_gray_star(6, SHOP_FAVORITE_POINTS[6]))
+        self.assertTrue(
+            any("取消收藏未生效" in message for message in warnings)
         )
 
     def test_gray_star_recognizer_separates_slot_seven_gray_and_yellow_renders(self):
@@ -1567,6 +1639,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         template_clicks = []
         shop_entry_attempts = []
         keyword_checks = []
+        shop_confirm_checks = []
         sleeps = []
 
         task = SimpleNamespace(
@@ -1614,6 +1687,9 @@ class CatalogAndSafetyTest(unittest.TestCase):
         navigator._wait_for_ocr_keywords = (
             lambda keywords, timeout, name: keyword_checks.append((keywords, timeout, name)) or True
         )
+        navigator._wait_for_bargain_shop_confirmation = lambda: (
+            shop_confirm_checks.append(True) or True
+        )
 
         def open_quick_switcher(**callbacks):
             return (
@@ -1627,6 +1703,8 @@ class CatalogAndSafetyTest(unittest.TestCase):
         result = navigator.enter_q_sp6_buy_flow()
 
         self.assertTrue(result.success)
+        self.assertEqual(ScreenState.SHOP, result.state)
+        self.assertEqual([True], shop_confirm_checks)
         self.assertEqual(
             [(QUICK_SWITCH_TEMPLATE, 10.0, 1.0)],
             template_clicks,
@@ -1642,7 +1720,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
             [
                 (*STORY_CATEGORY_POINT, 0.5),
                 (*BARGAIN_POINT, 0.0),
-                (*BARGAIN_CONFIRM_POINT, Q_SP6_BARGAIN_CONFIRM_DELAY),
+                (*BARGAIN_CONFIRM_POINT, 0.0),
             ],
             clicks,
         )
@@ -1665,6 +1743,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         clicks = []
         shop_entry_attempts = []
         keyword_checks = []
+        shop_confirm_checks = []
         sleeps = []
         task = SimpleNamespace(
             config={},
@@ -1691,10 +1770,15 @@ class CatalogAndSafetyTest(unittest.TestCase):
             )
             or True
         )
+        navigator._wait_for_bargain_shop_confirmation = lambda: (
+            shop_confirm_checks.append(True) or True
+        )
 
         result = navigator.enter_q_sp6_buy_flow()
 
         self.assertTrue(result.success)
+        self.assertEqual(ScreenState.SHOP, result.state)
+        self.assertEqual([True], shop_confirm_checks)
         self.assertEqual(
             [(Q_SP6_SHOP_PRIORITY_TIMEOUT, False)],
             shop_entry_attempts,
@@ -1702,7 +1786,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         self.assertEqual(
             [
                 (*BARGAIN_POINT, 0.0),
-                (*BARGAIN_CONFIRM_POINT, Q_SP6_BARGAIN_CONFIRM_DELAY),
+                (*BARGAIN_CONFIRM_POINT, 0.0),
             ],
             clicks,
         )
@@ -1740,6 +1824,84 @@ class CatalogAndSafetyTest(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertEqual("商店页面未识别到砍价入口", result.message)
         self.assertEqual([], clicks)
+
+    def test_buy_entry_stops_when_shop_page_is_not_confirmed_after_bargain(self):
+        clicks = []
+        shop_confirm_checks = []
+        task = SimpleNamespace(
+            config={},
+            operate_click=lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep)),
+            sleep=lambda *_args: None,
+            log_warning=lambda *_args, **_kwargs: None,
+            open_cartridge_quick_switcher=lambda **_kwargs: self.fail(
+                "visible Q_sp6 shop must bypass quick-switch navigation"
+            ),
+        )
+        navigator = Navigator(task, SimpleNamespace())
+        navigator._enter_q_sp6_shop = lambda *_args, **_kwargs: True
+        navigator._wait_for_ocr_keywords = lambda *_args, **_kwargs: True
+        navigator._wait_for_bargain_shop_confirmation = lambda: (
+            shop_confirm_checks.append(True) or False
+        )
+        navigator.classify = lambda: ScreenState.SHOP
+
+        result = navigator.enter_q_sp6_buy_flow()
+
+        self.assertFalse(result.success)
+        self.assertEqual("砍价确认后未通过OCR确认商店页面", result.message)
+        self.assertEqual(
+            [(*BARGAIN_POINT, 0.0), (*BARGAIN_CONFIRM_POINT, 0.0)],
+            clicks,
+        )
+        self.assertEqual([True], shop_confirm_checks)
+
+    def test_bargain_shop_confirmation_requires_popup_closed_and_stable_hits(self):
+        texts = iter(
+            (
+                "仓库 严加管理 砍价成功率100% 取消",
+                "BROWN DUST II",
+                "仓库管理石怪 仓库 严加管理 天赋技能",
+                "仓库管理石怪 仓库 严加管理 天赋技能",
+            )
+        )
+        sleeps = []
+        statuses = []
+        task = SimpleNamespace(
+            config={},
+            sleep=sleeps.append,
+            log_warning=lambda *_args, **_kwargs: None,
+            info_set=lambda key, value: statuses.append((key, value)),
+        )
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        vision = SimpleNamespace(
+            capture=lambda: frame,
+            ocr_text=lambda _frame, _name: next(texts),
+            simplify=lambda value: value,
+        )
+        navigator = Navigator(task, vision)
+
+        self.assertTrue(navigator._wait_for_bargain_shop_confirmation(timeout=5.0))
+        self.assertEqual(("砍价后商店页面 OCR稳定", "2/2"), statuses[-1])
+        self.assertEqual(3, len(sleeps))
+
+    def test_bargain_shop_confirmation_times_out_when_popup_never_closes(self):
+        texts = iter(["仓库 严加管理 砍价成功率100% 取消"] * 20)
+        warnings = []
+        task = SimpleNamespace(
+            config={},
+            sleep=lambda *_args: None,
+            log_warning=warnings.append,
+        )
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        vision = SimpleNamespace(
+            capture=lambda: frame,
+            ocr_text=lambda _frame, _name: next(texts),
+            simplify=lambda value: value,
+        )
+        navigator = Navigator(task, vision)
+
+        self.assertFalse(navigator._wait_for_bargain_shop_confirmation(timeout=0.0))
+        self.assertTrue(warnings)
 
     def test_q_sp6_shop_entry_clicks_once_then_waits_for_warehouse_page_ocr(self):
         client_clicks = []
@@ -2218,11 +2380,12 @@ class CatalogAndSafetyTest(unittest.TestCase):
 
     def test_buy_phase_enters_shop_then_runs_or_skips_local_favorite_rebuild(self):
         actions = []
+        warnings = []
         task = SimpleNamespace(
             config={"收藏重建周期": "每周"},
             sleep=lambda seconds: actions.append(("sleep", seconds)),
             log_info=lambda message: actions.append(("log", message)),
-            log_warning=lambda *_args, **_kwargs: None,
+            log_warning=warnings.append,
         )
         progress = SimpleNamespace(
             should_rebuild_favorites=lambda every_run=False: actions.append(
@@ -2236,9 +2399,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         trader.progress = progress
         trader.now_provider = lambda: datetime(2026, 7, 19, 7, 59, tzinfo=UTC_PLUS_8)
         trader.navigator = SimpleNamespace(
-            enter_q_sp6_buy_flow=lambda: NavigationResult(
-                True, ScreenState.MERCHANT_DIALOG
-            )
+            enter_q_sp6_buy_flow=lambda: NavigationResult(True, ScreenState.SHOP)
         )
         trader.rebuild_favorites = lambda: actions.append(("rebuild",)) or True
         trader.buy_all_favorites = lambda: actions.append(("buy-all",)) or True
@@ -2255,6 +2416,27 @@ class CatalogAndSafetyTest(unittest.TestCase):
         )
 
         actions.clear()
+        warnings.clear()
+        trader.navigator = SimpleNamespace(
+            enter_q_sp6_buy_flow=lambda: NavigationResult(
+                True,
+                ScreenState.MERCHANT_DIALOG,
+            )
+        )
+        self.assertFalse(trader.run_buy())
+        self.assertEqual(
+            [("log", "买：按2026-07-18库存批次执行（每日08:00刷新）。")],
+            actions,
+        )
+        self.assertIn(
+            "买：砍价后状态为merchant_dialog，未确认商店页，停止购买。",
+            warnings,
+        )
+
+        actions.clear()
+        trader.navigator = SimpleNamespace(
+            enter_q_sp6_buy_flow=lambda: NavigationResult(True, ScreenState.SHOP)
+        )
         task.config["收藏重建周期"] = "永不"
         progress.should_rebuild_favorites = lambda **_kwargs: self.fail(
             "永不模式不应读取收藏重建进度"
@@ -2281,6 +2463,30 @@ class CatalogAndSafetyTest(unittest.TestCase):
             ],
             actions,
         )
+
+    def test_phase_failure_stops_later_phases(self):
+        actions = []
+        task = object.__new__(MapTradeTask)
+        task.config = {"买": True, "卖": True, "制作料理": True}
+        task.info_set = lambda *_args: None
+        task.log_info = lambda *_args: None
+        task.log_warning = lambda *_args: None
+        task.log_error = lambda *_args: None
+        task._save_diagnostic = lambda *_args: None
+        navigator = SimpleNamespace(
+            return_home=lambda: actions.append("home") or NavigationResult(
+                True,
+                ScreenState.HOME,
+            )
+        )
+        phases = (
+            ("买", "买", lambda: actions.append("buy") or False),
+            ("卖", "卖", lambda: actions.append("sell") or True),
+            ("制作料理", "制作料理", lambda: actions.append("cooking") or True),
+        )
+
+        self.assertFalse(task._run_phases(navigator, phases))
+        self.assertEqual(["buy", "home"], actions)
 
     def test_buy_all_favorites_uses_current_button_and_confirmation_regions(self):
         clicks = []
@@ -2463,6 +2669,83 @@ class CatalogAndSafetyTest(unittest.TestCase):
         self.assertNotEqual(ScreenState.HOME, navigator.classify())
         gacha_text["value"] = "抽抽乐"
         self.assertEqual(ScreenState.HOME, navigator.classify())
+
+    def test_classify_shop_page_wins_over_merchant_dialog_template(self):
+        task = SimpleNamespace(config={}, info_set=lambda *_args: None)
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        merchant = MatchResult(0.90, (1000, 40), (60, 40), pixel_score=0.85)
+        failed = MatchResult(-1.0, (0, 0), (0, 0))
+
+        def match(_frame, spec):
+            if spec == MERCHANT_DIALOG_TEMPLATE:
+                return merchant
+            return failed
+
+        vision = SimpleNamespace(
+            capture=lambda: frame,
+            match=match,
+            passes=lambda *_args: False,
+            threshold_for=lambda spec: spec.threshold,
+            template_brightness_ratio=lambda *_args: 0.0,
+            ocr_text=lambda _frame, name, **_kwargs: (
+                "仓库管理石怪 仓库 严加管理 天赋技能 砍价"
+                if name == "界面分类"
+                else ""
+            ),
+            simplify=lambda value: value,
+        )
+        navigator = Navigator(task, vision)
+
+        self.assertEqual(ScreenState.SHOP, navigator.classify())
+
+    def test_classify_merchant_dialog_requires_shop_ocr_absent(self):
+        task = SimpleNamespace(config={}, info_set=lambda *_args: None)
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        merchant = MatchResult(0.90, (1000, 40), (60, 40), pixel_score=0.85)
+        failed = MatchResult(-1.0, (0, 0), (0, 0))
+
+        def match(_frame, spec):
+            if spec == MERCHANT_DIALOG_TEMPLATE:
+                return merchant
+            return failed
+
+        vision = SimpleNamespace(
+            capture=lambda: frame,
+            match=match,
+            passes=lambda *_args: False,
+            threshold_for=lambda spec: spec.threshold,
+            template_brightness_ratio=lambda *_args: 0.0,
+            ocr_text=lambda _frame, name, **_kwargs: (
+                "与仓库管理石怪砍价 砍价成功率100% 取消"
+                if name == "界面分类"
+                else ""
+            ),
+            simplify=lambda value: value,
+        )
+        navigator = Navigator(task, vision)
+
+        self.assertEqual(ScreenState.MERCHANT_DIALOG, navigator.classify())
+
+    def test_classify_shop_ocr_fallback_without_merchant_template(self):
+        task = SimpleNamespace(config={}, info_set=lambda *_args: None)
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        failed = MatchResult(-1.0, (0, 0), (0, 0))
+        vision = SimpleNamespace(
+            capture=lambda: frame,
+            match=lambda *_args: failed,
+            passes=lambda *_args: False,
+            threshold_for=lambda spec: spec.threshold,
+            template_brightness_ratio=lambda *_args: 0.0,
+            ocr_text=lambda _frame, name, **_kwargs: (
+                "仓库管理石怪 仓库 严加管理 天赋技能"
+                if name == "界面分类"
+                else ""
+            ),
+            simplify=lambda value: value,
+        )
+        navigator = Navigator(task, vision)
+
+        self.assertEqual(ScreenState.SHOP, navigator.classify())
 
     def test_return_home_from_shop_closes_discount_shop_then_uses_home_button(self):
         actions = []
