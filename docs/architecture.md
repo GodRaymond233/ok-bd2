@@ -98,7 +98,7 @@ Task shell → Trader / Collector → Navigator → Vision → utils
 
 - `src/ui/`：状态页、实时截图、日志入口和响应式任务配置补丁。
 - `configs/`：运行时配置与进度文件；不是业务常量的唯一来源。
-- `offline-train/train-source-screenshots/`：正式模板资源。
+- `recognition-assets/template-assets/`：正式模板资源。
 - `assets/map_trade/`：随程序发布的跑商业务数据。
 - `.local-dev/`：不发布的一次性探针、样本和实验输出。
 

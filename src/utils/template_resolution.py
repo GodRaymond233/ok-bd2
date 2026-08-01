@@ -1,6 +1,6 @@
 from pathlib import Path, PurePosixPath
 
-OFFLINE_TEMPLATE_ROOT_NAME = "train-source-screenshots"
+OFFLINE_TEMPLATE_ROOT_NAME = "template-assets"
 OFFLINE_GREEN_TEMPLATE_DIR = "green"
 OFFLINE_TEMPLATE_REFERENCE_RESOLUTIONS = {
     "image": (1280, 720),

@@ -37,7 +37,7 @@ from src.utils.template_resolution import (
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-TEMPLATE_DIR = PROJECT_ROOT / "offline-train" / "train-source-screenshots"
+TEMPLATE_DIR = PROJECT_ROOT / "recognition-assets" / "template-assets"
 EMPTY_MATCH = MatchResult(-1.0, (0, 0), (0, 0))
 COUNT_PATTERN = re.compile(r"(?<!\d)(\d+)\s*[/：:|\-~]\s*(\d+)(?!\d)")
 

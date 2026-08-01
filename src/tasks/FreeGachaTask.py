@@ -27,7 +27,7 @@ from src.utils.template_resolution import offline_template_scale
 REFERENCE_WIDTH = 1920
 REFERENCE_HEIGHT = 1080
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-TEMPLATE_DIR = PROJECT_ROOT / "offline-train" / "train-source-screenshots"
+TEMPLATE_DIR = PROJECT_ROOT / "recognition-assets" / "template-assets"
 KEYWORD_MATCH_RATIO = 0.9
 
 

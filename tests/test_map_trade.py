@@ -305,7 +305,7 @@ class VisionTest(unittest.TestCase):
         self.assertTrue(all(value.pixel_score == 1.0 for value in matches))
 
     def test_story_cartridge_brightness_calibration_separates_selected_state(self):
-        template_root = ROOT / "offline-train" / "train-source-screenshots"
+        template_root = ROOT / "recognition-assets" / "template-assets"
         normal = cv2.imread(
             str(template_root / SHOP_CARTRIDGE_BRIGHTNESS.normal_template),
             cv2.IMREAD_GRAYSCALE,
@@ -486,7 +486,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         self.assertEqual(SHOP_UNFAVORITED_POINTS.keys(), SHOP_PURCHASE_REFERENCES.keys())
         self.assertEqual(SHOP_CARTRIDGE_LABELS.keys(), SHOP_PURCHASE_REFERENCES.keys())
 
-        template_root = ROOT / "offline-train" / "train-source-screenshots"
+        template_root = ROOT / "recognition-assets" / "template-assets"
         for shop_id, reference in SHOP_PURCHASE_REFERENCES.items():
             with self.subTest(shop=shop_id):
                 self.assertEqual(shop_id, reference.shop_id)
@@ -1562,7 +1562,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
                 self.assertTrue(forbidden_calls.isdisjoint(called))
 
     def test_card_and_recipe_templates_are_packaged(self):
-        template_root = ROOT / "offline-train" / "train-source-screenshots"
+        template_root = ROOT / "recognition-assets" / "template-assets"
         templates = [card.template for card in STORY_CARDS]
         templates.extend(RECIPE_TEMPLATES.values())
         templates.extend(
