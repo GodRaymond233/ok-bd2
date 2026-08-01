@@ -17,8 +17,6 @@ from src.tasks.PVPTask import (
     HOME_TEMPLATE,
     PVP_BACK_HOME_REFERENCE_POINT,
     PVP_CARTRIDGE_SLOT_POINT,
-    PVP_CONFIRM_BUTTON_SCREEN_ROI,
-    PVP_FAILURE_LEAVE_REFERENCE_POINT,
     PVP_FAILURE_LEAVE_REFERENCE_ROI,
     PVP_HUB_NOTICE_SCREEN_ROI,
     PVP_HUB_NOTICE_TEMPLATE,
@@ -29,7 +27,6 @@ from src.tasks.PVPTask import (
     PVP_RESULT_SCREEN_ROI,
     PVP_STAGE_CLICK_REFERENCE_OFFSET,
     PVP_STAGE_TEMPLATE,
-    PVP_SUCCESS_LEAVE_REFERENCE_POINT,
     PVP_SUCCESS_LEAVE_REFERENCE_ROI,
     QUICK_PACK_TEMPLATE,
     QUICK_SWITCH_PAGE_PATTERNS,
@@ -947,10 +944,12 @@ class PVPTaskHelperTest(unittest.TestCase):
 
         def fake_ocr(_frame, name, roi=None):
             ocr_calls.append((name, roi))
-            return "离开" if name == "pvp_leave_failure" else ""
+            if name == "pvp_leave_failure":
+                return [SimpleNamespace(name="离开", x=300, y=20, width=80, height=40)]
+            return []
 
-        task._ocr_text = fake_ocr
-        task._click_reference = lambda x, y, after_sleep=0.0: clicks.append(
+        task._ocr_boxes = fake_ocr
+        task.operate_click = lambda x, y, after_sleep=0.0: clicks.append(
             (x, y, after_sleep)
         )
         task.sleep = lambda *_args, **_kwargs: None
@@ -964,8 +963,8 @@ class PVPTaskHelperTest(unittest.TestCase):
             ocr_calls,
         )
         self.assertEqual(
-            (*PVP_FAILURE_LEAVE_REFERENCE_POINT, 2.0),
-            clicks[0],
+            [(1036 / 1920, 992 / 1080, 2.0)],
+            clicks,
         )
 
     def test_click_leave_button_clicks_success_target(self):
@@ -973,30 +972,49 @@ class PVPTaskHelperTest(unittest.TestCase):
         task.config = {}
         task.info_set = lambda *_args, **_kwargs: None
         task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        task._ocr_text = lambda _frame, name, roi=None: (
-            "离开" if name == "pvp_leave_success" else ""
+        task._ocr_boxes = lambda _frame, name, roi=None: (
+            [SimpleNamespace(name="离开", x=70, y=15, width=100, height=30)]
+            if name == "pvp_leave_success"
+            else []
         )
         clicks = []
-        task._click_reference = lambda x, y, after_sleep=0.0: clicks.append(
+        task.operate_click = lambda x, y, after_sleep=0.0: clicks.append(
             (x, y, after_sleep)
         )
         task.sleep = lambda *_args, **_kwargs: None
 
         self.assertTrue(PVPTask._click_leave_button(task))
-        self.assertEqual([(*PVP_SUCCESS_LEAVE_REFERENCE_POINT, 2.0)], clicks)
+        self.assertEqual([((1594 + 120) / 1920, (987 + 30) / 1080, 2.0)], clicks)
 
-    def test_leave_targets_use_1920_reference_coordinates(self):
+    def test_leave_ocr_regions_use_1920_reference_coordinates(self):
         self.assertEqual((696, 952, 535, 87), PVP_FAILURE_LEAVE_REFERENCE_ROI)
-        self.assertEqual((1058, 996), PVP_FAILURE_LEAVE_REFERENCE_POINT)
         self.assertEqual((1594, 987, 240, 66), PVP_SUCCESS_LEAVE_REFERENCE_ROI)
-        self.assertEqual((1707, 1021), PVP_SUCCESS_LEAVE_REFERENCE_POINT)
+
+    def test_leave_ocr_center_adds_scaled_roi_offset_at_720p(self):
+        task = object.__new__(PVPTask)
+        task.config = {}
+        task.info_set = lambda *_args, **_kwargs: None
+        task.capture_frame = lambda: np.zeros((720, 1280, 3), dtype=np.uint8)
+        task._ocr_boxes = lambda _frame, name, roi=None: (
+            [SimpleNamespace(name="离开", x=200, y=10, width=60, height=20)]
+            if name == "pvp_leave_failure"
+            else []
+        )
+        clicks = []
+        task.operate_click = lambda x, y, after_sleep=0.0: clicks.append(
+            (x, y, after_sleep)
+        )
+        task.sleep = lambda *_args, **_kwargs: None
+
+        self.assertTrue(PVPTask._click_leave_button(task))
+        self.assertEqual([((464 + 230) / 1280, (635 + 20) / 720, 2.0)], clicks)
 
     def test_ensure_pvp_hub_after_leave_returns_when_hub_seen(self):
         task = object.__new__(PVPTask)
         task.config = {}
         task.info_set = lambda *_args, **_kwargs: None
-        task._wait_for_pvp_hub_or_confirm = lambda timeout: ("hub", "")
-        task._click_screen_reference = lambda *_args, **_kwargs: self.fail(
+        task._wait_for_pvp_hub_or_confirm = lambda timeout: ("hub", "", None)
+        task._click_frame_point = lambda *_args, **_kwargs: self.fail(
             "confirm should not be clicked after hub is detected"
         )
 
@@ -1009,9 +1027,15 @@ class PVPTaskHelperTest(unittest.TestCase):
         clicks = []
         waits = []
 
-        task._wait_for_pvp_hub_or_confirm = lambda timeout: ("confirm", "确认")
-        task._click_screen_reference = lambda x, y, after_sleep=0.0: clicks.append(
-            (x, y, after_sleep)
+        task._wait_for_pvp_hub_or_confirm = lambda timeout: (
+            "confirm",
+            "恭喜晋级 确认",
+            (960.0, 1030.0),
+        )
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task.capture_frame = lambda: frame
+        task._click_frame_point = lambda seen_frame, point, after_sleep=0.0: clicks.append(
+            (seen_frame, point, after_sleep)
         )
 
         def fake_wait_for_template(spec, timeout, name, **_kwargs):
@@ -1021,13 +1045,30 @@ class PVPTaskHelperTest(unittest.TestCase):
         task._wait_for_template = fake_wait_for_template
 
         self.assertTrue(PVPTask._ensure_pvp_hub_after_leave(task))
-        self.assertEqual(
-            [(*PVPTask._screen_reference_roi_center(PVP_CONFIRM_BUTTON_SCREEN_ROI), 1.0)],
-            clicks,
-        )
+        self.assertIs(frame, clicks[0][0])
+        self.assertEqual(((960.0, 1030.0), 1.0), clicks[0][1:])
         self.assertEqual([(PVP_MEDALS_TEMPLATE, 10.0, "PVP 箱庭")], waits)
 
-    def test_wait_for_pvp_hub_or_confirm_detects_confirm_roi(self):
+    def test_ensure_pvp_hub_after_leave_timeout_does_not_blind_click(self):
+        task = object.__new__(PVPTask)
+        task.config = {}
+        task.info_set = lambda *_args, **_kwargs: None
+        task._wait_for_pvp_hub_or_confirm = lambda timeout: (
+            "timeout",
+            "战斗 离开",
+            None,
+        )
+        task.capture_frame = lambda: self.fail("timeout must not capture for a click")
+        task._click_frame_point = lambda *_args, **_kwargs: self.fail(
+            "timeout must not blind click"
+        )
+        task._wait_for_template = lambda *_args, **_kwargs: self.fail(
+            "timeout must not skip directly to hub waiting"
+        )
+
+        self.assertFalse(PVPTask._ensure_pvp_hub_after_leave(task))
+
+    def test_wait_for_pvp_hub_or_confirm_detects_full_frame_confirm_center(self):
         task = object.__new__(PVPTask)
         task.config = {}
         task.info_set = lambda *_args, **_kwargs: None
@@ -1038,21 +1079,32 @@ class PVPTaskHelperTest(unittest.TestCase):
 
         def fake_ocr(_frame, name, roi=None):
             ocr_calls.append((name, roi))
-            return "确认"
+            return [SimpleNamespace(name="确认", x=900, y=1000, width=120, height=40)]
 
-        task._ocr_text = fake_ocr
+        task._ocr_boxes = fake_ocr
         task.sleep = lambda *_args, **_kwargs: self.fail("confirm should be immediate")
 
         self.assertEqual(
-            ("confirm", "确认"),
+            ("confirm", "确认", (960.0, 1020.0)),
             PVPTask._wait_for_pvp_hub_or_confirm(task, timeout=1.0),
         )
+        self.assertEqual([("PVP 升降级确认", None)], ocr_calls)
+
+    def test_wait_for_pvp_hub_or_confirm_accepts_determine_wording(self):
+        task = object.__new__(PVPTask)
+        task.config = {}
+        task.info_set = lambda *_args, **_kwargs: None
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task._match = lambda _frame, _spec: SimpleNamespace(score=0.1)
+        task._passes = lambda _result, _spec: False
+        task._ocr_boxes = lambda *_args, **_kwargs: [
+            SimpleNamespace(name="确定", x=850, y=980, width=220, height=60)
+        ]
+        task.sleep = lambda *_args, **_kwargs: self.fail("determine should be immediate")
+
         self.assertEqual(
-            [(
-                "PVP 升降级确认",
-                PVPTask._screen_reference_roi_to_reference_roi(PVP_CONFIRM_BUTTON_SCREEN_ROI),
-            )],
-            ocr_calls,
+            ("confirm", "确定", (960.0, 1010.0)),
+            PVPTask._wait_for_pvp_hub_or_confirm(task, timeout=1.0),
         )
 
     def test_wait_for_pvp_hub_or_confirm_prefers_hub(self):
@@ -1062,13 +1114,13 @@ class PVPTaskHelperTest(unittest.TestCase):
         task.capture_frame = lambda: np.zeros((1440, 2560, 3), dtype=np.uint8)
         task._match = lambda _frame, _spec: SimpleNamespace(score=0.95)
         task._passes = lambda _result, _spec: True
-        task._ocr_text = lambda *_args, **_kwargs: self.fail(
+        task._ocr_boxes = lambda *_args, **_kwargs: self.fail(
             "confirm OCR should not run after hub is detected"
         )
         task.sleep = lambda *_args, **_kwargs: self.fail("hub should be immediate")
 
         self.assertEqual(
-            ("hub", ""),
+            ("hub", "", None),
             PVPTask._wait_for_pvp_hub_or_confirm(task, timeout=1.0),
         )
 

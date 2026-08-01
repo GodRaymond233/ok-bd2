@@ -43,10 +43,7 @@ FREE_AP_SWITCH_SCREEN_ROI = (1680, 535, 120, 55)
 PVP_RESULT_SCREEN_ROI = (932, 368, 699, 704)
 PVP_RESULT_CLOSE_SCREEN_POINT = (1585, 410)
 PVP_FAILURE_LEAVE_REFERENCE_ROI = (696, 952, 535, 87)
-PVP_FAILURE_LEAVE_REFERENCE_POINT = (1058, 996)
 PVP_SUCCESS_LEAVE_REFERENCE_ROI = (1594, 987, 240, 66)
-PVP_SUCCESS_LEAVE_REFERENCE_POINT = (1707, 1021)
-PVP_CONFIRM_BUTTON_SCREEN_ROI = (1108, 1297, 349, 92)
 PVP_BACK_HOME_REFERENCE_POINT = (100, 54)
 PVP_HUB_NOTICE_SCREEN_ROI = (1381, 865, 62, 45)
 GAMEPLAY_CARTRIDGE_POINT = (988 / REFERENCE_WIDTH, 876 / REFERENCE_HEIGHT)
@@ -110,7 +107,9 @@ class PVPTask(BaseBD2Task):
         "PVP 结算 OCR",
         "PVP 结算命中",
         "PVP 离开 OCR",
+        "PVP 离开点击",
         "PVP 升降级确认 OCR",
+        "PVP 升降级确认",
         "PVP 返回主页",
         "PVP AP不足 OCR",
         "匹配错误",
@@ -626,22 +625,32 @@ class PVPTask(BaseBD2Task):
                     "失败页",
                     "pvp_leave_failure",
                     PVP_FAILURE_LEAVE_REFERENCE_ROI,
-                    PVP_FAILURE_LEAVE_REFERENCE_POINT,
                 ),
                 (
                     "成功页",
                     "pvp_leave_success",
                     PVP_SUCCESS_LEAVE_REFERENCE_ROI,
-                    PVP_SUCCESS_LEAVE_REFERENCE_POINT,
                 ),
             )
             ocr_results = []
-            matched_point = None
-            for page_name, ocr_name, roi, click_point in targets:
-                text = self._ocr_text(frame, ocr_name, roi=roi)
+            matched_point: tuple[float, float] | None = None
+            for page_name, ocr_name, roi in targets:
+                boxes = self._ocr_boxes(frame, ocr_name, roi=roi)
+                text = " ".join(
+                    str(getattr(box, "name", ""))
+                    for box in boxes
+                    if getattr(box, "name", "")
+                )
                 ocr_results.append((page_name, text))
-                if matched_point is None and self._matches_any(text, [r"离开"]):
-                    matched_point = click_point
+                leave_box = self._find_ocr_box(boxes, "离开")
+                if matched_point is None and leave_box is not None:
+                    local_point = self._ocr_box_center(leave_box)
+                    if local_point is not None:
+                        roi_left, roi_top, _roi_frame = self._roi_frame(frame, roi)
+                        matched_point = (
+                            roi_left + local_point[0],
+                            roi_top + local_point[1],
+                        )
 
             combined_text = " | ".join(
                 f"{page_name}:{text or '-'}" for page_name, text in ocr_results
@@ -649,7 +658,11 @@ class PVPTask(BaseBD2Task):
             last_text = combined_text or last_text
             self.info_set("PVP 离开 OCR", combined_text or "-")
             if matched_point is not None:
-                self._click_reference(*matched_point, after_sleep=2.0)
+                self.info_set(
+                    "PVP 离开点击",
+                    f"OCR中心=({matched_point[0]:.0f},{matched_point[1]:.0f})",
+                )
+                self._click_frame_point(frame, matched_point, after_sleep=2.0)
                 return True
 
             self.sleep(0.5)
@@ -660,20 +673,21 @@ class PVPTask(BaseBD2Task):
     def _ensure_pvp_hub_after_leave(self) -> bool:
         self.info_set("当前阶段", "确认离开结果")
         timeout = float(self.config.get("PVP 返回箱庭等待秒数", 10.0))
-        state, text = self._wait_for_pvp_hub_or_confirm(timeout=timeout)
+        state, text, point = self._wait_for_pvp_hub_or_confirm(timeout=timeout)
         if state == "hub":
             return True
 
-        if state == "confirm":
-            self.info_set("PVP 升降级确认 OCR", text or "-")
-        else:
-            self.info_set("PVP 升降级确认 OCR", text or "-")
-            self.info_set("PVP 返回主页", "未确认 PVP 箱庭，尝试确认")
+        self.info_set("PVP 升降级确认 OCR", text or "-")
+        if state != "confirm" or point is None:
+            self.info_set("PVP 返回主页", "未检测到 PVP 箱庭或升降级确认按钮")
+            return False
 
-        self._click_screen_reference(
-            *self._screen_reference_roi_center(PVP_CONFIRM_BUTTON_SCREEN_ROI),
-            after_sleep=1.0,
+        frame = self.capture_frame()
+        self.info_set(
+            "PVP 升降级确认",
+            f"OCR中心=({point[0]:.0f},{point[1]:.0f})",
         )
+        self._click_frame_point(frame, point, after_sleep=1.0)
         return self._wait_for_template(
             PVP_MEDALS_TEMPLATE,
             timeout=timeout,
@@ -684,11 +698,10 @@ class PVPTask(BaseBD2Task):
         self,
         timeout: float,
         interval: float = 0.5,
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, tuple[float, float] | None]:
         end_at = monotonic() + max(0.0, timeout)
         last_text = ""
         last_hub_score = -1.0
-        confirm_roi = self._screen_reference_roi_to_reference_roi(PVP_CONFIRM_BUTTON_SCREEN_ROI)
         while monotonic() <= end_at:
             frame = self.capture_frame()
 
@@ -697,18 +710,25 @@ class PVPTask(BaseBD2Task):
             self.info_set("PVP 箱庭", f"{hub.score:.3f}")
             if self._passes(hub, PVP_MEDALS_TEMPLATE):
                 self.info_set("PVP 返回主页", "已回到 PVP 箱庭")
-                return "hub", last_text
+                return "hub", last_text, None
 
-            text = self._ocr_text(frame, "PVP 升降级确认", roi=confirm_roi)
+            boxes = self._ocr_boxes(frame, "PVP 升降级确认")
+            text = " ".join(
+                str(getattr(box, "name", ""))
+                for box in boxes
+                if getattr(box, "name", "")
+            )
             last_text = text or last_text
             self.info_set("PVP 升降级确认 OCR", text or "-")
-            if self._matches_any(text, [r"确认"]):
-                return "confirm", text
+            confirm_box = self._find_first_ocr_box(boxes, ("确认", "确定"))
+            point = self._ocr_box_center(confirm_box) if confirm_box is not None else None
+            if point is not None:
+                return "confirm", text, point
 
             self.sleep(interval)
 
         self.info_set("PVP 箱庭", f"{last_hub_score:.3f}")
-        return "timeout", last_text
+        return "timeout", last_text, None
 
     def _return_home_from_pvp_hub(self) -> bool:
         self.info_set("当前阶段", "返回主页")
@@ -1327,6 +1347,27 @@ class PVPTask(BaseBD2Task):
             max(0.0, min(1.0, y / REFERENCE_HEIGHT)),
             after_sleep=after_sleep,
         )
+
+    def _click_frame_point(
+        self,
+        frame: np.ndarray,
+        point: tuple[float, float],
+        after_sleep: float = 0.0,
+    ) -> None:
+        frame_height, frame_width = frame.shape[:2]
+        self.operate_click(
+            max(0.0, min(1.0, point[0] / max(1, frame_width))),
+            max(0.0, min(1.0, point[1] / max(1, frame_height))),
+            after_sleep=after_sleep,
+        )
+
+    @classmethod
+    def _find_first_ocr_box(cls, boxes: list, keywords: tuple[str, ...]):
+        for keyword in keywords:
+            box = cls._find_ocr_box(boxes, keyword)
+            if box is not None:
+                return box
+        return None
 
     @staticmethod
     def _mf_point(x: int, y: int) -> tuple[int, int]:
