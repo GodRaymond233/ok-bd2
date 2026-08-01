@@ -19,6 +19,12 @@ class DependencyManagementTest(unittest.TestCase):
         self.assertIn("ok-script==1.0.180", self.dev_requirements)
         self.assertNotIn("ok-script==1.0.179", self.runtime_requirements)
 
+    def test_msvc_runtime_is_consistently_constrained(self):
+        dependencies = self.pyproject["project"]["dependencies"]
+        self.assertIn("msvc-runtime>=14.44.35112", dependencies)
+        self.assertIn("msvc-runtime==14.44.35112", self.runtime_requirements)
+        self.assertIn("msvc-runtime==14.44.35112", self.dev_requirements)
+
     def test_uv_lock_targets_windows_and_is_committed(self):
         self.assertEqual(
             ["sys_platform == 'win32'"],
