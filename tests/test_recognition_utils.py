@@ -13,6 +13,7 @@ from src.utils.image_utils import (
     pixel_similarity,
     reference_roi_frame,
     resize_mask,
+    scale_reference_roi,
     stabilize_template_match,
     stable_match_consensus,
     to_gray,
@@ -224,6 +225,16 @@ class ImageRecognitionUtilsTest(unittest.TestCase):
         )
         self.assertEqual((left, top), (100, 50))
         self.assertEqual(reference.shape, (10, 20))
+
+    def test_reference_roi_scaling_moves_origin_and_resizes_both_axes(self):
+        self.assertEqual(
+            (1031, 133, 207, 42),
+            scale_reference_roi(
+                (1546, 199, 311, 63),
+                (1280, 720),
+                (1920, 1080),
+            ),
+        )
 
 
 class OcrUtilsTest(unittest.TestCase):
