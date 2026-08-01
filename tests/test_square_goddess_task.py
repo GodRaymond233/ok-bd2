@@ -42,6 +42,11 @@ class SquareGoddessEntryTest(unittest.TestCase):
         task._home_brightness_ratio = lambda _frame: 0.8
         gacha_text = {"value": ""}
         task._ocr_text = lambda *_args, **_kwargs: gacha_text["value"]
+        task._sleep_after_recognition = lambda: None
+        announcement_clicks = []
+        task.operate_click = lambda x, y, after_sleep=0.0: announcement_clicks.append(
+            (x, y, after_sleep)
+        )
 
         self.assertFalse(SquareGoddessTask._wait_for_cartridge_home(task))
         gacha_text["value"] = "抽抽乐"
@@ -51,6 +56,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
         task._home_brightness_ratio = lambda _frame: 0.8
         task._passes = lambda *_args, **_kwargs: False
         self.assertFalse(SquareGoddessTask._wait_for_cartridge_home(task))
+        self.assertEqual([(169 / 1920, 615 / 1080, 0.2)], announcement_clicks)
 
     def test_entry_uses_quick_switch_gameplay_and_fixed_seventh_slot(self):
         task = object.__new__(SquareGoddessTask)

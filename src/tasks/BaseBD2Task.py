@@ -12,6 +12,10 @@ from PIL import Image
 
 from src.scene.BD2Scene import BD2Scene
 from src.scene.ScreenPosition import ScreenPosition
+from src.utils.home_confirmation import (
+    HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT,
+    home_temporary_announcement_detected,
+)
 from src.utils.ocr_utils import normalize_ocr_text
 
 logger = Logger.get_logger(__name__)
@@ -51,6 +55,7 @@ class BaseBD2Task(BaseTask):
         self.default_box = ScreenPosition(self)
         self._last_interval_action_time = {}
         self._action_interval_lock = threading.Lock()
+        self._last_home_announcement_clear_at = 0.0
         self.default_config.update(
             {
                 "识别成功后等待秒数": 1.0,
@@ -268,6 +273,46 @@ class BaseBD2Task(BaseTask):
         seconds = float(self.config.get("识别成功后等待秒数", 1.0))
         if seconds > 0:
             self.sleep(seconds)
+
+    def clear_temporary_home_announcement_if_needed(
+        self,
+        *,
+        button_found: bool,
+        brightness_ratio: float,
+        brightness_threshold: float,
+        gacha_ocr_text: object,
+        context: str,
+    ) -> bool:
+        """Clear a dimming announcement only when the other two home signals pass."""
+        if not home_temporary_announcement_detected(
+            button_found=button_found,
+            brightness_ratio=brightness_ratio,
+            brightness_threshold=brightness_threshold,
+            gacha_ocr_text=gacha_ocr_text,
+        ):
+            return False
+
+        now = monotonic()
+        last_click_at = float(
+            getattr(self, "_last_home_announcement_clear_at", 0.0)
+        )
+        if now - last_click_at < 1.0:
+            return True
+        self._last_home_announcement_clear_at = now
+
+        clear_x, clear_y = HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT
+        self.info_set(
+            "主页临时公告",
+            f"{context}：亮度 {brightness_ratio:.3f}/{brightness_threshold:.3f}",
+        )
+        self.log_info(
+            f"{context}：主页按钮和抽抽乐 OCR 已命中但亮度不足，"
+            f"按登录公告流程点击清理位置，ratio={brightness_ratio:.3f}, "
+            f"x={clear_x:.2%}, y={clear_y:.2%}。"
+        )
+        self._sleep_after_recognition()
+        self.operate_click(clear_x, clear_y, after_sleep=0.2)
+        return True
 
     def open_cartridge_quick_switcher(
         self,

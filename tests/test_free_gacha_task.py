@@ -149,6 +149,19 @@ class FreeGachaTaskHelperTest(unittest.TestCase):
         button_found["value"] = True
         brightness["value"] = 0.74
         self.assertFalse(task._home_confirmation_signals(frame, "返回主页")[0])
+        announcement_signals = []
+        task.clear_temporary_home_announcement_if_needed = (
+            lambda **signals: announcement_signals.append(signals)
+        )
+        self.assertFalse(
+            task._home_confirmation_signals(
+                frame,
+                "返回主页",
+                clear_context="抽抽乐返回主页",
+            )[0]
+        )
+        self.assertEqual(1, len(announcement_signals))
+        self.assertEqual("抽抽乐返回主页", announcement_signals[0]["context"])
         brightness["value"] = 0.8
         gacha_text["value"] = ""
         self.assertFalse(task._home_confirmation_signals(frame, "返回主页")[0])

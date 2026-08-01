@@ -48,7 +48,6 @@ PVP_SUCCESS_LEAVE_REFERENCE_ROI = (1594, 987, 240, 66)
 PVP_SUCCESS_LEAVE_REFERENCE_POINT = (1707, 1021)
 PVP_CONFIRM_BUTTON_SCREEN_ROI = (1108, 1297, 349, 92)
 PVP_BACK_HOME_REFERENCE_POINT = (100, 54)
-PVP_RANK_DROP_CONFIRM_SCREEN_POINT = (960, 1006)
 PVP_HUB_NOTICE_SCREEN_ROI = (1381, 865, 62, 45)
 GAMEPLAY_CARTRIDGE_POINT = (988 / REFERENCE_WIDTH, 876 / REFERENCE_HEIGHT)
 PVP_CARTRIDGE_SLOT_POINT = (152 / REFERENCE_WIDTH, 970 / REFERENCE_HEIGHT)
@@ -100,6 +99,7 @@ class PVPTask(BaseBD2Task):
         "卡带选择页 OCR 命中",
         "PVP 箱庭",
         "PVP 段位下滑 OCR",
+        "PVP 段位下滑确认",
         "PVP 箱庭感叹号",
         "PVP 舞台",
         "PVP 自动战斗 OCR",
@@ -318,6 +318,14 @@ class PVPTask(BaseBD2Task):
             self.info_set("主页抽抽乐 OCR", gacha_text or "-")
             if home_ok:
                 return True
+            self.clear_temporary_home_announcement_if_needed(
+                button_found=last_button_score
+                >= float(self.config.get("主页小屋按钮阈值", 0.70)),
+                brightness_ratio=last_ratio,
+                brightness_threshold=self._home_ratio_threshold(),
+                gacha_ocr_text=gacha_text,
+                context="镜中之战确认主页",
+            )
             self.sleep(interval)
 
         self.log_info(
@@ -334,25 +342,63 @@ class PVPTask(BaseBD2Task):
     ) -> bool:
         """Continuously handle rank-drop OCR before accepting the PVP hub."""
         end_at = monotonic() + max(0.0, timeout)
-        rank_drop_confirmed = False
+        rank_drop_seen = False
+        rank_drop_confirm_clicked = False
+        rank_drop_still_visible_reported = False
+        rank_drop_dismissed = False
         last_text = ""
         last_hub_score = -1.0
 
         while monotonic() <= end_at:
             frame = self.capture_frame()
+            boxes = self._ocr_boxes(frame, "PVP 段位下滑")
+            text = " ".join(
+                str(getattr(box, "name", ""))
+                for box in boxes
+                if getattr(box, "name", "")
+            )
+            last_text = text or last_text
+            self.info_set("PVP 段位下滑 OCR", text or "-")
 
-            if not rank_drop_confirmed:
-                text = self._ocr_text(frame, "PVP 段位下滑")
-                last_text = text or last_text
-                self.info_set("PVP 段位下滑 OCR", text or "-")
-                if self._ocr_pattern_match_count(text, [r"段位下滑", r"确认"]) >= 2:
+            if self._ocr_pattern_match_count(text, [r"段位下滑", r"确认"]) >= 2:
+                rank_drop_seen = True
+                confirm_box = self._find_ocr_box(boxes, "确认")
+                point = self._ocr_box_center(confirm_box) if confirm_box is not None else None
+                if point is not None and not rank_drop_confirm_clicked:
+                    frame_height, frame_width = frame.shape[:2]
                     self.info_set("当前阶段", "确认段位下滑")
-                    self._click_screen_reference(
-                        *PVP_RANK_DROP_CONFIRM_SCREEN_POINT,
+                    self.info_set(
+                        "PVP 段位下滑确认",
+                        f"OCR中心=({point[0]:.0f},{point[1]:.0f})，点击1次",
+                    )
+                    self.operate_click(
+                        max(0.0, min(1.0, point[0] / max(1, frame_width))),
+                        max(0.0, min(1.0, point[1] / max(1, frame_height))),
                         after_sleep=0.5,
                     )
-                    rank_drop_confirmed = True
+                    rank_drop_confirm_clicked = True
                     continue
+                if point is None:
+                    self.info_set("PVP 段位下滑确认", "已命中成对文字，但确认框无坐标")
+                else:
+                    if not rank_drop_still_visible_reported:
+                        self.info_set(
+                            "PVP 段位下滑确认",
+                            "点击后确认页仍存在，不再重复点击",
+                        )
+                        rank_drop_still_visible_reported = True
+                self.sleep(interval)
+                continue
+            elif (
+                rank_drop_seen
+                and rank_drop_confirm_clicked
+                and not rank_drop_dismissed
+            ):
+                self.info_set(
+                    "PVP 段位下滑确认",
+                    "确认页已消失，共点击1次",
+                )
+                rank_drop_dismissed = True
 
             self.info_set("当前阶段", "确认 PVP 箱庭")
             hub = self._match(frame, PVP_MEDALS_TEMPLATE)
@@ -367,7 +413,9 @@ class PVPTask(BaseBD2Task):
         self.info_set("PVP 箱庭", f"{last_hub_score:.3f}")
         self.log_info(
             "镜中之战：点击 PVP 卡带后未确认进入 PVP 箱庭，"
-            f"hub={last_hub_score:.3f}, rank_drop_ocr={last_text or '-'}。"
+            f"hub={last_hub_score:.3f}, "
+            f"rank_drop_clicked={int(rank_drop_confirm_clicked)}, "
+            f"rank_drop_ocr={last_text or '-'}。"
         )
         return False
 
@@ -694,6 +742,14 @@ class PVPTask(BaseBD2Task):
             self.info_set("主页抽抽乐 OCR", gacha_text or "-")
             if home_ok:
                 return True
+            self.clear_temporary_home_announcement_if_needed(
+                button_found=button_score
+                >= float(self.config.get("主页小屋按钮阈值", 0.70)),
+                brightness_ratio=ratio,
+                brightness_threshold=self._home_ratio_threshold(),
+                gacha_ocr_text=gacha_text,
+                context="PVP 返回主页",
+            )
             self.sleep(interval)
         return False
 

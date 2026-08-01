@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
@@ -32,6 +33,10 @@ REFERENCE_WIDTH = 1920
 REFERENCE_HEIGHT = 1080
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 TEMPLATE_DIR = PROJECT_ROOT / "recognition-assets" / "template-assets"
+PRELOGIN_STATES = frozenset({"waiting", "browndustx", "waiting_update", "downloading"})
+DOWNLOAD_PROGRESS_PATTERN = re.compile(
+    r"(?<!\d)(?:100(?:[.,]0+)?|\d{1,2}(?:[.,]\d+)?)\s*[%％]"
+)
 
 
 @dataclass(frozen=True)
@@ -40,6 +45,7 @@ class TemplateSpec:
     file_name: str
     threshold_key: str
     default_threshold: float
+    candidate_threshold: float | None = None
     crop: tuple[float, float, float, float] | None = None
     green_mask: bool = False
 
@@ -68,6 +74,10 @@ class AutoLoginTask(BaseBD2Task):
         "BrownDustX Confirm 像素阈值",
         "BrownDustX Confirm OCR",
         "BrownDustX Confirm 点击",
+        "登录页 OCR",
+        "更新下载",
+        "下载进度",
+        "更新下载点击",
         "TOUCH TO START",
         "TOUCH TO START 阈值",
         "加载页面",
@@ -135,6 +145,8 @@ class AutoLoginTask(BaseBD2Task):
         self._login_clicked_at: float | None = None
         self._waiting_home_since: float | None = None
         self._last_clear_click_at = 0.0
+        self._last_confirm_click_at = 0.0
+        self._last_download_click_at = 0.0
         self._finished = False
         self._missing_template_names: set[str] = set()
         self._match_error_names: set[str] = set()
@@ -173,7 +185,7 @@ class AutoLoginTask(BaseBD2Task):
                 self._set_action("游戏窗口尚未就绪，等待脚本自动启动游戏。")
             return False
 
-        if self._state == "waiting":
+        if self._state in PRELOGIN_STATES:
             confirmed, _button, _spec, _ratio, _gacha_text = (
                 self._home_confirmation_signals(frame)
             )
@@ -189,58 +201,59 @@ class AutoLoginTask(BaseBD2Task):
                 )
                 return False
 
-        if self._state == "browndustx":
-            return self._wait_browndustx_then_login(frame)
         if self._state == "clearing":
             return self._clear_popups_until_home(frame)
         if self._state in ("waiting_loading", "loading", "waiting_home"):
             return self._wait_loading_then_home(frame)
 
-        browndustx = self._match(frame, BROWNDUSTX_TEMPLATE)
-        self.info_set("BrownDustX", f"{browndustx.score:.3f}")
-        self.info_set("BrownDustX 像素", f"{browndustx.pixel_score:.3f}")
-
-        if self._is_browndustx_present(browndustx):
-            self._state = "browndustx"
-            return self._wait_browndustx_then_login(frame, browndustx)
-
-        self.info_set("BrownDustX Confirm", "-")
-        self.info_set("BrownDustX Confirm 像素", "-")
-        self.info_set("BrownDustX Confirm OCR", "-")
-
-        touch_to_start = self._match(frame, TOUCH_TO_START_TEMPLATE)
-        self.info_set("TOUCH TO START", f"{touch_to_start.score:.3f}")
-        self.info_set("加载页面", "-")
-        self.info_set("小屋按钮", "-")
-
-        if self._passes(touch_to_start, TOUCH_TO_START_TEMPLATE):
-            self._click_login_after_touch(touch_to_start)
-            return False
-
-        self._set_stage("等待登录页")
-        self._set_action("等待 BrownDustX 或 TOUCH TO START 画面。")
-
-        return False
+        return self._wait_browndustx_then_login(frame)
 
     def _wait_browndustx_then_login(
         self,
         frame,
         browndustx: MatchResult | None = None,
     ) -> bool:
+        boxes, login_text = self._login_page_ocr(frame)
+        download_button = self._find_update_download_button(boxes)
+        if download_button is not None:
+            self._handle_update_download_prompt(download_button)
+            return False
+
+        progress = self._download_progress_text(boxes)
+        if progress:
+            self._state = "downloading"
+            self.info_set("更新下载", "正在下载")
+            self.info_set("下载进度", progress)
+            self.info_set("BrownDustX", "-")
+            self.info_set("BrownDustX 像素", "-")
+            self.info_set("BrownDustX Confirm", "-")
+            self.info_set("BrownDustX Confirm 像素", "-")
+            self.info_set("BrownDustX Confirm OCR", "-")
+            self.info_set("TOUCH TO START", "-")
+            self._set_stage("更新下载中")
+            self._set_action(f"检测到游戏数据正在下载，当前进度 {progress}，继续等待。")
+            self.log_info(f"自动登录：游戏数据正在下载，progress={progress}")
+            return False
+
         if browndustx is None:
             browndustx = self._match(frame, BROWNDUSTX_TEMPLATE)
             self.info_set("BrownDustX", f"{browndustx.score:.3f}")
             self.info_set("BrownDustX 像素", f"{browndustx.pixel_score:.3f}")
 
+        # Confirm must be checked independently. The BrownDustX panel contains
+        # version-dependent text, so its coarse template cannot gate the stable
+        # Confirm button.
         confirm = self._match(frame, CONFIRM_TEMPLATE)
         self.info_set("BrownDustX Confirm", f"{confirm.score:.3f}")
         self.info_set("BrownDustX Confirm 像素", f"{confirm.pixel_score:.3f}")
         if self._is_browndustx_confirm(frame, confirm):
-            self._set_stage("BrownDustX 异常确认")
-            self._set_action("检测到 BrownDustX Confirm，点击确认按钮。")
-            self.log_info(f"自动登录：检测到 BrownDustX Confirm，score={confirm.score:.3f}")
-            self._sleep_after_recognition()
-            self._click_match_center(confirm, after_sleep=1.0)
+            self._handle_browndustx_confirm_match(confirm)
+            return False
+
+        confirm_box = self._find_browndustx_confirm_ocr_box(boxes)
+        if confirm_box is not None:
+            self.info_set("BrownDustX Confirm OCR", getattr(confirm_box, "name", "CONFIRM"))
+            self._handle_browndustx_confirm_ocr(confirm_box)
             return False
 
         touch_to_start = self._match(frame, TOUCH_TO_START_TEMPLATE)
@@ -248,20 +261,185 @@ class AutoLoginTask(BaseBD2Task):
         self.info_set("加载页面", "-")
         self.info_set("小屋按钮", "-")
         if self._passes(touch_to_start, TOUCH_TO_START_TEMPLATE):
+            self.info_set("更新下载", "-")
+            self.info_set("下载进度", "-")
             self._click_login_after_touch(touch_to_start)
             return False
 
         if self._is_browndustx_present(browndustx):
-            self._record_browndustx_text(frame, browndustx)
-
-        self._set_stage("BrownDustX 加载")
-        self._set_action("等待 BrownDustX Confirm 或 TOUCH TO START。")
+            self._state = "browndustx"
+            self.info_set("BrownDustX OCR", login_text or "-")
+            self._set_stage("BrownDustX 加载")
+            self._set_action("等待 BrownDustX Confirm、更新下载提示或 TOUCH TO START。")
+        elif self._state == "downloading":
+            self._set_stage("等待更新下载完成")
+            self._set_action("当前帧未读取到下载进度，等待下载转场或 TOUCH TO START。")
+        elif self._state == "waiting_update":
+            self._set_stage("等待更新或登录页")
+            self._set_action("Confirm 已处理，等待更新下载提示或 TOUCH TO START。")
+        else:
+            self._state = "waiting"
+            self._set_stage("等待登录页")
+            self._set_action("等待 BrownDustX、Confirm、更新下载提示或 TOUCH TO START。")
         self.log_info(
-            "自动登录：BrownDustX 等待中，"
+            "自动登录：登录前等待中，"
             f"browndustx={browndustx.score:.3f}, confirm={confirm.score:.3f}, "
-            f"touch={touch_to_start.score:.3f}"
+            f"touch={touch_to_start.score:.3f}, state={self._state}"
         )
         return False
+
+    def _handle_browndustx_confirm_match(self, confirm: MatchResult) -> None:
+        self._state = "waiting_update"
+        self._set_stage("BrownDustX 异常确认")
+        self._set_action("检测到 BrownDustX Confirm，点击确认按钮。")
+        self.log_info(f"自动登录：检测到 BrownDustX Confirm，score={confirm.score:.3f}")
+        now = monotonic()
+        if now - self._last_confirm_click_at < 2.0:
+            return
+        self._sleep_after_recognition()
+        self._click_match_center(confirm, after_sleep=1.0)
+        self._last_confirm_click_at = now
+
+    def _handle_browndustx_confirm_ocr(self, confirm_box) -> None:
+        self._state = "waiting_update"
+        self._set_stage("BrownDustX 异常确认")
+        self._set_action("模板未命中，但 OCR 检测到 BrownDustX Confirm，点击文字中心。")
+        now = monotonic()
+        if now - self._last_confirm_click_at < 2.0:
+            return
+        self.log_info("自动登录：通过 BrownDustX 上下文与精确 CONFIRM OCR 处理确认页。")
+        self._sleep_after_recognition()
+        if self._click_ocr_box_center(
+            confirm_box,
+            status_key="BrownDustX Confirm 点击",
+            after_sleep=1.0,
+        ):
+            self._last_confirm_click_at = now
+
+    def _handle_update_download_prompt(self, download_button) -> None:
+        self._state = "downloading"
+        self.info_set("更新下载", "等待确认")
+        self.info_set("下载进度", "-")
+        self._set_stage("确认更新下载")
+        self._set_action("检测到游戏数据下载确认页，点击右侧“下载”按钮。")
+        now = monotonic()
+        if now - self._last_download_click_at < 3.0:
+            return
+        self.log_info("自动登录：检测到游戏数据下载确认页，点击 OCR 下载按钮中心。")
+        self._sleep_after_recognition()
+        if self._click_ocr_box_center(
+            download_button,
+            status_key="更新下载点击",
+            after_sleep=1.0,
+        ):
+            self._last_download_click_at = now
+            self.info_set("更新下载", "已点击下载")
+
+    def _login_page_ocr(self, frame) -> tuple[list, str]:
+        try:
+            boxes = list(
+                self.ocr(
+                    frame=frame,
+                    threshold=float(self.config.get("BrownDustX OCR 阈值", 0.2)),
+                    target_height=720,
+                    log=False,
+                    name="自动登录页面",
+                )
+            )
+        except Exception as exc:
+            self.info_set("登录页 OCR", f"错误：{exc}")
+            self.info_set("更新下载", "-")
+            self.info_set("下载进度", "-")
+            return [], ""
+
+        text = " ".join(
+            str(getattr(box, "name", ""))
+            for box in boxes
+            if getattr(box, "name", "")
+        )
+        self.info_set("登录页 OCR", text or "-")
+        self.info_set("更新下载", "-")
+        self.info_set("下载进度", "-")
+        return boxes, text
+
+    def _find_browndustx_confirm_ocr_box(self, boxes: list):
+        combined = self._normalize_ocr_text(
+            " ".join(str(getattr(box, "name", "")) for box in boxes)
+        )
+        if "browndustx" not in combined and "bdx" not in combined:
+            return None
+        return next(
+            (
+                box
+                for box in boxes
+                if self._normalize_ocr_text(getattr(box, "name", "")) == "confirm"
+            ),
+            None,
+        )
+
+    def _find_update_download_button(self, boxes: list):
+        combined = self._normalize_ocr_text(
+            " ".join(str(getattr(box, "name", "")) for box in boxes)
+        )
+        if "下载容量" not in combined or "可用空间" not in combined:
+            return None
+
+        cancel_box = next(
+            (
+                box
+                for box in boxes
+                if self._normalize_ocr_text(getattr(box, "name", "")) == "取消"
+            ),
+            None,
+        )
+        if cancel_box is None:
+            return None
+        cancel_center = self._ocr_box_center(cancel_box)
+        if cancel_center is None:
+            return None
+
+        candidates = []
+        for box in boxes:
+            if self._normalize_ocr_text(getattr(box, "name", "")) != "下载":
+                continue
+            center = self._ocr_box_center(box)
+            if center is None or center[0] <= cancel_center[0]:
+                continue
+            row_tolerance = 1.5 * max(
+                12.0,
+                float(getattr(cancel_box, "height", 0) or 0),
+                float(getattr(box, "height", 0) or 0),
+            )
+            if abs(center[1] - cancel_center[1]) > row_tolerance:
+                continue
+            candidates.append((abs(center[1] - cancel_center[1]), center[0], box))
+        if not candidates:
+            return None
+        return min(candidates, key=lambda candidate: (candidate[0], candidate[1]))[2]
+
+    def _download_progress_text(self, boxes: list) -> str:
+        combined = self._normalize_ocr_text(
+            " ".join(str(getattr(box, "name", "")) for box in boxes)
+        )
+        if "正在下载" not in combined:
+            return ""
+        match = DOWNLOAD_PROGRESS_PATTERN.search(combined)
+        return match.group(0) if match else ""
+
+    def _click_ocr_box_center(
+        self,
+        box,
+        *,
+        status_key: str,
+        after_sleep: float,
+    ) -> bool:
+        point = self._ocr_box_center(box)
+        if point is None:
+            return False
+        x, y = round(point[0]), round(point[1])
+        self.info_set(status_key, f"{x},{y}")
+        self.operate_click(x, y, after_sleep=after_sleep)
+        return True
 
     def _click_login_after_touch(self, touch_to_start: MatchResult) -> None:
         self._set_stage("点击登录")
@@ -568,9 +746,7 @@ class AutoLoginTask(BaseBD2Task):
             base_scale = offline_template_scale(spec.file_name, full_width, full_height)
             scales = self._candidate_scales(base_scale)
             best = empty
-            template_threshold = float(
-                getattr(self, "config", {}).get(spec.threshold_key, spec.default_threshold)
-            )
+            template_threshold = self._candidate_template_threshold(spec)
 
             for scale in scales:
                 scaled_template = self._resize_template(template, scale)
@@ -607,6 +783,13 @@ class AutoLoginTask(BaseBD2Task):
             return empty
 
         return best
+
+    def _candidate_template_threshold(self, spec: TemplateSpec) -> float:
+        if spec.candidate_threshold is not None:
+            return float(spec.candidate_threshold)
+        return float(
+            getattr(self, "config", {}).get(spec.threshold_key, spec.default_threshold)
+        )
 
     def _load_template(self, spec: TemplateSpec) -> np.ndarray:
         if spec.name in self._templates:
@@ -713,6 +896,8 @@ class AutoLoginTask(BaseBD2Task):
         self._login_clicked_at = None
         self._waiting_home_since = None
         self._last_clear_click_at = 0.0
+        self._last_confirm_click_at = 0.0
+        self._last_download_click_at = 0.0
         self._finished = False
         self._set_stage("等待登录页")
         self._set_action(action)
@@ -767,6 +952,7 @@ BROWNDUSTX_TEMPLATE = TemplateSpec(
     file_name="browndustx.png",
     threshold_key="BrownDustX 阈值",
     default_threshold=0.82,
+    candidate_threshold=0.0,
 )
 
 CONFIRM_TEMPLATE = TemplateSpec(

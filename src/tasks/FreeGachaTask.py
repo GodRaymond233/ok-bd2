@@ -463,7 +463,11 @@ class FreeGachaTask(BaseBD2Task):
                 last_pixel_score,
                 last_ratio,
                 last_gacha_text,
-            ) = self._home_confirmation_signals(frame, name)
+            ) = self._home_confirmation_signals(
+                frame,
+                name,
+                clear_context=name,
+            )
             if confirmed:
                 return True
             self.sleep(interval)
@@ -477,7 +481,11 @@ class FreeGachaTask(BaseBD2Task):
 
     def _home_confirmation_ok(self, frame, name: str) -> bool:
         confirmed, _score, _pixel_score, _ratio, _text = (
-            self._home_confirmation_signals(frame, name)
+            self._home_confirmation_signals(
+                frame,
+                name,
+                clear_context=name,
+            )
         )
         return confirmed
 
@@ -485,6 +493,7 @@ class FreeGachaTask(BaseBD2Task):
         self,
         frame,
         name: str,
+        clear_context: str | None = None,
     ) -> tuple[bool, float, float, float, str]:
         vision = self._home_vision()
         candidates = [(spec, vision.match(frame, spec)) for spec in HOME_BUTTON_TEMPLATES]
@@ -501,12 +510,21 @@ class FreeGachaTask(BaseBD2Task):
         )
         self.info_set(f"{name} 亮度", f"{ratio:.3f}")
         self.info_set(f"{name} 抽抽乐 OCR", gacha_text or "-")
+        button_found = vision.passes(result, spec)
         confirmed = home_confirmation_passes(
-            button_found=vision.passes(result, spec),
+            button_found=button_found,
             brightness_ratio=ratio,
             brightness_threshold=self._home_ratio_threshold(),
             gacha_ocr_text=gacha_text,
         )
+        if clear_context is not None and not confirmed:
+            self.clear_temporary_home_announcement_if_needed(
+                button_found=button_found,
+                brightness_ratio=ratio,
+                brightness_threshold=self._home_ratio_threshold(),
+                gacha_ocr_text=gacha_text,
+                context=clear_context,
+            )
         return confirmed, result.score, result.pixel_score, ratio, gacha_text
 
     def _home_vision(self) -> Vision:
