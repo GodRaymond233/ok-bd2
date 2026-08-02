@@ -550,6 +550,7 @@ class Vision:
         name: str,
         roi: tuple[int, int, int, int] | None = None,
         relative_roi: tuple[float, float, float, float] | None = None,
+        target_height: int = 720,
     ) -> list:
         offset_x = offset_y = 0
         target = frame
@@ -579,7 +580,7 @@ class Vision:
                         self.task.config.get("跑图跑商 OCR 阈值", 0.2),
                     )
                 ),
-                target_height=720,
+                target_height=target_height,
                 log=False,
                 name=name,
             )
@@ -622,6 +623,7 @@ class Vision:
         name: str,
         roi: tuple[int, int, int, int] | None = None,
         relative_roi: tuple[float, float, float, float] | None = None,
+        target_height: int = 720,
     ) -> str:
         values = [
             str(getattr(box, "name", ""))
@@ -630,6 +632,7 @@ class Vision:
                 name,
                 roi,
                 relative_roi=relative_roi,
+                target_height=target_height,
             )
         ]
         text = " ".join(value for value in values if value)
