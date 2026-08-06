@@ -19,11 +19,13 @@ from src.tasks.map_trade.action_icons import (
     ACTION_ICON_BRIGHT_CORE_GRAY,
     ACTION_ICON_TEMPLATE_SCORE,
     ACTION_ICON_USED_MAX_BRIGHTNESS,
+    ACTION_ICON_USED_ZNCC_SCORE,
     ACTION_ICON_ZNCC_SCORE,
     ACTION_ICONS,
     COOKING_ICON,
     COOKING_ICON_SCALE_RATIOS,
     SEARCH_ICON,
+    SEARCH_ICON_TEMPLATE_SCORE,
     SUBDUE_ICON,
     SUMMON_ICON,
     ActionIconDetection,
@@ -52,7 +54,17 @@ from src.tasks.map_trade.card_status import (
     StoryCardCompletion,
     card_icon_region,
 )
-from src.tasks.map_trade.collector import Collector, SkillExecutionResult
+from src.tasks.map_trade.collector import (
+    ABSORB_ACTION,
+    BATTLE_ACTIONS,
+    SEARCH_COUNTDOWN_FALLBACK_RELATIVE_ROI,
+    SKILL_FALLBACK_POINTS,
+    SKILL_FIXED_COUNT_RELATIVE_ROIS,
+    SUMMON_ACTION,
+    Collector,
+    SearchCountdownSession,
+    SkillExecutionResult,
+)
 from src.tasks.map_trade.data import (
     SHOP_CARTRIDGE_BRIGHTNESS,
     SHOP_CARTRIDGE_LABELS,
@@ -65,6 +77,9 @@ from src.tasks.map_trade.data import (
 from src.tasks.map_trade.models import (
     CARD_BY_ID,
     COLLECTABLE_CARDS,
+    DAILY_ABSORB_LIMIT,
+    DAILY_SUMMON_LIMIT,
+    DAILY_SUPPRESS_LIMIT,
     DEFAULT_SALE_WHITELIST,
     PINNED_CARD_IDS,
     RECIPE_TEMPLATES,
@@ -95,9 +110,10 @@ from src.tasks.map_trade.navigator import (
     FIRST_CARD_SKIP_TEMPLATE,
     HAND_TEMPLATE,
     HOME_TEMPLATES,
-    MERCHANT_DIALOG_TEMPLATE,
+    MERCHANT_ICON_TEMPLATE,
     PROBE_QUICK_SWITCH_SCROLL_AMOUNT,
     PROBE_QUICK_SWITCH_SCROLL_COUNT,
+    PROBE_QUICK_SWITCH_SCROLL_INTERVAL_SECONDS,
     PROBE_QUICK_SWITCH_SCROLL_POINT,
     PROBE_QUICK_SWITCH_SCROLL_SETTLE_SECONDS,
     PROBE_STORY_BADGE_CONFIRM_SECONDS,
@@ -121,10 +137,24 @@ from src.tasks.map_trade.navigator import (
     QUICK_SWITCH_SCROLL_UP_COUNT,
     QUICK_SWITCH_TEMPLATE,
     RETURN_HOME_TIMEOUT,
+    SANDBOX_CONFIRM_ACTION_TEMPLATES,
     SANDBOX_MAP_SETTLE_SECONDS,
-    SANDBOX_MAP_TELEPORT_TEMPLATES,
-    SANDBOX_MAP_TELEPORT_TIMEOUT,
-    SANDBOX_MAP_TITLE_OCR_RELATIVE_ROI,
+    SANDBOX_MAP_TELEPORT_TEMPLATE,
+    SANDBOX_SKILL_GROUP_PIXEL_SCORE,
+    SANDBOX_SKILL_GROUP_TEMPLATE_SCORE,
+    SANDBOX_SKILL_GROUP_ZNCC_SCORE,
+    SANDBOX_SKILL_SLOT_1_CENTER_ROI,
+    SANDBOX_SKILL_SLOT_1_REFERENCE_CENTER,
+    SANDBOX_SKILL_SLOT_1_RELATIVE_POINT,
+    SANDBOX_SKILL_SLOT_1_SELECTED_TEMPLATE,
+    SANDBOX_SKILL_SLOT_1_UNSELECTED_TEMPLATE,
+    SANDBOX_SKILL_SLOT_2_CENTER_ROI,
+    SANDBOX_SKILL_SLOT_2_SELECTED_TEMPLATE,
+    SANDBOX_SKILL_SLOT_2_UNSELECTED_TEMPLATE,
+    SANDBOX_SKILL_STATE_TEMPLATES,
+    SANDBOX_TELEPORT_SKILL_POLL_INTERVAL,
+    SANDBOX_TELEPORT_SKILL_RELATIVE_POINT,
+    SANDBOX_TELEPORT_SKILL_TEMPLATE,
     SANDBOX_TEMPLATES,
     STORY_BADGE_CANDIDATE_ZNCC_SCORE,
     STORY_BADGE_MIN_MARGIN,
@@ -136,18 +166,22 @@ from src.tasks.map_trade.navigator import (
     STORY_CATEGORY_HIGHLIGHT_REGION,
     STORY_CATEGORY_POINT,
     STORY_SANDBOX_STABLE_HITS,
+    TELEPORT_GENERATION_OCR_TIMEOUT,
     TELEPORT_INTERACTION_CLICK_DELAY,
-    TELEPORT_INTERACTION_POLL_INTERVAL,
-    TELEPORT_INTERACTION_TIMEOUT,
     TELEPORT_MAP_BACKWARD_TEMPLATE,
     TELEPORT_MAP_FORWARD_TEMPLATE,
     TELEPORT_MAP_RETURN_RELATIVE_POINT,
-    TELEPORT_MAP_TEMPLATES,
+    TELEPORT_MAP_SKILL_TEMPLATE,
+    TELEPORT_MAP_TELEPORT_CIRCLE_TEMPLATE,
+    TELEPORT_MAP_TELEPORT_CIRCLE_TEMPLATES,
     TELEPORT_MAP_TITLE_OCR_RELATIVE_ROI,
+    TELEPORT_MAP_TRAVEL_SETTLE_SECONDS,
+    TRADE_MERCHANT_CONTEXT_TEMPLATE,
     AreaMapContext,
     LocatedStoryCard,
     Navigator,
     ProbedStoryCard,
+    SandboxConfirmation,
     StoryBadgeCandidate,
     StoryBadgeDetection,
 )
@@ -161,8 +195,6 @@ from src.tasks.map_trade.progress import (
 )
 from src.tasks.map_trade.trader import (
     BUY_ALL_FAVORITES_KEYWORD,
-    BUY_ALL_FAVORITES_POINT,
-    BUY_ALL_FAVORITES_REGION,
     BUY_ALL_FAVORITES_STABLE_HITS,
     BUY_CONFIRM_DIALOG_REGION,
     BUY_CONFIRM_KEYWORDS,
@@ -229,6 +261,27 @@ class FakeTask:
 
     def sleep(self, *_args):
         return None
+
+
+class SaveFrameTest(unittest.TestCase):
+    def test_save_frame_preserves_bgr_bgra_and_grayscale_channels(self):
+        from src.tasks import BaseBD2Task as base_task_module
+
+        task = object.__new__(BaseBD2Task)
+        task.info_set = lambda *_args: None
+        frames = (
+            np.array([[[3, 2, 1]]], dtype=np.uint8),
+            np.array([[[3, 2, 1, 4]]], dtype=np.uint8),
+            np.array([[7]], dtype=np.uint8),
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(base_task_module, "PROBE_OUTPUT_DIR", Path(directory)):
+                for index, frame in enumerate(frames):
+                    with self.subTest(channels=frame.shape):
+                        path = task.save_frame(f"channel_{index}", frame)
+                        saved = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+                        np.testing.assert_array_equal(saved, frame)
 
 
 class VisionTest(unittest.TestCase):
@@ -525,17 +578,13 @@ class ActionIconTest(unittest.TestCase):
         brightness_calls = []
 
         def passes(candidate, spec):
-            return (
-                candidate.score >= spec.threshold
-                and candidate.zncc_score >= spec.min_zncc_score
-            )
+            return candidate.score >= spec.threshold and candidate.zncc_score >= spec.min_zncc_score
 
         vision = SimpleNamespace(
             match=lambda _frame, _spec: result,
             passes=passes,
             template_brightness_ratio=lambda *_args, **kwargs: (
-                brightness_calls.append(kwargs["minimum_template_gray"])
-                or brightness
+                brightness_calls.append(kwargs["minimum_template_gray"]) or brightness
             ),
         )
         return ActionIconDetector(vision), brightness_calls
@@ -556,13 +605,23 @@ class ActionIconTest(unittest.TestCase):
         for icon in ACTION_ICONS:
             with self.subTest(icon=icon.name):
                 self.assertTrue(icon.template.file_name.startswith("image/green/"))
-                self.assertEqual(ACTION_ICON_TEMPLATE_SCORE, icon.template.threshold)
-                self.assertEqual(ACTION_ICON_ZNCC_SCORE, icon.template.min_zncc_score)
+                self.assertEqual(
+                    SEARCH_ICON_TEMPLATE_SCORE
+                    if icon is SEARCH_ICON
+                    else ACTION_ICON_TEMPLATE_SCORE,
+                    icon.template.threshold,
+                )
+                self.assertEqual(
+                    ACTION_ICON_USED_ZNCC_SCORE
+                    if icon in (ABSORB_ICON, SUMMON_ICON, SUBDUE_ICON)
+                    else ACTION_ICON_ZNCC_SCORE,
+                    icon.template.min_zncc_score,
+                )
                 self.assertIsNone(icon.template.min_pixel_score)
         self.assertEqual(COOKING_ICON_SCALE_RATIOS, COOKING_ICON.template.scale_ratios)
         self.assertIn(1.40, COOKING_ICON.template.scale_ratios)
 
-    def test_low_raw_pixel_does_not_reject_snow_subdue_or_volcano_search(self):
+    def test_low_raw_pixel_does_not_reject_shape_confirmed_icons(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         low_pixel_shape_match = MatchResult(
             0.958,
@@ -578,7 +637,7 @@ class ActionIconTest(unittest.TestCase):
             detector.detect(frame, SEARCH_ICON).state,
         )
         self.assertEqual(
-            ActionIconState.AVAILABLE,
+            ActionIconState.USED,
             detector.detect(frame, SUBDUE_ICON).state,
         )
         self.assertEqual(
@@ -590,7 +649,7 @@ class ActionIconTest(unittest.TestCase):
             calls,
         )
 
-    def test_dimmed_absorb_and_summon_are_used_instead_of_absent(self):
+    def test_dimmed_limited_icons_are_used_instead_of_absent(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         identity = MatchResult(
             0.974,
@@ -606,6 +665,29 @@ class ActionIconTest(unittest.TestCase):
 
         self.assertEqual(ActionIconState.USED, detector.detect(frame, ABSORB_ICON).state)
         self.assertEqual(ActionIconState.USED, detector.detect(frame, SUMMON_ICON).state)
+        self.assertEqual(ActionIconState.USED, detector.detect(frame, SUBDUE_ICON).state)
+
+    def test_dimmed_icons_use_relaxed_zncc_but_bright_icons_keep_strict_gate(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        relaxed_identity = MatchResult(
+            0.98,
+            (100, 100),
+            (40, 40),
+            pixel_score=0.72,
+            zncc_score=ACTION_ICON_USED_ZNCC_SCORE,
+        )
+
+        dimmed, _calls = self._detector(
+            relaxed_identity,
+            ACTION_ICON_USED_MAX_BRIGHTNESS,
+        )
+        bright, _calls = self._detector(
+            relaxed_identity,
+            ACTION_ICON_AVAILABLE_MIN_BRIGHTNESS,
+        )
+
+        self.assertEqual(ActionIconState.USED, dimmed.detect(frame, ABSORB_ICON).state)
+        self.assertEqual(ActionIconState.UNKNOWN, bright.detect(frame, ABSORB_ICON).state)
 
     def test_limited_icon_brightness_has_used_unknown_and_available_bands(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -633,7 +715,7 @@ class ActionIconTest(unittest.TestCase):
             (100, 100),
             (40, 40),
             pixel_score=0.99,
-            zncc_score=ACTION_ICON_ZNCC_SCORE - 0.001,
+            zncc_score=ACTION_ICON_USED_ZNCC_SCORE - 0.001,
         )
         detector, calls = self._detector(failed_shape, brightness=1.0)
 
@@ -1127,9 +1209,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         trader._gray_star_present = lambda *_args: False
 
         self.assertFalse(trader._wait_for_gray_star(6, SHOP_FAVORITE_POINTS[6]))
-        self.assertTrue(
-            any("取消收藏未生效" in message for message in warnings)
-        )
+        self.assertTrue(any("取消收藏未生效" in message for message in warnings))
 
     def test_gray_star_recognizer_separates_slot_seven_gray_and_yellow_renders(self):
         point = SHOP_FAVORITE_POINTS[7]
@@ -1313,6 +1393,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         left: bool = False,
         right: bool = False,
         candidate_keys: tuple[str, ...] | None = None,
+        teleports: tuple[MatchResult, ...] = (),
     ) -> AreaMapContext:
         match = MatchResult(0.99, (100, 100), (30, 30), pixel_score=0.98)
         keys = (
@@ -1327,7 +1408,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
             resolved_target_key=target_key if len(keys) == 1 else None,
             left_arrow=match if left else None,
             right_arrow=match if right else None,
-            teleports=(),
+            teleports=teleports,
             overlap_arrow=None,
             back_button=match,
         )
@@ -1390,21 +1471,154 @@ class CatalogAndSafetyTest(unittest.TestCase):
         self.assertIn("多个目标", reason)
 
     def test_area_map_back_template_uses_recognition_center_without_external_roi(self):
-        self.assertEqual("back.png", AREA_MAP_BACK_TEMPLATE.file_name)
+        self.assertEqual("image/green/BackButGe.png", AREA_MAP_BACK_TEMPLATE.file_name)
         self.assertIsNone(AREA_MAP_BACK_TEMPLATE.roi)
+        self.assertEqual(0.90, AREA_MAP_BACK_TEMPLATE.threshold)
+        self.assertEqual(0.80, AREA_MAP_BACK_TEMPLATE.min_zncc_score)
 
     def test_area_map_uses_user_confirmed_relative_geometry(self):
         self.assertEqual((289 / 1920, 253 / 1080), AREA_MAP_OPEN_RELATIVE_POINT)
-        self.assertEqual(
-            (222 / 1920, 8 / 1080, 878 / 1920, 96 / 1080),
-            SANDBOX_MAP_TITLE_OCR_RELATIVE_ROI,
-        )
         self.assertEqual(
             (654 / 1920, 946 / 1080, 1268 / 1920, 1021 / 1080),
             TELEPORT_MAP_TITLE_OCR_RELATIVE_ROI,
         )
         self.assertEqual(TELEPORT_MAP_TITLE_OCR_RELATIVE_ROI, AREA_MAP_TITLE_OCR_RELATIVE_ROI)
-        self.assertEqual((135 / 1920, 51 / 1080), TELEPORT_MAP_RETURN_RELATIVE_POINT)
+        self.assertEqual((136 / 1920, 52 / 1080), TELEPORT_MAP_RETURN_RELATIVE_POINT)
+
+    def test_prepare_collection_main_closes_map_when_initial_title_is_main(self):
+        card = CARD_BY_ID["Q_sp1"]
+        events = []
+        navigator = Navigator(SimpleNamespace(), SimpleNamespace())
+        navigator.open_teleport_map_from_sandbox = lambda: NavigationResult(
+            True,
+            ScreenState.UNKNOWN,
+        )
+        navigator._wait_for_collection_teleport_map = lambda _card: self._area_context(
+            card.targets[0].title,
+            card.targets[0].key,
+            right=True,
+        )
+        navigator.return_teleport_map_to_sandbox = lambda number: (
+            events.append(("return", number)) or NavigationResult(True, ScreenState.SANDBOX)
+        )
+        navigator._reset_collection_teleport_map_to_main = lambda *_args: self.fail(
+            "already-main title must not be paged"
+        )
+
+        result = navigator.prepare_collection_main_area(card.card_id)
+
+        self.assertTrue(result.success)
+        self.assertEqual([("return", 1)], events)
+
+    def test_prepare_collection_main_pages_to_first_title_then_teleports(self):
+        card = CARD_BY_ID["Q_sp1"]
+        teleport = MatchResult(0.99, (800, 400), (60, 60), 0.95, 0.93)
+        contexts = iter(
+            (
+                self._area_context(
+                    card.targets[1].title,
+                    card.targets[1].key,
+                    left=True,
+                    right=True,
+                ),
+                self._area_context(
+                    card.targets[0].title,
+                    card.targets[0].key,
+                    right=True,
+                    teleports=(teleport,),
+                ),
+            )
+        )
+        moves = []
+        clicks = []
+        generation_calls = []
+        vision = SimpleNamespace(
+            click_client=lambda point, shape, after_sleep=0: clicks.append(
+                (point, shape, after_sleep)
+            )
+        )
+        navigator = Navigator(SimpleNamespace(), vision)
+        navigator.open_teleport_map_from_sandbox = lambda: NavigationResult(
+            True,
+            ScreenState.UNKNOWN,
+        )
+        navigator._click_teleport_generation = lambda received, shape: (
+            generation_calls.append((received, shape)) or True
+        )
+        initial = self._area_context(
+            card.targets[2].title,
+            card.targets[2].key,
+            left=True,
+        )
+        navigator._wait_for_collection_teleport_map = lambda _card: initial
+        navigator._move_area_map = lambda _card, _context, direction: (
+            moves.append(direction) or next(contexts)
+        )
+        navigator._wait_for_story_sandbox = lambda number: NavigationResult(
+            True,
+            ScreenState.SANDBOX,
+            f"Q_sp{number}",
+        )
+
+        result = navigator.prepare_collection_main_area(card.card_id)
+
+        self.assertTrue(result.success)
+        self.assertEqual(["left", "left"], moves)
+        self.assertEqual(
+            [(teleport.center, (1080, 1920, 3), TELEPORT_MAP_TRAVEL_SETTLE_SECONDS)],
+            clicks,
+        )
+        self.assertEqual([], generation_calls)
+
+    def test_advance_collection_map_moves_back_exactly_one_confirmed_page(self):
+        card = CARD_BY_ID["Q_sp1"]
+        current, target = card.targets[1:]
+        teleport = MatchResult(0.99, (1000, 500), (60, 60), 0.95, 0.93)
+        clicks = []
+        moves = []
+        vision = SimpleNamespace(
+            click_client=lambda point, shape, after_sleep=0: clicks.append(
+                (point, shape, after_sleep)
+            ),
+        )
+        navigator = Navigator(SimpleNamespace(), vision)
+        navigator.open_teleport_map_from_sandbox = lambda: NavigationResult(
+            True,
+            ScreenState.UNKNOWN,
+            "已点击箱庭5号传送阵技能",
+            teleport_map_opened_by_skill=True,
+        )
+        generation_calls = []
+        navigator._click_teleport_generation = lambda received, shape: (
+            generation_calls.append((received, shape)) or True
+        )
+        navigator._wait_for_collection_teleport_map = lambda _card: self._area_context(
+            current.title,
+            current.key,
+            left=True,
+            right=True,
+        )
+        navigator._move_area_map = lambda _card, _context, direction: (
+            moves.append(direction)
+            or self._area_context(
+                target.title,
+                target.key,
+                left=True,
+                teleports=(teleport,),
+            )
+        )
+        navigator._wait_for_story_sandbox = lambda number: NavigationResult(
+            True,
+            ScreenState.SANDBOX,
+            f"Q_sp{number}",
+        )
+
+        result = navigator.advance_collection_map(card.card_id, current, target)
+
+        self.assertTrue(result.success)
+        self.assertEqual(["right"], moves)
+        self.assertEqual([], clicks)
+        self.assertEqual([(teleport, (1080, 1920, 3))], generation_calls)
 
     def test_teleport_map_page_arrows_are_strict_and_directional(self):
         self.assertEqual("image/green/TpMapLeft.png", TELEPORT_MAP_FORWARD_TEMPLATE.file_name)
@@ -1418,239 +1632,461 @@ class CatalogAndSafetyTest(unittest.TestCase):
                 self.assertIsNone(spec.roi)
                 self.assertIsNone(spec.relative_roi)
 
-    def test_teleport_map_route_clicks_existing_interaction_button_directly(self):
+    def test_sandbox_teleport_skill_is_separate_from_map_skill(self):
+        self.assertEqual(
+            "image/green/Skill3-4GE.png",
+            SANDBOX_TELEPORT_SKILL_TEMPLATE.file_name,
+        )
+        self.assertEqual(0.95, SANDBOX_TELEPORT_SKILL_TEMPLATE.threshold)
+        self.assertEqual(0.85, SANDBOX_TELEPORT_SKILL_TEMPLATE.min_pixel_score)
+        self.assertEqual(0.85, SANDBOX_TELEPORT_SKILL_TEMPLATE.min_zncc_score)
+        self.assertNotIn(
+            SANDBOX_TELEPORT_SKILL_TEMPLATE,
+            TELEPORT_MAP_TELEPORT_CIRCLE_TEMPLATES,
+        )
+
+    def test_sandbox_map_teleport_template_uses_sandbox_asset_name(self):
+        self.assertEqual("箱庭地图传送阵模板", SANDBOX_MAP_TELEPORT_TEMPLATE.name)
+        self.assertEqual(
+            "image/green/SandboxNviTpCircleMapGE.png",
+            SANDBOX_MAP_TELEPORT_TEMPLATE.file_name,
+        )
+        self.assertNotEqual(
+            SANDBOX_MAP_TELEPORT_TEMPLATE.file_name,
+            TELEPORT_MAP_TELEPORT_CIRCLE_TEMPLATE.file_name,
+        )
+        for file_name in (
+            "image/SandboxTpCircleMap.png",
+            "image/green/SandboxNviTpCircleMapGE.png",
+            "image/green/SandboxTpCircleMapGE.png",
+            "image/green/TpCircleMapNewGE.png",
+        ):
+            with self.subTest(file_name=file_name):
+                self.assertTrue((ROOT / "recognition-assets/template-assets" / file_name).is_file())
+
+    def test_teleport_map_route_prefers_interaction_center(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        interaction = MatchResult(
-            0.95,
-            (900, 500),
-            (80, 80),
-            pixel_score=0.94,
-            zncc_score=0.93,
+        hand = MatchResult(
+            0.968,
+            (820, 470),
+            (44, 43),
+            pixel_score=0.92,
+            zncc_score=0.90,
         )
         clicks = []
         task = SimpleNamespace(
-            operate_click=lambda *_args, **_kwargs: self.fail(
-                "existing interaction button must bypass the sandbox map"
-            ),
-            sleep=lambda *_args: self.fail(
-                "direct interaction route must use click after_sleep"
-            ),
+            info_set=lambda *_args: None,
+            sleep=lambda *_args: self.fail("a passing interaction must click immediately"),
         )
         vision = SimpleNamespace(
             capture=lambda: frame,
-            match=lambda _frame, spec: (
-                self.assertEqual(HAND_TEMPLATE, spec) or interaction
+            match=lambda received, spec: (
+                self.assertIs(received, frame)
+                or self.assertIs(spec, HAND_TEMPLATE)
+                or hand
             ),
+            passes=lambda result, spec: result is hand and spec is HAND_TEMPLATE,
+            click_client=lambda point, shape, after_sleep=0: clicks.append(
+                (point, shape, after_sleep)
+            ),
+        )
+        navigator = Navigator(task, vision)
+        navigator._wait_for_sandbox_map_open = lambda *_args, **_kwargs: NavigationResult(
+            True,
+            ScreenState.AREA_MAP,
+            "交互按钮已确认传送阵地图",
+        )
+        navigator._click_sandbox_teleport_skill = lambda: self.fail(
+            "interaction route must not click the fifth skill"
+        )
+
+        result = navigator.open_teleport_map_from_sandbox()
+
+        self.assertTrue(result.success)
+        self.assertEqual(ScreenState.AREA_MAP, result.state)
+        self.assertFalse(result.teleport_map_opened_by_skill)
+        self.assertEqual(
+            [(hand.center, frame.shape, TELEPORT_INTERACTION_CLICK_DELAY)],
+            clicks,
+        )
+
+    def test_teleport_map_route_uses_skill_center_when_interaction_is_missing(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        skill = MatchResult(
+            0.968,
+            (1760, 790),
+            (44, 43),
+            pixel_score=0.873,
+            zncc_score=0.900,
+        )
+        clicks = []
+        task = SimpleNamespace(
+            capture_frame=lambda: frame,
+            info_set=lambda *_args: None,
+            sleep=lambda *_args: self.fail("a passing skill must click immediately"),
+        )
+        def match(received, spec):
+            self.assertIs(received, frame)
+            if spec is HAND_TEMPLATE:
+                return MatchResult(-1.0, (0, 0), (0, 0))
+            self.assertIs(spec, SANDBOX_TELEPORT_SKILL_TEMPLATE)
+            return skill
+
+        vision = SimpleNamespace(
+            capture=lambda: frame,
+            match=match,
             passes=lambda result, spec: (
-                result.score >= spec.threshold
-                and result.pixel_score >= spec.min_pixel_score
-                and result.zncc_score >= spec.min_zncc_score
+                result is skill and spec is SANDBOX_TELEPORT_SKILL_TEMPLATE
             ),
             click_client=lambda point, shape, after_sleep=0: clicks.append(
                 (point, shape, after_sleep)
             ),
-            wait_template=lambda *_args, **_kwargs: self.fail(
-                "direct interaction route must not scan the sandbox map"
-            ),
         )
         navigator = Navigator(task, vision)
+        navigator._click_sandbox_teleport_interaction = lambda: False
+        navigator._wait_for_sandbox_map_open = lambda *_args, **_kwargs: NavigationResult(
+            True,
+            ScreenState.AREA_MAP,
+            "技能已确认传送阵地图",
+        )
 
         result = navigator.open_teleport_map_from_sandbox()
 
         self.assertTrue(result.success)
-        self.assertEqual(ScreenState.UNKNOWN, result.state)
-        self.assertIn("等待确认传送阵地图", result.message)
+        self.assertEqual(ScreenState.AREA_MAP, result.state)
+        self.assertTrue(result.teleport_map_opened_by_skill)
         self.assertEqual(
-            [(interaction.center, frame.shape, SANDBOX_MAP_SETTLE_SECONDS)],
+            [(skill.center, frame.shape, SANDBOX_MAP_SETTLE_SECONDS)],
             clicks,
         )
 
-    def test_teleport_map_route_navigates_through_sandbox_map_with_half_second_waits(self):
+    def test_teleport_map_route_uses_fixed_center_when_skill_is_missing(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         missing = MatchResult(-1.0, (0, 0), (0, 0))
-        teleport = MatchResult(
-            0.90,
-            (300, 400),
-            (60, 60),
-            pixel_score=0.89,
-            zncc_score=0.88,
-        )
-        interaction = MatchResult(
-            0.97,
-            (1000, 600),
-            (80, 80),
-            pixel_score=0.92,
-            zncc_score=0.91,
-        )
-        interaction_matches = iter((missing, interaction))
+        clicks = []
         fixed_clicks = []
-        client_clicks = []
         sleeps = []
         task = SimpleNamespace(
-            operate_click=lambda *args, **kwargs: fixed_clicks.append((args, kwargs)),
+            info_set=lambda *_args: None,
             sleep=sleeps.append,
+            operate_click=lambda *args, **kwargs: fixed_clicks.append((args, kwargs)),
         )
-
         vision = SimpleNamespace(
             capture=lambda: frame,
             match=lambda _frame, spec: (
-                self.assertEqual(HAND_TEMPLATE, spec) or next(interaction_matches)
+                self.assertIn(spec, (HAND_TEMPLATE, SANDBOX_TELEPORT_SKILL_TEMPLATE))
+                or missing
             ),
-            passes=lambda result, spec: (
-                result.score >= spec.threshold
-                and result.pixel_score >= spec.min_pixel_score
-                and result.zncc_score >= spec.min_zncc_score
-            ),
-            click_client=lambda point, shape, after_sleep=0: client_clicks.append(
-                (point, shape, after_sleep)
-            ),
+            passes=lambda *_args: False,
+            click_client=lambda *args, **kwargs: clicks.append((args, kwargs)),
         )
         navigator = Navigator(task, vision)
-        navigator._sandbox_map_teleports = lambda received: (
-            self.assertIs(frame, received) or (teleport,)
+        navigator._click_sandbox_teleport_interaction = lambda: False
+        navigator._wait_for_sandbox_map_open = lambda *_args, **_kwargs: NavigationResult(
+            False,
+            ScreenState.SANDBOX,
+            "未确认传送阵地图",
         )
+
+        with patch(
+            "src.tasks.map_trade.navigator.monotonic",
+            side_effect=(100.0, 100.0, 106.0),
+        ):
+            result = navigator.open_teleport_map_from_sandbox()
+
+        self.assertFalse(result.success)
+        self.assertEqual("未确认传送阵地图", result.message)
+        self.assertEqual([], clicks)
+        self.assertEqual(
+            [
+                (
+                    tuple(SANDBOX_TELEPORT_SKILL_RELATIVE_POINT),
+                    {"after_sleep": SANDBOX_MAP_SETTLE_SECONDS},
+                )
+            ],
+            fixed_clicks,
+        )
+        self.assertEqual([SANDBOX_TELEPORT_SKILL_POLL_INTERVAL], sleeps)
+
+    def test_teleport_skill_failure_ocr_is_explicit_and_enters_walk_fallback(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task = SimpleNamespace(info_set=lambda *_args: None, sleep=lambda *_args: None)
+        vision = SimpleNamespace(
+            capture=lambda: frame,
+            ocr_text=lambda received, name: (
+                self.assertIs(received, frame)
+                or self.assertEqual("箱庭5号传送阵技能失败", name)
+                or "无法在魔法阵附近使用天赋技能"
+            ),
+            simplify=lambda value: value,
+        )
+        navigator = Navigator(task, vision)
+        navigator.classify = lambda _frame=None: ScreenState.SANDBOX
+
+        result = navigator._wait_for_sandbox_map_open(
+            "箱庭5号传送阵技能",
+            detect_skill_failure=True,
+        )
+
+        self.assertFalse(result.success)
+        self.assertEqual(ScreenState.SANDBOX, result.state)
+        self.assertIn("魔法阵附近", result.message)
+        self.assertTrue(
+            navigator._sandbox_teleport_skill_failure_matches(
+                result.message
+            )
+        )
+
+    def test_teleport_skill_failure_routes_to_walk_fallback_result(self):
+        task = SimpleNamespace(info_set=lambda *_args: None)
+        navigator = Navigator(task, SimpleNamespace())
+        navigator._click_sandbox_teleport_interaction = lambda: False
+        navigator._click_sandbox_teleport_skill = lambda: True
+        navigator._wait_for_sandbox_map_open = lambda *_args, **_kwargs: NavigationResult(
+            False,
+            ScreenState.SANDBOX,
+            "箱庭5号传送阵技能失败 OCR命中：无法在魔法阵附近使用天赋技能",
+        )
+        fallback_calls = []
+
+        def walk_fallback():
+            fallback_calls.append(True)
+            return NavigationResult(True, ScreenState.AREA_MAP, "已通过徒步回退")
+
+        navigator._walk_to_sandbox_teleport_interaction = walk_fallback
 
         result = navigator.open_teleport_map_from_sandbox()
 
         self.assertTrue(result.success)
-        self.assertEqual(ScreenState.UNKNOWN, result.state)
-        self.assertIn("等待确认传送阵地图", result.message)
-        self.assertEqual(
-            [
-                (
-                    AREA_MAP_OPEN_RELATIVE_POINT,
-                    {"after_sleep": SANDBOX_MAP_SETTLE_SECONDS},
-                )
-            ],
-            fixed_clicks,
-        )
-        self.assertEqual(
-            [
-                (teleport.center, frame.shape, 0.0),
-                (
-                    interaction.center,
-                    frame.shape,
-                    SANDBOX_MAP_SETTLE_SECONDS,
-                ),
-            ],
-            client_clicks,
-        )
-        self.assertEqual([TELEPORT_INTERACTION_CLICK_DELAY], sleeps)
+        self.assertEqual(ScreenState.AREA_MAP, result.state)
+        self.assertEqual([True], fallback_calls)
+        self.assertFalse(result.teleport_map_opened_by_skill)
+        self.assertIn("徒步回退", result.message)
 
-    def test_teleport_map_route_reports_after_thirty_seconds_without_interaction(self):
+    def test_walk_fallback_selects_unique_navigation_teleport_then_interacts(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        missing = MatchResult(-1.0, (0, 0), (0, 0))
-        teleport = MatchResult(0.90, (300, 400), (60, 60), pixel_score=0.89)
-        fixed_clicks = []
-        client_clicks = []
-        sleeps = []
-        task = SimpleNamespace(
-            operate_click=lambda *args, **kwargs: fixed_clicks.append((args, kwargs)),
-            sleep=sleeps.append,
+        teleport = MatchResult(
+            0.96,
+            (500, 300),
+            (40, 40),
+            pixel_score=0.90,
+            zncc_score=0.88,
         )
+        hand = MatchResult(
+            0.97,
+            (820, 470),
+            (44, 43),
+            pixel_score=0.92,
+            zncc_score=0.90,
+        )
+        clicks = []
+        task = SimpleNamespace(info_set=lambda *_args: None, sleep=lambda *_args: None)
+
+        def match(received, spec):
+            self.assertIs(received, frame)
+            self.assertIs(spec, HAND_TEMPLATE)
+            return hand
+
         vision = SimpleNamespace(
             capture=lambda: frame,
-            match=lambda _frame, spec: (
-                self.assertEqual(HAND_TEMPLATE, spec) or missing
+            match=match,
+            match_all=lambda received, spec, **_kwargs: (
+                self.assertIs(received, frame)
+                or self.assertIs(spec, SANDBOX_MAP_TELEPORT_TEMPLATE)
+                or (teleport,)
             ),
-            passes=lambda result, spec: (
-                result.score >= spec.threshold
-                and result.pixel_score >= spec.min_pixel_score
-                and result.zncc_score >= spec.min_zncc_score
-            ),
-            click_client=lambda point, shape, after_sleep=0: client_clicks.append(
+            threshold_for=lambda spec: spec.threshold,
+            passes=lambda result, spec: result in (hand, teleport),
+            click_client=lambda point, shape, after_sleep=0: clicks.append(
                 (point, shape, after_sleep)
             ),
         )
         navigator = Navigator(task, vision)
-        navigator._sandbox_map_teleports = lambda _frame: (teleport,)
+        navigator._click_sandbox_navigation_map = lambda: True
+        navigator._sandbox_navigation_page_has_keyword = lambda _frame: True
+        menu_calls = []
 
-        with patch(
-            "src.tasks.map_trade.navigator.monotonic",
-            side_effect=(100.0, 100.0, 100.0, 100.0, 131.0),
-        ):
-            result = navigator.open_teleport_map_from_sandbox()
+        def click_menu(_frame):
+            menu_calls.append(True)
+            return len(menu_calls) == 1
 
-        self.assertFalse(result.success)
-        self.assertIn("30秒内未识别到交互按钮", result.message)
-        self.assertEqual([(teleport.center, frame.shape, 0.0)], client_clicks)
-        self.assertEqual([TELEPORT_INTERACTION_POLL_INTERVAL], sleeps)
-        self.assertEqual(30.0, TELEPORT_INTERACTION_TIMEOUT)
-        self.assertEqual(30.0, SANDBOX_MAP_TELEPORT_TIMEOUT)
-
-    def test_teleport_map_route_rejects_multiple_enabled_sandbox_teleports(self):
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        missing = MatchResult(-1.0, (0, 0), (0, 0))
-        teleports = (
-            MatchResult(0.99, (300, 400), (52, 52), 0.95, 0.93),
-            MatchResult(0.98, (700, 400), (52, 52), 0.94, 0.92),
+        navigator._click_sandbox_navigation_menu_teleport = click_menu
+        navigator._click_sandbox_navigation_destination_confirmation = lambda _frame: True
+        navigator._wait_for_sandbox_map_open = lambda *_args, **_kwargs: NavigationResult(
+            True,
+            ScreenState.AREA_MAP,
+            "徒步交互已确认传送阵地图",
         )
-        fixed_clicks = []
-        task = SimpleNamespace(
-            operate_click=lambda *args, **kwargs: fixed_clicks.append((args, kwargs)),
-            sleep=lambda *_args: self.fail("ambiguous teleport candidates must stop"),
-        )
-        vision = SimpleNamespace(
-            capture=lambda: frame,
-            match=lambda _frame, _spec: missing,
-            passes=lambda *_args: False,
-            click_client=lambda *_args, **_kwargs: self.fail(
-                "ambiguous teleport candidates must not be clicked"
-            ),
-        )
-        navigator = Navigator(task, vision)
-        navigator._sandbox_map_teleports = lambda _frame: teleports
 
-        result = navigator.open_teleport_map_from_sandbox()
+        result = navigator._walk_to_sandbox_teleport_interaction()
 
-        self.assertFalse(result.success)
-        self.assertIn("2个已开启传送阵", result.message)
+        self.assertTrue(result.success)
         self.assertEqual(
             [
-                (
-                    AREA_MAP_OPEN_RELATIVE_POINT,
-                    {"after_sleep": SANDBOX_MAP_SETTLE_SECONDS},
-                )
+                (teleport.center, frame.shape, 3.0),
+                (hand.center, frame.shape, TELEPORT_INTERACTION_CLICK_DELAY),
             ],
-            fixed_clicks,
+            clicks,
         )
 
-    def test_teleport_map_route_stops_when_no_enabled_sandbox_teleport_appears(self):
+    def test_walk_fallback_destination_confirmation_clicks_ocr_center(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        missing = MatchResult(-1.0, (0, 0), (0, 0))
-        task = SimpleNamespace(
-            operate_click=lambda *_args, **_kwargs: None,
-            sleep=lambda *_args: None,
-        )
+        clicks = []
+        box = SimpleNamespace(name="确认", x=700, y=500, width=120, height=40)
+        task = SimpleNamespace(info_set=lambda *_args: None)
         vision = SimpleNamespace(
-            capture=lambda: frame,
-            match=lambda _frame, _spec: missing,
-            passes=lambda *_args: False,
-            click_client=lambda *_args, **_kwargs: self.fail(
-                "missing teleport must not be clicked"
+            ocr_boxes=lambda received, name: (
+                self.assertIs(received, frame)
+                or self.assertEqual("箱庭徒步导航传送阵确认", name)
+                or [box]
+            ),
+            simplify=lambda value: value,
+            click_client=lambda point, shape, after_sleep=0: clicks.append(
+                (point, shape, after_sleep)
             ),
         )
         navigator = Navigator(task, vision)
-        navigator._sandbox_map_teleports = lambda _frame: ()
+
+        self.assertTrue(
+            navigator._click_sandbox_navigation_destination_confirmation(frame)
+        )
+        self.assertEqual([((760, 520), frame.shape, 0.25)], clicks)
+
+    def test_teleport_generation_clicks_unique_white_center_then_generate_box_center(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        teleport = MatchResult(0.99, (800, 400), (60, 60), 0.95, 0.93)
+        clicks = []
+        ocr_frames = []
+        boxes = [
+            SimpleNamespace(name="生成魔法阵", x=880, y=430, width=120, height=40),
+            SimpleNamespace(name="取消", x=740, y=620, width=220, height=48),
+            SimpleNamespace(name="生成5", x=990, y=620, width=220, height=48),
+        ]
+        task = SimpleNamespace(info_set=lambda *_args: None, sleep=lambda *_args: None)
+        vision = SimpleNamespace(
+            capture=lambda: ocr_frames.append(frame) or frame,
+            ocr_boxes=lambda received, name: (
+                self.assertIs(received, frame) or self.assertEqual("传送阵生成确认", name) or boxes
+            ),
+            simplify=lambda value: value,
+            click_client=lambda point, shape, after_sleep=0: clicks.append(
+                (point, shape, after_sleep)
+            ),
+        )
+        navigator = Navigator(task, vision)
+
+        self.assertTrue(navigator._click_teleport_generation(teleport, frame.shape))
+        self.assertEqual(
+            [
+                (teleport.center, frame.shape, 0.5),
+                ((1100, 644), frame.shape, TELEPORT_MAP_TRAVEL_SETTLE_SECONDS),
+            ],
+            clicks,
+        )
+        self.assertEqual([frame], ocr_frames)
+
+    def test_teleport_generation_rejects_missing_or_ambiguous_white_candidates(self):
+        teleport = MatchResult(0.99, (800, 400), (60, 60), 0.95, 0.93)
+        task = SimpleNamespace(info_set=lambda *_args: None)
+        vision = SimpleNamespace(
+            click_client=lambda *_args, **_kwargs: self.fail(
+                "non-unique white teleport must not be clicked"
+            )
+        )
+        navigator = Navigator(task, vision)
+        card = CARD_BY_ID["Q_sp1"]
+        for candidates in ((), (teleport, teleport)):
+            with self.subTest(count=len(candidates)):
+                context = self._area_context(
+                    card.targets[1].title,
+                    card.targets[1].key,
+                    teleports=candidates,
+                )
+                result = navigator._click_collection_destination(
+                    card,
+                    card.targets[1],
+                    context,
+                )
+                self.assertFalse(result.success)
+                self.assertIn("唯一", result.message)
+
+    def test_teleport_generation_rejects_missing_keyword_without_generate_click(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        teleport = MatchResult(0.99, (800, 400), (60, 60), 0.95, 0.93)
+        clicks = []
+        task = SimpleNamespace(info_set=lambda *_args: None, sleep=lambda *_args: None)
+        vision = SimpleNamespace(
+            capture=lambda: frame,
+            ocr_boxes=lambda *_args: [
+                SimpleNamespace(name="生成魔法阵", x=880, y=430, width=120, height=40),
+                SimpleNamespace(name="取消", x=740, y=620, width=220, height=48),
+            ],
+            simplify=lambda value: value,
+            click_client=lambda point, shape, after_sleep=0: clicks.append(
+                (point, shape, after_sleep)
+            ),
+        )
+        navigator = Navigator(task, vision)
 
         with patch(
             "src.tasks.map_trade.navigator.monotonic",
-            side_effect=(100.0, 131.0),
+            side_effect=(100.0, 100.0, 109.0),
         ):
-            result = navigator.open_teleport_map_from_sandbox()
+            result = navigator._click_teleport_generation(
+                teleport,
+                frame.shape,
+                timeout=TELEPORT_GENERATION_OCR_TIMEOUT,
+            )
 
-        self.assertFalse(result.success)
-        self.assertIn("30秒内唯一识别到已开启传送阵", result.message)
+        self.assertFalse(result)
+        self.assertEqual([(teleport.center, frame.shape, 0.5)], clicks)
+
+    def test_teleport_generation_rejects_ambiguous_generate_button(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        teleport = MatchResult(0.99, (800, 400), (60, 60), 0.95, 0.93)
+        clicks = []
+        task = SimpleNamespace(info_set=lambda *_args: None, sleep=lambda *_args: None)
+        vision = SimpleNamespace(
+            capture=lambda: frame,
+            ocr_boxes=lambda *_args: [
+                SimpleNamespace(name="生成魔法阵", x=880, y=430, width=120, height=40),
+                SimpleNamespace(name="取消", x=740, y=620, width=220, height=48),
+                SimpleNamespace(name="生成5", x=990, y=620, width=220, height=48),
+                SimpleNamespace(name="生成5", x=1230, y=620, width=220, height=48),
+            ],
+            simplify=lambda value: value,
+            click_client=lambda point, shape, after_sleep=0: clicks.append(
+                (point, shape, after_sleep)
+            ),
+        )
+        navigator = Navigator(task, vision)
+
+        with patch(
+            "src.tasks.map_trade.navigator.monotonic",
+            side_effect=(100.0, 100.0, 109.0),
+        ):
+            result = navigator._click_teleport_generation(
+                teleport,
+                frame.shape,
+                timeout=TELEPORT_GENERATION_OCR_TIMEOUT,
+            )
+
+        self.assertFalse(result)
+        self.assertEqual([(teleport.center, frame.shape, 0.5)], clicks)
 
     def test_return_teleport_map_clicks_confirmed_point_and_reuses_stable_sandbox_wait(self):
         clicks = []
         confirmed_numbers = []
         task = SimpleNamespace(
-            operate_click=lambda x, y, after_sleep=0: clicks.append(
-                (x, y, after_sleep)
-            ),
+            operate_click=lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep)),
         )
-        navigator = Navigator(task, SimpleNamespace())
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        vision = SimpleNamespace(
+            capture=lambda: frame,
+            match=lambda *_args: MatchResult(-1.0, (0, 0), (0, 0)),
+            passes=lambda *_args: False,
+        )
+        navigator = Navigator(task, vision)
         navigator._wait_for_story_sandbox = lambda number: (
             confirmed_numbers.append(number)
             or NavigationResult(True, ScreenState.SANDBOX, f"Q_sp{number}")
@@ -1666,13 +2102,45 @@ class CatalogAndSafetyTest(unittest.TestCase):
             clicks,
         )
 
+    def test_return_teleport_map_prefers_recognized_back_button_center(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        back = MatchResult(0.98, (110, 35), (40, 40), 0.95, 0.92)
+        clicks = []
+        task = SimpleNamespace(
+            operate_click=lambda *_args, **_kwargs: self.fail(
+                "recognized back button must win over the fallback point"
+            )
+        )
+        vision = SimpleNamespace(
+            capture=lambda: frame,
+            match=lambda _frame, spec: (
+                back if spec is AREA_MAP_BACK_TEMPLATE else MatchResult(-1.0, (0, 0), (0, 0))
+            ),
+            passes=lambda result, _spec: result is back,
+            click_client=lambda point, shape, after_sleep=0: clicks.append(
+                (point, shape, after_sleep)
+            ),
+        )
+        navigator = Navigator(task, vision)
+        navigator._wait_for_story_sandbox = lambda number: NavigationResult(
+            True,
+            ScreenState.SANDBOX,
+            f"Q_sp{number}",
+        )
+
+        result = navigator.return_teleport_map_to_sandbox(1)
+
+        self.assertTrue(result.success)
+        self.assertEqual(
+            [(back.center, frame.shape, SANDBOX_MAP_SETTLE_SECONDS)],
+            clicks,
+        )
+
     def test_open_story_quick_switcher_from_sandbox_never_detours_through_home(self):
         fixed_clicks = []
         template_clicks = []
         task = SimpleNamespace(
-            operate_click=lambda x, y, after_sleep=0: fixed_clicks.append(
-                (x, y, after_sleep)
-            ),
+            operate_click=lambda x, y, after_sleep=0: fixed_clicks.append((x, y, after_sleep)),
             open_cartridge_quick_switcher=lambda **_kwargs: self.fail(
                 "sandbox route must not use the global-home entry"
             ),
@@ -1723,6 +2191,30 @@ class CatalogAndSafetyTest(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertIn("未稳定确认", result.message)
 
+    def test_open_story_quick_switcher_reuses_immediately_prior_sandbox_confirmation(self):
+        template_clicks = []
+        task = SimpleNamespace(
+            operate_click=lambda *_args, **_kwargs: None,
+        )
+        vision = SimpleNamespace(
+            click_stable_template=lambda spec, timeout, after_sleep: (
+                template_clicks.append((spec, timeout, after_sleep)) or True
+            ),
+        )
+        navigator = Navigator(task, vision)
+        navigator._wait_for_current_sandbox = lambda: self.fail(
+            "the caller already confirmed the same sandbox"
+        )
+        navigator._wait_for_quick_switch_page = lambda: True
+        navigator._wait_for_story_category = lambda: True
+
+        result = navigator.open_story_quick_switcher_from_sandbox(
+            sandbox_already_confirmed=True,
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual([(QUICK_SWITCH_TEMPLATE, 10.0, 1.0)], template_clicks)
+
     def test_current_sandbox_confirmation_requires_consecutive_frames(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         states = iter(
@@ -1739,6 +2231,12 @@ class CatalogAndSafetyTest(unittest.TestCase):
             SimpleNamespace(capture=lambda: captures.append(frame) or frame),
         )
         navigator.classify = lambda _frame=None: next(states)
+        navigator._match_story_sandbox_signals = lambda _frame: SandboxConfirmation(
+            2,
+            2,
+            3,
+            1,
+        )
 
         result = navigator._wait_for_current_sandbox(timeout=2.0, interval=0.0)
 
@@ -1753,27 +2251,44 @@ class CatalogAndSafetyTest(unittest.TestCase):
         self.assertEqual(0.85, HAND_TEMPLATE.min_zncc_score)
         self.assertEqual(0.95, HAND_TEMPLATE.minimum_safe_threshold)
 
-    def test_area_map_fallback_click_uses_confirmed_relative_point(self):
+    def test_area_map_entry_uses_skill_center_and_no_fixed_point(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        skill = MatchResult(0.97, (1760, 790), (44, 43), 0.88, 0.90)
         clicks = []
         navigator = object.__new__(Navigator)
         navigator.task = SimpleNamespace(
-            operate_click=lambda *args, **kwargs: clicks.append((args, kwargs))
+            info_set=lambda *_args: None,
+            operate_click=lambda *args, **kwargs: self.fail(
+                f"area-map entry must not use fixed point: {args}, {kwargs}"
+            ),
         )
         navigator.vision = SimpleNamespace(
-            click_template=lambda *_args, **_kwargs: False,
+            capture=lambda: frame,
+            match=lambda _frame, spec: (
+                self.assertIn(spec, (HAND_TEMPLATE, SANDBOX_TELEPORT_SKILL_TEMPLATE))
+                or skill
+            ),
+            passes=lambda result, spec: (
+                result is skill and spec is SANDBOX_TELEPORT_SKILL_TEMPLATE
+            ),
+            click_client=lambda point, shape, after_sleep=0: clicks.append(
+                (point, shape, after_sleep)
+            ),
         )
         navigator.classify = lambda: ScreenState.SANDBOX
+        navigator._click_sandbox_teleport_interaction = lambda: False
+        navigator._wait_for_sandbox_map_open = lambda *_args, **_kwargs: NavigationResult(
+            True,
+            ScreenState.AREA_MAP,
+            "技能已确认传送阵地图",
+        )
 
         result = navigator.ensure_area_map()
 
-        self.assertFalse(result.success)
+        self.assertTrue(result.success)
+        self.assertEqual(ScreenState.AREA_MAP, result.state)
         self.assertEqual(
-            [
-                (
-                    AREA_MAP_OPEN_RELATIVE_POINT,
-                    {"after_sleep": 0.8},
-                )
-            ],
+            [(skill.center, frame.shape, SANDBOX_MAP_SETTLE_SECONDS)],
             clicks,
         )
 
@@ -1823,11 +2338,14 @@ class CatalogAndSafetyTest(unittest.TestCase):
         self.assertEqual(TELEPORT_MAP_TITLE_OCR_RELATIVE_ROI, ocr_calls[1][2])
 
     def test_area_map_teleport_template_is_enabled_only_and_strict(self):
-        self.assertIs(SANDBOX_MAP_TELEPORT_TEMPLATES, TELEPORT_MAP_TEMPLATES)
-        self.assertEqual(1, len(SANDBOX_MAP_TELEPORT_TEMPLATES))
-        spec = SANDBOX_MAP_TELEPORT_TEMPLATES[0]
-        self.assertEqual("箱庭地图已开启传送阵", spec.name)
-        self.assertEqual("image/green/TpCircleMapGE.png", spec.file_name)
+        self.assertIs(
+            TELEPORT_MAP_TELEPORT_CIRCLE_TEMPLATES[0],
+            TELEPORT_MAP_TELEPORT_CIRCLE_TEMPLATE,
+        )
+        self.assertEqual(1, len(TELEPORT_MAP_TELEPORT_CIRCLE_TEMPLATES))
+        spec = TELEPORT_MAP_TELEPORT_CIRCLE_TEMPLATE
+        self.assertEqual("传送阵地图传送阵", spec.name)
+        self.assertEqual("image/green/TpCircleMapNewGE.png", spec.file_name)
         self.assertEqual(0.95, spec.threshold)
         self.assertEqual(0.90, spec.min_pixel_score)
         self.assertEqual(0.85, spec.min_zncc_score)
@@ -1836,9 +2354,37 @@ class CatalogAndSafetyTest(unittest.TestCase):
         path = ROOT / "recognition-assets/template-assets" / spec.file_name
         template = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
         self.assertIsNotNone(template)
-        self.assertEqual((42, 42, 4), template.shape)
-        self.assertGreater(np.count_nonzero(template[:, :, 3]), 0)
-        self.assertLess(np.count_nonzero(template[:, :, 3]), template.shape[0] * template.shape[1])
+        self.assertEqual((50, 54, 3), template.shape)
+        green = (
+            (template[:, :, 0] == 0)
+            & (template[:, :, 1] == 255)
+            & (template[:, :, 2] == 0)
+        )
+        self.assertGreater(np.count_nonzero(green), 0)
+        self.assertLess(np.count_nonzero(green), template.shape[0] * template.shape[1])
+
+        skill_spec = TELEPORT_MAP_SKILL_TEMPLATE
+        self.assertEqual("传送阵地图传送技能", skill_spec.name)
+        self.assertEqual("image/green/TpSkillMapGE.png", skill_spec.file_name)
+        self.assertEqual(0.95, skill_spec.threshold)
+        self.assertEqual(0.90, skill_spec.min_pixel_score)
+        self.assertEqual(0.85, skill_spec.min_zncc_score)
+        self.assertEqual(0.95, skill_spec.minimum_safe_threshold)
+        self.assertNotIn(skill_spec, TELEPORT_MAP_TELEPORT_CIRCLE_TEMPLATES)
+
+        skill_path = ROOT / "recognition-assets/template-assets" / skill_spec.file_name
+        skill_template = cv2.imread(str(skill_path), cv2.IMREAD_UNCHANGED)
+        self.assertIsNotNone(skill_template)
+        self.assertEqual((43, 43, 4), skill_template.shape)
+        self.assertGreater(np.count_nonzero(skill_template[:, :, 3]), 0)
+        self.assertLess(
+            np.count_nonzero(skill_template[:, :, 3]),
+            skill_template.shape[0] * skill_template.shape[1],
+        )
+
+        sandbox_skill = SANDBOX_TELEPORT_SKILL_TEMPLATE
+        self.assertEqual("image/green/Skill3-4GE.png", sandbox_skill.file_name)
+        self.assertNotIn(sandbox_skill, TELEPORT_MAP_TELEPORT_CIRCLE_TEMPLATES)
 
     def test_area_map_teleports_reject_dim_candidate_before_click_context(self):
         frame = np.zeros((300, 500, 3), dtype=np.uint8)
@@ -1872,7 +2418,6 @@ class CatalogAndSafetyTest(unittest.TestCase):
             navigator._area_map_teleport_bright_neutral_ratio(frame, disabled),
             AREA_MAP_TELEPORT_BRIGHT_NEUTRAL_RATIO,
         )
-        self.assertEqual((enabled,), navigator._sandbox_map_teleports(frame))
         self.assertEqual((enabled,), navigator._area_map_teleports(frame))
 
     def test_sale_whitelist_allows_only_intersection(self):
@@ -2835,6 +3380,106 @@ class CatalogAndSafetyTest(unittest.TestCase):
             Navigator._q_sp6_shop_click_point(match_720, (720, 1280, 3)),
         )
 
+    def test_merchant_interaction_uses_gated_head_match_and_clicks_below_it(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        match = MatchResult(
+            0.971,
+            (1229, 245),
+            (55, 40),
+            pixel_score=0.839,
+            zncc_score=0.684,
+        )
+        clicks = []
+        statuses = []
+
+        def passes(result, spec):
+            return (
+                result.score >= spec.threshold
+                and result.pixel_score >= spec.min_pixel_score
+                and result.zncc_score >= spec.min_zncc_score
+            )
+
+        task = SimpleNamespace(
+            config={},
+            sleep=lambda *_args: None,
+            log_warning=lambda *_args: None,
+            info_set=lambda key, value: statuses.append((key, value)),
+        )
+        vision = SimpleNamespace(
+            capture=lambda: frame,
+            match=lambda captured, spec: match,
+            passes=passes,
+            click_client=lambda point, shape, after_sleep=0: clicks.append(
+                (point, shape, after_sleep)
+            ),
+        )
+        navigator = Navigator(task, vision)
+
+        self.assertTrue(navigator._click_merchant_interaction(timeout=1.0, after_sleep=1.2))
+        self.assertEqual([((1256, 415), frame.shape, 1.2)], clicks)
+        self.assertEqual(0.90, MERCHANT_ICON_TEMPLATE.threshold)
+        self.assertEqual(0.80, MERCHANT_ICON_TEMPLATE.min_pixel_score)
+        self.assertEqual(0.90, MERCHANT_ICON_TEMPLATE.minimum_safe_threshold)
+        self.assertEqual(0.62, MERCHANT_ICON_TEMPLATE.min_zncc_score)
+        self.assertEqual(
+            (0.0, 0.0, 1.0, 700 / 1080),
+            MERCHANT_ICON_TEMPLATE.candidate_center_roi,
+        )
+        self.assertEqual(
+            (
+                "商人交互",
+                "pass; match=0.971; pixel=0.839; zncc=0.684; play_area=yes",
+            ),
+            statuses[-2],
+        )
+        self.assertEqual(
+            ("商人交互点击位置", "head=(1256,265) -> click=(1256,415)"),
+            statuses[-1],
+        )
+
+    def test_merchant_interaction_rejects_bottom_hud_false_match(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        false_match = MatchResult(
+            0.969,
+            (1381, 859),
+            (55, 56),
+            pixel_score=0.899,
+            zncc_score=0.766,
+        )
+        clicks = []
+
+        def passes(result, spec):
+            return (
+                result.score >= spec.threshold
+                and result.pixel_score >= spec.min_pixel_score
+                and result.zncc_score >= spec.min_zncc_score
+            )
+
+        task = SimpleNamespace(
+            config={},
+            sleep=lambda *_args: None,
+            log_warning=lambda *_args: None,
+            info_set=lambda *_args: None,
+        )
+        vision = SimpleNamespace(
+            capture=lambda: frame,
+            match=lambda captured, spec: false_match,
+            passes=passes,
+            click_client=lambda point, shape, after_sleep=0: clicks.append(point),
+        )
+        navigator = Navigator(task, vision)
+
+        self.assertFalse(
+            navigator._click_merchant_interaction(timeout=0.01, after_sleep=0.0)
+        )
+        self.assertEqual([], clicks)
+        self.assertFalse(
+            Navigator._merchant_interaction_candidate_in_play_area(
+                false_match,
+                frame.shape,
+            )
+        )
+
     def test_story_card_state_templates_are_packaged_with_alpha_masks(self):
         template_root = ROOT / "recognition-assets" / "template-assets"
         expected_shapes = {
@@ -2864,6 +3509,190 @@ class CatalogAndSafetyTest(unittest.TestCase):
         )
         self.assertEqual(0, suppress_pending[-1, -1, 3])
         self.assertEqual(255, suppress_completed[-1, -1, 3])
+
+    def test_sandbox_skill_slot_templates_are_packaged_with_alpha_masks(self):
+        template_root = ROOT / "recognition-assets" / "template-assets"
+        expected_shapes = {
+            "image/green/SandboxSkillSlot1AvailableGE.png": (44, 44, 4),
+            "image/green/SandboxSkillSlot2UsedGE.png": (44, 44, 4),
+            "image/green/SandboxSkillSlot1UsedGE.png": (44, 44, 4),
+            "image/green/SandboxSkillSlot2AvailableGE.png": (45, 45, 4),
+        }
+
+        for file_name, expected_shape in expected_shapes.items():
+            with self.subTest(file_name=file_name):
+                template = cv2.imread(
+                    str(template_root / file_name),
+                    cv2.IMREAD_UNCHANGED,
+                )
+                self.assertIsNotNone(template)
+                self.assertEqual(expected_shape, template.shape)
+                self.assertGreater(np.count_nonzero(template[:, :, 3] == 0), 0)
+                self.assertGreater(np.count_nonzero(template[:, :, 3] == 255), 0)
+
+    def test_sandbox_skill_group_templates_use_strict_slot_specific_gates(self):
+        self.assertEqual(
+            (
+                SANDBOX_SKILL_SLOT_1_SELECTED_TEMPLATE,
+                SANDBOX_SKILL_SLOT_2_UNSELECTED_TEMPLATE,
+                SANDBOX_SKILL_SLOT_2_SELECTED_TEMPLATE,
+                SANDBOX_SKILL_SLOT_1_UNSELECTED_TEMPLATE,
+            ),
+            SANDBOX_SKILL_STATE_TEMPLATES,
+        )
+        for spec in SANDBOX_SKILL_STATE_TEMPLATES:
+            with self.subTest(spec=spec.name):
+                self.assertTrue(spec.green_mask)
+                self.assertEqual(SANDBOX_SKILL_GROUP_TEMPLATE_SCORE, spec.threshold)
+                self.assertEqual(SANDBOX_SKILL_GROUP_PIXEL_SCORE, spec.min_pixel_score)
+                self.assertEqual(SANDBOX_SKILL_GROUP_ZNCC_SCORE, spec.min_zncc_score)
+                self.assertEqual(
+                    SANDBOX_SKILL_GROUP_TEMPLATE_SCORE,
+                    spec.minimum_safe_threshold,
+                )
+        self.assertEqual(
+            SANDBOX_SKILL_SLOT_1_CENTER_ROI,
+            SANDBOX_SKILL_SLOT_1_SELECTED_TEMPLATE.candidate_center_roi,
+        )
+        self.assertEqual(
+            SANDBOX_SKILL_SLOT_2_CENTER_ROI,
+            SANDBOX_SKILL_SLOT_2_SELECTED_TEMPLATE.candidate_center_roi,
+        )
+        self.assertEqual(
+            "image/green/SandboxSkillSlot1AvailableGE.png",
+            SANDBOX_SKILL_SLOT_1_SELECTED_TEMPLATE.file_name,
+        )
+        self.assertEqual(
+            "image/green/SandboxSkillSlot2UsedGE.png",
+            SANDBOX_SKILL_SLOT_2_UNSELECTED_TEMPLATE.file_name,
+        )
+
+    def test_story_sandbox_confirmation_matches_all_signal_groups_and_accepts_three_actions(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        passed_specs = {
+            SANDBOX_TEMPLATES[0],
+            SANDBOX_SKILL_SLOT_1_SELECTED_TEMPLATE,
+            SANDBOX_SKILL_SLOT_2_UNSELECTED_TEMPLATE,
+            ABSORB_ICON.template,
+            SEARCH_ICON.template,
+            SUMMON_ICON.template,
+        }
+        calls = []
+        result = MatchResult(0.99, (100, 100), (40, 40), 0.96, 0.90)
+        vision = SimpleNamespace(
+            match=lambda received, spec: calls.append((received, spec)) or result,
+            passes=lambda _result, spec: spec in passed_specs,
+        )
+        navigator = Navigator(SimpleNamespace(info_set=lambda *_args: None), vision)
+
+        confirmation = navigator._match_story_sandbox_signals(frame)
+
+        self.assertEqual(1, confirmation.map_signal_hits)
+        self.assertEqual(2, confirmation.skill_state_hits)
+        self.assertEqual(3, confirmation.action_hits)
+        self.assertEqual(1, confirmation.skill_group)
+        self.assertTrue(confirmation.passed)
+        self.assertEqual(
+            (
+                *SANDBOX_TEMPLATES,
+                *SANDBOX_SKILL_STATE_TEMPLATES,
+                *(spec for _name, spec in SANDBOX_CONFIRM_ACTION_TEMPLATES),
+            ),
+            tuple(spec for _frame, spec in calls),
+        )
+
+    def test_story_sandbox_confirmation_rejects_missing_group_or_action_evidence(self):
+        self.assertFalse(SandboxConfirmation(1, 2, 3, None).passed)
+        self.assertFalse(SandboxConfirmation(0, 2, 3, 1).passed)
+        self.assertFalse(SandboxConfirmation(1, 1, 3, 1).passed)
+        self.assertFalse(SandboxConfirmation(1, 2, 2, 1).passed)
+        self.assertFalse(SandboxConfirmation(1, 4, 3, None).passed)
+
+    def test_story_sandbox_group_two_switches_to_group_one_once_before_stabilizing(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        confirmations = iter(
+            (
+                SandboxConfirmation(1, 2, 3, 2),
+                SandboxConfirmation(1, 2, 3, 1),
+                SandboxConfirmation(1, 2, 3, 1),
+            )
+        )
+        captures = []
+        clicks = []
+        task = SimpleNamespace(
+            info_set=lambda *_args: None,
+            operate_click=lambda x, y, after_sleep=0: clicks.append(
+                (x, y, after_sleep)
+            ),
+            sleep=lambda *_args: None,
+        )
+        navigator = Navigator(
+            task,
+            SimpleNamespace(capture=lambda: captures.append(frame) or frame),
+        )
+        navigator.classify = lambda _frame=None: ScreenState.SANDBOX
+        navigator._match_story_sandbox_signals = lambda _frame: next(confirmations)
+
+        with patch(
+            "src.tasks.map_trade.navigator.monotonic",
+            side_effect=[100.0] * 20,
+        ):
+            result = navigator._wait_for_current_sandbox(timeout=2.0, interval=0.0)
+
+        self.assertTrue(result.success)
+        self.assertEqual(
+            [
+                (
+                    SANDBOX_SKILL_SLOT_1_RELATIVE_POINT[0],
+                    SANDBOX_SKILL_SLOT_1_RELATIVE_POINT[1],
+                    0.5,
+                )
+            ],
+            clicks,
+        )
+        self.assertEqual(SANDBOX_SKILL_SLOT_1_REFERENCE_CENTER, (1672, 1010))
+        self.assertEqual(3, len(captures))
+
+    def test_story_sandbox_group_two_does_not_confirm_when_switch_stays_on_group_two(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        captures = []
+        clicks = []
+        task = SimpleNamespace(
+            info_set=lambda *_args: None,
+            operate_click=lambda x, y, after_sleep=0: clicks.append(
+                (x, y, after_sleep)
+            ),
+            sleep=lambda *_args: None,
+        )
+        navigator = Navigator(
+            task,
+            SimpleNamespace(capture=lambda: captures.append(frame) or frame),
+        )
+        navigator.classify = lambda _frame=None: ScreenState.SANDBOX
+        navigator._match_story_sandbox_signals = lambda _frame: SandboxConfirmation(
+            1,
+            2,
+            3,
+            2,
+        )
+
+        with patch(
+            "src.tasks.map_trade.navigator.monotonic",
+            side_effect=[100.0] * 6 + [101.0],
+        ):
+            result = navigator._wait_for_current_sandbox(timeout=0.1, interval=0.0)
+
+        self.assertFalse(result.success)
+        self.assertEqual(
+            [
+                (
+                    SANDBOX_SKILL_SLOT_1_RELATIVE_POINT[0],
+                    SANDBOX_SKILL_SLOT_1_RELATIVE_POINT[1],
+                    0.5,
+                )
+            ],
+            clicks,
+        )
 
     def test_story_badge_detection_requires_dual_scores_and_candidate_margin(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -3110,6 +3939,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
             ),
         )
         navigator = Navigator(task, vision)
+        navigator.classify = lambda: ScreenState.HOME
         navigator.return_home = lambda: NavigationResult(True, ScreenState.HOME)
         navigator._wait_for_cartridge_home = lambda: True
         navigator._wait_for_quick_switch_page = lambda: True
@@ -3197,6 +4027,42 @@ class CatalogAndSafetyTest(unittest.TestCase):
         self.assertEqual(ScreenState.CARD_MENU, result.state)
         self.assertIs(completion, result.completion)
         self.assertIn(("卡带完成度", "completed"), statuses)
+
+    def test_formal_collection_skips_card_when_preentry_status_is_complete(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            progress = ProgressStore(
+                Path(temp_dir) / "progress.json",
+                lambda: datetime(2026, 8, 3, 12, tzinfo=UTC_PLUS_8),
+            )
+            selected = []
+            task = SimpleNamespace(
+                config={"卡带单步重试次数": 1},
+                log_warning=lambda *_args: None,
+                info_set=lambda *_args: None,
+            )
+
+            def select(card_id, *, enter_visually_complete):
+                selected.append((card_id, enter_visually_complete))
+                return CollectionCardSelectionResult(
+                    CollectionCardSelectionOutcome.VISUALLY_COMPLETE,
+                    NavigationResult(True, ScreenState.CARD_MENU, "视觉完成"),
+                )
+
+            navigator = SimpleNamespace(
+                select_collection_card=select,
+                prepare_collection_main_area=lambda *_args: self.fail(
+                    "preentry-complete card must not enter the sandbox"
+                ),
+            )
+            collector = Collector(task, object(), navigator, progress)
+            with patch(
+                "src.tasks.map_trade.collector.COLLECTABLE_CARDS",
+                (CARD_BY_ID["Q_sp1"],),
+            ):
+                result = collector.run()
+
+        self.assertTrue(result.success)
+        self.assertEqual([("Q_sp1", False)], selected)
 
     def test_collection_card_pending_or_unknown_status_still_enters(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -3425,12 +4291,10 @@ class CatalogAndSafetyTest(unittest.TestCase):
         navigator._find_story_badge = lambda *_args: next(find_results)
         detected_frames = []
         navigator.card_status = SimpleNamespace(
-            detect=lambda frame, center: (
-                detected_frames.append((frame, center)) or completion
-            )
+            detect=lambda frame, center: detected_frames.append((frame, center)) or completion
         )
 
-        result = navigator.locate_probe_story_card("Q_sp10", scan_steps=1)
+        result = navigator.locate_probe_story_card("Q_sp10", scan_steps=5)
 
         self.assertIsNotNone(result)
         self.assertIs(confirmed_frame, result.located.frame)
@@ -3441,7 +4305,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
                     (PROBE_QUICK_SWITCH_SCROLL_POINT, PROBE_QUICK_SWITCH_SCROLL_AMOUNT),
                     {
                         "count": PROBE_QUICK_SWITCH_SCROLL_COUNT,
-                        "interval": 0.0,
+                        "interval": PROBE_QUICK_SWITCH_SCROLL_INTERVAL_SECONDS,
                         "after_sleep": PROBE_QUICK_SWITCH_SCROLL_SETTLE_SECONDS,
                     },
                 )
@@ -3450,8 +4314,9 @@ class CatalogAndSafetyTest(unittest.TestCase):
         )
         self.assertEqual((43 / 1920, 974 / 1080), PROBE_QUICK_SWITCH_SCROLL_POINT)
         self.assertEqual(1, PROBE_QUICK_SWITCH_SCROLL_AMOUNT)
-        self.assertEqual(1, PROBE_QUICK_SWITCH_SCROLL_COUNT)
-        self.assertEqual(0.4, PROBE_QUICK_SWITCH_SCROLL_SETTLE_SECONDS)
+        self.assertEqual(5, PROBE_QUICK_SWITCH_SCROLL_COUNT)
+        self.assertEqual(0.1, PROBE_QUICK_SWITCH_SCROLL_INTERVAL_SECONDS)
+        self.assertEqual(0.5, PROBE_QUICK_SWITCH_SCROLL_SETTLE_SECONDS)
         self.assertEqual(
             [((QUICK_SWITCH_SCROLL_FOCUS_POINT), {"after_sleep": 0.0})],
             clicks,
@@ -3608,19 +4473,19 @@ class CatalogAndSafetyTest(unittest.TestCase):
         )
         navigator._find_story_badge = lambda *_args: (None, "未识别")
 
-        result = navigator.locate_probe_story_card("Q_sp10", scan_steps=2)
+        result = navigator.locate_probe_story_card("Q_sp10", scan_steps=12)
 
         self.assertIsNone(result)
-        self.assertEqual(3, len(captures))
-        self.assertEqual(2, len(scrolls))
+        self.assertEqual(4, len(captures))
+        self.assertEqual(3, len(scrolls))
+        self.assertEqual([5, 5, 2], [call[1]["count"] for call in scrolls])
         self.assertEqual(
             [((QUICK_SWITCH_SCROLL_FOCUS_POINT), {"after_sleep": 0.0})],
             clicks,
         )
         self.assertTrue(
             all(
-                call[0]
-                == (PROBE_QUICK_SWITCH_SCROLL_POINT, PROBE_QUICK_SWITCH_SCROLL_AMOUNT)
+                call[0] == (PROBE_QUICK_SWITCH_SCROLL_POINT, PROBE_QUICK_SWITCH_SCROLL_AMOUNT)
                 for call in scrolls
             )
         )
@@ -3689,6 +4554,12 @@ class CatalogAndSafetyTest(unittest.TestCase):
         )
         navigator = Navigator(task, vision)
         navigator.classify = lambda _frame=None: next(states)
+        navigator._match_story_sandbox_signals = lambda _frame: SandboxConfirmation(
+            2,
+            2,
+            3,
+            1,
+        )
 
         result = navigator._wait_for_story_sandbox(12, timeout=2.0, interval=0.0)
 
@@ -3756,6 +4627,12 @@ class CatalogAndSafetyTest(unittest.TestCase):
             )
         )
         navigator.classify = lambda _frame=None: next(states)
+        navigator._match_story_sandbox_signals = lambda _frame: SandboxConfirmation(
+            2,
+            2,
+            3,
+            1,
+        )
 
         result = navigator._wait_for_story_sandbox(12, timeout=2.0, interval=0.0)
 
@@ -3784,6 +4661,12 @@ class CatalogAndSafetyTest(unittest.TestCase):
         navigator = Navigator(task, vision)
         navigator.classify = lambda _frame=None: next(states)
         navigator._handle_story_card_intermediate = lambda _frame: False
+        navigator._match_story_sandbox_signals = lambda _frame: SandboxConfirmation(
+            2,
+            2,
+            3,
+            1,
+        )
 
         result = navigator._wait_for_story_sandbox(1, timeout=2.0, interval=0.0)
 
@@ -3940,9 +4823,12 @@ class CatalogAndSafetyTest(unittest.TestCase):
         task.log_error = lambda *_args: None
         task._save_diagnostic = lambda *_args: None
         navigator = SimpleNamespace(
-            return_home=lambda: actions.append("home") or NavigationResult(
-                True,
-                ScreenState.HOME,
+            return_home=lambda: (
+                actions.append("home")
+                or NavigationResult(
+                    True,
+                    ScreenState.HOME,
+                )
             )
         )
         phases = (
@@ -3954,7 +4840,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         self.assertFalse(task._run_phases(navigator, phases))
         self.assertEqual(["buy", "home"], actions)
 
-    def test_buy_all_favorites_uses_current_button_and_confirmation_regions(self):
+    def test_buy_all_favorites_clicks_ocr_button_center_and_confirmation_point(self):
         clicks = []
         logs = []
         warnings = []
@@ -3965,20 +4851,22 @@ class CatalogAndSafetyTest(unittest.TestCase):
             log_info=lambda message: logs.append(("log", message)),
             log_warning=warnings.append,
         )
-        trader._wait_for_buy_all_favorites_button = lambda: True
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        trader.vision = SimpleNamespace(
+            click_client=lambda point, shape, after_sleep=0: clicks.append(
+                (point, shape, after_sleep)
+            )
+        )
+        trader._wait_for_buy_all_favorites_button = lambda: ((1454, 1004), frame)
         trader._wait_for_purchase_confirmation = lambda: True
 
         self.assertTrue(trader.buy_all_favorites())
         self.assertEqual(
             [
-                (*BUY_ALL_FAVORITES_POINT, 0.3),
+                ((1454, 1004), frame.shape, 0.3),
                 (*BUY_CONFIRM_POINT, 0.8),
             ],
             clicks,
-        )
-        self.assertEqual(
-            ((1324 + 1545) / 2 / 1920, (982 + 1029) / 2 / 1080),
-            BUY_ALL_FAVORITES_POINT,
         )
         self.assertEqual(
             (701 / 1920, 328 / 1080, 1219 / 1920, 753 / 1080),
@@ -3999,11 +4887,18 @@ class CatalogAndSafetyTest(unittest.TestCase):
             logs,
         )
 
-    def test_buy_all_button_requires_two_consecutive_ocr_hits_in_given_region(self):
+    def test_buy_all_button_requires_two_consecutive_full_frame_ocr_hits(self):
         ocr_calls = []
         sleeps = []
         statuses = []
-        texts = iter(("一键购买全部收藏", "", "-键购买全部收藏", "一键购买全部收藏"))
+        boxes = iter(
+            (
+                [SimpleNamespace(name="一键购买全部收藏", x=1324, y=982, width=221, height=47)],
+                [],
+                [SimpleNamespace(name="-键购买全部收藏", x=1379, y=992, width=148, height=24)],
+                [SimpleNamespace(name="一键购买全部收藏", x=1377, y=990, width=152, height=28)],
+            )
+        )
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         trader = object.__new__(Trader)
         trader.task = SimpleNamespace(
@@ -4013,21 +4908,22 @@ class CatalogAndSafetyTest(unittest.TestCase):
         )
         trader.vision = SimpleNamespace(
             capture=lambda: frame,
-            ocr_text=lambda captured, name, relative_roi: (
-                ocr_calls.append((captured.shape, name, relative_roi)) or next(texts)
+            ocr_boxes=lambda captured, name: (
+                ocr_calls.append((captured.shape, name)) or next(boxes)
             ),
             simplify=lambda value: value,
         )
 
-        self.assertTrue(trader._wait_for_buy_all_favorites_button())
+        located = trader._wait_for_buy_all_favorites_button()
+
+        self.assertIsNotNone(located)
+        point, located_frame = located
+        self.assertEqual((1453, 1004), point)
+        self.assertIs(frame, located_frame)
         self.assertEqual(3, len(sleeps))
         self.assertEqual(BUY_ALL_FAVORITES_KEYWORD, "购买全部收藏")
         self.assertEqual(BUY_ALL_FAVORITES_STABLE_HITS, 2)
-        self.assertEqual(
-            (1324 / 1920, 982 / 1080, 1545 / 1920, 1029 / 1080),
-            BUY_ALL_FAVORITES_REGION,
-        )
-        self.assertTrue(all(call[2] == BUY_ALL_FAVORITES_REGION for call in ocr_calls))
+        self.assertTrue(all(call[0] == frame.shape for call in ocr_calls))
         self.assertEqual(
             ("一键购买全部收藏按钮 OCR稳定", "2/2"),
             statuses[-1],
@@ -4071,11 +4967,17 @@ class CatalogAndSafetyTest(unittest.TestCase):
             log_info=lambda *_args, **_kwargs: None,
             log_warning=warnings.append,
         )
-        trader._wait_for_buy_all_favorites_button = lambda: True
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        trader.vision = SimpleNamespace(
+            click_client=lambda point, shape, after_sleep=0: clicks.append(
+                (point, shape, after_sleep)
+            )
+        )
+        trader._wait_for_buy_all_favorites_button = lambda: ((969, 669), frame)
         trader._wait_for_purchase_confirmation = lambda: False
 
         self.assertFalse(trader.buy_all_favorites())
-        self.assertEqual([(*BUY_ALL_FAVORITES_POINT, 0.3)], clicks)
+        self.assertEqual([((969, 669), frame.shape, 0.3)], clicks)
         self.assertEqual(
             ["买：点击一键购买全部收藏后，未同时识别到确认标题和询问文字。"],
             warnings,
@@ -4168,21 +5070,55 @@ class CatalogAndSafetyTest(unittest.TestCase):
         navigator = Navigator(SimpleNamespace(config={}), vision)
 
         self.assertEqual(ScreenState.LOADING, navigator.classify(frame))
-        self.assertEqual(1, len(SANDBOX_TEMPLATES))
+        self.assertEqual(2, len(SANDBOX_TEMPLATES))
         spec = SANDBOX_TEMPLATES[0]
         self.assertEqual("image/UI_miniMap_B.png", spec.file_name)
         self.assertEqual(0.90, spec.threshold)
         self.assertEqual(0.90, spec.min_pixel_score)
         self.assertEqual(0.90, spec.min_zncc_score)
+        self.assertIs(QUICK_SWITCH_TEMPLATE, SANDBOX_TEMPLATES[1])
 
-    def test_classify_shop_page_wins_over_merchant_dialog_template(self):
+    def test_quick_switch_button_alone_is_a_valid_sandbox_signal(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        failed = MatchResult(-1.0, (0, 0), (0, 0))
+        quick_switch = MatchResult(
+            0.98,
+            (820, 980),
+            (60, 50),
+            pixel_score=0.91,
+            zncc_score=0.92,
+        )
+
+        def match(_frame, spec):
+            return quick_switch if spec is QUICK_SWITCH_TEMPLATE else failed
+
+        def passes(result, spec):
+            return (
+                result.score >= spec.threshold
+                and (spec.min_pixel_score is None or result.pixel_score >= spec.min_pixel_score)
+                and (spec.min_zncc_score is None or result.zncc_score >= spec.min_zncc_score)
+            )
+
+        vision = SimpleNamespace(
+            match=match,
+            passes=passes,
+            threshold_for=lambda spec: spec.threshold,
+            template_brightness_ratio=lambda *_args: 0.0,
+            ocr_text=lambda *_args, **_kwargs: "",
+            simplify=lambda value: value,
+        )
+        navigator = Navigator(SimpleNamespace(config={}), vision)
+
+        self.assertEqual(ScreenState.SANDBOX, navigator.classify(frame))
+
+    def test_trade_classify_shop_page_wins_over_merchant_dialog_template(self):
         task = SimpleNamespace(config={}, info_set=lambda *_args: None)
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         merchant = MatchResult(0.90, (1000, 40), (60, 40), pixel_score=0.85)
         failed = MatchResult(-1.0, (0, 0), (0, 0))
 
         def match(_frame, spec):
-            if spec == MERCHANT_DIALOG_TEMPLATE:
+            if spec == TRADE_MERCHANT_CONTEXT_TEMPLATE:
                 return merchant
             return failed
 
@@ -4193,24 +5129,22 @@ class CatalogAndSafetyTest(unittest.TestCase):
             threshold_for=lambda spec: spec.threshold,
             template_brightness_ratio=lambda *_args: 0.0,
             ocr_text=lambda _frame, name, **_kwargs: (
-                "仓库管理石怪 仓库 严加管理 天赋技能 砍价"
-                if name == "界面分类"
-                else ""
+                "仓库管理石怪 仓库 严加管理 天赋技能 砍价" if name == "跑商界面分类" else ""
             ),
             simplify=lambda value: value,
         )
         navigator = Navigator(task, vision)
 
-        self.assertEqual(ScreenState.SHOP, navigator.classify())
+        self.assertEqual(ScreenState.SHOP, navigator.classify_trade())
 
-    def test_classify_merchant_dialog_requires_shop_ocr_absent(self):
+    def test_trade_classify_merchant_dialog_requires_shop_ocr_absent(self):
         task = SimpleNamespace(config={}, info_set=lambda *_args: None)
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         merchant = MatchResult(0.90, (1000, 40), (60, 40), pixel_score=0.85)
         failed = MatchResult(-1.0, (0, 0), (0, 0))
 
         def match(_frame, spec):
-            if spec == MERCHANT_DIALOG_TEMPLATE:
+            if spec == TRADE_MERCHANT_CONTEXT_TEMPLATE:
                 return merchant
             return failed
 
@@ -4221,15 +5155,44 @@ class CatalogAndSafetyTest(unittest.TestCase):
             threshold_for=lambda spec: spec.threshold,
             template_brightness_ratio=lambda *_args: 0.0,
             ocr_text=lambda _frame, name, **_kwargs: (
-                "与仓库管理石怪砍价 砍价成功率100% 取消"
-                if name == "界面分类"
-                else ""
+                "与仓库管理石怪砍价 砍价成功率100% 取消" if name == "跑商界面分类" else ""
             ),
             simplify=lambda value: value,
         )
         navigator = Navigator(task, vision)
 
-        self.assertEqual(ScreenState.MERCHANT_DIALOG, navigator.classify())
+        self.assertEqual(ScreenState.MERCHANT_DIALOG, navigator.classify_trade())
+
+    def test_shared_classify_never_uses_trade_merchant_template(self):
+        task = SimpleNamespace(config={}, info_set=lambda *_args: None)
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        merchant = MatchResult(
+            0.99,
+            (1000, 40),
+            (60, 40),
+            pixel_score=0.95,
+            zncc_score=0.94,
+        )
+        failed = MatchResult(-1.0, (0, 0), (0, 0))
+        matched_specs = []
+
+        def match(_frame, spec):
+            matched_specs.append(spec)
+            return merchant if spec == TRADE_MERCHANT_CONTEXT_TEMPLATE else failed
+
+        vision = SimpleNamespace(
+            capture=lambda: frame,
+            match=match,
+            passes=lambda *_args: False,
+            threshold_for=lambda spec: spec.threshold,
+            template_brightness_ratio=lambda *_args: 0.0,
+            ocr_text=lambda *_args, **_kwargs: "",
+            simplify=lambda value: value,
+        )
+        navigator = Navigator(task, vision)
+
+        self.assertEqual(ScreenState.UNKNOWN, navigator.classify())
+        self.assertNotIn(TRADE_MERCHANT_CONTEXT_TEMPLATE, matched_specs)
 
     def test_classify_shop_ocr_fallback_without_merchant_template(self):
         task = SimpleNamespace(config={}, info_set=lambda *_args: None)
@@ -4242,9 +5205,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
             threshold_for=lambda spec: spec.threshold,
             template_brightness_ratio=lambda *_args: 0.0,
             ocr_text=lambda _frame, name, **_kwargs: (
-                "仓库管理石怪 仓库 严加管理 天赋技能"
-                if name == "界面分类"
-                else ""
+                "仓库管理石怪 仓库 严加管理 天赋技能" if name == "界面分类" else ""
             ),
             simplify=lambda value: value,
         )
@@ -4325,9 +5286,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         actions = []
         task = SimpleNamespace(
             config={},
-            operate_click=lambda x, y, after_sleep=0: actions.append(
-                (x, y, after_sleep)
-            ),
+            operate_click=lambda x, y, after_sleep=0: actions.append((x, y, after_sleep)),
         )
         navigator = Navigator(task, SimpleNamespace())
         navigator.classify = lambda: ScreenState.SANDBOX
@@ -4346,9 +5305,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
     def test_return_home_from_unknown_page_does_not_click(self):
         task = SimpleNamespace(
             config={},
-            operate_click=lambda *_args, **_kwargs: self.fail(
-                "unknown page must not be clicked"
-            ),
+            operate_click=lambda *_args, **_kwargs: self.fail("unknown page must not be clicked"),
         )
         navigator = Navigator(task, SimpleNamespace())
         navigator.classify = lambda: ScreenState.UNKNOWN
@@ -4363,9 +5320,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         actions = []
         task = SimpleNamespace(
             config={"加载页面等待秒数": 45.0},
-            operate_click=lambda x, y, after_sleep=0: actions.append(
-                (x, y, after_sleep)
-            ),
+            operate_click=lambda x, y, after_sleep=0: actions.append((x, y, after_sleep)),
         )
         navigator = Navigator(task, SimpleNamespace())
         navigator.classify = lambda: ScreenState.LOADING
@@ -4616,79 +5571,265 @@ class CatalogAndSafetyTest(unittest.TestCase):
             self.assertEqual(61.0, migrated["加载页面等待秒数"])
             self.assertEqual(4, migrated["卡带单步重试次数"])
 
-    def test_collection_stops_after_three_consecutive_card_failures(self):
-        task = SimpleNamespace(
-            config={"卡带单步重试次数": 1},
-            log_warning=lambda *_args: None,
-        )
-        progress = ProgressStore(
-            Path(tempfile.gettempdir()) / "unused-map-trade-test.json",
-            lambda: datetime(2026, 7, 13, 12, tzinfo=UTC_PLUS_8),
-        )
-        progress.state = SimpleNamespace(
-            depleted_today=False,
-            daily_submaps=0,
-            weekly_submap_count=0,
-            completed_targets=lambda _card: set(),
-        )
-        progress.load = lambda: progress.state
-        navigator = SimpleNamespace(
-            select_collection_card=lambda _card: CollectionCardSelectionResult(
-                CollectionCardSelectionOutcome.ENTERED,
-                NavigationResult(True, ScreenState.SANDBOX),
-            ),
-            enter_collection_map=lambda _card, _target: NavigationResult(
-                False, ScreenState.UNKNOWN, "failed"
-            ),
-        )
+    def test_collection_retries_the_same_first_card_then_stops(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            progress = ProgressStore(
+                Path(temp_dir) / "progress.json",
+                lambda: datetime(2026, 8, 3, 12, tzinfo=UTC_PLUS_8),
+            )
+            attempts = []
+            task = SimpleNamespace(
+                config={"卡带单步重试次数": 3},
+                log_warning=lambda *_args: None,
+                info_set=lambda *_args: None,
+            )
 
-        result = Collector(task, object(), navigator, progress).run()
+            def select(card_id, *, enter_visually_complete):
+                attempts.append((card_id, enter_visually_complete))
+                return CollectionCardSelectionResult(
+                    CollectionCardSelectionOutcome.FAILED,
+                    NavigationResult(False, ScreenState.UNKNOWN, "failed"),
+                )
+
+            navigator = SimpleNamespace(select_collection_card=select)
+            result = Collector(task, object(), navigator, progress).run()
 
         self.assertFalse(result.success)
-        self.assertEqual("连续三张卡带采集失败", result.message)
+        self.assertEqual("未能进入卡带 Q_sp1", result.message)
+        self.assertEqual([("Q_sp1", False)] * 3, attempts)
 
-    def test_visual_completion_skips_without_mutating_collection_progress(self):
-        task = SimpleNamespace(
-            config={"卡带单步重试次数": 1},
-            log_warning=lambda *_args: None,
-            info_set=lambda *_args: None,
-        )
-        state = SimpleNamespace(
-            depleted_today=False,
-            daily_submaps=0,
-            weekly_submap_count=0,
-            completed_targets=lambda _card: set(),
-        )
-        progress = SimpleNamespace(load=lambda: state)
-        selected_cards = []
-        completion = StoryCardCompletion(
-            absorb=CardActionDetection(CardActionState.COMPLETED),
-            suppress=CardActionDetection(CardActionState.COMPLETED),
-            bounds=(0, 0, 1, 1),
-            complete_region=True,
-        )
-        navigator = SimpleNamespace(
-            select_collection_card=lambda card_id: (
-                selected_cards.append(card_id)
-                or CollectionCardSelectionResult(
-                    CollectionCardSelectionOutcome.VISUALLY_COMPLETE,
-                    NavigationResult(True, ScreenState.CARD_MENU),
-                    completion,
+    def test_formal_collection_runs_safe_battle_one_battle_two_then_verifies(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            progress = ProgressStore(
+                Path(temp_dir) / "progress.json",
+                lambda: datetime(2026, 8, 3, 12, tzinfo=UTC_PLUS_8),
+            )
+            progress.load()
+            progress.state.daily_submaps = 18
+            progress.state.daily_summons = 12
+            progress.state.daily_suppressions = 12
+            progress.save()
+            events = []
+            task = SimpleNamespace(
+                config={"卡带单步重试次数": 1},
+                log_warning=lambda *_args: None,
+                info_set=lambda *_args: None,
+            )
+
+            def select(card_id, *, enter_visually_complete):
+                events.append(("select", card_id, enter_visually_complete))
+                return CollectionCardSelectionResult(
+                    CollectionCardSelectionOutcome.ENTERED,
+                    NavigationResult(True, ScreenState.SANDBOX),
                 )
-            ),
-            enter_collection_map=lambda *_args: self.fail(
-                "visually complete card must not enter a map"
-            ),
-        )
 
-        result = Collector(task, object(), navigator, progress).run()
+            navigator = SimpleNamespace(
+                select_collection_card=select,
+                prepare_collection_main_area=lambda card_id: (
+                    events.append(("prepare", card_id))
+                    or NavigationResult(True, ScreenState.SANDBOX)
+                ),
+                advance_collection_map=lambda card_id, current, target: (
+                    events.append(("advance", card_id, current.key, target.key))
+                    or NavigationResult(True, ScreenState.SANDBOX)
+                ),
+                open_story_quick_switcher_from_sandbox=lambda: (
+                    events.append(("quick",)) or NavigationResult(True, ScreenState.CARD_MENU)
+                ),
+                inspect_collection_card_completion=lambda card_id: (
+                    events.append(("inspect", card_id))
+                    or CollectionCardSelectionResult(
+                        CollectionCardSelectionOutcome.VISUALLY_COMPLETE,
+                        NavigationResult(True, ScreenState.CARD_MENU),
+                    )
+                ),
+            )
+            collector = Collector(task, object(), navigator, progress)
+            search = SearchCountdownSession((0.1, 0.2, 0.3, 0.4), 87)
+            collector._start_search = lambda: events.append(("search",)) or search
+            collector._verify_search_countdown = lambda value: (
+                events.append(("countdown", value.value)) or True
+            )
+            collector._use_actions = lambda actions, **_kwargs: (
+                events.append(("actions", tuple(action.name for action in actions)))
+                or SkillExecutionResult(True)
+            )
+
+            result = collector.run()
 
         self.assertTrue(result.success)
-        self.assertEqual(0, result.completed_submaps)
-        self.assertEqual(0, state.daily_submaps)
+        self.assertTrue(result.depleted)
+        self.assertEqual(3, result.completed_submaps)
         self.assertEqual(
-            [card.card_id for card in COLLECTABLE_CARDS],
-            selected_cards,
+            [
+                ("select", "Q_sp1", False),
+                ("prepare", "Q_sp1"),
+                ("search",),
+                ("actions", ("吸收",)),
+                ("advance", "Q_sp1", "main_area", "battle_area_1"),
+                ("countdown", 87),
+                ("actions", tuple(action.name for action in BATTLE_ACTIONS)),
+                ("advance", "Q_sp1", "battle_area_1", "battle_area_2"),
+                ("actions", tuple(action.name for action in BATTLE_ACTIONS)),
+                ("quick",),
+                ("inspect", "Q_sp1"),
+            ],
+            events,
+        )
+        self.assertEqual(21, progress.state.daily_absorbs)
+        self.assertEqual(14, progress.state.daily_summons)
+        self.assertEqual(14, progress.state.daily_suppressions)
+        self.assertTrue(progress.state.card_verified("Q_sp1"))
+
+    def test_collection_never_starts_a_card_that_cannot_fit_daily_absorbs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            progress = ProgressStore(
+                Path(temp_dir) / "progress.json",
+                lambda: datetime(2026, 8, 3, 12, tzinfo=UTC_PLUS_8),
+            )
+            progress.load()
+            progress.state.daily_submaps = 19
+            progress.save()
+            task = SimpleNamespace(
+                config={"卡带单步重试次数": 1},
+                log_warning=lambda *_args: None,
+                info_set=lambda *_args: None,
+            )
+            navigator = SimpleNamespace(
+                select_collection_card=lambda *_args, **_kwargs: self.fail(
+                    "an incomplete card must not be started"
+                )
+            )
+
+            result = Collector(task, object(), navigator, progress).run()
+
+        self.assertTrue(result.success)
+        self.assertTrue(result.depleted)
+        self.assertEqual(0, result.completed_submaps)
+        self.assertTrue(progress.state.depleted_today)
+
+    def test_formal_collection_skips_chapter_fourteen_without_progress(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            progress = ProgressStore(
+                Path(temp_dir) / "progress.json",
+                lambda: datetime(2026, 8, 3, 12, tzinfo=UTC_PLUS_8),
+            )
+            progress.load()
+            progress.state.daily_submaps = 18
+            progress.state.daily_summons = 12
+            progress.state.daily_suppressions = 12
+            progress.save()
+            selected = []
+            warnings = []
+            task = SimpleNamespace(
+                config={"卡带单步重试次数": 1},
+                log_warning=lambda value: warnings.append(value),
+                info_set=lambda *_args: None,
+            )
+
+            def select(card_id, *, enter_visually_complete):
+                selected.append((card_id, enter_visually_complete))
+                return CollectionCardSelectionResult(
+                    CollectionCardSelectionOutcome.ENTERED,
+                    NavigationResult(True, ScreenState.SANDBOX),
+                )
+
+            navigator = SimpleNamespace(
+                select_collection_card=select,
+                prepare_collection_main_area=lambda _card_id: NavigationResult(
+                    True,
+                    ScreenState.SANDBOX,
+                ),
+                advance_collection_map=lambda *_args: NavigationResult(
+                    True,
+                    ScreenState.SANDBOX,
+                ),
+                open_story_quick_switcher_from_sandbox=lambda: NavigationResult(
+                    True,
+                    ScreenState.CARD_MENU,
+                ),
+                inspect_collection_card_completion=lambda _card_id: CollectionCardSelectionResult(
+                    CollectionCardSelectionOutcome.VISUALLY_COMPLETE,
+                    NavigationResult(True, ScreenState.CARD_MENU),
+                ),
+            )
+            collector = Collector(task, object(), navigator, progress)
+            collector._start_search = lambda: SearchCountdownSession(
+                (0.1, 0.2, 0.3, 0.4),
+                80,
+            )
+            collector._verify_search_countdown = lambda _session: True
+            collector._use_actions = lambda _actions, **_kwargs: SkillExecutionResult(True)
+            with patch(
+                "src.tasks.map_trade.collector.COLLECTABLE_CARDS",
+                (CARD_BY_ID["Q_sp14"], CARD_BY_ID["Q_sp15"]),
+            ):
+                result = collector.run()
+
+        self.assertTrue(result.success)
+        self.assertEqual([("Q_sp15", False)], selected)
+        self.assertEqual(set(), progress.state.completed_targets("Q_sp14"))
+        self.assertTrue(progress.state.card_verified("Q_sp15"))
+        self.assertTrue(any("第14章" in value for value in warnings))
+
+    def test_observed_skill_limit_finishes_current_battle_actions_then_stops(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            progress = ProgressStore(
+                Path(temp_dir) / "progress.json",
+                lambda: datetime(2026, 8, 3, 12, tzinfo=UTC_PLUS_8),
+            )
+            task = SimpleNamespace(
+                config={"卡带单步重试次数": 1},
+                log_warning=lambda *_args: None,
+                info_set=lambda *_args: None,
+            )
+            events = []
+            navigator = SimpleNamespace(
+                select_collection_card=lambda *_args, **_kwargs: CollectionCardSelectionResult(
+                    CollectionCardSelectionOutcome.ENTERED,
+                    NavigationResult(True, ScreenState.SANDBOX),
+                ),
+                prepare_collection_main_area=lambda _card_id: NavigationResult(
+                    True,
+                    ScreenState.SANDBOX,
+                ),
+                advance_collection_map=lambda _card_id, current, target: (
+                    events.append(("advance", current.key, target.key))
+                    or NavigationResult(True, ScreenState.SANDBOX)
+                ),
+                open_story_quick_switcher_from_sandbox=lambda: self.fail(
+                    "battle two must be left for the next daily cycle"
+                ),
+            )
+            collector = Collector(task, object(), navigator, progress)
+            collector._start_search = lambda: SearchCountdownSession(
+                (0.1, 0.2, 0.3, 0.4),
+                80,
+            )
+            collector._verify_search_countdown = lambda _session: True
+            action_results = iter(
+                (
+                    SkillExecutionResult(True),
+                    SkillExecutionResult(True, depleted=True),
+                )
+            )
+            collector._use_actions = lambda _actions, **_kwargs: next(action_results)
+            with patch(
+                "src.tasks.map_trade.collector.COLLECTABLE_CARDS",
+                (CARD_BY_ID["Q_sp1"],),
+            ):
+                result = collector.run()
+
+        self.assertTrue(result.success)
+        self.assertTrue(result.depleted)
+        self.assertEqual(2, result.completed_submaps)
+        self.assertEqual(
+            {"main_area", "battle_area_1"},
+            progress.state.completed_targets("Q_sp1"),
+        )
+        self.assertEqual(
+            [("advance", "main_area", "battle_area_1")],
+            events,
         )
 
 
@@ -4716,6 +5857,7 @@ class CollectorSkillTest(unittest.TestCase):
             capture=lambda: frame,
             match=lambda *_args: MatchResult(-1.0, (0, 0), (0, 0)),
             passes=lambda *_args: False,
+            ocr_text=lambda _frame, name, **_kwargs: "87" if name == "探查倒计时" else "",
             click_client=lambda center, shape, after_sleep=0: clicks.append(
                 (center, shape, after_sleep)
             ),
@@ -4723,7 +5865,7 @@ class CollectorSkillTest(unittest.TestCase):
         collector = Collector(task, vision, SimpleNamespace(), SimpleNamespace())
 
         def detect(_frame, icon):
-            state = states[icon.name]
+            state = ActionIconState.ABSENT if icon is SEARCH_ICON and clicks else states[icon.name]
             return ActionIconDetection(
                 state,
                 MatchResult(
@@ -4738,7 +5880,7 @@ class CollectorSkillTest(unittest.TestCase):
 
         collector.action_icons = SimpleNamespace(detect=detect)
         count_iters = {name: iter(values) for name, values in counts.items()}
-        collector._read_count = lambda action: next(count_iters[action.name])
+        collector._read_count = lambda action, _detection=None: next(count_iters[action.name])
         return collector, clicks, statuses
 
     def test_dimmed_absorb_and_summon_count_as_already_used_without_clicking(self):
@@ -4768,7 +5910,7 @@ class CollectorSkillTest(unittest.TestCase):
                 "吸收": ActionIconState.AVAILABLE,
                 "召集": ActionIconState.AVAILABLE,
             },
-            {"探查": (None,)},
+            {"吸收": (None,)},
         )
 
         result = collector._use_skills()
@@ -4776,7 +5918,7 @@ class CollectorSkillTest(unittest.TestCase):
         self.assertFalse(result.completed)
         self.assertFalse(result.depleted)
         self.assertIn("OCR 失败", result.message)
-        self.assertEqual([], clicks)
+        self.assertEqual(1, len(clicks))
 
     def test_pre_exhausted_available_skill_does_not_complete_current_map(self):
         collector, clicks, _statuses = self._skill_collector(
@@ -4785,14 +5927,14 @@ class CollectorSkillTest(unittest.TestCase):
                 "吸收": ActionIconState.AVAILABLE,
                 "召集": ActionIconState.AVAILABLE,
             },
-            {"探查": ((40, 40),)},
+            {"吸收": ((21, 21),)},
         )
 
         result = collector._use_skills()
 
         self.assertFalse(result.completed)
         self.assertTrue(result.depleted)
-        self.assertEqual([], clicks)
+        self.assertEqual(1, len(clicks))
 
     def test_mid_sequence_exhaustion_waits_for_all_three_skills(self):
         collector, clicks, _statuses = self._skill_collector(
@@ -4802,7 +5944,6 @@ class CollectorSkillTest(unittest.TestCase):
                 "召集": ActionIconState.AVAILABLE,
             },
             {
-                "探查": ((39, 40), (40, 40)),
                 "吸收": ((21, 21),),
             },
         )
@@ -4821,7 +5962,6 @@ class CollectorSkillTest(unittest.TestCase):
                 "召集": ActionIconState.AVAILABLE,
             },
             {
-                "探查": ((39, 40), (40, 40)),
                 "吸收": ((20, 21), (21, 21)),
                 "召集": ((20, 21), (21, 21)),
             },
@@ -4833,70 +5973,269 @@ class CollectorSkillTest(unittest.TestCase):
         self.assertTrue(result.depleted)
         self.assertEqual(3, len(clicks))
 
-    @staticmethod
-    def _run_collector_with_skill_result(skill_result):
-        target = SimpleNamespace(
-            key="main_area",
-            role=SimpleNamespace(label="主城区"),
-            title="测试地图",
+    def test_battle_flow_executes_absorb_summon_and_suppression(self):
+        collector, clicks, _statuses = self._skill_collector(
+            {
+                "吸收": ActionIconState.AVAILABLE,
+                "召集": ActionIconState.AVAILABLE,
+                "制服": ActionIconState.AVAILABLE,
+            },
+            {
+                "吸收": ((4, 21), (5, 21)),
+                "召集": ((2, 21), (3, 21)),
+                "压制": ((6, 60), (7, 60)),
+            },
         )
-        card = SimpleNamespace(card_id="Q_test", targets=(target,))
-        state = SimpleNamespace(
-            depleted_today=False,
-            daily_submaps=0,
-            weekly_submap_count=0,
-            completed_targets=lambda _card: set(),
+
+        result = collector._use_actions(BATTLE_ACTIONS)
+
+        self.assertTrue(result.completed)
+        self.assertFalse(result.depleted)
+        self.assertEqual(3, len(clicks))
+
+    def test_suppression_count_roi_is_derived_from_current_icon_match(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        calls = []
+        detection = ActionIconDetection(
+            ActionIconState.AVAILABLE,
+            MatchResult(0.98, (1440, 700), (80, 80), 0.95, 0.92),
+            0.95,
         )
-        marks = []
-        depleted_marks = []
-        progress = SimpleNamespace(
-            state=state,
-            load=lambda: state,
-            mark_target=lambda card_id, key: marks.append((card_id, key)),
-            mark_depleted_today=lambda: depleted_marks.append(True),
+        vision = SimpleNamespace(
+            capture=lambda: frame,
+            ocr_text=lambda _frame, name, **kwargs: calls.append((name, kwargs)) or "7/60",
         )
-        navigator = SimpleNamespace(
-            select_collection_card=lambda _card: CollectionCardSelectionResult(
-                CollectionCardSelectionOutcome.ENTERED,
-                NavigationResult(True, ScreenState.SANDBOX),
+        collector = Collector(
+            SimpleNamespace(config={}, sleep=lambda *_args: None),
+            vision,
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+
+        count = collector._read_count(BATTLE_ACTIONS[-1], detection)
+
+        self.assertEqual((7, 60), count)
+        self.assertEqual("压制次数", calls[0][0])
+        self.assertNotIn("roi", calls[0][1])
+        self.assertEqual(1080, calls[0][1]["target_height"])
+        self.assertEqual(
+            collector._action_text_relative_roi(detection, frame.shape),
+            calls[0][1]["relative_roi"],
+        )
+
+    def test_post_click_count_ocr_uses_refreshed_icon_bbox(self):
+        before_frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        after_frame = np.ones((1080, 1920, 3), dtype=np.uint8)
+        before = ActionIconDetection(
+            ActionIconState.AVAILABLE,
+            MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
+            0.95,
+        )
+        after = ActionIconDetection(
+            ActionIconState.AVAILABLE,
+            MatchResult(0.98, (960, 420), (52, 48), 0.95, 0.92),
+            0.95,
+        )
+        detections = iter((before, after))
+        frames = iter((before_frame, after_frame))
+        count_detections = []
+        clicks = []
+        collector = Collector(
+            SimpleNamespace(
+                config={},
+                sleep=lambda *_args: None,
+                info_set=lambda *_args: None,
             ),
-            enter_collection_map=lambda *_args: NavigationResult(
-                True,
-                ScreenState.SANDBOX,
+            SimpleNamespace(
+                capture=lambda: next(frames),
+                click_client=lambda *args, **kwargs: clicks.append((args, kwargs)),
             ),
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+        collector.action_icons = SimpleNamespace(detect=lambda *_args: next(detections))
+        counts = iter(((0, 21), (1, 21)))
+        collector._read_count = lambda _action, detection: (
+            count_detections.append(detection) or next(counts)
+        )
+
+        result = collector._use_action(ABSORB_ACTION)
+
+        self.assertTrue(result.completed)
+        self.assertEqual([before, after], count_detections)
+        self.assertEqual(
+            (before.match.center, before_frame.shape, 2.0),
+            (clicks[0][0][0], clicks[0][0][1], clicks[0][1]["after_sleep"]),
+        )
+
+    def test_absorb_and_summon_count_rois_are_derived_from_current_icon_match(self):
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        calls = []
+        detection = ActionIconDetection(
+            ActionIconState.AVAILABLE,
+            MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
+            0.95,
+        )
+        vision = SimpleNamespace(
+            capture=lambda: frame,
+            ocr_text=lambda _frame, name, **kwargs: calls.append((name, kwargs)) or "7/21",
+        )
+        collector = Collector(
+            SimpleNamespace(config={}, sleep=lambda *_args: None),
+            vision,
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+
+        for action in (ABSORB_ACTION, SUMMON_ACTION):
+            with self.subTest(action=action.name):
+                self.assertIsNone(action.count_roi)
+                self.assertEqual((7, 21), collector._read_count(action, detection))
+
+        self.assertEqual(2, len(calls))
+        for name, kwargs in calls:
+            self.assertIn(name, {"吸收次数", "召集次数"})
+            self.assertNotIn("roi", kwargs)
+            self.assertEqual(1080, kwargs["target_height"])
+            self.assertEqual(
+                collector._action_text_relative_roi(detection, frame.shape),
+                kwargs["relative_roi"],
+            )
+
+    def test_battle_arrival_checks_search_countdown_without_matching_search_icon(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        ocr_calls = []
+        vision = SimpleNamespace(
+            capture=lambda: frame,
+            ocr_text=lambda _frame, name, **kwargs: ocr_calls.append((name, kwargs)) or "44",
+        )
+        collector = Collector(
+            SimpleNamespace(
+                config={},
+                sleep=lambda *_args: None,
+                log_warning=lambda *_args: None,
+            ),
+            vision,
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+        collector.action_icons = SimpleNamespace(
+            detect=lambda *_args: self.fail(
+                "active search must not be template-matched after map travel"
+            )
+        )
+        session = SearchCountdownSession((0.4, 0.5, 0.6, 0.7), 45)
+
+        self.assertTrue(collector._verify_search_countdown(session))
+        self.assertEqual(
+            [
+                (
+                    "战斗区域1探查倒计时",
+                    {
+                        "relative_roi": session.relative_roi,
+                        "target_height": 1080,
+                    },
+                )
+            ],
+            ocr_calls,
+        )
+
+    def test_search_icon_miss_uses_safe_area_fixed_center_and_fixed_ocr_roi(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        clicks = []
+        ocr_calls = []
+        missing = ActionIconDetection(
+            ActionIconState.ABSENT,
+            MatchResult(-1.0, (0, 0), (0, 0)),
         )
         task = SimpleNamespace(
-            config={"卡带单步重试次数": 1},
+            config={},
+            operate_click=lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep)),
+            sleep=lambda *_args: None,
             log_warning=lambda *_args: None,
             info_set=lambda *_args: None,
         )
-        collector = Collector(task, SimpleNamespace(), navigator, progress)
-        collector._use_skills = lambda: skill_result
-        with patch("src.tasks.map_trade.collector.COLLECTABLE_CARDS", (card,)):
-            result = collector.run()
-        return result, marks, depleted_marks
+        vision = SimpleNamespace(
+            capture=lambda: frame,
+            ocr_text=lambda _frame, name, **kwargs: (
+                ocr_calls.append((name, kwargs)) or "44"
+            ),
+            match=lambda *_args: MatchResult(-1.0, (0, 0), (0, 0)),
+            passes=lambda *_args: False,
+        )
+        collector = Collector(task, vision, SimpleNamespace(), SimpleNamespace())
+        collector.action_icons = SimpleNamespace(detect=lambda *_args: missing)
 
-    def test_incomplete_depleted_map_is_not_written_to_progress(self):
-        result, marks, depleted_marks = self._run_collector_with_skill_result(
-            SkillExecutionResult(False, depleted=True, message="次数已用尽")
+        result = collector._start_search()
+
+        self.assertIsInstance(result, SearchCountdownSession)
+        self.assertEqual(
+            (SKILL_FALLBACK_POINTS["探查"][0], SKILL_FALLBACK_POINTS["探查"][1], 2.0),
+            clicks[-1],
+        )
+        self.assertEqual(SEARCH_COUNTDOWN_FALLBACK_RELATIVE_ROI, result.relative_roi)
+        self.assertEqual(SEARCH_COUNTDOWN_FALLBACK_RELATIVE_ROI, ocr_calls[0][1]["relative_roi"])
+
+    def test_battle_action_miss_uses_fixed_center_and_fixed_count_roi_only_in_battle_map(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        clicks = []
+        ocr_calls = []
+        missing = ActionIconDetection(
+            ActionIconState.ABSENT,
+            MatchResult(-1.0, (0, 0), (0, 0)),
+        )
+        counts = iter(("0/21", "1/21"))
+        task = SimpleNamespace(
+            config={},
+            operate_click=lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep)),
+            sleep=lambda *_args: None,
+            log_warning=lambda *_args: None,
+            info_set=lambda *_args: None,
+        )
+        vision = SimpleNamespace(
+            capture=lambda: frame,
+            ocr_text=lambda _frame, name, **kwargs: (
+                ocr_calls.append((name, kwargs)) or next(counts)
+            ),
+            match=lambda *_args: MatchResult(-1.0, (0, 0), (0, 0)),
+            passes=lambda *_args: False,
+        )
+        collector = Collector(task, vision, SimpleNamespace(), SimpleNamespace())
+        collector.action_icons = SimpleNamespace(detect=lambda *_args: missing)
+
+        result = collector._use_actions(
+            (ABSORB_ACTION,),
+            map_role=CollectionMapRole.BATTLE_AREA_1,
         )
 
-        self.assertTrue(result.success)
-        self.assertTrue(result.depleted)
-        self.assertEqual(0, result.completed_submaps)
-        self.assertEqual([], marks)
-        self.assertEqual([True], depleted_marks)
-
-    def test_completed_depleted_map_is_written_before_stopping(self):
-        result, marks, depleted_marks = self._run_collector_with_skill_result(
-            SkillExecutionResult(True, depleted=True)
+        self.assertTrue(result.completed)
+        self.assertEqual(
+            (SKILL_FALLBACK_POINTS["吸收"][0], SKILL_FALLBACK_POINTS["吸收"][1], 2.0),
+            clicks[-1],
+        )
+        self.assertEqual(
+            [SKILL_FIXED_COUNT_RELATIVE_ROIS["吸收"]] * 2,
+            [kwargs["relative_roi"] for _name, kwargs in ocr_calls],
         )
 
-        self.assertTrue(result.success)
-        self.assertTrue(result.depleted)
-        self.assertEqual(1, result.completed_submaps)
-        self.assertEqual([("Q_test", "main_area")], marks)
-        self.assertEqual([True], depleted_marks)
+        forbidden_clicks = []
+        forbidden_task = SimpleNamespace(
+            config={},
+            operate_click=lambda *args, **kwargs: forbidden_clicks.append((args, kwargs)),
+            sleep=lambda *_args: None,
+            log_warning=lambda *_args: None,
+            info_set=lambda *_args: None,
+        )
+        forbidden_collector = Collector(
+            forbidden_task,
+            vision,
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+        forbidden_collector.action_icons = SimpleNamespace(detect=lambda *_args: missing)
+        forbidden_result = forbidden_collector._use_action(ABSORB_ACTION)
+        self.assertFalse(forbidden_result.completed)
+        self.assertEqual([], forbidden_clicks)
 
 
 class CalendarTest(unittest.TestCase):
@@ -5207,13 +6546,24 @@ class ProgressTest(unittest.TestCase):
                     self.assertTrue(store.mark_target(card.card_id, target.key))
                     self.assertTrue(path.exists())
                     self.assertFalse(path.with_suffix(".json.tmp").exists())
+                self.assertTrue(store.mark_card_verified(card.card_id))
 
-            self.assertEqual(21, store.state.daily_submaps)
+            self.assertEqual(DAILY_ABSORB_LIMIT, store.state.daily_absorbs)
+            self.assertEqual(14, store.state.daily_summons)
+            self.assertEqual(14, store.state.daily_suppressions)
             self.assertTrue(store.state.depleted_today)
             self.assertEqual(21, store.state.weekly_submap_count)
+            self.assertTrue(
+                all(store.state.card_verified(card.card_id) for card in COLLECTABLE_CARDS[:7])
+            )
             with self.assertRaisesRegex(RuntimeError, "daily collection limit"):
                 next_card = COLLECTABLE_CARDS[7]
                 store.mark_target(next_card.card_id, next_card.targets[0].key)
+
+    def test_collection_skill_limits_match_three_two_two_per_card(self):
+        self.assertEqual(21, DAILY_ABSORB_LIMIT)
+        self.assertEqual(21, DAILY_SUMMON_LIMIT)
+        self.assertEqual(60, DAILY_SUPPRESS_LIMIT)
 
     def test_progress_rejects_pinned_collection_cards(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -5226,23 +6576,42 @@ class ProgressTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "invalid collection card"):
                 store.mark_target("Q_sp6", CollectionMapRole.MAIN_AREA.value)
 
+    def test_card_visual_verification_requires_all_three_map_roles(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = ProgressStore(
+                Path(temp_dir) / "progress.json",
+                lambda: datetime(2026, 8, 3, 12, tzinfo=UTC_PLUS_8),
+            )
+            store.load()
+            store.mark_target("Q_sp1", CollectionMapRole.MAIN_AREA.value)
+
+            with self.assertRaisesRegex(RuntimeError, "targets are incomplete"):
+                store.mark_card_verified("Q_sp1")
+
+            self.assertFalse(store.state.card_verified("Q_sp1"))
+
     def test_daily_reset_preserves_weekly_submaps(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "progress.json"
             now = [datetime(2026, 7, 12, 3, 59, tzinfo=UTC_PLUS_8)]
             store = ProgressStore(path, lambda: now[0])
             store.load()
-            store.mark_target("Q_sp1", CollectionMapRole.MAIN_AREA.value)
+            for target in CARD_BY_ID["Q_sp1"].targets:
+                store.mark_target("Q_sp1", target.key)
+            store.mark_card_verified("Q_sp1")
             now[0] = datetime(2026, 7, 12, 4, 0, tzinfo=UTC_PLUS_8)
 
             state = ProgressStore(path, lambda: now[0]).load()
 
             self.assertEqual(
-                {CollectionMapRole.MAIN_AREA.value},
+                {target.key for target in CARD_BY_ID["Q_sp1"].targets},
                 state.completed_targets("Q_sp1"),
             )
             self.assertEqual(0, state.daily_submaps)
+            self.assertEqual(0, state.daily_summons)
+            self.assertEqual(0, state.daily_suppressions)
             self.assertFalse(state.depleted_today)
+            self.assertTrue(state.card_verified("Q_sp1"))
 
     def test_weekly_reset_clears_submaps(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -5257,6 +6626,7 @@ class ProgressTest(unittest.TestCase):
 
             self.assertEqual({}, state.cards)
             self.assertEqual(0, state.weekly_submap_count)
+            self.assertEqual([], state.verified_cards)
 
     def test_all_seventeen_cards_make_fifty_one_weekly_targets(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -5300,10 +6670,46 @@ class ProgressTest(unittest.TestCase):
             saved = json.loads(path.read_text(encoding="utf-8"))
 
             self.assertEqual({}, state.cards)
-            self.assertEqual(5, state.daily_submaps)
+            self.assertEqual(0, state.daily_submaps)
+            self.assertEqual(0, state.daily_summons)
+            self.assertEqual(0, state.daily_suppressions)
             self.assertEqual({"S1"}, state.completed_favorite_cards)
             self.assertEqual(weekly_cycle_key(now), state.cooking_week)
             self.assertEqual(STATE_SCHEMA_VERSION, saved["schema_version"])
+
+    def test_schema_two_collection_progress_resets_for_role_specific_flow(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "progress.json"
+            now = datetime(2026, 8, 3, 12, tzinfo=UTC_PLUS_8)
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "weekly_key": weekly_cycle_key(now),
+                        "daily_key": daily_cycle_key(now),
+                        "cards": {
+                            "Q_sp1": [
+                                "main_area",
+                                "battle_area_1",
+                                "battle_area_2",
+                            ]
+                        },
+                        "daily_submaps": 3,
+                        "depleted_today": False,
+                        "favorite_week": weekly_cycle_key(now),
+                        "favorite_cards": ["S1"],
+                        "cooking_week": weekly_cycle_key(now),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            state = ProgressStore(path, lambda: now).load()
+
+            self.assertEqual({}, state.cards)
+            self.assertEqual(0, state.daily_absorbs)
+            self.assertEqual([], state.verified_cards)
+            self.assertEqual({"S1"}, state.completed_favorite_cards)
 
     def test_corrupt_file_recovers_and_keeps_backup(self):
         with tempfile.TemporaryDirectory() as temp_dir:

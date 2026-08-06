@@ -102,6 +102,7 @@ class SquareGoddessTask(BaseBD2Task):
         "女神像许愿 OCR",
         "广场每日导航",
         "广场导航文本 OCR",
+        "广场导航文字命中",
         "广场导航中",
         "女神像许愿结果",
         "匹配错误",
@@ -709,18 +710,25 @@ class SquareGoddessTask(BaseBD2Task):
             for box in boxes
             if getattr(box, "name", "")
         )
-        if not all(
-            self._matches_any(text, [term])
-            for term in GODDESS_NAVIGATION_TERMS
-        ):
+        normalized_text = self._normalize_text(text)
+        matched_characters = {
+            character
+            for character in GODDESS_NAVIGATION_TARGET
+            if character in normalized_text
+        }
+        self.info_set(
+            "广场导航文字命中",
+            f"{len(matched_characters)}/{len(GODDESS_NAVIGATION_TARGET)}",
+        )
+        if len(matched_characters) < GODDESS_NAVIGATION_MINIMUM_HITS:
             return None, text
 
         relevant_boxes = [
             box
             for box in boxes
             if any(
-                self._matches_any(getattr(box, "name", ""), [term])
-                for term in GODDESS_NAVIGATION_TERMS
+                character in self._normalize_text(getattr(box, "name", ""))
+                for character in GODDESS_NAVIGATION_TARGET
             )
         ]
         geometries = []
@@ -1395,7 +1403,8 @@ SQUARE_MISSION_NAVI_TEMPLATE = SquareTemplateSpec(
     roi=SquareGoddessTask._mf_roi(1168, 106, 69, 247),
 )
 
-GODDESS_NAVIGATION_TERMS = (r"移动至", r"艾力克史", r"温女")
+GODDESS_NAVIGATION_TARGET = "移动至艾力克史温女"
+GODDESS_NAVIGATION_MINIMUM_HITS = 6
 GODDESS_PRAY_PATTERNS = [r"向女神像许愿|女神像许愿|许愿"]
 GODDESS_PRAY_FALLBACK_POINT = (
     1412 / REFERENCE_WIDTH,

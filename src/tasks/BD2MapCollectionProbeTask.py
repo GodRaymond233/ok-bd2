@@ -17,7 +17,6 @@ from src.tasks.map_trade.models import (
 )
 from src.tasks.map_trade.navigator import (
     PROBE_QUICK_SWITCH_SCROLL_STEPS,
-    SANDBOX_MAP_TITLE_OCR_RELATIVE_ROI,
     TELEPORT_MAP_BACKWARD_TEMPLATE,
     TELEPORT_MAP_FORWARD_TEMPLATE,
     TELEPORT_MAP_RETURN_RELATIVE_POINT,
@@ -287,7 +286,8 @@ class BD2MapCollectionProbeTask(MapAutomationTaskBase):
                 "测试起始卡带": "选择本次测试的第一张卡带；与终止卡带相同即只测试一张。",
                 "测试终止卡带": "选择本次测试的最后一张卡带；起止范围包含两端。",
                 "目标角标最大滚轮次数": (
-                    "目标不在当前快速选择画面时，在画面底部每次向上滚轮一次并等待0.4秒。"
+                    "目标不在当前快速选择画面时，每批最多向上滚轮5次，"
+                    "次间隔0.1秒；每批完成后静置0.5秒再识别。"
                 ),
                 "传送阵地图名 OCR 重试次数": "同一地图页标题为空时的有限重试次数。",
                 "保存完成度截图": "保存用于同帧读取角标、吸取和压制状态的画面。",
@@ -307,7 +307,7 @@ class BD2MapCollectionProbeTask(MapAutomationTaskBase):
                     "type": "drop_down",
                     "options": list(COLLECTION_CARD_OPTIONS),
                 },
-                "目标角标最大滚轮次数": {"min": 1, "max": 60, "step": 1},
+                "目标角标最大滚轮次数": {"min": 1, "max": 30, "step": 1},
                 "传送阵地图名 OCR 重试次数": {"min": 1, "max": 10, "step": 1},
                 MAP_VISION_THRESHOLD_KEY: {"min": 0.50, "max": 0.95, "step": 0.01},
                 MAP_OCR_THRESHOLD_KEY: {"min": 0.05, "max": 0.95, "step": 0.01},
@@ -523,7 +523,7 @@ class BD2MapCollectionProbeTask(MapAutomationTaskBase):
         )
         scroll_steps = max(
             1,
-            min(60, int(self.config.get("目标角标最大滚轮次数", PROBE_QUICK_SWITCH_SCROLL_STEPS))),
+            min(30, int(self.config.get("目标角标最大滚轮次数", PROBE_QUICK_SWITCH_SCROLL_STEPS))),
         )
         observations: dict[str, list[dict]] = {
             card.card_id: [] for card in COLLECTABLE_CARDS
@@ -623,7 +623,9 @@ class BD2MapCollectionProbeTask(MapAutomationTaskBase):
                 break
 
             if index < len(cards):
-                reopened = navigator.open_story_quick_switcher_from_sandbox()
+                reopened = navigator.open_story_quick_switcher_from_sandbox(
+                    sandbox_already_confirmed=True,
+                )
                 value["quick_switch_reopened"] = reopened.success
                 if not reopened.success:
                     value["status"] = "quick_switch_reopen_failed"
@@ -639,7 +641,6 @@ class BD2MapCollectionProbeTask(MapAutomationTaskBase):
             "weekly_table": str(store.path),
             "weekly_key": weekly_state["weekly_key"],
             "geometry": {
-                "sandbox_map_title_roi": list(SANDBOX_MAP_TITLE_OCR_RELATIVE_ROI),
                 "teleport_map_title_roi": list(TELEPORT_MAP_TITLE_OCR_RELATIVE_ROI),
                 "teleport_map_return_point": list(TELEPORT_MAP_RETURN_RELATIVE_POINT),
             },
