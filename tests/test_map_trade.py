@@ -143,6 +143,7 @@ from src.tasks.map_trade.navigator import (
     SANDBOX_SKILL_GROUP_PIXEL_SCORE,
     SANDBOX_SKILL_GROUP_TEMPLATE_SCORE,
     SANDBOX_SKILL_GROUP_ZNCC_SCORE,
+    SANDBOX_SKILL_SELECTED_YELLOW_MIN_RATIO,
     SANDBOX_SKILL_SLOT_1_CENTER_ROI,
     SANDBOX_SKILL_SLOT_1_REFERENCE_CENTER,
     SANDBOX_SKILL_SLOT_1_RELATIVE_POINT,
@@ -152,6 +153,7 @@ from src.tasks.map_trade.navigator import (
     SANDBOX_SKILL_SLOT_2_SELECTED_TEMPLATE,
     SANDBOX_SKILL_SLOT_2_UNSELECTED_TEMPLATE,
     SANDBOX_SKILL_STATE_TEMPLATES,
+    SANDBOX_SKILL_UNSELECTED_YELLOW_MAX_RATIO,
     SANDBOX_TELEPORT_SKILL_POLL_INTERVAL,
     SANDBOX_TELEPORT_SKILL_RELATIVE_POINT,
     SANDBOX_TELEPORT_SKILL_TEMPLATE,
@@ -512,6 +514,40 @@ class VisionTest(unittest.TestCase):
         self.assertAlmostEqual(1 / 3, ratios[0])
         self.assertAlmostEqual(1 / 3, ratios[1])
         self.assertAlmostEqual(1 / 3, ratios[2])
+
+    def test_template_hsv_color_ratios_only_measure_alpha_pixels(self):
+        with tempfile.TemporaryDirectory() as directory:
+            template = np.zeros((2, 2, 4), dtype=np.uint8)
+            template[:, :, 3] = np.array([[255, 255], [255, 0]], dtype=np.uint8)
+            path = Path(directory) / "hsv-color-mask.png"
+            self.assertTrue(cv2.imwrite(str(path), template))
+            frame = np.array(
+                [
+                    [
+                        [0, 200, 255],
+                        [160, 160, 160],
+                    ],
+                    [
+                        [20, 20, 20],
+                        [0, 200, 255],
+                    ],
+                ],
+                dtype=np.uint8,
+            )
+            with patch(
+                "src.tasks.map_trade.vision.TEMPLATE_DIR",
+                Path(directory),
+            ):
+                ratios = Vision(FakeTask()).template_hsv_color_ratios(
+                    frame,
+                    TemplateSpec("hsv colors", path.name),
+                    MatchResult(1.0, (0, 0), (2, 2)),
+                )
+
+        self.assertIsNotNone(ratios)
+        self.assertAlmostEqual(1 / 3, ratios[0])
+        self.assertAlmostEqual(1 / 3, ratios[1])
+        self.assertAlmostEqual(2 / 3, ratios[2])
 
     def test_star_color_uses_saturation(self):
         match = MatchResult(0.9, (0, 0), (20, 20))
@@ -3566,6 +3602,65 @@ class CatalogAndSafetyTest(unittest.TestCase):
             "image/green/SandboxSkillSlot2UsedGE.png",
             SANDBOX_SKILL_SLOT_2_UNSELECTED_TEMPLATE.file_name,
         )
+        self.assertLess(
+            SANDBOX_SKILL_UNSELECTED_YELLOW_MAX_RATIO,
+            SANDBOX_SKILL_SELECTED_YELLOW_MIN_RATIO,
+        )
+
+    def test_story_sandbox_skill_group_uses_color_when_all_templates_match(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        passed_specs = {
+            SANDBOX_TEMPLATES[0],
+            *SANDBOX_SKILL_STATE_TEMPLATES,
+            ABSORB_ICON.template,
+            SEARCH_ICON.template,
+            SUMMON_ICON.template,
+        }
+        result = MatchResult(0.99, (100, 100), (40, 40), 0.96, 0.90)
+        selected_slot_specs = {
+            SANDBOX_SKILL_SLOT_1_SELECTED_TEMPLATE,
+            SANDBOX_SKILL_SLOT_1_UNSELECTED_TEMPLATE,
+        }
+        vision = SimpleNamespace(
+            match=lambda _frame, _spec: result,
+            passes=lambda _result, spec: spec in passed_specs,
+            template_hsv_color_ratios=lambda _frame, spec, _result: (
+                (0.55, 0.20, 0.90)
+                if spec in selected_slot_specs
+                else (0.01, 0.90, 0.60)
+            ),
+        )
+        navigator = Navigator(SimpleNamespace(info_set=lambda *_args: None), vision)
+
+        confirmation = navigator._match_story_sandbox_signals(frame)
+
+        self.assertEqual(4, confirmation.skill_state_hits)
+        self.assertEqual(1, confirmation.skill_group)
+        self.assertTrue(confirmation.passed)
+
+    def test_story_sandbox_skill_group_rejects_ambiguous_slot_color(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        result = MatchResult(0.99, (100, 100), (40, 40), 0.96, 0.90)
+        vision = SimpleNamespace(
+            template_hsv_color_ratios=lambda _frame, _spec, _result: (
+                0.15,
+                0.15,
+                0.80,
+            )
+        )
+        navigator = Navigator(SimpleNamespace(info_set=lambda *_args: None), vision)
+
+        state = navigator._sandbox_skill_slot_state(
+            frame,
+            SANDBOX_SKILL_SLOT_1_SELECTED_TEMPLATE,
+            result,
+            True,
+            SANDBOX_SKILL_SLOT_1_UNSELECTED_TEMPLATE,
+            result,
+            True,
+        )
+
+        self.assertEqual("unknown", state)
 
     def test_story_sandbox_confirmation_matches_all_signal_groups_and_accepts_three_actions(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)

@@ -179,8 +179,12 @@ SANDBOX_TEMPLATES = (
     QUICK_SWITCH_TEMPLATE,
 )
 SANDBOX_SKILL_GROUP_TEMPLATE_SCORE = 0.95
-SANDBOX_SKILL_GROUP_PIXEL_SCORE = 0.92
-SANDBOX_SKILL_GROUP_ZNCC_SCORE = 0.85
+# Structural gates retain candidates in complex backgrounds; HSV semantics
+# below decide whether a slot is selected or unselected.
+SANDBOX_SKILL_GROUP_PIXEL_SCORE = 0.80
+SANDBOX_SKILL_GROUP_ZNCC_SCORE = 0.64
+SANDBOX_SKILL_SELECTED_YELLOW_MIN_RATIO = 0.20
+SANDBOX_SKILL_UNSELECTED_YELLOW_MAX_RATIO = 0.10
 SANDBOX_SKILL_GROUP_SCALE_RATIOS = (0.90, 0.95, 1.0, 1.05, 1.10, 1.15, 1.20, 1.25, 1.30, 1.35)
 SANDBOX_SKILL_GROUP_SEARCH_ROI = (0.80, 0.85, 0.96, 1.0)
 SANDBOX_SKILL_SLOT_1_REFERENCE_CENTER = (1672, 1010)
@@ -1558,16 +1562,36 @@ class Navigator:
             for spec in SANDBOX_SKILL_STATE_TEMPLATES
         )
         skill_state_hits = sum(1 for _name, _result, passed in skill_matches if passed)
-        states = tuple(passed for _name, _result, passed in skill_matches)
+        slot_states = (
+            self._sandbox_skill_slot_state(
+                frame,
+                SANDBOX_SKILL_SLOT_1_SELECTED_TEMPLATE,
+                skill_matches[0][1],
+                skill_matches[0][2],
+                SANDBOX_SKILL_SLOT_1_UNSELECTED_TEMPLATE,
+                skill_matches[3][1],
+                skill_matches[3][2],
+            ),
+            self._sandbox_skill_slot_state(
+                frame,
+                SANDBOX_SKILL_SLOT_2_SELECTED_TEMPLATE,
+                skill_matches[2][1],
+                skill_matches[2][2],
+                SANDBOX_SKILL_SLOT_2_UNSELECTED_TEMPLATE,
+                skill_matches[1][1],
+                skill_matches[1][2],
+            ),
+        )
         skill_group = None
-        if states[0] and states[1] and not states[2] and not states[3]:
+        if slot_states == ("selected", "unselected"):
             skill_group = 1
-        elif states[2] and states[3] and not states[0] and not states[1]:
+        elif slot_states == ("unselected", "selected"):
             skill_group = 2
         self._status(
             "箱庭技能组状态",
             (
                 f"命中={skill_state_hits}/4；"
+                f"颜色状态={slot_states}；"
                 f"状态={'技能组' + str(skill_group) if skill_group else '未知/冲突'}；"
                 f"{self._format_sandbox_matches(skill_matches)}"
             ),
@@ -1605,6 +1629,63 @@ class Navigator:
             ),
         )
         return confirmation
+
+    def _sandbox_skill_slot_state(
+        self,
+        frame: np.ndarray,
+        selected_spec: TemplateSpec,
+        selected_result: MatchResult,
+        selected_passed: bool,
+        unselected_spec: TemplateSpec,
+        unselected_result: MatchResult,
+        unselected_passed: bool,
+    ) -> str:
+        """Classify one skill slot from structure plus masked HSV semantics."""
+
+        color_ratios = getattr(self.vision, "template_hsv_color_ratios", None)
+        if color_ratios is None:
+            # Lightweight test doubles may only provide structural evidence.
+            if selected_passed and not unselected_passed:
+                return "selected"
+            if unselected_passed and not selected_passed:
+                return "unselected"
+            return "unknown"
+
+        selected_colors = (
+            color_ratios(frame, selected_spec, selected_result)
+            if selected_passed
+            else None
+        )
+        unselected_colors = (
+            color_ratios(frame, unselected_spec, unselected_result)
+            if unselected_passed
+            else None
+        )
+        def format_colors(values: tuple[float, float, float] | None) -> str:
+            if values is None:
+                return "missing"
+            return f"y={values[0]:.3f},n={values[1]:.3f},b={values[2]:.3f}"
+        self._status(
+            "箱庭技能槽颜色",
+            (
+                f"{selected_spec.name}[{format_colors(selected_colors)}]；"
+                f"{unselected_spec.name}[{format_colors(unselected_colors)}]"
+            ),
+        )
+        selected_is_yellow = (
+            selected_colors is not None
+            and selected_colors[0] >= SANDBOX_SKILL_SELECTED_YELLOW_MIN_RATIO
+        )
+        unselected_is_gray = (
+            unselected_colors is not None
+            and unselected_colors[0] <= SANDBOX_SKILL_UNSELECTED_YELLOW_MAX_RATIO
+            and unselected_colors[1] >= 0.20
+        )
+        if selected_is_yellow and not unselected_is_gray:
+            return "selected"
+        if unselected_is_gray and not selected_is_yellow:
+            return "unselected"
+        return "unknown"
 
     def _click_sandbox_skill_group_1(self) -> None:
         """Switch to the first sandbox skill group using its calibrated center."""
