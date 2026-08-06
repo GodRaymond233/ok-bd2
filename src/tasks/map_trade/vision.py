@@ -432,6 +432,63 @@ class Vision:
             float(np.mean(neutral_pixels)),
         )
 
+    def template_hsv_color_ratios(
+        self,
+        frame: np.ndarray,
+        spec: TemplateSpec,
+        result: MatchResult,
+    ) -> tuple[float, float, float] | None:
+        """Measure yellow, neutral, and bright pixels under a match mask."""
+
+        left, top = result.position
+        width, height = result.size
+        right = left + width
+        bottom = top + height
+        if (
+            width <= 0
+            or height <= 0
+            or left < 0
+            or top < 0
+            or right > frame.shape[1]
+            or bottom > frame.shape[0]
+        ):
+            return None
+        crop = frame[top:bottom, left:right]
+        if crop.ndim == 2:
+            color = cv2.cvtColor(crop, cv2.COLOR_GRAY2BGR)
+        elif crop.shape[2] == 4:
+            color = cv2.cvtColor(crop, cv2.COLOR_BGRA2BGR)
+        else:
+            color = crop[:, :, :3]
+
+        _template, mask = self._load(spec)
+        if mask is None:
+            active = np.ones((height, width), dtype=bool)
+        else:
+            active = cv2.resize(
+                mask,
+                (width, height),
+                interpolation=cv2.INTER_NEAREST,
+            ) > 0
+        if not np.any(active):
+            return None
+
+        hsv = cv2.cvtColor(color, cv2.COLOR_BGR2HSV)
+        hue, saturation, value = hsv[active].T
+        yellow = (
+            (hue >= 8)
+            & (hue <= 38)
+            & (saturation >= 60)
+            & (value >= 75)
+        )
+        neutral = (saturation <= 55) & (value >= 50)
+        bright = value >= 130
+        return (
+            float(np.mean(yellow)),
+            float(np.mean(neutral)),
+            float(np.mean(bright)),
+        )
+
     def template_brightness_ratio(
         self,
         frame: np.ndarray,
