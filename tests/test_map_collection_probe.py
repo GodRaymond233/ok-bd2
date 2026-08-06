@@ -38,7 +38,6 @@ from src.tasks.map_trade.models import (
 from src.tasks.map_trade.navigator import (
     PROBE_QUICK_SWITCH_SCROLL_POINT,
     QUICK_SWITCH_SCROLL_FOCUS_POINT,
-    SANDBOX_MAP_TITLE_OCR_RELATIVE_ROI,
     TELEPORT_MAP_BACKWARD_TEMPLATE,
     TELEPORT_MAP_FORWARD_TEMPLATE,
     TELEPORT_MAP_RETURN_RELATIVE_POINT,
@@ -153,14 +152,10 @@ class MapCollectionProbeTaskTest(unittest.TestCase):
             set(range(1, 21)) - {card.number for card in COLLECTABLE_CARDS},
         )
         self.assertEqual(
-            (222 / 1920, 8 / 1080, 878 / 1920, 96 / 1080),
-            SANDBOX_MAP_TITLE_OCR_RELATIVE_ROI,
-        )
-        self.assertEqual(
             (654 / 1920, 946 / 1080, 1268 / 1920, 1021 / 1080),
             TELEPORT_MAP_TITLE_OCR_RELATIVE_ROI,
         )
-        self.assertEqual((135 / 1920, 51 / 1080), TELEPORT_MAP_RETURN_RELATIVE_POINT)
+        self.assertEqual((136 / 1920, 52 / 1080), TELEPORT_MAP_RETURN_RELATIVE_POINT)
         self.assertEqual((43 / 1920, 974 / 1080), PROBE_QUICK_SWITCH_SCROLL_POINT)
         self.assertEqual((43 / 1920, 974 / 1080), QUICK_SWITCH_SCROLL_FOCUS_POINT)
 
@@ -443,7 +438,7 @@ class MapCollectionProbeTaskTest(unittest.TestCase):
 
             @staticmethod
             def locate_story_card_for_probe(card_id, *, scan_steps):
-                self.assertGreaterEqual(scan_steps, 1)
+                self.assertEqual(30, scan_steps)
                 calls["locate"].append(card_id)
                 card = CARD_BY_ID[card_id]
                 return ProbedStoryCard(
@@ -466,7 +461,11 @@ class MapCollectionProbeTaskTest(unittest.TestCase):
                 return NavigationResult(True, ScreenState.SANDBOX, "returned")
 
             @staticmethod
-            def open_story_quick_switcher_from_sandbox():
+            def open_story_quick_switcher_from_sandbox(
+                *,
+                sandbox_already_confirmed=False,
+            ):
+                self.assertTrue(sandbox_already_confirmed)
                 calls["reopen"] += 1
                 return NavigationResult(True, ScreenState.CARD_MENU, "reopened")
 
@@ -516,9 +515,7 @@ class MapCollectionProbeTaskTest(unittest.TestCase):
         task.log_info = lambda *_args, **_kwargs: None
         task.sleep = lambda *_args: None
         task.write_probe_text = lambda name, *_args, **_kwargs: Path(name)
-        task._scan_teleport_map_pages = lambda *_args: TeleportMapScanResult(
-            True, (), 0, 0, "done"
-        )
+        task._scan_teleport_map_pages = lambda *_args: TeleportMapScanResult(True, (), 0, 0, "done")
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         located = []
 
@@ -555,7 +552,11 @@ class MapCollectionProbeTaskTest(unittest.TestCase):
                 lambda _number: NavigationResult(True, ScreenState.SANDBOX, "returned")
             )
             open_story_quick_switcher_from_sandbox = staticmethod(
-                lambda: NavigationResult(True, ScreenState.CARD_MENU, "reopened")
+                lambda **_kwargs: NavigationResult(
+                    True,
+                    ScreenState.CARD_MENU,
+                    "reopened",
+                )
             )
 
         class FakeStore:

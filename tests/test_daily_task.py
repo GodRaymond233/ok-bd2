@@ -28,6 +28,7 @@ from src.tasks.DailyTask import (
     QUICK_HUNT_DOUBLE_TEMPLATE,
     QUICK_HUNT_ENTRY_POINT,
     QUICK_HUNT_MAP_SCAN_ROI,
+    QUICK_HUNT_RED_POINT,
     QUICK_HUNT_RESOURCE_ROI,
     QUICK_HUNT_RETURN_POINT,
     QUICK_HUNT_REWARD_ROI,
@@ -574,14 +575,14 @@ class DailyTaskHelperTest(unittest.TestCase):
         self.assertEqual("Double.png", QUICK_HUNT_DOUBLE_TEMPLATE.file_name)
         self.assertEqual(QUICK_HUNT_DOUBLE_ROI, QUICK_HUNT_DOUBLE_TEMPLATE.relative_roi)
 
-    def test_quick_hunt_entry_pixel_uses_scaled_1920_reference_point(self):
+    def test_quick_hunt_red_diagnostic_uses_scaled_1920_reference_point(self):
         task = object.__new__(QuickHuntTask)
         frame = np.zeros((720, 1280, 3), dtype=np.uint8)
         frame[158, 1188] = (0, 0, 255)
 
         is_red, point, bgr, hsv = task._quick_hunt_entry_red_state(frame)
 
-        self.assertEqual((1782 / 1920, 237 / 1080), QUICK_HUNT_ENTRY_POINT)
+        self.assertEqual((1782 / 1920, 237 / 1080), QUICK_HUNT_RED_POINT)
         self.assertTrue(is_red)
         self.assertEqual((1188, 158), point)
         self.assertEqual((0, 0, 255), bgr)
@@ -616,24 +617,19 @@ class DailyTaskHelperTest(unittest.TestCase):
         gacha_text[0] = ""
         self.assertFalse(task._quick_hunt_home_signals(frame)[0])
 
-    def test_quick_hunt_open_menu_follows_home_red_click_and_ocr_sequence(self):
+    def test_quick_hunt_open_menu_prefers_home_ocr_center(self):
         task = object.__new__(QuickHuntTask)
         task.config = {"快速狩猎界面等待秒数": 8.0}
         task._wait_for_quick_hunt_home = lambda: True
-        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        task._quick_hunt_entry_red_state = lambda _frame: (
-            True,
-            (1782, 237),
-            (0, 0, 255),
-            (0, 255, 255),
-        )
-        sleeps = []
         clicks = []
+        click_ocr_calls = []
         ocr_calls = []
         statuses = {}
-        task.sleep = lambda seconds: sleeps.append(seconds)
         task.operate_click = lambda x, y, **kwargs: clicks.append((x, y, kwargs))
         task.info_set = lambda key, value: statuses.__setitem__(key, value)
+        task._quick_hunt_click_ocr = lambda patterns, roi, timeout, name: (
+            click_ocr_calls.append((patterns, roi, timeout, name)) or True
+        )
 
         def wait_ocr(patterns, roi, timeout, name):
             ocr_calls.append((patterns, roi, timeout, name))
@@ -642,16 +638,36 @@ class DailyTaskHelperTest(unittest.TestCase):
         task._quick_hunt_wait_ocr = wait_ocr
 
         self.assertEqual("opened", task._quick_hunt_open_menu())
-        self.assertEqual([0.5, 0.5], sleeps)
-        self.assertEqual(
-            [(QUICK_HUNT_ENTRY_POINT[0], QUICK_HUNT_ENTRY_POINT[1], {"after_sleep": 1.0})],
-            clicks,
-        )
+        self.assertEqual([([r"^快速狩猎$"], None, 8.0, "主页快速狩猎入口")], click_ocr_calls)
+        self.assertEqual([], clicks)
         self.assertEqual([r"狩猎场"], ocr_calls[0][0])
         self.assertIsNone(ocr_calls[0][1])
         self.assertEqual(8.0, ocr_calls[0][2])
         self.assertEqual("快速狩猎菜单确认", ocr_calls[0][3])
+        self.assertEqual("已进入", statuses["快速狩猎入口"])
         self.assertEqual("狩猎场", statuses["快速狩猎菜单"])
+
+    def test_quick_hunt_open_menu_uses_reference_center_when_ocr_misses(self):
+        task = object.__new__(QuickHuntTask)
+        task.config = {"快速狩猎界面等待秒数": 8.0}
+        task._wait_for_quick_hunt_home = lambda: True
+        task._quick_hunt_click_ocr = lambda *_args, **_kwargs: False
+        task._quick_hunt_wait_ocr = lambda *_args, **_kwargs: (
+            "狩猎场",
+            SimpleNamespace(),
+        )
+        clicks = []
+        statuses = {}
+        task.operate_click = lambda x, y, **kwargs: clicks.append((x, y, kwargs))
+        task.info_set = lambda key, value: statuses.__setitem__(key, value)
+
+        self.assertEqual("opened", task._quick_hunt_open_menu())
+        self.assertEqual((1756 / 1920, 262 / 1080), QUICK_HUNT_ENTRY_POINT)
+        self.assertEqual(
+            [(*QUICK_HUNT_ENTRY_POINT, {"after_sleep": 1.0})],
+            clicks,
+        )
+        self.assertEqual("已进入", statuses["快速狩猎入口"])
 
     def test_quick_hunt_wait_ocr_scans_full_frame_and_reports_text(self):
         task = object.__new__(QuickHuntTask)
@@ -699,26 +715,24 @@ class DailyTaskHelperTest(unittest.TestCase):
 
         self.assertEqual("failed", task._quick_hunt_open_menu())
 
-    def test_quick_hunt_open_menu_skips_when_entry_pixel_is_not_red(self):
+    def test_quick_hunt_open_menu_does_not_use_red_pixel_as_gate(self):
         task = object.__new__(QuickHuntTask)
         task.config = {}
         task._wait_for_quick_hunt_home = lambda: True
-        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        task._quick_hunt_entry_red_state = lambda _frame: (
-            False,
-            (1782, 237),
-            (40, 40, 40),
-            (0, 0, 40),
+        task._quick_hunt_entry_red_state = lambda _frame: self.fail(
+            "normal flow must not inspect the unreliable red pixel"
         )
-        sleeps = []
-        task.sleep = lambda seconds: sleeps.append(seconds)
+        task._quick_hunt_click_ocr = lambda *_args, **_kwargs: True
+        task._quick_hunt_wait_ocr = lambda *_args, **_kwargs: (
+            "狩猎场",
+            SimpleNamespace(),
+        )
         task.operate_click = lambda *_args, **_kwargs: self.fail(
-            "non-red entry must not be clicked"
+            "OCR success must not use the fixed-coordinate fallback"
         )
         task.info_set = lambda *_args, **_kwargs: None
 
-        self.assertEqual("skip", task._quick_hunt_open_menu())
-        self.assertEqual([0.5], sleeps)
+        self.assertEqual("opened", task._quick_hunt_open_menu())
 
     def test_quick_hunt_map_scan_scrolls_down_at_most_six_times_and_clicks_ocr_center(self):
         task = object.__new__(QuickHuntTask)
