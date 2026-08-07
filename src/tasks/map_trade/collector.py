@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import dataclass
 from time import monotonic
 
@@ -39,7 +40,10 @@ SEARCH_COUNTDOWN_TIMEOUT = 3.0
 SEARCH_COUNTDOWN_INTERVAL = 0.25
 SEARCH_COUNTDOWN_PATTERN = re.compile(r"^\d{1,3}$")
 SKILL_MENU_OPEN_RELATIVE_POINT = (1203 / 1280, 664 / 720)
-ACTION_AFTER_CLICK_SECONDS = 2.0
+ACTION_AFTER_CLICK_SECONDS = 0.0
+ACTION_OCR_WINDOW_SAMPLES = 3
+ACTION_OCR_WINDOW_INTERVAL = 0.25
+ACTION_FEEDBACK_CHARACTER_RATIO = 0.80
 UNSUPPORTED_COLLECTION_CARD_NUMBERS = frozenset({14})
 SKILL_REFERENCE_SIZE = (1920, 1080)
 
@@ -91,6 +95,19 @@ SEARCH_COUNTDOWN_FALLBACK_REFERENCE_ROI = (1534, 940, 82, 140)
 SEARCH_COUNTDOWN_FALLBACK_RELATIVE_ROI = _relative_reference_roi(
     SEARCH_COUNTDOWN_FALLBACK_REFERENCE_ROI
 )
+ACTION_FEEDBACK_REFERENCE_ROI = (735, 210, 1182 - 735, 270 - 210)
+ACTION_FEEDBACK_RELATIVE_ROI = _relative_reference_roi(ACTION_FEEDBACK_REFERENCE_ROI)
+ACTION_SUCCESS_FEEDBACK = {
+    "探查": ("在秒内确认隐藏物品的位置",),
+    "吸收": (),
+    "召集": ("召集带奖励的战场怪物",),
+    "压制": ("已制伏地图内所有的怪物",),
+}
+ACTION_FAILURE_FEEDBACK = {
+    "吸收": ("周围没有可以吸收的拾取物",),
+    "召集": ("无可召集的战场怪物",),
+    "压制": ("没有可制伏的怪物",),
+}
 
 
 @dataclass(frozen=True)
@@ -117,6 +134,14 @@ class SkillExecutionResult:
 class SearchCountdownSession:
     relative_roi: tuple[float, float, float, float]
     value: int
+
+
+@dataclass(frozen=True)
+class SkillFeedbackObservation:
+    text: str
+    outcome: str | None
+    ratio: float = 0.0
+    keyword: str = ""
 
 
 # The counter is positioned relative to the icon on the live client. Keeping
@@ -533,6 +558,84 @@ class Collector:
         )
         return True
 
+    @staticmethod
+    def _feedback_character_ratio(text: str, keyword: str) -> float:
+        actual = Counter(character for character in text if character.isalnum())
+        expected = Counter(character for character in keyword if character.isalnum())
+        expected_count = sum(expected.values())
+        if expected_count <= 0:
+            return 0.0
+        return sum((actual & expected).values()) / expected_count
+
+    def _read_action_feedback(self, action: SkillAction) -> SkillFeedbackObservation:
+        best = SkillFeedbackObservation("", None)
+        keywords = (
+            *(('success', value) for value in ACTION_SUCCESS_FEEDBACK[action.name]),
+            *(('failure', value) for value in ACTION_FAILURE_FEEDBACK.get(action.name, ())),
+        )
+        for attempt in range(ACTION_OCR_WINDOW_SAMPLES):
+            text = self.vision.ocr_text(
+                self.vision.capture(),
+                f"{action.name}执行反馈",
+                relative_roi=ACTION_FEEDBACK_RELATIVE_ROI,
+                target_height=1080,
+            )
+            for outcome, keyword in keywords:
+                ratio = self._feedback_character_ratio(text, keyword)
+                if ratio > best.ratio:
+                    best = SkillFeedbackObservation(text, outcome, ratio, keyword)
+            if text and not best.text:
+                best = SkillFeedbackObservation(text, None)
+            if attempt + 1 < ACTION_OCR_WINDOW_SAMPLES:
+                self.task.sleep(ACTION_OCR_WINDOW_INTERVAL)
+        matched_outcome = (
+            best.outcome
+            if best.ratio >= ACTION_FEEDBACK_CHARACTER_RATIO
+            else None
+        )
+        observation = SkillFeedbackObservation(
+            best.text,
+            matched_outcome,
+            best.ratio,
+            best.keyword,
+        )
+        self._status(
+            f"{action.name}执行反馈",
+            (
+                f"outcome={observation.outcome or 'unknown'}; "
+                f"ratio={observation.ratio:.3f}; "
+                f"text={observation.text or '-'}"
+            ),
+        )
+        return observation
+
+    def _read_count_window(
+        self,
+        action: SkillAction,
+        detection: ActionIconDetection | None = None,
+    ) -> tuple[int, int] | None:
+        samples: list[tuple[int, int]] = []
+        for attempt in range(ACTION_OCR_WINDOW_SAMPLES):
+            count = self._read_count(action, detection)
+            if count is not None:
+                samples.append(count)
+            if attempt + 1 < ACTION_OCR_WINDOW_SAMPLES:
+                self.task.sleep(ACTION_OCR_WINDOW_INTERVAL)
+        if not samples:
+            return None
+        count, occurrences = Counter(samples).most_common(1)[0]
+        if occurrences < 2:
+            self._status(
+                f"{action.name}次数窗口",
+                f"不稳定：{samples}",
+            )
+            return None
+        self._status(
+            f"{action.name}次数窗口",
+            f"稳定={count[0]}/{count[1]}；samples={samples}",
+        )
+        return count
+
     def _start_search(
         self,
         *,
@@ -560,6 +663,15 @@ class Collector:
                 detection.match.center,
                 frame.shape,
                 after_sleep=ACTION_AFTER_CLICK_SECONDS,
+            )
+        feedback = self._read_action_feedback(search_action)
+        if feedback.outcome != "success":
+            return SkillExecutionResult(
+                False,
+                message=(
+                    "探查点击后未确认执行反馈："
+                    f"ratio={feedback.ratio:.3f}, text={feedback.text or '-'}"
+                ),
             )
         end_at = monotonic() + SEARCH_COUNTDOWN_TIMEOUT
         last_text = ""
@@ -652,14 +764,11 @@ class Collector:
                 return SkillExecutionResult(False, message=f"未识别到{action.name}图标")
             return SkillExecutionResult(False, message=f"{action.name}图标状态未知")
 
-        before = self._read_count(action, detection)
+        before = self._read_count_window(action, detection)
         if before is None:
             return SkillExecutionResult(False, message=f"{action.name}次数 OCR 失败")
         self._status(f"{action.name}次数", f"{before[0]}/{before[1]}")
-        if detection.state is ActionIconState.USED:
-            self._status(f"{action.name}状态", "当前地图已使用")
-            return SkillExecutionResult(True, before[0] >= before[1])
-        if before[0] >= before[1]:
+        if detection.state is ActionIconState.AVAILABLE and before[0] >= before[1]:
             return SkillExecutionResult(
                 False,
                 True,
@@ -671,31 +780,57 @@ class Collector:
             frame.shape,
             after_sleep=ACTION_AFTER_CLICK_SECONDS,
         )
+        feedback = self._read_action_feedback(action)
         post_frame = self.vision.capture()
         post_detection = self.action_icons.detect(post_frame, action.icon)
         self._report_icon_detection(action, post_detection)
         count_detection = post_detection if post_detection.present else detection
-        after = self._read_count(action, count_detection)
+        after = self._read_count_window(action, count_detection)
         if after is None:
             return SkillExecutionResult(False, message=f"{action.name}次数 OCR 失败")
         self._status(f"{action.name}次数", f"{after[0]}/{after[1]}")
-        if after[0] <= before[0]:
-            if post_detection.state is not ActionIconState.USED:
-                return SkillExecutionResult(
-                    False,
-                    message=f"{action.name}次数未增加且图标未变为已使用",
-                )
-        return SkillExecutionResult(True, after[0] >= after[1])
+        count_increased = after[1] == before[1] and after[0] == before[0] + 1
+        count_unchanged = after == before
+        icon_used = post_detection.state is ActionIconState.USED
+        feedback_success = feedback.outcome == "success"
+        if action.name == "吸收" and feedback.outcome is None and feedback.text:
+            feedback_success = True
+            self._status("吸收成功反馈待标定", feedback.text)
+        if count_increased and icon_used and feedback_success:
+            return SkillExecutionResult(True, after[0] >= after[1])
+        if (
+            detection.state is ActionIconState.USED
+            and count_unchanged
+            and icon_used
+            and feedback.outcome == "failure"
+        ):
+            self._status(f"{action.name}状态", "当前地图已使用，失败反馈已确认")
+            return SkillExecutionResult(True, after[0] >= after[1])
+        return SkillExecutionResult(
+            False,
+            after[0] >= after[1],
+            (
+                f"{action.name}执行证据不一致："
+                f"count={before[0]}/{before[1]}->{after[0]}/{after[1]}, "
+                f"icon={detection.state.value}->{post_detection.state.value}, "
+                f"feedback={feedback.outcome or 'unknown'}, "
+                f"text={feedback.text or '-'}"
+            ),
+        )
 
     def _use_action_fixed(self, action: SkillAction) -> SkillExecutionResult:
         """Click a known map-role action even when its icon identity is absent."""
 
-        before = self._read_count(action)
+        before = self._read_count_window(action)
         if before is not None:
             self._status(f"{action.name}次数", f"{before[0]}/{before[1]}（固定框点击前）")
         if not self._click_fixed_action(action):
             return SkillExecutionResult(False, message=f"{action.name}没有固定回退中心")
-        after = self._read_count(action)
+        feedback = self._read_action_feedback(action)
+        post_frame = self.vision.capture()
+        post_detection = self.action_icons.detect(post_frame, action.icon)
+        self._report_icon_detection(action, post_detection)
+        after = self._read_count_window(action)
         if after is None:
             return SkillExecutionResult(False, message=f"{action.name}次数 OCR 失败")
         self._status(f"{action.name}次数", f"{after[0]}/{after[1]}（固定框点击后）")
@@ -705,7 +840,29 @@ class Collector:
                 True,
                 f"{action.name}固定框 OCR 显示次数已达到 {after[0]}/{after[1]}",
             )
-        return SkillExecutionResult(True, after[0] >= after[1])
+        feedback_success = feedback.outcome == "success"
+        if action.name == "吸收" and feedback.outcome is None and feedback.text:
+            feedback_success = True
+            self._status("吸收成功反馈待标定", feedback.text)
+        if (
+            before is not None
+            and after[1] == before[1]
+            and after[0] == before[0] + 1
+            and post_detection.state is ActionIconState.USED
+            and feedback_success
+        ):
+            return SkillExecutionResult(True, after[0] >= after[1])
+        return SkillExecutionResult(
+            False,
+            after[0] >= after[1],
+            (
+                f"{action.name}固定框执行证据不一致："
+                f"count={before or '-'}->{after}, "
+                f"icon={post_detection.state.value}, "
+                f"feedback={feedback.outcome or 'unknown'}, "
+                f"text={feedback.text or '-'}"
+            ),
+        )
 
     def _use_skills(self) -> SkillExecutionResult:
         """Compatibility helper for focused skill tests; formal flow is role-specific."""
