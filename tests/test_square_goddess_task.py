@@ -10,6 +10,8 @@ from src.tasks.SquareGoddessTask import (
     GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO,
     GAMEPLAY_CATEGORY_HIGHLIGHT_REGION,
     GODDESS_DAILY_REGION,
+    GODDESS_NAVIGATION_MINIMUM_HITS,
+    GODDESS_NAVIGATION_TARGET,
     GODDESS_PRAY_FALLBACK_POINT,
     QUICK_SWITCH_PAGE_PATTERNS,
     QUICK_SWITCH_TEMPLATE,
@@ -466,10 +468,11 @@ class SquareGoddessEntryTest(unittest.TestCase):
 
         self.assertEqual((1656, 229), point)
 
-    def test_navigation_ocr_rejects_only_six_target_characters(self):
+    def test_navigation_ocr_accepts_six_of_nine_target_characters(self):
         task = object.__new__(SquareGoddessTask)
         task.config = {"广场 OCR 阈值": 0.2}
-        task.info_set = lambda *_args, **_kwargs: None
+        statuses = {}
+        task.info_set = lambda key, value: statuses.__setitem__(key, value)
         task._ocr_boxes = lambda *_args, **_kwargs: [
             SimpleNamespace(name="移动至艾力克", x=40, y=20, width=120, height=20),
         ]
@@ -481,6 +484,54 @@ class SquareGoddessEntryTest(unittest.TestCase):
             name="广场导航文本",
         )
 
+        self.assertEqual("移动至艾力克史温女", GODDESS_NAVIGATION_TARGET)
+        self.assertEqual(6, GODDESS_NAVIGATION_MINIMUM_HITS)
+        self.assertEqual("6/9", statuses["广场导航文字命中"])
+        self.assertEqual((1646, 229), point)
+
+    def test_navigation_ocr_accepts_traditional_wen_from_live_log(self):
+        task = object.__new__(SquareGoddessTask)
+        task.config = {"广场 OCR 阈值": 0.2}
+        statuses = {}
+        task.info_set = lambda key, value: statuses.__setitem__(key, value)
+        task._ocr_boxes = lambda *_args, **_kwargs: [
+            SimpleNamespace(
+                name="每日奖励 E 移动至艾力克史溫女 +",
+                x=0,
+                y=0,
+                width=240,
+                height=20,
+            ),
+        ]
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+
+        point, text = SquareGoddessTask._goddess_navigation_click_point(
+            task,
+            frame,
+            name="广场导航文本",
+        )
+
+        self.assertEqual("8/9", statuses["广场导航文字命中"])
+        self.assertEqual((1666, 209), point)
+        self.assertIn("艾力克史溫女", text)
+
+    def test_navigation_ocr_rejects_only_five_target_characters(self):
+        task = object.__new__(SquareGoddessTask)
+        task.config = {"广场 OCR 阈值": 0.2}
+        statuses = {}
+        task.info_set = lambda key, value: statuses.__setitem__(key, value)
+        task._ocr_boxes = lambda *_args, **_kwargs: [
+            SimpleNamespace(name="移动至艾力", x=40, y=20, width=100, height=20),
+        ]
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+
+        point, _text = SquareGoddessTask._goddess_navigation_click_point(
+            task,
+            frame,
+            name="广场导航文本",
+        )
+
+        self.assertEqual("5/9", statuses["广场导航文字命中"])
         self.assertIsNone(point)
 
     def test_navigation_ocr_rejects_another_destination(self):

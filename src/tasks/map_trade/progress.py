@@ -8,10 +8,17 @@ from pathlib import Path
 from typing import Callable
 
 from src.tasks.map_trade.data import SHOP_PURCHASE_REFERENCES
-from src.tasks.map_trade.models import COLLECTABLE_CARDS, DAILY_SUBMAP_LIMIT
+from src.tasks.map_trade.models import (
+    COLLECTABLE_CARDS,
+    DAILY_ABSORB_LIMIT,
+    DAILY_SUBMAP_LIMIT,
+    DAILY_SUMMON_LIMIT,
+    DAILY_SUPPRESS_LIMIT,
+    CollectionMapRole,
+)
 
 UTC_PLUS_8 = timezone(timedelta(hours=8), name="UTC+8")
-STATE_SCHEMA_VERSION = 2
+STATE_SCHEMA_VERSION = 3
 VALID_CARD_IDS = frozenset(card.card_id for card in COLLECTABLE_CARDS)
 VALID_TARGET_KEYS = {
     card.card_id: frozenset(target.key for target in card.targets) for card in COLLECTABLE_CARDS
@@ -40,7 +47,10 @@ class ProgressState:
     daily_key: str
     cards: dict[str, list[str]] = field(default_factory=dict)
     daily_submaps: int = 0
+    daily_summons: int = 0
+    daily_suppressions: int = 0
     depleted_today: bool = False
+    verified_cards: list[str] = field(default_factory=list)
     favorite_week: str = ""
     favorite_cards: list[str] = field(default_factory=list)
     cooking_week: str = ""
@@ -52,6 +62,19 @@ class ProgressState:
     @property
     def weekly_submap_count(self) -> int:
         return sum(len(self.completed_targets(card_id)) for card_id in self.cards)
+
+    @property
+    def daily_absorbs(self) -> int:
+        return self.daily_submaps
+
+    def card_complete(self, card_id: str) -> bool:
+        return self.completed_targets(card_id) == VALID_TARGET_KEYS.get(
+            card_id,
+            frozenset(),
+        )
+
+    def card_verified(self, card_id: str) -> bool:
+        return card_id in self.verified_cards and self.card_complete(card_id)
 
     @property
     def completed_favorite_cards(self) -> set[str]:
@@ -79,29 +102,31 @@ class ProgressStore:
             self.save()
             return self.state
 
-        if raw.get("schema_version") != STATE_SCHEMA_VERSION:
+        schema_version = self._safe_nonnegative_int(raw.get("schema_version", 0))
+        if schema_version != STATE_SCHEMA_VERSION:
             self.state = ProgressState(
                 weekly_key=week,
-                daily_key=str(raw.get("daily_key", day)),
-                daily_submaps=self._safe_nonnegative_int(raw.get("daily_submaps", 0)),
-                depleted_today=bool(raw.get("depleted_today", False)),
+                daily_key=day,
                 favorite_week=str(raw.get("favorite_week", "")),
                 favorite_cards=self._sanitize_favorite_cards(raw.get("favorite_cards", [])),
                 cooking_week=str(raw.get("cooking_week", "")),
             )
-            if self.state.daily_key != day:
-                self.state.daily_key = day
-                self.state.daily_submaps = 0
-                self.state.depleted_today = False
             self.save()
             return self.state
 
+        cards = self._sanitize_cards(raw.get("cards", {}))
         self.state = ProgressState(
             weekly_key=week,
             daily_key=str(raw.get("daily_key", day)),
-            cards=self._sanitize_cards(raw.get("cards", {})),
+            cards=cards,
             daily_submaps=self._safe_nonnegative_int(raw.get("daily_submaps", 0)),
+            daily_summons=self._safe_nonnegative_int(raw.get("daily_summons", 0)),
+            daily_suppressions=self._safe_nonnegative_int(raw.get("daily_suppressions", 0)),
             depleted_today=bool(raw.get("depleted_today", False)),
+            verified_cards=self._sanitize_verified_cards(
+                raw.get("verified_cards", []),
+                cards,
+            ),
             favorite_week=str(raw.get("favorite_week", "")),
             favorite_cards=self._sanitize_favorite_cards(raw.get("favorite_cards", [])),
             cooking_week=str(raw.get("cooking_week", "")),
@@ -109,6 +134,8 @@ class ProgressStore:
         if self.state.daily_key != day:
             self.state.daily_key = day
             self.state.daily_submaps = 0
+            self.state.daily_summons = 0
+            self.state.daily_suppressions = 0
             self.state.depleted_today = False
             self.save()
         return self.state
@@ -141,6 +168,16 @@ class ProgressStore:
             return []
         return sorted({str(value) for value in raw_cards} & VALID_FAVORITE_SHOP_IDS)
 
+    @staticmethod
+    def _sanitize_verified_cards(raw_cards, cards: dict[str, list[str]]) -> list[str]:
+        if not isinstance(raw_cards, list):
+            return []
+        verified = []
+        for card_id in sorted({str(value) for value in raw_cards} & VALID_CARD_IDS):
+            if set(cards.get(card_id, [])) == VALID_TARGET_KEYS[card_id]:
+                verified.append(card_id)
+        return verified
+
     def _read_json(self) -> dict:
         if not self.path.exists():
             return {}
@@ -165,7 +202,14 @@ class ProgressStore:
             "daily_key": self.state.daily_key,
             "cards": self.state.cards,
             "daily_submaps": self.state.daily_submaps,
+            "daily_summons": self.state.daily_summons,
+            "daily_suppressions": self.state.daily_suppressions,
             "depleted_today": self.state.depleted_today,
+            "verified_cards": sorted(
+                card_id
+                for card_id in self.state.verified_cards
+                if self.state.card_complete(card_id)
+            ),
             "favorite_week": self.state.favorite_week,
             "favorite_cards": sorted(self.state.completed_favorite_cards),
             "cooking_week": self.state.cooking_week,
@@ -188,15 +232,47 @@ class ProgressStore:
         completed = state.completed_targets(card_id)
         if target_key in completed:
             return False
-        if state.daily_submaps >= DAILY_SUBMAP_LIMIT:
+        is_battle = target_key in {
+            CollectionMapRole.BATTLE_AREA_1.value,
+            CollectionMapRole.BATTLE_AREA_2.value,
+        }
+        if state.daily_submaps >= DAILY_ABSORB_LIMIT:
             state.depleted_today = True
             self.save()
             raise RuntimeError("daily collection limit reached")
+        if is_battle and state.daily_summons >= DAILY_SUMMON_LIMIT:
+            state.depleted_today = True
+            self.save()
+            raise RuntimeError("daily summon limit reached")
+        if is_battle and state.daily_suppressions >= DAILY_SUPPRESS_LIMIT:
+            state.depleted_today = True
+            self.save()
+            raise RuntimeError("daily suppression limit reached")
         completed.add(target_key)
         state.cards[card_id] = sorted(completed)
         state.daily_submaps += 1
-        if state.daily_submaps >= DAILY_SUBMAP_LIMIT:
+        if is_battle:
+            state.daily_summons += 1
+            state.daily_suppressions += 1
+        if (
+            state.daily_submaps >= DAILY_SUBMAP_LIMIT
+            or state.daily_summons >= DAILY_SUMMON_LIMIT
+            or state.daily_suppressions >= DAILY_SUPPRESS_LIMIT
+        ):
             state.depleted_today = True
+        self.save()
+        return True
+
+    def mark_card_verified(self, card_id: str) -> bool:
+        if card_id not in VALID_CARD_IDS:
+            raise ValueError(f"invalid collection card: {card_id}")
+        state = self._require_state()
+        if not state.card_complete(card_id):
+            raise RuntimeError("collection card targets are incomplete")
+        if card_id in state.verified_cards:
+            return False
+        state.verified_cards.append(card_id)
+        state.verified_cards.sort()
         self.save()
         return True
 

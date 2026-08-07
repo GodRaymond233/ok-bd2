@@ -102,6 +102,7 @@ class SquareGoddessTask(BaseBD2Task):
         "女神像许愿 OCR",
         "广场每日导航",
         "广场导航文本 OCR",
+        "广场导航文字命中",
         "广场导航中",
         "女神像许愿结果",
         "匹配错误",
@@ -1418,7 +1419,7 @@ SQUARE_MISSION_NAVI_TEMPLATE = SquareTemplateSpec(
 )
 
 GODDESS_NAVIGATION_TARGET = "移动至艾力克史温女"
-GODDESS_NAVIGATION_MINIMUM_HITS = 7
+GODDESS_NAVIGATION_MINIMUM_HITS = 6
 GODDESS_PRAY_PATTERNS = [r"向女神像许愿|女神像许愿|许愿"]
 GODDESS_PRAY_FALLBACK_POINT = (
     1412 / REFERENCE_WIDTH,

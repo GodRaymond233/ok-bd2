@@ -8,7 +8,11 @@ import cv2
 import numpy as np
 from qfluentwidgets import FluentIcon
 
-from src.tasks.BaseBD2Task import BaseBD2Task, green_mask_from_template
+from src.tasks.BaseBD2Task import (
+    RECENT_CARTRIDGE_SPECIAL_PAGE_MAX_ACTIONS,
+    BaseBD2Task,
+    green_mask_from_template,
+)
 from src.utils.home_confirmation import (
     HOME_GACHA_OCR_REFERENCE_ROI,
     home_confirmation_passes,
@@ -50,6 +54,9 @@ GAMEPLAY_CARTRIDGE_POINT = (988 / REFERENCE_WIDTH, 876 / REFERENCE_HEIGHT)
 PVP_CARTRIDGE_SLOT_POINT = (152 / REFERENCE_WIDTH, 970 / REFERENCE_HEIGHT)
 PVP_STAGE_CLICK_REFERENCE_OFFSET = (0, -75)
 PVP_RESULT_BASE_MINUTES = 20.0
+PVP_SEASON_REWARD_AFTER_CLICK_SECONDS = 3.0
+PVP_RANK_PAGE_AFTER_CLICK_SECONDS = 2.0
+PVP_HUB_SPECIAL_PAGE_GRACE_SECONDS = 2.0
 QUICK_SWITCH_PAGE_PATTERNS = (r"最近", r"剧情游戏卡", r"玩法游戏卡")
 HOME_GACHA_OCR_ROI = HOME_GACHA_OCR_REFERENCE_ROI
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -95,8 +102,8 @@ class PVPTask(BaseBD2Task):
         "卡带选择页 OCR",
         "卡带选择页 OCR 命中",
         "PVP 箱庭",
-        "PVP 段位下滑 OCR",
-        "PVP 段位下滑确认",
+        "PVP 入场特殊页面模式",
+        "PVP 入场特殊页面 OCR",
         "PVP 箱庭感叹号",
         "PVP 舞台",
         "PVP 自动战斗 OCR",
@@ -339,82 +346,91 @@ class PVPTask(BaseBD2Task):
         timeout: float,
         interval: float = 0.5,
     ) -> bool:
-        """Continuously handle rank-drop OCR before accepting the PVP hub."""
+        """Handle every PVP entry special page before accepting the PVP hub."""
         end_at = monotonic() + max(0.0, timeout)
-        rank_drop_seen = False
-        rank_drop_confirm_clicked = False
-        rank_drop_still_visible_reported = False
-        rank_drop_dismissed = False
+        handled: set[str] = set()
+        action_count = 0
         last_text = ""
         last_hub_score = -1.0
+        hub_candidate_at: float | None = None
+        allow_season_reward = self._is_beijing_monday()
+        self.info_set(
+            "PVP 入场特殊页面模式",
+            "周一：赛季奖励及升降级" if allow_season_reward else "非周一：仅升降级",
+        )
 
-        while monotonic() <= end_at:
+        while True:
+            now = monotonic()
+            if now > end_at:
+                break
             frame = self.capture_frame()
-            boxes = self._ocr_boxes(frame, "PVP 段位下滑")
-            text = " ".join(
-                str(getattr(box, "name", ""))
-                for box in boxes
-                if getattr(box, "name", "")
+            boxes = self._pvp_special_page_ocr_boxes(
+                frame,
+                name="PVP 入场特殊页面",
+            )
+            text, action_name, target_box = self._pvp_special_page_action(
+                boxes,
+                allow_season_reward=allow_season_reward,
             )
             last_text = text or last_text
-            self.info_set("PVP 段位下滑 OCR", text or "-")
-
-            if self._ocr_pattern_match_count(text, [r"段位下滑", r"确认"]) >= 2:
-                rank_drop_seen = True
-                confirm_box = self._find_ocr_box(boxes, "确认")
-                point = self._ocr_box_center(confirm_box) if confirm_box is not None else None
-                if point is not None and not rank_drop_confirm_clicked:
-                    frame_height, frame_width = frame.shape[:2]
-                    self.info_set("当前阶段", "确认段位下滑")
-                    self.info_set(
-                        "PVP 段位下滑确认",
-                        f"OCR中心=({point[0]:.0f},{point[1]:.0f})，点击1次",
-                    )
-                    self.operate_click(
-                        max(0.0, min(1.0, point[0] / max(1, frame_width))),
-                        max(0.0, min(1.0, point[1] / max(1, frame_height))),
-                        after_sleep=0.5,
-                    )
-                    rank_drop_confirm_clicked = True
-                    continue
-                if point is None:
-                    self.info_set("PVP 段位下滑确认", "已命中成对文字，但确认框无坐标")
-                else:
-                    if not rank_drop_still_visible_reported:
-                        self.info_set(
-                            "PVP 段位下滑确认",
-                            "点击后确认页仍存在，不再重复点击",
+            self.info_set("PVP 入场特殊页面 OCR", text or "-")
+            if action_name:
+                hub_candidate_at = None
+                if (
+                    action_name not in handled
+                    and target_box is not None
+                    and action_count < RECENT_CARTRIDGE_SPECIAL_PAGE_MAX_ACTIONS
+                ):
+                    point = self._ocr_box_center(target_box)
+                    if point is not None:
+                        frame_height, frame_width = frame.shape[:2]
+                        self.info_set("当前阶段", f"处理 PVP 入场{action_name}")
+                        after_sleep = (
+                            PVP_SEASON_REWARD_AFTER_CLICK_SECONDS
+                            if action_name == "赛季奖励"
+                            else PVP_RANK_PAGE_AFTER_CLICK_SECONDS
                         )
-                        rank_drop_still_visible_reported = True
+                        self.operate_click(
+                            max(0.0, min(1.0, point[0] / max(1, frame_width))),
+                            max(0.0, min(1.0, point[1] / max(1, frame_height))),
+                            after_sleep=after_sleep,
+                        )
+                        handled.add(action_name)
+                        action_count += 1
+                        continue
+                # The hub artwork can remain visible behind these overlays. Never
+                # accept its template from a frame that contains a special page.
                 self.sleep(interval)
                 continue
-            elif (
-                rank_drop_seen
-                and rank_drop_confirm_clicked
-                and not rank_drop_dismissed
-            ):
-                self.info_set(
-                    "PVP 段位下滑确认",
-                    "确认页已消失，共点击1次",
-                )
-                rank_drop_dismissed = True
 
             self.info_set("当前阶段", "确认 PVP 箱庭")
             hub = self._match(frame, PVP_MEDALS_TEMPLATE)
             last_hub_score = hub.score
             self.info_set("PVP 箱庭", f"{hub.score:.3f}")
             if self._passes(hub, PVP_MEDALS_TEMPLATE):
-                return True
+                if hub_candidate_at is None:
+                    hub_candidate_at = now
+                stable_seconds = now - hub_candidate_at
+                self.info_set(
+                    "当前阶段",
+                    (
+                        "确认 PVP 箱庭并观察特殊页面 "
+                        f"{stable_seconds:.1f}/{PVP_HUB_SPECIAL_PAGE_GRACE_SECONDS:.1f}秒"
+                    ),
+                )
+                if stable_seconds >= PVP_HUB_SPECIAL_PAGE_GRACE_SECONDS:
+                    return True
+            else:
+                hub_candidate_at = None
 
             self.sleep(interval)
 
-        self.info_set("PVP 段位下滑 OCR", last_text or "-")
+        self.info_set("PVP 入场特殊页面 OCR", last_text or "-")
         self.info_set("PVP 箱庭", f"{last_hub_score:.3f}")
         self.log_info(
             "镜中之战：点击 PVP 卡带后未确认进入 PVP 箱庭，"
-            f"hub={last_hub_score:.3f}, "
-            f"rank_drop_clicked={int(rank_drop_confirm_clicked)}, "
-            f"rank_drop_ocr={last_text or '-'}。"
+            f"hub={last_hub_score:.3f}, special_page_ocr={last_text or '-'}, "
+            f"handled={','.join(sorted(handled)) or '-'}。"
         )
         return False
 
