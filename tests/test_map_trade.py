@@ -208,19 +208,12 @@ from src.tasks.map_trade.trader import (
     BUY_TO_SELL_POST_CLICK_DELAY,
     BUY_TO_SELL_PRE_CLICK_DELAY,
     BUY_TO_SELL_SOLD_OUT_KEYWORD,
-    FIRST_SALE_ITEM_POINT,
-    FIRST_SALE_ITEM_REGION,
-    FIRST_SALE_QUANTITY_REGION,
-    PREMIUM_RATE_TEMPLATE,
-    PRICE_SORT_TEMPLATE,
     SALE_CONFIRM_POINT,
     SALE_DIALOG_REGION,
+    SALE_ITEM_NAME_LEFT_OFFSET_X,
     SALE_MAX_POINT,
     SALE_SLIDER_REGION,
-    SALE_SORT_MAX_CLICKS,
     SELL_MODE_POINT,
-    SELL_SORT_MODE_REGION,
-    SELL_SORT_OPTION_POINT,
     SHOP_CARTRIDGE_RECOGNITION_REGION,
     SHOP_CARTRIDGE_SCROLL_POINT,
     SHOP_CARTRIDGE_SCROLL_REGION,
@@ -2619,99 +2612,66 @@ class CatalogAndSafetyTest(unittest.TestCase):
 
         self.assertFalse(trader.run_sell())
 
-    def test_price_sort_template_switches_to_premium_and_checks_first_slot(self):
+    def test_locate_sale_item_matches_name_and_120_percent_with_left_offset(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        price = MatchResult(0.97, (1735, 36), (48, 47), pixel_score=0.96)
-        missing = MatchResult(0.20, (1735, 36), (48, 47), pixel_score=0.20)
-        client_clicks = []
-        fixed_clicks = []
-        ocr_calls = []
+        boxes = [
+            SimpleNamespace(name="水果罐头", confidence=1.0, x=598, y=451, width=84, height=23),
+            SimpleNamespace(name="↑120%", confidence=0.99, x=492, y=451, width=56, height=13),
+            SimpleNamespace(name="胡萝卜", confidence=1.0, x=928, y=451, width=62, height=22),
+            SimpleNamespace(name="4118%", confidence=0.9, x=818, y=440, width=86, height=38),
+        ]
         trader = object.__new__(Trader)
-        trader.task = SimpleNamespace(
-            operate_click=lambda x, y, after_sleep=0: fixed_clicks.append((x, y, after_sleep)),
-            sleep=lambda *_args: None,
-            log_info=lambda *_args: None,
-            log_warning=lambda *_args: None,
-            info_set=lambda *_args: None,
-        )
         trader.vision = SimpleNamespace(
-            capture=lambda: frame,
-            match=lambda _frame, spec: price if spec is PRICE_SORT_TEMPLATE else missing,
-            passes=lambda result, spec: (
-                result.score >= spec.threshold and result.pixel_score >= spec.min_pixel_score
-            ),
-            click_client=lambda point, shape, after_sleep=0: client_clicks.append(
-                (point, shape, after_sleep)
-            ),
-            ocr_text=lambda _frame, name, relative_roi: (
-                ocr_calls.append((name, relative_roi))
-                or ("120% 黄油" if name == "出售首格商品" else "8,400")
-            ),
+            ocr_boxes=lambda _frame, _name, target_height=720: boxes,
             simplify=lambda value: value,
         )
+        trader.task = SimpleNamespace(info_set=lambda *_args: None)
 
-        quantity = trader._prepare_first_sale_item(
-            CalendarEntry("黄油", "S2:苍蓝魔女", aliases=("奶油",), reserve=5500)
-        )
-
-        self.assertEqual(8400, quantity)
-        self.assertEqual([(price.center, frame.shape, 0.5)], client_clicks)
-        self.assertEqual([(*SELL_SORT_OPTION_POINT, 0.5)], fixed_clicks)
-        self.assertEqual(SELL_SORT_MODE_REGION, PREMIUM_RATE_TEMPLATE.relative_roi)
-        self.assertEqual(SELL_SORT_MODE_REGION, PRICE_SORT_TEMPLATE.relative_roi)
         self.assertEqual(
-            [
-                ("出售首格商品", FIRST_SALE_ITEM_REGION),
-                ("出售首格库存", FIRST_SALE_QUANTITY_REGION),
-            ],
-            ocr_calls,
+            (640, 462),
+            trader._locate_sale_item(CalendarEntry("水果罐头", "S2:苍蓝魔女"), frame),
         )
+        self.assertEqual(115, SALE_ITEM_NAME_LEFT_OFFSET_X)
 
-    def test_price_sort_clicks_option_at_most_twice_until_target_reaches_first_slot(self):
+    def test_locate_sale_item_rejects_when_probe_not_in_120_percent_box(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        price = MatchResult(0.97, (1735, 36), (48, 47), pixel_score=0.96)
-        missing = MatchResult(0.20, (1735, 36), (48, 47), pixel_score=0.20)
-        texts = iter(("100% 别的商品", "120% 甜辣酱", "400"))
-        clicks = []
-        client_clicks = []
-        sleeps = []
+        boxes = [
+            SimpleNamespace(name="水果罐头", confidence=1.0, x=598, y=451, width=84, height=23),
+            SimpleNamespace(name="120%", confidence=0.99, x=300, y=451, width=40, height=13),
+        ]
         trader = object.__new__(Trader)
-        trader.task = SimpleNamespace(
-            operate_click=lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep)),
-            sleep=sleeps.append,
-            log_info=lambda *_args: None,
-            log_warning=lambda *_args: None,
-            info_set=lambda *_args: None,
-        )
         trader.vision = SimpleNamespace(
-            capture=lambda: frame,
-            match=lambda _frame, spec: price if spec is PRICE_SORT_TEMPLATE else missing,
-            passes=lambda result, spec: (
-                result.score >= spec.threshold and result.pixel_score >= spec.min_pixel_score
-            ),
-            click_client=lambda point, shape, after_sleep=0: client_clicks.append(
-                (point, shape, after_sleep)
-            ),
-            ocr_text=lambda *_args, **_kwargs: next(texts),
+            ocr_boxes=lambda _frame, _name, target_height=720: boxes,
             simplify=lambda value: value,
         )
+        trader.task = SimpleNamespace(info_set=lambda *_args: None)
+
+        self.assertIsNone(
+            trader._locate_sale_item(CalendarEntry("水果罐头", "S2:苍蓝魔女"), frame)
+        )
+        self.assertTrue(trader._last_sale_unavailable)
+        self.assertEqual("商品名左侧115参考像素未落在120%框内", trader._last_sale_reason)
+
+    def test_locate_sale_item_scales_left_offset_at_720p(self):
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        boxes = [
+            SimpleNamespace(name="水果罐头", confidence=1.0, x=399, y=301, width=56, height=15),
+            # 720p：偏移 115*1280/1920≈77；商品名中心(427,308) 左移77 → (350,308)。
+            SimpleNamespace(name="120%", confidence=0.99, x=328, y=301, width=37, height=9),
+        ]
+        trader = object.__new__(Trader)
+        trader.vision = SimpleNamespace(
+            ocr_boxes=lambda _frame, _name, target_height=900: boxes,
+            simplify=lambda value: value,
+        )
+        trader.task = SimpleNamespace(info_set=lambda *_args: None)
 
         self.assertEqual(
-            400,
-            trader._prepare_first_sale_item(CalendarEntry("甜辣酱", "S10:霍尔蒙克斯")),
+            (427, 308),
+            trader._locate_sale_item(CalendarEntry("水果罐头", "S2:苍蓝魔女"), frame),
         )
-        self.assertEqual(
-            [(*SELL_SORT_OPTION_POINT, 0.5), (*SELL_SORT_OPTION_POINT, 0.5)],
-            clicks,
-        )
-        self.assertEqual([(price.center, frame.shape, 0.5)], client_clicks)
-        self.assertEqual([0.5], sleeps)
-        self.assertEqual(2, SALE_SORT_MAX_CLICKS)
 
-    def test_first_slot_without_target_120_percent_marks_item_unavailable(self):
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        premium = MatchResult(0.97, (1735, 36), (48, 47), pixel_score=0.96)
-        missing = MatchResult(0.20, (1735, 36), (48, 47), pixel_score=0.20)
+    def test_sale_item_without_matching_row_marks_item_unavailable(self):
         trader = object.__new__(Trader)
         trader.task = SimpleNamespace(
             operate_click=lambda *_args, **_kwargs: None,
@@ -2720,25 +2680,22 @@ class CatalogAndSafetyTest(unittest.TestCase):
             log_warning=lambda *_args: None,
             info_set=lambda *_args: None,
         )
-        trader.vision = SimpleNamespace(
-            capture=lambda: frame,
-            match=lambda _frame, spec: premium if spec is PREMIUM_RATE_TEMPLATE else missing,
-            passes=lambda result, spec: (
-                result.score >= spec.threshold and result.pixel_score >= spec.min_pixel_score
-            ),
-            ocr_text=lambda *_args, **_kwargs: "120% 其他商品",
-            simplify=lambda value: value,
-        )
+
+        def fail_wait(_entry):
+            trader._last_sale_unavailable = True
+            trader._last_sale_reason = "全画面OCR未识别到120%"
+            return None
+
+        trader._wait_sale_item_point = fail_wait
 
         self.assertFalse(trader._sell_selected_entry(CalendarEntry("豆子", "S12:海边天使")))
         self.assertTrue(trader._last_sale_unavailable)
-        self.assertEqual(
-            "未发现120%，可能无货或已经售出",
-            trader._last_sale_reason,
-        )
+        self.assertEqual("全画面OCR未识别到120%", trader._last_sale_reason)
 
-    def test_normal_sale_double_clicks_first_slot_then_uses_max_and_sell(self):
+    def test_normal_sale_clicks_located_item_name_then_uses_max_and_sell(self):
         clicks = []
+        client_clicks = []
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         trader = object.__new__(Trader)
         trader.task = SimpleNamespace(
             config={"出售保险": False},
@@ -2747,19 +2704,51 @@ class CatalogAndSafetyTest(unittest.TestCase):
             log_warning=lambda *_args: None,
             info_set=lambda *_args: None,
         )
-        trader._prepare_first_sale_item = lambda _entry: 400
+        trader.vision = SimpleNamespace(
+            click_client=lambda point, shape, after_sleep=0: client_clicks.append(
+                (point, shape, after_sleep)
+            )
+        )
+        trader._wait_sale_item_point = lambda _entry: ((640, 462), frame)
         trader._wait_owned_quantity = lambda: 400
 
-        self.assertTrue(trader._sell_selected_entry(CalendarEntry("甜辣酱", "S10:霍尔蒙克斯")))
+        self.assertTrue(
+            trader._sell_selected_entry(CalendarEntry("甜辣酱", "S10:霍尔蒙克斯"))
+        )
+        self.assertEqual([((640, 462), frame.shape, 0.5)], client_clicks)
         self.assertEqual(
             [
-                (*FIRST_SALE_ITEM_POINT, 0.5),
-                (*FIRST_SALE_ITEM_POINT, 0.5),
                 (*SALE_MAX_POINT, 0.5),
                 (*SALE_CONFIRM_POINT, 0.5),
             ],
             clicks,
         )
+
+    def test_wait_sale_item_point_retries_until_located(self):
+        sleeps = []
+        warnings = []
+        trader = object.__new__(Trader)
+        trader.task = SimpleNamespace(
+            sleep=sleeps.append,
+            log_warning=warnings.append,
+        )
+        frames = [np.zeros((1080, 1920, 3), dtype=np.uint8) for _ in range(2)]
+        calls = []
+        trader.vision = SimpleNamespace(
+            capture=lambda: frames[min(len(calls), 1)]
+        )
+        trader._locate_sale_item = lambda _entry, _frame: (
+            calls.append(_frame) or (None if len(calls) < 2 else (640, 462))
+        )
+
+        located = trader._wait_sale_item_point(
+            CalendarEntry("水果罐头", "S2:苍蓝魔女"),
+            timeout=5.0,
+            interval=0.1,
+        )
+        self.assertEqual(((640, 462), frames[1]), located)
+        self.assertEqual(1, len(sleeps))
+        self.assertEqual([], warnings)
 
     def test_butter_reserve_uses_proportional_slider_point(self):
         clicks = []
@@ -2995,7 +2984,6 @@ class CatalogAndSafetyTest(unittest.TestCase):
         templates.extend(RECIPE_TEMPLATES.values())
         templates.extend([QUICK_SWITCH_TEMPLATE.file_name, Q_SP6_SHOP_TEMPLATE.file_name])
         templates.extend(spec.file_name for _number, spec in STORY_BADGE_SPECS)
-        templates.extend([PREMIUM_RATE_TEMPLATE.file_name, PRICE_SORT_TEMPLATE.file_name])
 
         for relative_path in templates:
             with self.subTest(template=relative_path):

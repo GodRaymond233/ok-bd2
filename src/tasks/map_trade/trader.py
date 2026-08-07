@@ -105,29 +105,13 @@ SHOP_MODE_TITLE_REGION = (
 SELL_MODE_POINT = (173 / 1920, 250 / 1080)
 SHOP_MODE_TIMEOUT = 4.0
 SHOP_MODE_INTERVAL = 0.25
-SELL_SORT_MODE_REGION = (
-    1727 / 1920,
-    29 / 1080,
-    1800 / 1920,
-    99 / 1080,
-)
-SELL_SORT_OPTION_POINT = (1578 / 1920, 145 / 1080)
-FIRST_SALE_ITEM_REGION = (
-    486 / 1920,
-    121 / 1080,
-    814 / 1920,
-    231 / 1080,
-)
-FIRST_SALE_QUANTITY_REGION = (
-    491 / 1920,
-    190 / 1080,
-    601 / 1920,
-    230 / 1080,
-)
-FIRST_SALE_ITEM_POINT = (
-    ((486 + 814) / 2) / 1920,
-    ((121 + 231) / 2) / 1080,
-)
+# 卖：在对应卡带页全画面 OCR 定位商品名与 120% 溢价，不再依赖排序后首格固定位置。
+# 商品名识别框中心向左偏移量（1920×1080 参考像素，运行时按客户区宽度同比缩放）。
+SALE_ITEM_NAME_LEFT_OFFSET_X = 115
+# 全帧 OCR 目标高度：1920×1080 实测 720 缩放下 ↑120% 会被误读成 41209，
+# 原生 1080 也误读为 4120%；900 可稳定读出 120%。
+SALE_FULL_PAGE_OCR_TARGET_HEIGHT = 900
+SALE_120_PERCENT_PATTERN = re.compile(r"120\s*%")
 SALE_DIALOG_REGION = (
     470 / 1920,
     294 / 1080,
@@ -144,7 +128,6 @@ SALE_SLIDER_REGION = (
     912 / 1920,
     683 / 1080,
 )
-SALE_SORT_MAX_CLICKS = 2
 SALE_DIALOG_TIMEOUT = 5.0
 SALE_OCR_INTERVAL = 0.25
 COOK_SUBMENU_TEMPLATE = TemplateSpec(
@@ -152,24 +135,6 @@ COOK_SUBMENU_TEMPLATE = TemplateSpec(
     "image/green/UI_cooking_submenu.png",
     0.72,
     roi=(670, 540, 230, 180),
-)
-PREMIUM_RATE_TEMPLATE = TemplateSpec(
-    "溢价率排序",
-    "shop/premium_rate.png",
-    0.85,
-    green_mask=True,
-    relative_roi=SELL_SORT_MODE_REGION,
-    scale_ratios=SHOP_CARTRIDGE_SCALE_RATIOS,
-    min_pixel_score=0.85,
-)
-PRICE_SORT_TEMPLATE = TemplateSpec(
-    "价格排序",
-    "shop/price.png",
-    0.85,
-    green_mask=True,
-    relative_roi=SELL_SORT_MODE_REGION,
-    scale_ratios=SHOP_CARTRIDGE_SCALE_RATIOS,
-    min_pixel_score=0.85,
 )
 
 
@@ -1011,22 +976,6 @@ class Trader:
         )
         return None
 
-    @staticmethod
-    def _ocr_box_center(box) -> tuple[int, int] | None:
-        x = getattr(box, "x", None)
-        y = getattr(box, "y", None)
-        width = getattr(box, "width", None)
-        height = getattr(box, "height", None)
-        if any(value is None for value in (x, y, width, height)):
-            raw_box = getattr(box, "box", None)
-            if raw_box is not None and len(raw_box) >= 4:
-                x, y, width, height = raw_box[:4]
-        if any(value is None for value in (x, y, width, height)):
-            return None
-        return round(float(x) + float(width) / 2), round(
-            float(y) + float(height) / 2
-        )
-
     def _wait_for_purchase_confirmation(
         self,
         timeout: float = BUY_CONFIRM_TIMEOUT,
@@ -1158,17 +1107,11 @@ class Trader:
     def _sell_selected_entry(self, entry: CalendarEntry) -> bool:
         self._last_sale_unavailable = False
         self._last_sale_reason = ""
-        list_quantity = self._prepare_first_sale_item(entry)
-        if list_quantity is None:
+        located = self._wait_sale_item_point(entry)
+        if located is None:
             return False
-        if entry.reserve and list_quantity <= entry.reserve:
-            self.task.log_info(
-                f"卖：{entry.item}当前{list_quantity}个，不超过保留量{entry.reserve}，跳过。"
-            )
-            return True
-
-        self.task.operate_click(*FIRST_SALE_ITEM_POINT, after_sleep=0.5)
-        self.task.operate_click(*FIRST_SALE_ITEM_POINT, after_sleep=0.5)
+        point, frame = located
+        self.vision.click_client(point, frame.shape, after_sleep=0.5)
         owned = self._wait_owned_quantity()
         if owned is None:
             self.task.log_warning(f"卖：{entry.item}出售弹窗未识别到拥有数量。")
@@ -1176,91 +1119,123 @@ class Trader:
         self._status("出售弹窗库存", f"{entry.item}:{owned}")
         self.task.log_info(f"卖：{entry.item}出售弹窗记录库存{owned}个。")
         if entry.reserve and owned <= entry.reserve:
-            self.task.log_warning(
-                f"卖：{entry.item}弹窗库存{owned}不超过保留量{entry.reserve}，停止出售。"
+            self.task.log_info(
+                f"卖：{entry.item}弹窗库存{owned}不超过保留量{entry.reserve}，跳过。"
             )
-            return False
+            return True
         if not self._choose_sale_quantity(entry, owned):
             return False
         self.task.operate_click(*SALE_CONFIRM_POINT, after_sleep=0.5)
         self.task.log_info(f"卖：{entry.item}已点击出售。")
         return True
 
-    def _prepare_first_sale_item(self, entry: CalendarEntry) -> int | None:
-        frame = self.vision.capture()
-        premium = self.vision.match(frame, PREMIUM_RATE_TEMPLATE)
-        price = self.vision.match(frame, PRICE_SORT_TEMPLATE)
-        premium_passes = self.vision.passes(premium, PREMIUM_RATE_TEMPLATE)
-        price_passes = self.vision.passes(price, PRICE_SORT_TEMPLATE)
-        self._status(
-            "出售排序",
-            f"premium={premium.score:.3f}/{premium.pixel_score:.3f}, "
-            f"price={price.score:.3f}/{price.pixel_score:.3f}",
-        )
+    def _wait_sale_item_point(
+        self,
+        entry: CalendarEntry,
+        timeout: float = 8.0,
+        interval: float = 0.5,
+    ) -> tuple[tuple[int, int], np.ndarray] | None:
+        """等待商品名与 120% 在全画面 OCR 中配对成功，返回点击点与同帧画面。"""
 
-        sort_clicks = 0
-        if premium_passes and (not price_passes or premium.score >= price.score):
-            # Premium-rate mode is already correct.  The fixed option point is
-            # only valid while switching away from the price menu.
-            sort_clicks = SALE_SORT_MAX_CLICKS
-        elif price_passes:
-            self.vision.click_client(price.center, frame.shape, after_sleep=0.5)
-            self.task.operate_click(*SELL_SORT_OPTION_POINT, after_sleep=0.5)
-            sort_clicks = 1
-        else:
-            self.task.log_warning("卖：排序区域既未识别到溢价率，也未识别到价格。")
-            return False
-
+        end_at = monotonic() + max(0.0, timeout)
+        last_reason = ""
         while True:
-            text = self.vision.ocr_text(
-                self.vision.capture(),
-                "出售首格商品",
-                relative_roi=FIRST_SALE_ITEM_REGION,
-            )
-            if self._first_sale_item_matches(text, entry):
-                quantity = self._read_sale_list_quantity(entry)
-                if quantity is not None:
-                    return quantity
-                self.task.log_warning(f"卖：{entry.item}首格库存数量OCR失败。")
-                return None
-            if sort_clicks >= SALE_SORT_MAX_CLICKS:
+            frame = self.vision.capture()
+            point = self._locate_sale_item(entry, frame)
+            if point is not None:
+                return point, frame
+            last_reason = str(getattr(self, "_last_sale_reason", "") or "")
+            if monotonic() >= end_at:
                 break
-            self.task.sleep(0.5)
-            self.task.operate_click(*SELL_SORT_OPTION_POINT, after_sleep=0.5)
-            sort_clicks += 1
-        self.task.log_warning(
-            f"卖：最多点击排序{SALE_SORT_MAX_CLICKS}次后，首格仍未同时识别到"
-            f"120%和{entry.item}。"
-        )
-        self._last_sale_unavailable = True
-        self._last_sale_reason = "未发现120%，可能无货或已经售出"
+            self.task.sleep(interval)
+        self.task.log_warning(f"卖：{entry.item}全画面定位失败：{last_reason}")
         return None
 
-    def _first_sale_item_matches(self, text: str, entry: CalendarEntry) -> bool:
-        normalized = self._normal(text)
+    def _locate_sale_item(
+        self,
+        entry: CalendarEntry,
+        frame: np.ndarray,
+    ) -> tuple[int, int] | None:
+        """在对应卡带页整帧 OCR：命中商品名后，验证其中心向左
+        SALE_ITEM_NAME_LEFT_OFFSET_X 参考像素处落在某个 120% 识别框内，
+        再次确认则返回商品名识别框中心（客户区像素）。"""
+
+        height, width = frame.shape[:2]
         names = (entry.item, *entry.aliases, *ITEM_ALIASES.get(entry.item, ()))
-        normalized_names = tuple(self._normal(value) for value in names)
-        has_item = any(
-            name and (name in normalized or normalized in name)
-            for name in normalized_names
-        )
-        return has_item and bool(re.search(r"120\s*%", text))
-
-    def _read_sale_list_quantity(self, entry: CalendarEntry) -> int | None:
-        for attempt in range(3):
-            text = self.vision.ocr_text(
-                self.vision.capture(),
-                "出售首格库存",
-                relative_roi=FIRST_SALE_QUANTITY_REGION,
-            )
-            quantity = self._quantity_from_text(text)
-            if quantity is not None:
-                self._status("出售列表库存", f"{entry.item}:{quantity}")
-                self.task.log_info(f"卖：{entry.item}列表记录库存{quantity}个。")
-                return quantity
-            if attempt < 2:
-                self.task.sleep(SALE_OCR_INTERVAL)
+        normalized_names = tuple(self._normal(value) for value in names if value)
+        name_boxes: list[object] = []
+        percent_boxes: list[object] = []
+        for box in self.vision.ocr_boxes(
+            frame,
+            "出售商品列表",
+            target_height=SALE_FULL_PAGE_OCR_TARGET_HEIGHT,
+        ):
+            text = str(getattr(box, "name", ""))
+            normalized = self._normal(text)
+            if SALE_120_PERCENT_PATTERN.search(normalized):
+                percent_boxes.append(box)
+            if any(
+                name and (name in normalized or normalized in name)
+                for name in normalized_names
+            ):
+                name_boxes.append(box)
+        if not name_boxes:
+            self._last_sale_unavailable = True
+            self._last_sale_reason = "全画面OCR未识别到商品名"
+            return None
+        if not percent_boxes:
+            self._last_sale_unavailable = True
+            self._last_sale_reason = "全画面OCR未识别到120%"
+            return None
+        offset_x = round(SALE_ITEM_NAME_LEFT_OFFSET_X * width / 1920)
+        for name_box in name_boxes:
+            center = self._ocr_box_center(name_box)
+            if center is None:
+                continue
+            probe = (center[0] - offset_x, center[1])
+            if any(
+                self._ocr_box_contains(percent_box, probe)
+                for percent_box in percent_boxes
+            ):
+                self._status(
+                    "出售商品定位",
+                    f"{entry.item} center={center} probe={probe}",
+                )
+                return center
+        self._last_sale_unavailable = True
+        self._last_sale_reason = "商品名左侧115参考像素未落在120%框内"
         return None
+
+    @staticmethod
+    def _ocr_box_geometry(box) -> tuple[float, float, float, float] | None:
+        x = getattr(box, "x", None)
+        y = getattr(box, "y", None)
+        width = getattr(box, "width", None)
+        height = getattr(box, "height", None)
+        if any(value is None for value in (x, y, width, height)):
+            raw_box = getattr(box, "box", None)
+            if raw_box is not None and len(raw_box) >= 4:
+                x, y, width, height = raw_box[:4]
+        if any(value is None for value in (x, y, width, height)):
+            return None
+        return float(x), float(y), float(width), float(height)
+
+    @classmethod
+    def _ocr_box_center(cls, box) -> tuple[int, int] | None:
+        geometry = cls._ocr_box_geometry(box)
+        if geometry is None:
+            return None
+        x, y, width, height = geometry
+        return round(x + width / 2), round(y + height / 2)
+
+    @classmethod
+    def _ocr_box_contains(cls, box, point: tuple[int, int]) -> bool:
+        geometry = cls._ocr_box_geometry(box)
+        if geometry is None:
+            return False
+        x, y, width, height = geometry
+        px, py = point
+        return x <= px < x + width and y <= py < y + height
 
     def _wait_owned_quantity(self, timeout: float = SALE_DIALOG_TIMEOUT) -> int | None:
         end_at = monotonic() + max(0.0, timeout)
