@@ -72,16 +72,6 @@ STAR_VERIFY_INTERVAL = 0.25
 STAR_POST_CLICK_DELAY = 1.0
 STAR_REMOVE_TOAST_KEYWORD = "从收藏中移除"
 STAR_ADD_TOAST_KEYWORD = "加入收藏"
-BUY_ALL_FAVORITES_POINT = (
-    ((1324 + 1545) / 2) / 1920,
-    ((982 + 1029) / 2) / 1080,
-)
-BUY_ALL_FAVORITES_REGION = (
-    1324 / 1920,
-    982 / 1080,
-    1545 / 1920,
-    1029 / 1080,
-)
 BUY_ALL_FAVORITES_KEYWORD = "购买全部收藏"
 BUY_ALL_FAVORITES_STABLE_HITS = 2
 BUY_ALL_FAVORITES_TIMEOUT = 30.0
@@ -937,10 +927,16 @@ class Trader:
         return self._select_shop_cartridge_from_first_page(reference.shop_id)
 
     def buy_all_favorites(self) -> bool:
-        if not self._wait_for_buy_all_favorites_button():
+        located = self._wait_for_buy_all_favorites_button()
+        if located is None:
             self.task.log_warning("买：商店页面未稳定显示一键购买全部收藏按钮。")
             return False
-        self.task.operate_click(*BUY_ALL_FAVORITES_POINT, after_sleep=0.3)
+        button_center, frame = located
+        self._status(
+            "一键购买全部收藏按钮点击中心",
+            f"center=({button_center[0]},{button_center[1]})",
+        )
+        self.vision.click_client(button_center, frame.shape, after_sleep=0.3)
         if not self._wait_for_purchase_confirmation():
             self.task.log_warning(
                 "买：点击一键购买全部收藏后，未同时识别到确认标题和询问文字。"
@@ -960,37 +956,76 @@ class Trader:
     def _wait_for_buy_all_favorites_button(
         self,
         timeout: float = BUY_ALL_FAVORITES_TIMEOUT,
-    ) -> bool:
+    ) -> tuple[tuple[int, int], np.ndarray] | None:
         end_at = monotonic() + max(0.0, timeout)
         consecutive_hits = 0
         last_text = ""
+        last_center: tuple[int, int] | None = None
+        last_frame: np.ndarray | None = None
         expected = normalize_text(self.vision.simplify(BUY_ALL_FAVORITES_KEYWORD))
         while True:
             frame = self.vision.capture()
-            text = self.vision.ocr_text(
+            boxes = self.vision.ocr_boxes(
                 frame,
                 "一键购买全部收藏按钮",
-                relative_roi=BUY_ALL_FAVORITES_REGION,
             )
+            texts = [str(getattr(box, "name", "")) for box in boxes]
+            text = " ".join(value for value in texts if value)
+            self._status("一键购买全部收藏按钮 OCR", text or "-")
             last_text = text or last_text
-            normalized = normalize_text(self.vision.simplify(text))
-            if expected in normalized:
+            matched_center = next(
+                (
+                    center
+                    for box in boxes
+                    if expected
+                    in normalize_text(
+                        self.vision.simplify(str(getattr(box, "name", "")))
+                    )
+                    if (center := self._ocr_box_center(box)) is not None
+                ),
+                None,
+            )
+            if matched_center is not None:
                 consecutive_hits += 1
+                last_center = matched_center
+                last_frame = frame
             else:
                 consecutive_hits = 0
+                last_center = None
+                last_frame = None
             self._status(
                 "一键购买全部收藏按钮 OCR稳定",
                 f"{consecutive_hits}/{BUY_ALL_FAVORITES_STABLE_HITS}",
             )
-            if consecutive_hits >= BUY_ALL_FAVORITES_STABLE_HITS:
-                return True
+            if (
+                consecutive_hits >= BUY_ALL_FAVORITES_STABLE_HITS
+                and last_center is not None
+                and last_frame is not None
+            ):
+                return last_center, last_frame
             if monotonic() >= end_at:
                 break
             self.task.sleep(BUY_ALL_FAVORITES_INTERVAL)
         self.task.log_warning(
             f"买：一键购买全部收藏按钮OCR超时，OCR={last_text or '-'}。"
         )
-        return False
+        return None
+
+    @staticmethod
+    def _ocr_box_center(box) -> tuple[int, int] | None:
+        x = getattr(box, "x", None)
+        y = getattr(box, "y", None)
+        width = getattr(box, "width", None)
+        height = getattr(box, "height", None)
+        if any(value is None for value in (x, y, width, height)):
+            raw_box = getattr(box, "box", None)
+            if raw_box is not None and len(raw_box) >= 4:
+                x, y, width, height = raw_box[:4]
+        if any(value is None for value in (x, y, width, height)):
+            return None
+        return round(float(x) + float(width) / 2), round(
+            float(y) + float(height) / 2
+        )
 
     def _wait_for_purchase_confirmation(
         self,

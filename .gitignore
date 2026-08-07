@@ -62,6 +62,7 @@ update.bat
 # Tests
 tests/.tmp/
 /scripts/test_quick_switch_templates.py
+/tmp/
 
 # OS
 Thumbs.db

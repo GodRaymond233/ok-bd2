@@ -5,7 +5,10 @@ from enum import Enum
 
 MF_REFERENCE_WIDTH = 1280
 MF_REFERENCE_HEIGHT = 720
-DAILY_SUBMAP_LIMIT = 21
+DAILY_ABSORB_LIMIT = 21
+DAILY_SUMMON_LIMIT = 21
+DAILY_SUPPRESS_LIMIT = 60
+DAILY_SUBMAP_LIMIT = DAILY_ABSORB_LIMIT
 SUBMAPS_PER_CARD = 3
 MERCHANT_CARD_ID = "Q_sp6"
 PINNED_CARD_IDS = frozenset({"Q_sp6", "Q_sp18", "Q_sp20"})
@@ -109,6 +112,7 @@ class NavigationResult:
     success: bool
     state: ScreenState
     message: str = ""
+    teleport_map_opened_by_skill: bool = False
 
 
 @dataclass(frozen=True)

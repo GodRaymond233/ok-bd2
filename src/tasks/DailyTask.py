@@ -566,10 +566,9 @@ class DailyTask(BaseBD2Task):
                 detail = "识别完成"
             elif action == "open_menu":
                 opened = self._quick_hunt_open_menu()
-                success = opened in {"opened", "skip"}
+                success = opened == "opened"
                 detail = {
                     "opened": "菜单已打开",
-                    "skip": "未发现入口红点",
                     "failed": "入口识别或菜单确认失败",
                 }.get(opened, opened)
             elif action == "inspect_menu":
@@ -674,9 +673,6 @@ class DailyTask(BaseBD2Task):
         """Run the  quick-hunt scheduler using PC-safe mouse input."""
 
         opened = self._quick_hunt_open_menu()
-        if opened == "skip":
-            self._status_set("快速狩猎结果", "入口无红点，按已完成跳过")
-            return True
         if opened != "opened":
             self._status_set("快速狩猎结果", "无法进入狩猎菜单")
             return False
@@ -768,8 +764,8 @@ class DailyTask(BaseBD2Task):
         frame,
     ) -> tuple[bool, tuple[int, int], tuple[int, int, int], tuple[int, int, int]]:
         height, width = frame.shape[:2]
-        x = max(0, min(width - 1, round(width * QUICK_HUNT_ENTRY_POINT[0])))
-        y = max(0, min(height - 1, round(height * QUICK_HUNT_ENTRY_POINT[1])))
+        x = max(0, min(width - 1, round(width * QUICK_HUNT_RED_POINT[0])))
+        y = max(0, min(height - 1, round(height * QUICK_HUNT_RED_POINT[1])))
         if frame.ndim < 3 or frame.shape[2] < 3:
             return False, (x, y), (0, 0, 0), (0, 0, 0)
 
@@ -784,22 +780,6 @@ class DailyTask(BaseBD2Task):
         )
         return is_red, (x, y), bgr, hsv
 
-    def _quick_hunt_wait_entry_red(self) -> bool:
-        for sample_index in range(1, QUICK_HUNT_ENTRY_RED_SAMPLE_COUNT + 1):
-            frame = self.capture_frame()
-            is_red, point, bgr, hsv = self._quick_hunt_entry_red_state(frame)
-            self._status_set(
-                "快速狩猎红点识别",
-                f"sample={sample_index}/{QUICK_HUNT_ENTRY_RED_SAMPLE_COUNT}, "
-                f"point={point}, BGR={bgr}, HSV={hsv}, "
-                f"{'红色' if is_red else '非红色'}",
-            )
-            if is_red:
-                return True
-            if sample_index < QUICK_HUNT_ENTRY_RED_SAMPLE_COUNT:
-                self.sleep(QUICK_HUNT_ENTRY_RED_SAMPLE_INTERVAL)
-        return False
-
     def _quick_hunt_open_menu(self) -> str:
         self._status_set("快速狩猎当前阶段", "确认首页并打开狩猎菜单")
         if not self._wait_for_quick_hunt_home():
@@ -807,17 +787,18 @@ class DailyTask(BaseBD2Task):
             return "failed"
 
         self._status_set("快速狩猎入口", "首页已确认")
-        self.sleep(0.5)
-        if not self._quick_hunt_wait_entry_red():
-            self._status_set(
-                "快速狩猎入口",
-                f"连续{QUICK_HUNT_ENTRY_RED_SAMPLE_COUNT}帧未识别到红色，"
-                "按已完成跳过",
-            )
-            return "skip"
+        clicked_by_ocr = self._quick_hunt_click_ocr(
+            [r"^快速狩猎$"],
+            None,
+            self._quick_hunt_ui_timeout(),
+            name="主页快速狩猎入口",
+        )
+        if clicked_by_ocr:
+            self._status_set("快速狩猎入口", "已点击 OCR 文字框中心")
+        else:
+            self.operate_click(*QUICK_HUNT_ENTRY_POINT, after_sleep=1.0)
+            self._status_set("快速狩猎入口", "OCR 未命中，已点击固定入口中心")
 
-        self.sleep(0.5)
-        self.operate_click(*QUICK_HUNT_ENTRY_POINT, after_sleep=1.0)
         # User requirement:  coordinates must not be inferred or converted.
         # The menu is confirmed by full-frame OCR unless an ok-bd2 ROI is supplied.
         text, _box = self._quick_hunt_wait_ocr(
@@ -1242,7 +1223,7 @@ class DailyTask(BaseBD2Task):
     def _quick_hunt_click_ocr(
         self,
         patterns: list[str],
-        roi: tuple[float, float, float, float],
+        roi: tuple[float, float, float, float] | None,
         timeout: float,
         name: str,
         require_enabled: bool = False,
@@ -1872,9 +1853,8 @@ def _quick_hunt_relative_roi(
     )
 
 
-QUICK_HUNT_ENTRY_POINT = (1782 / REFERENCE_WIDTH, 237 / REFERENCE_HEIGHT)
-QUICK_HUNT_ENTRY_RED_SAMPLE_COUNT = 9
-QUICK_HUNT_ENTRY_RED_SAMPLE_INTERVAL = 0.25
+QUICK_HUNT_ENTRY_POINT = (1756 / REFERENCE_WIDTH, 262 / REFERENCE_HEIGHT)
+QUICK_HUNT_RED_POINT = (1782 / REFERENCE_WIDTH, 237 / REFERENCE_HEIGHT)
 QUICK_HUNT_RESOURCE_CAPACITIES = {"米饭": 90}
 QUICK_HUNT_RESOURCE_ROI = _quick_hunt_relative_roi(1724, 80, 1602, 38)
 QUICK_HUNT_BUTTON_ROI = _quick_hunt_relative_roi(1720, 1018, 1599, 963)

@@ -141,7 +141,12 @@ class Vision:
         if raw is None:
             raise RuntimeError(f"跑图跑商模板不存在或无法读取：{path}")
         use_green_mask = spec.green_mask or offline_template_requires_green_mask(spec.file_name)
-        mask = green_mask_from_template(raw) if use_green_mask else None
+        if use_green_mask:
+            mask = green_mask_from_template(raw)
+        elif raw.ndim == 3 and raw.shape[2] >= 4:
+            mask = np.where(raw[:, :, 3] > 0, 255, 0).astype(np.uint8)
+        else:
+            mask = None
         if raw.ndim == 2:
             gray = raw
         elif raw.shape[2] == 4:
@@ -295,6 +300,17 @@ class Vision:
         radius = max(1, int(peak_radius))
         limit = max(1, int(max_results))
         score_floor = max(-1.0, min(1.0, float(minimum_score)))
+        center_bounds = None
+        if spec.candidate_center_roi is not None:
+            center_left, center_top, center_right, center_bottom = (
+                spec.candidate_center_roi
+            )
+            center_bounds = (
+                round(frame_width * center_left) - left,
+                round(frame_height * center_top) - top,
+                round(frame_width * center_right) - left,
+                round(frame_height * center_bottom) - top,
+            )
         candidates: list[MatchResult] = []
         base_scale = offline_template_scale(
             spec.file_name,
@@ -320,6 +336,7 @@ class Vision:
                 template_threshold=score_floor,
                 pixel_threshold=(spec.min_pixel_score or 0.0),
                 zncc_threshold=spec.min_zncc_score,
+                center_bounds=center_bounds,
                 suppression_radius=radius,
                 max_matches=limit,
             )
@@ -357,6 +374,123 @@ class Vision:
         if spec.min_zncc_score is not None and result.zncc_score < spec.min_zncc_score:
             return False
         return True
+
+    def template_color_ratios(
+        self,
+        frame: np.ndarray,
+        spec: TemplateSpec,
+        result: MatchResult,
+    ) -> tuple[float, float, float] | None:
+        """Measure green, red, and neutral pixels under a template mask."""
+
+        left, top = result.position
+        width, height = result.size
+        right = left + width
+        bottom = top + height
+        if (
+            width <= 0
+            or height <= 0
+            or left < 0
+            or top < 0
+            or right > frame.shape[1]
+            or bottom > frame.shape[0]
+        ):
+            return None
+        crop = frame[top:bottom, left:right]
+        if crop.ndim == 2:
+            color = cv2.cvtColor(crop, cv2.COLOR_GRAY2BGR)
+        elif crop.shape[2] == 4:
+            color = cv2.cvtColor(crop, cv2.COLOR_BGRA2BGR)
+        else:
+            color = crop[:, :, :3]
+
+        _template, mask = self._load(spec)
+        if mask is None:
+            active = np.ones((height, width), dtype=bool)
+        else:
+            active = cv2.resize(
+                mask,
+                (width, height),
+                interpolation=cv2.INTER_NEAREST,
+            ) > 0
+        if not np.any(active):
+            return None
+
+        pixels = color[active].astype(np.int16)
+        blue, green, red = pixels.T
+        green_pixels = (
+            (green - np.maximum(blue, red) >= 8)
+            & (green >= 60)
+        )
+        red_pixels = (
+            (red - np.maximum(blue, green) >= 8)
+            & (red >= 60)
+        )
+        neutral_pixels = (
+            np.max(pixels, axis=1) - np.min(pixels, axis=1) <= 10
+        )
+        return (
+            float(np.mean(green_pixels)),
+            float(np.mean(red_pixels)),
+            float(np.mean(neutral_pixels)),
+        )
+
+    def template_hsv_color_ratios(
+        self,
+        frame: np.ndarray,
+        spec: TemplateSpec,
+        result: MatchResult,
+    ) -> tuple[float, float, float] | None:
+        """Measure yellow, neutral, and bright pixels under a match mask."""
+
+        left, top = result.position
+        width, height = result.size
+        right = left + width
+        bottom = top + height
+        if (
+            width <= 0
+            or height <= 0
+            or left < 0
+            or top < 0
+            or right > frame.shape[1]
+            or bottom > frame.shape[0]
+        ):
+            return None
+        crop = frame[top:bottom, left:right]
+        if crop.ndim == 2:
+            color = cv2.cvtColor(crop, cv2.COLOR_GRAY2BGR)
+        elif crop.shape[2] == 4:
+            color = cv2.cvtColor(crop, cv2.COLOR_BGRA2BGR)
+        else:
+            color = crop[:, :, :3]
+
+        _template, mask = self._load(spec)
+        if mask is None:
+            active = np.ones((height, width), dtype=bool)
+        else:
+            active = cv2.resize(
+                mask,
+                (width, height),
+                interpolation=cv2.INTER_NEAREST,
+            ) > 0
+        if not np.any(active):
+            return None
+
+        hsv = cv2.cvtColor(color, cv2.COLOR_BGR2HSV)
+        hue, saturation, value = hsv[active].T
+        yellow = (
+            (hue >= 8)
+            & (hue <= 38)
+            & (saturation >= 60)
+            & (value >= 75)
+        )
+        neutral = (saturation <= 55) & (value >= 50)
+        bright = value >= 130
+        return (
+            float(np.mean(yellow)),
+            float(np.mean(neutral)),
+            float(np.mean(bright)),
+        )
 
     def template_brightness_ratio(
         self,
@@ -550,6 +684,8 @@ class Vision:
         name: str,
         roi: tuple[int, int, int, int] | None = None,
         relative_roi: tuple[float, float, float, float] | None = None,
+        target_height: int = 720,
+        minimum_threshold: float | None = None,
     ) -> list:
         offset_x = offset_y = 0
         target = frame
@@ -571,15 +707,21 @@ class Vision:
             return []
         try:
             key = getattr(self.task, "ocr_threshold_key", "跑图跑商 OCR 阈值")
+            configured_threshold = float(
+                self.task.config.get(
+                    key,
+                    self.task.config.get("跑图跑商 OCR 阈值", 0.2),
+                )
+            )
+            if minimum_threshold is not None:
+                configured_threshold = max(
+                    configured_threshold,
+                    float(minimum_threshold),
+                )
             boxes = self.task.ocr(
                 frame=target,
-                threshold=float(
-                    self.task.config.get(
-                        key,
-                        self.task.config.get("跑图跑商 OCR 阈值", 0.2),
-                    )
-                ),
-                target_height=720,
+                threshold=configured_threshold,
+                target_height=max(0, int(target_height)),
                 log=False,
                 name=name,
             )
@@ -622,6 +764,8 @@ class Vision:
         name: str,
         roi: tuple[int, int, int, int] | None = None,
         relative_roi: tuple[float, float, float, float] | None = None,
+        target_height: int = 720,
+        minimum_threshold: float | None = None,
     ) -> str:
         values = [
             str(getattr(box, "name", ""))
@@ -630,6 +774,8 @@ class Vision:
                 name,
                 roi,
                 relative_roi=relative_roi,
+                target_height=target_height,
+                minimum_threshold=minimum_threshold,
             )
         ]
         text = " ".join(value for value in values if value)

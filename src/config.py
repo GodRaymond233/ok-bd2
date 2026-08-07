@@ -123,6 +123,10 @@ config = {
         ["src.tasks.BD2InputTestTask", "BD2MouseClickInputTestTask"],
         ["src.tasks.BD2InputTestTask", "BD2MouseWheelInputTestTask"],
         ["src.tasks.BD2ProbeTask", "BD2ProbeTask"],
+        [
+            "src.tasks.BD2MapCollectionProbeTask",
+            "BD2MapCollectionProbeTask",
+        ],
         ["src.tasks.BD2OneTimeTask", "BD2OneTimeTask"],
         ["src.tasks.LauncherTask", "LauncherTask"],
         ["src.tasks.BD2DiagnosisTask", "BD2DiagnosisTask"],
