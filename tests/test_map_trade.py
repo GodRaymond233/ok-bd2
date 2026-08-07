@@ -56,6 +56,8 @@ from src.tasks.map_trade.card_status import (
 )
 from src.tasks.map_trade.collector import (
     ABSORB_ACTION,
+    ACTION_FEEDBACK_CHARACTER_RATIO,
+    ACTION_FEEDBACK_RELATIVE_ROI,
     BATTLE_ACTIONS,
     SEARCH_COUNTDOWN_FALLBACK_RELATIVE_ROI,
     SKILL_FALLBACK_POINTS,
@@ -64,6 +66,7 @@ from src.tasks.map_trade.collector import (
     Collector,
     SearchCountdownSession,
     SkillExecutionResult,
+    SkillFeedbackObservation,
 )
 from src.tasks.map_trade.data import (
     SHOP_CARTRIDGE_BRIGHTNESS,
@@ -142,7 +145,6 @@ from src.tasks.map_trade.navigator import (
     SANDBOX_MAP_TELEPORT_TEMPLATE,
     SANDBOX_SKILL_GROUP_PIXEL_SCORE,
     SANDBOX_SKILL_GROUP_TEMPLATE_SCORE,
-    SANDBOX_SKILL_GROUP_ZNCC_SCORE,
     SANDBOX_SKILL_SELECTED_YELLOW_MIN_RATIO,
     SANDBOX_SKILL_SLOT_1_CENTER_ROI,
     SANDBOX_SKILL_SLOT_1_REFERENCE_CENTER,
@@ -2021,30 +2023,39 @@ class CatalogAndSafetyTest(unittest.TestCase):
         )
         self.assertEqual([frame], ocr_frames)
 
-    def test_teleport_generation_rejects_missing_or_ambiguous_white_candidates(self):
-        teleport = MatchResult(0.99, (800, 400), (60, 60), 0.95, 0.93)
+    def test_teleport_generation_rejects_missing_and_selects_strongest_multiple_candidate(self):
+        weaker = MatchResult(0.989, (800, 400), (60, 60), 0.932, 0.947)
+        stronger = MatchResult(0.994, (1038, 659), (60, 60), 0.949, 0.973)
         task = SimpleNamespace(info_set=lambda *_args: None)
-        vision = SimpleNamespace(
-            click_client=lambda *_args, **_kwargs: self.fail(
-                "non-unique white teleport must not be clicked"
-            )
-        )
+        vision = SimpleNamespace(click_client=lambda *_args, **_kwargs: None)
         navigator = Navigator(task, vision)
         card = CARD_BY_ID["Q_sp1"]
-        for candidates in ((), (teleport, teleport)):
-            with self.subTest(count=len(candidates)):
-                context = self._area_context(
-                    card.targets[1].title,
-                    card.targets[1].key,
-                    teleports=candidates,
-                )
-                result = navigator._click_collection_destination(
-                    card,
-                    card.targets[1],
-                    context,
-                )
-                self.assertFalse(result.success)
-                self.assertIn("唯一", result.message)
+        missing = self._area_context(
+            card.targets[1].title,
+            card.targets[1].key,
+            teleports=(),
+        )
+        result = navigator._click_collection_destination(card, card.targets[1], missing)
+        self.assertFalse(result.success)
+        self.assertIn("未识别到", result.message)
+
+        selected = []
+        navigator._click_teleport_map_destination = (
+            lambda teleport, _shape, opened_by_skill=False: selected.append(teleport) or True
+        )
+        navigator._wait_for_story_sandbox = lambda number: NavigationResult(
+            True,
+            ScreenState.SANDBOX,
+            f"Q_sp{number}",
+        )
+        multiple = self._area_context(
+            card.targets[1].title,
+            card.targets[1].key,
+            teleports=(weaker, stronger),
+        )
+        result = navigator._click_collection_destination(card, card.targets[1], multiple)
+        self.assertTrue(result.success)
+        self.assertEqual([stronger], selected)
 
     def test_teleport_generation_rejects_missing_keyword_without_generate_click(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -3581,7 +3592,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
                 self.assertTrue(spec.green_mask)
                 self.assertEqual(SANDBOX_SKILL_GROUP_TEMPLATE_SCORE, spec.threshold)
                 self.assertEqual(SANDBOX_SKILL_GROUP_PIXEL_SCORE, spec.min_pixel_score)
-                self.assertEqual(SANDBOX_SKILL_GROUP_ZNCC_SCORE, spec.min_zncc_score)
+                self.assertIsNone(spec.min_zncc_score)
                 self.assertEqual(
                     SANDBOX_SKILL_GROUP_TEMPLATE_SCORE,
                     spec.minimum_safe_threshold,
@@ -3662,6 +3673,31 @@ class CatalogAndSafetyTest(unittest.TestCase):
 
         self.assertEqual("unknown", state)
 
+    def test_story_sandbox_skill_group_uses_other_slot_template_when_missing(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        result = MatchResult(0.99, (1644, 983), (55, 55), 0.94, 0.60)
+        vision = SimpleNamespace(
+            template_hsv_color_ratios=lambda _frame, spec, _result: (
+                (0.71, 0.28, 1.0)
+                if spec
+                is SANDBOX_SKILL_SLOT_1_UNSELECTED_TEMPLATE
+                else (0.01, 0.99, 0.56)
+            )
+        )
+        navigator = Navigator(SimpleNamespace(info_set=lambda *_args: None), vision)
+
+        state = navigator._sandbox_skill_slot_state(
+            frame,
+            SANDBOX_SKILL_SLOT_1_SELECTED_TEMPLATE,
+            MatchResult(-1.0, (0, 0), (0, 0)),
+            False,
+            SANDBOX_SKILL_SLOT_1_UNSELECTED_TEMPLATE,
+            result,
+            True,
+        )
+
+        self.assertEqual("selected", state)
+
     def test_story_sandbox_confirmation_matches_all_signal_groups_and_accepts_three_actions(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         passed_specs = {
@@ -3709,6 +3745,9 @@ class CatalogAndSafetyTest(unittest.TestCase):
             (
                 SandboxConfirmation(1, 2, 3, 2),
                 SandboxConfirmation(1, 2, 3, 1),
+                SandboxConfirmation(1, 2, 3, None),
+                SandboxConfirmation(1, 2, 3, 1),
+                SandboxConfirmation(1, 2, 3, None),
                 SandboxConfirmation(1, 2, 3, 1),
             )
         )
@@ -3746,7 +3785,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
             clicks,
         )
         self.assertEqual(SANDBOX_SKILL_SLOT_1_REFERENCE_CENTER, (1672, 1010))
-        self.assertEqual(3, len(captures))
+        self.assertEqual(6, len(captures))
 
     def test_story_sandbox_group_two_does_not_confirm_when_switch_stays_on_group_two(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -5958,9 +5997,17 @@ class CollectorSkillTest(unittest.TestCase):
             ),
         )
         collector = Collector(task, vision, SimpleNamespace(), SimpleNamespace())
+        executed_icons = set()
 
         def detect(_frame, icon):
-            state = ActionIconState.ABSENT if icon is SEARCH_ICON and clicks else states[icon.name]
+            if icon.name in executed_icons:
+                state = (
+                    ActionIconState.ABSENT
+                    if icon is SEARCH_ICON
+                    else ActionIconState.USED
+                )
+            else:
+                state = states[icon.name]
             return ActionIconDetection(
                 state,
                 MatchResult(
@@ -5975,10 +6022,85 @@ class CollectorSkillTest(unittest.TestCase):
 
         collector.action_icons = SimpleNamespace(detect=detect)
         count_iters = {name: iter(values) for name, values in counts.items()}
-        collector._read_count = lambda action, _detection=None: next(count_iters[action.name])
+        collector._read_count_window = (
+            lambda action, _detection=None: next(count_iters[action.name])
+        )
+
+        def feedback(action):
+            executed_icons.add(action.icon.name)
+            was_used = states[action.icon.name] is ActionIconState.USED
+            return SkillFeedbackObservation(
+                "失败反馈" if was_used else "成功反馈",
+                "failure" if was_used else "success",
+                1.0,
+            )
+
+        collector._read_action_feedback = feedback
         return collector, clicks, statuses
 
-    def test_dimmed_absorb_and_summon_count_as_already_used_without_clicking(self):
+    def test_action_feedback_region_and_character_threshold_follow_calibration(self):
+        self.assertEqual(
+            (735 / 1920, 210 / 1080, 1182 / 1920, 270 / 1080),
+            ACTION_FEEDBACK_RELATIVE_ROI,
+        )
+        self.assertEqual(0.80, ACTION_FEEDBACK_CHARACTER_RATIO)
+        self.assertEqual(
+            1.0,
+            Collector._feedback_character_ratio(
+                "在74秒内确认隐藏物品的位置。",
+                "在秒内确认隐藏物品的位置",
+            ),
+        )
+        self.assertGreaterEqual(
+            Collector._feedback_character_ratio(
+                "周围没有可以吸收的拾取勿。",
+                "周围没有可以吸收的拾取物",
+            ),
+            ACTION_FEEDBACK_CHARACTER_RATIO,
+        )
+        self.assertLess(
+            Collector._feedback_character_ratio(
+                "召集带奖励的战场怪物",
+                "没有可制伏的怪物",
+            ),
+            ACTION_FEEDBACK_CHARACTER_RATIO,
+        )
+
+    def test_action_feedback_window_matches_absorb_failure(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        calls = []
+        collector = Collector(
+            SimpleNamespace(
+                config={},
+                sleep=lambda *_args: None,
+                info_set=lambda *_args: None,
+            ),
+            SimpleNamespace(
+                capture=lambda: frame,
+                ocr_text=lambda _frame, name, **kwargs: (
+                    calls.append((name, kwargs))
+                    or "周围没有可以吸收的拾取物。"
+                ),
+            ),
+            SimpleNamespace(),
+            SimpleNamespace(),
+        )
+
+        feedback = collector._read_action_feedback(ABSORB_ACTION)
+
+        self.assertEqual("failure", feedback.outcome)
+        self.assertEqual(1.0, feedback.ratio)
+        self.assertEqual(3, len(calls))
+        self.assertTrue(all(name == "吸收执行反馈" for name, _kwargs in calls))
+        self.assertTrue(
+            all(
+                kwargs["relative_roi"] == ACTION_FEEDBACK_RELATIVE_ROI
+                and kwargs["target_height"] == 1080
+                for _name, kwargs in calls
+            )
+        )
+
+    def test_dimmed_absorb_and_summon_require_failed_execution_feedback(self):
         collector, clicks, _statuses = self._skill_collector(
             {
                 "探查": ActionIconState.AVAILABLE,
@@ -5987,8 +6109,8 @@ class CollectorSkillTest(unittest.TestCase):
             },
             {
                 "探查": ((1, 40), (2, 40)),
-                "吸收": ((2, 21),),
-                "召集": ((1, 21),),
+                "吸收": ((2, 21), (2, 21)),
+                "召集": ((1, 21), (1, 21)),
             },
         )
 
@@ -5996,7 +6118,7 @@ class CollectorSkillTest(unittest.TestCase):
 
         self.assertTrue(result.completed)
         self.assertFalse(result.depleted)
-        self.assertEqual(1, len(clicks))
+        self.assertEqual(3, len(clicks))
 
     def test_skill_ocr_failure_is_not_reported_as_completed(self):
         collector, clicks, _statuses = self._skill_collector(
@@ -6127,9 +6249,9 @@ class CollectorSkillTest(unittest.TestCase):
             0.95,
         )
         after = ActionIconDetection(
-            ActionIconState.AVAILABLE,
+            ActionIconState.USED,
             MatchResult(0.98, (960, 420), (52, 48), 0.95, 0.92),
-            0.95,
+            0.65,
         )
         detections = iter((before, after))
         frames = iter((before_frame, after_frame))
@@ -6150,8 +6272,12 @@ class CollectorSkillTest(unittest.TestCase):
         )
         collector.action_icons = SimpleNamespace(detect=lambda *_args: next(detections))
         counts = iter(((0, 21), (1, 21)))
-        collector._read_count = lambda _action, detection: (
+        collector._read_count_window = lambda _action, detection: (
             count_detections.append(detection) or next(counts)
+        )
+        collector._read_action_feedback = lambda _action: SkillFeedbackObservation(
+            "吸收成功",
+            None,
         )
 
         result = collector._use_action(ABSORB_ACTION)
@@ -6159,7 +6285,7 @@ class CollectorSkillTest(unittest.TestCase):
         self.assertTrue(result.completed)
         self.assertEqual([before, after], count_detections)
         self.assertEqual(
-            (before.match.center, before_frame.shape, 2.0),
+            (before.match.center, before_frame.shape, 0.0),
             (clicks[0][0][0], clicks[0][0][1], clicks[0][1]["after_sleep"]),
         )
 
@@ -6253,7 +6379,12 @@ class CollectorSkillTest(unittest.TestCase):
         vision = SimpleNamespace(
             capture=lambda: frame,
             ocr_text=lambda _frame, name, **kwargs: (
-                ocr_calls.append((name, kwargs)) or "44"
+                ocr_calls.append((name, kwargs))
+                or (
+                    "在44秒内确认隐藏物品的位置。"
+                    if name == "探查执行反馈"
+                    else "44"
+                )
             ),
             match=lambda *_args: MatchResult(-1.0, (0, 0), (0, 0)),
             passes=lambda *_args: False,
@@ -6265,11 +6396,14 @@ class CollectorSkillTest(unittest.TestCase):
 
         self.assertIsInstance(result, SearchCountdownSession)
         self.assertEqual(
-            (SKILL_FALLBACK_POINTS["探查"][0], SKILL_FALLBACK_POINTS["探查"][1], 2.0),
+            (SKILL_FALLBACK_POINTS["探查"][0], SKILL_FALLBACK_POINTS["探查"][1], 0.0),
             clicks[-1],
         )
         self.assertEqual(SEARCH_COUNTDOWN_FALLBACK_RELATIVE_ROI, result.relative_roi)
-        self.assertEqual(SEARCH_COUNTDOWN_FALLBACK_RELATIVE_ROI, ocr_calls[0][1]["relative_roi"])
+        self.assertEqual(
+            SEARCH_COUNTDOWN_FALLBACK_RELATIVE_ROI,
+            next(kwargs["relative_roi"] for name, kwargs in ocr_calls if name == "探查倒计时"),
+        )
 
     def test_battle_action_miss_uses_fixed_center_and_fixed_count_roi_only_in_battle_map(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -6279,7 +6413,7 @@ class CollectorSkillTest(unittest.TestCase):
             ActionIconState.ABSENT,
             MatchResult(-1.0, (0, 0), (0, 0)),
         )
-        counts = iter(("0/21", "1/21"))
+        counts = iter((*("0/21" for _ in range(3)), *("1/21" for _ in range(3))))
         task = SimpleNamespace(
             config={},
             operate_click=lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep)),
@@ -6290,13 +6424,26 @@ class CollectorSkillTest(unittest.TestCase):
         vision = SimpleNamespace(
             capture=lambda: frame,
             ocr_text=lambda _frame, name, **kwargs: (
-                ocr_calls.append((name, kwargs)) or next(counts)
+                ocr_calls.append((name, kwargs))
+                or (
+                    "吸收执行成功"
+                    if name == "吸收执行反馈"
+                    else next(counts)
+                )
             ),
             match=lambda *_args: MatchResult(-1.0, (0, 0), (0, 0)),
             passes=lambda *_args: False,
         )
         collector = Collector(task, vision, SimpleNamespace(), SimpleNamespace())
-        collector.action_icons = SimpleNamespace(detect=lambda *_args: missing)
+        used = ActionIconDetection(
+            ActionIconState.USED,
+            MatchResult(0.98, (1490, 850), (55, 55), 0.83, 0.70),
+            0.65,
+        )
+        detections = iter((missing, missing, missing, used))
+        collector.action_icons = SimpleNamespace(
+            detect=lambda *_args: next(detections)
+        )
 
         result = collector._use_actions(
             (ABSORB_ACTION,),
@@ -6305,12 +6452,16 @@ class CollectorSkillTest(unittest.TestCase):
 
         self.assertTrue(result.completed)
         self.assertEqual(
-            (SKILL_FALLBACK_POINTS["吸收"][0], SKILL_FALLBACK_POINTS["吸收"][1], 2.0),
+            (SKILL_FALLBACK_POINTS["吸收"][0], SKILL_FALLBACK_POINTS["吸收"][1], 0.0),
             clicks[-1],
         )
         self.assertEqual(
-            [SKILL_FIXED_COUNT_RELATIVE_ROIS["吸收"]] * 2,
-            [kwargs["relative_roi"] for _name, kwargs in ocr_calls],
+            [SKILL_FIXED_COUNT_RELATIVE_ROIS["吸收"]] * 6,
+            [
+                kwargs["relative_roi"]
+                for name, kwargs in ocr_calls
+                if name == "吸收次数"
+            ],
         )
 
         forbidden_clicks = []

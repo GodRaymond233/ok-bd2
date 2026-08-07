@@ -167,6 +167,8 @@ DISCOUNT_SHOP_CLOSE_TIMEOUT = 5.0
 RETURN_HOME_TIMEOUT = 10.0
 HOME_BRIGHTNESS_THRESHOLD = 0.75
 STORY_SANDBOX_STABLE_HITS = 2
+STORY_SANDBOX_SWITCH_WINDOW = 5
+STORY_SANDBOX_SWITCH_WINDOW_HITS = 3
 SANDBOX_TEMPLATES = (
     TemplateSpec(
         "箱庭小地图缩放按钮",
@@ -182,7 +184,7 @@ SANDBOX_SKILL_GROUP_TEMPLATE_SCORE = 0.95
 # Structural gates retain candidates in complex backgrounds; HSV semantics
 # below decide whether a slot is selected or unselected.
 SANDBOX_SKILL_GROUP_PIXEL_SCORE = 0.80
-SANDBOX_SKILL_GROUP_ZNCC_SCORE = 0.64
+SANDBOX_SKILL_GROUP_ZNCC_SCORE = None
 SANDBOX_SKILL_SELECTED_YELLOW_MIN_RATIO = 0.20
 SANDBOX_SKILL_UNSELECTED_YELLOW_MAX_RATIO = 0.10
 SANDBOX_SKILL_GROUP_SCALE_RATIOS = (0.90, 0.95, 1.0, 1.05, 1.10, 1.15, 1.20, 1.25, 1.30, 1.35)
@@ -1651,15 +1653,34 @@ class Navigator:
                 return "unselected"
             return "unknown"
 
-        selected_colors = (
-            color_ratios(frame, selected_spec, selected_result)
-            if selected_passed
-            else None
+        candidates = (
+            (
+                selected_spec,
+                selected_result,
+                selected_passed,
+            ),
+            (
+                unselected_spec,
+                unselected_result,
+                unselected_passed,
+            ),
         )
-        unselected_colors = (
-            color_ratios(frame, unselected_spec, unselected_result)
-            if unselected_passed
-            else None
+        colors = tuple(
+            (
+                spec,
+                color_ratios(frame, spec, result),
+            )
+            for spec, result, passed in candidates
+            if passed
+        )
+
+        selected_colors = next(
+            (values for spec, values in colors if spec is selected_spec),
+            None,
+        )
+        unselected_colors = next(
+            (values for spec, values in colors if spec is unselected_spec),
+            None,
         )
         def format_colors(values: tuple[float, float, float] | None) -> str:
             if values is None:
@@ -1672,14 +1693,16 @@ class Navigator:
                 f"{unselected_spec.name}[{format_colors(unselected_colors)}]"
             ),
         )
-        selected_is_yellow = (
-            selected_colors is not None
-            and selected_colors[0] >= SANDBOX_SKILL_SELECTED_YELLOW_MIN_RATIO
+        selected_is_yellow = any(
+            values[0] >= SANDBOX_SKILL_SELECTED_YELLOW_MIN_RATIO
+            for _spec, values in colors
+            if values is not None
         )
-        unselected_is_gray = (
-            unselected_colors is not None
-            and unselected_colors[0] <= SANDBOX_SKILL_UNSELECTED_YELLOW_MAX_RATIO
-            and unselected_colors[1] >= 0.20
+        unselected_is_gray = any(
+            values[0] <= SANDBOX_SKILL_UNSELECTED_YELLOW_MAX_RATIO
+            and values[1] >= 0.20
+            for _spec, values in colors
+            if values is not None
         )
         if selected_is_yellow and not unselected_is_gray:
             return "selected"
@@ -1716,6 +1739,7 @@ class Navigator:
         last_state = ScreenState.UNKNOWN
         sandbox_hits = 0
         skill_group_switch_attempted = False
+        switch_group_one_history: list[bool] = []
         while monotonic() <= end_at:
             frame = self.vision.capture()
             last_state = self.classify(frame)
@@ -1729,13 +1753,39 @@ class Navigator:
                     self._click_sandbox_skill_group_1()
                     skill_group_switch_attempted = True
                     sandbox_hits = 0
+                    switch_group_one_history.clear()
                     continue
                 if skill_group_switch_attempted and confirmation.skill_group != 1:
+                    switch_group_one_history.append(False)
+                    del switch_group_one_history[:-STORY_SANDBOX_SWITCH_WINDOW]
                     self._status(
                         "箱庭技能组切换",
-                        "点击技能组1后仍未确认技能组1状态，继续等待但不累计稳定帧",
+                        (
+                            "点击技能组1后仍未确认技能组1状态，"
+                            f"切换窗口={sum(switch_group_one_history)}"
+                            f"/{STORY_SANDBOX_SWITCH_WINDOW}"
+                        ),
                     )
                     sandbox_hits = 0
+                    if confirmation.skill_group == 2:
+                        switch_group_one_history.clear()
+                elif skill_group_switch_attempted:
+                    switch_group_one_history.append(confirmation.passed)
+                    del switch_group_one_history[:-STORY_SANDBOX_SWITCH_WINDOW]
+                    window_hits = sum(switch_group_one_history)
+                    self._status(
+                        "箱庭稳定确认",
+                        (
+                            f"切换窗口={window_hits}"
+                            f"/{STORY_SANDBOX_SWITCH_WINDOW_HITS}"
+                            f"（{len(switch_group_one_history)}帧）"
+                        ),
+                    )
+                    if (
+                        len(switch_group_one_history) >= STORY_SANDBOX_SWITCH_WINDOW
+                        and window_hits >= STORY_SANDBOX_SWITCH_WINDOW_HITS
+                    ):
+                        return NavigationResult(True, last_state, success_message)
                 elif confirmation.passed:
                     sandbox_hits += 1
                     self._status(
@@ -2932,6 +2982,16 @@ class Navigator:
         return self._teleport_map_teleports(frame)
 
     @staticmethod
+    def _select_map_teleport(teleports: tuple[MatchResult, ...]) -> MatchResult | None:
+        """Choose the strongest already-validated teleport when several are visible."""
+        if not teleports:
+            return None
+        return max(
+            teleports,
+            key=lambda value: (value.score, value.pixel_score, value.zncc_score),
+        )
+
+    @staticmethod
     def _target_keys_in_text(card: CardSpec, normalized_text: str) -> tuple[str, ...]:
         matches: list[tuple[int, str]] = []
         for target in card.targets:
@@ -3067,20 +3127,21 @@ class Navigator:
                 ScreenState.AREA_MAP,
                 (f"传送前地图名不符：expected={target.title}, actual={context.raw_text or '-'}"),
             )
-        if len(context.teleports) != 1:
+        teleport = self._select_map_teleport(context.teleports)
+        if teleport is None:
             return NavigationResult(
                 False,
                 ScreenState.AREA_MAP,
                 (
-                    f"{target.title}需要唯一的传送阵地图传送阵，"
-                    f"实际识别到{len(context.teleports)}个"
+                    f"{target.title}未识别到传送阵地图传送阵，"
+                    "无法安全传送"
                 ),
             )
-        teleport = context.teleports[0]
         self._status(
             "传送阵地图传送阵点击中心",
             (
-                f"target={target.title}, center={teleport.center}, "
+                f"target={target.title}, candidates={len(context.teleports)}, "
+                f"selected=center={teleport.center}, "
                 f"match={teleport.score:.3f}, pixel={teleport.pixel_score:.3f}, "
                 f"zncc={teleport.zncc_score:.3f}"
             ),
@@ -3367,15 +3428,16 @@ class Navigator:
                     "展开传送阵后目标地图标题发生变化",
                 )
             context = expanded
-        if len(context.teleports) != 1:
+        teleport = self._select_map_teleport(context.teleports)
+        if teleport is None:
             return NavigationResult(
                 False,
                 ScreenState.AREA_MAP,
-                f"{target.title}需要唯一传送阵，实际识别到{len(context.teleports)}个",
+                f"{target.title}未识别到传送阵，无法安全传送",
             )
 
         if not self._click_teleport_map_destination(
-            context.teleports[0],
+            teleport,
             context.frame_shape,
             opened_by_skill=teleport_map_opened_by_skill,
         ):
