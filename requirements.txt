@@ -20,13 +20,15 @@ idna==3.18 ; sys_platform == 'win32'
     # via requests
 mouse==0.7.1 ; sys_platform == 'win32'
     # via ok-script
+msvc-runtime==14.44.35112 ; sys_platform == 'win32'
+    # via ok-bd2
 numpy==2.4.6 ; sys_platform == 'win32'
     # via
     #   ok-bd2
     #   opencv-python
     #   openvino
     #   shapely
-ok-script==1.0.179 ; sys_platform == 'win32'
+ok-script==1.0.180 ; sys_platform == 'win32'
     # via ok-bd2
 onnxocr-ppocrv5==0.0.18 ; sys_platform == 'win32'
     # via ok-bd2
