@@ -1,21 +1,22 @@
-# ok-bd2 重构记录（阶段一 / 阶段二 / 阶段三 / 阶段四）
+# ok-bd2 重构记录（阶段一 / 阶段二 / 阶段三 / 阶段四 / 阶段五）
 
-本文档按用户要求记录 2026-08-10 四次重构改动的**大纲、主要内容与思路**，用于后续管理与维护。
+本文档按用户要求记录 2026-08-10 五次重构改动的**大纲、主要内容与思路**，用于后续管理与维护。
 每个阶段包含：目标与范围（大纲）、具体改动（主要内容）、设计动机（思路）、验证与审阅结论、
 提交与备份状态。代码以本地 `main` 分支为准。
 
 ---
 
-## 〇、四次改动总览
+## 〇、五次改动总览
 
 | 阶段 | 主题 | 核心目标 | 提交 | 状态 |
 | --- | --- | --- | --- | --- |
 | 阶段一 | 摘除测试兼容层 | 消除正式路径与测试兼容层的双轨并存，让正式账本路径成为唯一路径 | `6dc8b58` | 已提交、已推送、已备份 |
 | 阶段二 | 统一视觉识别管线 | 消除五份重复模板匹配实现，修复 `map_trade/vision.py` 对任务层的反向依赖 | `0656264` | 已提交、已推送、已备份 |
 | 阶段三 | 拆分大模块与状态机 | 拆分 navigator/trader/collector 千行模块，重构 `_use_action` 状态机 | 本文档下方记录 | 已提交本地、未推送 |
-| 阶段四 | 统一输入与坐标模型 | 收敛 drag/scroll 到基类、统一参考分辨率与技能槽坐标、PVP 特殊页下沉 | 本文档下方记录 | 本地未提交、待审阅/提交 |
+| 阶段四 | 统一输入与坐标模型 | 收敛 drag/scroll 到基类、统一参考分辨率与技能槽坐标、PVP 特殊页下沉 | `aaf6a0a` | 已提交本地、未推送 |
+| 阶段五 | 错误语义与性能修复 | mark_target 失败语义、跑商盲点移除、classify 局部 ROI、QuickHunt 组合化 | 本文档下方记录 | 已提交本地、未推送 |
 
-四次改动的共同约束（来自 AGENTS.md）：
+五次改动的共同约束（来自 AGENTS.md）：
 
 - 禁止在 `src` 中引入项目自定义键盘发送/按下/释放/热键注册/键盘映射。
 - 每次改动后必须完整执行单元测试（当前 562 项）、Ruff、compileall、`git diff --check` 与键盘限制扫描。
@@ -317,7 +318,102 @@
 
 ---
 
-## 五、验证门禁
+## 五、阶段五：错误语义与性能修复
+
+### 5.1 大纲
+
+- 目标：修正采集额度超限的错误语义、移除跑商盲点点击、降低共享界面分类的 OCR
+  成本，并将 QuickHuntTask 从“继承 DailyTask + 反向删配置”改为组合式共享 mixin。
+- 范围：`map_trade/progress.py`、`map_trade/collector.py`、
+  `map_trade/navigator.py`、`map_trade/navigator_trade.py`、
+  `map_trade/navigator_constants.py`，以及
+  `DailyTask.py` / `QuickHuntTask.py` 与新拆分
+  `task_vision_mixin.py` / `quick_hunt.py`。
+- 提交：`09d36ed refactor(tasks): 错误语义与分类性能修复并组合化快速狩猎`
+  （12 文件，+2179/−1659）。
+
+### 5.2 主要内容
+
+- 额度超限失败语义：
+  - `ProgressStore.mark_target` 在吸收/召集/压制额度超限时不再 raise
+    `RuntimeError`，改为持久化 `depleted_today` 并返回 False；重复目标同样
+    返回 False，docstring 明确两种 False 语义。
+  - `Collector.run` 统一把内部 `RuntimeError` 转成失败 `CollectionResult`
+    （日志保留异常文本），任务编排不再因点击等中断异常直接炸出。
+  - 三处 `mark_target` 调用检查返回值；False 时返回
+    `CollectionResult(True, depleted=True, ...)`，已成功小图计数不丢失，
+    与既有“实机技能次数到上限”分支保持一致。
+- 跑商盲点移除：
+  - `_bargain_and_enter_shop` 删除“点击成功但商店页 OCR 未确认仍按成功继续”
+    与“对话动画偶尔需要一次中心无害点击”两条固定点/宽松路径；改为
+    `_click_shop_entry_with_retries()` 前置 OCR 识别（最多 3 次、间隔 0.5 秒），
+    失败返回明确失败；点击成功后 `wait_trade_state` 必须确认 SHOP。
+  - `_return_home_from_discount_shop` 的关闭按钮与箱庭主页按钮从固定点盲点
+    改为模板优先助手（关闭按钮 2 个模板、主页按钮 3 个模板，门槛 0.85，
+    相对 ROI 0–0.2×0–0.18 与 0.86–1×0–0.18），模板未通过时才回退到已标定
+    相对点 (82,36) / (1797,63)；确认弹窗点击后的 0.8 秒时序保持与旧实现一致。
+- 界面分类性能：
+  - `classify` / `classify_trade` 从整帧 OCR 改为 7 个局部 ROI OCR（加载、
+    商店页签、商店标题、传送阵标题、卡带标题、卡带类别、料理标题/材料），
+    坐标全部为 1920×1080 参考像素派生相对 ROI，实机 OCR 报告见
+    `.local-dev/experiments/classify-roi-20260810/ocr_report.json`。
+  - 两个入口记录每次分类的 `monotonic()` 耗时并输出
+    “界面分类耗时”/“跑商界面分类耗时”，便于后续量化。
+  - 信号隔离保持不变：共享 `classify` 仍不调用商人模板；商人模板只属于
+    `classify_trade`。
+- QuickHuntTask 组合化：
+  - 新增 `src/tasks/task_vision_mixin.py`：共享视觉状态、模板/OCR/等待 helper
+    与主页确认信号；`DailyTask` 与 `QuickHuntTask` 共同使用。
+  - 新增 `src/tasks/quick_hunt.py`：`QUICK_HUNT_*` 常量、
+    `QuickHuntConfigMixin`（默认配置/描述/type 配置/安装）与
+    `QuickHuntFeatureMixin`（全部快速狩猎方法）。
+  - `DailyTask` 裁掉快速狩猎与共享视觉实现，仅保留公会/小屋/收菜日常行为；
+    `QuickHuntTask` 不再继承 `DailyTask`，改为组合三个 mixin + `BaseBD2Task`。
+  - 关键修复：type 配置回调含 `self._queue_quick_hunt_test` lambda，不能做类
+    属性，因此 `quick_hunt_config_type` 改为实例方法 `_quick_hunt_type_config()`。
+
+### 5.3 思路
+
+- mark_target 抛异常把“今日额度用尽”与“流程异常”混为一谈，任务层无法区分；
+  改为返回值后，额度耗尽成为可计划、可持久化的正常终止，异常只保留给真正
+  不可恢复的流程错误（`Collector.run` 统一兜底成失败结果）。
+- 商店入口与折扣商店关闭/主页按钮都属于“能识别目标时优先点击识别结果中心”
+  的场景；固定点只能作为模板门禁失败后的兜底。实机截图探测显示关闭/主页
+  候选模板最高分仅约 0.62，因此保留严格门槛（0.85）下的标定相对点回退，
+  而不是硬性只点模板。
+- 整帧 OCR 是共享分类的主要成本来源，而各状态关键字只出现在固定 UI 区域；
+  按状态切局部 ROI 可显著减少 OCR 像素量，同时用耗时日志暴露每次分类的成本
+  变化，便于实机验证。
+- QuickHuntTask 之前靠“继承 DailyTask 再删除日常配置键”实现独立，代价是
+  DailyTask 的修改总会波及快速狩猎，且反向删除顺序脆弱；组合式 mixin 让
+  职责边界显式化，视觉 helper 与快速狩猎能力各自独立可复用。
+
+### 5.4 验证与审阅
+
+- 565 项完整单元测试（564 + 新增 Collector.run 异常转换回归）、Ruff、
+  compileall、`git diff --check` 与 src 键盘限制扫描全部通过。
+- 测试更新：`test_map_trade.py` 的商店入口失败语义、盲点零点击、
+  局部 ROI OCR 分类、return_home 模板优先回退时序、额度超限 False 语义；
+  `test_daily_task.py` / `test_calibration.py` 的常量导入迁移到
+  `task_vision_mixin` / `quick_hunt`。
+- AST 比对：原 DailyTask 46 个模块级名称与 60 个方法全部存在于新四模块
+  union，仅新增三个意图内方法（`_init_vision_state` /
+  `_install_quick_hunt_config` / `_quick_hunt_type_config`）。
+- 独立只读子代理审阅结论与主线程同清单复核：PASS（无阻塞项）；一处非阻塞
+  观察为 `TaskVisionMixin._ocr_text` 仍按旧实现硬编码读取“日常 OCR 阈值”，
+  QuickHuntTask 的“快速狩猎 OCR 阈值”配置暂不生效（历史遗留，本次为逐字
+  搬迁，未扩大行为差异）。
+
+### 5.5 提交与备份
+
+- 本阶段代码与测试已提交为 `09d36ed`；本文档单独提交（未推送）。
+- 备份位于 `D:\ok-bd2-backups\ok-bd2-main-<新提交哈希>-<时间戳>\`
+  （含完整历史 bundle、HEAD 快照 zip、SHA256 与提交清单），具体路径与哈希
+  以 AGENTS.md 当前计划区为准。
+
+---
+
+## 六、验证门禁
 
 每次修改后完整执行：
 
@@ -332,7 +428,7 @@ git diff --check
 
 ---
 
-## 六、维护注意事项与后续计划
+## 七、维护注意事项与后续计划
 
 - 门面文件只保留类、编排入口与再导出；新增逻辑优先落在对应职责的 mixin/子模块，
   避免门面重新膨胀。
@@ -347,7 +443,17 @@ git diff --check
   只允许以 `action_icons.py` 为唯一事实来源。
 - PVP 特殊页（最近卡带模板、赛季奖励/晋级/段位下滑）只属于 `PVPTask`；共享快速
   切换流程通过 `_recent_cartridge_is_pvp` 钩子决定是否启用。
+- 额度超限是 `mark_target` 的正常 False 结果（并持久化 `depleted_today`），
+  不是异常；`Collector.run` 对外只返回 `CollectionResult`，不向编排层抛
+  `RuntimeError`。
+- 商店入口/折扣商店关闭/主页按钮遵循“识别优先、固定点兜底”；模板新增时
+  保持严格门槛，不要退回裸固定点盲点。
+- 共享界面分类只允许局部 ROI OCR；新增界面状态时先在实机截图确认关键字
+  所在参考区域，再派生相对 ROI。
+- 快速狩猎能力统一在 `quick_hunt.py` 的 mixin 中；`DailyTask` 不再承载
+  快速狩猎逻辑，新增任务按需组合 `QuickHuntFeatureMixin`。
 - 阶段四包含两处有意的行为变化（非回归）：技能组/传送中心按实机标定收敛 1–2 像素；
   Square / MapTrade 不再隐式执行 PVP 模板匹配与特殊页处理。
-- 阶段三为纯重构，不改实机行为；功能层面的实机验证与发版门禁继续按 AGENTS.md
-  当前计划执行（收到明确发布请求后再推送、打标签与发布）。
+- 阶段三/四/五的实机行为差异（额度耗尽终止、跑商入口失败、分类 ROI、快速狩猎
+  组合化）以测试锁定，实机验证与发版门禁继续按 AGENTS.md 当前计划执行
+  （收到明确发布请求后再推送、打标签与发布）。
