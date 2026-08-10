@@ -92,6 +92,7 @@ class SquareGoddessTask(BaseBD2Task):
         "主页小屋按钮",
         "主页亮度",
         "主页抽抽乐 OCR",
+        "广场主页点击次数",
         "快速切换按钮",
         "卡带选择页 OCR",
         "卡带选择页 OCR 命中",
@@ -150,6 +151,8 @@ class SquareGoddessTask(BaseBD2Task):
                 "女神像完成确认等待秒数": 8.0,
                 "女神像许愿最多点击次数": 3,
                 "广场返回主页等待秒数": 15.0,
+                "广场返回主页最多点击次数": 3,
+                "广场返回主页重试间隔秒数": 2.0,
                 "广场感叹号阈值": 0.72,
                 "梦幻广场阈值": 0.78,
                 "广场每日导航阈值": 0.76,
@@ -172,6 +175,12 @@ class SquareGoddessTask(BaseBD2Task):
                 "女神像完成确认等待秒数": "点击许愿后等待每日导航文字消失的最长时间。",
                 "女神像许愿最多点击次数": "OCR 仍识别到许愿提示时最多重复点击几次。",
                 "广场返回主页等待秒数": "许愿完成后点击主页按钮并确认回到主页的最长时间。",
+                "广场返回主页最多点击次数": (
+                    "返回主页点击未生效且仍明确识别到广场聊天输入时，允许的总点击次数。"
+                ),
+                "广场返回主页重试间隔秒数": (
+                    "返回主页点击后仍停留在广场时，再次点击主页按钮前的最短等待时间。"
+                ),
             }
         )
 
@@ -209,9 +218,21 @@ class SquareGoddessTask(BaseBD2Task):
 
     def _return_home_from_square(self) -> bool:
         self.info_set("当前阶段", "广场返回主页")
+        max_clicks = max(
+            1,
+            int(self.config.get("广场返回主页最多点击次数", 3)),
+        )
+        retry_interval = max(
+            0.0,
+            float(self.config.get("广场返回主页重试间隔秒数", 2.0)),
+        )
+        self.info_set("广场主页点击次数", f"1/{max_clicks}")
         self.operate_click(*SQUARE_HOME_POINT, after_sleep=1.0)
         return self._wait_for_cartridge_home(
-            timeout=float(self.config.get("广场返回主页等待秒数", 15.0))
+            timeout=float(self.config.get("广场返回主页等待秒数", 15.0)),
+            retry_home_clicks=max_clicks - 1,
+            retry_interval=retry_interval,
+            total_home_clicks=max_clicks,
         )
 
     def _enter_square_from_home(self) -> bool:
@@ -253,6 +274,9 @@ class SquareGoddessTask(BaseBD2Task):
         self,
         interval: float = 0.35,
         timeout: float | None = None,
+        retry_home_clicks: int = 0,
+        retry_interval: float = 2.0,
+        total_home_clicks: int = 1,
     ) -> bool:
         self.info_set("当前阶段", "确认主页")
         wait_seconds = (
@@ -265,6 +289,18 @@ class SquareGoddessTask(BaseBD2Task):
         last_button_pixel = -1.0
         last_ratio = 0.0
         last_gacha_text = ""
+        remaining_home_clicks = max(0, int(retry_home_clicks))
+        total_home_clicks = max(
+            remaining_home_clicks + 1,
+            int(total_home_clicks),
+        )
+        completed_home_clicks = total_home_clicks - remaining_home_clicks
+        retry_interval = max(0.0, float(retry_interval))
+        next_home_retry_at = (
+            monotonic() + retry_interval
+            if remaining_home_clicks > 0
+            else float("inf")
+        )
         while monotonic() <= end_at:
             frame = self.capture_frame()
             candidates = [(spec, self._match(frame, spec)) for spec in HOME_TEMPLATES]
@@ -295,6 +331,29 @@ class SquareGoddessTask(BaseBD2Task):
                 gacha_ocr_text=last_gacha_text,
                 context="广场女神像返回主页",
             )
+            normalized_gacha_text = self._normalize_text(last_gacha_text)
+            square_chat_visible = (
+                normalized_gacha_text.startswith("输入")
+                and "抽抽乐" not in normalized_gacha_text
+            )
+            if (
+                remaining_home_clicks > 0
+                and square_chat_visible
+                and monotonic() >= next_home_retry_at
+            ):
+                completed_home_clicks += 1
+                remaining_home_clicks -= 1
+                self.info_set(
+                    "广场主页点击次数",
+                    f"{completed_home_clicks}/{total_home_clicks}",
+                )
+                self.log_info(
+                    "广场女神像：返回主页点击未生效，"
+                    f"仍识别到广场聊天输入，执行第{completed_home_clicks}次点击。"
+                )
+                self.operate_click(*SQUARE_HOME_POINT, after_sleep=1.0)
+                next_home_retry_at = monotonic() + retry_interval
+                continue
             self.sleep(interval)
 
         self.log_info(
