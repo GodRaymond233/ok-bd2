@@ -1,0 +1,445 @@
+from __future__ import annotations
+
+from time import monotonic
+
+from src.tasks.map_trade.models import (
+    MERCHANT_CARD_ID,
+    MatchResult,
+    NavigationResult,
+    ScreenState,
+)
+from src.tasks.map_trade.navigator_constants import (  # noqa: F401
+    AREA_MAP_BACK_TEMPLATE,
+    AREA_MAP_CHANGE_INTERVAL,
+    AREA_MAP_CHANGE_TIMEOUT,
+    AREA_MAP_CLICK_SETTLE_SECONDS,
+    AREA_MAP_OPEN_REFERENCE_POINT,
+    AREA_MAP_OPEN_RELATIVE_POINT,
+    AREA_MAP_REFERENCE_SIZE,
+    AREA_MAP_SCAN_LIMIT,
+    AREA_MAP_TELEPORT_BRIGHT_MAXIMUM_SPREAD,
+    AREA_MAP_TELEPORT_BRIGHT_MINIMUM_GRAY,
+    AREA_MAP_TELEPORT_BRIGHT_NEUTRAL_RATIO,
+    AREA_MAP_TELEPORT_BRIGHT_RADIUS_RATIO,
+    AREA_MAP_TELEPORT_CLUSTER_RADIUS,
+    BARGAIN_CONFIRM_POINT,
+    BARGAIN_POINT,
+    BARGAIN_SHOP_CONFIRM_POPUP_KEYWORD,
+    BARGAIN_SHOP_CONFIRM_STABLE_HITS,
+    CHAPTER_HOME_POINT,
+    DISCOUNT_SHOP_CLOSE_DIALOG_REGION,
+    DISCOUNT_SHOP_CLOSE_KEYWORDS,
+    DISCOUNT_SHOP_CLOSE_POINT,
+    DISCOUNT_SHOP_CLOSE_TIMEOUT,
+    FIRST_CARD_CONFIRM_REGION,
+    FIRST_CARD_INSERT_REGION,
+    FIRST_CARD_SKIP_TEMPLATE,
+    HAND_TEMPLATE,
+    HOME_BRIGHTNESS_THRESHOLD,
+    HOME_TEMPLATES,
+    LOADING_TEMPLATE,
+    MERCHANT_CLICK_LOCATION_FAILURE_MESSAGE,
+    MERCHANT_CLICK_LOCATION_TEMPLATE,
+    MERCHANT_DIALOG_CONFIRM_TIMEOUT,
+    OVERLAP_ARROW_TEMPLATE,
+    PROBE_QUICK_SWITCH_SCROLL_AMOUNT,
+    PROBE_QUICK_SWITCH_SCROLL_COUNT,
+    PROBE_QUICK_SWITCH_SCROLL_INTERVAL_SECONDS,
+    PROBE_QUICK_SWITCH_SCROLL_POINT,
+    PROBE_QUICK_SWITCH_SCROLL_SETTLE_SECONDS,
+    PROBE_QUICK_SWITCH_SCROLL_STEPS,
+    PROBE_STORY_BADGE_CONFIRM_SECONDS,
+    Q_SP6_BARGAIN_OCR_TIMEOUT,
+    Q_SP6_BARGAIN_RECHECK_DELAY,
+    Q_SP6_SHOP_PAGE_KEYWORDS,
+    Q_SP6_SHOP_PAGE_OCR_INTERVAL,
+    Q_SP6_SHOP_PRIORITY_TIMEOUT,
+    Q_SP6_STORY_NUMBER,
+    QUICK_SWITCH_CARTRIDGE_REGION,
+    QUICK_SWITCH_PAGE_KEYWORDS,
+    QUICK_SWITCH_SCROLL_FOCUS_POINT,
+    QUICK_SWITCH_SCROLL_INTERVAL,
+    QUICK_SWITCH_SCROLL_POINT,
+    QUICK_SWITCH_SCROLL_RESET_AMOUNT,
+    QUICK_SWITCH_SCROLL_RESET_COUNT,
+    QUICK_SWITCH_SCROLL_SCAN_STEPS,
+    QUICK_SWITCH_SCROLL_SETTLE_SECONDS,
+    QUICK_SWITCH_SCROLL_UP_AMOUNT,
+    QUICK_SWITCH_SCROLL_UP_COUNT,
+    QUICK_SWITCH_TEMPLATE,
+    RETURN_HOME_TIMEOUT,
+    SANDBOX_CONFIRM_ACTION_TEMPLATES,
+    SANDBOX_INTERACTION_PROBE_INTERVAL,
+    SANDBOX_INTERACTION_PROBE_TIMEOUT,
+    SANDBOX_MAP_SETTLE_SECONDS,
+    SANDBOX_MAP_TELEPORT_TEMPLATE,
+    SANDBOX_MAP_TELEPORT_TIMEOUT,
+    SANDBOX_NAVIGATION_CONFIRM_TIMEOUT,
+    SANDBOX_NAVIGATION_MAP_TIMEOUT,
+    SANDBOX_NAVIGATION_OCR_INTERVAL,
+    SANDBOX_NAVIGATION_OPEN_SETTLE_SECONDS,
+    SANDBOX_NAVIGATION_OPEN_TEMPLATES,
+    SANDBOX_NAVIGATION_OPEN_TIMEOUT,
+    SANDBOX_NAVIGATION_PAGE_KEYWORDS,
+    SANDBOX_NAVIGATION_PIN_TEMPLATE,
+    SANDBOX_NAVIGATION_RUN_TEMPLATE,
+    SANDBOX_NAVIGATION_TELEPORT_SETTLE_SECONDS,
+    SANDBOX_NAVIGATION_WALK_TIMEOUT,
+    SANDBOX_SKILL_GROUP_PIXEL_SCORE,
+    SANDBOX_SKILL_GROUP_SCALE_RATIOS,
+    SANDBOX_SKILL_GROUP_SEARCH_ROI,
+    SANDBOX_SKILL_GROUP_SWITCH_SETTLE_SECONDS,
+    SANDBOX_SKILL_GROUP_TEMPLATE_SCORE,
+    SANDBOX_SKILL_GROUP_ZNCC_SCORE,
+    SANDBOX_SKILL_SELECTED_YELLOW_MIN_RATIO,
+    SANDBOX_SKILL_SLOT_1_CENTER_ROI,
+    SANDBOX_SKILL_SLOT_1_REFERENCE_CENTER,
+    SANDBOX_SKILL_SLOT_1_RELATIVE_POINT,
+    SANDBOX_SKILL_SLOT_1_SELECTED_TEMPLATE,
+    SANDBOX_SKILL_SLOT_1_UNSELECTED_TEMPLATE,
+    SANDBOX_SKILL_SLOT_2_CENTER_ROI,
+    SANDBOX_SKILL_SLOT_2_REFERENCE_CENTER,
+    SANDBOX_SKILL_SLOT_2_SELECTED_TEMPLATE,
+    SANDBOX_SKILL_SLOT_2_UNSELECTED_TEMPLATE,
+    SANDBOX_SKILL_STATE_TEMPLATES,
+    SANDBOX_SKILL_UNSELECTED_YELLOW_MAX_RATIO,
+    SANDBOX_TELEPORT_SKILL_FAILURE_GROUPS,
+    SANDBOX_TELEPORT_SKILL_POLL_INTERVAL,
+    SANDBOX_TELEPORT_SKILL_REFERENCE_CENTER,
+    SANDBOX_TELEPORT_SKILL_RELATIVE_POINT,
+    SANDBOX_TELEPORT_SKILL_TEMPLATE,
+    SANDBOX_TELEPORT_SKILL_TIMEOUT,
+    SANDBOX_TEMPLATES,
+    SHOP_PAGE_OCR_KEYWORDS,
+    STORY_BADGE_CANDIDATE_PIXEL_SCORE,
+    STORY_BADGE_CANDIDATE_SCORE,
+    STORY_BADGE_CANDIDATE_ZNCC_SCORE,
+    STORY_BADGE_CENTER_REGION,
+    STORY_BADGE_CLUSTER_RADIUS,
+    STORY_BADGE_MIN_MARGIN,
+    STORY_BADGE_OCR_BINARY_THRESHOLD,
+    STORY_BADGE_OCR_HORIZONTAL_BORDER,
+    STORY_BADGE_OCR_INNER_HEIGHT,
+    STORY_BADGE_OCR_INNER_RADIUS_RATIO,
+    STORY_BADGE_OCR_MIN_CONFIDENCE,
+    STORY_BADGE_OCR_VERTICAL_BORDER,
+    STORY_BADGE_PIXEL_SCORE,
+    STORY_BADGE_SPECS,
+    STORY_BADGE_TEMPLATE_SCORE,
+    STORY_CATEGORY_HIGHLIGHT_MIN_RATIO,
+    STORY_CATEGORY_HIGHLIGHT_REGION,
+    STORY_CATEGORY_POINT,
+    STORY_SANDBOX_STABLE_HITS,
+    STORY_SANDBOX_SWITCH_WINDOW,
+    STORY_SANDBOX_SWITCH_WINDOW_HITS,
+    TELEPORT_GENERATION_OCR_INTERVAL,
+    TELEPORT_GENERATION_OCR_KEYWORDS,
+    TELEPORT_GENERATION_OCR_TIMEOUT,
+    TELEPORT_INTERACTION_CLICK_DELAY,
+    TELEPORT_INTERACTION_POLL_INTERVAL,
+    TELEPORT_INTERACTION_TIMEOUT,
+    TELEPORT_MAP_BACKWARD_TEMPLATE,
+    TELEPORT_MAP_FIRST_PAGE_LIMIT,
+    TELEPORT_MAP_FORWARD_TEMPLATE,
+    TELEPORT_MAP_OPEN_TIMEOUT,
+    TELEPORT_MAP_RETURN_REFERENCE_POINT,
+    TELEPORT_MAP_RETURN_RELATIVE_POINT,
+    TELEPORT_MAP_SKILL_TEMPLATE,
+    TELEPORT_MAP_TELEPORT_CIRCLE_TEMPLATE,
+    TELEPORT_MAP_TELEPORT_CIRCLE_TEMPLATES,
+    TELEPORT_MAP_TITLE_OCR_REFERENCE_ROI,
+    TELEPORT_MAP_TITLE_OCR_RELATIVE_ROI,
+    TELEPORT_MAP_TRAVEL_SETTLE_SECONDS,
+    TRADE_MERCHANT_CONTEXT_TEMPLATE,
+    AreaMapContext,
+    LocatedStoryCard,
+    ProbedStoryCard,
+    SandboxConfirmation,
+    StoryBadgeCandidate,
+    StoryBadgeDetection,
+    _sandbox_skill_template,
+)
+from src.tasks.map_trade.vision import normalize_text
+
+
+class TradeNavigationMixin:
+    def enter_q_sp6_buy_flow(self) -> NavigationResult:
+        """Run the buy entry flow and stop after the discounted shop page is confirmed."""
+
+        self._status("导航状态", "优先识别MerchantClickLocation.png")
+        shop_opened = self._enter_q_sp6_shop(
+            Q_SP6_SHOP_PRIORITY_TIMEOUT,
+            log_timeout=False,
+        )
+        if not shop_opened:
+            self._status("导航状态", "确认主页")
+            story_menu = self._open_story_quick_switcher()
+            if not story_menu.success:
+                return story_menu
+            self._status("导航状态", "识别剧情游戏卡6角标")
+            badge_match = self._wait_for_story_badge(Q_SP6_STORY_NUMBER)
+            if badge_match is None:
+                return NavigationResult(False, self.classify(), "未唯一确认剧情游戏卡6角标")
+            badge_frame, badge = badge_match
+            self._status(
+                "剧情游戏卡6角标点击中心",
+                (
+                    f"center=({badge.best.result.center[0]},"
+                    f"{badge.best.result.center[1]}), "
+                    f"match={badge.best.result.score:.3f}, "
+                    f"pixel={badge.best.result.pixel_score:.3f}, "
+                    f"zncc={badge.best.result.zncc_score:.3f}, "
+                    f"margin={badge.margin:.3f}, "
+                    f"ocr={badge.ocr_number if badge.ocr_number is not None else '-'}"
+                ),
+            )
+            self.vision.click_client(
+                badge.best.result.center,
+                badge_frame.shape,
+                after_sleep=0.0,
+            )
+
+            self._status("导航状态", "持续识别MerchantClickLocation.png")
+            shop_opened = self._enter_q_sp6_shop(
+                self._loading_timeout(),
+                log_timeout=True,
+            )
+            if not shop_opened:
+                return NavigationResult(
+                    False,
+                    self.classify(),
+                    MERCHANT_CLICK_LOCATION_FAILURE_MESSAGE,
+                )
+
+        self.task.sleep(Q_SP6_BARGAIN_RECHECK_DELAY)
+        if not self._wait_for_ocr_keywords(
+            ("砍价",),
+            Q_SP6_BARGAIN_OCR_TIMEOUT,
+            "砍价入口",
+        ):
+            return NavigationResult(False, self.classify(), "商店页面未识别到砍价入口")
+        self.task.operate_click(*BARGAIN_POINT, after_sleep=0.0)
+
+        bargain_tip = "使用砍价技能后可享受商店折扣价"
+        if not self._wait_for_ocr_keywords((bargain_tip,), 10.0, "砍价说明"):
+            return NavigationResult(False, self.classify(), "未识别到砍价技能折扣说明")
+        self.task.operate_click(*BARGAIN_CONFIRM_POINT, after_sleep=0.0)
+        if not self._wait_for_bargain_shop_confirmation():
+            return NavigationResult(
+                False,
+                self.classify(),
+                "砍价确认后未通过OCR确认商店页面",
+            )
+        return NavigationResult(True, ScreenState.SHOP, "已通过OCR确认商店页面")
+
+    def _enter_q_sp6_shop(
+        self,
+        timeout: float,
+        *,
+        log_timeout: bool,
+        interval: float = 0.5,
+    ) -> bool:
+        if not self._click_merchant_interaction(
+            timeout,
+            after_sleep=0.0,
+            interval=interval,
+        ):
+            if log_timeout:
+                self.task.log_warning(
+                    f"跑商：{MERCHANT_CLICK_LOCATION_FAILURE_MESSAGE}。"
+                )
+            return False
+        self._status("商店进入", "成功，已点击MerchantClickLocation中心")
+        return True
+
+    def _click_merchant_interaction(
+        self,
+        timeout: float,
+        *,
+        after_sleep: float,
+        interval: float = 0.25,
+    ) -> bool:
+        """Find the calibrated merchant location crop and click its center."""
+
+        end_at = monotonic() + max(0.0, timeout)
+        last = MatchResult(-1.0, (0, 0), (0, 0))
+        while monotonic() <= end_at:
+            frame = self.vision.capture()
+            last = self.vision.match(frame, MERCHANT_CLICK_LOCATION_TEMPLATE)
+            passed = self.vision.passes(last, MERCHANT_CLICK_LOCATION_TEMPLATE)
+            self._status(
+                MERCHANT_CLICK_LOCATION_TEMPLATE.name,
+                (
+                    f"{'pass' if passed else 'miss'}; match={last.score:.3f}; "
+                    f"pixel={last.pixel_score:.3f}; zncc={last.zncc_score:.3f}"
+                ),
+            )
+            if passed:
+                click_point = last.center
+                self._status(
+                    "商人交互点击位置",
+                    f"center=({click_point[0]},{click_point[1]})",
+                )
+                self.vision.click_client(
+                    click_point,
+                    frame.shape,
+                    after_sleep=after_sleep,
+                )
+                return True
+            self.task.sleep(interval)
+        self.task.log_warning(
+            f"跑商：{MERCHANT_CLICK_LOCATION_FAILURE_MESSAGE}，"
+            f"最后匹配={last.score:.3f}/{last.pixel_score:.3f}/{last.zncc_score:.3f}。"
+        )
+        return False
+
+    def _wait_for_bargain_shop_confirmation(self, timeout: float | None = None) -> bool:
+        """Wait until the discounted shop page is confirmed by stable OCR.
+
+        The bargain popup itself still exposes the shop keywords, so a frame only
+        counts when the shop keywords are present and the popup-specific marker is
+        absent on consecutive captures.
+        """
+
+        timeout = self._loading_timeout() if timeout is None else float(timeout)
+        end_at = monotonic() + max(0.0, timeout)
+        consecutive_hits = 0
+        last_text = ""
+        popup_marker = normalize_text(self.vision.simplify(BARGAIN_SHOP_CONFIRM_POPUP_KEYWORD))
+        while True:
+            frame = self.vision.capture()
+            matched, text = self._ocr_keywords_in_frame(
+                frame,
+                Q_SP6_SHOP_PAGE_KEYWORDS,
+                "砍价后商店页面",
+            )
+            last_text = text or last_text
+            normalized = normalize_text(self.vision.simplify(text))
+            if matched and popup_marker not in normalized:
+                consecutive_hits += 1
+            else:
+                consecutive_hits = 0
+            self._status(
+                "砍价后商店页面 OCR稳定",
+                f"{consecutive_hits}/{BARGAIN_SHOP_CONFIRM_STABLE_HITS}",
+            )
+            if consecutive_hits >= BARGAIN_SHOP_CONFIRM_STABLE_HITS:
+                return True
+            if monotonic() >= end_at:
+                break
+            self.task.sleep(Q_SP6_SHOP_PAGE_OCR_INTERVAL)
+        self.task.log_warning(f"跑商：砍价确认后未通过OCR确认商店页面，OCR={last_text or '-'}。")
+        return False
+
+    def _bargain_and_enter_shop(self) -> NavigationResult:
+        bargained = self.vision.click_ocr([r"砍价"], roi=(80, 520, 1000, 150), name="砍价")
+        if bargained:
+            self.task.sleep(0.5)
+            if not self.vision.click_ocr(
+                [r"砍价", r"确认"], roi=(500, 300, 380, 280), name="砍价确认"
+            ):
+                self.task.log_warning("跑商：砍价确认未出现，可能缺少砍价药，继续进入商店。")
+        else:
+            self.task.log_warning("跑商：未找到砍价选项，尝试直接进入商店。")
+        self.task.sleep(0.7)
+        shop_entry_clicked = self.vision.click_ocr(
+            [r"商店", r"进入商店"], roi=(60, 400, 1040, 260), name="商店入口"
+        )
+        if not shop_entry_clicked:
+            # Only used after the merchant dialogue template was positively identified.
+            self.vision.click_reference(130, 447, after_sleep=0.5)
+        state = self.wait_trade_state({ScreenState.SHOP}, 12)
+        if state == ScreenState.SHOP:
+            return NavigationResult(True, state)
+        if shop_entry_clicked:
+            self.task.log_warning(
+                "跑商：已点击商店入口，但商店页OCR未确认，按卖出入口成功继续。"
+            )
+            return NavigationResult(
+                True,
+                ScreenState.SHOP,
+                "已点击商店入口，商店页OCR未确认",
+            )
+        # Dialogue animation occasionally needs one harmless central click.
+        self.vision.click_reference(640, 620, after_sleep=0.6)
+        state = self.wait_trade_state({ScreenState.SHOP}, 6)
+        return NavigationResult(state == ScreenState.SHOP, state, "商店进入超时")
+
+    def reach_merchant_shop(self) -> NavigationResult:
+        state = self.classify_trade()
+        if state == ScreenState.SHOP:
+            return NavigationResult(True, state)
+        if state not in {ScreenState.SANDBOX, ScreenState.MERCHANT_DIALOG}:
+            entered = self.select_card(MERCHANT_CARD_ID)
+            if not entered.success:
+                return entered
+
+        if self.classify_trade() == ScreenState.MERCHANT_DIALOG:
+            return self._bargain_and_enter_shop()
+        if not self._click_merchant_interaction(timeout=2.0, after_sleep=1.2):
+            return NavigationResult(
+                False,
+                ScreenState.SANDBOX,
+                MERCHANT_CLICK_LOCATION_FAILURE_MESSAGE,
+            )
+        if (
+            self.wait_trade_state(
+                {ScreenState.MERCHANT_DIALOG},
+                MERCHANT_DIALOG_CONFIRM_TIMEOUT,
+            )
+            != ScreenState.MERCHANT_DIALOG
+        ):
+            return NavigationResult(False, self.classify_trade(), "未进入商人对话")
+        return self._bargain_and_enter_shop()
+
+    def return_home(self) -> NavigationResult:
+        state = self.classify()
+        if state == ScreenState.HOME:
+            return NavigationResult(True, state)
+        if state == ScreenState.SHOP:
+            return self._return_home_from_discount_shop()
+        if state == ScreenState.LOADING:
+            state = self.wait_state(
+                {ScreenState.HOME, ScreenState.SANDBOX},
+                self._loading_timeout(),
+            )
+            if state == ScreenState.HOME:
+                return NavigationResult(True, state)
+        if state != ScreenState.SANDBOX:
+            return NavigationResult(
+                False,
+                state,
+                "当前页面没有已确认的安全返回路径，未执行点击",
+            )
+
+        self.task.operate_click(*CHAPTER_HOME_POINT, after_sleep=0.0)
+        if self._wait_for_cartridge_home(timeout=RETURN_HOME_TIMEOUT):
+            return NavigationResult(True, ScreenState.HOME, "已从箱庭返回主页")
+        return NavigationResult(
+            False,
+            self.classify(),
+            "点击一次箱庭主页按钮后未在10秒内确认主页",
+        )
+
+    def _return_home_from_discount_shop(self) -> NavigationResult:
+        self.vision.click_reference(82, 36, after_sleep=0.0)
+        if not self._wait_for_ocr_keywords(
+            DISCOUNT_SHOP_CLOSE_KEYWORDS,
+            DISCOUNT_SHOP_CLOSE_TIMEOUT,
+            "折扣商店关闭确认",
+            interval=0.25,
+            relative_roi=DISCOUNT_SHOP_CLOSE_DIALOG_REGION,
+        ):
+            return NavigationResult(
+                False,
+                self.classify(),
+                "点击返回后未识别到折扣商店关闭确认",
+            )
+
+        self.task.operate_click(*DISCOUNT_SHOP_CLOSE_POINT, after_sleep=0.8)
+        self.vision.click_reference(82, 36, after_sleep=0.8)
+        self.task.operate_click(*CHAPTER_HOME_POINT, after_sleep=0.0)
+        if self._wait_for_cartridge_home(timeout=RETURN_HOME_TIMEOUT):
+            return NavigationResult(True, ScreenState.HOME, "已关闭折扣商店并返回主页")
+        return NavigationResult(False, self.classify(), "关闭折扣商店后未在10秒内返回主页")
+

@@ -1,0 +1,805 @@
+from __future__ import annotations
+
+import re
+from time import monotonic
+
+import numpy as np
+
+from src.tasks.map_trade.calendar import (
+    SALE_PRICE_REFRESH_HOUR,
+    sale_price_calendar_date,
+)
+from src.tasks.map_trade.data import (
+    ITEM_ALIASES,
+)
+from src.tasks.map_trade.models import (
+    CalendarEntry,
+    ScreenState,
+)
+from src.tasks.map_trade.trader_constants import (  # noqa: F401
+    BUY_ALL_FAVORITES_INTERVAL,
+    BUY_ALL_FAVORITES_KEYWORD,
+    BUY_ALL_FAVORITES_STABLE_HITS,
+    BUY_ALL_FAVORITES_TIMEOUT,
+    BUY_CONFIRM_DIALOG_REGION,
+    BUY_CONFIRM_INTERVAL,
+    BUY_CONFIRM_KEYWORDS,
+    BUY_CONFIRM_POINT,
+    BUY_CONFIRM_POST_CLICK_DELAY,
+    BUY_CONFIRM_PRE_CLICK_DELAY,
+    BUY_CONFIRM_TIMEOUT,
+    BUY_TO_SELL_OCR_INTERVAL,
+    BUY_TO_SELL_POST_CLICK_DELAY,
+    BUY_TO_SELL_PRE_CLICK_DELAY,
+    BUY_TO_SELL_SOLD_OUT_KEYWORD,
+    BUY_TO_SELL_TIMEOUT,
+    CALENDAR_DIR,
+    COOK_SUBMENU_TEMPLATE,
+    PROJECT_ROOT,
+    SALE_120_PERCENT_PATTERN,
+    SALE_AVAILABLE_PATTERN,
+    SALE_CLOSE_POINT,
+    SALE_COMPLETION_INTERVAL,
+    SALE_COMPLETION_STABLE_HITS,
+    SALE_COMPLETION_TIMEOUT,
+    SALE_CONFIRM_POINT,
+    SALE_DIALOG_REGION,
+    SALE_DIALOG_TIMEOUT,
+    SALE_DIALOG_TITLE_REGION,
+    SALE_FULL_PAGE_OCR_TARGET_HEIGHT,
+    SALE_ITEM_NAME_LEFT_OFFSET_X,
+    SALE_MAX_POINT,
+    SALE_MIN_POINT,
+    SALE_OCR_INTERVAL,
+    SALE_OWNED_PATTERN,
+    SALE_PLUS_TEN_POINT,
+    SALE_SLIDER_REGION,
+    SALE_TOAST_ID_PATTERN,
+    SELL_MODE_POINT,
+    SHOP_CARTRIDGE_CANDIDATE_SCORE,
+    SHOP_CARTRIDGE_CATEGORY_PATTERN,
+    SHOP_CARTRIDGE_CATEGORY_PREFIX,
+    SHOP_CARTRIDGE_CONFIRM_SCORE,
+    SHOP_CARTRIDGE_MIN_MARGIN,
+    SHOP_CARTRIDGE_NAME_MIN_SIMILARITY,
+    SHOP_CARTRIDGE_OCR_MIN_CONFIDENCE,
+    SHOP_CARTRIDGE_OCR_ROI,
+    SHOP_CARTRIDGE_OCR_ROW_LINK_RADIUS,
+    SHOP_CARTRIDGE_RECOGNITION_REGION,
+    SHOP_CARTRIDGE_ROW_CLUSTER_RADIUS,
+    SHOP_CARTRIDGE_SCALE_RATIOS,
+    SHOP_CARTRIDGE_SCROLL_POINT,
+    SHOP_CARTRIDGE_SCROLL_REGION,
+    SHOP_DOWN_SCROLL_INTERVAL,
+    SHOP_FIRST_PAGE_MAX_UP_SCROLLS,
+    SHOP_MODE_INTERVAL,
+    SHOP_MODE_TIMEOUT,
+    SHOP_MODE_TITLE_REGION,
+    SHOP_UP_SCROLL_RECOGNITION_INTERVAL,
+    STAR_ADD_TOAST_KEYWORD,
+    STAR_PIXEL_THRESHOLD,
+    STAR_POST_CLICK_DELAY,
+    STAR_REMOVE_TOAST_KEYWORD,
+    STAR_ROI_HALF_SIZE_X,
+    STAR_ROI_HALF_SIZE_Y,
+    STAR_TEMPLATE_FILE,
+    STAR_TEMPLATE_THRESHOLD,
+    STAR_VERIFY_ATTEMPTS,
+    STAR_VERIFY_INTERVAL,
+    SaleItemCandidate,
+    ShopCartridgeDetection,
+    ShopCartridgeOcrRow,
+    ShopCartridgeOcrText,
+    ShopCartridgeTemplateCandidate,
+    split_items,
+)
+from src.tasks.map_trade.vision import normalize_text
+
+
+class SellFlowMixin:
+    def run_sell(self) -> bool:
+        if getattr(self, "_buy_completed_in_current_shop", False):
+            self.task.log_info("卖：买卖同时执行，继续使用当前商店并等待购买结果。")
+            if not self._switch_from_completed_buy_to_sell():
+                return False
+        else:
+            entered = self.navigator.enter_q_sp6_buy_flow()
+            if not entered.success:
+                self.task.log_warning(f"卖：{entered.message}")
+                return False
+            if entered.state != ScreenState.SHOP:
+                self.task.log_warning(
+                    f"卖：进入商店后状态为{entered.state.value}，未确认商店页，停止出售。"
+                )
+                return False
+            if not self._ensure_sell_page():
+                return False
+        self._buy_completed_in_current_shop = False
+        return self.sell_max_price_items()
+
+    def _ensure_sell_page(
+        self,
+        timeout: float = SHOP_MODE_TIMEOUT,
+        *,
+        allow_switch: bool = True,
+    ) -> bool:
+        end_at = monotonic() + max(0.0, timeout)
+        switched = False
+        last_text = ""
+        while True:
+            frame = self.vision.capture()
+            text = self.vision.ocr_text(
+                frame,
+                "商店买卖页标题",
+                relative_roi=SHOP_MODE_TITLE_REGION,
+            )
+            last_text = text or last_text
+            normalized = normalize_text(self.vision.simplify(text))
+            if "出售" in normalized:
+                self._status("商店页面", "出售")
+                return True
+            if "购买" in normalized and allow_switch and not switched:
+                self._status("商店页面", "购买→出售")
+                self.task.operate_click(*SELL_MODE_POINT, after_sleep=0.5)
+                switched = True
+                continue
+            if monotonic() >= end_at:
+                break
+            self.task.sleep(SHOP_MODE_INTERVAL)
+        self.task.log_warning(
+            f"卖：未能通过标题区域确认已切换到出售页面，OCR={last_text or '-'}。"
+        )
+        return False
+
+    def sell_max_price_items(self) -> bool:
+        try:
+            market_now = self._current_market_time()
+            calendar_date = sale_price_calendar_date(market_now)
+            calendar = self.calendar_client.load(
+                use_bundled=bool(
+                    self.task.config.get("使用程序默认价表", True)
+                ),
+                use_online=bool(self.task.config.get("使用在线价表", True)),
+                manual_text=str(self.task.config.get("自定义最高价表", "")),
+            )
+            self._status("价表来源", calendar.source)
+            self._status("出售价表日期", calendar_date.isoformat())
+            self.task.log_info(
+                f"卖：当前北京时间{market_now.strftime('%Y-%m-%d %H:%M:%S')}，"
+                f"按{calendar_date.isoformat()}最高价表执行（每日"
+                f"{SALE_PRICE_REFRESH_HOUR:02d}:00刷新）。"
+            )
+            entries = list(calendar.entries_for(calendar_date.day))
+        except Exception as exc:
+            self.task.log_warning(f"价表加载失败，为避免误卖已停止出售：{exc}")
+            return False
+
+        sellable = []
+        for entry in entries:
+            if not entry.sell:
+                self.task.log_info(f"卖：{entry.item}标记为不出售，跳过。")
+                continue
+            sellable.append(entry)
+
+        use_whitelist = bool(self.task.config.get("使用出售白名单", True))
+        self._status("出售白名单", "开启" if use_whitelist else "关闭")
+        if use_whitelist:
+            whitelist = self._sale_whitelist()
+            entries = [entry for entry in sellable if self._entry_allowed(entry, whitelist)]
+        else:
+            entries = sellable
+            self.task.log_info("卖：出售白名单已关闭，执行价表中全部允许出售的商品。")
+
+        use_blacklist = bool(self.task.config.get("使用出售黑名单", False))
+        self._status("出售黑名单", "开启" if use_blacklist else "关闭")
+        if use_blacklist:
+            blacklist = self._sale_blacklist()
+            allowed_entries = []
+            for entry in entries:
+                if self._entry_allowed(entry, blacklist):
+                    self.task.log_info(f"卖：{entry.item}命中出售黑名单，跳过。")
+                    continue
+                allowed_entries.append(entry)
+            entries = allowed_entries
+        if not entries:
+            if use_blacklist:
+                self.task.log_info("跑商：筛选后没有可出售的最高价物品。")
+            elif use_whitelist:
+                self.task.log_info("跑商：今天没有白名单内的最高价物品。")
+            else:
+                self.task.log_info("跑商：今天没有允许出售的最高价物品。")
+            return True
+
+        failed = []
+        unavailable: list[str] = []
+        not_sold_details: list[str] = []
+        selected_shop = ""
+        for entry in entries:
+            if entry.shop != selected_shop:
+                if not self.select_shop_tab(entry.shop):
+                    failed.append(entry)
+                    not_sold_details.append(f"{entry.item}（商店卡带选择失败）")
+                    self._status("未出售商品", "、".join(not_sold_details))
+                    selected_shop = ""
+                    continue
+                selected_shop = entry.shop
+            if not self._sell_selected_entry(entry):
+                if getattr(self, "_last_sale_unavailable", False):
+                    detail = f"{entry.item}（{self._last_sale_reason}）"
+                    unavailable.append(detail)
+                    not_sold_details.append(detail)
+                    self._status("未出售商品", "、".join(not_sold_details))
+                    continue
+                failed.append(entry)
+                not_sold_details.append(f"{entry.item}（出售执行失败）")
+                self._status("未出售商品", "、".join(not_sold_details))
+                self.task.log_warning(
+                    f"卖：{entry.item}执行过程中断，停止继续处理后续价表商品。"
+                )
+                break
+        if unavailable:
+            self.task.log_warning("未出售商品：" + "、".join(unavailable))
+        if not not_sold_details:
+            self._status("未出售商品", "无")
+        if failed:
+            self.task.log_warning("最高价出售失败：" + "、".join(entry.item for entry in failed))
+        return not failed
+
+    def sell_entry(self, entry: CalendarEntry) -> bool:
+        if not self.select_shop_tab(entry.shop):
+            return False
+        return self._sell_selected_entry(entry)
+
+    def _sell_selected_entry(self, entry: CalendarEntry) -> bool:
+        self._last_sale_unavailable = False
+        self._last_sale_reason = ""
+        sold_count = 0
+        previous_owned: int | None = None
+        while True:
+            located = self._wait_sale_item_candidates(entry)
+            if located is None:
+                if sold_count:
+                    self._last_sale_unavailable = False
+                    self._last_sale_reason = ""
+                    self.task.log_info(
+                        f"卖：{entry.item}当前商店页已无剩余可出售组，共出售{sold_count}组。"
+                    )
+                    return True
+                return False
+
+            candidates, frame = located
+            candidate = candidates[0]
+            outcome = self._sell_one_candidate(
+                entry,
+                candidate,
+                frame,
+                previous_owned=previous_owned,
+            )
+            if outcome is None:
+                return False
+            owned, sold = outcome
+            if not sold:
+                return True
+            sold_count += 1
+            previous_owned = owned
+
+    def _sell_one_candidate(
+        self,
+        entry: CalendarEntry,
+        candidate: SaleItemCandidate,
+        frame: np.ndarray,
+        *,
+        previous_owned: int | None,
+    ) -> tuple[int, bool] | None:
+        """Sell one currently visible card and verify that the page advanced."""
+
+        before_signature = self._sale_name_signature(entry, frame)
+        before_toast_id = self._sale_toast_id(frame)
+        known_toast_id = getattr(self, "_last_sale_toast_id", None)
+        if known_toast_id is not None:
+            before_toast_id = max(before_toast_id or 0, known_toast_id)
+        self.vision.click_client(candidate.center, frame.shape, after_sleep=0.5)
+        if not self._wait_sale_dialog_item(entry):
+            self.task.log_warning(f"卖：{entry.item}出售弹窗商品标题未确认。")
+            return None
+        owned = self._wait_owned_quantity()
+        if owned is None:
+            self.task.log_warning(f"卖：{entry.item}出售弹窗未识别到拥有数量。")
+            return None
+        available = self._wait_available_quantity()
+        if available is None:
+            self.task.log_warning(f"卖：{entry.item}出售弹窗未识别到可购买数量。")
+            return None
+        if previous_owned is not None and owned >= previous_owned:
+            self.task.log_warning(
+                f"卖：{entry.item}出售后拥有数量未下降（当前{owned}，上次{previous_owned}），停止以避免重复出售。"
+            )
+            return None
+
+        self._status("出售弹窗库存", f"{entry.item}:{owned}")
+        self._status("出售当前组上限", f"{entry.item}:{available}")
+        self.task.log_info(
+            f"卖：{entry.item}出售弹窗记录库存{owned}个，当前组可购买{available}个。"
+        )
+        if entry.reserve and owned <= entry.reserve:
+            self.task.log_info(
+                f"卖：{entry.item}弹窗库存{owned}不超过保留量{entry.reserve}，关闭弹窗并跳过。"
+            )
+            self.task.operate_click(*SALE_CLOSE_POINT, after_sleep=0.5)
+            return owned, False
+        if not self._choose_sale_quantity(entry, owned):
+            return None
+        expected_selected = None
+        if entry.reserve <= 0:
+            expected_selected = (
+                1
+                if bool(self.task.config.get("出售保险", False))
+                else available
+            )
+        if not self._wait_selected_sale_quantity(expected_selected):
+            self.task.log_warning(
+                f"卖：{entry.item}出售数量未确认（期望{expected_selected or '正数'}，"
+                f"当前组上限{available}），停止确认。"
+            )
+            return None
+        self.task.operate_click(*SALE_CONFIRM_POINT, after_sleep=0.5)
+        self.task.log_info(
+            f"卖：{entry.item}已点击出售，本组最大可出售{available}个，等待交易完成。"
+        )
+        if not self._wait_sale_completion(
+            entry,
+            frame,
+            before_signature,
+            before_toast_id=before_toast_id,
+        ):
+            return None
+        return owned, True
+
+    def _wait_sale_item_candidates(
+        self,
+        entry: CalendarEntry,
+        timeout: float = 8.0,
+        interval: float = 0.5,
+    ) -> tuple[list[SaleItemCandidate], np.ndarray] | None:
+        """Wait for all OCR-confirmed sale cards for one calendar entry."""
+
+        end_at = monotonic() + max(0.0, timeout)
+        last_reason = ""
+        while True:
+            frame = self.vision.capture()
+            candidates = self._locate_sale_items(entry, frame)
+            if candidates:
+                return candidates, frame
+            last_reason = str(getattr(self, "_last_sale_reason", "") or "")
+            if monotonic() >= end_at:
+                break
+            self.task.sleep(interval)
+        self.task.log_warning(f"卖：{entry.item}全画面多目标定位失败：{last_reason}")
+        return None
+
+    def _locate_sale_items(
+        self,
+        entry: CalendarEntry,
+        frame: np.ndarray,
+    ) -> list[SaleItemCandidate]:
+        """Return every OCR-confirmed sale card for one calendar entry.
+
+        The left-side 120% marker is paired one-to-one with the closest
+        matching item name.  This keeps one marker from validating multiple
+        OCR names when the page contains several identical sale cards.
+        """
+
+        _height, width = frame.shape[:2]
+        names = (entry.item, *entry.aliases, *ITEM_ALIASES.get(entry.item, ()))
+        normalized_names = tuple(self._normal(value) for value in names if value)
+        name_boxes: list[object] = []
+        percent_boxes: list[object] = []
+        for box in self.vision.ocr_boxes(
+            frame,
+            "出售商品列表",
+            target_height=SALE_FULL_PAGE_OCR_TARGET_HEIGHT,
+        ):
+            text = str(getattr(box, "name", ""))
+            normalized = self._normal(text)
+            if SALE_120_PERCENT_PATTERN.search(normalized):
+                percent_boxes.append(box)
+            if any(
+                name and (name in normalized or normalized in name)
+                for name in normalized_names
+            ):
+                name_boxes.append(box)
+        if not name_boxes:
+            self._last_sale_unavailable = True
+            self._last_sale_reason = "全画面OCR未识别到商品名"
+            return []
+        if not percent_boxes:
+            self._last_sale_unavailable = True
+            self._last_sale_reason = "全画面OCR未识别到120%"
+            return []
+        name_boxes = self._deduplicate_ocr_boxes(name_boxes)
+        percent_boxes = self._deduplicate_ocr_boxes(percent_boxes)
+        if not name_boxes:
+            self._last_sale_unavailable = True
+            self._last_sale_reason = "全画面OCR商品名框几何无效"
+            return []
+        if not percent_boxes:
+            self._last_sale_unavailable = True
+            self._last_sale_reason = "全画面OCR 120%框几何无效"
+            return []
+        offset_x = round(SALE_ITEM_NAME_LEFT_OFFSET_X * width / 1920)
+        ordered_names = sorted(
+            name_boxes,
+            key=lambda box: (
+                self._ocr_box_center(box) or (10**9, 10**9)
+            )[1:],
+        )
+        possible_matches: dict[int, list[int]] = {}
+        percent_to_names: dict[int, list[int]] = {}
+        for name_index, name_box in enumerate(ordered_names):
+            center = self._ocr_box_center(name_box)
+            if center is None:
+                continue
+            probe = (center[0] - offset_x, center[1])
+            matches = [
+                index
+                for index, percent_box in enumerate(percent_boxes)
+                if self._ocr_box_contains(percent_box, probe)
+            ]
+            possible_matches[name_index] = matches
+            for percent_index in matches:
+                percent_to_names.setdefault(percent_index, []).append(name_index)
+
+        candidates: list[SaleItemCandidate] = []
+        for name_index, name_box in enumerate(ordered_names):
+            center = self._ocr_box_center(name_box)
+            if center is None:
+                continue
+            matches = possible_matches.get(name_index, [])
+            if len(matches) == 1 and len(percent_to_names[matches[0]]) == 1:
+                percent_box = percent_boxes[matches[0]]
+                candidates.append(
+                    SaleItemCandidate(
+                        center=center,
+                        name_box=name_box,
+                        percent_box=percent_box,
+                    )
+                )
+
+        if not candidates:
+            self._last_sale_unavailable = True
+            self._last_sale_reason = "商品名左侧115参考像素未落在120%框内"
+            return []
+        self._last_sale_unavailable = False
+        self._last_sale_reason = ""
+        candidates.sort(key=lambda candidate: (candidate.center[1], candidate.center[0]))
+        self._status(
+            "出售商品定位",
+            f"{entry.item}候选{len(candidates)}组："
+            + "、".join(str(candidate.center) for candidate in candidates),
+        )
+        return candidates
+
+    def _sale_name_signature(
+        self,
+        entry: CalendarEntry,
+        frame: np.ndarray,
+    ) -> tuple[tuple[str, int, int, int, int], ...]:
+        """Return a page signature independent of 120% OCR success.
+
+        The card list can reflow after a sale.  Including all matching name
+        boxes lets completion detection notice that a card disappeared even
+        when OCR temporarily misses one or more 120% markers.
+        """
+
+        names = (entry.item, *entry.aliases, *ITEM_ALIASES.get(entry.item, ()))
+        normalized_names = tuple(self._normal(value) for value in names if value)
+        signature = []
+        matching_boxes = []
+        for box in self.vision.ocr_boxes(
+            frame,
+            "出售商品列表",
+            target_height=SALE_FULL_PAGE_OCR_TARGET_HEIGHT,
+        ):
+            text = str(getattr(box, "name", ""))
+            normalized = self._normal(text)
+            if not any(
+                name and (name in normalized or normalized in name)
+                for name in normalized_names
+            ):
+                continue
+            matching_boxes.append(box)
+        for box in self._deduplicate_ocr_boxes(matching_boxes):
+            normalized = self._normal(str(getattr(box, "name", "")))
+            geometry = self._ocr_box_geometry(box)
+            if geometry is None:
+                continue
+            x, y, box_width, box_height = geometry
+            signature.append(
+                (
+                    normalized,
+                    round(x),
+                    round(y),
+                    round(box_width),
+                    round(box_height),
+                )
+            )
+        return tuple(sorted(signature, key=lambda value: value[1:]))
+
+    def _wait_sale_completion(
+        self,
+        entry: CalendarEntry,
+        before_frame: np.ndarray,
+        before_signature: tuple[tuple[str, int, int, int, int], ...],
+        timeout: float = SALE_COMPLETION_TIMEOUT,
+        *,
+        before_toast_id: int | None = None,
+    ) -> bool:
+        """Wait until the sale dialog closes and the page advances.
+
+        A transaction toast is preferred.  If it is missed, two consecutive
+        post-sale OCR signatures that differ from the pre-sale page are an
+        equivalent reflow confirmation.  A still-open sale dialog never
+        counts as completion.
+        """
+
+        if before_toast_id is None:
+            before_toast_id = self._sale_toast_id(before_frame)
+        end_at = monotonic() + max(0.0, timeout)
+        changed_signature: tuple[tuple[str, int, int, int, int], ...] | None = None
+        stable_hits = 0
+        last_text = ""
+        while True:
+            frame = self.vision.capture()
+            dialog_text = self.vision.ocr_text(
+                frame,
+                "出售弹窗完成确认",
+                relative_roi=SALE_DIALOG_REGION,
+            )
+            normalized_dialog = self._normal(dialog_text)
+            last_text = dialog_text or last_text
+            if "拥有" not in normalized_dialog and "可购买" not in normalized_dialog:
+                full_text = self.vision.ocr_text(frame, "出售交易完成")
+                normalized_full = self._normal(full_text)
+                last_text = full_text or last_text
+                toast_match = SALE_TOAST_ID_PATTERN.search(normalized_full)
+                if toast_match is not None:
+                    toast_id = self._quantity_from_text(toast_match.group(1))
+                    if before_toast_id is None or (
+                        toast_id is not None and toast_id > before_toast_id
+                    ):
+                        self._last_sale_toast_id = toast_id
+                        self._status(
+                            "出售完成确认",
+                            f"{entry.item}:交易提示{toast_id or '-'}",
+                        )
+                        return True
+                current_signature = self._sale_name_signature(entry, frame)
+                if current_signature != before_signature:
+                    if current_signature == changed_signature:
+                        stable_hits += 1
+                    else:
+                        changed_signature = current_signature
+                        stable_hits = 1
+                    if stable_hits >= SALE_COMPLETION_STABLE_HITS:
+                        self._status("出售完成确认", f"{entry.item}:页面重排")
+                        return True
+            if monotonic() >= end_at:
+                break
+            self.task.sleep(SALE_COMPLETION_INTERVAL)
+        self.task.log_warning(
+            f"卖：{entry.item}点击出售后未确认交易完成，OCR={last_text or '-'}。"
+        )
+        return False
+
+    def _sale_toast_id(self, frame: np.ndarray) -> int | None:
+        """Read the currently visible transaction toast sequence number."""
+
+        try:
+            text = self.vision.ocr_text(frame, "出售交易完成")
+        except AttributeError:
+            return None
+        normalized = self._normal(text)
+        matched = SALE_TOAST_ID_PATTERN.search(normalized)
+        if matched is None:
+            return None
+        return self._quantity_from_text(matched.group(1))
+
+    @staticmethod
+    def _ocr_box_geometry(box) -> tuple[float, float, float, float] | None:
+        x = getattr(box, "x", None)
+        y = getattr(box, "y", None)
+        width = getattr(box, "width", None)
+        height = getattr(box, "height", None)
+        if any(value is None for value in (x, y, width, height)):
+            raw_box = getattr(box, "box", None)
+            if raw_box is not None and len(raw_box) >= 4:
+                x, y, width, height = raw_box[:4]
+        if any(value is None for value in (x, y, width, height)):
+            return None
+        return float(x), float(y), float(width), float(height)
+
+    @classmethod
+    def _ocr_box_center(cls, box) -> tuple[int, int] | None:
+        geometry = cls._ocr_box_geometry(box)
+        if geometry is None:
+            return None
+        x, y, width, height = geometry
+        return round(x + width / 2), round(y + height / 2)
+
+    @classmethod
+    def _ocr_box_contains(cls, box, point: tuple[int, int]) -> bool:
+        geometry = cls._ocr_box_geometry(box)
+        if geometry is None:
+            return False
+        x, y, width, height = geometry
+        px, py = point
+        return x <= px < x + width and y <= py < y + height
+
+    @classmethod
+    def _deduplicate_ocr_boxes(cls, boxes: list[object]) -> list[object]:
+        unique = []
+        seen: set[tuple[int, int, int, int]] = set()
+        for box in boxes:
+            geometry = cls._ocr_box_geometry(box)
+            if geometry is None:
+                continue
+            x, y, width, height = geometry
+            if width <= 0 or height <= 0:
+                continue
+            key = round(x), round(y), round(width), round(height)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(box)
+        return unique
+
+    def _wait_sale_dialog_item(
+        self,
+        entry: CalendarEntry,
+        timeout: float = SALE_DIALOG_TIMEOUT,
+    ) -> bool:
+        names = (entry.item, *entry.aliases, *ITEM_ALIASES.get(entry.item, ()))
+        normalized_names = tuple(self._normal(value) for value in names if value)
+        end_at = monotonic() + max(0.0, timeout)
+        while True:
+            text = self.vision.ocr_text(
+                self.vision.capture(),
+                "出售弹窗商品标题",
+                relative_roi=SALE_DIALOG_TITLE_REGION,
+            )
+            normalized = self._normal(text)
+            if any(
+                name and (name in normalized or normalized in name)
+                for name in normalized_names
+            ):
+                return True
+            if monotonic() >= end_at:
+                return False
+            self.task.sleep(SALE_OCR_INTERVAL)
+
+    def _wait_owned_quantity(self, timeout: float = SALE_DIALOG_TIMEOUT) -> int | None:
+        end_at = monotonic() + max(0.0, timeout)
+        while True:
+            text = self.vision.ocr_text(
+                self.vision.capture(),
+                "出售弹窗库存",
+                relative_roi=SALE_DIALOG_REGION,
+            )
+            normalized = self.vision.simplify(text)
+            matched = SALE_OWNED_PATTERN.search(normalized)
+            if matched is not None:
+                quantity = self._quantity_from_text(matched.group(1))
+                if quantity is not None:
+                    return quantity
+            if monotonic() >= end_at:
+                return None
+            self.task.sleep(SALE_OCR_INTERVAL)
+
+    def _wait_available_quantity(
+        self,
+        timeout: float = SALE_DIALOG_TIMEOUT,
+    ) -> int | None:
+        end_at = monotonic() + max(0.0, timeout)
+        while True:
+            text = self.vision.ocr_text(
+                self.vision.capture(),
+                "出售弹窗可购买数量",
+                relative_roi=SALE_DIALOG_REGION,
+            )
+            normalized = self.vision.simplify(text)
+            matched = SALE_AVAILABLE_PATTERN.search(normalized)
+            if matched is not None:
+                quantity = self._quantity_from_text(matched.group(1))
+                if quantity is not None and quantity > 0:
+                    return quantity
+            if monotonic() >= end_at:
+                return None
+            self.task.sleep(SALE_OCR_INTERVAL)
+
+    def _wait_selected_sale_quantity(
+        self,
+        expected: int | None,
+        timeout: float = SALE_DIALOG_TIMEOUT,
+    ) -> bool:
+        end_at = monotonic() + max(0.0, timeout)
+        while True:
+            text = self.vision.ocr_text(
+                self.vision.capture(),
+                "出售弹窗已选数量",
+                relative_roi=SALE_DIALOG_REGION,
+            )
+            selected = self._selected_quantity_from_text(text)
+            if selected is not None and selected > 0:
+                if expected is None or selected == expected:
+                    self._status("出售已选数量", str(selected))
+                    return True
+            if monotonic() >= end_at:
+                return False
+            self.task.sleep(SALE_OCR_INTERVAL)
+
+    @staticmethod
+    def _selected_quantity_from_text(text: str) -> int | None:
+        normalized = str(text).replace("，", ",")
+        values = []
+        for matched in re.finditer(r"([0-9][0-9,.]*)\s*个", normalized):
+            prefix = normalized[max(0, matched.start() - 4) : matched.start()]
+            if "拥有" in prefix or "可购买" in prefix:
+                continue
+            quantity = SellFlowMixin._quantity_from_text(matched.group(1))
+            if quantity is not None:
+                values.append(quantity)
+        return max(values, default=None)
+
+    @staticmethod
+    def _quantity_from_text(text: str) -> int | None:
+        values = []
+        for matched in re.findall(r"[0-9][0-9,，.]*", str(text)):
+            digits = re.sub(r"\D", "", matched)
+            if digits:
+                values.append(int(digits))
+        return max(values, default=None)
+
+    def _choose_sale_quantity(self, entry: CalendarEntry, owned: int) -> bool:
+        if entry.reserve > 0:
+            slider_point = self._sale_slider_point(owned, entry.reserve)
+            if slider_point is None:
+                return False
+            amount = owned - entry.reserve
+            self.task.operate_click(*slider_point, after_sleep=0.5)
+            self._status("出售保留量", f"{entry.item}:约{entry.reserve}")
+            self.task.log_info(
+                f"卖：{entry.item}拥有{owned}个，滑条选择出售约{amount}个，"
+                f"目标保留约{entry.reserve}个。"
+            )
+            return True
+        if bool(self.task.config.get("出售保险", False)):
+            self.task.operate_click(*SALE_MIN_POINT, after_sleep=0.5)
+        else:
+            self.task.operate_click(*SALE_MAX_POINT, after_sleep=0.5)
+        return True
+
+    @staticmethod
+    def _sale_slider_point(
+        owned: int, reserve: int
+    ) -> tuple[float, float] | None:
+        """Map the desired sale amount onto the one-to-all sale slider."""
+
+        if owned <= reserve or owned <= 0:
+            return None
+        amount = owned - reserve
+        ratio = 0.0 if owned == 1 else (amount - 1) / (owned - 1)
+        ratio = max(0.0, min(1.0, ratio))
+        left, top, right, bottom = SALE_SLIDER_REGION
+        return left + ((right - left) * ratio), (top + bottom) / 2
+
+    @staticmethod
+    def _box_values(box) -> tuple[float, float, float, float] | None:
+        values = tuple(getattr(box, key, None) for key in ("x", "y", "width", "height"))
+        if any(value is None for value in values):
+            raw_box = getattr(box, "box", None)
+            if raw_box is not None and len(raw_box) >= 4:
+                values = tuple(raw_box[:4])
+        if any(value is None for value in values):
+            return None
+        return tuple(float(value) for value in values)
+

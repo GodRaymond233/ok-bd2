@@ -2064,7 +2064,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         )
 
         with patch(
-            "src.tasks.map_trade.navigator.monotonic",
+            "src.tasks.map_trade.navigator_sandbox.monotonic",
             side_effect=(100.0, 100.0, 106.0),
         ):
             result = navigator.open_teleport_map_from_sandbox()
@@ -2305,7 +2305,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         navigator = Navigator(task, vision)
 
         with patch(
-            "src.tasks.map_trade.navigator.monotonic",
+            "src.tasks.map_trade.navigator_sandbox.monotonic",
             side_effect=(100.0, 100.0, 109.0),
         ):
             result = navigator._click_teleport_generation(
@@ -2338,7 +2338,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         navigator = Navigator(task, vision)
 
         with patch(
-            "src.tasks.map_trade.navigator.monotonic",
+            "src.tasks.map_trade.navigator_sandbox.monotonic",
             side_effect=(100.0, 100.0, 109.0),
         ):
             result = navigator._click_teleport_generation(
@@ -4008,7 +4008,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
                 navigator = Navigator(task, vision)
 
                 with patch(
-                    "src.tasks.map_trade.navigator.monotonic",
+                    "src.tasks.map_trade.navigator_trade.monotonic",
                     side_effect=(0.0, 1.0),
                 ):
                     self.assertFalse(
@@ -4050,7 +4050,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         navigator = Navigator(task, vision)
         navigator.classify_trade = lambda: ScreenState.SANDBOX
 
-        with patch("src.tasks.map_trade.navigator.monotonic", side_effect=(0.0, 3.0)):
+        with patch("src.tasks.map_trade.navigator_trade.monotonic", side_effect=(0.0, 3.0)):
             result = navigator.reach_merchant_shop()
 
         self.assertFalse(result.success)
@@ -4339,7 +4339,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         navigator._match_story_sandbox_signals = lambda _frame: next(confirmations)
 
         with patch(
-            "src.tasks.map_trade.navigator.monotonic",
+            "src.tasks.map_trade.navigator_sandbox.monotonic",
             side_effect=[100.0] * 20,
         ):
             result = navigator._wait_for_current_sandbox(timeout=2.0, interval=0.0)
@@ -4382,7 +4382,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         )
 
         with patch(
-            "src.tasks.map_trade.navigator.monotonic",
+            "src.tasks.map_trade.navigator_sandbox.monotonic",
             side_effect=[100.0] * 6 + [101.0],
         ):
             result = navigator._wait_for_current_sandbox(timeout=0.1, interval=0.0)
@@ -6990,7 +6990,10 @@ class CollectorSkillTest(unittest.TestCase):
             SimpleNamespace(),
         )
 
-        with patch("src.tasks.map_trade.collector.monotonic", side_effect=lambda: clock[0]):
+        with patch(
+            "src.tasks.map_trade.collector_skills.monotonic",
+            side_effect=lambda: clock[0],
+        ):
             feedback = collector._read_action_feedback(SEARCH_ACTION)
 
         self.assertIsNone(feedback.outcome)
