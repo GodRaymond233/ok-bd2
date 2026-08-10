@@ -1,23 +1,24 @@
-# ok-bd2 重构记录（阶段一 / 阶段二 / 阶段三）
+# ok-bd2 重构记录（阶段一 / 阶段二 / 阶段三 / 阶段四）
 
-本文档按用户要求记录 2026-08-10 三次重构改动的**大纲、主要内容与思路**，用于后续管理与维护。
+本文档按用户要求记录 2026-08-10 四次重构改动的**大纲、主要内容与思路**，用于后续管理与维护。
 每个阶段包含：目标与范围（大纲）、具体改动（主要内容）、设计动机（思路）、验证与审阅结论、
 提交与备份状态。代码以本地 `main` 分支为准。
 
 ---
 
-## 〇、三次改动总览
+## 〇、四次改动总览
 
 | 阶段 | 主题 | 核心目标 | 提交 | 状态 |
 | --- | --- | --- | --- | --- |
 | 阶段一 | 摘除测试兼容层 | 消除正式路径与测试兼容层的双轨并存，让正式账本路径成为唯一路径 | `6dc8b58` | 已提交、已推送、已备份 |
 | 阶段二 | 统一视觉识别管线 | 消除五份重复模板匹配实现，修复 `map_trade/vision.py` 对任务层的反向依赖 | `0656264` | 已提交、已推送、已备份 |
 | 阶段三 | 拆分大模块与状态机 | 拆分 navigator/trader/collector 千行模块，重构 `_use_action` 状态机 | 本文档下方记录 | 已提交本地、未推送 |
+| 阶段四 | 统一输入与坐标模型 | 收敛 drag/scroll 到基类、统一参考分辨率与技能槽坐标、PVP 特殊页下沉 | 本文档下方记录 | 本地未提交、待审阅/提交 |
 
-三次改动的共同约束（来自 AGENTS.md）：
+四次改动的共同约束（来自 AGENTS.md）：
 
 - 禁止在 `src` 中引入项目自定义键盘发送/按下/释放/热键注册/键盘映射。
-- 每次改动后必须完整执行 554 项单元测试、Ruff、compileall、`git diff --check` 与键盘限制扫描。
+- 每次改动后必须完整执行单元测试（当前 562 项）、Ruff、compileall、`git diff --check` 与键盘限制扫描。
 - 保留用户已有未提交修改，不覆盖或回退无关文件。
 - 大规模重构必须保持行为等价，以测试为保护网，并在完成后由独立只读子代理审阅。
 
@@ -228,7 +229,95 @@
 
 ---
 
-## 四、验证门禁
+## 四、阶段四：统一输入与坐标模型
+
+### 4.1 大纲
+
+- 目标：把 MapTradeTask / PVPTask / SquareGoddessTask 三处重复的拖拽/滚轮实现
+  收敛为 `BaseBD2Task` 公开方法；把 1280×720、1920×1080、2560×1440 三套参考分辨率
+  统一为显式 `ReferenceCalibration`；技能槽坐标以 `action_icons.py` 为唯一事实来源；
+  把基类中的 PVP 特殊页逻辑下沉到 `PVPTask`。
+- 范围：`BaseBD2Task`、`PVPTask`、`SquareGoddessTask`、`MapTradeTask`、
+  `map_trade/` 各模块、7 个任务模块与对应测试。
+- 状态：本地未提交，待独立审阅与用户指示。
+
+### 4.2 主要内容
+
+- 新增 `src/utils/calibration.py`：
+  - `ReferenceCalibration`（width / height / size）与 `HD_720` / `FHD_1080` /
+    `QHD_1440` 三个显式校准对象。
+  - PVP / Square 的 `REFERENCE_WIDTH/HEIGHT`、`ENTRY_*`，
+    Daily / FreeGacha / QuickSuppression / BargainLevel / BD2InputTest /
+    AutoLogin 的 1920×1080 参考常量全部改为从校准对象派生。
+- `map_trade` 参考分辨率：
+  - `models.py` 删除 `MF_REFERENCE_WIDTH/HEIGHT`，新增 `MAP_TRADE_REFERENCE = HD_720`。
+  - `vision.py` 的 `reference_point` / `reference_roi` / `click_reference` /
+    模板 ROI 引用全部改用 `MAP_TRADE_REFERENCE`。
+- 技能槽坐标单一事实来源：
+  - `action_icons.py` 新增 `SKILL_GROUP_CENTERS_REFERENCE`
+    （1/2/3 组中心 `(1671, 1011)` / `(1749, 1011)` / `(1824, 1011)`）。
+  - `collector_constants.SKILL_GROUP_REFERENCE_POINTS` 直接复用同一字典对象；
+    `navigator_constants` 槽位 1/2 与传送技能中心改从 `action_icons` 派生。
+  - 由此修正三处分叉：槽位 1 `(1672,1010)→(1671,1011)`、槽位 2
+    `(1748,1010)→(1749,1011)`、传送 `(1793,789)→(1795,788)`，均收敛到
+    `action_icons` 中经实机标定的既有值。
+- 输入统一：
+  - `BaseBD2Task` 新增公开 `drag_client()` / `scroll_client()`（自 MapTradeTask
+    逐字收敛）。
+  - 删除 MapTradeTask / PVPTask / SquareGoddessTask 各自的 `_drag_client`、
+    `_scroll_client`，以及 PVPTask 未使用的 `_post_drag_client`。
+  - `navigator_story.py` / `trader_cartridge.py` / `vision.py` 改用公开方法。
+- PVP 特殊页逻辑下沉：
+  - `BaseBD2Task` 删除最近卡带 PVP 模板匹配、赛季奖励/晋级/段位下滑 OCR、
+    周一判定与相关常量；`_recent_cartridge_is_pvp` 改为默认返回 False 的钩子。
+  - `PVPTask` 接收上述全部逻辑与常量，并在 `__init__` 初始化模板缓存字段；
+    `open_cartridge_quick_switcher` 只在该钩子返回 True 时调用特殊页处理。
+
+### 4.3 思路
+
+- 三份拖拽/滚轮实现源自 MapTradeTask 向 PVP / Square 的复制，任何交互修复都需
+  三处同步；PVP 还残留一份未被调用的 post-message 实现。收敛到基类后输入语义只有
+  一份，测试直接锁定“方法只存在于基类”。
+- 参考分辨率此前散落为裸数字，任务模块各自重复定义；显式校准对象 + 派生常量让
+  “每个任务以哪个分辨率标定”成为可测试的事实，避免再出现 1920/1080 与 1280/720
+  手抄错位。
+- 技能组按钮中心此前在 action_icons（技能栏）、collector_constants（技能组恢复）、
+  navigator_constants（箱庭技能组切换）三处独立标定，存在 1–2 像素分叉；统一到
+  `action_icons` 后按既有实机标定收敛，像素级变化属于修正而非回归。
+- PVP 特殊页逻辑挂在基类，导致所有使用 `open_cartridge_quick_switcher` 的任务
+  （Square / MapTrade）都隐式执行 PVP 模板匹配与特殊页 OCR。按职责下沉后，非 PVP
+  任务不再做 PVP 识别与特殊页处理——这是本阶段有意的职责隔离。
+
+### 4.4 验证与审阅
+
+- 562 项完整单元测试（554 + 新增 8 项 `test_calibration`）、Ruff、compileall、
+  `git diff --check` 与 src 键盘限制扫描全部通过。
+- 新增 `test_calibration.py` 锁定：校准常量、任务模块派生、Vision 720p 参考、
+  技能坐标单一来源、输入方法归属、PVP 职责归属（基类无任何特殊页方法残留）。
+- 测试补丁点迁移：`test_pvp_task.py` 的 `monotonic` patch 改到 `PVPTask` 模块、
+  `_drag_client` → `drag_client`；`test_map_trade.py` 的 `_scroll_client` →
+  `scroll_client`（7 处）。
+- 独立审阅补充：审阅发现 `AutoLoginTask` 的 1920×1080 参考常量仍为裸数字
+  （本阶段初版遗漏的任务模块），已按同一方式改为从 `FHD_1080` 派生并纳入
+  `test_calibration` 回归；数值不变，仅派生方式统一。
+- 独立审阅结论：PASS（无阻塞项）。按验收清单逐项复核：旧输入接口与旧坐标
+  分叉无残留；校准对象与各任务派生一致；技能坐标单一事实来源成立；PVP 特殊页
+  逻辑完全下沉且基类只剩默认 False 钩子；AST 比对确认 8 个下沉方法与输入方法
+  为逐字搬迁（输入方法仅公开化改名）；562 项测试、Ruff、compileall、
+  `git diff --check`、键盘扫描全绿；改动范围与文档一致。两点非阻塞观察：
+  （1）本阶段初版遗漏 AutoLoginTask，已在审阅中补全；（2）审阅子代理消息机制
+  再次异常（嵌套派发/空转），最终结论由主线程按同一清单独立复核收口。
+
+### 4.5 提交与备份
+
+- 本阶段代码与测试已提交为 `aaf6a0a refactor(input): 统一输入与坐标模型并下沉PVP特殊页逻辑`；
+  本文档单独提交（未推送）。
+- 备份位于 `D:\ok-bd2-backups\ok-bd2-main-<新提交哈希>-<时间戳>\`（含完整历史 bundle、
+  HEAD 快照 zip、SHA256 与提交清单），具体路径与哈希以 AGENTS.md 当前计划区为准。
+
+---
+
+## 五、验证门禁
 
 每次修改后完整执行：
 
@@ -243,7 +332,7 @@ git diff --check
 
 ---
 
-## 五、维护注意事项与后续计划
+## 六、维护注意事项与后续计划
 
 - 门面文件只保留类、编排入口与再导出；新增逻辑优先落在对应职责的 mixin/子模块，
   避免门面重新膨胀。
@@ -252,5 +341,13 @@ git diff --check
   再迁移补丁路径。
 - `_use_action` 的阶段方法分别对应可独立验证的状态分支；新增分支时保持入口编排
   线性可读，不要回到单函数大状态机。
+- 拖拽/滚轮只允许调用 `BaseBD2Task.drag_client/scroll_client`；新增任务不得复制
+  私有输入实现。
+- 参考分辨率一律使用 `src/utils/calibration.py` 的校准对象派生；技能槽/技能组中心
+  只允许以 `action_icons.py` 为唯一事实来源。
+- PVP 特殊页（最近卡带模板、赛季奖励/晋级/段位下滑）只属于 `PVPTask`；共享快速
+  切换流程通过 `_recent_cartridge_is_pvp` 钩子决定是否启用。
+- 阶段四包含两处有意的行为变化（非回归）：技能组/传送中心按实机标定收敛 1–2 像素；
+  Square / MapTrade 不再隐式执行 PVP 模板匹配与特殊页处理。
 - 阶段三为纯重构，不改实机行为；功能层面的实机验证与发版门禁继续按 AGENTS.md
   当前计划执行（收到明确发布请求后再推送、打标签与发布）。
