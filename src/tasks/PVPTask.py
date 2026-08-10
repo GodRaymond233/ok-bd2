@@ -52,6 +52,8 @@ PVP_BACK_HOME_REFERENCE_POINT = (100, 54)
 PVP_HUB_NOTICE_SCREEN_ROI = (1381, 865, 62, 45)
 GAMEPLAY_CARTRIDGE_POINT = (988 / REFERENCE_WIDTH, 876 / REFERENCE_HEIGHT)
 PVP_CARTRIDGE_SLOT_POINT = (152 / REFERENCE_WIDTH, 970 / REFERENCE_HEIGHT)
+PVP_AUTO_BATTLE_SCREEN_ROI = (1470, 910, 170, 150)
+PVP_AUTO_BATTLE_CLICK_REFERENCE = (2026, 1291)
 PVP_STAGE_CLICK_REFERENCE_OFFSET = (0, -75)
 PVP_RESULT_BASE_MINUTES = 20.0
 PVP_SEASON_REWARD_AFTER_CLICK_SECONDS = 3.0
@@ -107,6 +109,7 @@ class PVPTask(BaseBD2Task):
         "PVP 箱庭感叹号",
         "PVP 舞台",
         "PVP 自动战斗 OCR",
+        "PVP 自动战斗点击",
         "PVP 免费AP",
         "PVP 倍率 OCR",
         "PVP 开始战斗 OCR",
@@ -472,13 +475,23 @@ class PVPTask(BaseBD2Task):
             [r"自动战斗", r"自动"],
             timeout=float(self.config.get("PVP 菜单等待秒数", 12.0)),
             name="PVP 自动战斗",
-            roi=(1470, 910, 170, 150),
+            roi=PVP_AUTO_BATTLE_SCREEN_ROI,
         )
         self.info_set("PVP 自动战斗 OCR", text or "-")
         if not found_auto:
             return "failed"
 
-        self._click_screen_reference(2026, 1291, after_sleep=1.0)
+        if not self._click_ocr_pattern_center(
+            [r"自动战斗", r"自动"],
+            name="PVP 自动战斗",
+            roi=PVP_AUTO_BATTLE_SCREEN_ROI,
+            after_sleep=1.0,
+        ):
+            self.info_set("PVP 自动战斗点击", "OCR框中心不可用，使用相对比例回退")
+            self._click_screen_reference(
+                *PVP_AUTO_BATTLE_CLICK_REFERENCE,
+                after_sleep=1.0,
+            )
         found_menu, menu_text = self._wait_for_ocr_patterns(
             [r"鲜血鸡尾酒"],
             timeout=8.0,
@@ -1356,6 +1369,40 @@ class PVPTask(BaseBD2Task):
         except Exception as exc:
             self.info_set(f"{name} OCR 错误", str(exc))
             return []
+
+    def _click_ocr_pattern_center(
+        self,
+        patterns: list[str],
+        name: str,
+        roi: tuple[int, int, int, int] | None = None,
+        after_sleep: float = 0.0,
+    ) -> bool:
+        """Click the center of a matching OCR box in the current frame."""
+        frame = self.capture_frame()
+        boxes = self._ocr_boxes(frame, name=name, roi=roi)
+        left, top, _ = self._roi_frame(frame, roi)
+        frame_height, frame_width = frame.shape[:2]
+        for box in boxes:
+            label = str(getattr(box, "name", ""))
+            if not self._matches_any(label, patterns):
+                continue
+            local_point = self._ocr_box_center(box)
+            if local_point is None:
+                continue
+            point = (left + local_point[0], top + local_point[1])
+            self.info_set(
+                "PVP 自动战斗点击",
+                f"OCR中心=({point[0]:.0f},{point[1]:.0f})",
+            )
+            self._click_client(
+                int(round(point[0])),
+                int(round(point[1])),
+                frame_width,
+                frame_height,
+                after_sleep=after_sleep,
+            )
+            return True
+        return False
 
     def _click_reference(self, x: int, y: int, after_sleep: float = 0.0):
         self.operate_click(

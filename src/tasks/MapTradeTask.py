@@ -23,6 +23,13 @@ TRADE_OCR_THRESHOLD_KEY = "跑商 OCR 阈值"
 MAP_VISION_THRESHOLD_KEY = "跑图识图阈值"
 MAP_OCR_THRESHOLD_KEY = "跑图 OCR 阈值"
 
+# Temporary kill switch: keep the cooking implementation and its persisted
+# data intact, but hide the cooking UI and phase until the feature is restored.
+TEMPORARY_COOKING_FEATURE_ENABLED = False
+COOKING_CONFIG_KEYS = frozenset(
+    ("制作料理", "料理制作周期", "料理保险", "5星料理")
+)
+
 
 def _empty_manual_calendar() -> str:
     return "\n".join(f"{day}=" for day in range(1, 32))
@@ -248,7 +255,7 @@ class MapAutomationTaskBase(BaseBD2Task):
         self.sleep(after_sleep)
 
 class MapTradeTask(MapAutomationTaskBase):
-    """Daily cooking and merchant task, separated from weekly map collection."""
+    """Daily merchant task, separated from weekly map collection."""
 
     vision_threshold_key = TRADE_VISION_THRESHOLD_KEY
     ocr_threshold_key = TRADE_OCR_THRESHOLD_KEY
@@ -281,7 +288,7 @@ class MapTradeTask(MapAutomationTaskBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.name = "每日跑商"
-        self.description = "每日按配置执行买、卖与制作料理。"
+        self.description = "每日按配置执行买卖。"
         self.icon = FluentIcon.SHOPPING_CART
         self.group_name = "日常/周常"
         self.group_icon = FluentIcon.CALENDAR
@@ -385,6 +392,11 @@ class MapTradeTask(MapAutomationTaskBase):
                 "加载页面等待秒数": {"min": 10.0, "max": 120.0, "step": 1.0},
             }
         )
+        if not TEMPORARY_COOKING_FEATURE_ENABLED:
+            for key in COOKING_CONFIG_KEYS:
+                self.default_config.pop(key, None)
+                self.config_description.pop(key, None)
+                self.config_type.pop(key, None)
 
     def load_config(self):
         legacy = _read_config(_config_path(self.__class__.__name__))
@@ -392,7 +404,8 @@ class MapTradeTask(MapAutomationTaskBase):
         _migrate_collection_config(legacy)
         super().load_config()
         for key, value in section_values.items():
-            self.config[key] = value
+            if TEMPORARY_COOKING_FEATURE_ENABLED or key not in COOKING_CONFIG_KEYS:
+                self.config[key] = value
         key_map = {
             LEGACY_VISION_THRESHOLD_KEY: TRADE_VISION_THRESHOLD_KEY,
             LEGACY_OCR_THRESHOLD_KEY: TRADE_OCR_THRESHOLD_KEY,
@@ -400,6 +413,10 @@ class MapTradeTask(MapAutomationTaskBase):
         for old_key, new_key in key_map.items():
             if new_key not in legacy and old_key in legacy:
                 self.config[new_key] = legacy[old_key]
+        if not TEMPORARY_COOKING_FEATURE_ENABLED:
+            for key in COOKING_CONFIG_KEYS:
+                if key in self.config:
+                    self.config.pop(key, None)
 
     def validate_config(self, key, value):
         current_config = self.config if self.config is not None else self.default_config
@@ -435,11 +452,10 @@ class MapTradeTask(MapAutomationTaskBase):
         progress = ProgressStore()
         progress.load()
         trader = Trader(self, vision, navigator, progress)
-        return self._run_phases(
-            navigator,
-            (
-                ("买", "买", trader.run_buy),
-                ("卖", "卖", trader.run_sell),
-                ("制作料理", "制作料理", trader.run_cooking),
-            ),
+        phases = (
+            ("买", "买", trader.run_buy),
+            ("卖", "卖", trader.run_sell),
         )
+        if TEMPORARY_COOKING_FEATURE_ENABLED:
+            phases += (("制作料理", "制作料理", trader.run_cooking),)
+        return self._run_phases(navigator, phases)

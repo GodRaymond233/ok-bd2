@@ -686,6 +686,7 @@ class Vision:
         relative_roi: tuple[float, float, float, float] | None = None,
         target_height: int = 720,
         minimum_threshold: float | None = None,
+        ocr_scale: float = 1.0,
     ) -> list:
         offset_x = offset_y = 0
         target = frame
@@ -705,6 +706,16 @@ class Vision:
                 f"识别区域超出画面：roi={region}, frame={width}x{height}",
             )
             return []
+        if ocr_scale <= 0:
+            raise ValueError("ocr_scale must be positive")
+        if ocr_scale != 1.0:
+            target = cv2.resize(
+                target,
+                None,
+                fx=ocr_scale,
+                fy=ocr_scale,
+                interpolation=cv2.INTER_CUBIC,
+            )
         try:
             key = getattr(self.task, "ocr_threshold_key", "跑图跑商 OCR 阈值")
             configured_threshold = float(
@@ -728,7 +739,7 @@ class Vision:
         except Exception as exc:
             self._status(f"{name} OCR错误", str(exc))
             return []
-        if not offset_x and not offset_y:
+        if not offset_x and not offset_y and ocr_scale == 1.0:
             return list(boxes)
         adjusted = []
         for box in boxes:
@@ -745,9 +756,13 @@ class Vision:
                 if raw_box is not None and len(raw_box) >= 4:
                     values["x"], values["y"], values["width"], values["height"] = raw_box[:4]
             if values["x"] is not None:
-                values["x"] = float(values["x"]) + offset_x
+                values["x"] = float(values["x"]) / ocr_scale + offset_x
             if values["y"] is not None:
-                values["y"] = float(values["y"]) + offset_y
+                values["y"] = float(values["y"]) / ocr_scale + offset_y
+            if values["width"] is not None:
+                values["width"] = float(values["width"]) / ocr_scale
+            if values["height"] is not None:
+                values["height"] = float(values["height"]) / ocr_scale
             if all(values[key] is not None for key in ("x", "y", "width", "height")):
                 values["box"] = (
                     values["x"],
@@ -766,6 +781,7 @@ class Vision:
         relative_roi: tuple[float, float, float, float] | None = None,
         target_height: int = 720,
         minimum_threshold: float | None = None,
+        ocr_scale: float = 1.0,
     ) -> str:
         values = [
             str(getattr(box, "name", ""))
@@ -776,6 +792,7 @@ class Vision:
                 relative_roi=relative_roi,
                 target_height=target_height,
                 minimum_threshold=minimum_threshold,
+                ocr_scale=ocr_scale,
             )
         ]
         text = " ".join(value for value in values if value)

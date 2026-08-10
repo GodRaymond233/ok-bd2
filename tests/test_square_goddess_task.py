@@ -333,19 +333,162 @@ class SquareGoddessEntryTest(unittest.TestCase):
         task.config = {
             "主页确认等待秒数": 10.0,
             "广场返回主页等待秒数": 15.0,
+            "广场返回主页最多点击次数": 3,
+            "广场返回主页重试间隔秒数": 2.0,
         }
-        task.info_set = lambda *_args, **_kwargs: None
+        statuses = {}
+        task.info_set = lambda key, value: statuses.__setitem__(key, value)
         clicks = []
         task.operate_click = lambda *args, **kwargs: clicks.append((args, kwargs))
-        observed_timeouts = []
+        observed_waits = []
         task._wait_for_cartridge_home = (
-            lambda **kwargs: observed_timeouts.append(kwargs["timeout"]) or True
+            lambda **kwargs: observed_waits.append(kwargs) or True
         )
 
         self.assertTrue(SquareGoddessTask._return_home_from_square(task))
         self.assertEqual([((*SQUARE_HOME_POINT,), {"after_sleep": 1.0})], clicks)
-        self.assertEqual([15.0], observed_timeouts)
+        self.assertEqual(
+            [
+                {
+                    "timeout": 15.0,
+                    "retry_home_clicks": 2,
+                    "retry_interval": 2.0,
+                    "total_home_clicks": 3,
+                }
+            ],
+            observed_waits,
+        )
+        self.assertEqual("1/3", statuses["广场主页点击次数"])
         self.assertEqual(10.0, task.config["主页确认等待秒数"])
+
+    def test_square_return_home_retries_when_chat_input_confirms_click_was_ignored(self):
+        task = object.__new__(SquareGoddessTask)
+        task.config = {"主页亮度比例阈值": 0.75}
+        statuses = {}
+        task.info_set = lambda key, value: statuses.__setitem__(key, value)
+        logs = []
+        task.log_info = logs.append
+        task.sleep = lambda *_args, **_kwargs: None
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        match = SquareMatchResult(0.9, 0.9, (0, 0), (10, 10))
+        task._match = lambda *_args, **_kwargs: match
+        task._passes = lambda *_args, **_kwargs: True
+        task._home_brightness_ratio = lambda _frame: 0.8
+        ocr_texts = iter(("输入", "抽抽乐"))
+        task._ocr_text = lambda *_args, **_kwargs: next(ocr_texts)
+        task.clear_temporary_home_announcement_if_needed = (
+            lambda **_kwargs: False
+        )
+        clicks = []
+        task.operate_click = lambda *args, **kwargs: clicks.append((args, kwargs))
+
+        with patch(
+            "src.tasks.SquareGoddessTask.monotonic",
+            side_effect=[0.0] * 10,
+        ):
+            self.assertTrue(
+                SquareGoddessTask._wait_for_cartridge_home(
+                    task,
+                    timeout=10.0,
+                    retry_home_clicks=2,
+                    retry_interval=0.0,
+                    total_home_clicks=3,
+                )
+            )
+
+        self.assertEqual(
+            [((*SQUARE_HOME_POINT,), {"after_sleep": 1.0})],
+            clicks,
+        )
+        self.assertEqual("2/3", statuses["广场主页点击次数"])
+        self.assertTrue(any("执行第2次点击" in message for message in logs))
+
+    def test_square_return_home_does_not_retry_without_square_chat_signal(self):
+        task = object.__new__(SquareGoddessTask)
+        task.config = {"主页亮度比例阈值": 0.75}
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task.sleep = lambda *_args, **_kwargs: None
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        match = SquareMatchResult(0.9, 0.9, (0, 0), (10, 10))
+        task._match = lambda *_args, **_kwargs: match
+        task._passes = lambda *_args, **_kwargs: True
+        task._home_brightness_ratio = lambda _frame: 0.8
+        task._ocr_text = lambda *_args, **_kwargs: ""
+        task.clear_temporary_home_announcement_if_needed = (
+            lambda **_kwargs: False
+        )
+        clicks = []
+        task.operate_click = lambda *args, **kwargs: clicks.append((args, kwargs))
+        clock = {"value": 0.0}
+
+        def advance_clock():
+            clock["value"] += 0.1
+            return clock["value"]
+
+        with patch(
+            "src.tasks.SquareGoddessTask.monotonic",
+            side_effect=advance_clock,
+        ):
+            self.assertFalse(
+                SquareGoddessTask._wait_for_cartridge_home(
+                    task,
+                    timeout=0.5,
+                    retry_home_clicks=2,
+                    retry_interval=0.0,
+                    total_home_clicks=3,
+                )
+            )
+
+        self.assertEqual([], clicks)
+
+    def test_square_return_home_stops_after_retry_budget_is_exhausted(self):
+        task = object.__new__(SquareGoddessTask)
+        task.config = {"主页亮度比例阈值": 0.75}
+        task.info_set = lambda *_args, **_kwargs: None
+        logs = []
+        task.log_info = logs.append
+        task.sleep = lambda *_args, **_kwargs: None
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        match = SquareMatchResult(0.9, 0.9, (0, 0), (10, 10))
+        task._match = lambda *_args, **_kwargs: match
+        task._passes = lambda *_args, **_kwargs: True
+        task._home_brightness_ratio = lambda _frame: 0.8
+        task._ocr_text = lambda *_args, **_kwargs: "输入"
+        task.clear_temporary_home_announcement_if_needed = (
+            lambda **_kwargs: False
+        )
+        clicks = []
+        task.operate_click = lambda *args, **kwargs: clicks.append((args, kwargs))
+        clock = {"value": 0.0}
+
+        def advance_clock():
+            clock["value"] += 0.1
+            return clock["value"]
+
+        with patch(
+            "src.tasks.SquareGoddessTask.monotonic",
+            side_effect=advance_clock,
+        ):
+            self.assertFalse(
+                SquareGoddessTask._wait_for_cartridge_home(
+                    task,
+                    timeout=1.0,
+                    retry_home_clicks=2,
+                    retry_interval=0.0,
+                    total_home_clicks=3,
+                )
+            )
+
+        self.assertEqual(
+            [
+                ((*SQUARE_HOME_POINT,), {"after_sleep": 1.0}),
+                ((*SQUARE_HOME_POINT,), {"after_sleep": 1.0}),
+            ],
+            clicks,
+        )
+        self.assertEqual(1, sum("执行第2次点击" in message for message in logs))
+        self.assertEqual(1, sum("执行第3次点击" in message for message in logs))
 
     def test_square_notice_uses_requested_region_and_clicks_match_center(self):
         self.assertEqual("image/green/tanhaoGE.png", SQUARE_NOTICE_TEMPLATE.file_name)

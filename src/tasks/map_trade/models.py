@@ -40,6 +40,25 @@ class CollectionMapRole(str, Enum):
         }[self]
 
 
+class CollectionActionState(str, Enum):
+    """Durable lifecycle for one daily/card/map-role action.
+
+    ``pending`` means the map-local action is proven but its absolute daily
+    counter has not yet been reconciled.  These values are persisted as plain
+    strings so old progress files remain easy to inspect and repair.
+    """
+
+    PREEXISTING_USED = "preexisting_used"
+    ARMED = "armed"
+    CLICKED = "clicked"
+    LOCAL_DONE = "local_done"
+    PENDING = "pending"
+    SETTLED = "settled"
+    BLOCKED = "blocked"
+    VOID = "void"
+    ARCHIVED = "archived"
+
+
 @dataclass(frozen=True)
 class CollectionMapTarget:
     role: CollectionMapRole

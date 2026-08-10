@@ -10,6 +10,8 @@ import numpy as np
 
 from src.tasks.map_trade.action_icons import (
     ABSORB_ICON,
+    ACTION_SLOT_CENTER_RELATIVE_ROIS,
+    ACTION_SLOT_RELATIVE_ROIS,
     SEARCH_ICON,
     SUBDUE_ICON,
     SUMMON_ICON,
@@ -66,14 +68,6 @@ QUICK_SWITCH_TEMPLATE = TemplateSpec(
     minimum_safe_threshold=0.88,
     min_zncc_score=0.85,
 )
-Q_SP6_SHOP_TEMPLATE = TemplateSpec(
-    "Q_sp6商店按钮",
-    "Q_sp6_shop.png",
-    0.78,
-    scale_ratios=(0.90, 0.95, 1.0, 1.05, 1.10),
-    min_pixel_score=0.72,
-)
-Q_SP6_SHOP_VERTICAL_OFFSET = 150 / 1080
 Q_SP6_SHOP_PRIORITY_TIMEOUT = 3.0
 # 折扣商店页专有页签 OCR 信号：在商店页整帧 OCR 中已验证稳定命中
 # （“仓库”单独可能出现在 NPC 名“仓库管理石怪”里，必须与“严加管理”成对出现）。
@@ -258,30 +252,20 @@ LOADING_TEMPLATE = TemplateSpec("加载页面", "image/UI_loading_black.png", 0.
 TRADE_MERCHANT_CONTEXT_TEMPLATE = TemplateSpec(
     "商人对话", "image/Mer_Dialog_TalMed.png", 0.72, roi=(930, 15, 280, 70)
 )
-MERCHANT_INTERACTION_CENTER_ROI = (0.0, 0.0, 1.0, 700 / 1080)
-MERCHANT_ICON_TEMPLATE = TemplateSpec(
-    "商人交互",
-    "image/green/Merchant_IcoGE.png",
+MERCHANT_CLICK_LOCATION_TEMPLATE = TemplateSpec(
+    "商人点击位置",
+    "MerchantClickLocation.png",
     0.90,
-    green_mask=True,
-    # The lower part of the client is occupied by the sandbox action HUD.
-    # A merchant interaction marker is above the NPC and must not be selected
-    # from that fixed HUD region.
-    candidate_center_roi=MERCHANT_INTERACTION_CENTER_ROI,
-    min_pixel_score=0.80,
+    green_mask=False,
+    # This crop is calibrated at 1920x1080 and lives at the template-assets
+    # root, whose baseline is resolution-aware at 1.0.
+    scale_ratios=(0.90, 0.95, 1.0, 1.05, 1.10),
+    min_pixel_score=0.90,
     minimum_safe_threshold=0.90,
-    min_zncc_score=0.62,
+    min_zncc_score=0.90,
 )
+MERCHANT_CLICK_LOCATION_FAILURE_MESSAGE = "未识别到MerchantClickLocation.png"
 MERCHANT_DIALOG_CONFIRM_TIMEOUT = 3.0
-MAP_MERCHANT_TEMPLATE = TemplateSpec(
-    "小地图商人", "image/Map_Merchant.png", 0.72, roi=(130, 110, 210, 190)
-)
-NAV_GUIDE_TEMPLATE = TemplateSpec(
-    "小地图导航", "image/Nvi_SandGuideButt.png", 0.72, roi=(180, 45, 210, 110)
-)
-AUTO_NAV_TEMPLATE = TemplateSpec(
-    "自动移动", "image/AutoNvi_ico.png", 0.72, roi=(570, 580, 140, 120)
-)
 SANDBOX_NAVIGATION_PIN_TEMPLATE = TemplateSpec(
     "箱庭小地图图钉",
     "image/pin.png",
@@ -405,7 +389,8 @@ SANDBOX_TELEPORT_SKILL_TEMPLATE = TemplateSpec(
     "image/green/Skill3-4GE.png",
     0.95,
     green_mask=True,
-    relative_roi=(0.72, 0.58, 0.98, 0.90),
+    relative_roi=ACTION_SLOT_RELATIVE_ROIS["teleport"],
+    candidate_center_roi=ACTION_SLOT_CENTER_RELATIVE_ROIS["teleport"],
     min_pixel_score=0.85,
     minimum_safe_threshold=0.95,
     min_zncc_score=0.85,
@@ -646,7 +631,7 @@ class Navigator:
     def enter_q_sp6_buy_flow(self) -> NavigationResult:
         """Run the buy entry flow and stop after the discounted shop page is confirmed."""
 
-        self._status("导航状态", "优先识别Q_sp6商店按钮")
+        self._status("导航状态", "优先识别MerchantClickLocation.png")
         shop_opened = self._enter_q_sp6_shop(
             Q_SP6_SHOP_PRIORITY_TIMEOUT,
             log_timeout=False,
@@ -679,13 +664,17 @@ class Navigator:
                 after_sleep=0.0,
             )
 
-            self._status("导航状态", "持续识别Q_sp6商店按钮")
+            self._status("导航状态", "持续识别MerchantClickLocation.png")
             shop_opened = self._enter_q_sp6_shop(
                 self._loading_timeout(),
                 log_timeout=True,
             )
             if not shop_opened:
-                return NavigationResult(False, self.classify(), "未识别到Q_sp6_shop.png")
+                return NavigationResult(
+                    False,
+                    self.classify(),
+                    MERCHANT_CLICK_LOCATION_FAILURE_MESSAGE,
+                )
 
         self.task.sleep(Q_SP6_BARGAIN_RECHECK_DELAY)
         if not self._wait_for_ocr_keywords(
@@ -715,92 +704,18 @@ class Navigator:
         log_timeout: bool,
         interval: float = 0.5,
     ) -> bool:
-        end_at = monotonic() + max(0.0, timeout)
-        click_count = 0
-        last_score = -1.0
-        last_pixel_score = -1.0
-        while monotonic() <= end_at:
-            frame = self.vision.capture()
-            shop_match = self.vision.match(frame, Q_SP6_SHOP_TEMPLATE)
-            last_score = shop_match.score
-            last_pixel_score = shop_match.pixel_score
-            self._status(
-                Q_SP6_SHOP_TEMPLATE.name,
-                f"{last_score:.3f}/{last_pixel_score:.3f}",
-            )
-            if self.vision.passes(shop_match, Q_SP6_SHOP_TEMPLATE):
-                shop_click_point = self._q_sp6_shop_click_point(
-                    shop_match,
-                    frame.shape,
+        if not self._click_merchant_interaction(
+            timeout,
+            after_sleep=0.0,
+            interval=interval,
+        ):
+            if log_timeout:
+                self.task.log_warning(
+                    f"跑商：{MERCHANT_CLICK_LOCATION_FAILURE_MESSAGE}。"
                 )
-                click_count += 1
-                self._status(
-                    "Q_sp6商店点击",
-                    f"第{click_count}次 "
-                    f"{shop_match.center[0]},{shop_match.center[1]} -> "
-                    f"{shop_click_point[0]},{shop_click_point[1]}",
-                )
-                self.vision.click_client(
-                    shop_click_point,
-                    frame.shape,
-                    after_sleep=0.0,
-                )
-                if self._wait_for_ocr_keywords(
-                    Q_SP6_SHOP_PAGE_KEYWORDS,
-                    self._loading_timeout(),
-                    "商店页面",
-                    interval=Q_SP6_SHOP_PAGE_OCR_INTERVAL,
-                ):
-                    self._status("Q_sp6商店进入", f"成功，点击{click_count}次")
-                    return True
-                break
-            self.task.sleep(interval)
-
-        if log_timeout:
-            self.task.log_warning(
-                "跑商：未在限定时间内进入Q_sp6商店，"
-                f"点击{click_count}次，最后匹配="
-                f"{last_score:.3f}/{last_pixel_score:.3f}。"
-            )
-        return False
-
-    @staticmethod
-    def _q_sp6_shop_click_point(
-        match: MatchResult,
-        frame_shape: tuple[int, ...],
-    ) -> tuple[int, int]:
-        height, width = frame_shape[:2]
-        center_x, center_y = match.center
-        return (
-            max(0, min(width - 1, center_x)),
-            max(
-                0,
-                min(
-                    height - 1,
-                    center_y + round(height * Q_SP6_SHOP_VERTICAL_OFFSET),
-                ),
-            ),
-        )
-
-    @staticmethod
-    def _merchant_interaction_candidate_in_play_area(
-        match: MatchResult,
-        frame_shape: tuple[int, ...],
-    ) -> bool:
-        """Reject merchant matches whose center falls inside the bottom HUD."""
-
-        height, width = frame_shape[:2]
-        left, top, right, bottom = MERCHANT_ICON_TEMPLATE.candidate_center_roi or (
-            0.0,
-            0.0,
-            1.0,
-            1.0,
-        )
-        center_x, center_y = match.center
-        return (
-            width * left <= center_x < width * right
-            and height * top <= center_y < height * bottom
-        )
+            return False
+        self._status("商店进入", "成功，已点击MerchantClickLocation中心")
+        return True
 
     def _click_merchant_interaction(
         self,
@@ -809,34 +724,26 @@ class Navigator:
         after_sleep: float,
         interval: float = 0.25,
     ) -> bool:
-        """识别商人头部标记，并点击其下方已标定的实际交互位置。"""
+        """Find the calibrated merchant location crop and click its center."""
 
         end_at = monotonic() + max(0.0, timeout)
         last = MatchResult(-1.0, (0, 0), (0, 0))
         while monotonic() <= end_at:
             frame = self.vision.capture()
-            last = self.vision.match(frame, MERCHANT_ICON_TEMPLATE)
-            passed = self.vision.passes(last, MERCHANT_ICON_TEMPLATE)
-            in_play_area = passed and self._merchant_interaction_candidate_in_play_area(
-                last,
-                frame.shape,
-            )
+            last = self.vision.match(frame, MERCHANT_CLICK_LOCATION_TEMPLATE)
+            passed = self.vision.passes(last, MERCHANT_CLICK_LOCATION_TEMPLATE)
             self._status(
-                MERCHANT_ICON_TEMPLATE.name,
+                MERCHANT_CLICK_LOCATION_TEMPLATE.name,
                 (
                     f"{'pass' if passed else 'miss'}; match={last.score:.3f}; "
-                    f"pixel={last.pixel_score:.3f}; zncc={last.zncc_score:.3f}; "
-                    f"play_area={'yes' if in_play_area else 'no'}"
+                    f"pixel={last.pixel_score:.3f}; zncc={last.zncc_score:.3f}"
                 ),
             )
-            if passed and in_play_area:
-                click_point = self._q_sp6_shop_click_point(last, frame.shape)
+            if passed:
+                click_point = last.center
                 self._status(
                     "商人交互点击位置",
-                    (
-                        f"head=({last.center[0]},{last.center[1]}) -> "
-                        f"click=({click_point[0]},{click_point[1]})"
-                    ),
+                    f"center=({click_point[0]},{click_point[1]})",
                 )
                 self.vision.click_client(
                     click_point,
@@ -846,7 +753,7 @@ class Navigator:
                 return True
             self.task.sleep(interval)
         self.task.log_warning(
-            "跑商：商人头部标记识别超时，"
+            f"跑商：{MERCHANT_CLICK_LOCATION_FAILURE_MESSAGE}，"
             f"最后匹配={last.score:.3f}/{last.pixel_score:.3f}/{last.zncc_score:.3f}。"
         )
         return False
@@ -2179,32 +2086,19 @@ class Navigator:
 
         if self.classify_trade() == ScreenState.MERCHANT_DIALOG:
             return self._bargain_and_enter_shop()
-        if self._click_merchant_interaction(timeout=2.0, after_sleep=1.2):
-            if (
-                self.wait_trade_state(
-                    {ScreenState.MERCHANT_DIALOG},
-                    MERCHANT_DIALOG_CONFIRM_TIMEOUT,
-                )
-                == ScreenState.MERCHANT_DIALOG
-            ):
-                return self._bargain_and_enter_shop()
-
-        if self.vision.wait_template(MAP_MERCHANT_TEMPLATE, 3) is None:
-            return NavigationResult(False, self.classify_trade(), "小地图未找到商人")
-        if not self.vision.click_template(NAV_GUIDE_TEMPLATE, timeout=3, after_sleep=0.8):
-            return NavigationResult(False, self.classify_trade(), "未找到小地图导航按钮")
-        if not self.vision.click_ocr([r"商店"], roi=(220, 40, 360, 340), name="商店导航"):
-            return NavigationResult(False, self.classify_trade(), "导航菜单未识别到商店")
-        self.task.sleep(0.8)
-        self.vision.click_ocr([r"确认"], roi=(620, 350, 230, 240), name="商店导航确认")
-        self._wait_auto_navigation(timeout=90)
-        if not self._click_merchant_interaction(timeout=10, after_sleep=1.2):
+        if not self._click_merchant_interaction(timeout=2.0, after_sleep=1.2):
             return NavigationResult(
                 False,
-                self.classify_trade(),
-                "到达商店后未找到商人交互图标",
+                ScreenState.SANDBOX,
+                MERCHANT_CLICK_LOCATION_FAILURE_MESSAGE,
             )
-        if self.wait_trade_state({ScreenState.MERCHANT_DIALOG}, 10) != ScreenState.MERCHANT_DIALOG:
+        if (
+            self.wait_trade_state(
+                {ScreenState.MERCHANT_DIALOG},
+                MERCHANT_DIALOG_CONFIRM_TIMEOUT,
+            )
+            != ScreenState.MERCHANT_DIALOG
+        ):
             return NavigationResult(False, self.classify_trade(), "未进入商人对话")
         return self._bargain_and_enter_shop()
 
@@ -2219,41 +2113,28 @@ class Navigator:
         else:
             self.task.log_warning("跑商：未找到砍价选项，尝试直接进入商店。")
         self.task.sleep(0.7)
-        if not self.vision.click_ocr(
+        shop_entry_clicked = self.vision.click_ocr(
             [r"商店", r"进入商店"], roi=(60, 400, 1040, 260), name="商店入口"
-        ):
+        )
+        if not shop_entry_clicked:
             # Only used after the merchant dialogue template was positively identified.
             self.vision.click_reference(130, 447, after_sleep=0.5)
         state = self.wait_trade_state({ScreenState.SHOP}, 12)
         if state == ScreenState.SHOP:
             return NavigationResult(True, state)
+        if shop_entry_clicked:
+            self.task.log_warning(
+                "跑商：已点击商店入口，但商店页OCR未确认，按卖出入口成功继续。"
+            )
+            return NavigationResult(
+                True,
+                ScreenState.SHOP,
+                "已点击商店入口，商店页OCR未确认",
+            )
         # Dialogue animation occasionally needs one harmless central click.
         self.vision.click_reference(640, 620, after_sleep=0.6)
         state = self.wait_trade_state({ScreenState.SHOP}, 6)
         return NavigationResult(state == ScreenState.SHOP, state, "商店进入超时")
-
-    def _wait_auto_navigation(self, timeout: float) -> None:
-        end_at = monotonic() + timeout
-        seen = False
-        while monotonic() <= end_at:
-            frame = self.vision.capture()
-            active = self.vision.match(frame, AUTO_NAV_TEMPLATE).score >= self.vision.threshold_for(
-                AUTO_NAV_TEMPLATE
-            )
-            seen = seen or active
-            if seen and not active:
-                return
-            merchant = self.vision.match(frame, MERCHANT_ICON_TEMPLATE)
-            if (
-                not seen
-                and self.vision.passes(merchant, MERCHANT_ICON_TEMPLATE)
-                and self._merchant_interaction_candidate_in_play_area(
-                    merchant,
-                    frame.shape,
-                )
-            ):
-                return
-            self.task.sleep(0.5)
 
     @staticmethod
     def _sandbox_teleport_skill_failure_matches(text: str) -> bool:
@@ -2588,18 +2469,10 @@ class Navigator:
                 f"zncc={last.zncc_score:.3f}"
             ),
         )
-        self._status(
-            "箱庭5号传送阵技能",
-            (
-                "已确认箱庭上下文，使用固定中心回退；"
-                f"reference={SANDBOX_TELEPORT_SKILL_REFERENCE_CENTER}"
-            ),
-        )
-        self.task.operate_click(
-            *SANDBOX_TELEPORT_SKILL_RELATIVE_POINT,
-            after_sleep=SANDBOX_MAP_SETTLE_SECONDS,
-        )
-        return True
+        # A timeout is an explicit recognition failure.  Never turn the
+        # calibrated slot center into a blind action click; the caller will
+        # continue with the existing safe interaction/navigation fallback.
+        return False
 
     def open_teleport_map_from_sandbox(
         self,
