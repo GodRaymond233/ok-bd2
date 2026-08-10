@@ -10,15 +10,14 @@ import cv2
 import numpy as np
 from opencc import OpenCC
 
-from src.tasks.BaseBD2Task import green_mask_from_template
 from src.tasks.map_trade.models import (
     MF_REFERENCE_HEIGHT,
     MF_REFERENCE_WIDTH,
     MatchResult,
     TemplateSpec,
 )
+from src.utils import task_vision
 from src.utils.image_utils import (
-    best_pixel_valid_match,
     candidate_scales,
     independent_pixel_valid_matches,
     pixel_similarity,
@@ -31,7 +30,6 @@ from src.utils.image_utils import (
     to_gray,
 )
 from src.utils.template_resolution import (
-    offline_template_requires_green_mask,
     offline_template_scale,
     offline_template_search_region,
     offline_template_uses_main_region,
@@ -134,29 +132,7 @@ class Vision:
         )
 
     def _load(self, spec: TemplateSpec) -> tuple[np.ndarray, np.ndarray | None]:
-        if spec.file_name in self._templates:
-            return self._templates[spec.file_name]
-        path = TEMPLATE_DIR / spec.file_name
-        raw = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
-        if raw is None:
-            raise RuntimeError(f"跑图跑商模板不存在或无法读取：{path}")
-        use_green_mask = spec.green_mask or offline_template_requires_green_mask(spec.file_name)
-        if use_green_mask:
-            mask = green_mask_from_template(raw)
-        elif raw.ndim == 3 and raw.shape[2] >= 4:
-            mask = np.where(raw[:, :, 3] > 0, 255, 0).astype(np.uint8)
-        else:
-            mask = None
-        if raw.ndim == 2:
-            gray = raw
-        elif raw.shape[2] == 4:
-            gray = cv2.cvtColor(raw, cv2.COLOR_BGRA2GRAY)
-        else:
-            gray = cv2.cvtColor(raw, cv2.COLOR_BGR2GRAY)
-        if mask is not None and np.count_nonzero(mask) == mask.size:
-            mask = None
-        self._templates[spec.file_name] = (gray, mask)
-        return gray, mask
+        return task_vision.load_template(TEMPLATE_DIR, spec, cache=self._templates)
 
     _gray = staticmethod(to_gray)
 
@@ -195,73 +171,18 @@ class Vision:
     _resize_mask = staticmethod(resize_mask)
 
     def match(self, frame: np.ndarray, spec: TemplateSpec) -> MatchResult:
-        template, mask = self._load(spec)
-        gray = self._gray(frame)
-        frame_height, frame_width = gray.shape[:2]
-        left = top = 0
-        search = gray
-        if offline_template_uses_main_region(spec.file_name):
-            left, top, right, bottom = offline_template_search_region(
-                spec.file_name,
-                frame_width,
-                frame_height,
-            )
-            search = gray[top:bottom, left:right]
-        elif spec.relative_roi is not None:
-            left, top, search = self._relative_roi(gray, spec.relative_roi)
-        elif spec.roi is not None:
-            left, top, width, height = self.reference_roi(spec.roi, frame_width, frame_height)
-            search = gray[top : top + height, left : left + width]
-        if search.size == 0:
-            return EMPTY_MATCH
-
-        best = EMPTY_MATCH
-        template_threshold = self.threshold_for(spec)
-        center_bounds = None
-        if spec.candidate_center_roi is not None:
-            center_left, center_top, center_right, center_bottom = spec.candidate_center_roi
-            center_bounds = (
-                round(frame_width * center_left) - left,
-                round(frame_height * center_top) - top,
-                round(frame_width * center_right) - left,
-                round(frame_height * center_bottom) - top,
-            )
-        base_scale = offline_template_scale(
-            spec.file_name,
-            frame_width,
-            frame_height,
-            reference_scale=spec.reference_scale,
+        return task_vision.match_template(
+            frame,
+            spec,
+            self.task.config,
+            TEMPLATE_DIR,
+            cache=self._templates,
+            min_size=4,
+            skip_scale_errors=True,
+            template_threshold=self.threshold_for(spec),
+            roi_reference_size=(MF_REFERENCE_WIDTH, MF_REFERENCE_HEIGHT),
+            loader=lambda _template_dir, spec: self._load(spec),
         )
-        for scale in self._candidate_scales(base_scale, spec.scale_ratios):
-            scaled = self._resize_template(template, scale)
-            scaled_mask = self._resize_mask(mask, scale)
-            height, width = scaled.shape[:2]
-            if height < 4 or width < 4 or height > search.shape[0] or width > search.shape[1]:
-                continue
-            try:
-                result = template_match_response(search, scaled, scaled_mask)
-            except cv2.error:
-                continue
-            candidate = best_pixel_valid_match(
-                result,
-                search,
-                scaled,
-                scaled_mask,
-                template_threshold=template_threshold,
-                pixel_threshold=(spec.min_pixel_score or 0.0),
-                zncc_threshold=spec.min_zncc_score,
-                center_bounds=center_bounds,
-            )
-            if candidate is None or candidate.score <= best.score:
-                continue
-            best = MatchResult(
-                score=candidate.score,
-                position=(left + candidate.location[0], top + candidate.location[1]),
-                size=(width, height),
-                pixel_score=candidate.pixel_score,
-                zncc_score=float(getattr(candidate, "zncc_score", -1.0)),
-            )
-        return best
 
     def match_all(
         self,
@@ -367,13 +288,12 @@ class Vision:
         return tuple(independent)
 
     def passes(self, result: MatchResult, spec: TemplateSpec) -> bool:
-        if result.score < self.threshold_for(spec):
-            return False
-        if spec.min_pixel_score is not None and result.pixel_score < spec.min_pixel_score:
-            return False
-        if spec.min_zncc_score is not None and result.zncc_score < spec.min_zncc_score:
-            return False
-        return True
+        return task_vision.passes_match(
+            result,
+            spec,
+            self.task.config,
+            threshold=self.threshold_for(spec),
+        )
 
     def template_color_ratios(
         self,

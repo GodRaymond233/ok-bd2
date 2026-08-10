@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from src.utils.vision_models import MatchResult, TemplateSpec  # noqa: F401
+
 MF_REFERENCE_WIDTH = 1280
 MF_REFERENCE_HEIGHT = 720
 DAILY_ABSORB_LIMIT = 21
@@ -83,38 +85,6 @@ class CardSpec:
     shop_label: str
     collectable: bool = True
     targets: tuple[CollectionMapTarget, ...] = ()
-
-
-@dataclass(frozen=True)
-class TemplateSpec:
-    name: str
-    file_name: str
-    threshold: float = 0.76
-    roi: tuple[int, int, int, int] | None = None
-    green_mask: bool = False
-    relative_roi: tuple[float, float, float, float] | None = None
-    reference_scale: float | None = None
-    scale_ratios: tuple[float, ...] = (1.0,)
-    min_pixel_score: float | None = None
-    candidate_center_roi: tuple[float, float, float, float] | None = None
-    minimum_safe_threshold: float | None = None
-    min_zncc_score: float | None = None
-
-
-@dataclass(frozen=True)
-class MatchResult:
-    score: float
-    position: tuple[int, int]
-    size: tuple[int, int]
-    pixel_score: float = -1.0
-    zncc_score: float = -1.0
-
-    @property
-    def center(self) -> tuple[int, int]:
-        return (
-            self.position[0] + self.size[0] // 2,
-            self.position[1] + self.size[1] // 2,
-        )
 
 
 @dataclass(frozen=True)

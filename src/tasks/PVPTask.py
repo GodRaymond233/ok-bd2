@@ -1,6 +1,5 @@
 import re
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
 
@@ -11,31 +10,19 @@ from qfluentwidgets import FluentIcon
 from src.tasks.BaseBD2Task import (
     RECENT_CARTRIDGE_SPECIAL_PAGE_MAX_ACTIONS,
     BaseBD2Task,
-    green_mask_from_template,
 )
+from src.tasks.map_trade.models import MatchResult, TemplateSpec
+from src.utils import task_vision
 from src.utils.home_confirmation import (
     HOME_GACHA_OCR_REFERENCE_ROI,
     home_confirmation_passes,
 )
 from src.utils.image_utils import (
-    best_pixel_valid_match,
-    candidate_scales,
-    pixel_similarity,
     reference_roi_frame,
     relative_roi_frame,
-    resize_mask,
-    resize_template,
     stabilize_template_match,
-    template_match_response,
-    to_gray,
 )
 from src.utils.ocr_utils import normalize_ocr_text
-from src.utils.template_resolution import (
-    offline_template_requires_green_mask,
-    offline_template_scale,
-    offline_template_search_region,
-    offline_template_uses_main_region,
-)
 
 REFERENCE_WIDTH = 1920
 REFERENCE_HEIGHT = 1080
@@ -63,32 +50,6 @@ QUICK_SWITCH_PAGE_PATTERNS = (r"最近", r"剧情游戏卡", r"玩法游戏卡")
 HOME_GACHA_OCR_ROI = HOME_GACHA_OCR_REFERENCE_ROI
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_DIR = PROJECT_ROOT / "recognition-assets" / "template-assets"
-
-
-@dataclass(frozen=True)
-class PVPTemplateSpec:
-    name: str
-    file_name: str
-    threshold_key: str
-    default_threshold: float
-    roi: tuple[int, int, int, int] | None = None
-    relative_roi: tuple[float, float, float, float] | None = None
-    green_mask: bool = False
-    reference_scale: float | None = None
-    scale_ratios: tuple[float, ...] = (1.0,)
-    min_pixel_score: float | None = None
-    candidate_center_roi: tuple[float, float, float, float] | None = None
-    minimum_safe_threshold: float | None = None
-    min_zncc_score: float | None = None
-
-
-@dataclass(frozen=True)
-class PVPMatchResult:
-    score: float
-    pixel_score: float
-    position: tuple[int, int]
-    size: tuple[int, int]
-    zncc_score: float = -1.0
 
 
 class PVPTask(BaseBD2Task):
@@ -869,7 +830,7 @@ class PVPTask(BaseBD2Task):
 
     def _click_template_until(
         self,
-        spec: PVPTemplateSpec,
+        spec: TemplateSpec,
         timeout: float,
         name: str,
         target: tuple[int, int] | None = None,
@@ -958,11 +919,11 @@ class PVPTask(BaseBD2Task):
 
     def _find_template_until(
         self,
-        spec: PVPTemplateSpec,
+        spec: TemplateSpec,
         timeout: float,
         name: str,
         interval: float = 0.35,
-    ) -> tuple[PVPMatchResult | None, tuple[int, int] | None]:
+    ) -> tuple[MatchResult | None, tuple[int, int] | None]:
         end_at = monotonic() + max(0.0, timeout)
         last_score = -1.0
         while monotonic() <= end_at:
@@ -1003,7 +964,7 @@ class PVPTask(BaseBD2Task):
 
     def _wait_for_template(
         self,
-        spec: PVPTemplateSpec,
+        spec: TemplateSpec,
         timeout: float,
         name: str,
         interval: float = 0.35,
@@ -1146,96 +1107,26 @@ class PVPTask(BaseBD2Task):
                 return
             self.sleep(interval)
 
-    def _match(self, frame, spec: PVPTemplateSpec) -> PVPMatchResult:
-        empty = PVPMatchResult(score=-1.0, pixel_score=-1.0, position=(0, 0), size=(0, 0))
+    def _match(self, frame, spec: TemplateSpec) -> MatchResult:
+        empty = MatchResult(-1.0, (0, 0), (0, 0))
         if monotonic() < self._match_pause_until:
             return empty
 
         try:
-            template, mask = self._load_template(spec)
+            return task_vision.match_template(
+                frame,
+                spec,
+                self.config,
+                TEMPLATE_DIR,
+                cache=self._templates,
+                min_size=5,
+                loader=lambda _template_dir, spec: self._load_template(spec),
+            )
         except RuntimeError as exc:
             if spec.name not in self._missing_template_names:
                 self._missing_template_names.add(spec.name)
                 self.log_warning(str(exc), notify=True)
             return empty
-
-        try:
-            frame_gray = self._to_gray(frame)
-            if offline_template_uses_main_region(spec.file_name):
-                frame_height, frame_width = frame_gray.shape[:2]
-                roi_left, roi_top, roi_right, roi_bottom = offline_template_search_region(
-                    spec.file_name,
-                    frame_width,
-                    frame_height,
-                )
-                roi_frame = frame_gray[roi_top:roi_bottom, roi_left:roi_right]
-            elif spec.relative_roi is not None:
-                roi_left, roi_top, roi_frame = self._relative_roi_frame(
-                    frame_gray,
-                    spec.relative_roi,
-                )
-            elif spec.roi is not None:
-                roi_left, roi_top, roi_frame = self._roi_frame(frame_gray, spec.roi)
-            else:
-                roi_left = 0
-                roi_top = 0
-                roi_frame = frame_gray
-            frame_height, frame_width = roi_frame.shape[:2]
-            base_scale = offline_template_scale(
-                spec.file_name,
-                frame_gray.shape[1],
-                frame_gray.shape[0],
-                reference_scale=spec.reference_scale,
-            )
-            best = empty
-            configured_threshold = float(
-                getattr(self, "config", {}).get(spec.threshold_key, spec.default_threshold)
-            )
-            template_threshold = max(
-                configured_threshold,
-                spec.minimum_safe_threshold
-                if spec.minimum_safe_threshold is not None
-                else configured_threshold,
-            )
-            center_bounds = None
-            if spec.candidate_center_roi is not None:
-                full_height, full_width = frame_gray.shape[:2]
-                left, top, right, bottom = spec.candidate_center_roi
-                center_bounds = (
-                    round(full_width * left) - roi_left,
-                    round(full_height * top) - roi_top,
-                    round(full_width * right) - roi_left,
-                    round(full_height * bottom) - roi_top,
-                )
-
-            for scale in self._candidate_scales(base_scale, spec.scale_ratios):
-                scaled_template = self._resize_template(template, scale)
-                scaled_mask = self._resize_mask(mask, scale) if mask is not None else None
-                height, width = scaled_template.shape[:2]
-                if height < 5 or width < 5 or height > frame_height or width > frame_width:
-                    continue
-
-                result = template_match_response(roi_frame, scaled_template, scaled_mask)
-                candidate = best_pixel_valid_match(
-                    result,
-                    roi_frame,
-                    scaled_template,
-                    scaled_mask,
-                    template_threshold=template_threshold,
-                    pixel_threshold=(spec.min_pixel_score or 0.0),
-                    zncc_threshold=spec.min_zncc_score,
-                    center_bounds=center_bounds,
-                )
-                if candidate is None or candidate.score <= best.score:
-                    continue
-                x, y = candidate.location
-                best = PVPMatchResult(
-                    score=candidate.score,
-                    pixel_score=candidate.pixel_score,
-                    position=(roi_left + x, roi_top + y),
-                    size=(int(width), int(height)),
-                    zncc_score=float(getattr(candidate, "zncc_score", -1.0)),
-                )
         except (cv2.error, MemoryError) as exc:
             self._match_pause_until = monotonic() + 2.0
             message = f"图像匹配内存不足，暂停识别2秒：{spec.name}"
@@ -1245,85 +1136,23 @@ class PVPTask(BaseBD2Task):
                 self.log_warning(f"{message}；{exc}", notify=True)
             return empty
 
-        return best
-
     def _home_brightness_ratio(self, frame) -> float:
         return max(self._home_brightness_ratio_for_template(frame, spec) for spec in HOME_TEMPLATES)
 
-    def _home_brightness_ratio_for_template(self, frame, spec: PVPTemplateSpec) -> float:
-        template, mask = self._load_template(spec)
-        frame_gray = self._to_gray(frame)
-        frame_height, frame_width = frame_gray.shape[:2]
-        scale = offline_template_scale(
-            spec.file_name,
-            frame_width,
-            frame_height,
-            reference_scale=spec.reference_scale,
+    def _home_brightness_ratio_for_template(self, frame, spec: TemplateSpec) -> float:
+        return task_vision.brightness_ratio(
+            frame,
+            spec,
+            (222 / ENTRY_REFERENCE_WIDTH, 211 / ENTRY_REFERENCE_HEIGHT),
+            TEMPLATE_DIR,
+            cache=self._templates,
         )
-        template_height, template_width = template.shape[:2]
-        roi_width = max(8, round(template_width * scale))
-        roi_height = max(8, round(template_height * scale))
-        center_x = round(frame_width * (222 / ENTRY_REFERENCE_WIDTH))
-        center_y = round(frame_height * (211 / ENTRY_REFERENCE_HEIGHT))
-        left = max(0, center_x - roi_width // 2)
-        top = max(0, center_y - roi_height // 2)
-        right = min(frame_width, left + roi_width)
-        bottom = min(frame_height, top + roi_height)
-        region = frame_gray[top:bottom, left:right]
-        if region.size == 0:
-            return 0.0
 
-        scaled_template = self._resize_template(template, scale)
-        scaled_mask = self._resize_mask(mask, scale) if mask is not None else None
-        match_height = min(region.shape[0], scaled_template.shape[0])
-        match_width = min(region.shape[1], scaled_template.shape[1])
-        if match_height <= 0 or match_width <= 0:
-            return 0.0
-        region = region[:match_height, :match_width]
-        scaled_template = scaled_template[:match_height, :match_width]
-        if scaled_mask is not None:
-            scaled_mask = scaled_mask[:match_height, :match_width]
-            active = scaled_mask > 0
-            if not np.any(active):
-                return 0.0
-            template_mean = float(np.mean(scaled_template[active]))
-            region_mean = float(np.mean(region[active]))
-        else:
-            template_mean = float(np.mean(scaled_template))
-            region_mean = float(np.mean(region))
-        if template_mean <= 0:
-            return 0.0
-        return float(region_mean / template_mean)
+    def _load_template(self, spec: TemplateSpec) -> tuple[np.ndarray, np.ndarray | None]:
+        return task_vision.load_template(TEMPLATE_DIR, spec, cache=self._templates)
 
-    def _load_template(self, spec: PVPTemplateSpec) -> tuple[np.ndarray, np.ndarray | None]:
-        if spec.name in self._templates:
-            return self._templates[spec.name]
-
-        path = TEMPLATE_DIR / spec.file_name
-        raw = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
-        if raw is None:
-            raise RuntimeError(f"PVP 模板不存在或无法读取：{path}")
-
-        use_green_mask = spec.green_mask or offline_template_requires_green_mask(spec.file_name)
-        mask = green_mask_from_template(raw) if use_green_mask else None
-        template = self._to_gray(raw)
-        if mask is not None and np.count_nonzero(mask) == mask.size:
-            mask = None
-
-        self._templates[spec.name] = (template, mask)
-        return self._templates[spec.name]
-
-    def _passes(self, result: PVPMatchResult, spec: PVPTemplateSpec) -> bool:
-        threshold = float(self.config.get(spec.threshold_key, spec.default_threshold))
-        if spec.minimum_safe_threshold is not None:
-            threshold = max(threshold, spec.minimum_safe_threshold)
-        if result.score < threshold:
-            return False
-        if spec.min_pixel_score is not None and result.pixel_score < spec.min_pixel_score:
-            return False
-        if spec.min_zncc_score is not None and result.zncc_score < spec.min_zncc_score:
-            return False
-        return True
+    def _passes(self, result: MatchResult, spec: TemplateSpec) -> bool:
+        return task_vision.passes_match(result, spec, self.config)
 
     def _ocr_text(
         self,
@@ -1697,12 +1526,6 @@ class PVPTask(BaseBD2Task):
             multiplier = 1
         return multiplier if multiplier in {1, 4, 5, 10, 20, 40} else 1
 
-    _candidate_scales = staticmethod(candidate_scales)
-    _resize_template = staticmethod(resize_template)
-    _resize_mask = staticmethod(resize_mask)
-    _to_gray = staticmethod(to_gray)
-    _pixel_similarity = staticmethod(pixel_similarity)
-
     @staticmethod
     def _roi_frame(
         frame: np.ndarray,
@@ -1733,21 +1556,21 @@ class PVPTask(BaseBD2Task):
         return int(x + width / 2 + 0.5), int(y + height / 2 + 0.5)
 
 
-LOADING_TEMPLATE = PVPTemplateSpec(
+LOADING_TEMPLATE = TemplateSpec(
     name="loading",
     file_name="image/UI_loading_black.png",
     threshold_key="加载页面阈值",
     default_threshold=0.72,
 )
 
-HOME_TEMPLATE = PVPTemplateSpec(
+HOME_TEMPLATE = TemplateSpec(
     name="home",
     file_name="home.png",
     threshold_key="主页亮度比例阈值",
     default_threshold=0.75,
 )
 
-HOME_ICE_TEMPLATE = PVPTemplateSpec(
+HOME_ICE_TEMPLATE = TemplateSpec(
     name="home_ice",
     file_name="image/green/MainHomeIceGE.png",
     threshold_key="主页亮度比例阈值",
@@ -1755,7 +1578,7 @@ HOME_ICE_TEMPLATE = PVPTemplateSpec(
     green_mask=True,
 )
 
-HOME_RICE_TEMPLATE = PVPTemplateSpec(
+HOME_RICE_TEMPLATE = TemplateSpec(
     name="home_rice",
     file_name="image/green/MainHomeRIceGE.png",
     threshold_key="主页亮度比例阈值",
@@ -1765,7 +1588,7 @@ HOME_RICE_TEMPLATE = PVPTemplateSpec(
 
 HOME_TEMPLATES = (HOME_TEMPLATE, HOME_ICE_TEMPLATE, HOME_RICE_TEMPLATE)
 
-QUICK_PACK_TEMPLATE = PVPTemplateSpec(
+QUICK_PACK_TEMPLATE = TemplateSpec(
     name="quick_pack",
     file_name="image/green/QuickSwitchPlayIco.png",
     threshold_key="快速切换按钮阈值",
@@ -1779,7 +1602,7 @@ QUICK_PACK_TEMPLATE = PVPTemplateSpec(
     min_zncc_score=0.85,
 )
 
-PVP_MEDALS_TEMPLATE = PVPTemplateSpec(
+PVP_MEDALS_TEMPLATE = TemplateSpec(
     name="pvp_medals",
     file_name="image/pvp-medals.png",
     threshold_key="PVP 箱庭阈值",
@@ -1789,7 +1612,7 @@ PVP_MEDALS_TEMPLATE = PVPTemplateSpec(
     min_pixel_score=0.88,
 )
 
-PVP_HUB_NOTICE_TEMPLATE = PVPTemplateSpec(
+PVP_HUB_NOTICE_TEMPLATE = TemplateSpec(
     name="pvp_hub_notice",
     file_name="image/green/tanhaoGE.png",
     threshold_key="PVP 箱庭感叹号阈值",
@@ -1797,7 +1620,7 @@ PVP_HUB_NOTICE_TEMPLATE = PVPTemplateSpec(
     roi=PVPTask._screen_reference_roi_to_reference_roi(PVP_HUB_NOTICE_SCREEN_ROI),
 )
 
-PVP_STAGE_TEMPLATE = PVPTemplateSpec(
+PVP_STAGE_TEMPLATE = TemplateSpec(
     name="pvp_stage",
     file_name="image/pvp-stage.png",
     threshold_key="PVP 舞台阈值",
@@ -1805,7 +1628,7 @@ PVP_STAGE_TEMPLATE = PVPTemplateSpec(
     roi=(190, 238, 900, 620),
 )
 
-PVP_LOC_RESET_TEMPLATE = PVPTemplateSpec(
+PVP_LOC_RESET_TEMPLATE = TemplateSpec(
     name="pvp_loc_reset",
     file_name="image/pvp-loc-reset.png",
     threshold_key="PVP 定位修正阈值",
@@ -1813,43 +1636,43 @@ PVP_LOC_RESET_TEMPLATE = PVPTemplateSpec(
 )
 
 PVP_NO_FIND_TEMPLATES = [
-    PVPTemplateSpec(
+    TemplateSpec(
         name="pvp_nofind_UT_bk",
         file_name="image/pvp-nofind-UT-bk.png",
         threshold_key="PVP 定位修正阈值",
         default_threshold=0.76,
     ),
-    PVPTemplateSpec(
+    TemplateSpec(
         name="pvp_nofind_ut_bk2",
         file_name="image/pvp-nofind-ut-bk2.png",
         threshold_key="PVP 定位修正阈值",
         default_threshold=0.76,
     ),
-    PVPTemplateSpec(
+    TemplateSpec(
         name="pvp_nofind_UT_ft",
         file_name="image/pvp-nofind-UT-ft.png",
         threshold_key="PVP 定位修正阈值",
         default_threshold=0.76,
     ),
-    PVPTemplateSpec(
+    TemplateSpec(
         name="pvp_nofind_UT_Rt",
         file_name="image/pvp-nofind-UT-Rt.png",
         threshold_key="PVP 定位修正阈值",
         default_threshold=0.76,
     ),
-    PVPTemplateSpec(
+    TemplateSpec(
         name="pvp_nofind_twoaudience",
         file_name="image/pvp-nofind-twoaudience.png",
         threshold_key="PVP 定位修正阈值",
         default_threshold=0.76,
     ),
-    PVPTemplateSpec(
+    TemplateSpec(
         name="pvp_nofind_waiter_fr",
         file_name="image/pvp-nofind-waiter-fr.png",
         threshold_key="PVP 定位修正阈值",
         default_threshold=0.76,
     ),
-    PVPTemplateSpec(
+    TemplateSpec(
         name="pvp_nofind_aman_sit",
         file_name="image/pvp-nofind-aman-sit.png",
         threshold_key="PVP 定位修正阈值",

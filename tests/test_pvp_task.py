@@ -48,6 +48,7 @@ from src.tasks.PVPTask import (
     REFERENCE_WIDTH,
     PVPTask,
 )
+from src.utils.image_utils import candidate_scales
 
 
 class PVPTaskHelperTest(unittest.TestCase):
@@ -57,30 +58,41 @@ class PVPTaskHelperTest(unittest.TestCase):
         task._match_pause_until = 0.0
         task._missing_template_names = set()
         task._match_error_names = set()
+        task._templates = {}
         task._load_template = lambda _spec: (
             np.ones((5, 5), dtype=np.uint8),
             None,
         )
-        task._to_gray = lambda frame: frame
-        task._candidate_scales = lambda _base, _ratios: (1.0,)
-        task._resize_template = lambda template, _scale: template
-        task._resize_mask = lambda mask, _scale: mask
         frame = np.zeros((20, 30), dtype=np.uint8)
         candidate = SimpleNamespace(score=0.90, pixel_score=0.85, location=(7, 9))
 
         with (
             patch(
-                "src.tasks.PVPTask.template_match_response",
+                "src.utils.image_utils.template_match_response",
                 return_value=np.array([[0.90]], dtype=np.float32),
             ) as response_mock,
             patch(
-                "src.tasks.PVPTask.best_pixel_valid_match",
+                "src.utils.image_utils.best_pixel_valid_match",
                 return_value=candidate,
+            ),
+            patch("src.utils.image_utils.candidate_scales", return_value=[1.0]),
+            patch(
+                "src.utils.image_utils.resize_template",
+                side_effect=lambda template, _scale: template,
+            ),
+            patch(
+                "src.utils.image_utils.resize_mask",
+                side_effect=lambda mask, _scale: mask,
+            ),
+            patch(
+                "src.utils.template_resolution.offline_template_scale",
+                return_value=1.0,
             ),
         ):
             result = PVPTask._match(task, frame, HOME_TEMPLATE)
 
-        self.assertIs(response_mock.call_args.args[0], frame)
+        np.testing.assert_array_equal(response_mock.call_args.args[0], frame)
+        self.assertEqual(frame.shape, response_mock.call_args.args[0].shape)
         self.assertEqual((7, 9), result.position)
         self.assertEqual((5, 5), result.size)
 
@@ -708,7 +720,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         self.assertEqual(0.88, PVP_MEDALS_TEMPLATE.min_pixel_score)
         self.assertEqual(
             [1.18, 1.2, 1.22, 1.25, 1.3],
-            PVPTask._candidate_scales(
+            candidate_scales(
                 1.25,
                 PVP_MEDALS_TEMPLATE.scale_ratios,
             ),
