@@ -4355,7 +4355,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
             ],
             clicks,
         )
-        self.assertEqual(SANDBOX_SKILL_SLOT_1_REFERENCE_CENTER, (1672, 1010))
+        self.assertEqual(SANDBOX_SKILL_SLOT_1_REFERENCE_CENTER, (1671, 1011))
         self.assertEqual(6, len(captures))
 
     def test_story_sandbox_group_two_does_not_confirm_when_switch_stays_on_group_two(self):
@@ -4882,7 +4882,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
             )
         )
         task = SimpleNamespace(
-            _scroll_client=lambda *args, **kwargs: scrolls.append((args, kwargs)),
+            scroll_client=lambda *args, **kwargs: scrolls.append((args, kwargs)),
             operate_click=lambda *args, **kwargs: clicks.append((args, kwargs)),
             log_warning=lambda *_args, **_kwargs: None,
         )
@@ -4926,7 +4926,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         warnings = []
         task = SimpleNamespace(
-            _scroll_client=lambda *_args, **_kwargs: self.fail(
+            scroll_client=lambda *_args, **_kwargs: self.fail(
                 "ambiguous badge must stop before scrolling"
             ),
             log_warning=warnings.append,
@@ -4979,7 +4979,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         clicks = []
         sleeps = []
         task = SimpleNamespace(
-            _scroll_client=lambda *args, **kwargs: scrolls.append((args, kwargs)),
+            scroll_client=lambda *args, **kwargs: scrolls.append((args, kwargs)),
             operate_click=lambda *args, **kwargs: clicks.append((args, kwargs)),
             sleep=sleeps.append,
             info_set=lambda *_args: None,
@@ -5075,7 +5075,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         scrolls = []
         clicks = []
         task = SimpleNamespace(
-            _scroll_client=lambda *args, **kwargs: scrolls.append((args, kwargs)),
+            scroll_client=lambda *args, **kwargs: scrolls.append((args, kwargs)),
             operate_click=lambda *args, **kwargs: clicks.append((args, kwargs)),
             sleep=lambda *_args: None,
             info_set=lambda *_args: None,
@@ -5102,7 +5102,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         warnings = []
         task = SimpleNamespace(
-            _scroll_client=lambda *_args, **_kwargs: self.fail(
+            scroll_client=lambda *_args, **_kwargs: self.fail(
                 "ambiguous probe badge must not scroll"
             ),
             sleep=lambda *_args: self.fail("ambiguous probe badge must not sleep"),
@@ -5143,7 +5143,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         )
         warnings = []
         task = SimpleNamespace(
-            _scroll_client=lambda *_args, **_kwargs: self.fail(
+            scroll_client=lambda *_args, **_kwargs: self.fail(
                 "a vanished recheck must stop before scrolling"
             ),
             sleep=lambda *_args: None,
@@ -5166,7 +5166,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         clicks = []
         captures = []
         task = SimpleNamespace(
-            _scroll_client=lambda *args, **kwargs: scrolls.append((args, kwargs)),
+            scroll_client=lambda *args, **kwargs: scrolls.append((args, kwargs)),
             operate_click=lambda *args, **kwargs: clicks.append((args, kwargs)),
             sleep=lambda *_args: None,
             info_set=lambda *_args: None,

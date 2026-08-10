@@ -11,6 +11,7 @@ from src.tasks.BaseBD2Task import BaseBD2Task
 from src.tasks.map_trade.models import MatchResult, TemplateSpec
 from src.tasks.map_trade.vision import Vision
 from src.utils import task_vision
+from src.utils.calibration import FHD_1080
 from src.utils.home_confirmation import (
     HOME_GACHA_OCR_RELATIVE_ROI,
     home_confirmation_passes,
@@ -20,8 +21,8 @@ from src.utils.image_utils import (
 )
 from src.utils.ocr_utils import keyword_match_count, normalize_ocr_text
 
-REFERENCE_WIDTH = 1920
-REFERENCE_HEIGHT = 1080
+REFERENCE_WIDTH = FHD_1080.width
+REFERENCE_HEIGHT = FHD_1080.height
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_DIR = PROJECT_ROOT / "recognition-assets" / "template-assets"
 QUICK_HUNT_CHILD_CONFIG_KEYS = (

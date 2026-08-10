@@ -7,6 +7,7 @@ import numpy as np
 
 from src.tasks.map_trade.models import MatchResult, TemplateSpec
 from src.tasks.map_trade.vision import Vision
+from src.utils.calibration import FHD_1080
 
 ACTION_ICON_TEMPLATE_SCORE = 0.95
 ACTION_ICON_ZNCC_SCORE = 0.80
@@ -20,14 +21,23 @@ ACTION_ICON_AVAILABLE_MIN_BRIGHTNESS = 0.85
 # The action HUD is anchored to the lower-right corner of the client.  Keep
 # the calibration in reference pixels and derive all runtime bounds as
 # relative coordinates so the same matcher works at 720p through 4K.
-SKILL_REFERENCE_WIDTH = 1920
-SKILL_REFERENCE_HEIGHT = 1080
+SKILL_REFERENCE_WIDTH = FHD_1080.width
+SKILL_REFERENCE_HEIGHT = FHD_1080.height
 ACTION_SLOT_CENTERS_REFERENCE = {
     "search": (1575, 994),
     "absorb": (1530, 880),
     "summon": (1577, 774),
     "subdue": (1682, 729),
     "teleport": (1795, 788),
+}
+# The three bottom-right skill group switch buttons.  This is the single
+# source of truth for skill group centers; collector and sandbox navigation
+# derive their own constants from this map instead of re-calibrating the
+# same buttons independently.
+SKILL_GROUP_CENTERS_REFERENCE = {
+    1: (1671, 1011),
+    2: (1749, 1011),
+    3: (1824, 1011),
 }
 ACTION_SLOT_SEARCH_RADII_REFERENCE = {
     "search": (82, 72),
@@ -346,6 +356,7 @@ __all__ = [
     "INTERACT_ICON",
     "SEARCH_ICON",
     "SEARCH_ICON_TEMPLATE_SCORE",
+    "SKILL_GROUP_CENTERS_REFERENCE",
     "SUBDUE_ICON",
     "SUMMON_ICON",
     "ActionIconDetection",

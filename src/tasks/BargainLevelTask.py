@@ -3,10 +3,11 @@ from time import monotonic
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task
+from src.utils.calibration import FHD_1080
 from src.utils.ocr_utils import keyword_match_count, normalize_ocr_text
 
-REFERENCE_WIDTH = 1920
-REFERENCE_HEIGHT = 1080
+REFERENCE_WIDTH = FHD_1080.width
+REFERENCE_HEIGHT = FHD_1080.height
 POST_RECOGNITION_DELAY_SECONDS = 1.0
 UPGRADE_CHECK_SECONDS = 1.0
 

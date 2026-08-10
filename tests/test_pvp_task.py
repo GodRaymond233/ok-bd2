@@ -8,14 +8,6 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-from src.tasks.BaseBD2Task import (
-    RECENT_CARTRIDGE_SPECIAL_PAGE_SECONDS,
-    RECENT_PVP_CARTRIDGE_PIXEL_THRESHOLD,
-    RECENT_PVP_CARTRIDGE_TEMPLATE_FILE,
-    RECENT_PVP_CARTRIDGE_TEMPLATE_THRESHOLD,
-    RECENT_PVP_CARTRIDGE_ZNCC_THRESHOLD,
-    TEMPLATE_DIR,
-)
 from src.tasks.PVPTask import (
     ENTRY_REFERENCE_HEIGHT,
     ENTRY_REFERENCE_WIDTH,
@@ -44,8 +36,14 @@ from src.tasks.PVPTask import (
     PVP_SUCCESS_LEAVE_REFERENCE_ROI,
     QUICK_PACK_TEMPLATE,
     QUICK_SWITCH_PAGE_PATTERNS,
+    RECENT_CARTRIDGE_SPECIAL_PAGE_SECONDS,
+    RECENT_PVP_CARTRIDGE_PIXEL_THRESHOLD,
+    RECENT_PVP_CARTRIDGE_TEMPLATE_FILE,
+    RECENT_PVP_CARTRIDGE_TEMPLATE_THRESHOLD,
+    RECENT_PVP_CARTRIDGE_ZNCC_THRESHOLD,
     REFERENCE_HEIGHT,
     REFERENCE_WIDTH,
+    TEMPLATE_DIR,
     PVPTask,
 )
 from src.utils.image_utils import candidate_scales
@@ -587,7 +585,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         )
 
         with patch(
-            "src.tasks.BaseBD2Task.monotonic",
+            "src.tasks.PVPTask.monotonic",
             side_effect=(0.0, 0.5, 1.0, 3.1),
         ):
             self.assertTrue(task._handle_recent_cartridge_special_pages(timeout=3.0))
@@ -1371,7 +1369,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         )
         task.sleep = lambda seconds: sleeps.append(seconds)
 
-        PVPTask._drag_client(task, (10, 20), (30, 40), duration=0.0, after_sleep=0.5)
+        PVPTask.drag_client(task, (10, 20), (30, 40), duration=0.0, after_sleep=0.5)
 
         self.assertEqual([(True, True, True)], operates)
         self.assertEqual([0.5], sleeps)

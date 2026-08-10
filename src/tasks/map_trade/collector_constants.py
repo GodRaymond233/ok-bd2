@@ -6,11 +6,13 @@ from dataclasses import dataclass
 from src.tasks.map_trade.action_icons import (
     ABSORB_ICON,
     SEARCH_ICON,
+    SKILL_GROUP_CENTERS_REFERENCE,
     SUBDUE_ICON,
     SUMMON_ICON,
     ActionIconSpec,
 )
 from src.tasks.map_trade.models import TemplateSpec
+from src.utils.calibration import FHD_1080
 
 SEARCH_COUNTDOWN_TIMEOUT = 3.0
 SEARCH_COUNTDOWN_INTERVAL = 0.25
@@ -28,7 +30,7 @@ ACTION_ICON_DETECTION_INTERVAL = 0.15
 SKILL_FAILURE_EVIDENCE_LIMIT = 12
 SKILL_FAILURE_TEXT_LIMIT = 320
 UNSUPPORTED_COLLECTION_CARD_NUMBERS = frozenset({14})
-SKILL_REFERENCE_SIZE = (1920, 1080)
+SKILL_REFERENCE_SIZE = FHD_1080.size
 SKILL_GROUP_SWITCH_SETTLE_SECONDS = 0.8
 
 
@@ -50,11 +52,7 @@ def _relative_reference_roi(
     )
 
 
-SKILL_GROUP_REFERENCE_POINTS = {
-    1: (1671, 1011),
-    2: (1749, 1011),
-    3: (1824, 1011),
-}
+SKILL_GROUP_REFERENCE_POINTS = SKILL_GROUP_CENTERS_REFERENCE
 SKILL_GROUP_RELATIVE_POINTS = {
     group: _relative_reference_point(point)
     for group, point in SKILL_GROUP_REFERENCE_POINTS.items()
