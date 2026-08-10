@@ -117,7 +117,6 @@ from src.tasks.map_trade.navigator import (
     AREA_MAP_BACK_TEMPLATE,
     AREA_MAP_OPEN_RELATIVE_POINT,
     AREA_MAP_TELEPORT_BRIGHT_NEUTRAL_RATIO,
-    AREA_MAP_TITLE_OCR_RELATIVE_ROI,
     BARGAIN_CONFIRM_POINT,
     BARGAIN_POINT,
     CHAPTER_HOME_POINT,
@@ -273,6 +272,27 @@ class FakeTask:
 
     def sleep(self, *_args):
         return None
+
+
+def _seed_action_records(store, card_id, target_key):
+    """Persist the durable role-required records before a target commit."""
+
+    actions = (
+        ("吸收",)
+        if target_key == CollectionMapRole.MAIN_AREA.value
+        else ("吸收", "召集", "压制")
+    )
+    for action in actions:
+        store.arm_action(card_id, target_key, action)
+        store.mark_action_local_done(card_id, target_key, action, pending=False)
+
+
+def _seed_battle_supplements(store, card_id, target_key):
+    """Persist the summon/suppress records when a test seeds absorb itself."""
+
+    for action in ("召集", "压制"):
+        store.arm_action(card_id, target_key, action)
+        store.mark_action_local_done(card_id, target_key, action, pending=False)
 
 
 class SaveFrameTest(unittest.TestCase):
@@ -1738,7 +1758,6 @@ class CatalogAndSafetyTest(unittest.TestCase):
             (654 / 1920, 946 / 1080, 1268 / 1920, 1021 / 1080),
             TELEPORT_MAP_TITLE_OCR_RELATIVE_ROI,
         )
-        self.assertEqual(TELEPORT_MAP_TITLE_OCR_RELATIVE_ROI, AREA_MAP_TITLE_OCR_RELATIVE_ROI)
         self.assertEqual((136 / 1920, 52 / 1080), TELEPORT_MAP_RETURN_RELATIVE_POINT)
 
     def test_prepare_collection_main_closes_map_when_initial_title_is_main(self):
@@ -2643,7 +2662,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         self.assertEqual("image/green/Skill3-4GE.png", sandbox_skill.file_name)
         self.assertNotIn(sandbox_skill, TELEPORT_MAP_TELEPORT_CIRCLE_TEMPLATES)
 
-    def test_area_map_teleports_reject_dim_candidate_before_click_context(self):
+    def test_teleport_map_teleports_reject_dim_candidate_before_click_context(self):
         frame = np.zeros((300, 500, 3), dtype=np.uint8)
         enabled = MatchResult(0.98, (80, 80), (52, 52), 0.94, 0.93)
         disabled = MatchResult(0.98, (280, 80), (52, 52), 0.94, 0.93)
@@ -2675,7 +2694,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
             navigator._area_map_teleport_bright_neutral_ratio(frame, disabled),
             AREA_MAP_TELEPORT_BRIGHT_NEUTRAL_RATIO,
         )
-        self.assertEqual((enabled,), navigator._area_map_teleports(frame))
+        self.assertEqual((enabled,), navigator._teleport_map_teleports(frame))
 
     def test_sale_whitelist_allows_only_intersection(self):
         trader = object.__new__(Trader)
@@ -2882,7 +2901,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
 
         self.assertFalse(trader.run_sell())
 
-    def test_locate_sale_item_matches_name_and_120_percent_with_left_offset(self):
+    def test_locate_sale_items_match_name_and_120_percent_with_left_offset(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         boxes = [
             SimpleNamespace(name="水果罐头", confidence=1.0, x=598, y=451, width=84, height=23),
@@ -2897,13 +2916,14 @@ class CatalogAndSafetyTest(unittest.TestCase):
         )
         trader.task = SimpleNamespace(info_set=lambda *_args: None)
 
-        self.assertEqual(
-            (640, 462),
-            trader._locate_sale_item(CalendarEntry("水果罐头", "S2:苍蓝魔女"), frame),
+        candidates = trader._locate_sale_items(
+            CalendarEntry("水果罐头", "S2:苍蓝魔女"),
+            frame,
         )
+        self.assertEqual([(640, 462)], [candidate.center for candidate in candidates])
         self.assertEqual(115, SALE_ITEM_NAME_LEFT_OFFSET_X)
 
-    def test_locate_sale_item_rejects_when_probe_not_in_120_percent_box(self):
+    def test_locate_sale_items_reject_when_probe_not_in_120_percent_box(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         boxes = [
             SimpleNamespace(name="水果罐头", confidence=1.0, x=598, y=451, width=84, height=23),
@@ -2916,13 +2936,17 @@ class CatalogAndSafetyTest(unittest.TestCase):
         )
         trader.task = SimpleNamespace(info_set=lambda *_args: None)
 
-        self.assertIsNone(
-            trader._locate_sale_item(CalendarEntry("水果罐头", "S2:苍蓝魔女"), frame)
+        self.assertEqual(
+            [],
+            trader._locate_sale_items(
+                CalendarEntry("水果罐头", "S2:苍蓝魔女"),
+                frame,
+            ),
         )
         self.assertTrue(trader._last_sale_unavailable)
         self.assertEqual("商品名左侧115参考像素未落在120%框内", trader._last_sale_reason)
 
-    def test_locate_sale_item_scales_left_offset_at_720p(self):
+    def test_locate_sale_items_scale_left_offset_at_720p(self):
         frame = np.zeros((720, 1280, 3), dtype=np.uint8)
         boxes = [
             SimpleNamespace(name="水果罐头", confidence=1.0, x=399, y=301, width=56, height=15),
@@ -2936,10 +2960,11 @@ class CatalogAndSafetyTest(unittest.TestCase):
         )
         trader.task = SimpleNamespace(info_set=lambda *_args: None)
 
-        self.assertEqual(
-            (427, 308),
-            trader._locate_sale_item(CalendarEntry("水果罐头", "S2:苍蓝魔女"), frame),
+        candidates = trader._locate_sale_items(
+            CalendarEntry("水果罐头", "S2:苍蓝魔女"),
+            frame,
         )
+        self.assertEqual([(427, 308)], [candidate.center for candidate in candidates])
 
     def test_locate_sale_items_returns_all_same_item_in_reading_order(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -3090,7 +3115,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
         self.assertEqual([(620, 572), (620, 572)], clicked)
         self.assertEqual([], scans)
 
-    def test_wait_sale_item_point_retries_until_located(self):
+    def test_wait_sale_item_candidates_retries_until_located(self):
         sleeps = []
         warnings = []
         trader = object.__new__(Trader)
@@ -3103,16 +3128,18 @@ class CatalogAndSafetyTest(unittest.TestCase):
         trader.vision = SimpleNamespace(
             capture=lambda: frames[min(len(calls), 1)]
         )
-        trader._locate_sale_item = lambda _entry, _frame: (
-            calls.append(_frame) or (None if len(calls) < 2 else (640, 462))
+        trader._locate_sale_items = lambda _entry, _frame: (
+            calls.append(_frame)
+            or ([] if len(calls) < 2 else [SimpleNamespace(center=(640, 462))])
         )
 
-        located = trader._wait_sale_item_point(
+        located = trader._wait_sale_item_candidates(
             CalendarEntry("水果罐头", "S2:苍蓝魔女"),
             timeout=5.0,
             interval=0.1,
         )
-        self.assertEqual(((640, 462), frames[1]), located)
+        self.assertEqual([(640, 462)], [candidate.center for candidate in located[0]])
+        self.assertIs(frames[1], located[1])
         self.assertEqual(1, len(sleeps))
         self.assertEqual([], warnings)
 
@@ -4252,6 +4279,11 @@ class CatalogAndSafetyTest(unittest.TestCase):
         vision = SimpleNamespace(
             match=lambda received, spec: calls.append((received, spec)) or result,
             passes=lambda _result, spec: spec in passed_specs,
+            template_hsv_color_ratios=lambda _frame, spec, _result: (
+                (0.55, 0.20, 0.90)
+                if spec is SANDBOX_SKILL_SLOT_1_SELECTED_TEMPLATE
+                else (0.01, 0.90, 0.60)
+            ),
         )
         navigator = Navigator(SimpleNamespace(info_set=lambda *_args: None), vision)
 
@@ -6369,10 +6401,12 @@ class CatalogAndSafetyTest(unittest.TestCase):
             collector._verify_search_countdown = lambda value: (
                 events.append(("countdown", value.value)) or True
             )
-            collector._use_actions = lambda actions, **_kwargs: (
+            def fake_use_actions(actions, *, card_id, map_role):
                 events.append(("actions", tuple(action.name for action in actions)))
-                or SkillExecutionResult(True)
-            )
+                _seed_action_records(progress, card_id, map_role.value)
+                return SkillExecutionResult(True)
+
+            collector._use_actions = fake_use_actions
 
             result = collector.run()
 
@@ -6478,7 +6512,11 @@ class CatalogAndSafetyTest(unittest.TestCase):
                 80,
             )
             collector._verify_search_countdown = lambda _session: True
-            collector._use_actions = lambda _actions, **_kwargs: SkillExecutionResult(True)
+            def fake_use_actions(_actions, *, card_id, map_role):
+                _seed_action_records(progress, card_id, map_role.value)
+                return SkillExecutionResult(True)
+
+            collector._use_actions = fake_use_actions
             with patch(
                 "src.tasks.map_trade.collector.COLLECTABLE_CARDS",
                 (CARD_BY_ID["Q_sp14"], CARD_BY_ID["Q_sp15"]),
@@ -6532,7 +6570,11 @@ class CatalogAndSafetyTest(unittest.TestCase):
                     SkillExecutionResult(True, depleted=True),
                 )
             )
-            collector._use_actions = lambda _actions, **_kwargs: next(action_results)
+            def fake_use_actions(_actions, *, card_id, map_role):
+                _seed_action_records(progress, card_id, map_role.value)
+                return next(action_results)
+
+            collector._use_actions = fake_use_actions
             with patch(
                 "src.tasks.map_trade.collector.COLLECTABLE_CARDS",
                 (CARD_BY_ID["Q_sp1"],),
@@ -6666,7 +6708,12 @@ class CollectorSkillTest(unittest.TestCase):
                 (center, shape, after_sleep)
             ),
         )
-        collector = Collector(task, vision, SimpleNamespace(), SimpleNamespace())
+        progress = ProgressStore(
+            Path(tempfile.mkdtemp(prefix="ok-bd2-skill-")) / "progress.json",
+            lambda: datetime(2026, 8, 11, 12, tzinfo=UTC_PLUS_8),
+        )
+        progress.load()
+        collector = Collector(task, vision, SimpleNamespace(), progress)
         executed_icons = set()
 
         def detect(_frame, icon):
@@ -6693,7 +6740,7 @@ class CollectorSkillTest(unittest.TestCase):
         collector.action_icons = SimpleNamespace(detect=detect)
         count_iters = {name: iter(values) for name, values in counts.items()}
         collector._read_count_window = (
-            lambda action, _detection=None: next(count_iters[action.name])
+            lambda action, _detection=None, **_kwargs: next(count_iters[action.name])
         )
 
         def feedback(action):
@@ -6706,7 +6753,7 @@ class CollectorSkillTest(unittest.TestCase):
             )
 
         collector._read_action_feedback = feedback
-        return collector, clicks, statuses
+        return collector, clicks, statuses, progress
 
     def test_skill_failure_evidence_is_bounded_and_replayable(self):
         warnings = []
@@ -6986,7 +7033,7 @@ class CollectorSkillTest(unittest.TestCase):
         collector._open_skill_menu = lambda *_args, **_kwargs: True
         collector.action_icons = SimpleNamespace(detect=lambda *_args: next(detections))
 
-        result = collector._start_search()
+        result = collector._start_search(map_role=CollectionMapRole.MAIN_AREA)
 
         self.assertIsInstance(result, SearchCountdownSession)
         self.assertEqual([ACTION_FEEDBACK_SUCCESS_DELAY_SECONDS], sleeps)
@@ -7029,7 +7076,7 @@ class CollectorSkillTest(unittest.TestCase):
         collector._open_skill_menu = lambda *_args, **_kwargs: True
         collector.action_icons = SimpleNamespace(detect=lambda *_args: next(detections))
 
-        result = collector._start_search()
+        result = collector._start_search(map_role=CollectionMapRole.MAIN_AREA)
 
         self.assertEqual(SEARCH_COUNTDOWN_RELATIVE_ROI, result.relative_roi)
         self.assertEqual(available.match.center, clicks[0][0][0])
@@ -7039,8 +7086,8 @@ class CollectorSkillTest(unittest.TestCase):
         self.assertEqual(SEARCH_COUNTDOWN_RELATIVE_ROI, countdown_kwargs["relative_roi"])
         self.assertEqual(SKILL_OCR_UPSCALE, countdown_kwargs["ocr_scale"])
 
-    def test_dimmed_absorb_and_summon_require_failed_execution_feedback(self):
-        collector, clicks, _statuses = self._skill_collector(
+    def test_dimmed_absorb_and_summon_are_preexisting_used_without_click(self):
+        collector, clicks, _statuses, _progress = self._skill_collector(
             {
                 "探查": ActionIconState.AVAILABLE,
                 "吸收": ActionIconState.USED,
@@ -7053,14 +7100,19 @@ class CollectorSkillTest(unittest.TestCase):
             },
         )
 
-        result = collector._use_skills()
+        result = collector._use_actions(
+            (ABSORB_ACTION, SUMMON_ACTION),
+            card_id="Q_sp1",
+            map_role=CollectionMapRole.MAIN_AREA,
+        )
 
         self.assertTrue(result.completed)
         self.assertFalse(result.depleted)
-        self.assertEqual(3, len(clicks))
+        self.assertEqual(0, len(clicks))
+        self.assertEqual({"吸收", "召集"}, set(result.pending_actions))
 
     def test_skill_ocr_failure_is_not_reported_as_completed(self):
-        collector, clicks, _statuses = self._skill_collector(
+        collector, clicks, _statuses, _progress = self._skill_collector(
             {
                 "探查": ActionIconState.AVAILABLE,
                 "吸收": ActionIconState.AVAILABLE,
@@ -7069,7 +7121,13 @@ class CollectorSkillTest(unittest.TestCase):
             {"吸收": (None,)},
         )
 
-        result = collector._use_skills()
+        search = collector._start_search(map_role=CollectionMapRole.MAIN_AREA)
+        self.assertIsInstance(search, SearchCountdownSession)
+        result = collector._use_actions(
+            (ABSORB_ACTION, SUMMON_ACTION),
+            card_id="Q_sp1",
+            map_role=CollectionMapRole.MAIN_AREA,
+        )
 
         self.assertFalse(result.completed)
         self.assertFalse(result.depleted)
@@ -7077,7 +7135,7 @@ class CollectorSkillTest(unittest.TestCase):
         self.assertEqual(1, len(clicks))
 
     def test_pre_exhausted_available_skill_does_not_complete_current_map(self):
-        collector, clicks, _statuses = self._skill_collector(
+        collector, clicks, _statuses, _progress = self._skill_collector(
             {
                 "探查": ActionIconState.AVAILABLE,
                 "吸收": ActionIconState.AVAILABLE,
@@ -7086,14 +7144,20 @@ class CollectorSkillTest(unittest.TestCase):
             {"吸收": ((21, 21),)},
         )
 
-        result = collector._use_skills()
+        search = collector._start_search(map_role=CollectionMapRole.MAIN_AREA)
+        self.assertIsInstance(search, SearchCountdownSession)
+        result = collector._use_actions(
+            (ABSORB_ACTION, SUMMON_ACTION),
+            card_id="Q_sp1",
+            map_role=CollectionMapRole.MAIN_AREA,
+        )
 
         self.assertFalse(result.completed)
         self.assertTrue(result.depleted)
         self.assertEqual(1, len(clicks))
 
     def test_mid_sequence_exhaustion_waits_for_all_three_skills(self):
-        collector, clicks, _statuses = self._skill_collector(
+        collector, clicks, _statuses, _progress = self._skill_collector(
             {
                 "探查": ActionIconState.AVAILABLE,
                 "吸收": ActionIconState.AVAILABLE,
@@ -7104,14 +7168,20 @@ class CollectorSkillTest(unittest.TestCase):
             },
         )
 
-        result = collector._use_skills()
+        search = collector._start_search(map_role=CollectionMapRole.MAIN_AREA)
+        self.assertIsInstance(search, SearchCountdownSession)
+        result = collector._use_actions(
+            (ABSORB_ACTION, SUMMON_ACTION),
+            card_id="Q_sp1",
+            map_role=CollectionMapRole.MAIN_AREA,
+        )
 
         self.assertFalse(result.completed)
         self.assertTrue(result.depleted)
         self.assertEqual(1, len(clicks))
 
     def test_all_three_completed_can_report_depleted_after_completion(self):
-        collector, clicks, _statuses = self._skill_collector(
+        collector, clicks, _statuses, _progress = self._skill_collector(
             {
                 "探查": ActionIconState.AVAILABLE,
                 "吸收": ActionIconState.AVAILABLE,
@@ -7123,14 +7193,20 @@ class CollectorSkillTest(unittest.TestCase):
             },
         )
 
-        result = collector._use_skills()
+        search = collector._start_search(map_role=CollectionMapRole.MAIN_AREA)
+        self.assertIsInstance(search, SearchCountdownSession)
+        result = collector._use_actions(
+            (ABSORB_ACTION, SUMMON_ACTION),
+            card_id="Q_sp1",
+            map_role=CollectionMapRole.MAIN_AREA,
+        )
 
         self.assertTrue(result.completed)
         self.assertTrue(result.depleted)
         self.assertEqual(3, len(clicks))
 
     def test_battle_flow_executes_absorb_summon_and_suppression(self):
-        collector, clicks, _statuses = self._skill_collector(
+        collector, clicks, _statuses, _progress = self._skill_collector(
             {
                 "吸收": ActionIconState.AVAILABLE,
                 "召集": ActionIconState.AVAILABLE,
@@ -7143,7 +7219,11 @@ class CollectorSkillTest(unittest.TestCase):
             },
         )
 
-        result = collector._use_actions(BATTLE_ACTIONS)
+        result = collector._use_actions(
+            BATTLE_ACTIONS,
+            card_id="Q_sp1",
+            map_role=CollectionMapRole.BATTLE_AREA_1,
+        )
 
         self.assertTrue(result.completed)
         self.assertFalse(result.depleted)
@@ -7193,10 +7273,15 @@ class CollectorSkillTest(unittest.TestCase):
             MatchResult(0.98, (960, 420), (52, 48), 0.95, 0.92),
             0.65,
         )
-        detections = iter((before, after))
-        frames = iter((before_frame, after_frame))
+        frames = iter((before_frame, after_frame, after_frame))
+        detections = iter((before, after, after))
         count_detections = []
         clicks = []
+        progress = ProgressStore(
+            Path(tempfile.mkdtemp(prefix="ok-bd2-post-click-")) / "progress.json",
+            lambda: datetime(2026, 8, 11, 12, tzinfo=UTC_PLUS_8),
+        )
+        progress.load()
         collector = Collector(
             SimpleNamespace(
                 config={},
@@ -7208,19 +7293,24 @@ class CollectorSkillTest(unittest.TestCase):
                 click_client=lambda *args, **kwargs: clicks.append((args, kwargs)),
             ),
             SimpleNamespace(),
-            SimpleNamespace(),
+            progress,
         )
         collector.action_icons = SimpleNamespace(detect=lambda *_args: next(detections))
         counts = iter(((0, 21), (1, 21)))
-        collector._read_count_window = lambda _action, detection: (
+        collector._read_count_window = lambda _action, detection, **_kwargs: (
             count_detections.append(detection) or next(counts)
         )
         collector._read_action_feedback = lambda _action: SkillFeedbackObservation(
-            "吸收成功",
-            None,
+            "吸收周围的拾取物",
+            "success",
+            1.0,
         )
 
-        result = collector._use_action(ABSORB_ACTION)
+        result = collector._use_action(
+            ABSORB_ACTION,
+            card_id="Q_sp1",
+            map_role=CollectionMapRole.MAIN_AREA,
+        )
 
         self.assertTrue(result.completed)
         self.assertEqual([before, after], count_detections)
@@ -7386,6 +7476,7 @@ class CollectorSkillTest(unittest.TestCase):
 
         result = collector._use_actions(
             (ABSORB_ACTION,),
+            card_id="Q_sp1",
             map_role=CollectionMapRole.BATTLE_AREA_1,
         )
 
@@ -7442,7 +7533,7 @@ class CollectorSkillTest(unittest.TestCase):
         self.assertEqual(1, len(clicks))
         self.assertTrue(any("不再重复点击" in value for value in warnings))
 
-    def test_skill_menu_recovery_is_disabled_without_cartridge_context(self):
+    def test_start_search_recovers_group_one_once_then_fails(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         clicks = []
         missing = ActionIconDetection(
@@ -7464,10 +7555,11 @@ class CollectorSkillTest(unittest.TestCase):
         )
         collector.action_icons = SimpleNamespace(detect=lambda *_args: missing)
 
-        result = collector._start_search()
+        result = collector._start_search(map_role=CollectionMapRole.MAIN_AREA)
 
         self.assertFalse(result.completed)
-        self.assertEqual([], clicks)
+        self.assertEqual(1, len(clicks))
+        self.assertIn("未确认安全区技能栏", result.message)
 
     def test_missing_action_after_menu_confirmation_never_uses_fixed_action_point(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -7483,17 +7575,23 @@ class CollectorSkillTest(unittest.TestCase):
             log_warning=lambda *_args: None,
             info_set=lambda *_args: None,
         )
+        progress = ProgressStore(
+            Path(tempfile.mkdtemp(prefix="ok-bd2-missing-action-")) / "progress.json",
+            lambda: datetime(2026, 8, 11, 12, tzinfo=UTC_PLUS_8),
+        )
+        progress.load()
         collector = Collector(
             task,
             SimpleNamespace(capture=lambda: frame),
             SimpleNamespace(),
-            SimpleNamespace(),
+            progress,
         )
         collector._open_skill_menu = lambda *_args, **_kwargs: True
         collector.action_icons = SimpleNamespace(detect=lambda *_args: missing)
 
         result = collector._use_action(
             ABSORB_ACTION,
+            card_id="Q_sp1",
             map_role=CollectionMapRole.BATTLE_AREA_1,
         )
 
@@ -7570,7 +7668,9 @@ class CollectorSkillTest(unittest.TestCase):
             collector = Collector(task, vision, SimpleNamespace(), progress)
             collector.action_icons = SimpleNamespace(detect=lambda *_args: next(detections))
             count_values = iter(((0, 21), None))
-            collector._read_count_window = lambda action, detection: next(count_values)
+            collector._read_count_window = (
+                lambda action, detection, **_kwargs: next(count_values)
+            )
             collector._read_action_feedback = lambda _action: SkillFeedbackObservation(
                 "吸收周围的拾取物", "success", 1.0
             )
@@ -7736,7 +7836,7 @@ class CollectorSkillTest(unittest.TestCase):
             self.assertEqual([0, 21], record["baseline"])
             self.assertEqual(CollectionActionState.PREEXISTING_USED.value, record["state"])
             progress.mark_target(
-                "Q_sp1", CollectionMapRole.MAIN_AREA.value, require_actions=True
+                "Q_sp1", CollectionMapRole.MAIN_AREA.value
             )
             self.assertEqual(1, progress.effective_used("吸收"))
             self.assertEqual(1, progress.reconcile_pending("吸收", (1, 21)))
@@ -7807,8 +7907,13 @@ class CollectorSkillTest(unittest.TestCase):
             progress.mark_action_local_done(
                 "Q_sp1", CollectionMapRole.BATTLE_AREA_1, "吸收", pending=True
             )
+            _seed_battle_supplements(
+                progress,
+                "Q_sp1",
+                CollectionMapRole.BATTLE_AREA_1,
+            )
             progress.mark_target(
-                "Q_sp1", CollectionMapRole.BATTLE_AREA_1.value, require_actions=False
+                "Q_sp1", CollectionMapRole.BATTLE_AREA_1.value
             )
             frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
             used = ActionIconDetection(
@@ -7855,8 +7960,13 @@ class CollectorSkillTest(unittest.TestCase):
             self.assertEqual([1, 21], current["baseline"])
             self.assertTrue(current["covered"])
             self.assertEqual(2, progress.effective_used("吸收"))
+            _seed_battle_supplements(
+                progress,
+                "Q_sp1",
+                CollectionMapRole.BATTLE_AREA_2,
+            )
             progress.mark_target(
-                "Q_sp1", CollectionMapRole.BATTLE_AREA_2.value, require_actions=False
+                "Q_sp1", CollectionMapRole.BATTLE_AREA_2.value
             )
             self.assertEqual(2, progress.effective_used("吸收"))
             self.assertEqual(0, progress.reconcile_pending("吸收", (2, 21)))
@@ -7922,8 +8032,13 @@ class CollectorSkillTest(unittest.TestCase):
                 "吸收",
                 pending=True,
             )
+            _seed_battle_supplements(
+                progress,
+                "Q_sp1",
+                CollectionMapRole.BATTLE_AREA_1,
+            )
             progress.mark_target(
-                "Q_sp1", CollectionMapRole.BATTLE_AREA_1.value, require_actions=False
+                "Q_sp1", CollectionMapRole.BATTLE_AREA_1.value
             )
 
             frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -8000,7 +8115,7 @@ class CollectorSkillTest(unittest.TestCase):
             )
             self.assertEqual(1, progress.reconcile_pending("吸收", (1, 21)))
             progress.mark_target(
-                "Q_sp1", CollectionMapRole.MAIN_AREA.value, require_actions=True
+                "Q_sp1", CollectionMapRole.MAIN_AREA.value
             )
 
             progress.arm_action(
@@ -8009,8 +8124,13 @@ class CollectorSkillTest(unittest.TestCase):
             progress.mark_action_local_done(
                 "Q_sp1", CollectionMapRole.BATTLE_AREA_1, "吸收", pending=True
             )
+            _seed_battle_supplements(
+                progress,
+                "Q_sp1",
+                CollectionMapRole.BATTLE_AREA_1,
+            )
             progress.mark_target(
-                "Q_sp1", CollectionMapRole.BATTLE_AREA_1.value, require_actions=False
+                "Q_sp1", CollectionMapRole.BATTLE_AREA_1.value
             )
             self.assertEqual(2, progress.state.daily_absorbs)
 
@@ -8090,8 +8210,13 @@ class CollectorSkillTest(unittest.TestCase):
             progress.mark_action_local_done(
                 "Q_sp1", CollectionMapRole.BATTLE_AREA_1, "吸收", pending=True
             )
+            _seed_battle_supplements(
+                progress,
+                "Q_sp1",
+                CollectionMapRole.BATTLE_AREA_1,
+            )
             progress.mark_target(
-                "Q_sp1", CollectionMapRole.BATTLE_AREA_1.value, require_actions=False
+                "Q_sp1", CollectionMapRole.BATTLE_AREA_1.value
             )
             frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
             available = ActionIconDetection(
@@ -8258,7 +8383,7 @@ class CollectorSkillTest(unittest.TestCase):
             )
             self.assertEqual(1, progress.reconcile_pending("吸收", (1, 21)))
             progress.mark_target(
-                "Q_sp1", CollectionMapRole.MAIN_AREA.value, require_actions=True
+                "Q_sp1", CollectionMapRole.MAIN_AREA.value
             )
 
             progress.arm_action(
@@ -8267,8 +8392,13 @@ class CollectorSkillTest(unittest.TestCase):
             progress.mark_action_local_done(
                 "Q_sp1", CollectionMapRole.BATTLE_AREA_1, "吸收", pending=True
             )
+            _seed_battle_supplements(
+                progress,
+                "Q_sp1",
+                CollectionMapRole.BATTLE_AREA_1,
+            )
             progress.mark_target(
-                "Q_sp1", CollectionMapRole.BATTLE_AREA_1.value, require_actions=False
+                "Q_sp1", CollectionMapRole.BATTLE_AREA_1.value
             )
 
             self.assertEqual(2, progress.state.daily_absorbs)
@@ -8621,10 +8751,18 @@ class ProgressTest(unittest.TestCase):
             path = Path(temp_dir) / "progress.json"
             store = ProgressStore(path, lambda: datetime(2026, 7, 12, 12, tzinfo=UTC_PLUS_8))
             store.load()
+            # The 22nd absorb would exceed the daily limit; keep its durable
+            # records ready so the limit check, not the readiness check, fires.
+            _seed_action_records(
+                store,
+                COLLECTABLE_CARDS[7].card_id,
+                COLLECTABLE_CARDS[7].targets[0].key,
+            )
             for card in COLLECTABLE_CARDS[:7]:
                 for target in card.targets:
+                    _seed_action_records(store, card.card_id, target.key)
                     self.assertTrue(
-                        store.mark_target(card.card_id, target.key, require_actions=False)
+                        store.mark_target(card.card_id, target.key)
                     )
                     self.assertTrue(path.exists())
                     self.assertFalse(path.with_suffix(".json.tmp").exists())
@@ -8643,7 +8781,6 @@ class ProgressTest(unittest.TestCase):
                 store.mark_target(
                     next_card.card_id,
                     next_card.targets[0].key,
-                    require_actions=False,
                 )
 
     def test_collection_skill_limits_match_three_two_two_per_card(self):
@@ -8661,7 +8798,7 @@ class ProgressTest(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "invalid collection card"):
                 store.mark_target(
-                    "Q_sp6", CollectionMapRole.MAIN_AREA.value, require_actions=False
+                    "Q_sp6", CollectionMapRole.MAIN_AREA.value
                 )
 
     def test_card_visual_verification_requires_all_three_map_roles(self):
@@ -8671,8 +8808,13 @@ class ProgressTest(unittest.TestCase):
                 lambda: datetime(2026, 8, 3, 12, tzinfo=UTC_PLUS_8),
             )
             store.load()
+            _seed_action_records(
+                store,
+                "Q_sp1",
+                CollectionMapRole.MAIN_AREA.value,
+            )
             store.mark_target(
-                "Q_sp1", CollectionMapRole.MAIN_AREA.value, require_actions=False
+                "Q_sp1", CollectionMapRole.MAIN_AREA.value
             )
 
             with self.assertRaisesRegex(RuntimeError, "targets are incomplete"):
@@ -8687,7 +8829,8 @@ class ProgressTest(unittest.TestCase):
             store = ProgressStore(path, lambda: now[0])
             store.load()
             for target in CARD_BY_ID["Q_sp1"].targets:
-                store.mark_target("Q_sp1", target.key, require_actions=False)
+                _seed_action_records(store, "Q_sp1", target.key)
+                store.mark_target("Q_sp1", target.key)
             store.mark_card_verified("Q_sp1")
             now[0] = datetime(2026, 7, 12, 4, 0, tzinfo=UTC_PLUS_8)
 
@@ -8708,8 +8851,13 @@ class ProgressTest(unittest.TestCase):
             path = Path(temp_dir) / "progress.json"
             store = ProgressStore(path, lambda: datetime(2026, 7, 13, 3, 59, tzinfo=UTC_PLUS_8))
             store.load()
+            _seed_action_records(
+                store,
+                "Q_sp1",
+                CollectionMapRole.MAIN_AREA.value,
+            )
             store.mark_target(
-                "Q_sp1", CollectionMapRole.MAIN_AREA.value, require_actions=False
+                "Q_sp1", CollectionMapRole.MAIN_AREA.value
             )
 
             state = ProgressStore(
@@ -8733,7 +8881,8 @@ class ProgressTest(unittest.TestCase):
                     now[0] = now[0].replace(day=now[0].day + 1)
                     store.load()
                 for target in card.targets:
-                    store.mark_target(card.card_id, target.key, require_actions=False)
+                    _seed_action_records(store, card.card_id, target.key)
+                    store.mark_target(card.card_id, target.key)
 
             self.assertEqual(51, store.state.weekly_submap_count)
 
@@ -8940,14 +9089,14 @@ class ProgressTest(unittest.TestCase):
             self.assertEqual(1, store.effective_daily_counts()["吸收"])
             self.assertTrue(
                 store.mark_target(
-                    "Q_sp1", CollectionMapRole.MAIN_AREA.value, require_actions=False
+                    "Q_sp1", CollectionMapRole.MAIN_AREA.value
                 )
             )
             self.assertEqual(1, store.state.daily_submaps)
             self.assertEqual(1, store.effective_daily_counts()["吸收"])
             self.assertFalse(
                 store.mark_target(
-                    "Q_sp1", CollectionMapRole.MAIN_AREA.value, require_actions=False
+                    "Q_sp1", CollectionMapRole.MAIN_AREA.value
                 )
             )
 
