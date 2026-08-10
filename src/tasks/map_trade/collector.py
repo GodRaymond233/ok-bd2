@@ -88,6 +88,16 @@ class Collector(SkillExecutionMixin):
         # is bounded once per formal run, while direct helper calls retain the
         # latch until the next run invocation.
         self._group_one_recovery_attempted = False
+        try:
+            return self._run_collection()
+        except RuntimeError as exc:
+            self.task.log_error("地图采集流程异常", exc)
+            return CollectionResult(
+                False,
+                message=f"地图采集流程异常：{exc}",
+            )
+
+    def _run_collection(self) -> CollectionResult:
         state = self.progress.load()
         if state.depleted_today or state.daily_submaps >= DAILY_SUBMAP_LIMIT:
             return CollectionResult(True, depleted=True, message="今日采集技能额度已用尽")
@@ -189,10 +199,20 @@ class Collector(SkillExecutionMixin):
                         main_result,
                         completed_this_run,
                     )
-                self.progress.mark_target(
+                committed = self.progress.mark_target(
                     card.card_id,
                     main_target.key,
                 )
+                if not committed:
+                    return CollectionResult(
+                        True,
+                        depleted=True,
+                        completed_submaps=completed_this_run,
+                        message=(
+                            f"{card.card_id}{main_target.role.label}提交失败："
+                            "今日技能额度已用尽，剩余地图留待次日"
+                        ),
+                    )
                 completed.add(main_target.key)
                 completed_this_run += 1
                 observed_depleted = main_result.depleted
@@ -246,10 +266,20 @@ class Collector(SkillExecutionMixin):
                         battle_result,
                         completed_this_run,
                     )
-                self.progress.mark_target(
+                committed = self.progress.mark_target(
                     card.card_id,
                     battle_one.key,
                 )
+                if not committed:
+                    return CollectionResult(
+                        True,
+                        depleted=True,
+                        completed_submaps=completed_this_run,
+                        message=(
+                            f"{card.card_id}{battle_one.role.label}提交失败："
+                            "今日技能额度已用尽，战斗区域2留待次日"
+                        ),
+                    )
                 completed.add(battle_one.key)
                 completed_this_run += 1
                 observed_depleted = observed_depleted or battle_result.depleted
@@ -293,10 +323,20 @@ class Collector(SkillExecutionMixin):
                         battle_result,
                         completed_this_run,
                     )
-                self.progress.mark_target(
+                committed = self.progress.mark_target(
                     card.card_id,
                     battle_two.key,
                 )
+                if not committed:
+                    return CollectionResult(
+                        True,
+                        depleted=True,
+                        completed_submaps=completed_this_run,
+                        message=(
+                            f"{card.card_id}{battle_two.role.label}提交失败："
+                            "今日技能额度已用尽"
+                        ),
+                    )
                 completed.add(battle_two.key)
                 completed_this_run += 1
                 observed_depleted = observed_depleted or battle_result.depleted

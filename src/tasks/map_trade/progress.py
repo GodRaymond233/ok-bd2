@@ -890,6 +890,14 @@ class ProgressStore:
         card_id: str,
         target_key: str,
     ) -> bool:
+        """Commit one collection target for a card.
+
+        Returns True when the target was newly committed.  A duplicate target
+        or a daily quota that is already exhausted returns False; quota
+        failure also persists ``depleted_today`` instead of raising, so the
+        task scheduler can turn it into a clean depleted result.
+        """
+
         state = self._require_state()
         if card_id not in VALID_CARD_IDS:
             raise ValueError(f"invalid collection card: {card_id}")
@@ -912,21 +920,21 @@ class ProgressStore:
         if self._effective_used("吸收") - absorb_reservation + 1 > DAILY_ABSORB_LIMIT:
             state.depleted_today = True
             self.save()
-            raise RuntimeError("daily collection limit reached")
+            return False
         summon_reservation = self._target_reservations(card_id, target_key, "召集")
         if is_battle and (
             self._effective_used("召集") - summon_reservation + 1 > DAILY_SUMMON_LIMIT
         ):
             state.depleted_today = True
             self.save()
-            raise RuntimeError("daily summon limit reached")
+            return False
         suppress_reservation = self._target_reservations(card_id, target_key, "压制")
         if is_battle and (
             self._effective_used("压制") - suppress_reservation + 1 > DAILY_SUPPRESS_LIMIT
         ):
             state.depleted_today = True
             self.save()
-            raise RuntimeError("daily suppression limit reached")
+            return False
         completed.add(target_key)
         state.cards[card_id] = sorted(completed)
         state.daily_submaps += 1

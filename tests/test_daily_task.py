@@ -12,10 +12,11 @@ from src.tasks.DailyTask import (
     GUILD_SIGNUP_SUCCESS_TEMPLATE,
     GUILD_SUCCESS_KEYWORDS,
     GUILD_TEMPLATE,
-    HOME_ICE_TEMPLATE,
-    HOME_RICE_TEMPLATE,
-    LOADING_TEMPLATE,
     MY_HOME_TEMPLATE,
+    DailyTask,
+)
+from src.tasks.map_trade.models import MatchResult
+from src.tasks.quick_hunt import (
     QUICK_HUNT_ADVENTURE_LABEL_PATTERNS,
     QUICK_HUNT_ADVENTURE_LIST_ROI,
     QUICK_HUNT_ADVENTURE_MAP_PATTERNS,
@@ -36,12 +37,15 @@ from src.tasks.DailyTask import (
     QUICK_HUNT_START_ROI,
     QUICK_HUNT_STONE_COUNT_ROI,
     QUICK_HUNT_STONE_LIST_ROI,
+)
+from src.tasks.QuickHuntTask import QuickHuntTask
+from src.tasks.task_vision_mixin import (
+    HOME_ICE_TEMPLATE,
+    HOME_RICE_TEMPLATE,
+    LOADING_TEMPLATE,
     REFERENCE_HEIGHT,
     REFERENCE_WIDTH,
-    DailyTask,
 )
-from src.tasks.map_trade.models import MatchResult
-from src.tasks.QuickHuntTask import QuickHuntTask
 from src.utils.image_utils import crop_relative
 
 

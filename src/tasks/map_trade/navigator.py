@@ -25,6 +25,13 @@ from src.tasks.map_trade.navigator_constants import (  # noqa: F401
     BARGAIN_SHOP_CONFIRM_POPUP_KEYWORD,
     BARGAIN_SHOP_CONFIRM_STABLE_HITS,
     CHAPTER_HOME_POINT,
+    CLASSIFY_CARD_MENU_CATEGORY_RELATIVE_ROI,
+    CLASSIFY_CARD_MENU_TITLE_RELATIVE_ROI,
+    CLASSIFY_COOKING_MATERIALS_RELATIVE_ROI,
+    CLASSIFY_COOKING_TITLE_RELATIVE_ROI,
+    CLASSIFY_LOADING_RELATIVE_ROI,
+    CLASSIFY_SHOP_TABS_RELATIVE_ROI,
+    CLASSIFY_SHOP_TITLE_RELATIVE_ROI,
     DISCOUNT_SHOP_CLOSE_DIALOG_REGION,
     DISCOUNT_SHOP_CLOSE_KEYWORDS,
     DISCOUNT_SHOP_CLOSE_POINT,
@@ -176,6 +183,12 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
     def classify(self, frame=None) -> ScreenState:
         """Classify shared map states without trade- or PVP-specific templates."""
 
+        started = monotonic()
+        state = self._classify_frame(frame)
+        self._status("界面分类耗时", f"{monotonic() - started:.3f}s")
+        return state
+
+    def _classify_frame(self, frame) -> ScreenState:
         frame = self.vision.capture() if frame is None else frame
         if self._home_confirmation_signals(frame)[0]:
             return ScreenState.HOME
@@ -200,22 +213,90 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
         if sandbox_confirmed:
             return ScreenState.SANDBOX
 
-        text = normalize_text(self.vision.simplify(self.vision.ocr_text(frame, "界面分类")))
-        if "browndust" in text:
+        loading_text = normalize_text(
+            self.vision.simplify(
+                self.vision.ocr_text(
+                    frame,
+                    "界面分类加载",
+                    relative_roi=CLASSIFY_LOADING_RELATIVE_ROI,
+                )
+            )
+        )
+        if "browndust" in loading_text:
             return ScreenState.LOADING
-        if self._shop_page_text(text):
+        shop_text = normalize_text(
+            self.vision.simplify(
+                self.vision.ocr_text(
+                    frame,
+                    "界面分类商店页",
+                    relative_roi=CLASSIFY_SHOP_TABS_RELATIVE_ROI,
+                )
+                + " "
+                + self.vision.ocr_text(
+                    frame,
+                    "界面分类商店标题",
+                    relative_roi=CLASSIFY_SHOP_TITLE_RELATIVE_ROI,
+                )
+            )
+        )
+        if self._shop_page_text(shop_text):
             return ScreenState.SHOP
-        if "移动魔法阵" in text:
+        area_map_text = normalize_text(
+            self.vision.simplify(
+                self.vision.ocr_text(
+                    frame,
+                    "界面分类传送阵",
+                    relative_roi=TELEPORT_MAP_TITLE_OCR_RELATIVE_ROI,
+                )
+            )
+        )
+        if "移动魔法阵" in area_map_text:
             return ScreenState.AREA_MAP
-        if "游戏卡珍藏" in text or "剧情游戏卡" in text:
+        card_text = normalize_text(
+            self.vision.simplify(
+                self.vision.ocr_text(
+                    frame,
+                    "界面分类卡带标题",
+                    relative_roi=CLASSIFY_CARD_MENU_TITLE_RELATIVE_ROI,
+                )
+                + " "
+                + self.vision.ocr_text(
+                    frame,
+                    "界面分类卡带页",
+                    relative_roi=CLASSIFY_CARD_MENU_CATEGORY_RELATIVE_ROI,
+                )
+            )
+        )
+        if "游戏卡珍藏" in card_text or "剧情游戏卡" in card_text:
             return ScreenState.CARD_MENU
-        if "所需材料" in text and "料理" in text:
+        cooking_text = normalize_text(
+            self.vision.simplify(
+                self.vision.ocr_text(
+                    frame,
+                    "界面分类料理标题",
+                    relative_roi=CLASSIFY_COOKING_TITLE_RELATIVE_ROI,
+                )
+                + " "
+                + self.vision.ocr_text(
+                    frame,
+                    "界面分类料理材料",
+                    relative_roi=CLASSIFY_COOKING_MATERIALS_RELATIVE_ROI,
+                )
+            )
+        )
+        if "所需材料" in cooking_text and "料理" in cooking_text:
             return ScreenState.COOKING
         return ScreenState.UNKNOWN
 
     def classify_trade(self, frame=None) -> ScreenState:
         """Classify trade-only merchant context before falling back to shared states."""
 
+        started = monotonic()
+        state = self._classify_trade_frame(frame)
+        self._status("跑商界面分类耗时", f"{monotonic() - started:.3f}s")
+        return state
+
+    def _classify_trade_frame(self, frame) -> ScreenState:
         frame = self.vision.capture() if frame is None else frame
         if self._home_confirmation_signals(frame)[0]:
             return ScreenState.HOME
@@ -235,8 +316,22 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
         if merchant_passed:
             # 折扣商店页的标题牌与商人对话共用 UI 框架，模板会同时命中。
             # 该判断只属于跑商流程；剧情箱庭和 PVP 均不得调用本方法。
-            text = normalize_text(self.vision.simplify(self.vision.ocr_text(frame, "跑商界面分类")))
-            if self._shop_page_text(text):
+            shop_text = normalize_text(
+                self.vision.simplify(
+                    self.vision.ocr_text(
+                        frame,
+                        "跑商界面分类商店页",
+                        relative_roi=CLASSIFY_SHOP_TABS_RELATIVE_ROI,
+                    )
+                    + " "
+                    + self.vision.ocr_text(
+                        frame,
+                        "跑商界面分类商店标题",
+                        relative_roi=CLASSIFY_SHOP_TITLE_RELATIVE_ROI,
+                    )
+                )
+            )
+            if self._shop_page_text(shop_text):
                 return ScreenState.SHOP
             return ScreenState.MERCHANT_DIALOG
         return self.classify(frame)

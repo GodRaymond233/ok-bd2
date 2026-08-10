@@ -4070,7 +4070,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
             )
         )
 
-    def test_sell_only_shop_entry_survives_shop_ocr_miss_after_positive_entry_click(self):
+    def test_sell_only_shop_entry_fails_when_shop_ocr_miss_after_positive_entry_click(self):
         click_ocr_results = iter((False, True))
         reference_clicks = []
         warnings = []
@@ -4082,16 +4082,60 @@ class CatalogAndSafetyTest(unittest.TestCase):
         vision = SimpleNamespace(
             click_ocr=lambda *_args, **_kwargs: next(click_ocr_results),
             click_reference=lambda *args, **kwargs: reference_clicks.append((args, kwargs)),
+            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
+            match=lambda *_args: MatchResult(-1.0, (0, 0), (0, 0)),
+            passes=lambda *_args: False,
+            threshold_for=lambda spec: spec.threshold,
+            template_brightness_ratio=lambda *_args: 0.0,
+            ocr_text=lambda *_args, **_kwargs: "",
+            simplify=lambda value: value,
         )
         navigator = Navigator(task, vision)
         navigator.wait_trade_state = lambda wanted, timeout: ScreenState.MERCHANT_DIALOG
 
         result = navigator._bargain_and_enter_shop()
 
-        self.assertTrue(result.success)
-        self.assertEqual(ScreenState.SHOP, result.state)
+        self.assertFalse(result.success)
+        self.assertEqual(ScreenState.MERCHANT_DIALOG, result.state)
         self.assertEqual([], reference_clicks)
-        self.assertTrue(any("商店页OCR未确认" in warning for warning in warnings))
+        self.assertIn("商店页OCR未确认", result.message)
+        self.assertFalse(any("商店页OCR未确认" in warning for warning in warnings))
+
+    def test_shop_entry_missing_never_clicks_blind_point(self):
+        click_ocr_calls = []
+        reference_clicks = []
+        task = SimpleNamespace(
+            config={},
+            sleep=lambda *_args: None,
+            log_warning=lambda *_args, **_kwargs: None,
+        )
+        vision = SimpleNamespace(
+            click_ocr=lambda *args, **kwargs: (
+                click_ocr_calls.append((args, kwargs)) or False
+            ),
+            click_reference=lambda *args, **kwargs: reference_clicks.append((args, kwargs)),
+            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
+            match=lambda *_args: MatchResult(-1.0, (0, 0), (0, 0)),
+            passes=lambda *_args: False,
+            threshold_for=lambda spec: spec.threshold,
+            template_brightness_ratio=lambda *_args: 0.0,
+            ocr_text=lambda *_args, **_kwargs: "",
+            simplify=lambda value: value,
+        )
+        navigator = Navigator(task, vision)
+
+        result = navigator._bargain_and_enter_shop()
+
+        self.assertFalse(result.success)
+        self.assertEqual([], reference_clicks)
+        entry_calls = [
+            call
+            for _args, kwargs in click_ocr_calls
+            for call in [kwargs]
+            if "商店入口" in str(call.get("name", ""))
+        ]
+        self.assertEqual(3, len(entry_calls))
+        self.assertIn("未识别到商店/进入商店入口", result.message)
 
     def test_story_card_state_templates_are_packaged_with_alpha_masks(self):
         template_root = ROOT / "recognition-assets" / "template-assets"
@@ -5782,7 +5826,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
             threshold_for=lambda spec: spec.threshold,
             template_brightness_ratio=lambda *_args: 0.0,
             ocr_text=lambda _frame, name, **_kwargs: (
-                "BROWN DUST II 94%" if name == "界面分类" else ""
+                "BROWN DUST II 94%" if name == "界面分类加载" else ""
             ),
             simplify=lambda value: value,
         )
@@ -5847,9 +5891,10 @@ class CatalogAndSafetyTest(unittest.TestCase):
             passes=lambda *_args: False,
             threshold_for=lambda spec: spec.threshold,
             template_brightness_ratio=lambda *_args: 0.0,
-            ocr_text=lambda _frame, name, **_kwargs: (
-                "仓库管理石怪 仓库 严加管理 天赋技能 砍价" if name == "跑商界面分类" else ""
-            ),
+            ocr_text=lambda _frame, name, **_kwargs: {
+                "跑商界面分类商店页": "购买 出售",
+                "跑商界面分类商店标题": "仓库管理石怪 仓库 严加管理 天赋技能 砍价",
+            }.get(name, ""),
             simplify=lambda value: value,
         )
         navigator = Navigator(task, vision)
@@ -5873,9 +5918,7 @@ class CatalogAndSafetyTest(unittest.TestCase):
             passes=lambda *_args: False,
             threshold_for=lambda spec: spec.threshold,
             template_brightness_ratio=lambda *_args: 0.0,
-            ocr_text=lambda _frame, name, **_kwargs: (
-                "与仓库管理石怪砍价 砍价成功率100% 取消" if name == "跑商界面分类" else ""
-            ),
+            ocr_text=lambda *_args, **_kwargs: "",
             simplify=lambda value: value,
         )
         navigator = Navigator(task, vision)
@@ -5923,26 +5966,65 @@ class CatalogAndSafetyTest(unittest.TestCase):
             passes=lambda *_args: False,
             threshold_for=lambda spec: spec.threshold,
             template_brightness_ratio=lambda *_args: 0.0,
-            ocr_text=lambda _frame, name, **_kwargs: (
-                "仓库管理石怪 仓库 严加管理 天赋技能" if name == "界面分类" else ""
-            ),
+            ocr_text=lambda _frame, name, **_kwargs: {
+                "界面分类商店页": "购买 出售",
+                "界面分类商店标题": "仓库管理石怪 仓库 严加管理 天赋技能",
+            }.get(name, ""),
             simplify=lambda value: value,
         )
         navigator = Navigator(task, vision)
 
         self.assertEqual(ScreenState.SHOP, navigator.classify())
 
+    def test_classify_area_map_card_menu_and_cooking_use_scoped_roi_ocr(self):
+        task = SimpleNamespace(config={}, info_set=lambda *_args: None)
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        failed = MatchResult(-1.0, (0, 0), (0, 0))
+        texts = {
+            "界面分类加载": "",
+            "界面分类商店页": "",
+            "界面分类商店标题": "",
+            "界面分类传送阵": "移动魔法阵",
+            "界面分类卡带标题": "",
+            "界面分类卡带页": "",
+            "界面分类料理标题": "",
+            "界面分类料理材料": "",
+        }
+        vision = SimpleNamespace(
+            capture=lambda: frame,
+            match=lambda *_args: failed,
+            passes=lambda *_args: False,
+            threshold_for=lambda spec: spec.threshold,
+            template_brightness_ratio=lambda *_args: 0.0,
+            ocr_text=lambda _frame, name, **_kwargs: texts.get(name, ""),
+            simplify=lambda value: value,
+        )
+        navigator = Navigator(task, vision)
+
+        self.assertEqual(ScreenState.AREA_MAP, navigator.classify(frame))
+        texts["界面分类传送阵"] = ""
+        texts["界面分类卡带标题"] = "游戏卡珍藏集"
+        self.assertEqual(ScreenState.CARD_MENU, navigator.classify(frame))
+        texts["界面分类卡带标题"] = ""
+        texts["界面分类料理标题"] = "料理"
+        texts["界面分类料理材料"] = "所需材料"
+        self.assertEqual(ScreenState.COOKING, navigator.classify(frame))
+
     def test_return_home_from_shop_closes_discount_shop_then_uses_home_button(self):
         actions = []
         task = SimpleNamespace(
             config={},
             operate_click=lambda x, y, after_sleep=0: actions.append(("click", x, y, after_sleep)),
+            sleep=lambda *_args: None,
             log_warning=lambda *_args, **_kwargs: None,
         )
         vision = SimpleNamespace(
             click_reference=lambda x, y, after_sleep=0: actions.append(
                 ("reference", x, y, after_sleep)
-            )
+            ),
+            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
+            match=lambda *_args: MatchResult(-1.0, (0, 0), (0, 0)),
+            passes=lambda *_args: False,
         )
         navigator = Navigator(task, vision)
         navigator.classify = lambda: ScreenState.SHOP
@@ -5986,10 +6068,14 @@ class CatalogAndSafetyTest(unittest.TestCase):
         task = SimpleNamespace(
             config={},
             operate_click=lambda *_args, **_kwargs: self.fail("未确认关闭弹窗时不得继续点击"),
+            sleep=lambda *_args: None,
             log_warning=lambda *_args, **_kwargs: None,
         )
         vision = SimpleNamespace(
-            click_reference=lambda x, y, after_sleep=0: actions.append((x, y, after_sleep))
+            click_reference=lambda x, y, after_sleep=0: actions.append((x, y, after_sleep)),
+            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
+            match=lambda *_args: MatchResult(-1.0, (0, 0), (0, 0)),
+            passes=lambda *_args: False,
         )
         states = iter((ScreenState.SHOP, ScreenState.SHOP))
         navigator = Navigator(task, vision)
@@ -6346,6 +6432,32 @@ class CatalogAndSafetyTest(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertEqual("未能进入卡带 Q_sp1", result.message)
         self.assertEqual([("Q_sp1", False)] * 3, attempts)
+
+    def test_collector_run_converts_runtime_error_to_collection_result(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            progress = ProgressStore(
+                Path(temp_dir) / "progress.json",
+                lambda: datetime(2026, 8, 3, 12, tzinfo=UTC_PLUS_8),
+            )
+            progress.load()
+            task = SimpleNamespace(
+                config={},
+                log_error=lambda *_args, **_kwargs: None,
+                log_warning=lambda *_args, **_kwargs: None,
+                info_set=lambda *_args: None,
+            )
+            collector = Collector(task, object(), object(), progress)
+
+            def boom(*_args, **_kwargs):
+                raise RuntimeError("click interrupted")
+
+            collector._run_collection = boom
+
+            result = collector.run()
+
+        self.assertFalse(result.success)
+        self.assertIn("地图采集流程异常", result.message)
+        self.assertIn("click interrupted", result.message)
 
     def test_formal_collection_runs_safe_battle_one_battle_two_then_verifies(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -8779,12 +8891,14 @@ class ProgressTest(unittest.TestCase):
             self.assertTrue(
                 all(store.state.card_verified(card.card_id) for card in COLLECTABLE_CARDS[:7])
             )
-            with self.assertRaisesRegex(RuntimeError, "daily collection limit"):
-                next_card = COLLECTABLE_CARDS[7]
+            next_card = COLLECTABLE_CARDS[7]
+            self.assertFalse(
                 store.mark_target(
                     next_card.card_id,
                     next_card.targets[0].key,
                 )
+            )
+            self.assertTrue(store.state.depleted_today)
 
     def test_collection_skill_limits_match_three_two_two_per_card(self):
         self.assertEqual(21, DAILY_ABSORB_LIMIT)
