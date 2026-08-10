@@ -1263,28 +1263,6 @@ class Trader:
         self.task.log_warning(f"卖：{entry.item}全画面多目标定位失败：{last_reason}")
         return None
 
-    def _wait_sale_item_point(
-        self,
-        entry: CalendarEntry,
-        timeout: float = 8.0,
-        interval: float = 0.5,
-    ) -> tuple[tuple[int, int], np.ndarray] | None:
-        """等待商品名与 120% 在全画面 OCR 中配对成功，返回点击点与同帧画面。"""
-
-        end_at = monotonic() + max(0.0, timeout)
-        last_reason = ""
-        while True:
-            frame = self.vision.capture()
-            point = self._locate_sale_item(entry, frame)
-            if point is not None:
-                return point, frame
-            last_reason = str(getattr(self, "_last_sale_reason", "") or "")
-            if monotonic() >= end_at:
-                break
-            self.task.sleep(interval)
-        self.task.log_warning(f"卖：{entry.item}全画面定位失败：{last_reason}")
-        return None
-
     def _locate_sale_items(
         self,
         entry: CalendarEntry,
@@ -1386,18 +1364,6 @@ class Trader:
             + "、".join(str(candidate.center) for candidate in candidates),
         )
         return candidates
-
-    def _locate_sale_item(
-        self,
-        entry: CalendarEntry,
-        frame: np.ndarray,
-    ) -> tuple[int, int] | None:
-        """Compatibility wrapper returning the first sale candidate center."""
-
-        candidates = self._locate_sale_items(entry, frame)
-        if candidates:
-            return candidates[0].center
-        return None
 
     def _sale_name_signature(
         self,
@@ -1711,16 +1677,6 @@ class Trader:
         ratio = max(0.0, min(1.0, ratio))
         left, top, right, bottom = SALE_SLIDER_REGION
         return left + ((right - left) * ratio), (top + bottom) / 2
-
-    def _confirm_sale(self) -> bool:
-        """Compatibility wrapper for callers outside the strict first-slot flow."""
-
-        if bool(self.task.config.get("出售保险", False)):
-            self.task.operate_click(*SALE_MIN_POINT, after_sleep=0.5)
-        else:
-            self.task.operate_click(*SALE_MAX_POINT, after_sleep=0.5)
-        self.task.operate_click(*SALE_CONFIRM_POINT, after_sleep=0.5)
-        return True
 
     def discover_max_price_items(self) -> list[CalendarEntry]:
         if not self.vision.click_ocr([r"价目表"], roi=(800, 60, 300, 200), name="价目表"):

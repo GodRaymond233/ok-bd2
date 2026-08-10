@@ -428,11 +428,6 @@ TELEPORT_MAP_BACKWARD_TEMPLATE = TemplateSpec(
     minimum_safe_threshold=0.95,
     min_zncc_score=0.90,
 )
-# Compatibility names used by the existing collection-map navigator. In the
-# teleport-map UI, "forward" is the left-facing arrow and "backward" is the
-# right-facing arrow.
-MAP_LEFT_TEMPLATE = TELEPORT_MAP_FORWARD_TEMPLATE
-MAP_RIGHT_TEMPLATE = TELEPORT_MAP_BACKWARD_TEMPLATE
 # Two 1920×1080 enabled teleport-map samples bottomed out at
 # 0.991/0.939/0.958 with the new inner-circle-only template. The template
 # excludes the activated outer halo and is intentionally separate from the
@@ -503,9 +498,6 @@ TELEPORT_MAP_RETURN_RELATIVE_POINT = (
     TELEPORT_MAP_RETURN_REFERENCE_POINT[0] / AREA_MAP_REFERENCE_SIZE[0],
     TELEPORT_MAP_RETURN_REFERENCE_POINT[1] / AREA_MAP_REFERENCE_SIZE[1],
 )
-# Compatibility aliases now refer to the actual teleport-map title region.
-AREA_MAP_TITLE_OCR_REFERENCE_ROI = TELEPORT_MAP_TITLE_OCR_REFERENCE_ROI
-AREA_MAP_TITLE_OCR_RELATIVE_ROI = TELEPORT_MAP_TITLE_OCR_RELATIVE_ROI
 AREA_MAP_TELEPORT_BRIGHT_RADIUS_RATIO = 24 / 52
 AREA_MAP_TELEPORT_BRIGHT_MINIMUM_GRAY = 200
 AREA_MAP_TELEPORT_BRIGHT_MAXIMUM_SPREAD = 35
@@ -1359,22 +1351,6 @@ class Navigator:
         )
         return None
 
-    def locate_story_card_for_probe(
-        self,
-        card_id: str,
-        scan_steps: int = PROBE_QUICK_SWITCH_SCROLL_STEPS,
-    ) -> ProbedStoryCard | NavigationResult:
-        """Compatibility wrapper returning an explicit failure to probe tasks."""
-
-        located = self.locate_probe_story_card(card_id, scan_steps=scan_steps)
-        if located is not None:
-            return located
-        return NavigationResult(
-            False,
-            ScreenState.CARD_MENU,
-            f"未确认剧情游戏卡{card_id}角标及完整完成度区域",
-        )
-
     def enter_probe_story_card(self, probed: ProbedStoryCard) -> NavigationResult:
         """Click the revalidated probe center and confirm a stable sandbox."""
 
@@ -1551,15 +1527,7 @@ class Navigator:
     ) -> str:
         """Classify one skill slot from structure plus masked HSV semantics."""
 
-        color_ratios = getattr(self.vision, "template_hsv_color_ratios", None)
-        if color_ratios is None:
-            # Lightweight test doubles may only provide structural evidence.
-            if selected_passed and not unselected_passed:
-                return "selected"
-            if unselected_passed and not selected_passed:
-                return "unselected"
-            return "unknown"
-
+        color_ratios = self.vision.template_hsv_color_ratios
         candidates = (
             (
                 selected_spec,
@@ -2474,17 +2442,9 @@ class Navigator:
         # continue with the existing safe interaction/navigation fallback.
         return False
 
-    def open_teleport_map_from_sandbox(
-        self,
-        map_open_point: tuple[float, float] = AREA_MAP_OPEN_RELATIVE_POINT,
-    ) -> NavigationResult:
-        """Open the teleport map through interaction first, then skill fallback.
+    def open_teleport_map_from_sandbox(self) -> NavigationResult:
+        """Open the teleport map through interaction first, then skill fallback."""
 
-        ``map_open_point`` remains in the signature for callers that still pass
-        it for compatibility; this entry never uses that fixed point.
-        """
-
-        del map_open_point
         self._status("导航状态", "优先识别箱庭传送阵交互按钮")
         if self._click_sandbox_teleport_interaction():
             opened = self._wait_for_sandbox_map_open(
@@ -2849,11 +2809,6 @@ class Navigator:
             status_name="传送阵地图传送阵候选",
         )
 
-    def _area_map_teleports(self, frame: np.ndarray) -> tuple[MatchResult, ...]:
-        """Compatibility alias for the teleport-map page detector."""
-
-        return self._teleport_map_teleports(frame)
-
     @staticmethod
     def _select_map_teleport(teleports: tuple[MatchResult, ...]) -> MatchResult | None:
         """Choose the strongest already-validated teleport when several are visible."""
@@ -2901,7 +2856,7 @@ class Navigator:
             resolved_target_key=target_keys[0] if len(target_keys) == 1 else None,
             left_arrow=self._optional_match(frame, TELEPORT_MAP_FORWARD_TEMPLATE),
             right_arrow=self._optional_match(frame, TELEPORT_MAP_BACKWARD_TEMPLATE),
-            teleports=self._area_map_teleports(frame),
+            teleports=self._teleport_map_teleports(frame),
             overlap_arrow=self._optional_match(frame, OVERLAP_ARROW_TEMPLATE),
             back_button=self._optional_match(frame, AREA_MAP_BACK_TEMPLATE),
             confirmation_text=confirmation_text,

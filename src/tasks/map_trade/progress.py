@@ -464,9 +464,6 @@ class ProgressStore:
             self.action_key(card_id, map_role, action)
         )
 
-    # Alias used by callers that want to make the idempotence explicit.
-    action_record = get_action_record
-
     def _effective_used(self, action: str) -> int:
         state = self._require_state()
         action_name = self._action_name(action)
@@ -638,11 +635,6 @@ class ProgressStore:
             return True
         return False
 
-    # Descriptive aliases keep the ledger convenient for tests/integrations
-    # while the canonical names above remain explicit in the collector.
-    reserve_action = arm_action
-    mark_clicked = mark_action_clicked
-
     def mark_action_preexisting_used(
         self,
         card_id: str,
@@ -741,8 +733,6 @@ class ProgressStore:
             record["observed"] = list(observed)
         self.save()
         return True
-
-    mark_local_done = mark_action_local_done
 
     def mark_action_blocked(
         self,
@@ -888,9 +878,6 @@ class ProgressStore:
         self.save()
         return settled
 
-    # More explicit public name for callers and tests.
-    settle_pending_actions = reconcile_pending
-
     def pending_count(self, action: str | None = None) -> int:
         records = self.pending_action_records()
         if action is None:
@@ -902,8 +889,6 @@ class ProgressStore:
         self,
         card_id: str,
         target_key: str,
-        *,
-        require_actions: bool = True,
     ) -> bool:
         state = self._require_state()
         if card_id not in VALID_CARD_IDS:
@@ -915,7 +900,7 @@ class ProgressStore:
         if target_key in completed:
             self._cover_action_records(card_id, target_key)
             return False
-        if require_actions and not self._target_actions_ready(card_id, target_key):
+        if not self._target_actions_ready(card_id, target_key):
             raise RuntimeError(
                 f"{card_id}/{target_key} requires durable local action records"
             )

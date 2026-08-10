@@ -126,11 +126,6 @@ class SkillExecutionResult:
     # pending.  Keep the action names visible to the caller for status and
     # final-map warnings without changing the existing positional interface.
     pending_actions: tuple[str, ...] = ()
-    # True only when the formal collector persisted every role-required
-    # action record before returning success.  Legacy test/integration
-    # shims can leave this false and explicitly use ProgressStore's
-    # compatibility mark_target path.
-    durable_actions: bool = False
 
 
 @dataclass(frozen=True)
@@ -305,7 +300,6 @@ class Collector:
                 self.progress.mark_target(
                     card.card_id,
                     main_target.key,
-                    require_actions=main_result.durable_actions,
                 )
                 completed.add(main_target.key)
                 completed_this_run += 1
@@ -363,7 +357,6 @@ class Collector:
                 self.progress.mark_target(
                     card.card_id,
                     battle_one.key,
-                    require_actions=battle_result.durable_actions,
                 )
                 completed.add(battle_one.key)
                 completed_this_run += 1
@@ -411,7 +404,6 @@ class Collector:
                 self.progress.mark_target(
                     card.card_id,
                     battle_two.key,
-                    require_actions=battle_result.durable_actions,
                 )
                 completed.add(battle_two.key)
                 completed_this_run += 1
@@ -850,11 +842,11 @@ class Collector:
     def _start_search(
         self,
         *,
-        map_role: CollectionMapRole | None = None,
+        map_role: CollectionMapRole,
     ) -> SearchCountdownSession | SkillExecutionResult:
         menu_confirmed = self._open_skill_menu(
             (SEARCH_ICON, ABSORB_ICON),
-            allow_group_one_recovery=isinstance(map_role, CollectionMapRole),
+            allow_group_one_recovery=True,
         )
         if not menu_confirmed:
             return SkillExecutionResult(False, message="未确认安全区技能栏")
@@ -933,12 +925,12 @@ class Collector:
         self,
         actions: tuple[SkillAction, ...],
         *,
-        card_id: str | None = None,
-        map_role: CollectionMapRole | None = None,
+        card_id: str,
+        map_role: CollectionMapRole,
     ) -> SkillExecutionResult:
         menu_confirmed = self._open_skill_menu(
             tuple(action.icon for action in actions),
-            allow_group_one_recovery=isinstance(map_role, CollectionMapRole),
+            allow_group_one_recovery=True,
         )
         if not menu_confirmed:
             return SkillExecutionResult(False, message="未确认采集技能栏")
@@ -953,7 +945,6 @@ class Collector:
                     depleted or result.depleted,
                     result.message,
                     tuple(pending_actions) + result.pending_actions,
-                    result.durable_actions,
                 )
             depleted = depleted or result.depleted
             pending_actions.extend(result.pending_actions)
@@ -965,26 +956,20 @@ class Collector:
             depleted,
             message,
             tuple(pending_actions),
-            bool(card_id and isinstance(map_role, CollectionMapRole)),
         )
 
     def _use_action(
         self,
         action: SkillAction,
         *,
-        card_id: str | None = None,
-        map_role: CollectionMapRole | None = None,
+        card_id: str,
+        map_role: CollectionMapRole,
     ) -> SkillExecutionResult:
-        formal = bool(card_id and isinstance(map_role, CollectionMapRole))
-        existing = (
-            self.progress.get_action_record(card_id, map_role, action.name)
-            if formal
-            else None
-        )
+        existing = self.progress.get_action_record(card_id, map_role, action.name)
         # A process restart may leave an ARMED/CLICKED intent.  Even when the
         # icon is bright again we must not click a second time; a later USED
         # frame can safely reconcile the intent instead.
-        if formal and existing is not None:
+        if existing is not None:
             existing_state = str(existing.get("state", existing.get("status", "")))
             if existing_state in {
                 "local_done",
@@ -1004,10 +989,10 @@ class Collector:
                 )
         frame, detection = self._detect_action_icon(
             action.icon,
-            require_used_stable=formal,
+            require_used_stable=True,
         )
         self._report_icon_detection(action, detection)
-        if formal and existing is not None and existing_state in {
+        if existing is not None and existing_state in {
             "armed",
             "clicked",
             "blocked",
@@ -1040,11 +1025,9 @@ class Collector:
                 return SkillExecutionResult(False, message=f"未识别到{action.name}图标")
             return SkillExecutionResult(False, message=f"{action.name}图标状态未知")
 
-        # In the formal card flow, a stable dimmed icon is proof that this
-        # map action was already consumed.  Complete locally without a click.
-        # Compatibility helpers that omit ``card_id`` retain the historical
-        # feedback-based path used by focused unit tests.
-        if formal and detection.state is ActionIconState.USED:
+        # A stable dimmed icon is proof that this map action was already
+        # consumed.  Complete locally without a click.
+        if detection.state is ActionIconState.USED:
             # Capture the baseline before a checkpoint can settle older
             # records or a later target commit raises the local lower bound.
             preexisting_baseline = self.progress.trusted_action_baseline(action.name)
@@ -1067,14 +1050,11 @@ class Collector:
                 # settling an earlier pending action or updating the global
                 # absolute baseline.
                 self._last_count_window_stable = False
-                try:
-                    checkpoint = self._read_count_window(
-                        action,
-                        detection,
-                        allow_single=True,
-                    )
-                except TypeError:
-                    checkpoint = self._read_count_window(action, detection)
+                checkpoint = self._read_count_window(
+                    action,
+                    detection,
+                    allow_single=True,
+                )
                 checkpoint_stable = bool(self._last_count_window_stable)
                 if checkpoint is not None and checkpoint_stable:
                     settled = self.progress.reconcile_pending(action.name, checkpoint)
@@ -1150,33 +1130,32 @@ class Collector:
         if before is None:
             return SkillExecutionResult(False, message=f"{action.name}次数 OCR 失败")
         self._status(f"{action.name}次数", f"{before[0]}/{before[1]}")
-        if formal:
-            remaining_pending = self.progress.pending_count(action.name)
-            if remaining_pending:
-                checkpoint_stable = bool(self._last_count_window_stable)
-                if not checkpoint_stable:
-                    return SkillExecutionResult(
-                        False,
-                        message=(
-                            f"{action.name}次数窗口不稳定，"
-                            f"仍有{remaining_pending}条待对账动作，本次不执行新点击"
-                        ),
-                    )
-                settled = self.progress.reconcile_pending(action.name, before)
-                if settled:
-                    self._status(
-                        f"{action.name}次数对账",
-                        f"明亮帧结算 {settled} 条待对账动作",
-                    )
-                remaining_pending = self.progress.pending_count(action.name)
-            if remaining_pending:
+        remaining_pending = self.progress.pending_count(action.name)
+        if remaining_pending:
+            checkpoint_stable = bool(self._last_count_window_stable)
+            if not checkpoint_stable:
                 return SkillExecutionResult(
                     False,
                     message=(
-                        f"{action.name}仍有{remaining_pending}条待对账动作，"
-                        "本次不执行新点击"
+                        f"{action.name}次数窗口不稳定，"
+                        f"仍有{remaining_pending}条待对账动作，本次不执行新点击"
                     ),
                 )
+            settled = self.progress.reconcile_pending(action.name, before)
+            if settled:
+                self._status(
+                    f"{action.name}次数对账",
+                    f"明亮帧结算 {settled} 条待对账动作",
+                )
+            remaining_pending = self.progress.pending_count(action.name)
+        if remaining_pending:
+            return SkillExecutionResult(
+                False,
+                message=(
+                    f"{action.name}仍有{remaining_pending}条待对账动作，"
+                    "本次不执行新点击"
+                ),
+            )
         if detection.state is ActionIconState.AVAILABLE and before[0] >= before[1]:
             return SkillExecutionResult(
                 False,
@@ -1184,7 +1163,7 @@ class Collector:
                 f"{action.name}次数已达到 {before[0]}/{before[1]}，当前地图未完成",
             )
 
-        if formal and not self.progress.arm_action(
+        if not self.progress.arm_action(
             card_id,
             map_role,
             action.name,
@@ -1201,31 +1180,24 @@ class Collector:
             frame.shape,
             after_sleep=ACTION_AFTER_CLICK_SECONDS,
         )
-        if formal:
-            # CLICKED is durable only after the recognized-center click
-            # returns successfully.  A crash/exception during the click
-            # therefore leaves the pre-click ARMED intent for safe recovery.
-            self.progress.mark_action_clicked(card_id, map_role, action.name)
+        # CLICKED is durable only after the recognized-center click
+        # returns successfully.  A crash/exception during the click
+        # therefore leaves the pre-click ARMED intent for safe recovery.
+        self.progress.mark_action_clicked(card_id, map_role, action.name)
         feedback = self._read_action_feedback(action)
         self._wait_after_feedback_match(action, feedback)
         post_frame, post_detection = self._detect_action_icon(
             action.icon,
-            require_used_stable=formal,
+            require_used_stable=True,
         )
         self._report_icon_detection(action, post_detection)
         count_detection = post_detection if post_detection.present else detection
         self._last_count_window_stable = False
-        try:
-            after = self._read_count_window(
-                action,
-                count_detection,
-                allow_single=True,
-            )
-        except TypeError:
-            # Focused integrations may replace the legacy two-argument
-            # helper; preserve that interface while retaining best-effort
-            # semantics in the production implementation.
-            after = self._read_count_window(action, count_detection)
+        after = self._read_count_window(
+            action,
+            count_detection,
+            allow_single=True,
+        )
         post_window_stable = bool(self._last_count_window_stable)
         icon_used = post_detection.state is ActionIconState.USED
         exact_single_increment = bool(
@@ -1235,39 +1207,27 @@ class Collector:
         )
         if after is not None:
             self._status(f"{action.name}次数", f"{after[0]}/{after[1]}")
-            if formal and post_window_stable:
+            if post_window_stable:
                 self.progress.reconcile_pending(action.name, after)
 
         # Explicit failure wins over a stale/bright post frame.  Absorb's
         # positive token is accepted only with a stable USED post state; a
         # negative token is never converted into success.
-        if (
-            not formal
-            and detection.state is ActionIconState.USED
-            and after is not None
-            and after == before
-            and icon_used
-            and feedback.outcome == "failure"
-        ):
-            self._status(f"{action.name}状态", "当前地图已使用，失败反馈已确认")
-            return SkillExecutionResult(True, after[0] >= after[1])
-
         if feedback.outcome == "failure":
-            if formal:
-                if post_detection.state is ActionIconState.AVAILABLE:
-                    self.progress.mark_action_void(
-                        card_id,
-                        map_role,
-                        action.name,
-                        feedback.text,
-                    )
-                else:
-                    self.progress.mark_action_blocked(
-                        card_id,
-                        map_role,
-                        action.name,
-                        feedback.text or "失败反馈与图标状态冲突",
-                    )
+            if post_detection.state is ActionIconState.AVAILABLE:
+                self.progress.mark_action_void(
+                    card_id,
+                    map_role,
+                    action.name,
+                    feedback.text,
+                )
+            else:
+                self.progress.mark_action_blocked(
+                    card_id,
+                    map_role,
+                    action.name,
+                    feedback.text or "失败反馈与图标状态冲突",
+                )
             return SkillExecutionResult(
                 False,
                 (after[0] >= after[1]) if after is not None else False,
@@ -1276,47 +1236,44 @@ class Collector:
 
         feedback_success = feedback.outcome == "success"
         if action.name == "吸收" and feedback.outcome is None and feedback.text:
-            # Keep legacy OCR-tolerant behavior for frames whose positive
-            # token is not yet fully calibrated, while still requiring a
-            # meaningful positive-token overlap in formal runs.  The exact
-            # ``吸收周围的拾取物`` token normally sets ``outcome=success``;
-            # compatibility helpers may still pass short legacy text.
+            # A meaningful positive-token overlap is still required when the
+            # engine does not set ``outcome=success``.  The exact
+            # ``吸收周围的拾取物`` token normally sets ``outcome=success``.
             overlap = self._feedback_character_ratio(
                 feedback.text,
                 ACTION_SUCCESS_FEEDBACK["吸收"][0],
             )
-            feedback_success = (not formal) or overlap >= 0.50
+            feedback_success = overlap >= 0.50
             if feedback_success:
                 self._status("吸收成功反馈待标定", feedback.text)
         if icon_used and feedback_success:
             pending = after is None
-            if formal:
-                # A valid absolute snapshot is settled immediately; any
-                # dim/bare/invalid post OCR remains a durable pending action.
-                trusted_post = post_window_stable or exact_single_increment
-                if (
-                    after is not None
-                    and after[1] == before[1]
-                    and after[0] >= before[0] + 1
-                    and trusted_post
-                ):
-                    self.progress.mark_action_local_done(
-                        card_id,
-                        map_role,
-                        action.name,
-                        pending=False,
-                        observed=after,
-                    )
-                    pending = False
-                else:
-                    self.progress.mark_action_local_done(
-                        card_id,
-                        map_role,
-                        action.name,
-                        pending=True,
-                        observed=after,
-                    )
-                    pending = True
+            # A valid absolute snapshot is settled immediately; any
+            # dim/bare/invalid post OCR remains a durable pending action.
+            trusted_post = post_window_stable or exact_single_increment
+            if (
+                after is not None
+                and after[1] == before[1]
+                and after[0] >= before[0] + 1
+                and trusted_post
+            ):
+                self.progress.mark_action_local_done(
+                    card_id,
+                    map_role,
+                    action.name,
+                    pending=False,
+                    observed=after,
+                )
+                pending = False
+            else:
+                self.progress.mark_action_local_done(
+                    card_id,
+                    map_role,
+                    action.name,
+                    pending=True,
+                    observed=after,
+                )
+                pending = True
             return SkillExecutionResult(
                 True,
                 (after[0] >= after[1]) if after is not None else False,
@@ -1335,17 +1292,6 @@ class Collector:
                 f"feedback={feedback.outcome or 'unknown'}, "
                 f"text={feedback.text or '-'}"
             ),
-        )
-
-    def _use_skills(self) -> SkillExecutionResult:
-        """Compatibility helper for focused skill tests; formal flow is role-specific."""
-
-        search = self._start_search(map_role=CollectionMapRole.MAIN_AREA)
-        if isinstance(search, SkillExecutionResult):
-            return search
-        return self._use_actions(
-            (ABSORB_ACTION, SUMMON_ACTION),
-            map_role=CollectionMapRole.MAIN_AREA,
         )
 
     def _report_icon_detection(

@@ -437,7 +437,7 @@ class MapCollectionProbeTaskTest(unittest.TestCase):
                 return NavigationResult(True, ScreenState.CARD_MENU, "ready")
 
             @staticmethod
-            def locate_story_card_for_probe(card_id, *, scan_steps):
+            def locate_probe_story_card(card_id, *, scan_steps):
                 self.assertEqual(30, scan_steps)
                 calls["locate"].append(card_id)
                 card = CARD_BY_ID[card_id]
@@ -532,10 +532,10 @@ class MapCollectionProbeTaskTest(unittest.TestCase):
             )
 
             @staticmethod
-            def locate_story_card_for_probe(card_id, **_kwargs):
+            def locate_probe_story_card(card_id, **_kwargs):
                 located.append(card_id)
                 if card_id == "Q_sp2":
-                    return NavigationResult(False, ScreenState.CARD_MENU, "missing two")
+                    return None
                 card = CARD_BY_ID[card_id]
                 return ProbedStoryCard(
                     LocatedStoryCard(card, frame, _badge(card.number)),

@@ -557,13 +557,13 @@ class BD2MapCollectionProbeTask(MapAutomationTaskBase):
             results.append(value)
             self.info_set("当前阶段", f"读取并进入 {card.card_id}（{index}/{len(cards)}）")
 
-            inspected = navigator.locate_story_card_for_probe(
+            inspected = navigator.locate_probe_story_card(
                 card.card_id,
                 scan_steps=scroll_steps,
             )
-            if isinstance(inspected, NavigationResult):
+            if inspected is None:
                 value["status"] = "card_not_found"
-                value["error"] = inspected.message
+                value["error"] = "未确认剧情游戏卡角标及完整完成度区域"
                 break
 
             completion_value = _completion_observation(
