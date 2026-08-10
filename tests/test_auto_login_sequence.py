@@ -15,6 +15,7 @@ from src.tasks.trigger.AutoLoginTask import (
     AutoLoginTask,
     MatchResult,
 )
+from src.utils import task_vision
 
 
 class AutoLoginSequenceTest(unittest.TestCase):
@@ -62,7 +63,7 @@ class AutoLoginSequenceTest(unittest.TestCase):
 
         def fake_match(_frame, spec):
             calls.append(spec.name)
-            return MatchResult(-1.0, -1.0, (0, 0), (0, 0))
+            return MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
 
         task._match = fake_match
 
@@ -85,10 +86,10 @@ class AutoLoginSequenceTest(unittest.TestCase):
         def fake_match(_frame, spec):
             calls.append(spec.name)
             if spec is HOME_BUTTON_TEMPLATE:
-                return MatchResult(0.9, 0.9, (0, 0), (1, 1))
+                return MatchResult(0.9, (0, 0), (1, 1), pixel_score=0.9)
             if spec is LOADING_TEMPLATE:
                 self.fail("loading should not be checked after home is found")
-            return MatchResult(-1.0, -1.0, (0, 0), (0, 0))
+            return MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
 
         task._match = fake_match
         task._clear_popups_until_home = lambda *_args, **_kwargs: False
@@ -110,13 +111,13 @@ class AutoLoginSequenceTest(unittest.TestCase):
         def fake_match(_frame, spec):
             calls.append(spec.name)
             if spec is BROWNDUSTX_TEMPLATE:
-                return MatchResult(0.9, 0.9, (0, 0), (1, 1))
+                return MatchResult(0.9, (0, 0), (1, 1), pixel_score=0.9)
             if spec is CONFIRM_TEMPLATE:
-                return MatchResult(-1.0, -1.0, (0, 0), (0, 0))
+                return MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
             if spec is TOUCH_TO_START_TEMPLATE:
-                return MatchResult(-1.0, -1.0, (0, 0), (0, 0))
+                return MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
             if spec in HOME_BUTTON_TEMPLATES:
-                return MatchResult(-1.0, -1.0, (0, 0), (0, 0))
+                return MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
             self.fail(f"unexpected match: {spec.name}")
 
         task._match = fake_match
@@ -161,11 +162,11 @@ class AutoLoginSequenceTest(unittest.TestCase):
 
         def fake_match(_frame, spec):
             if spec in (BROWNDUSTX_TEMPLATE, TOUCH_TO_START_TEMPLATE):
-                return MatchResult(-1.0, -1.0, (0, 0), (0, 0))
+                return MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
             if spec is HOME_BUTTON_TEMPLATE:
-                return MatchResult(0.9, 0.9, (0, 0), (1, 1))
+                return MatchResult(0.9, (0, 0), (1, 1), pixel_score=0.9)
             if spec in HOME_BUTTON_TEMPLATES:
-                return MatchResult(-1.0, -1.0, (0, 0), (0, 0))
+                return MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
             self.fail(f"unexpected match: {spec.name}")
 
         task._match = fake_match
@@ -185,8 +186,8 @@ class AutoLoginSequenceTest(unittest.TestCase):
 
         def fake_match(_frame, spec):
             if spec is HOME_BUTTON_TEMPLATE:
-                return MatchResult(0.9, 0.9, (0, 0), (1, 1))
-            return MatchResult(-1.0, -1.0, (0, 0), (0, 0))
+                return MatchResult(0.9, (0, 0), (1, 1), pixel_score=0.9)
+            return MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
 
         task._match = fake_match
 
@@ -205,13 +206,13 @@ class AutoLoginSequenceTest(unittest.TestCase):
         def fake_match(_frame, spec):
             calls.append(spec.name)
             if spec is BROWNDUSTX_TEMPLATE:
-                return MatchResult(0.54, 0.96, (0, 0), (1, 1))
+                return MatchResult(0.54, (0, 0), (1, 1), pixel_score=0.96)
             if spec is CONFIRM_TEMPLATE:
-                return MatchResult(-1.0, -1.0, (0, 0), (0, 0))
+                return MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
             if spec is TOUCH_TO_START_TEMPLATE:
-                return MatchResult(-1.0, -1.0, (0, 0), (0, 0))
+                return MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
             if spec in HOME_BUTTON_TEMPLATES:
-                return MatchResult(-1.0, -1.0, (0, 0), (0, 0))
+                return MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
             self.fail(f"unexpected match: {spec.name}")
 
         task._match = fake_match
@@ -237,14 +238,14 @@ class AutoLoginSequenceTest(unittest.TestCase):
         task._is_browndustx_confirm = lambda _frame, _confirm: True
         task._sleep_after_recognition = lambda: None
         clicks = []
-        confirm = MatchResult(0.9, 0.9, (1000, 800), (240, 80))
+        confirm = MatchResult(0.9, (1000, 800), (240, 80), pixel_score=0.9)
 
         def fake_match(_frame, spec):
             if spec is BROWNDUSTX_TEMPLATE:
-                return MatchResult(0.9, 0.9, (0, 0), (1, 1))
+                return MatchResult(0.9, (0, 0), (1, 1), pixel_score=0.9)
             if spec is CONFIRM_TEMPLATE:
                 return confirm
-            return MatchResult(-1.0, -1.0, (0, 0), (0, 0))
+            return MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
 
         task._match = fake_match
         task.operate_click = lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep))
@@ -261,12 +262,12 @@ class AutoLoginSequenceTest(unittest.TestCase):
         task._is_browndustx_confirm = lambda _frame, _confirm: True
         task._sleep_after_recognition = lambda: None
         clicks = []
-        confirm = MatchResult(0.99, 0.99, (650, 685), (606, 76))
+        confirm = MatchResult(0.99, (650, 685), (606, 76), pixel_score=0.99)
 
         def fake_match(_frame, spec):
             if spec is CONFIRM_TEMPLATE:
                 return confirm
-            return MatchResult(-1.0, -1.0, (0, 0), (0, 0))
+            return MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
 
         task._match = fake_match
         task.operate_click = lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep))
@@ -281,11 +282,19 @@ class AutoLoginSequenceTest(unittest.TestCase):
 
         self.assertEqual(
             0.0,
-            AutoLoginTask._candidate_template_threshold(task, BROWNDUSTX_TEMPLATE),
+            task_vision.resolve_match_threshold(
+                BROWNDUSTX_TEMPLATE,
+                task.config,
+                for_matching=True,
+            ),
         )
         self.assertEqual(
             0.82,
-            AutoLoginTask._candidate_template_threshold(task, CONFIRM_TEMPLATE),
+            task_vision.resolve_match_threshold(
+                CONFIRM_TEMPLATE,
+                task.config,
+                for_matching=True,
+            ),
         )
 
     def test_confirm_ocr_fallback_clicks_exact_confirm_with_browndustx_context(self):
@@ -293,12 +302,7 @@ class AutoLoginSequenceTest(unittest.TestCase):
         task._state = "waiting"
         task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
         task._sleep_after_recognition = lambda: None
-        task._match = lambda _frame, _spec: MatchResult(
-            -1.0,
-            -1.0,
-            (0, 0),
-            (0, 0),
-        )
+        task._match = lambda _frame, _spec: MatchResult(-1.0, (0, 0), (0, 0))
         task.ocr = lambda *_args, **_kwargs: [
             self._ocr_box("~ BrownDustX 2.28.13 ~", 800, 350, 280, 40),
             self._ocr_box("CONFIRM", 900, 735, 110, 35),
@@ -316,12 +320,7 @@ class AutoLoginSequenceTest(unittest.TestCase):
         task._state = "waiting_update"
         task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
         task._sleep_after_recognition = lambda: None
-        task._match = lambda _frame, _spec: MatchResult(
-            -1.0,
-            -1.0,
-            (0, 0),
-            (0, 0),
-        )
+        task._match = lambda _frame, _spec: MatchResult(-1.0, (0, 0), (0, 0))
         task.ocr = lambda *_args, **_kwargs: [
             self._ocr_box("下载", 930, 300, 65, 38),
             self._ocr_box("将下载游戏所需数据。", 850, 360, 200, 30),
@@ -362,12 +361,7 @@ class AutoLoginSequenceTest(unittest.TestCase):
         task = self._task()
         task._state = "downloading"
         task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        task._match = lambda _frame, _spec: MatchResult(
-            -1.0,
-            -1.0,
-            (0, 0),
-            (0, 0),
-        )
+        task._match = lambda _frame, _spec: MatchResult(-1.0, (0, 0), (0, 0))
         task.ocr = lambda *_args, **_kwargs: [
             self._ocr_box("正在下载", 100, 960, 90, 30),
             self._ocr_box("0.11%", 1740, 965, 75, 30),
@@ -422,8 +416,8 @@ class AutoLoginSequenceTest(unittest.TestCase):
 
         def fake_match(_frame, spec):
             if spec is TOUCH_TO_START_TEMPLATE:
-                return MatchResult(0.92, 0.92, (700, 600), (400, 80))
-            return MatchResult(-1.0, -1.0, (0, 0), (0, 0))
+                return MatchResult(0.92, (700, 600), (400, 80), pixel_score=0.92)
+            return MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
 
         task._match = fake_match
         clicks = []
@@ -443,12 +437,7 @@ class AutoLoginSequenceTest(unittest.TestCase):
         task.trigger_interval = 0
         task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
         task.ocr = lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("ocr failed"))
-        task._match = lambda _frame, _spec: MatchResult(
-            -1.0,
-            -1.0,
-            (0, 0),
-            (0, 0),
-        )
+        task._match = lambda _frame, _spec: MatchResult(-1.0, (0, 0), (0, 0))
 
         AutoLoginTask.run(task)
 
@@ -478,9 +467,9 @@ class AutoLoginSequenceTest(unittest.TestCase):
 
         def fake_match(_frame, spec):
             if spec in HOME_BUTTON_TEMPLATES:
-                return MatchResult(0.72, 0.72, (120, 130), (90, 90))
+                return MatchResult(0.72, (120, 130), (90, 90), pixel_score=0.72)
             if spec is LOADING_TEMPLATE:
-                return MatchResult(-1.0, -1.0, (0, 0), (0, 0))
+                return MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
             self.fail(f"unexpected match: {spec.name}")
 
         task._match = fake_match
@@ -501,7 +490,12 @@ class AutoLoginSequenceTest(unittest.TestCase):
         task._home_brightness_ratio = lambda _frame: 0.235
         task._sleep_after_recognition = lambda: None
         clicks = []
-        task._match = lambda _frame, _spec: MatchResult(0.72, 0.72, (120, 130), (90, 90))
+        task._match = lambda _frame, _spec: MatchResult(
+            0.72,
+            (120, 130),
+            (90, 90),
+            pixel_score=0.72,
+        )
         task.operate_click = lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep))
         task.send_key = lambda *_args, **_kwargs: self.fail("popup clearing must not send keys")
 
@@ -520,7 +514,12 @@ class AutoLoginSequenceTest(unittest.TestCase):
         task._home_brightness_ratio = lambda _frame: 0.235
         task._sleep_after_recognition = lambda: None
         clicks = []
-        task._match = lambda _frame, _spec: MatchResult(0.40, 0.40, (120, 130), (90, 90))
+        task._match = lambda _frame, _spec: MatchResult(
+            0.40,
+            (120, 130),
+            (90, 90),
+            pixel_score=0.40,
+        )
         task.operate_click = lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep))
         task.send_key = lambda *_args, **_kwargs: self.fail("popup clearing must not send keys")
 

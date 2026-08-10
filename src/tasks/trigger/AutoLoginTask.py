@@ -1,5 +1,4 @@
 import re
-from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
 
@@ -8,26 +7,16 @@ import numpy as np
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task
+from src.tasks.map_trade.models import MatchResult, TemplateSpec
+from src.utils import task_vision
 from src.utils.home_confirmation import (
     HOME_GACHA_OCR_RELATIVE_ROI,
     home_confirmation_passes,
 )
 from src.utils.image_utils import (
-    best_pixel_valid_match,
-    candidate_scales,
     crop_relative,
-    pixel_similarity,
-    resize_mask,
-    resize_template,
-    template_match_response,
-    to_gray,
 )
 from src.utils.ocr_utils import normalize_ocr_text
-from src.utils.template_resolution import (
-    offline_template_requires_green_mask,
-    offline_template_scale,
-    offline_template_search_region,
-)
 
 REFERENCE_WIDTH = 1920
 REFERENCE_HEIGHT = 1080
@@ -37,25 +26,6 @@ PRELOGIN_STATES = frozenset({"waiting", "browndustx", "waiting_update", "downloa
 DOWNLOAD_PROGRESS_PATTERN = re.compile(
     r"(?<!\d)(?:100(?:[.,]0+)?|\d{1,2}(?:[.,]\d+)?)\s*[%％]"
 )
-
-
-@dataclass(frozen=True)
-class TemplateSpec:
-    name: str
-    file_name: str
-    threshold_key: str
-    default_threshold: float
-    candidate_threshold: float | None = None
-    crop: tuple[float, float, float, float] | None = None
-    green_mask: bool = False
-
-
-@dataclass(frozen=True)
-class MatchResult:
-    score: float
-    pixel_score: float
-    position: tuple[int, int]
-    size: tuple[int, int]
 
 
 class AutoLoginTask(BaseBD2Task):
@@ -658,49 +628,20 @@ class AutoLoginTask(BaseBD2Task):
         frame,
         spec: TemplateSpec,
     ) -> float:
-        template = self._load_template(spec)
-        mask = self._load_template_mask(spec)
-        frame_gray = self._to_gray(frame)
-        frame_height, frame_width = frame_gray.shape[:2]
-        scale = offline_template_scale(spec.file_name, frame_width, frame_height)
-        template_height, template_width = template.shape[:2]
-        roi_width = max(8, round(template_width * scale))
-        roi_height = max(8, round(template_height * scale))
-        center_x = round(frame_width * self._percent_config("小屋按钮点击 X 百分比"))
-        center_y = round(frame_height * self._percent_config("小屋按钮点击 Y 百分比"))
-        left = max(0, center_x - roi_width // 2)
-        top = max(0, center_y - roi_height // 2)
-        right = min(frame_width, left + roi_width)
-        bottom = min(frame_height, top + roi_height)
-        region = frame_gray[top:bottom, left:right]
-        if region.size == 0:
-            return 0.0
-
-        scaled_template = self._resize_template(template, scale)
-        scaled_mask = self._resize_mask(mask, scale)
-        match_height = min(region.shape[0], scaled_template.shape[0])
-        match_width = min(region.shape[1], scaled_template.shape[1])
-        if match_height <= 0 or match_width <= 0:
-            return 0.0
-        region = region[:match_height, :match_width]
-        scaled_template = scaled_template[:match_height, :match_width]
-        if scaled_mask is not None:
-            scaled_mask = scaled_mask[:match_height, :match_width]
-            valid = scaled_mask > 0
-            if not np.any(valid):
-                return 0.0
-            template_mean = float(np.mean(scaled_template[valid]))
-            region_mean = float(np.mean(region[valid]))
-        else:
-            template_mean = float(np.mean(scaled_template))
-            region_mean = float(np.mean(region))
-        if template_mean <= 0:
-            return 0.0
-        return float(region_mean / template_mean)
+        return task_vision.brightness_ratio(
+            frame,
+            spec,
+            (
+                self._percent_config("小屋按钮点击 X 百分比"),
+                self._percent_config("小屋按钮点击 Y 百分比"),
+            ),
+            TEMPLATE_DIR,
+            cache=self._templates,
+        )
 
     @staticmethod
     def _empty_match() -> MatchResult:
-        return MatchResult(score=-1.0, pixel_score=-1.0, position=(0, 0), size=(0, 0))
+        return MatchResult(-1.0, (0, 0), (0, 0))
 
     def _match_best(
         self,
@@ -725,54 +666,23 @@ class AutoLoginTask(BaseBD2Task):
             return empty
 
         try:
-            template = self._load_template(spec)
-            mask = self._load_template_mask(spec)
+            return task_vision.match_template(
+                frame,
+                spec,
+                self.config,
+                TEMPLATE_DIR,
+                cache=self._templates,
+                min_size=8,
+                loader=lambda _template_dir, spec: (
+                    self._load_template(spec),
+                    self._load_template_mask(spec),
+                ),
+            )
         except RuntimeError as exc:
             if spec.name not in self._missing_template_names:
                 self._missing_template_names.add(spec.name)
                 self.log_warning(str(exc), notify=True)
             return empty
-
-        try:
-            frame_gray = self._to_gray(frame)
-            full_height, full_width = frame_gray.shape[:2]
-            roi_left, roi_top, roi_right, roi_bottom = offline_template_search_region(
-                spec.file_name,
-                full_width,
-                full_height,
-            )
-            search = frame_gray[roi_top:roi_bottom, roi_left:roi_right]
-            frame_height, frame_width = search.shape[:2]
-            base_scale = offline_template_scale(spec.file_name, full_width, full_height)
-            scales = self._candidate_scales(base_scale)
-            best = empty
-            template_threshold = self._candidate_template_threshold(spec)
-
-            for scale in scales:
-                scaled_template = self._resize_template(template, scale)
-                scaled_mask = self._resize_mask(mask, scale)
-                height, width = scaled_template.shape[:2]
-                if height < 8 or width < 8 or height > frame_height or width > frame_width:
-                    continue
-
-                result = template_match_response(search, scaled_template, scaled_mask)
-                candidate = best_pixel_valid_match(
-                    result,
-                    search,
-                    scaled_template,
-                    scaled_mask,
-                    template_threshold=template_threshold,
-                    pixel_threshold=0.0,
-                )
-                if candidate is None or candidate.score <= best.score:
-                    continue
-                x, y = candidate.location
-                best = MatchResult(
-                    score=candidate.score,
-                    pixel_score=candidate.pixel_score,
-                    position=(roi_left + x, roi_top + y),
-                    size=(int(width), int(height)),
-                )
         except (cv2.error, MemoryError) as exc:
             self._match_pause_until = monotonic() + 2.0
             message = f"图像匹配内存不足，暂停识别2秒：{spec.name}"
@@ -782,63 +692,14 @@ class AutoLoginTask(BaseBD2Task):
                 self.log_warning(f"{message}；{exc}", notify=True)
             return empty
 
-        return best
-
-    def _candidate_template_threshold(self, spec: TemplateSpec) -> float:
-        if spec.candidate_threshold is not None:
-            return float(spec.candidate_threshold)
-        return float(
-            getattr(self, "config", {}).get(spec.threshold_key, spec.default_threshold)
-        )
-
     def _load_template(self, spec: TemplateSpec) -> np.ndarray:
-        if spec.name in self._templates:
-            return self._templates[spec.name]
-
-        template, mask = self._read_template_and_mask(spec)
-        self._templates[spec.name] = template
-        self._template_masks[spec.name] = mask
-        return template
+        return task_vision.load_template(TEMPLATE_DIR, spec, cache=self._templates)[0]
 
     def _load_template_mask(self, spec: TemplateSpec) -> np.ndarray | None:
-        if spec.name not in self._templates:
-            self._load_template(spec)
-        return self._template_masks.get(spec.name)
-
-    def _read_template_and_mask(self, spec: TemplateSpec) -> tuple[np.ndarray, np.ndarray | None]:
-        path = TEMPLATE_DIR / spec.file_name
-        source = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
-        if source is None:
-            raise RuntimeError(f"自动登录模板不存在或无法读取：{path}")
-
-        if spec.crop is not None:
-            source = self._crop_relative(source, spec.crop)
-
-        mask = None
-        if len(source.shape) == 2:
-            template = source
-        else:
-            if source.shape[2] == 4:
-                template = cv2.cvtColor(source, cv2.COLOR_BGRA2GRAY)
-            else:
-                template = cv2.cvtColor(source, cv2.COLOR_BGR2GRAY)
-
-            if spec.green_mask or offline_template_requires_green_mask(spec.file_name):
-                color = source[:, :, :3]
-                green_pixels = (
-                    (color[:, :, 0] <= 4)
-                    & (color[:, :, 1] >= 251)
-                    & (color[:, :, 2] <= 4)
-                )
-                if source.shape[2] == 4:
-                    green_pixels |= source[:, :, 3] == 0
-                mask = np.where(green_pixels, 0, 255).astype(np.uint8)
-
-        return template, mask
+        return task_vision.load_template(TEMPLATE_DIR, spec, cache=self._templates)[1]
 
     def _passes(self, result: MatchResult, spec: TemplateSpec) -> bool:
-        threshold = float(self.config.get(spec.threshold_key, spec.default_threshold))
-        return result.score >= threshold
+        return task_vision.passes_match(result, spec, self.config)
 
     def _passes_strict(self, result: MatchResult, spec: TemplateSpec) -> bool:
         if not self._passes(result, spec):
@@ -939,12 +800,7 @@ class AutoLoginTask(BaseBD2Task):
         return " ".join(box.name for box in boxes if getattr(box, "name", ""))
 
     _normalize_ocr_text = staticmethod(normalize_ocr_text)
-    _candidate_scales = staticmethod(candidate_scales)
-    _resize_template = staticmethod(resize_template)
-    _resize_mask = staticmethod(resize_mask)
     _crop_relative = staticmethod(crop_relative)
-    _to_gray = staticmethod(to_gray)
-    _pixel_similarity = staticmethod(pixel_similarity)
 
 
 BROWNDUSTX_TEMPLATE = TemplateSpec(

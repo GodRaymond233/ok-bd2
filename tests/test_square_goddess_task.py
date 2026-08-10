@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import numpy as np
 
+from src.tasks.map_trade.models import MatchResult, TemplateSpec
 from src.tasks.SquareGoddessTask import (
     FANTASIA_SQUARE_TEMPLATE,
     GAMEPLAY_CARTRIDGE_POINT,
@@ -22,8 +23,6 @@ from src.tasks.SquareGoddessTask import (
     SQUARE_HOME_POINT,
     SQUARE_NOTICE_TEMPLATE,
     SquareGoddessTask,
-    SquareMatchResult,
-    SquareTemplateSpec,
 )
 
 
@@ -38,7 +37,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
         task.log_info = lambda *_args, **_kwargs: None
         task.sleep = lambda *_args, **_kwargs: None
         task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        match = SquareMatchResult(0.9, 0.9, (0, 0), (10, 10))
+        match = MatchResult(0.9, (0, 0), (10, 10), pixel_score=0.9)
         task._match = lambda *_args, **_kwargs: match
         task._passes = lambda *_args, **_kwargs: True
         task._home_brightness_ratio = lambda _frame: 0.8
@@ -133,7 +132,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
         task.config = {}
         task.info_set = lambda *_args, **_kwargs: None
         task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        task._match = lambda _frame, _spec: SquareMatchResult(
+        task._match = lambda _frame, _spec: MatchResult(
             score=0.95,
             pixel_score=0.90,
             position=(760, 960),
@@ -164,20 +163,16 @@ class SquareGoddessEntryTest(unittest.TestCase):
 
     def test_masked_match_ignores_non_finite_scores_from_black_regions(self):
         task = object.__new__(SquareGoddessTask)
+        task.config = {"masked-test-threshold": 0.7}
         task._match_pause_until = 0.0
         task._missing_template_names = set()
         task._match_error_names = set()
+        task._templates = {}
         task._load_template = lambda _spec: (
             np.ones((5, 5), dtype=np.uint8),
             np.full((5, 5), 255, dtype=np.uint8),
         )
-        task._to_gray = lambda frame: frame
-        task._roi_frame = lambda frame, _roi: (0, 0, frame)
-        task._candidate_scales = lambda _base, _ratios: (1.0,)
-        task._resize_template = lambda template, _scale: template
-        task._resize_mask = lambda mask, _scale: mask
-        task._pixel_similarity = lambda *_args: 0.8
-        spec = SquareTemplateSpec(
+        spec = TemplateSpec(
             name="masked-test",
             file_name="masked-test.png",
             threshold_key="masked-test-threshold",
@@ -191,12 +186,25 @@ class SquareGoddessEntryTest(unittest.TestCase):
 
         with (
             patch(
-                "src.tasks.SquareGoddessTask.offline_template_uses_main_region",
+                "src.utils.template_resolution.offline_template_uses_main_region",
                 return_value=False,
             ),
             patch(
-                "src.tasks.SquareGoddessTask.offline_template_scale",
+                "src.utils.template_resolution.offline_template_scale",
                 return_value=1.0,
+            ),
+            patch(
+                "src.utils.image_utils.reference_roi_frame",
+                side_effect=lambda frame, _roi, _reference: (0, 0, frame),
+            ),
+            patch("src.utils.image_utils.candidate_scales", return_value=[1.0]),
+            patch(
+                "src.utils.image_utils.resize_template",
+                side_effect=lambda template, _scale: template,
+            ),
+            patch(
+                "src.utils.image_utils.resize_mask",
+                side_effect=lambda mask, _scale: mask,
             ),
             patch("src.utils.image_utils.cv2.matchTemplate", return_value=response),
         ):
@@ -370,7 +378,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
         task.log_info = logs.append
         task.sleep = lambda *_args, **_kwargs: None
         task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        match = SquareMatchResult(0.9, 0.9, (0, 0), (10, 10))
+        match = MatchResult(0.9, (0, 0), (10, 10), pixel_score=0.9)
         task._match = lambda *_args, **_kwargs: match
         task._passes = lambda *_args, **_kwargs: True
         task._home_brightness_ratio = lambda _frame: 0.8
@@ -410,7 +418,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
         task.log_info = lambda *_args, **_kwargs: None
         task.sleep = lambda *_args, **_kwargs: None
         task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        match = SquareMatchResult(0.9, 0.9, (0, 0), (10, 10))
+        match = MatchResult(0.9, (0, 0), (10, 10), pixel_score=0.9)
         task._match = lambda *_args, **_kwargs: match
         task._passes = lambda *_args, **_kwargs: True
         task._home_brightness_ratio = lambda _frame: 0.8
@@ -450,7 +458,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
         task.log_info = logs.append
         task.sleep = lambda *_args, **_kwargs: None
         task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        match = SquareMatchResult(0.9, 0.9, (0, 0), (10, 10))
+        match = MatchResult(0.9, (0, 0), (10, 10), pixel_score=0.9)
         task._match = lambda *_args, **_kwargs: match
         task._passes = lambda *_args, **_kwargs: True
         task._home_brightness_ratio = lambda _frame: 0.8
@@ -499,7 +507,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
         task = object.__new__(SquareGoddessTask)
         task.info_set = lambda *_args, **_kwargs: None
         task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        task._match = lambda _frame, spec: SquareMatchResult(
+        task._match = lambda _frame, spec: MatchResult(
             score=0.90,
             pixel_score=0.90,
             position=(1376, 862),
@@ -525,7 +533,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
         task.info_set = lambda *_args, **_kwargs: None
         task.sleep = lambda *_args, **_kwargs: None
         task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        task._match = lambda _frame, _spec: SquareMatchResult(
+        task._match = lambda _frame, _spec: MatchResult(
             score=0.90,
             pixel_score=0.90,
             position=(1550, 203),

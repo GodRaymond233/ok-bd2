@@ -20,6 +20,7 @@ from src.utils.home_confirmation import (
 )
 from src.utils.image_utils import (
     best_pixel_valid_match,
+    green_mask_from_template,
     masked_zncc,
     pixel_similarity,
     resize_mask,
@@ -60,25 +61,6 @@ class RecentPvpCartridgeMatch:
             and self.pixel_score >= RECENT_PVP_CARTRIDGE_PIXEL_THRESHOLD
             and self.zncc_score >= RECENT_PVP_CARTRIDGE_ZNCC_THRESHOLD
         )
-
-
-def green_mask_from_template(
-    template: np.ndarray,
-    tolerance: int = GREEN_MASK_TOLERANCE,
-) -> np.ndarray:
-    if template.ndim < 3:
-        return np.full(template.shape[:2], 255, dtype=np.uint8)
-
-    color = template[:, :, :3]
-    tolerance = max(0, int(tolerance))
-    green_pixels = (
-        (color[:, :, 0] <= tolerance)
-        & (color[:, :, 1] >= 255 - tolerance)
-        & (color[:, :, 2] <= tolerance)
-    )
-    if template.shape[2] >= 4:
-        green_pixels |= template[:, :, 3] == 0
-    return np.where(green_pixels, 0, 255).astype(np.uint8)
 
 
 class BaseBD2Task(BaseTask):

@@ -1,6 +1,5 @@
 import re
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
 
@@ -8,29 +7,18 @@ import cv2
 import numpy as np
 from qfluentwidgets import FluentIcon
 
-from src.tasks.BaseBD2Task import BaseBD2Task, green_mask_from_template
+from src.tasks.BaseBD2Task import BaseBD2Task
+from src.tasks.map_trade.models import MatchResult, TemplateSpec
+from src.utils import task_vision
 from src.utils.home_confirmation import (
     HOME_GACHA_OCR_REFERENCE_ROI,
     home_confirmation_passes,
 )
 from src.utils.image_utils import (
-    best_pixel_valid_match,
-    candidate_scales,
-    pixel_similarity,
     reference_roi_frame,
-    resize_mask,
-    resize_template,
     stabilize_template_match,
-    template_match_response,
-    to_gray,
 )
 from src.utils.ocr_utils import normalize_ocr_text
-from src.utils.template_resolution import (
-    offline_template_requires_green_mask,
-    offline_template_scale,
-    offline_template_search_region,
-    offline_template_uses_main_region,
-)
 
 REFERENCE_WIDTH = 1920
 REFERENCE_HEIGHT = 1080
@@ -58,30 +46,6 @@ GAMEPLAY_CATEGORY_OCR_ROI = (876, 840, 225, 75)
 GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO = 0.05
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_DIR = PROJECT_ROOT / "recognition-assets" / "template-assets"
-
-
-@dataclass(frozen=True)
-class SquareTemplateSpec:
-    name: str
-    file_name: str
-    threshold_key: str
-    default_threshold: float
-    roi: tuple[int, int, int, int] | None = None
-    green_mask: bool = False
-    scale_ratios: tuple[float, ...] = (1.0,)
-    min_pixel_score: float | None = None
-    candidate_center_roi: tuple[float, float, float, float] | None = None
-    minimum_safe_threshold: float | None = None
-    min_zncc_score: float | None = None
-
-
-@dataclass(frozen=True)
-class SquareMatchResult:
-    score: float
-    pixel_score: float
-    position: tuple[int, int]
-    size: tuple[int, int]
-    zncc_score: float = -1.0
 
 
 class SquareGoddessTask(BaseBD2Task):
@@ -599,7 +563,7 @@ class SquareGoddessTask(BaseBD2Task):
 
     def _click_template_until(
         self,
-        spec: SquareTemplateSpec,
+        spec: TemplateSpec,
         timeout: float,
         name: str,
         target_offset_mf: tuple[int, int] = (0, 0),
@@ -835,11 +799,11 @@ class SquareGoddessTask(BaseBD2Task):
 
     def _find_template_until(
         self,
-        spec: SquareTemplateSpec,
+        spec: TemplateSpec,
         timeout: float,
         name: str,
         interval: float = 0.35,
-    ) -> tuple[SquareMatchResult | None, tuple[int, int] | None]:
+    ) -> tuple[MatchResult | None, tuple[int, int] | None]:
         end_at = monotonic() + max(0.0, timeout)
         last_score = -1.0
         while monotonic() <= end_at:
@@ -880,7 +844,7 @@ class SquareGoddessTask(BaseBD2Task):
 
     def _wait_for_template(
         self,
-        spec: SquareTemplateSpec,
+        spec: TemplateSpec,
         timeout: float,
         name: str,
         interval: float = 0.35,
@@ -942,86 +906,26 @@ class SquareGoddessTask(BaseBD2Task):
 
         return False, last_text
 
-    def _match(self, frame, spec: SquareTemplateSpec) -> SquareMatchResult:
-        empty = SquareMatchResult(score=-1.0, pixel_score=-1.0, position=(0, 0), size=(0, 0))
+    def _match(self, frame, spec: TemplateSpec) -> MatchResult:
+        empty = MatchResult(-1.0, (0, 0), (0, 0))
         if monotonic() < self._match_pause_until:
             return empty
 
         try:
-            template, mask = self._load_template(spec)
+            return task_vision.match_template(
+                frame,
+                spec,
+                self.config,
+                TEMPLATE_DIR,
+                cache=self._templates,
+                min_size=5,
+                loader=lambda _template_dir, spec: self._load_template(spec),
+            )
         except RuntimeError as exc:
             if spec.name not in self._missing_template_names:
                 self._missing_template_names.add(spec.name)
                 self.log_warning(str(exc), notify=True)
             return empty
-
-        try:
-            frame_gray = self._to_gray(frame)
-            if offline_template_uses_main_region(spec.file_name) or spec.roi is None:
-                frame_height, frame_width = frame_gray.shape[:2]
-                roi_left, roi_top, roi_right, roi_bottom = offline_template_search_region(
-                    spec.file_name,
-                    frame_width,
-                    frame_height,
-                )
-                roi_frame = frame_gray[roi_top:roi_bottom, roi_left:roi_right]
-            else:
-                roi_left, roi_top, roi_frame = self._roi_frame(frame_gray, spec.roi)
-            frame_height, frame_width = roi_frame.shape[:2]
-            base_scale = offline_template_scale(
-                spec.file_name,
-                frame_gray.shape[1],
-                frame_gray.shape[0],
-            )
-            best = empty
-            configured_threshold = float(
-                getattr(self, "config", {}).get(spec.threshold_key, spec.default_threshold)
-            )
-            template_threshold = max(
-                configured_threshold,
-                spec.minimum_safe_threshold
-                if spec.minimum_safe_threshold is not None
-                else configured_threshold,
-            )
-            center_bounds = None
-            if spec.candidate_center_roi is not None:
-                full_height, full_width = frame_gray.shape[:2]
-                left, top, right, bottom = spec.candidate_center_roi
-                center_bounds = (
-                    round(full_width * left) - roi_left,
-                    round(full_height * top) - roi_top,
-                    round(full_width * right) - roi_left,
-                    round(full_height * bottom) - roi_top,
-                )
-
-            for scale in self._candidate_scales(base_scale, spec.scale_ratios):
-                scaled_template = self._resize_template(template, scale)
-                scaled_mask = self._resize_mask(mask, scale) if mask is not None else None
-                height, width = scaled_template.shape[:2]
-                if height < 5 or width < 5 or height > frame_height or width > frame_width:
-                    continue
-
-                result = template_match_response(roi_frame, scaled_template, scaled_mask)
-                candidate = best_pixel_valid_match(
-                    result,
-                    roi_frame,
-                    scaled_template,
-                    scaled_mask,
-                    template_threshold=template_threshold,
-                    pixel_threshold=(spec.min_pixel_score or 0.0),
-                    zncc_threshold=spec.min_zncc_score,
-                    center_bounds=center_bounds,
-                )
-                if candidate is None or candidate.score <= best.score:
-                    continue
-                x, y = candidate.location
-                best = SquareMatchResult(
-                    score=candidate.score,
-                    pixel_score=candidate.pixel_score,
-                    position=(roi_left + x, roi_top + y),
-                    size=(int(width), int(height)),
-                    zncc_score=float(getattr(candidate, "zncc_score", -1.0)),
-                )
         except (cv2.error, MemoryError) as exc:
             self._match_pause_until = monotonic() + 2.0
             message = f"图像匹配内存不足，暂停识别2秒：{spec.name}"
@@ -1031,80 +935,23 @@ class SquareGoddessTask(BaseBD2Task):
                 self.log_warning(f"{message}；{exc}", notify=True)
             return empty
 
-        return best
-
     def _home_brightness_ratio(self, frame) -> float:
         return max(self._home_brightness_ratio_for_template(frame, spec) for spec in HOME_TEMPLATES)
 
-    def _home_brightness_ratio_for_template(self, frame, spec: SquareTemplateSpec) -> float:
-        template, mask = self._load_template(spec)
-        frame_gray = self._to_gray(frame)
-        frame_height, frame_width = frame_gray.shape[:2]
-        scale = offline_template_scale(spec.file_name, frame_width, frame_height)
-        template_height, template_width = template.shape[:2]
-        roi_width = max(8, round(template_width * scale))
-        roi_height = max(8, round(template_height * scale))
-        center_x = round(frame_width * (222 / ENTRY_REFERENCE_WIDTH))
-        center_y = round(frame_height * (211 / ENTRY_REFERENCE_HEIGHT))
-        left = max(0, center_x - roi_width // 2)
-        top = max(0, center_y - roi_height // 2)
-        right = min(frame_width, left + roi_width)
-        bottom = min(frame_height, top + roi_height)
-        region = frame_gray[top:bottom, left:right]
-        if region.size == 0:
-            return 0.0
+    def _home_brightness_ratio_for_template(self, frame, spec: TemplateSpec) -> float:
+        return task_vision.brightness_ratio(
+            frame,
+            spec,
+            (222 / ENTRY_REFERENCE_WIDTH, 211 / ENTRY_REFERENCE_HEIGHT),
+            TEMPLATE_DIR,
+            cache=self._templates,
+        )
 
-        scaled_template = self._resize_template(template, scale)
-        scaled_mask = self._resize_mask(mask, scale) if mask is not None else None
-        match_height = min(region.shape[0], scaled_template.shape[0])
-        match_width = min(region.shape[1], scaled_template.shape[1])
-        if match_height <= 0 or match_width <= 0:
-            return 0.0
-        region = region[:match_height, :match_width]
-        scaled_template = scaled_template[:match_height, :match_width]
-        if scaled_mask is not None:
-            scaled_mask = scaled_mask[:match_height, :match_width]
-            active = scaled_mask > 0
-            if not np.any(active):
-                return 0.0
-            template_mean = float(np.mean(scaled_template[active]))
-            region_mean = float(np.mean(region[active]))
-        else:
-            template_mean = float(np.mean(scaled_template))
-            region_mean = float(np.mean(region))
-        if template_mean <= 0:
-            return 0.0
-        return float(region_mean / template_mean)
+    def _load_template(self, spec: TemplateSpec) -> tuple[np.ndarray, np.ndarray | None]:
+        return task_vision.load_template(TEMPLATE_DIR, spec, cache=self._templates)
 
-    def _load_template(self, spec: SquareTemplateSpec) -> tuple[np.ndarray, np.ndarray | None]:
-        if spec.name in self._templates:
-            return self._templates[spec.name]
-
-        path = TEMPLATE_DIR / spec.file_name
-        raw = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
-        if raw is None:
-            raise RuntimeError(f"广场女神像模板不存在或无法读取：{path}")
-
-        use_green_mask = spec.green_mask or offline_template_requires_green_mask(spec.file_name)
-        mask = green_mask_from_template(raw) if use_green_mask else None
-        template = self._to_gray(raw)
-        if mask is not None and np.count_nonzero(mask) == mask.size:
-            mask = None
-
-        self._templates[spec.name] = (template, mask)
-        return self._templates[spec.name]
-
-    def _passes(self, result: SquareMatchResult, spec: SquareTemplateSpec) -> bool:
-        threshold = float(self.config.get(spec.threshold_key, spec.default_threshold))
-        if spec.minimum_safe_threshold is not None:
-            threshold = max(threshold, spec.minimum_safe_threshold)
-        if result.score < threshold:
-            return False
-        if spec.min_pixel_score is not None and result.pixel_score < spec.min_pixel_score:
-            return False
-        if spec.min_zncc_score is not None and result.zncc_score < spec.min_zncc_score:
-            return False
-        return True
+    def _passes(self, result: MatchResult, spec: TemplateSpec) -> bool:
+        return task_vision.passes_match(result, spec, self.config)
 
     def _ocr_text(
         self,
@@ -1334,12 +1181,6 @@ class SquareGoddessTask(BaseBD2Task):
         return center_x, max(0, click_y)
 
     _normalize_text = staticmethod(normalize_ocr_text)
-    _candidate_scales = staticmethod(candidate_scales)
-    _resize_template = staticmethod(resize_template)
-    _resize_mask = staticmethod(resize_mask)
-    _to_gray = staticmethod(to_gray)
-    _pixel_similarity = staticmethod(pixel_similarity)
-
     @staticmethod
     def _roi_frame(
         frame: np.ndarray,
@@ -1377,14 +1218,14 @@ class SquareGoddessTask(BaseBD2Task):
         return float(np.mean(highlighted))
 
 
-HOME_TEMPLATE = SquareTemplateSpec(
+HOME_TEMPLATE = TemplateSpec(
     name="home",
     file_name="home.png",
     threshold_key="主页小屋按钮阈值",
     default_threshold=0.70,
 )
 
-HOME_ICE_TEMPLATE = SquareTemplateSpec(
+HOME_ICE_TEMPLATE = TemplateSpec(
     name="home_ice",
     file_name="image/green/MainHomeIceGE.png",
     threshold_key="主页小屋按钮阈值",
@@ -1392,7 +1233,7 @@ HOME_ICE_TEMPLATE = SquareTemplateSpec(
     green_mask=True,
 )
 
-HOME_RICE_TEMPLATE = SquareTemplateSpec(
+HOME_RICE_TEMPLATE = TemplateSpec(
     name="home_rice",
     file_name="image/green/MainHomeRIceGE.png",
     threshold_key="主页小屋按钮阈值",
@@ -1402,7 +1243,7 @@ HOME_RICE_TEMPLATE = SquareTemplateSpec(
 
 HOME_TEMPLATES = (HOME_TEMPLATE, HOME_ICE_TEMPLATE, HOME_RICE_TEMPLATE)
 
-QUICK_SWITCH_TEMPLATE = SquareTemplateSpec(
+QUICK_SWITCH_TEMPLATE = TemplateSpec(
     name="quick_switch",
     file_name="image/green/QuickSwitchPlayIco.png",
     threshold_key="快速切换按钮阈值",
@@ -1416,21 +1257,21 @@ QUICK_SWITCH_TEMPLATE = SquareTemplateSpec(
     min_zncc_score=0.85,
 )
 
-REFERENCE_CARD_TEMPLATE = SquareTemplateSpec(
+REFERENCE_CARD_TEMPLATE = TemplateSpec(
     name="reference_card",
     file_name="Q_evilcastle.png",
     threshold_key="恶魔城卡带阈值",
     default_threshold=0.70,
 )
 
-SQUARE_ENTRY_CARD_TEMPLATE = SquareTemplateSpec(
+SQUARE_ENTRY_CARD_TEMPLATE = TemplateSpec(
     name="square_entry_card",
     file_name="Q_square.png",
     threshold_key="广场入口卡带阈值",
     default_threshold=0.78,
 )
 
-SQUARE_QCARD_TEMPLATE = SquareTemplateSpec(
+SQUARE_QCARD_TEMPLATE = TemplateSpec(
     name="square_qcard",
     file_name="image/Qcard_Square.png",
     threshold_key="广场入口卡带阈值",
@@ -1439,7 +1280,7 @@ SQUARE_QCARD_TEMPLATE = SquareTemplateSpec(
     green_mask=True,
 )
 
-FANTASIA_SQUARE_TEMPLATE = SquareTemplateSpec(
+FANTASIA_SQUARE_TEMPLATE = TemplateSpec(
     name="fantasia_square",
     file_name="image/Mirror_FantasiaSquare_Ico.png",
     threshold_key="梦幻广场阈值",
@@ -1447,7 +1288,7 @@ FANTASIA_SQUARE_TEMPLATE = SquareTemplateSpec(
     roi=SquareGoddessTask._mf_roi(656, 622, 77, 66),
 )
 
-SQUARE_NOTICE_TEMPLATE = SquareTemplateSpec(
+SQUARE_NOTICE_TEMPLATE = TemplateSpec(
     name="square_notice",
     file_name="image/green/tanhaoGE.png",
     threshold_key="广场感叹号阈值",
@@ -1460,7 +1301,7 @@ SQUARE_NOTICE_TEMPLATE = SquareTemplateSpec(
 
 GODDESS_DAILY_REGION = (1546, 199, 311, 63)
 
-SQUARE_DAILY_ICON_TEMPLATE = SquareTemplateSpec(
+SQUARE_DAILY_ICON_TEMPLATE = TemplateSpec(
     name="square_daily_icon",
     file_name="image/Square_DailyIco.png",
     threshold_key="广场每日导航阈值",
@@ -1469,7 +1310,7 @@ SQUARE_DAILY_ICON_TEMPLATE = SquareTemplateSpec(
     min_pixel_score=0.72,
 )
 
-SQUARE_MISSION_NAVI_TEMPLATE = SquareTemplateSpec(
+SQUARE_MISSION_NAVI_TEMPLATE = TemplateSpec(
     name="square_mission_navigation",
     file_name="image/Square_misstion_Nvi.png",
     threshold_key="广场导航中阈值",

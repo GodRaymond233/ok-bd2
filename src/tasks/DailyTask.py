@@ -1,5 +1,5 @@
 import re
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 from time import monotonic
 
@@ -8,28 +8,17 @@ import numpy as np
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task
-from src.tasks.map_trade.models import TemplateSpec
+from src.tasks.map_trade.models import MatchResult, TemplateSpec
 from src.tasks.map_trade.vision import Vision
+from src.utils import task_vision
 from src.utils.home_confirmation import (
     HOME_GACHA_OCR_RELATIVE_ROI,
     home_confirmation_passes,
 )
 from src.utils.image_utils import (
-    best_pixel_valid_match,
-    candidate_scales,
-    crop_relative,
-    pixel_similarity,
-    resize_mask,
-    resize_template,
-    template_match_response,
     to_gray,
 )
 from src.utils.ocr_utils import keyword_match_count, normalize_ocr_text
-from src.utils.template_resolution import (
-    offline_template_requires_green_mask,
-    offline_template_scale,
-    offline_template_search_region,
-)
 
 REFERENCE_WIDTH = 1920
 REFERENCE_HEIGHT = 1080
@@ -53,24 +42,6 @@ QUICK_HUNT_CHILD_CONFIG_KEYS = (
     "快速狩猎完整测试",
 )
 QUICK_HUNT_CONFIG_KEYS = ("执行快速狩猎", *QUICK_HUNT_CHILD_CONFIG_KEYS)
-
-
-@dataclass(frozen=True)
-class DailyTemplateSpec:
-    name: str
-    file_name: str
-    threshold_key: str
-    default_threshold: float
-    crop: tuple[float, float, float, float] | None = None
-    green_mask: bool = False
-
-
-@dataclass(frozen=True)
-class DailyMatchResult:
-    score: float
-    pixel_score: float
-    position: tuple[int, int]
-    size: tuple[int, int]
 
 
 class DailyTask(BaseBD2Task):
@@ -694,14 +665,14 @@ class DailyTask(BaseBD2Task):
     def _quick_hunt_home_signals(
         self,
         frame,
-    ) -> tuple[bool, DailyMatchResult, DailyTemplateSpec, float, str]:
+    ) -> tuple[bool, MatchResult, TemplateSpec, float, str]:
         return self._home_confirmation_signals(frame, "快速狩猎主页抽抽乐")
 
     def _home_confirmation_signals(
         self,
         frame,
         ocr_name: str,
-    ) -> tuple[bool, DailyMatchResult, DailyTemplateSpec, float, str]:
+    ) -> tuple[bool, MatchResult, TemplateSpec, float, str]:
         home_button, home_spec = self._match_best(frame, HOME_TEMPLATES)
         home_ratio = self._home_brightness_ratio(frame)
         gacha_text = self._quick_vision().ocr_text(
@@ -1403,7 +1374,7 @@ class DailyTask(BaseBD2Task):
     def _wait_loading_or_template(
         self,
         task_name: str,
-        spec: DailyTemplateSpec,
+        spec: TemplateSpec,
         name: str,
         interval: float = 0.35,
     ) -> tuple[str, bool]:
@@ -1431,7 +1402,7 @@ class DailyTask(BaseBD2Task):
     def _wait_loading_gone_or_template(
         self,
         task_name: str,
-        spec: DailyTemplateSpec,
+        spec: TemplateSpec,
         name: str,
         interval: float = 0.35,
     ) -> tuple[str, bool]:
@@ -1455,7 +1426,7 @@ class DailyTask(BaseBD2Task):
     def _wait_loading_or_template_or_ocr(
         self,
         task_name: str,
-        spec: DailyTemplateSpec,
+        spec: TemplateSpec,
         keywords: list[str],
         name: str,
         interval: float = 0.5,
@@ -1489,7 +1460,7 @@ class DailyTask(BaseBD2Task):
     def _wait_loading_gone_or_template_or_ocr(
         self,
         task_name: str,
-        spec: DailyTemplateSpec,
+        spec: TemplateSpec,
         keywords: list[str],
         name: str,
         last_text: str = "",
@@ -1516,7 +1487,7 @@ class DailyTask(BaseBD2Task):
 
     def _wait_for_template(
         self,
-        spec: DailyTemplateSpec,
+        spec: TemplateSpec,
         timeout: float,
         name: str,
         interval: float = 0.35,
@@ -1537,7 +1508,7 @@ class DailyTask(BaseBD2Task):
 
     def _wait_for_template_or_ocr(
         self,
-        spec: DailyTemplateSpec,
+        spec: TemplateSpec,
         keywords: list[str],
         timeout: float,
         name: str,
@@ -1627,57 +1598,25 @@ class DailyTask(BaseBD2Task):
     def _home_brightness_ratio_for_template(
         self,
         frame,
-        spec: DailyTemplateSpec,
+        spec: TemplateSpec,
     ) -> float:
-        template = self._load_template(spec)
-        mask = self._load_template_mask(spec)
-        frame_gray = self._to_gray(frame)
-        frame_height, frame_width = frame_gray.shape[:2]
-        scale = offline_template_scale(spec.file_name, frame_width, frame_height)
-        template_height, template_width = template.shape[:2]
-        roi_width = max(8, round(template_width * scale))
-        roi_height = max(8, round(template_height * scale))
-        center_x = round(frame_width * (166 / REFERENCE_WIDTH))
-        center_y = round(frame_height * (158 / REFERENCE_HEIGHT))
-        left = max(0, center_x - roi_width // 2)
-        top = max(0, center_y - roi_height // 2)
-        right = min(frame_width, left + roi_width)
-        bottom = min(frame_height, top + roi_height)
-        region = frame_gray[top:bottom, left:right]
-        if region.size == 0:
-            return 0.0
-
-        scaled_template = self._resize_template(template, scale)
-        scaled_mask = self._resize_mask(mask, scale)
-        match_height = min(region.shape[0], scaled_template.shape[0])
-        match_width = min(region.shape[1], scaled_template.shape[1])
-        if match_height <= 0 or match_width <= 0:
-            return 0.0
-        region = region[:match_height, :match_width]
-        scaled_template = scaled_template[:match_height, :match_width]
-        if scaled_mask is not None:
-            scaled_mask = scaled_mask[:match_height, :match_width]
-            valid = scaled_mask > 0
-            if not np.any(valid):
-                return 0.0
-            template_mean = float(np.mean(scaled_template[valid]))
-            region_mean = float(np.mean(region[valid]))
-        else:
-            template_mean = float(np.mean(scaled_template))
-            region_mean = float(np.mean(region))
-        if template_mean <= 0:
-            return 0.0
-        return float(region_mean / template_mean)
+        return task_vision.brightness_ratio(
+            frame,
+            spec,
+            (166 / REFERENCE_WIDTH, 158 / REFERENCE_HEIGHT),
+            TEMPLATE_DIR,
+            cache=self._templates,
+        )
 
     @staticmethod
-    def _empty_match() -> DailyMatchResult:
-        return DailyMatchResult(score=-1.0, pixel_score=-1.0, position=(0, 0), size=(0, 0))
+    def _empty_match() -> MatchResult:
+        return MatchResult(-1.0, (0, 0), (0, 0))
 
     def _match_best(
         self,
         frame,
-        specs: tuple[DailyTemplateSpec, ...],
-    ) -> tuple[DailyMatchResult, DailyTemplateSpec]:
+        specs: tuple[TemplateSpec, ...],
+    ) -> tuple[MatchResult, TemplateSpec]:
         best = self._empty_match()
         best_spec = specs[0]
         for spec in specs:
@@ -1687,61 +1626,29 @@ class DailyTask(BaseBD2Task):
                 best_spec = spec
         return best, best_spec
 
-    def _match(self, frame, spec: DailyTemplateSpec) -> DailyMatchResult:
-        empty = DailyMatchResult(score=-1.0, pixel_score=-1.0, position=(0, 0), size=(0, 0))
+    def _match(self, frame, spec: TemplateSpec) -> MatchResult:
+        empty = MatchResult(-1.0, (0, 0), (0, 0))
         if monotonic() < self._match_pause_until:
             return empty
 
         try:
-            template = self._load_template(spec)
-            mask = self._load_template_mask(spec)
+            return task_vision.match_template(
+                frame,
+                spec,
+                self.config,
+                TEMPLATE_DIR,
+                cache=self._templates,
+                min_size=8,
+                loader=lambda _template_dir, spec: (
+                    self._load_template(spec),
+                    self._load_template_mask(spec),
+                ),
+            )
         except RuntimeError as exc:
             if spec.name not in self._missing_template_names:
                 self._missing_template_names.add(spec.name)
                 self.log_warning(str(exc), notify=True)
             return empty
-
-        try:
-            frame_gray = self._to_gray(frame)
-            full_height, full_width = frame_gray.shape[:2]
-            roi_left, roi_top, roi_right, roi_bottom = offline_template_search_region(
-                spec.file_name,
-                full_width,
-                full_height,
-            )
-            search = frame_gray[roi_top:roi_bottom, roi_left:roi_right]
-            frame_height, frame_width = search.shape[:2]
-            base_scale = offline_template_scale(spec.file_name, full_width, full_height)
-            best = empty
-            template_threshold = float(
-                getattr(self, "config", {}).get(spec.threshold_key, spec.default_threshold)
-            )
-
-            for scale in self._candidate_scales(base_scale):
-                scaled_template = self._resize_template(template, scale)
-                scaled_mask = self._resize_mask(mask, scale)
-                height, width = scaled_template.shape[:2]
-                if height < 8 or width < 8 or height > frame_height or width > frame_width:
-                    continue
-
-                result = template_match_response(search, scaled_template, scaled_mask)
-                candidate = best_pixel_valid_match(
-                    result,
-                    search,
-                    scaled_template,
-                    scaled_mask,
-                    template_threshold=template_threshold,
-                    pixel_threshold=0.0,
-                )
-                if candidate is None or candidate.score <= best.score:
-                    continue
-                x, y = candidate.location
-                best = DailyMatchResult(
-                    score=candidate.score,
-                    pixel_score=candidate.pixel_score,
-                    position=(roi_left + x, roi_top + y),
-                    size=(int(width), int(height)),
-                )
         except (cv2.error, MemoryError) as exc:
             self._match_pause_until = monotonic() + 2.0
             message = f"图像匹配内存不足，暂停识别2秒：{spec.name}"
@@ -1751,59 +1658,14 @@ class DailyTask(BaseBD2Task):
                 self.log_warning(f"{message}；{exc}", notify=True)
             return empty
 
-        return best
+    def _load_template(self, spec: TemplateSpec) -> np.ndarray:
+        return task_vision.load_template(TEMPLATE_DIR, spec, cache=self._templates)[0]
 
-    def _load_template(self, spec: DailyTemplateSpec) -> np.ndarray:
-        if spec.name in self._templates:
-            return self._templates[spec.name]
+    def _load_template_mask(self, spec: TemplateSpec) -> np.ndarray | None:
+        return task_vision.load_template(TEMPLATE_DIR, spec, cache=self._templates)[1]
 
-        template, mask = self._read_template_and_mask(spec)
-        self._templates[spec.name] = template
-        self._template_masks[spec.name] = mask
-        return template
-
-    def _load_template_mask(self, spec: DailyTemplateSpec) -> np.ndarray | None:
-        if spec.name not in self._templates:
-            self._load_template(spec)
-        return self._template_masks.get(spec.name)
-
-    def _read_template_and_mask(
-        self,
-        spec: DailyTemplateSpec,
-    ) -> tuple[np.ndarray, np.ndarray | None]:
-        path = TEMPLATE_DIR / spec.file_name
-        source = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
-        if source is None:
-            raise RuntimeError(f"任务模板不存在或无法读取：{path}")
-
-        if spec.crop is not None:
-            source = self._crop_relative(source, spec.crop)
-
-        mask = None
-        if len(source.shape) == 2:
-            template = source
-        else:
-            if source.shape[2] == 4:
-                template = cv2.cvtColor(source, cv2.COLOR_BGRA2GRAY)
-            else:
-                template = cv2.cvtColor(source, cv2.COLOR_BGR2GRAY)
-
-            if spec.green_mask or offline_template_requires_green_mask(spec.file_name):
-                color = source[:, :, :3]
-                green_pixels = (
-                    (color[:, :, 0] <= 4)
-                    & (color[:, :, 1] >= 251)
-                    & (color[:, :, 2] <= 4)
-                )
-                if source.shape[2] == 4:
-                    green_pixels |= source[:, :, 3] == 0
-                mask = np.where(green_pixels, 0, 255).astype(np.uint8)
-
-        return template, mask
-
-    def _passes(self, result: DailyMatchResult, spec: DailyTemplateSpec) -> bool:
-        threshold = float(self.config.get(spec.threshold_key, spec.default_threshold))
-        return result.score >= threshold
+    def _passes(self, result: MatchResult, spec: TemplateSpec) -> bool:
+        return task_vision.passes_match(result, spec, self.config)
 
     def _ocr_text(self, frame, name: str) -> str:
         try:
@@ -1829,12 +1691,7 @@ class DailyTask(BaseBD2Task):
     def _home_ratio_threshold(self) -> float:
         return float(self.config.get("主页亮度比例阈值", 0.75))
 
-    _candidate_scales = staticmethod(candidate_scales)
-    _resize_template = staticmethod(resize_template)
-    _crop_relative = staticmethod(crop_relative)
     _to_gray = staticmethod(to_gray)
-    _resize_mask = staticmethod(resize_mask)
-    _pixel_similarity = staticmethod(pixel_similarity)
 
 
 def _quick_hunt_relative_roi(
@@ -1914,14 +1771,14 @@ QUICK_HUNT_DOUBLE_TEMPLATE = TemplateSpec(
 )
 
 
-GUILD_TEMPLATE = DailyTemplateSpec(
+GUILD_TEMPLATE = TemplateSpec(
     name="guild",
     file_name="guild.png",
     threshold_key="公会入口阈值",
     default_threshold=0.78,
 )
 
-GUILD_MAIN_ACTIVE_TEMPLATE = DailyTemplateSpec(
+GUILD_MAIN_ACTIVE_TEMPLATE = TemplateSpec(
     name="guild_main_active",
     file_name="image/green/MainBotmUnionAcGE.png",
     threshold_key="公会入口阈值",
@@ -1929,14 +1786,14 @@ GUILD_MAIN_ACTIVE_TEMPLATE = DailyTemplateSpec(
     green_mask=True,
 )
 
-GUILD_FINISHED_TEMPLATE = DailyTemplateSpec(
+GUILD_FINISHED_TEMPLATE = TemplateSpec(
     name="guild_finished",
     file_name="guild-finished.png",
     threshold_key="公会入口阈值",
     default_threshold=0.78,
 )
 
-GUILD_MAIN_FINISHED_TEMPLATE = DailyTemplateSpec(
+GUILD_MAIN_FINISHED_TEMPLATE = TemplateSpec(
     name="guild_main_finished",
     file_name="image/green/MainBotmUnionGE.png",
     threshold_key="公会入口阈值",
@@ -1951,35 +1808,35 @@ GUILD_ENTRY_TEMPLATES = (
     GUILD_MAIN_FINISHED_TEMPLATE,
 )
 
-GUILD_SIGNUP_SUCCESS_TEMPLATE = DailyTemplateSpec(
+GUILD_SIGNUP_SUCCESS_TEMPLATE = TemplateSpec(
     name="guild_signup_success",
     file_name="guild-singup-success.png",
     threshold_key="公会签到成功阈值",
     default_threshold=0.76,
 )
 
-MY_HOME_TEMPLATE = DailyTemplateSpec(
+MY_HOME_TEMPLATE = TemplateSpec(
     name="my_home",
     file_name="my-home.png",
     threshold_key="小屋页面阈值",
     default_threshold=0.76,
 )
 
-LOADING_TEMPLATE = DailyTemplateSpec(
+LOADING_TEMPLATE = TemplateSpec(
     name="ui_loading_black",
     file_name="image/UI_loading_black.png",
     threshold_key="加载页面阈值",
     default_threshold=0.72,
 )
 
-HOME_TEMPLATE = DailyTemplateSpec(
+HOME_TEMPLATE = TemplateSpec(
     name="home",
     file_name="home.png",
     threshold_key="主页亮度比例阈值",
     default_threshold=0.75,
 )
 
-HOME_ICE_TEMPLATE = DailyTemplateSpec(
+HOME_ICE_TEMPLATE = TemplateSpec(
     name="home_ice",
     file_name="image/green/MainHomeIceGE.png",
     threshold_key="主页亮度比例阈值",
@@ -1987,7 +1844,7 @@ HOME_ICE_TEMPLATE = DailyTemplateSpec(
     green_mask=True,
 )
 
-HOME_RICE_TEMPLATE = DailyTemplateSpec(
+HOME_RICE_TEMPLATE = TemplateSpec(
     name="home_rice",
     file_name="image/green/MainHomeRIceGE.png",
     threshold_key="主页亮度比例阈值",

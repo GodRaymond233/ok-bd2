@@ -6,6 +6,27 @@ import cv2
 import numpy as np
 
 
+def green_mask_from_template(
+    template: np.ndarray,
+    tolerance: int = 0,
+) -> np.ndarray:
+    """Build the project green-screen mask (plus transparent alpha) for a crop."""
+
+    if template.ndim < 3:
+        return np.full(template.shape[:2], 255, dtype=np.uint8)
+
+    color = template[:, :, :3]
+    tolerance = max(0, int(tolerance))
+    green_pixels = (
+        (color[:, :, 0] <= tolerance)
+        & (color[:, :, 1] >= 255 - tolerance)
+        & (color[:, :, 2] <= tolerance)
+    )
+    if template.shape[2] >= 4:
+        green_pixels |= template[:, :, 3] == 0
+    return np.where(green_pixels, 0, 255).astype(np.uint8)
+
+
 @dataclass(frozen=True)
 class PixelValidMatch:
     """Highest template-score candidate that also passes pixel validation."""

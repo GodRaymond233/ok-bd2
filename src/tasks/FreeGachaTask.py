@@ -1,4 +1,3 @@
-from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
 
@@ -7,44 +6,23 @@ import numpy as np
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task
-from src.tasks.map_trade.models import TemplateSpec
+from src.tasks.map_trade.models import MatchResult, TemplateSpec
 from src.tasks.map_trade.vision import Vision
+from src.utils import task_vision
 from src.utils.home_confirmation import (
     HOME_GACHA_OCR_RELATIVE_ROI,
     home_confirmation_passes,
 )
 from src.utils.image_utils import (
-    best_pixel_valid_match,
-    candidate_scales,
-    pixel_similarity,
-    resize_template,
-    template_match_response,
     to_gray,
 )
 from src.utils.ocr_utils import fuzzy_substring_match, keyword_match_count, normalize_ocr_text
-from src.utils.template_resolution import offline_template_scale
 
 REFERENCE_WIDTH = 1920
 REFERENCE_HEIGHT = 1080
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_DIR = PROJECT_ROOT / "recognition-assets" / "template-assets"
 KEYWORD_MATCH_RATIO = 0.9
-
-
-@dataclass(frozen=True)
-class GachaTemplateSpec:
-    name: str
-    file_name: str
-    threshold_key: str
-    default_threshold: float
-
-
-@dataclass(frozen=True)
-class GachaMatchResult:
-    score: float
-    pixel_score: float
-    position: tuple[int, int]
-    size: tuple[int, int]
 
 
 class FreeGachaTask(BaseBD2Task):
@@ -390,7 +368,7 @@ class FreeGachaTask(BaseBD2Task):
 
     def _wait_for_template(
         self,
-        spec: GachaTemplateSpec,
+        spec: TemplateSpec,
         timeout: float,
         name: str,
         interval: float = 0.35,
@@ -534,52 +512,26 @@ class FreeGachaTask(BaseBD2Task):
             self._home_confirmation_vision = vision
         return vision
 
-    def _match(self, frame, spec: GachaTemplateSpec) -> GachaMatchResult:
-        empty = GachaMatchResult(score=-1.0, pixel_score=-1.0, position=(0, 0), size=(0, 0))
+    def _match(self, frame, spec: TemplateSpec) -> MatchResult:
+        empty = MatchResult(-1.0, (0, 0), (0, 0))
         if monotonic() < self._match_pause_until:
             return empty
 
         try:
-            template = self._load_template(spec)
+            return task_vision.match_template(
+                frame,
+                spec,
+                self.config,
+                TEMPLATE_DIR,
+                cache=self._templates,
+                min_size=8,
+                loader=lambda _template_dir, spec: (self._load_template(spec), None),
+            )
         except RuntimeError as exc:
             if spec.name not in self._missing_template_names:
                 self._missing_template_names.add(spec.name)
                 self.log_warning(str(exc), notify=True)
             return empty
-
-        try:
-            frame_gray = self._to_gray(frame)
-            frame_height, frame_width = frame_gray.shape[:2]
-            base_scale = offline_template_scale(spec.file_name, frame_width, frame_height)
-            best = empty
-            template_threshold = float(
-                getattr(self, "config", {}).get(spec.threshold_key, spec.default_threshold)
-            )
-
-            for scale in self._candidate_scales(base_scale):
-                scaled_template = self._resize_template(template, scale)
-                height, width = scaled_template.shape[:2]
-                if height < 8 or width < 8 or height > frame_height or width > frame_width:
-                    continue
-
-                result = template_match_response(frame_gray, scaled_template)
-                candidate = best_pixel_valid_match(
-                    result,
-                    frame_gray,
-                    scaled_template,
-                    None,
-                    template_threshold=template_threshold,
-                    pixel_threshold=0.0,
-                )
-                if candidate is None or candidate.score <= best.score:
-                    continue
-                x, y = candidate.location
-                best = GachaMatchResult(
-                    score=candidate.score,
-                    pixel_score=candidate.pixel_score,
-                    position=(x, y),
-                    size=(int(width), int(height)),
-                )
         except (cv2.error, MemoryError) as exc:
             self._match_pause_until = monotonic() + 2.0
             message = f"图像匹配内存不足，暂停识别2秒：{spec.name}"
@@ -589,23 +541,11 @@ class FreeGachaTask(BaseBD2Task):
                 self.log_warning(f"{message}；{exc}", notify=True)
             return empty
 
-        return best
+    def _load_template(self, spec: TemplateSpec) -> np.ndarray:
+        return task_vision.load_template(TEMPLATE_DIR, spec, cache=self._templates)[0]
 
-    def _load_template(self, spec: GachaTemplateSpec) -> np.ndarray:
-        if spec.name in self._templates:
-            return self._templates[spec.name]
-
-        path = TEMPLATE_DIR / spec.file_name
-        template = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-        if template is None:
-            raise RuntimeError(f"白嫖抽抽乐模板不存在或无法读取：{path}")
-
-        self._templates[spec.name] = template
-        return template
-
-    def _passes(self, result: GachaMatchResult, spec: GachaTemplateSpec) -> bool:
-        threshold = float(self.config.get(spec.threshold_key, spec.default_threshold))
-        return result.score >= threshold
+    def _passes(self, result: MatchResult, spec: TemplateSpec) -> bool:
+        return task_vision.passes_match(result, spec, self.config)
 
     def _ocr_text(self, frame, name: str) -> str:
         try:
@@ -645,20 +585,17 @@ class FreeGachaTask(BaseBD2Task):
         )
 
     _normalize_text = staticmethod(normalize_ocr_text)
-    _candidate_scales = staticmethod(candidate_scales)
-    _resize_template = staticmethod(resize_template)
     _to_gray = staticmethod(to_gray)
-    _pixel_similarity = staticmethod(pixel_similarity)
 
 
-LOADING_TEMPLATE = GachaTemplateSpec(
+LOADING_TEMPLATE = TemplateSpec(
     name="ui_loading_black",
     file_name="image/UI_loading_black.png",
     threshold_key="加载页面阈值",
     default_threshold=0.72,
 )
 
-BACK_TEMPLATE = GachaTemplateSpec(
+BACK_TEMPLATE = TemplateSpec(
     name="back",
     file_name="back.png",
     threshold_key="返回按钮阈值",

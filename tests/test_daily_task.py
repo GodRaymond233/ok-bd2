@@ -38,10 +38,11 @@ from src.tasks.DailyTask import (
     QUICK_HUNT_STONE_LIST_ROI,
     REFERENCE_HEIGHT,
     REFERENCE_WIDTH,
-    DailyMatchResult,
     DailyTask,
 )
+from src.tasks.map_trade.models import MatchResult
 from src.tasks.QuickHuntTask import QuickHuntTask
+from src.utils.image_utils import crop_relative
 
 
 class DailyTaskHelperTest(unittest.TestCase):
@@ -136,7 +137,7 @@ class DailyTaskHelperTest(unittest.TestCase):
         task.capture_frame = lambda: np.zeros((720, 1280, 3), dtype=np.uint8)
         task._quick_hunt_home_signals = lambda _frame: (
             True,
-            DailyMatchResult(0.9, 0.85, (0, 0), (10, 10)),
+            MatchResult(0.9, (0, 0), (10, 10), pixel_score=0.85),
             HOME_RICE_TEMPLATE,
             0.8,
             "抽抽乐",
@@ -235,7 +236,7 @@ class DailyTaskHelperTest(unittest.TestCase):
     def test_crop_relative_uses_fractional_bounds(self):
         image = np.arange(100).reshape((10, 10))
 
-        crop = DailyTask._crop_relative(image, (0.2, 0.3, 0.6, 0.8))
+        crop = crop_relative(image, (0.2, 0.3, 0.6, 0.8))
 
         np.testing.assert_array_equal(crop, image[3:8, 2:6])
 
@@ -245,7 +246,7 @@ class DailyTaskHelperTest(unittest.TestCase):
         task.capture_frame = lambda: np.zeros((10, 10, 3), dtype=np.uint8)
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
-        task._match = lambda _frame, _spec: DailyMatchResult(-1.0, -1.0, (0, 0), (0, 0))
+        task._match = lambda _frame, _spec: MatchResult(-1.0, (0, 0), (0, 0))
         task._click_reference = lambda *_args, **_kwargs: self.fail("should not click")
 
         self.assertFalse(DailyTask.run_guild_sign_in(task))
@@ -261,10 +262,10 @@ class DailyTaskHelperTest(unittest.TestCase):
 
         def fake_match(_frame, spec):
             if spec is GUILD_FINISHED_TEMPLATE:
-                return DailyMatchResult(0.9, 0.9, (0, 0), (1, 1))
+                return MatchResult(0.9, (0, 0), (1, 1), pixel_score=0.9)
             if spec is GUILD_TEMPLATE:
-                return DailyMatchResult(0.7, 0.7, (0, 0), (1, 1))
-            return DailyMatchResult(-1.0, -1.0, (0, 0), (0, 0))
+                return MatchResult(0.7, (0, 0), (1, 1), pixel_score=0.7)
+            return MatchResult(-1.0, (0, 0), (0, 0))
 
         task._match = fake_match
         task._click_reference = lambda x, y, **_kwargs: clicks.append((x, y))
@@ -286,8 +287,8 @@ class DailyTaskHelperTest(unittest.TestCase):
 
         def fake_match(_frame, spec):
             if spec is GUILD_TEMPLATE:
-                return DailyMatchResult(0.9, 0.9, (0, 0), (1, 1))
-            return DailyMatchResult(-1.0, -1.0, (0, 0), (0, 0))
+                return MatchResult(0.9, (0, 0), (1, 1), pixel_score=0.9)
+            return MatchResult(-1.0, (0, 0), (0, 0))
 
         task._match = fake_match
         task._click_reference = lambda x, y, **_kwargs: clicks.append((x, y))
@@ -309,8 +310,8 @@ class DailyTaskHelperTest(unittest.TestCase):
 
         def fake_match(_frame, spec):
             if spec is GUILD_TEMPLATE:
-                return DailyMatchResult(0.9, 0.9, (0, 0), (1, 1))
-            return DailyMatchResult(-1.0, -1.0, (0, 0), (0, 0))
+                return MatchResult(0.9, (0, 0), (1, 1), pixel_score=0.9)
+            return MatchResult(-1.0, (0, 0), (0, 0))
 
         task._match = fake_match
         task._click_reference = lambda x, y, **_kwargs: clicks.append((x, y))
@@ -340,8 +341,8 @@ class DailyTaskHelperTest(unittest.TestCase):
 
         def fake_match(_frame, spec):
             if spec is GUILD_MAIN_ACTIVE_TEMPLATE:
-                return DailyMatchResult(0.9, 0.9, (0, 0), (1, 1))
-            return DailyMatchResult(-1.0, -1.0, (0, 0), (0, 0))
+                return MatchResult(0.9, (0, 0), (1, 1), pixel_score=0.9)
+            return MatchResult(-1.0, (0, 0), (0, 0))
 
         task._match = fake_match
         task._click_reference = lambda x, y, **_kwargs: clicks.append((x, y))
@@ -363,10 +364,10 @@ class DailyTaskHelperTest(unittest.TestCase):
 
         def fake_match(_frame, spec):
             if spec is GUILD_MAIN_ACTIVE_TEMPLATE:
-                return DailyMatchResult(0.967, 0.967, (0, 0), (1, 1))
+                return MatchResult(0.967, (0, 0), (1, 1), pixel_score=0.967)
             if spec is GUILD_MAIN_FINISHED_TEMPLATE:
-                return DailyMatchResult(0.978, 0.978, (0, 0), (1, 1))
-            return DailyMatchResult(-1.0, -1.0, (0, 0), (0, 0))
+                return MatchResult(0.978, (0, 0), (1, 1), pixel_score=0.978)
+            return MatchResult(-1.0, (0, 0), (0, 0))
 
         task._match = fake_match
         task._click_reference = lambda x, y, **_kwargs: clicks.append((x, y))
@@ -421,10 +422,10 @@ class DailyTaskHelperTest(unittest.TestCase):
         def fake_match(_frame, spec):
             calls.append(spec.name)
             if spec is LOADING_TEMPLATE:
-                return DailyMatchResult(0.9, 0.9, (0, 0), (1, 1))
+                return MatchResult(0.9, (0, 0), (1, 1), pixel_score=0.9)
             if spec is MY_HOME_TEMPLATE and calls.count(MY_HOME_TEMPLATE.name) >= 2:
-                return DailyMatchResult(0.9, 0.9, (0, 0), (1, 1))
-            return DailyMatchResult(-1.0, -1.0, (0, 0), (0, 0))
+                return MatchResult(0.9, (0, 0), (1, 1), pixel_score=0.9)
+            return MatchResult(-1.0, (0, 0), (0, 0))
 
         task._match = fake_match
 
@@ -449,8 +450,8 @@ class DailyTaskHelperTest(unittest.TestCase):
         def fake_match(_frame, spec):
             calls.append(spec.name)
             if spec is LOADING_TEMPLATE:
-                return DailyMatchResult(0.9, 0.9, (0, 0), (1, 1))
-            return DailyMatchResult(-1.0, -1.0, (0, 0), (0, 0))
+                return MatchResult(0.9, (0, 0), (1, 1), pixel_score=0.9)
+            return MatchResult(-1.0, (0, 0), (0, 0))
 
         task._match = fake_match
         task._ocr_text = lambda *_args, **_kwargs: (
@@ -601,7 +602,7 @@ class DailyTaskHelperTest(unittest.TestCase):
     def test_quick_hunt_home_requires_button_brightness_and_gacha_ocr(self):
         task = object.__new__(QuickHuntTask)
         task.config = {"主页亮度比例阈值": 0.75}
-        match = DailyMatchResult(0.9, 0.85, (0, 0), (10, 10))
+        match = MatchResult(0.9, (0, 0), (10, 10), pixel_score=0.85)
         task._match_best = lambda _frame, _specs: (match, HOME_RICE_TEMPLATE)
         task._passes = lambda _match, _spec: True
         task._home_brightness_ratio = lambda _frame: 0.7
@@ -1191,14 +1192,14 @@ class DailyTaskHelperTest(unittest.TestCase):
             (
                 (
                     False,
-                    DailyMatchResult(0.9, 0.85, (0, 0), (10, 10)),
+                    MatchResult(0.9, (0, 0), (10, 10), pixel_score=0.85),
                     HOME_RICE_TEMPLATE,
                     0.8,
                     "-",
                 ),
                 (
                     True,
-                    DailyMatchResult(0.9, 0.85, (0, 0), (10, 10)),
+                    MatchResult(0.9, (0, 0), (10, 10), pixel_score=0.85),
                     HOME_RICE_TEMPLATE,
                     0.8,
                     "抽抽乐",
@@ -1218,7 +1219,7 @@ class DailyTaskHelperTest(unittest.TestCase):
         task.config = {"主页亮度比例阈值": 0.75}
         task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
         task.info_set = lambda *_args, **_kwargs: None
-        match = DailyMatchResult(0.9, 0.85, (0, 0), (10, 10))
+        match = MatchResult(0.9, (0, 0), (10, 10), pixel_score=0.85)
         signals = iter(
             (
                 (False, match, HOME_RICE_TEMPLATE, 0.419, "抽抽乐"),

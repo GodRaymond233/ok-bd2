@@ -10,8 +10,8 @@ from src.tasks.FreeGachaTask import (
     REFERENCE_HEIGHT,
     REFERENCE_WIDTH,
     FreeGachaTask,
-    GachaMatchResult,
 )
+from src.tasks.map_trade.models import MatchResult
 
 free_gacha_module = importlib.import_module("src.tasks.FreeGachaTask")
 
@@ -70,8 +70,8 @@ class FreeGachaTaskHelperTest(unittest.TestCase):
         def fake_match(_frame, spec):
             if spec is LOADING_TEMPLATE:
                 loading_seen["value"] = True
-                return GachaMatchResult(0.9, 0.9, (0, 0), (1, 1))
-            return GachaMatchResult(-1.0, -1.0, (0, 0), (0, 0))
+                return MatchResult(0.9, (0, 0), (1, 1), pixel_score=0.9)
+            return MatchResult(-1.0, (0, 0), (0, 0))
 
         task._match = fake_match
         task._ocr_text = lambda *_args, **_kwargs: "服装" if loading_seen["value"] else ""
@@ -98,8 +98,8 @@ class FreeGachaTaskHelperTest(unittest.TestCase):
         def fake_match(_frame, spec):
             if spec is LOADING_TEMPLATE:
                 loading_seen["value"] = True
-                return GachaMatchResult(0.9, 0.9, (0, 0), (1, 1))
-            return GachaMatchResult(-1.0, -1.0, (0, 0), (0, 0))
+                return MatchResult(0.9, (0, 0), (1, 1), pixel_score=0.9)
+            return MatchResult(-1.0, (0, 0), (0, 0))
 
         task._match = fake_match
         task._home_confirmation_ok = (
