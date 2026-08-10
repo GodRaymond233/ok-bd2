@@ -3,10 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from src.utils.calibration import HD_720
 from src.utils.vision_models import MatchResult, TemplateSpec  # noqa: F401
 
-MF_REFERENCE_WIDTH = 1280
-MF_REFERENCE_HEIGHT = 720
+# map_trade vision coordinates are calibrated at 1280×720 and converted to
+# the live client resolution at runtime.
+MAP_TRADE_REFERENCE = HD_720
 DAILY_ABSORB_LIMIT = 21
 DAILY_SUMMON_LIMIT = 21
 DAILY_SUPPRESS_LIMIT = 60

@@ -1,5 +1,4 @@
 import re
-import time
 from pathlib import Path
 from time import monotonic
 
@@ -10,6 +9,7 @@ from qfluentwidgets import FluentIcon
 from src.tasks.BaseBD2Task import BaseBD2Task
 from src.tasks.map_trade.models import MatchResult, TemplateSpec
 from src.utils import task_vision
+from src.utils.calibration import FHD_1080, HD_720, QHD_1440
 from src.utils.home_confirmation import (
     HOME_GACHA_OCR_REFERENCE_ROI,
     home_confirmation_passes,
@@ -20,12 +20,12 @@ from src.utils.image_utils import (
 )
 from src.utils.ocr_utils import normalize_ocr_text
 
-REFERENCE_WIDTH = 1920
-REFERENCE_HEIGHT = 1080
-MFABD2_REFERENCE_WIDTH = 1280
-MFABD2_REFERENCE_HEIGHT = 720
-ENTRY_REFERENCE_WIDTH = 2560
-ENTRY_REFERENCE_HEIGHT = 1440
+REFERENCE_WIDTH = FHD_1080.width
+REFERENCE_HEIGHT = FHD_1080.height
+MFABD2_REFERENCE_WIDTH = HD_720.width
+MFABD2_REFERENCE_HEIGHT = HD_720.height
+ENTRY_REFERENCE_WIDTH = QHD_1440.width
+ENTRY_REFERENCE_HEIGHT = QHD_1440.height
 SQUARE_CARD_LIST_SWIPE_COUNT = 1
 GAMEPLAY_CARTRIDGE_POINT = (989 / REFERENCE_WIDTH, 875 / REFERENCE_HEIGHT)
 SQUARE_CARTRIDGE_SLOT_POINT = (1230 / REFERENCE_WIDTH, 970 / REFERENCE_HEIGHT)
@@ -1036,50 +1036,7 @@ class SquareGoddessTask(BaseBD2Task):
             round(frame_width * end[0] / ENTRY_REFERENCE_WIDTH),
             round(frame_height * end[1] / ENTRY_REFERENCE_HEIGHT),
         )
-        self._drag_client(start_client, end_client, duration=duration, after_sleep=after_sleep)
-
-    def _drag_client(
-        self,
-        start: tuple[int, int],
-        end: tuple[int, int],
-        duration: float = 0.7,
-        after_sleep: float = 0.0,
-    ) -> None:
-        def action():
-            import win32api
-            import win32con
-
-            interaction = getattr(self.executor, "interaction", None)
-            if interaction is not None and hasattr(interaction, "force_activate"):
-                interaction.force_activate()
-            elif interaction is not None and hasattr(interaction, "try_activate"):
-                interaction.try_activate()
-
-            capture = getattr(interaction, "capture", None)
-
-            def to_screen(point: tuple[int, int]) -> tuple[int, int]:
-                if capture is not None and hasattr(capture, "get_abs_cords"):
-                    return capture.get_abs_cords(point[0], point[1])
-                return point
-
-            start_abs = to_screen(start)
-            end_abs = to_screen(end)
-            steps = max(6, round(duration / 0.03))
-            win32api.SetCursorPos(start_abs)
-            time.sleep(0.03)
-            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-            try:
-                for index in range(1, steps + 1):
-                    ratio = index / steps
-                    x = round(start_abs[0] + (end_abs[0] - start_abs[0]) * ratio)
-                    y = round(start_abs[1] + (end_abs[1] - start_abs[1]) * ratio)
-                    win32api.SetCursorPos((x, y))
-                    time.sleep(duration / steps)
-            finally:
-                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-
-        self.operate(action, block=True, restore_cursor=True)
-        self.sleep(after_sleep)
+        self.drag_client(start_client, end_client, duration=duration, after_sleep=after_sleep)
 
     def _home_ratio_threshold(self) -> float:
         return float(self.config.get("主页亮度比例阈值", 0.75))

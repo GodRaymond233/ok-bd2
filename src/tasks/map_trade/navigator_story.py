@@ -550,7 +550,7 @@ class StoryCardNavigationMixin:
         # larger card numbers, so first reset to that edge. Scanning then uses
         # the user-calibrated upward wheel: cards move right, large to small.
         self._status("卡带滚轮", "向下复位到大编号端")
-        self.task._scroll_client(
+        self.task.scroll_client(
             QUICK_SWITCH_SCROLL_POINT,
             QUICK_SWITCH_SCROLL_RESET_AMOUNT,
             count=QUICK_SWITCH_SCROLL_RESET_COUNT,
@@ -571,7 +571,7 @@ class StoryCardNavigationMixin:
             if step >= steps:
                 break
             self._status("卡带滚轮", f"向上扫描 {step + 1}/{steps}")
-            self.task._scroll_client(
+            self.task.scroll_client(
                 QUICK_SWITCH_SCROLL_POINT,
                 QUICK_SWITCH_SCROLL_UP_AMOUNT,
                 count=QUICK_SWITCH_SCROLL_UP_COUNT,
@@ -691,7 +691,7 @@ class StoryCardNavigationMixin:
                 "卡带滚轮",
                 f"后续卡带滚动 {scrolled}/{scroll_limit}（本批{batch_count}次）",
             )
-            self.task._scroll_client(
+            self.task.scroll_client(
                 PROBE_QUICK_SWITCH_SCROLL_POINT,
                 PROBE_QUICK_SWITCH_SCROLL_AMOUNT,
                 count=batch_count,

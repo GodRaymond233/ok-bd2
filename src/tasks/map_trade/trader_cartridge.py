@@ -160,7 +160,7 @@ class ShopCartridgeNavigationMixin:
         interval: float,
         after_sleep: float,
     ) -> None:
-        self.task._scroll_client(
+        self.task.scroll_client(
             SHOP_CARTRIDGE_SCROLL_POINT,
             scroll_amount,
             count=count,

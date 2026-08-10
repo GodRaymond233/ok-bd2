@@ -11,8 +11,7 @@ import numpy as np
 from opencc import OpenCC
 
 from src.tasks.map_trade.models import (
-    MF_REFERENCE_HEIGHT,
-    MF_REFERENCE_WIDTH,
+    MAP_TRADE_REFERENCE,
     MatchResult,
     TemplateSpec,
 )
@@ -64,8 +63,8 @@ class Vision:
     @staticmethod
     def reference_point(x: float, y: float, width: int, height: int) -> tuple[int, int]:
         return (
-            round(width * x / MF_REFERENCE_WIDTH),
-            round(height * y / MF_REFERENCE_HEIGHT),
+            round(width * x / MAP_TRADE_REFERENCE.width),
+            round(height * y / MAP_TRADE_REFERENCE.height),
         )
 
     @staticmethod
@@ -75,7 +74,7 @@ class Vision:
         left, top, roi_width, roi_height = scale_reference_roi(
             roi,
             (width, height),
-            (MF_REFERENCE_WIDTH, MF_REFERENCE_HEIGHT),
+            MAP_TRADE_REFERENCE.size,
         )
         return left, top, max(1, roi_width), max(1, roi_height)
 
@@ -100,8 +99,8 @@ class Vision:
 
     def click_reference(self, x: float, y: float, after_sleep: float = 0.0) -> None:
         self.task.operate_click(
-            max(0.0, min(1.0, x / MF_REFERENCE_WIDTH)),
-            max(0.0, min(1.0, y / MF_REFERENCE_HEIGHT)),
+            max(0.0, min(1.0, x / MAP_TRADE_REFERENCE.width)),
+            max(0.0, min(1.0, y / MAP_TRADE_REFERENCE.height)),
             after_sleep=after_sleep,
         )
 
@@ -124,7 +123,7 @@ class Vision:
     ) -> None:
         frame = self.capture()
         height, width = frame.shape[:2]
-        self.task._drag_client(
+        self.task.drag_client(
             self.reference_point(*start, width, height),
             self.reference_point(*end, width, height),
             duration=duration,
@@ -180,7 +179,7 @@ class Vision:
             min_size=4,
             skip_scale_errors=True,
             template_threshold=self.threshold_for(spec),
-            roi_reference_size=(MF_REFERENCE_WIDTH, MF_REFERENCE_HEIGHT),
+            roi_reference_size=MAP_TRADE_REFERENCE.size,
             loader=lambda _template_dir, spec: self._load(spec),
         )
 

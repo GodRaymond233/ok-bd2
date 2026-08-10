@@ -1,5 +1,6 @@
 import re
-import time
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic
 
@@ -7,29 +8,42 @@ import cv2
 import numpy as np
 from qfluentwidgets import FluentIcon
 
-from src.tasks.BaseBD2Task import (
-    RECENT_CARTRIDGE_SPECIAL_PAGE_MAX_ACTIONS,
-    BaseBD2Task,
-)
+from src.tasks.BaseBD2Task import BaseBD2Task
 from src.tasks.map_trade.models import MatchResult, TemplateSpec
 from src.utils import task_vision
+from src.utils.calibration import FHD_1080, HD_720, QHD_1440
 from src.utils.home_confirmation import (
     HOME_GACHA_OCR_REFERENCE_ROI,
     home_confirmation_passes,
 )
 from src.utils.image_utils import (
+    best_pixel_valid_match,
+    masked_zncc,
+    pixel_similarity,
     reference_roi_frame,
     relative_roi_frame,
+    resize_mask,
+    resize_template,
     stabilize_template_match,
+    template_match_response,
+    to_gray,
 )
 from src.utils.ocr_utils import normalize_ocr_text
+from src.utils.template_resolution import offline_template_scale
 
-REFERENCE_WIDTH = 1920
-REFERENCE_HEIGHT = 1080
-MFABD2_REFERENCE_WIDTH = 1280
-MFABD2_REFERENCE_HEIGHT = 720
-ENTRY_REFERENCE_WIDTH = 2560
-ENTRY_REFERENCE_HEIGHT = 1440
+REFERENCE_WIDTH = FHD_1080.width
+REFERENCE_HEIGHT = FHD_1080.height
+MFABD2_REFERENCE_WIDTH = HD_720.width
+MFABD2_REFERENCE_HEIGHT = HD_720.height
+ENTRY_REFERENCE_WIDTH = QHD_1440.width
+ENTRY_REFERENCE_HEIGHT = QHD_1440.height
+RECENT_CARTRIDGE_SPECIAL_PAGE_SECONDS = 3.0
+RECENT_CARTRIDGE_SPECIAL_PAGE_MAX_ACTIONS = 3
+BEIJING_TIMEZONE = timezone(timedelta(hours=8))
+RECENT_PVP_CARTRIDGE_TEMPLATE_FILE = "cartridge-image2-left-lower-cutout.png"
+RECENT_PVP_CARTRIDGE_TEMPLATE_THRESHOLD = 0.95
+RECENT_PVP_CARTRIDGE_PIXEL_THRESHOLD = 0.95
+RECENT_PVP_CARTRIDGE_ZNCC_THRESHOLD = 0.85
 FREE_AP_SWITCH_SCREEN_ROI = (1680, 535, 120, 55)
 PVP_RESULT_SCREEN_ROI = (932, 368, 699, 704)
 PVP_RESULT_CLOSE_SCREEN_POINT = (1585, 410)
@@ -50,6 +64,23 @@ QUICK_SWITCH_PAGE_PATTERNS = (r"最近", r"剧情游戏卡", r"玩法游戏卡")
 HOME_GACHA_OCR_ROI = HOME_GACHA_OCR_REFERENCE_ROI
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_DIR = PROJECT_ROOT / "recognition-assets" / "template-assets"
+
+
+@dataclass(frozen=True)
+class RecentPvpCartridgeMatch:
+    score: float = -1.0
+    pixel_score: float = -1.0
+    zncc_score: float = -1.0
+    position: tuple[int, int] = (0, 0)
+    size: tuple[int, int] = (0, 0)
+
+    @property
+    def passed(self) -> bool:
+        return (
+            self.score >= RECENT_PVP_CARTRIDGE_TEMPLATE_THRESHOLD
+            and self.pixel_score >= RECENT_PVP_CARTRIDGE_PIXEL_THRESHOLD
+            and self.zncc_score >= RECENT_PVP_CARTRIDGE_ZNCC_THRESHOLD
+        )
 
 
 class PVPTask(BaseBD2Task):
@@ -107,6 +138,9 @@ class PVPTask(BaseBD2Task):
         self._missing_template_names: set[str] = set()
         self._match_error_names: set[str] = set()
         self._match_pause_until = 0.0
+        self._recent_pvp_cartridge_template_cache: (
+            tuple[np.ndarray, np.ndarray] | None
+        ) = None
         self.default_config.update(
             {
                 "启用": True,
@@ -154,6 +188,217 @@ class PVPTask(BaseBD2Task):
                 "PVP 箱庭感叹号阈值": "进入 PVP 箱庭后识别 tanhaoGE.png 的模板匹配阈值。",
             }
         )
+
+    def _recent_cartridge_is_pvp(self) -> bool:
+        frame = self.capture_frame()
+        result = self._match_recent_pvp_cartridge(frame)
+        verdict = "PVP" if result.passed else "非 PVP"
+        self.info_set(
+            "最近卡带 PVP 模板",
+            (
+                f"{verdict} m={result.score:.3f} p={result.pixel_score:.3f} "
+                f"z={result.zncc_score:.3f} box={result.position}+{result.size}"
+            ),
+        )
+        return result.passed
+
+    def _match_recent_pvp_cartridge(
+        self,
+        frame: np.ndarray,
+    ) -> RecentPvpCartridgeMatch:
+        template, mask = self._load_recent_pvp_cartridge_template()
+        frame_gray = to_gray(frame)
+        frame_height, frame_width = frame_gray.shape[:2]
+        scale = offline_template_scale(
+            RECENT_PVP_CARTRIDGE_TEMPLATE_FILE,
+            frame_width,
+            frame_height,
+        )
+        scaled_template = resize_template(template, scale)
+        scaled_mask = resize_mask(mask, scale)
+        height, width = scaled_template.shape[:2]
+        if (
+            height < 5
+            or width < 5
+            or height > frame_height
+            or width > frame_width
+        ):
+            return RecentPvpCartridgeMatch(size=(width, height))
+
+        try:
+            response = template_match_response(
+                frame_gray,
+                scaled_template,
+                scaled_mask,
+            )
+        except cv2.error as exc:
+            raise RuntimeError(f"最近卡带 PVP 模板匹配失败：{exc}") from exc
+
+        candidate = best_pixel_valid_match(
+            response,
+            frame_gray,
+            scaled_template,
+            scaled_mask,
+            template_threshold=RECENT_PVP_CARTRIDGE_TEMPLATE_THRESHOLD,
+            pixel_threshold=RECENT_PVP_CARTRIDGE_PIXEL_THRESHOLD,
+            zncc_threshold=RECENT_PVP_CARTRIDGE_ZNCC_THRESHOLD,
+        )
+        if candidate is not None:
+            return RecentPvpCartridgeMatch(
+                score=candidate.score,
+                pixel_score=candidate.pixel_score,
+                zncc_score=candidate.zncc_score,
+                position=candidate.location,
+                size=(width, height),
+            )
+
+        _minimum, score, _minimum_location, location = cv2.minMaxLoc(response)
+        x, y = location
+        region = frame_gray[y : y + height, x : x + width]
+        return RecentPvpCartridgeMatch(
+            score=float(score),
+            pixel_score=pixel_similarity(region, scaled_template, scaled_mask),
+            zncc_score=masked_zncc(region, scaled_template, scaled_mask),
+            position=(int(x), int(y)),
+            size=(width, height),
+        )
+
+    def _load_recent_pvp_cartridge_template(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        cached = getattr(self, "_recent_pvp_cartridge_template_cache", None)
+        if cached is not None:
+            return cached
+
+        path = TEMPLATE_DIR / RECENT_PVP_CARTRIDGE_TEMPLATE_FILE
+        raw = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+        if raw is None:
+            raise RuntimeError(f"最近卡带 PVP 模板不存在或无法读取：{path}")
+        if raw.ndim != 3 or raw.shape[2] < 4:
+            raise RuntimeError(f"最近卡带 PVP 模板缺少 Alpha 通道：{path}")
+
+        mask = np.where(raw[:, :, 3] > 0, 255, 0).astype(np.uint8)
+        active_pixels = int(np.count_nonzero(mask))
+        if active_pixels <= 0 or active_pixels >= mask.size:
+            raise RuntimeError(f"最近卡带 PVP 模板 Alpha 遮罩无效：{path}")
+
+        cached = (to_gray(raw), mask)
+        self._recent_pvp_cartridge_template_cache = cached
+        return cached
+
+    def _handle_recent_cartridge_special_pages(
+        self,
+        timeout: float = RECENT_CARTRIDGE_SPECIAL_PAGE_SECONDS,
+        interval: float = 0.25,
+        allow_season_reward: bool | None = None,
+    ) -> bool:
+        """OCR and dismiss PVP promotion, demotion, and season reward pages."""
+        if allow_season_reward is None:
+            allow_season_reward = self._is_beijing_monday()
+        end_at = monotonic() + max(0.0, float(timeout))
+        handled: set[str] = set()
+        action_count = 0
+
+        while True:
+            boxes = self._recent_cartridge_ocr_boxes()
+            text, action_name, target_box = self._pvp_special_page_action(
+                boxes,
+                allow_season_reward=allow_season_reward,
+            )
+            self.info_set("最近卡带特殊页面 OCR", text or "-")
+
+            if action_name and action_name not in handled and target_box is not None:
+                point = self._ocr_box_center(target_box)
+                if point is not None:
+                    frame_width = max(1, int(self.width))
+                    frame_height = max(1, int(self.height))
+                    self.info_set("当前阶段", f"处理最近卡带{action_name}")
+                    self.operate_click(
+                        max(0.0, min(1.0, point[0] / frame_width)),
+                        max(0.0, min(1.0, point[1] / frame_height)),
+                        after_sleep=0.5,
+                    )
+                    handled.add(action_name)
+                    action_count += 1
+
+            if (
+                monotonic() >= end_at
+                or action_count >= RECENT_CARTRIDGE_SPECIAL_PAGE_MAX_ACTIONS
+            ):
+                break
+            self.sleep(max(0.0, float(interval)))
+
+        return bool(handled)
+
+    @classmethod
+    def _pvp_special_page_action(
+        cls,
+        boxes: list,
+        *,
+        allow_season_reward: bool,
+    ) -> tuple[str, str, object | None]:
+        """Return a strict paired PVP special-page action from one OCR frame."""
+        text = " ".join(
+            str(getattr(box, "name", ""))
+            for box in boxes
+            if getattr(box, "name", "")
+        )
+        normalized = normalize_ocr_text(text)
+        if (
+            allow_season_reward
+            and "赛季奖励" in normalized
+            and "点击画面即可返回" in normalized
+        ):
+            return text, "赛季奖励", cls._find_ocr_box(boxes, "点击画面即可返回")
+        if "恭喜晋级" in normalized and "确认" in normalized:
+            return text, "恭喜晋级", cls._find_ocr_box(boxes, "确认")
+        if "段位下滑" in normalized and "确认" in normalized:
+            return text, "段位下滑", cls._find_ocr_box(boxes, "确认")
+        return text, "", None
+
+    @staticmethod
+    def _is_beijing_monday(now: datetime | None = None) -> bool:
+        if now is None:
+            now = datetime.now(timezone.utc)
+        return now.astimezone(BEIJING_TIMEZONE).weekday() == 0
+
+    def _pvp_special_page_ocr_boxes(
+        self,
+        frame: np.ndarray | None = None,
+        *,
+        name: str = "PVP 特殊页面",
+    ) -> list:
+        try:
+            if frame is None:
+                frame = self.capture_frame()
+            config = getattr(self, "config", {})
+            threshold = next(
+                (
+                    float(config[key])
+                    for key in (
+                        "PVP OCR 阈值",
+                        "广场 OCR 阈值",
+                        "跑商 OCR 阈值",
+                        "跑图 OCR 阈值",
+                    )
+                    if key in config
+                ),
+                0.2,
+            )
+            boxes = self.ocr(
+                frame=frame,
+                threshold=threshold,
+                target_height=720,
+                log=False,
+                name=name,
+            )
+        except Exception as exc:
+            self.info_set(f"{name} OCR 错误", str(exc))
+            return []
+        return list(boxes)
+
+    def _recent_cartridge_ocr_boxes(self) -> list:
+        return self._pvp_special_page_ocr_boxes(name="最近卡带特殊页面")
 
     def run(self):
         if not bool(self.config.get("启用", True)):
@@ -821,7 +1066,7 @@ class PVPTask(BaseBD2Task):
                 self._wait_loading_if_present("通行证进入 PVP")
                 return
             frame_height, frame_width = frame.shape[:2]
-            self._drag_client(
+            self.drag_client(
                 (round(frame_width * 0.5), round(frame_height * 0.72)),
                 (round(frame_width * 0.5), round(frame_height * 0.35)),
                 duration=0.6,
@@ -1347,92 +1592,7 @@ class PVPTask(BaseBD2Task):
             round(frame_width * end[0] / ENTRY_REFERENCE_WIDTH),
             round(frame_height * end[1] / ENTRY_REFERENCE_HEIGHT),
         )
-        self._drag_client(start_client, end_client, duration=duration, after_sleep=after_sleep)
-
-    def _drag_client(
-        self,
-        start: tuple[int, int],
-        end: tuple[int, int],
-        duration: float = 0.7,
-        after_sleep: float = 0.0,
-    ) -> None:
-        def action():
-            import win32api
-            import win32con
-
-            interaction = getattr(self.executor, "interaction", None)
-            if interaction is not None and hasattr(interaction, "force_activate"):
-                interaction.force_activate()
-            elif interaction is not None and hasattr(interaction, "try_activate"):
-                interaction.try_activate()
-
-            capture = getattr(interaction, "capture", None)
-
-            def to_screen(point: tuple[int, int]) -> tuple[int, int]:
-                if capture is not None and hasattr(capture, "get_abs_cords"):
-                    return capture.get_abs_cords(point[0], point[1])
-                return point
-
-            start_abs = to_screen(start)
-            end_abs = to_screen(end)
-            steps = max(6, round(duration / 0.03))
-            win32api.SetCursorPos(start_abs)
-            time.sleep(0.03)
-            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-            try:
-                for index in range(1, steps + 1):
-                    ratio = index / steps
-                    x = round(start_abs[0] + (end_abs[0] - start_abs[0]) * ratio)
-                    y = round(start_abs[1] + (end_abs[1] - start_abs[1]) * ratio)
-                    win32api.SetCursorPos((x, y))
-                    time.sleep(duration / steps)
-            finally:
-                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-
-        self.operate(action, block=True, restore_cursor=True)
-        self.sleep(after_sleep)
-
-    def _post_drag_client(
-        self,
-        start: tuple[int, int],
-        end: tuple[int, int],
-        duration: float = 0.7,
-    ) -> bool:
-        interaction = getattr(getattr(self, "executor", None), "interaction", None)
-        if interaction is None or not hasattr(interaction, "post"):
-            return False
-
-        try:
-            import win32api
-            import win32con
-        except ImportError:
-            return False
-
-        steps = max(6, round(duration / 0.03))
-
-        def post_drag_messages() -> None:
-            start_pos = win32api.MAKELONG(int(start[0]), int(start[1]))
-            interaction.post(win32con.WM_MOUSEMOVE, 0, start_pos)
-            interaction.post(win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, start_pos)
-            try:
-                for index in range(1, steps + 1):
-                    ratio = index / steps
-                    x = round(start[0] + (end[0] - start[0]) * ratio)
-                    y = round(start[1] + (end[1] - start[1]) * ratio)
-                    move_pos = win32api.MAKELONG(x, y)
-                    interaction.post(win32con.WM_MOUSEMOVE, win32con.MK_LBUTTON, move_pos)
-                    time.sleep(duration / steps if duration > 0 else 0)
-            finally:
-                end_pos = win32api.MAKELONG(int(end[0]), int(end[1]))
-                interaction.post(win32con.WM_LBUTTONUP, 0, end_pos)
-
-        lock = getattr(interaction, "_input_lock", None)
-        if lock is None:
-            post_drag_messages()
-        else:
-            with lock:
-                post_drag_messages()
-        return True
+        self.drag_client(start_client, end_client, duration=duration, after_sleep=after_sleep)
 
     def _home_ratio_threshold(self) -> float:
         return float(self.config.get("主页亮度比例阈值", 0.75))

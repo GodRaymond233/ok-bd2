@@ -6,6 +6,7 @@ import numpy as np
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task
+from src.utils.calibration import FHD_1080
 from src.utils.image_utils import (
     best_pixel_valid_match,
     resize_template,
@@ -14,7 +15,7 @@ from src.utils.image_utils import (
 )
 from src.utils.template_resolution import offline_template_scale
 
-REFERENCE_WIDTH = 1920
+REFERENCE_WIDTH = FHD_1080.width
 TEMPLATE_PATH = (
     Path(__file__).resolve().parents[2]
     / "recognition-assets"

@@ -6,9 +6,10 @@ from ok.util.process import is_admin
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task
+from src.utils.calibration import FHD_1080
 
-REFERENCE_WIDTH = 1920
-REFERENCE_HEIGHT = 1080
+REFERENCE_WIDTH = FHD_1080.width
+REFERENCE_HEIGHT = FHD_1080.height
 DEFAULT_WHEEL_REGION = (
     228 / REFERENCE_WIDTH,
     117 / REFERENCE_HEIGHT,
