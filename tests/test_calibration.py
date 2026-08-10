@@ -4,11 +4,11 @@ import numpy as np
 
 import src.tasks.PVPTask as pvp_task_module
 import src.tasks.SquareGoddessTask as square_goddess_task_module
+import src.tasks.task_vision_mixin as task_vision_mixin_module
 import src.tasks.trigger.AutoLoginTask as auto_login_task_module
 from src.tasks import (
     BargainLevelTask,
     BD2InputTestTask,
-    DailyTask,
     FreeGachaTask,
     QuickSuppressionTask,
 )
@@ -35,7 +35,7 @@ class ReferenceCalibrationTest(unittest.TestCase):
 
     def test_task_modules_derive_1080p_reference_from_shared_calibration(self):
         for module in (
-            DailyTask,
+            task_vision_mixin_module,
             FreeGachaTask,
             pvp_task_module,
             square_goddess_task_module,

@@ -27,6 +27,9 @@ from src.tasks.map_trade.navigator_constants import (  # noqa: F401
     BARGAIN_SHOP_CONFIRM_POPUP_KEYWORD,
     BARGAIN_SHOP_CONFIRM_STABLE_HITS,
     CHAPTER_HOME_POINT,
+    CHAPTER_HOME_TEMPLATES,
+    DISCOUNT_SHOP_CLOSE_CONTROL_REFERENCE_POINT,
+    DISCOUNT_SHOP_CLOSE_CONTROL_TEMPLATES,
     DISCOUNT_SHOP_CLOSE_DIALOG_REGION,
     DISCOUNT_SHOP_CLOSE_KEYWORDS,
     DISCOUNT_SHOP_CLOSE_POINT,
@@ -110,6 +113,10 @@ from src.tasks.map_trade.navigator_constants import (  # noqa: F401
     SANDBOX_TELEPORT_SKILL_TEMPLATE,
     SANDBOX_TELEPORT_SKILL_TIMEOUT,
     SANDBOX_TEMPLATES,
+    SHOP_CLOSE_CLICK_INTERVAL,
+    SHOP_CLOSE_CLICK_RETRIES,
+    SHOP_ENTRY_CLICK_INTERVAL,
+    SHOP_ENTRY_CLICK_RETRIES,
     SHOP_PAGE_OCR_KEYWORDS,
     STORY_BADGE_CANDIDATE_PIXEL_SCORE,
     STORY_BADGE_CANDIDATE_SCORE,
@@ -342,28 +349,101 @@ class TradeNavigationMixin:
         else:
             self.task.log_warning("跑商：未找到砍价选项，尝试直接进入商店。")
         self.task.sleep(0.7)
-        shop_entry_clicked = self.vision.click_ocr(
-            [r"商店", r"进入商店"], roi=(60, 400, 1040, 260), name="商店入口"
-        )
-        if not shop_entry_clicked:
-            # Only used after the merchant dialogue template was positively identified.
-            self.vision.click_reference(130, 447, after_sleep=0.5)
+        if not self._click_shop_entry_with_retries():
+            return NavigationResult(
+                False,
+                self.classify_trade(),
+                "未识别到商店/进入商店入口，停止进入商店",
+            )
         state = self.wait_trade_state({ScreenState.SHOP}, 12)
         if state == ScreenState.SHOP:
             return NavigationResult(True, state)
-        if shop_entry_clicked:
-            self.task.log_warning(
-                "跑商：已点击商店入口，但商店页OCR未确认，按卖出入口成功继续。"
-            )
-            return NavigationResult(
-                True,
-                ScreenState.SHOP,
-                "已点击商店入口，商店页OCR未确认",
-            )
-        # Dialogue animation occasionally needs one harmless central click.
-        self.vision.click_reference(640, 620, after_sleep=0.6)
-        state = self.wait_trade_state({ScreenState.SHOP}, 6)
-        return NavigationResult(state == ScreenState.SHOP, state, "商店进入超时")
+        return NavigationResult(
+            False,
+            state,
+            "已点击商店入口，但商店页OCR未确认",
+        )
+
+    def _click_shop_entry_with_retries(self) -> bool:
+        """Click the OCR-confirmed shop entry with bounded retries, never a blind point."""
+
+        for attempt in range(1, SHOP_ENTRY_CLICK_RETRIES + 1):
+            if self.vision.click_ocr(
+                [r"商店", r"进入商店"],
+                roi=(60, 400, 1040, 260),
+                name=f"商店入口({attempt})",
+            ):
+                return True
+            if attempt < SHOP_ENTRY_CLICK_RETRIES:
+                self.task.sleep(SHOP_ENTRY_CLICK_INTERVAL)
+        return False
+
+    def _click_shop_close_control(self, after_sleep: float = 0.0) -> None:
+        """Click the discount shop close control, template-first with a calibrated fallback."""
+
+        for attempt in range(1, SHOP_CLOSE_CLICK_RETRIES + 1):
+            frame = self.vision.capture()
+            for spec in DISCOUNT_SHOP_CLOSE_CONTROL_TEMPLATES:
+                result = self.vision.match(frame, spec)
+                passed = self.vision.passes(result, spec)
+                self._status(
+                    spec.name,
+                    (
+                        f"{'pass' if passed else 'miss'}; "
+                        f"match={result.score:.3f}; pixel={result.pixel_score:.3f}; "
+                        f"zncc={result.zncc_score:.3f}"
+                    ),
+                )
+                if passed:
+                    self._status(
+                        "折扣商店关闭按钮",
+                        f"center=({result.center[0]},{result.center[1]})",
+                    )
+                    self.vision.click_client(
+                        result.center,
+                        frame.shape,
+                        after_sleep=after_sleep,
+                    )
+                    return
+            if attempt < SHOP_CLOSE_CLICK_RETRIES:
+                self.task.sleep(SHOP_CLOSE_CLICK_INTERVAL)
+        self._status("折扣商店关闭按钮", "模板未命中，回退到标定相对点(82,36)")
+        self.vision.click_reference(
+            *DISCOUNT_SHOP_CLOSE_CONTROL_REFERENCE_POINT,
+            after_sleep=after_sleep,
+        )
+
+    def _click_chapter_home_button(self, after_sleep: float = 0.0) -> None:
+        """Click the chapter home button, template-first with a calibrated fallback."""
+
+        for attempt in range(1, SHOP_CLOSE_CLICK_RETRIES + 1):
+            frame = self.vision.capture()
+            for spec in CHAPTER_HOME_TEMPLATES:
+                result = self.vision.match(frame, spec)
+                passed = self.vision.passes(result, spec)
+                self._status(
+                    spec.name,
+                    (
+                        f"{'pass' if passed else 'miss'}; "
+                        f"match={result.score:.3f}; pixel={result.pixel_score:.3f}; "
+                        f"zncc={result.zncc_score:.3f}"
+                    ),
+                )
+                if passed:
+                    self._status(
+                        "箱庭主页按钮",
+                        f"center=({result.center[0]},{result.center[1]})",
+                    )
+                    self.vision.click_client(
+                        result.center,
+                        frame.shape,
+                        after_sleep=after_sleep,
+                    )
+                    return
+            if attempt < SHOP_CLOSE_CLICK_RETRIES:
+                self.task.sleep(SHOP_CLOSE_CLICK_INTERVAL)
+        self._status("箱庭主页按钮", "模板未命中，回退到标定相对点(1797,63)")
+        self.task.operate_click(*CHAPTER_HOME_POINT, after_sleep=after_sleep)
 
     def reach_merchant_shop(self) -> NavigationResult:
         state = self.classify_trade()
@@ -422,7 +502,7 @@ class TradeNavigationMixin:
         )
 
     def _return_home_from_discount_shop(self) -> NavigationResult:
-        self.vision.click_reference(82, 36, after_sleep=0.0)
+        self._click_shop_close_control()
         if not self._wait_for_ocr_keywords(
             DISCOUNT_SHOP_CLOSE_KEYWORDS,
             DISCOUNT_SHOP_CLOSE_TIMEOUT,
@@ -437,8 +517,8 @@ class TradeNavigationMixin:
             )
 
         self.task.operate_click(*DISCOUNT_SHOP_CLOSE_POINT, after_sleep=0.8)
-        self.vision.click_reference(82, 36, after_sleep=0.8)
-        self.task.operate_click(*CHAPTER_HOME_POINT, after_sleep=0.0)
+        self._click_shop_close_control(after_sleep=0.8)
+        self._click_chapter_home_button()
         if self._wait_for_cartridge_home(timeout=RETURN_HOME_TIMEOUT):
             return NavigationResult(True, ScreenState.HOME, "已关闭折扣商店并返回主页")
         return NavigationResult(False, self.classify(), "关闭折扣商店后未在10秒内返回主页")
