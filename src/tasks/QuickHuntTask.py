@@ -106,6 +106,24 @@ class QuickHuntTask(
             "max": 0.95,
             "step": 0.01,
         }
+        self.default_config.update(
+            {
+                "主页亮度比例阈值": 0.75,
+                "主页确认等待秒数": 10.0,
+            }
+        )
+        self.config_description.update(
+            {
+                "主页亮度比例阈值": "确认已返回主页所需的最低亮色像素比例。",
+                "主页确认等待秒数": "点击主页按钮后确认已返回主页的最长等待时间。",
+            }
+        )
+        self.config_type.update(
+            {
+                "主页亮度比例阈值": {"min": 0.5, "max": 0.95, "step": 0.01},
+                "主页确认等待秒数": {"min": 2.0, "max": 30.0, "step": 1.0},
+            }
+        )
 
         visible_keys = list(QUICK_HUNT_CHILD_CONFIG_KEYS)
         ocr_index = visible_keys.index("快速狩猎像素相似度阈值") + 1

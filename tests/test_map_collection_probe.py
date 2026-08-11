@@ -22,6 +22,7 @@ from src.tasks.BD2MapCollectionProbeTask import (
     merge_completion_observations,
     resolve_collection_map_titles,
 )
+from src.tasks.debug_registry import DEBUG_ONETIME_TASKS
 from src.tasks.map_trade.audit import CollectionVisualAuditStore
 from src.tasks.map_trade.card_status import (
     CardActionDetection,
@@ -122,19 +123,20 @@ def _observation(
 
 
 class MapCollectionProbeTaskTest(unittest.TestCase):
-    def test_only_merged_probe_task_is_registered_in_test_section(self):
+    def test_only_merged_probe_task_is_registered_in_debug_section(self):
         registration = [
             "src.tasks.BD2MapCollectionProbeTask",
             "BD2MapCollectionProbeTask",
         ]
-        self.assertIn(registration, config["onetime_tasks"])
+        self.assertNotIn(registration, config["onetime_tasks"])
+        self.assertIn(registration, DEBUG_ONETIME_TASKS)
         self.assertNotIn(
             ["src.tasks.BD2MapCollectionProbeTask", "BD2CollectionStatusProbeTask"],
-            config["onetime_tasks"],
+            DEBUG_ONETIME_TASKS,
         )
         self.assertNotIn(
             ["src.tasks.BD2MapCollectionProbeTask", "BD2MapLocationProbeTask"],
-            config["onetime_tasks"],
+            DEBUG_ONETIME_TASKS,
         )
 
         task = BD2MapCollectionProbeTask(

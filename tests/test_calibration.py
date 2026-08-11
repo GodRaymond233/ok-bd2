@@ -23,7 +23,13 @@ from src.tasks.map_trade.models import MAP_TRADE_REFERENCE
 from src.tasks.MapTradeTask import MapAutomationTaskBase, MapTradeTask
 from src.tasks.PVPTask import PVPTask
 from src.tasks.SquareGoddessTask import SquareGoddessTask
-from src.utils.calibration import FHD_1080, HD_720, QHD_1440, ReferenceCalibration
+from src.utils.calibration import (
+    FHD_1080,
+    HD_720,
+    QHD_1440,
+    ReferenceCalibration,
+    reference_rect_to_relative_roi,
+)
 
 
 class ReferenceCalibrationTest(unittest.TestCase):
@@ -32,6 +38,12 @@ class ReferenceCalibrationTest(unittest.TestCase):
         self.assertEqual(ReferenceCalibration(1920, 1080), FHD_1080)
         self.assertEqual(ReferenceCalibration(2560, 1440), QHD_1440)
         self.assertEqual((1920, 1080), FHD_1080.size)
+
+    def test_reference_rect_to_relative_roi_converts_width_height_to_right_bottom(self):
+        self.assertEqual(
+            (100 / 1920, 120 / 1080, 400 / 1920, 340 / 1080),
+            reference_rect_to_relative_roi((100, 120, 300, 220), FHD_1080),
+        )
 
     def test_task_modules_derive_1080p_reference_from_shared_calibration(self):
         for module in (

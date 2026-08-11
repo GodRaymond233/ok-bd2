@@ -26,8 +26,14 @@ update repository is intentionally smaller and is generated during release.
 `deploy.txt` is the sync list for that update repository. During the release
 workflow, `python -m ok.update.inline_ok_requirements --tag <tag>` copies
 `ok-script` and `pyappify` into local `ok/` and `pyappify/` directories, removes
-the external `ok-script` dependency from the update requirements, and updates
-`src/config.py` from `version = "dev"` to the tag being released.
+the external `ok-script` dependency from the update requirements, and replaces
+the source `src/config.py` marker `version = "release-tag-unset"` with the tag
+being released in the generated update content. The source package version has
+one authority: `pyproject.toml` (currently `0.1.1`), which
+`src.config.runtime_version()` reads whenever that file is present. Generated
+update content excludes `pyproject.toml`, so `runtime_version()` falls back to
+the inlined release tag there. A PyAppify tag, such as `v0.1.18`, identifies the
+update delivery and does not by itself change the package version.
 
 ## Required repositories and secrets
 
@@ -76,6 +82,10 @@ workflow edit or commit is required when switching.
 
 Use a stable semantic version tag. The build workflow only creates installer
 assets for tags like `v0.1.0`.
+
+Before creating the tag, confirm it names the intended delivery revision. Do
+not change `pyproject.toml` merely to match a historical PyAppify tag; change it
+only when making an intentional package-version release.
 
 ```powershell
 git tag v0.1.0

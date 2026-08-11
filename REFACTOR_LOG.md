@@ -1,12 +1,12 @@
-# ok-bd2 重构记录（阶段一 / 阶段二 / 阶段三 / 阶段四 / 阶段五）
+# ok-bd2 重构记录（阶段一至阶段六）
 
-本文档按用户要求记录 2026-08-10 五次重构改动的**大纲、主要内容与思路**，用于后续管理与维护。
+本文档按用户要求记录 2026-08-10 至 2026-08-11 六次重构改动的**大纲、主要内容与思路**，用于后续管理与维护。
 每个阶段包含：目标与范围（大纲）、具体改动（主要内容）、设计动机（思路）、验证与审阅结论、
 提交与备份状态。代码以本地 `main` 分支为准。
 
 ---
 
-## 〇、五次改动总览
+## 〇、六次改动总览
 
 | 阶段 | 主题 | 核心目标 | 提交 | 状态 |
 | --- | --- | --- | --- | --- |
@@ -15,11 +15,12 @@
 | 阶段三 | 拆分大模块与状态机 | 拆分 navigator/trader/collector 千行模块，重构 `_use_action` 状态机 | 本文档下方记录 | 已提交本地、未推送 |
 | 阶段四 | 统一输入与坐标模型 | 收敛 drag/scroll 到基类、统一参考分辨率与技能槽坐标、PVP 特殊页下沉 | `aaf6a0a` | 已提交本地、未推送 |
 | 阶段五 | 错误语义与性能修复 | mark_target 失败语义、跑商盲点移除、classify 局部 ROI、QuickHunt 组合化 | 本文档下方记录 | 已提交本地、未推送 |
+| 阶段六 | 仓库与测试卫生 | 拆分 map-trade 测试、隔离调试任务、统一版本来源、修复 Meta-Review 回归、盘点本地清理项 | 本次提交并推送 | 已实现、独立审阅 PASS |
 
-五次改动的共同约束（来自 AGENTS.md）：
+六次改动的共同约束（来自 AGENTS.md）：
 
 - 禁止在 `src` 中引入项目自定义键盘发送/按下/释放/热键注册/键盘映射。
-- 每次改动后必须完整执行单元测试（当前 562 项）、Ruff、compileall、`git diff --check` 与键盘限制扫描。
+- 每次改动后必须完整执行单元测试（当前 580 项）、Ruff、compileall、`git diff --check` 与键盘限制扫描。
 - 保留用户已有未提交修改，不覆盖或回退无关文件。
 - 大规模重构必须保持行为等价，以测试为保护网，并在完成后由独立只读子代理审阅。
 
@@ -413,7 +414,88 @@
 
 ---
 
-## 六、验证门禁
+## 六、阶段六：仓库与测试卫生
+
+### 6.1 大纲
+
+- 目标：降低超大测试文件的维护成本，把探针/诊断能力与正式任务注册隔离，
+  消除源码包版本漂移，并把本地大目录、worktree、旧分支整理为可确认的清理清单。
+- 范围：`tests/test_map_trade.py` 及拆分测试、`src/config.py`、
+  `src/tasks/debug_registry.py`、`main_debug.py`、`src/ui/BD2StatusTab.py`、
+  版本一致性测试、README/发布文档与 AGENTS.md 计划区。
+- 边界：本阶段只盘点本地清理项，不删除目录、worktree 或分支；提交和推送仅在
+  用户本次明确授权后执行，仍不备份、不打标签、不发布。
+
+### 6.2 主要内容
+
+- map-trade 测试拆分：
+  - 删除单体 `tests/test_map_trade.py`，按 action-icons、calendar、card-status、
+    collection、collector、config、navigator、progress、safety、sandbox、shop、
+    trader、vision 共 13 个职责模块拆分。
+  - `FakeTask`、`_seed_action_records`、`_seed_battle_supplements` 移到
+    `tests/helpers/map_trade.py`；HEAD 基线与初始拆分均为 279 项。
+  - 原 279 个测试名零缺失/零新增/零重复，测试函数体及核心 helper 的 AST 与基线
+    等价；后续 Meta-Review 新增 3 项 ROI 回归，当前 map-trade 共 282 项。
+- 调试任务隔离：
+  - BD2ProbeTask、BD2MapCollectionProbeTask、BD2OneTimeTask、BD2DiagnosisTask
+    从正式 `config["onetime_tasks"]` 移除。
+  - 新增 `src/tasks/debug_registry.py`，由 `main_debug.py` 幂等安装四个调试任务；
+    正式 `main.py` 不加载该注册表。
+  - BD2StatusTab 的“运行基础检查”优先复用调试实例；正式入口没有注册实例时，
+    按框架生命周期创建、`after_init`、`post_init`，app/executor 未就绪则明确失败。
+- 版本来源统一：
+  - `pyproject.toml` 的 `0.1.1` 是源码包版本唯一来源；不借重构发布新版本。
+  - `src.config.runtime_version()` 在源码树读取 `pyproject.toml`；
+    `src/config.py` 只保留 PyAppify 内联工具可替换的 release-tag marker，供不含
+    `pyproject.toml` 的生成更新仓库回退。
+  - 新增四项回归，锁定源码一致性、marker 隔离、无 pyproject fallback 与
+    现有 inline 正则兼容；README 和发布文档区分包版本与交付 tag。
+- Meta-Review 回归修复：
+  - 新增 reference XYWH 到 relative LTRB 的集中转换，修正七组分类 OCR ROI 与三个
+    章节主页模板区域；720p、1080p、1440p、4K 边界和自包含裁剪分类均有回归覆盖。
+  - QuickHunt 显式恢复主页亮度与确认等待配置的默认值、说明和数值类型，旧持久化值
+    经 `Config.verify_config()` 后保持不变。
+  - PyAppify 文档明确源码 marker 经 inline 流程替换为生成仓库 tag，且仅在生成内容
+    不含 `pyproject.toml` 时使用该 tag 回退。
+- 计划与清理盘点：
+  - AGENTS.md 中阶段一至五和两项历史完成记录压缩为单行结论；待实机验证、
+    待发版和待清理确认事项继续保留。
+  - 本地目录实测：`.local-dev` 8.19 GiB、`probe_outputs` 0.27 GiB、
+    `pyappify_build` 2.29 GiB、`pyappify_dist` 1.90 GiB。
+  - 三个附加 worktree 中 dependency-runtime-update 与 wt-sell 干净；
+    payload-282920b 有 `requirements.txt`、`src/config.py` 修改和未跟踪 `pyappify/`，
+    禁止直接清理。六条旧本地分支均已合入 main，但删除仍需用户确认。
+
+### 6.3 思路
+
+- 测试拆分只移动测试与共享 fixture，不改测试逻辑；用测试名集合、函数 AST 和
+  unittest discover 三层证据避免“文件拆开了，但断言或收集范围变了”。
+- 调试任务不应随正式 `onetime_tasks` 发布，但状态页的基础检查是正式 UI 能力；
+  因此把注册隔离与按需实例化分开，既缩小正式任务面，又保留该按钮。
+- 包版本与更新交付 tag 是两种语义：源码运行时由 pyproject 提供包版本，生成的
+  PyAppify 更新仓库不携带 pyproject，继续由既有 inline 流程写入 tag marker。
+- 本地清理不可逆且 payload worktree 含未提交数据，因此阶段六只提供精确清单，
+  不把“仓库卫生”解释为自动删除用户资产。
+
+### 6.4 验证与审阅
+
+- 初始阶段六 575 项完整单元测试通过（565 项原套件 + 6 项调试注册回归 + 4 项版本
+  契约回归）；Meta-Review 随后新增 5 项回归，最终 580 项全部通过。
+- map-trade 的原 279 项在拆分前后保持等价；加入 3 项 ROI 回归后当前为 282 项。
+- Ruff、compileall、`git diff --check` 与 src 键盘实现扫描全部通过。
+- 三个实现 worker 分片均完成；随后由三个不同的只读 verifier 分别检查测试拆分、
+  调试注册、版本/文档与全局门禁，共 24/24 条验收标准 PASS，无阻塞项。
+- 非阻塞建议：未来可补一个显式的 null-executor 状态页测试和一个 main_debug wiring
+  测试；当前行为已由直接调用、注册幂等测试和 575 项全量门禁覆盖。
+
+### 6.5 提交与备份
+
+- 阶段六与 Meta-Review 修复随本次用户授权提交并推送；未备份、未打标签、未发布。
+- 本地目录/worktree/分支均未删除，等待用户按清单明确确认。
+
+---
+
+## 七、验证门禁
 
 每次修改后完整执行：
 
@@ -428,7 +510,7 @@ git diff --check
 
 ---
 
-## 七、维护注意事项与后续计划
+## 八、维护注意事项与后续计划
 
 - 门面文件只保留类、编排入口与再导出；新增逻辑优先落在对应职责的 mixin/子模块，
   避免门面重新膨胀。
@@ -452,6 +534,14 @@ git diff --check
   所在参考区域，再派生相对 ROI。
 - 快速狩猎能力统一在 `quick_hunt.py` 的 mixin 中；`DailyTask` 不再承载
   快速狩猎逻辑，新增任务按需组合 `QuickHuntFeatureMixin`。
+- map-trade 测试新增用例时放入对应职责文件；跨 collector/progress/vision 的共享替身
+  统一维护在 `tests/helpers/map_trade.py`，不要重新建立单体 `test_map_trade.py`。
+- 探针、诊断与基础检查任务只通过 `src/tasks/debug_registry.py` 进入 `main_debug.py`；
+  新增调试任务不得直接放回正式 `config["onetime_tasks"]`。
+- 源码包版本只修改 `pyproject.toml`；`src/config.py` 的 release marker 是生成更新仓库
+  的交付 tag 接缝，不得手工同步为第二份包版本。
+- `.local-dev`、probe/build/dist 目录、worktree 和已合入分支的清理必须先复查工作区状态
+  并取得用户确认；特别是 payload-282920b 当前含未提交内容。
 - 阶段四包含两处有意的行为变化（非回归）：技能组/传送中心按实机标定收敛 1–2 像素；
   Square / MapTrade 不再隐式执行 PVP 模板匹配与特殊页处理。
 - 阶段三/四/五的实机行为差异（额度耗尽终止、跑商入口失败、分类 ROI、快速狩猎

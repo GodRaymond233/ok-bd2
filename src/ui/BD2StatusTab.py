@@ -1,4 +1,4 @@
-from ok import Config
+from ok import Config, og
 from ok.gui.widget.CustomTab import CustomTab
 from PySide6.QtCore import QEvent
 from qfluentwidgets import BodyLabel, FluentIcon, PrimaryPushButton, PushButton
@@ -35,7 +35,30 @@ class BD2StatusTab(CustomTab):
 
     def button_clicked(self):
         self.config["最近操作"] = "运行基础检查"
-        self.get_task(BD2OneTimeTask).run()
+        try:
+            task = self._basic_check_task()
+        except RuntimeError as exc:
+            self.config["最近操作"] = f"基础检查不可用：{exc}"
+            self.logger.error(f"基础检查不可用：{exc}")
+            return False
+        return task.run()
+
+    def _basic_check_task(self):
+        """Return the debug-registered task or initialize the status-only task."""
+        if self.executor is None:
+            raise RuntimeError("任务执行器尚未就绪")
+
+        task = self.get_task(BD2OneTimeTask)
+        if task is not None:
+            return task
+
+        if og.app is None:
+            raise RuntimeError("应用尚未就绪")
+
+        task = BD2OneTimeTask(executor=self.executor, app=og.app)
+        task.after_init(executor=self.executor, scene=getattr(self.executor, "scene", None))
+        task.post_init()
+        return task
 
     def open_logs_clicked(self):
         try:
