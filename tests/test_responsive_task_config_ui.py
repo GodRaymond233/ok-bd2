@@ -7,7 +7,10 @@ from ok import og
 from ok.gui.tasks.ConfigCard import ConfigCard
 from ok.gui.tasks.LabelAndSwitchButton import LabelAndSwitchButton
 from ok.gui.tasks.LabelAndTextEdit import LabelAndTextEdit
+from ok.gui.tasks.LabelAndWidget import LabelAndWidget
+from ok.gui.tasks.TaskCard import TaskCard
 from PySide6.QtCore import QRect, Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QPushButton
 from qfluentwidgets import FluentIcon
 
@@ -38,6 +41,27 @@ class _ConfigStub(dict):
 
 class _TaskStub:
     show_create_shortcut = False
+
+
+class _TaskCardStub:
+    name = "响应式任务"
+    description = "用于验证 1.0.190 TaskCard 紧凑标题与展开动画。"
+    icon = None
+    config_description = {
+        "启用测试项": "这是用于验证窄窗口换行的较长任务说明。" * 2,
+    }
+    config_type = {}
+    default_config = {}
+    is_custom = False
+    instructions = ""
+    enabled = False
+    paused = False
+    running = False
+    first_run_alert = ""
+    show_create_shortcut = False
+
+    def __init__(self):
+        self.config = _ConfigStub({"启用测试项": True})
 
 
 class ResponsiveTaskConfigUiTest(unittest.TestCase):
@@ -102,6 +126,90 @@ class ResponsiveTaskConfigUiTest(unittest.TestCase):
 
         self.assertEqual(Qt.AlignRight, widget.alignment)
         widget.close()
+
+    def test_multi_selection_hidden_items_reflow_and_right_align(self):
+        widget = ResponsiveFlowWidget(alignment=Qt.AlignRight)
+        buttons = []
+        for index in range(4):
+            button = QPushButton(f"选项 {index}")
+            button.setFixedWidth(100)
+            buttons.append(button)
+            widget.add_widget(button)
+
+        widget.flow_layout.setGeometry(QRect(0, 0, 230, 200))
+        full_height = widget.flow_layout.heightForWidth(230)
+        self.assertGreater(buttons[0].geometry().x(), 0)
+        self.assertGreater(buttons[2].geometry().y(), buttons[0].geometry().y())
+
+        buttons[1].hide()
+        buttons[3].hide()
+        widget.flow_layout.setGeometry(QRect(0, 0, 230, 200))
+        hidden_height = widget.flow_layout.heightForWidth(230)
+        self.assertLess(hidden_height, full_height)
+        self.assertEqual(buttons[0].geometry().y(), buttons[2].geometry().y())
+        widget.close()
+
+    def test_install_is_idempotent_after_ok_script_1_0_190_import(self):
+        original_init = LabelAndWidget.__init__
+        original_flow = __import__(
+            "ok.gui.tasks.LabelAndMultiSelection", fromlist=["FlowLayout"]
+        ).FlowLayout
+
+        install_responsive_task_config_ui()
+        install_responsive_task_config_ui()
+
+        self.assertIs(original_init, LabelAndWidget.__init__)
+        self.assertIs(original_flow, ResponsiveFlowWidget)
+
+    def test_config_card_visibility_updates_expanded_height(self):
+        values = {f"配置项 {index}": index for index in range(4)}
+        descriptions = {
+            key: "这是一段较长的配置说明，用于验证隐藏配置项后卡片高度会及时收缩。" * 2
+            for key in values
+        }
+        card = ConfigCard(
+            _TaskStub(),
+            "可见性配置",
+            _ConfigStub(values),
+            "隐藏配置项后不应残留空白。",
+            values,
+            descriptions,
+            {},
+            FluentIcon.INFO,
+        )
+        card.resize(420, card.card.height())
+        card.show()
+        self.app.processEvents()
+        card.isExpand = True
+        card._adjustViewSize()
+        self.app.processEvents()
+        expanded_height = card.height()
+
+        card.config_widget_by_key["配置项 0"].setVisible(False)
+        card._adjustViewSize()
+        self.app.processEvents()
+        self.assertLess(card.height(), expanded_height)
+        card.close()
+
+    def test_task_card_keeps_compact_header_through_expand_and_collapse(self):
+        card = TaskCard(_TaskCardStub(), onetime=False)
+        card.show()
+        self.app.processEvents()
+        self.assertEqual(card.card.height(), 50)
+        self.assertEqual(card.height(), 50)
+
+        card.setExpand(True)
+        QTest.qWait(300)
+        self.app.processEvents()
+        self.assertTrue(card.isExpand)
+        self.assertGreater(card.height(), card.card.height())
+
+        card.setExpand(False)
+        QTest.qWait(300)
+        self.app.processEvents()
+        self.assertFalse(card.isExpand)
+        self.assertEqual(card.height(), card.card.height())
+        card.close()
 
     def test_expanded_config_card_height_tracks_its_current_width(self):
         values = {

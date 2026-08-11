@@ -44,6 +44,7 @@ htmlcov/
 .vscode/
 
 # ok-script local/generated assets
+/cache/
 ok/
 ok
 ok_tasks/

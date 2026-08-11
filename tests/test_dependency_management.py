@@ -9,21 +9,55 @@ class DependencyManagementTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        cls.lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
         cls.runtime_requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
         cls.dev_requirements = (ROOT / "requirements-dev.txt").read_text(encoding="utf-8")
 
     def test_ok_script_is_consistently_pinned(self):
         dependencies = self.pyproject["project"]["dependencies"]
-        self.assertIn("ok-script==1.0.180", dependencies)
-        self.assertIn("ok-script==1.0.180", self.runtime_requirements)
-        self.assertIn("ok-script==1.0.180", self.dev_requirements)
-        self.assertNotIn("ok-script==1.0.179", self.runtime_requirements)
+        self.assertIn("ok-script==1.0.190", dependencies)
+        self.assertIn("ok-script==1.0.190", self.runtime_requirements)
+        self.assertIn("ok-script==1.0.190", self.dev_requirements)
+        self.assertNotIn("ok-script==1.0.180", self.runtime_requirements)
 
     def test_msvc_runtime_is_consistently_constrained(self):
         dependencies = self.pyproject["project"]["dependencies"]
         self.assertIn("msvc-runtime>=14.44.35112", dependencies)
         self.assertIn("msvc-runtime==14.44.35112", self.runtime_requirements)
         self.assertIn("msvc-runtime==14.44.35112", self.dev_requirements)
+
+    def test_onnxocr_is_exactly_pinned_with_pypi_provenance(self):
+        dependencies = self.pyproject["project"]["dependencies"]
+        self.assertIn("onnxocr-ppocrv5==0.0.20", dependencies)
+        self.assertIn("onnxocr-ppocrv5==0.0.20", self.runtime_requirements)
+        self.assertIn("onnxocr-ppocrv5==0.0.20", self.dev_requirements)
+
+        package = next(item for item in self.lock["package"] if item["name"] == "onnxocr-ppocrv5")
+        self.assertEqual("0.0.20", package["version"])
+        self.assertEqual(
+            "sha256:8e66895702d7eb6924d1c75c8e148e8e61a734be16c8cec7b09db7344558edd0",
+            package["sdist"]["hash"],
+        )
+        self.assertEqual(1, len(package["wheels"]))
+        self.assertEqual(
+            "sha256:eaa728d3a19c648bba201c92227d87f2f59f4e32d615ba06e7f6873263ab267a",
+            package["wheels"][0]["hash"],
+        )
+
+    def test_s1_dependency_pins_remain_unchanged(self):
+        dependencies = self.pyproject["project"]["dependencies"]
+        self.assertIn("ok-script==1.0.190", dependencies)
+        self.assertIn("pyappify==1.0.6", dependencies)
+        self.assertIn("msvc-runtime>=14.44.35112", dependencies)
+
+        for name, version in (
+            ("ok-script", "1.0.190"),
+            ("pyappify", "1.0.6"),
+            ("msvc-runtime", "14.44.35112"),
+        ):
+            with self.subTest(name=name):
+                package = next(item for item in self.lock["package"] if item["name"] == name)
+                self.assertEqual(version, package["version"])
 
     def test_uv_lock_targets_windows_and_is_committed(self):
         self.assertEqual(
@@ -38,12 +72,8 @@ class DependencyManagementTest(unittest.TestCase):
         self.assertIn("ruff==", self.dev_requirements)
 
     def test_dependency_scripts_use_locked_exports(self):
-        refresh = (ROOT / "scripts" / "refresh_dependencies.ps1").read_text(
-            encoding="utf-8"
-        )
-        check = (ROOT / "scripts" / "check_dependency_exports.ps1").read_text(
-            encoding="utf-8"
-        )
+        refresh = (ROOT / "scripts" / "refresh_dependencies.ps1").read_text(encoding="utf-8")
+        check = (ROOT / "scripts" / "check_dependency_exports.ps1").read_text(encoding="utf-8")
         for script in (refresh, check):
             with self.subTest(script=script[:20]):
                 self.assertIn("--locked", script)

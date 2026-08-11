@@ -52,6 +52,8 @@ config = {
             "auto_simplify": True,
             "params": {
                 "use_openvino": True,
+                # ok-script 1.0.190 forwards only use_openvino/use_npu here;
+                # onnxocr 0.0.20 therefore keeps its safe AsyncInferQueue default (1).
             },
         },
     },
