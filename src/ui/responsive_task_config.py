@@ -5,11 +5,17 @@ from PySide6.QtWidgets import QApplication, QLayout, QSizePolicy, QTextEdit, QWi
 class WrappingFlowLayout(QLayout):
     """A small flow layout that recomputes rows whenever its width changes."""
 
-    def __init__(self, parent=None, spacing=8):
+    def __init__(self, parent=None, spacing=8, alignment=Qt.AlignLeft):
         super().__init__(parent)
         self._items = []
         self._spacing = spacing
+        self._flow_alignment = alignment
+        super().setAlignment(alignment)
         self.setContentsMargins(0, 0, 0, 0)
+
+    def setAlignment(self, alignment):
+        self._flow_alignment = alignment
+        return super().setAlignment(alignment)
 
     def addItem(self, item):
         self._items.append(item)
@@ -42,6 +48,9 @@ class WrappingFlowLayout(QLayout):
     def minimumSize(self):
         size = QSize()
         for item in self._items:
+            widget = item.widget()
+            if widget is not None and widget.isHidden():
+                continue
             size = size.expandedTo(item.minimumSize())
         margins = self.contentsMargins()
         return size + QSize(
@@ -57,32 +66,61 @@ class WrappingFlowLayout(QLayout):
             -margins.right(),
             -margins.bottom(),
         )
-        x = effective.x()
-        y = effective.y()
-        line_height = 0
-
+        available_width = max(0, effective.width())
+        rows = []
+        row = []
+        row_width = 0
+        row_height = 0
         for item in self._items:
+            widget = item.widget()
+            if widget is not None and widget.isHidden():
+                if not test_only:
+                    item.setGeometry(QRect())
+                continue
             item_size = item.sizeHint()
-            next_x = x + item_size.width() + self._spacing
-            if line_height and next_x - self._spacing > effective.right() + 1:
+            proposed_width = (
+                item_size.width()
+                if not row
+                else row_width + self._spacing + item_size.width()
+            )
+            if row and proposed_width > available_width:
+                rows.append((row, row_width, row_height))
+                row = []
+                row_width = 0
+                row_height = 0
+            row.append((item, item_size))
+            row_width += item_size.width() if len(row) == 1 else self._spacing + item_size.width()
+            row_height = max(row_height, item_size.height())
+
+        if row:
+            rows.append((row, row_width, row_height))
+
+        y = effective.y()
+        for row, width, height in rows:
+            if self._flow_alignment & Qt.AlignRight:
+                x = max(effective.x(), effective.right() - width + 1)
+            elif self._flow_alignment & Qt.AlignHCenter:
+                x = effective.x() + max(0, (effective.width() - width) // 2)
+            else:
                 x = effective.x()
-                y += line_height + self._spacing
-                next_x = x + item_size.width() + self._spacing
-                line_height = 0
+            for item, item_size in row:
+                if not test_only:
+                    item.setGeometry(QRect(QPoint(x, y), item_size))
+                x += item_size.width() + self._spacing
+            y += height + self._spacing
 
-            if not test_only:
-                item.setGeometry(QRect(QPoint(x, y), item_size))
-            x = next_x
-            line_height = max(line_height, item_size.height())
-
-        return y + line_height - rect.y() + margins.bottom()
+        if not rows:
+            content_height = 0
+        else:
+            content_height = y - effective.y() - self._spacing
+        return content_height + margins.top() + margins.bottom()
 
 
 class ResponsiveFlowWidget(QWidget):
     def __init__(self, alignment=Qt.AlignLeft):
         super().__init__()
         self.alignment = alignment
-        self.flow_layout = WrappingFlowLayout(self)
+        self.flow_layout = WrappingFlowLayout(self, alignment=alignment)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
     def add_widget(self, widget):

@@ -193,8 +193,8 @@ requires-dist = [
     { name = "comtypes", specifier = ">=1.4.16" },
     { name = "msvc-runtime", specifier = ">=14.44.35112" },
     { name = "numpy", specifier = ">=2.4.0" },
-    { name = "ok-script", specifier = "==1.0.180" },
-    { name = "onnxocr-ppocrv5", specifier = ">=0.0.18" },
+    { name = "ok-script", specifier = "==1.0.190" },
+    { name = "onnxocr-ppocrv5", specifier = "==0.0.20" },
     { name = "opencc", specifier = ">=1.2.0" },
     { name = "opencv-python", specifier = ">=4.13.0.92" },
     { name = "openvino", specifier = ">=2026.1.0" },
@@ -213,7 +213,7 @@ dev = [{ name = "ruff", specifier = ">=0.13.0" }]
 
 [[package]]
 name = "ok-script"
-version = "1.0.180"
+version = "1.0.190"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "mouse", marker = "sys_platform == 'win32'" },
@@ -226,23 +226,23 @@ dependencies = [
     { name = "requests", marker = "sys_platform == 'win32'" },
     { name = "typing-extensions", marker = "sys_platform == 'win32'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/bd/17/82e44549181193cf5e0536706298674cf36db5ea5d8242f35edb71904778/ok_script-1.0.180.tar.gz", hash = "sha256:80b363c2c4acd51587c6567177ab60f3c4accd81fc767978c48766dd93dd76fc", size = 649920, upload-time = "2026-07-31T11:49:13.726Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/58/ef/205f9d843b11ec110dbeb6ed71d3a8ea138a414428beedda5822aec1dc12/ok_script-1.0.190.tar.gz", hash = "sha256:28c3559ca2c13f2426752b5d67c6f36cfa1a52c770873f70d6c670890778cc5d", size = 731076, upload-time = "2026-08-10T16:23:49.085Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/97/4b/a0b9058fa1632923c074673123ac083a1f3ef27b27aa2d06fbfd6dddadb1/ok_script-1.0.180-py3-none-any.whl", hash = "sha256:ab5fe9008e364da7a991de75de694ea4b5db59d252b27a89bdd637c79a397a5e", size = 721167, upload-time = "2026-07-31T11:49:11.809Z" },
+    { url = "https://files.pythonhosted.org/packages/27/1d/9d53622928ab2dc9fb67cefc760243f07765edd78ed8476231a1618ca040/ok_script-1.0.190-py3-none-any.whl", hash = "sha256:3ac40e6a10b4d3e7945a98423678570b4aaf09f1347a2bd62726594ab5e41f62", size = 777459, upload-time = "2026-08-10T16:23:47.503Z" },
 ]
 
 [[package]]
 name = "onnxocr-ppocrv5"
-version = "0.0.18"
+version = "0.0.20"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pillow", marker = "sys_platform == 'win32'" },
     { name = "pyclipper", marker = "sys_platform == 'win32'" },
     { name = "shapely", marker = "sys_platform == 'win32'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/fa/0e/c0c6d7e9a47586611e91cd47c0a197670edc89ee24f672c11d8fe991720e/onnxocr_ppocrv5-0.0.18.tar.gz", hash = "sha256:b5dd5a6bbf592ba07eb8ad6327c94a8a57f693ef5496e4f587dc812c42b06aa9", size = 19162042, upload-time = "2026-05-14T02:31:35.35Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a5/16/8de3bfdc9e6bd3d37b216203a4d5813ae162ad40c3dd3ca2f7e20217fe34/onnxocr_ppocrv5-0.0.20.tar.gz", hash = "sha256:8e66895702d7eb6924d1c75c8e148e8e61a734be16c8cec7b09db7344558edd0", size = 19164731, upload-time = "2026-08-10T05:38:12.51Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/33/97/6fcc5e51034fe4c6158a586ecfede7ff83377cbc02ca547a4ac5e2b109c3/onnxocr_ppocrv5-0.0.18-py3-none-any.whl", hash = "sha256:78e92e134a8bae6646819cdf4306d22da2007eaf614e90d10ca604765bfbde81", size = 19174681, upload-time = "2026-05-14T02:31:27.344Z" },
+    { url = "https://files.pythonhosted.org/packages/71/18/df6ef9b68877f08afb48c80c1e30f9b310093327a94109ce9b4fbf680976/onnxocr_ppocrv5-0.0.20-py3-none-any.whl", hash = "sha256:eaa728d3a19c648bba201c92227d87f2f59f4e32d615ba06e7f6873263ab267a", size = 19176274, upload-time = "2026-08-10T05:38:02.771Z" },
 ]
 
 [[package]]
