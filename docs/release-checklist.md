@@ -9,6 +9,12 @@ For one-time PyAppify/GitHub Actions/CNB setup, see
 
 - Run `python -m unittest discover tests`.
 - Run `ruff check .`.
+- Confirm `pyproject.toml` contains the intended package version (currently
+  `0.1.1`) and `tests/test_version_consistency.py` passes. Source runtime reads
+  this value directly; the `src/config.py` release marker is reserved for the
+  generated PyAppify update repository.
+- Confirm the release tag identifies the intended delivery revision. It is
+  inlined into the update repository and is not a second package-version field.
 - Confirm `git status --ignored --short` does not show private files as normal untracked files.
 - Confirm `configs/`, `logs/`, `screenshots/`, `probe_outputs/`, `.venv/`, and `upstream/` are ignored.
 - Confirm automatic-login template images do not contain account information or private data.

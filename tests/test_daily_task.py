@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
+from ok.util.config import Config
 
 from src.tasks.DailyTask import (
     GUILD_FINISHED_TEMPLATE,
@@ -99,6 +100,48 @@ class DailyTaskHelperTest(unittest.TestCase):
         self.assertEqual("完整执行(消耗)", full_button["text"])
         for button in (*entry_buttons, *menu_buttons, *stone_buttons, full_button):
             self.assertTrue(callable(button["callback"]))
+
+    def test_quick_hunt_home_confirmation_config_survives_hydration(self):
+        task = object.__new__(QuickHuntTask)
+        task.default_config = {}
+        task.config_description = {}
+        task.config_type = {}
+        with patch("src.tasks.DailyTask.BaseBD2Task.__init__", return_value=None):
+            QuickHuntTask.__init__(task)
+
+        expected_configs = {
+            "主页亮度比例阈值": (
+                0.75,
+                "确认已返回主页所需的最低亮色像素比例。",
+                {"min": 0.5, "max": 0.95, "step": 0.01},
+            ),
+            "主页确认等待秒数": (
+                10.0,
+                "点击主页按钮后确认已返回主页的最长等待时间。",
+                {"min": 2.0, "max": 30.0, "step": 1.0},
+            ),
+        }
+        for key, (default, description, config_type) in expected_configs.items():
+            with self.subTest(key=key):
+                self.assertEqual(default, task.default_config[key])
+                self.assertEqual(description, task.config_description[key])
+                self.assertEqual(config_type, task.config_type[key])
+
+        persisted_config = dict(task.default_config)
+        persisted_config.update(
+            {
+                "主页亮度比例阈值": 0.88,
+                "主页确认等待秒数": 27.0,
+            }
+        )
+        hydrated_config = Config.__new__(Config)
+        hydrated_config.validator = None
+
+        self.assertFalse(
+            hydrated_config.verify_config(persisted_config, task.default_config)
+        )
+        self.assertEqual(0.88, hydrated_config["主页亮度比例阈值"])
+        self.assertEqual(27.0, hydrated_config["主页确认等待秒数"])
 
     def test_quick_hunt_button_queues_selected_test_action(self):
         task = object.__new__(QuickHuntTask)

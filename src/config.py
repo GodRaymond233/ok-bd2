@@ -1,6 +1,8 @@
 # ruff: noqa: E501
 
 import os
+import tomllib
+from pathlib import Path
 
 from ok import Box
 
@@ -11,7 +13,20 @@ from src.interaction.BD2Interaction import BD2Interaction
 from src.process_feature import process_feature
 from src.ui.responsive_task_config import install_responsive_task_config_ui
 
-version = "dev"
+# This marker is replaced with the Git tag when PyAppify creates the update
+# repository.  Source checkouts always read the project version from pyproject.
+version = "release-tag-unset"
+
+
+def runtime_version(project_file: Path | None = None) -> str:
+    """Return the source package version or the inlined update-repository tag."""
+    project_file = project_file or Path(__file__).resolve().parents[1] / "pyproject.toml"
+    if project_file.is_file():
+        with project_file.open("rb") as file:
+            return tomllib.load(file)["project"]["version"]
+    if version == "release-tag-unset":
+        raise RuntimeError("Missing pyproject.toml and PyAppify release tag.")
+    return version
 
 enable_windows_10_wgc()
 install_responsive_task_config_ui()
@@ -104,7 +119,7 @@ config = {
         "generate_label_enum": True,
         "label_enum_relative_path": "src/Labels",
     },
-    "version": version,
+    "version": runtime_version(),
     "my_app": [
         "src.globals",
         "Globals",
@@ -122,14 +137,7 @@ config = {
         ["src.tasks.PVPTask", "PVPTask"],
         ["src.tasks.BD2InputTestTask", "BD2MouseClickInputTestTask"],
         ["src.tasks.BD2InputTestTask", "BD2MouseWheelInputTestTask"],
-        ["src.tasks.BD2ProbeTask", "BD2ProbeTask"],
-        [
-            "src.tasks.BD2MapCollectionProbeTask",
-            "BD2MapCollectionProbeTask",
-        ],
-        ["src.tasks.BD2OneTimeTask", "BD2OneTimeTask"],
         ["src.tasks.LauncherTask", "LauncherTask"],
-        ["src.tasks.BD2DiagnosisTask", "BD2DiagnosisTask"],
     ],
     "trigger_tasks": [
         ["src.tasks.trigger.AutoLoginTask", "AutoLoginTask"],

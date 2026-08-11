@@ -16,7 +16,7 @@ from src.tasks.map_trade.action_icons import (
 )
 from src.tasks.map_trade.card_status import StoryCardCompletion
 from src.tasks.map_trade.models import CardSpec, MatchResult, TemplateSpec
-from src.utils.calibration import FHD_1080
+from src.utils.calibration import FHD_1080, reference_rect_to_relative_roi
 
 HOME_TEMPLATES = (
     TemplateSpec("主页", "home.png", 0.72, min_pixel_score=0.80),
@@ -57,56 +57,42 @@ Q_SP6_BARGAIN_OCR_TIMEOUT = 10.0
 # 共享分类的局部 OCR 区域（1920×1080 参考像素）。整帧 OCR 成本高，
 # 这里只扫描各状态专有关键字所在的小区域；坐标来自实机截图标定。
 CLASSIFY_LOADING_REFERENCE_ROI = (0, 0, 700, 150)
-CLASSIFY_LOADING_RELATIVE_ROI = (
-    CLASSIFY_LOADING_REFERENCE_ROI[0] / FHD_1080.width,
-    CLASSIFY_LOADING_REFERENCE_ROI[1] / FHD_1080.height,
-    CLASSIFY_LOADING_REFERENCE_ROI[2] / FHD_1080.width,
-    CLASSIFY_LOADING_REFERENCE_ROI[3] / FHD_1080.height,
+CLASSIFY_LOADING_RELATIVE_ROI = reference_rect_to_relative_roi(
+    CLASSIFY_LOADING_REFERENCE_ROI,
+    FHD_1080,
 )
 # 商店页签（购买/出售）位于左上，标题/仓库/严加管理位于中部标题牌。
 CLASSIFY_SHOP_TABS_REFERENCE_ROI = (100, 120, 300, 220)
-CLASSIFY_SHOP_TABS_RELATIVE_ROI = (
-    CLASSIFY_SHOP_TABS_REFERENCE_ROI[0] / FHD_1080.width,
-    CLASSIFY_SHOP_TABS_REFERENCE_ROI[1] / FHD_1080.height,
-    CLASSIFY_SHOP_TABS_REFERENCE_ROI[2] / FHD_1080.width,
-    CLASSIFY_SHOP_TABS_REFERENCE_ROI[3] / FHD_1080.height,
+CLASSIFY_SHOP_TABS_RELATIVE_ROI = reference_rect_to_relative_roi(
+    CLASSIFY_SHOP_TABS_REFERENCE_ROI,
+    FHD_1080,
 )
 CLASSIFY_SHOP_TITLE_REFERENCE_ROI = (840, 240, 300, 170)
-CLASSIFY_SHOP_TITLE_RELATIVE_ROI = (
-    CLASSIFY_SHOP_TITLE_REFERENCE_ROI[0] / FHD_1080.width,
-    CLASSIFY_SHOP_TITLE_REFERENCE_ROI[1] / FHD_1080.height,
-    CLASSIFY_SHOP_TITLE_REFERENCE_ROI[2] / FHD_1080.width,
-    CLASSIFY_SHOP_TITLE_REFERENCE_ROI[3] / FHD_1080.height,
+CLASSIFY_SHOP_TITLE_RELATIVE_ROI = reference_rect_to_relative_roi(
+    CLASSIFY_SHOP_TITLE_REFERENCE_ROI,
+    FHD_1080,
 )
 # 卡带页：顶部“游戏卡珍藏集”标题与底部类别页签/收藏页描述。
 CLASSIFY_CARD_MENU_TITLE_REFERENCE_ROI = (0, 0, 700, 110)
-CLASSIFY_CARD_MENU_TITLE_RELATIVE_ROI = (
-    CLASSIFY_CARD_MENU_TITLE_REFERENCE_ROI[0] / FHD_1080.width,
-    CLASSIFY_CARD_MENU_TITLE_REFERENCE_ROI[1] / FHD_1080.height,
-    CLASSIFY_CARD_MENU_TITLE_REFERENCE_ROI[2] / FHD_1080.width,
-    CLASSIFY_CARD_MENU_TITLE_REFERENCE_ROI[3] / FHD_1080.height,
+CLASSIFY_CARD_MENU_TITLE_RELATIVE_ROI = reference_rect_to_relative_roi(
+    CLASSIFY_CARD_MENU_TITLE_REFERENCE_ROI,
+    FHD_1080,
 )
 CLASSIFY_CARD_MENU_CATEGORY_REFERENCE_ROI = (0, 840, 700, 240)
-CLASSIFY_CARD_MENU_CATEGORY_RELATIVE_ROI = (
-    CLASSIFY_CARD_MENU_CATEGORY_REFERENCE_ROI[0] / FHD_1080.width,
-    CLASSIFY_CARD_MENU_CATEGORY_REFERENCE_ROI[1] / FHD_1080.height,
-    CLASSIFY_CARD_MENU_CATEGORY_REFERENCE_ROI[2] / FHD_1080.width,
-    CLASSIFY_CARD_MENU_CATEGORY_REFERENCE_ROI[3] / FHD_1080.height,
+CLASSIFY_CARD_MENU_CATEGORY_RELATIVE_ROI = reference_rect_to_relative_roi(
+    CLASSIFY_CARD_MENU_CATEGORY_REFERENCE_ROI,
+    FHD_1080,
 )
 # 料理页：左侧标题与食谱/材料区域（配方模板搜索区同源）。
 CLASSIFY_COOKING_TITLE_REFERENCE_ROI = (100, 0, 400, 110)
-CLASSIFY_COOKING_TITLE_RELATIVE_ROI = (
-    CLASSIFY_COOKING_TITLE_REFERENCE_ROI[0] / FHD_1080.width,
-    CLASSIFY_COOKING_TITLE_REFERENCE_ROI[1] / FHD_1080.height,
-    CLASSIFY_COOKING_TITLE_REFERENCE_ROI[2] / FHD_1080.width,
-    CLASSIFY_COOKING_TITLE_REFERENCE_ROI[3] / FHD_1080.height,
+CLASSIFY_COOKING_TITLE_RELATIVE_ROI = reference_rect_to_relative_roi(
+    CLASSIFY_COOKING_TITLE_REFERENCE_ROI,
+    FHD_1080,
 )
 CLASSIFY_COOKING_MATERIALS_REFERENCE_ROI = (250, 70, 500, 300)
-CLASSIFY_COOKING_MATERIALS_RELATIVE_ROI = (
-    CLASSIFY_COOKING_MATERIALS_REFERENCE_ROI[0] / FHD_1080.width,
-    CLASSIFY_COOKING_MATERIALS_REFERENCE_ROI[1] / FHD_1080.height,
-    CLASSIFY_COOKING_MATERIALS_REFERENCE_ROI[2] / FHD_1080.width,
-    CLASSIFY_COOKING_MATERIALS_REFERENCE_ROI[3] / FHD_1080.height,
+CLASSIFY_COOKING_MATERIALS_RELATIVE_ROI = reference_rect_to_relative_roi(
+    CLASSIFY_COOKING_MATERIALS_REFERENCE_ROI,
+    FHD_1080,
 )
 QUICK_SWITCH_PAGE_KEYWORDS = (
     "店长游戏卡",
@@ -216,6 +202,8 @@ DISCOUNT_SHOP_CLOSE_CONTROL_TEMPLATES = (
         relative_roi=(0.0, 0.0, 0.2, 0.18),
     ),
 )
+# Relative template ROIs are always fractional left/top/right/bottom bounds.
+CHAPTER_HOME_RELATIVE_ROI = (0.86, 0.0, 1.0, 0.18)
 CHAPTER_HOME_TEMPLATES = (
     TemplateSpec(
         "箱庭主页按钮",
@@ -223,7 +211,7 @@ CHAPTER_HOME_TEMPLATES = (
         0.85,
         min_pixel_score=0.85,
         min_zncc_score=0.85,
-        relative_roi=(0.86, 0.0, 0.14, 0.18),
+        relative_roi=CHAPTER_HOME_RELATIVE_ROI,
     ),
     TemplateSpec(
         "箱庭主页按钮E3",
@@ -231,7 +219,7 @@ CHAPTER_HOME_TEMPLATES = (
         0.85,
         min_pixel_score=0.85,
         min_zncc_score=0.85,
-        relative_roi=(0.86, 0.0, 0.14, 0.18),
+        relative_roi=CHAPTER_HOME_RELATIVE_ROI,
     ),
     TemplateSpec(
         "箱庭主页按钮GE",
@@ -239,7 +227,7 @@ CHAPTER_HOME_TEMPLATES = (
         0.85,
         min_pixel_score=0.85,
         min_zncc_score=0.85,
-        relative_roi=(0.86, 0.0, 0.14, 0.18),
+        relative_roi=CHAPTER_HOME_RELATIVE_ROI,
     ),
 )
 HOME_BRIGHTNESS_THRESHOLD = 0.75
