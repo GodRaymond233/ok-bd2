@@ -218,6 +218,11 @@ class NavigatorTest(unittest.TestCase):
             ScreenState.SANDBOX,
             f"Q_sp{number}",
         )
+        arrivals = []
+        navigator._confirm_collection_arrival = lambda received_card, target: (
+            arrivals.append((received_card.card_id, target.key))
+            or NavigationResult(True, ScreenState.SANDBOX, target.title)
+        )
 
         result = navigator.prepare_collection_main_area(card.card_id)
 
@@ -228,6 +233,7 @@ class NavigatorTest(unittest.TestCase):
             clicks,
         )
         self.assertEqual([], generation_calls)
+        self.assertEqual([(card.card_id, card.targets[0].key)], arrivals)
 
     def test_advance_collection_map_moves_back_exactly_one_confirmed_page(self):
         card = CARD_BY_ID["Q_sp1"]
@@ -271,6 +277,11 @@ class NavigatorTest(unittest.TestCase):
             ScreenState.SANDBOX,
             f"Q_sp{number}",
         )
+        arrivals = []
+        navigator._confirm_collection_arrival = lambda received_card, received_target: (
+            arrivals.append((received_card.card_id, received_target.key))
+            or NavigationResult(True, ScreenState.SANDBOX, received_target.title)
+        )
 
         result = navigator.advance_collection_map(card.card_id, current, target)
 
@@ -278,6 +289,7 @@ class NavigatorTest(unittest.TestCase):
         self.assertEqual(["right"], moves)
         self.assertEqual([], clicks)
         self.assertEqual([(teleport, (1080, 1920, 3))], generation_calls)
+        self.assertEqual([(card.card_id, target.key)], arrivals)
 
     def test_teleport_map_page_arrows_are_strict_and_directional(self):
         self.assertEqual("image/green/TpMapLeft.png", TELEPORT_MAP_FORWARD_TEMPLATE.file_name)
@@ -651,6 +663,10 @@ class NavigatorTest(unittest.TestCase):
             ScreenState.SANDBOX,
             f"Q_sp{number}",
         )
+        navigator._confirm_collection_arrival = lambda _card, _target: NavigationResult(
+            True,
+            ScreenState.SANDBOX,
+        )
         multiple = self._area_context(
             card.targets[1].title,
             card.targets[1].key,
@@ -659,6 +675,62 @@ class NavigatorTest(unittest.TestCase):
         result = navigator._click_collection_destination(card, card.targets[1], multiple)
         self.assertTrue(result.success)
         self.assertEqual([stronger], selected)
+
+    def test_collection_destination_fails_when_arrival_map_does_not_match(self):
+        card = CARD_BY_ID["Q_sp1"]
+        target = card.targets[1]
+        teleport = MatchResult(0.99, (800, 400), (60, 60), 0.95, 0.93)
+        navigator = Navigator(
+            SimpleNamespace(info_set=lambda *_args: None),
+            SimpleNamespace(click_client=lambda *_args, **_kwargs: None),
+        )
+        navigator._click_teleport_map_destination = lambda *_args, **_kwargs: True
+        navigator._wait_for_story_sandbox = lambda _number: NavigationResult(
+            True,
+            ScreenState.SANDBOX,
+        )
+        navigator._confirm_collection_arrival = lambda _card, _target: NavigationResult(
+            False,
+            ScreenState.AREA_MAP,
+            "到达后地图不符：目标=卢戈森林，实际=battle_area_2",
+        )
+
+        result = navigator._click_collection_destination(
+            card,
+            target,
+            self._area_context(
+                target.title,
+                target.key,
+                teleports=(teleport,),
+            ),
+        )
+
+        self.assertFalse(result.success)
+        self.assertEqual(ScreenState.AREA_MAP, result.state)
+        self.assertIn("到达后地图不符", result.message)
+
+    def test_confirm_collection_arrival_checks_actual_area_map_title(self):
+        card = CARD_BY_ID["Q_sp1"]
+        target = card.targets[1]
+        navigator = Navigator(SimpleNamespace(), SimpleNamespace())
+        navigator.ensure_area_map = lambda: NavigationResult(
+            True,
+            ScreenState.AREA_MAP,
+        )
+        navigator._capture_area_map_context = lambda _card: self._area_context(
+            card.targets[2].title,
+            card.targets[2].key,
+        )
+        navigator._close_area_map = lambda _context: self.fail(
+            "a mismatched arrival map must remain open for failure handling"
+        )
+
+        result = navigator._confirm_collection_arrival(card, target)
+
+        self.assertFalse(result.success)
+        self.assertEqual(ScreenState.AREA_MAP, result.state)
+        self.assertIn(target.title, result.message)
+        self.assertIn(card.targets[2].key, result.message)
 
     def test_teleport_generation_rejects_missing_keyword_without_generate_click(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)

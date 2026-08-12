@@ -127,6 +127,10 @@ from src.tasks.map_trade.navigator_constants import (  # noqa: F401
     STORY_BADGE_CANDIDATE_ZNCC_SCORE,
     STORY_BADGE_CENTER_REGION,
     STORY_BADGE_CLUSTER_RADIUS,
+    STORY_BADGE_ENCODED_MIN_MARGIN,
+    STORY_BADGE_ENCODED_PIXEL_SCORE,
+    STORY_BADGE_ENCODED_TEMPLATE_SCORE,
+    STORY_BADGE_ENCODED_ZNCC_SCORE,
     STORY_BADGE_MIN_MARGIN,
     STORY_BADGE_OCR_BINARY_THRESHOLD,
     STORY_BADGE_OCR_HORIZONTAL_BORDER,
@@ -423,20 +427,37 @@ class StoryCardNavigationMixin:
         target_number: int,
         detections: tuple[StoryBadgeDetection, ...],
     ) -> tuple[StoryBadgeDetection | None, str]:
+        def strict_identity(value: StoryBadgeDetection) -> bool:
+            return (
+                value.best.result.score >= STORY_BADGE_TEMPLATE_SCORE
+                and value.best.result.pixel_score >= STORY_BADGE_PIXEL_SCORE
+            )
+
+        def encoded_identity(value: StoryBadgeDetection) -> bool:
+            return (
+                value.best.result.score >= STORY_BADGE_ENCODED_TEMPLATE_SCORE
+                and value.best.result.pixel_score >= STORY_BADGE_ENCODED_PIXEL_SCORE
+                and value.best.result.zncc_score >= STORY_BADGE_ENCODED_ZNCC_SCORE
+            )
+
         target_detections = [
             value
             for value in detections
             if value.best.number == target_number
-            and value.best.result.score >= STORY_BADGE_TEMPLATE_SCORE
-            and value.best.result.pixel_score >= STORY_BADGE_PIXEL_SCORE
+            and (strict_identity(value) or encoded_identity(value))
         ]
         if not target_detections:
             return (
                 None,
                 (
-                    "未达到角标双阈值："
+                    "未达到角标严格或编码恢复门槛："
                     f"match>={STORY_BADGE_TEMPLATE_SCORE:.3f}, "
                     f"pixel>={STORY_BADGE_PIXEL_SCORE:.3f}, "
+                    "或 "
+                    f"match>={STORY_BADGE_ENCODED_TEMPLATE_SCORE:.3f}, "
+                    f"pixel>={STORY_BADGE_ENCODED_PIXEL_SCORE:.3f}, "
+                    f"zncc>={STORY_BADGE_ENCODED_ZNCC_SCORE:.3f}, "
+                    f"margin>={STORY_BADGE_ENCODED_MIN_MARGIN:.3f}, "
                     f"检测目标数={len(detections)}"
                 ),
             )
@@ -445,10 +466,18 @@ class StoryCardNavigationMixin:
         detection = target_detections[0]
         if detection.runner_up is None:
             return None, "缺少同位置次优编号，无法检查歧义"
-        if detection.margin < STORY_BADGE_MIN_MARGIN:
+        required_margin = min(
+            threshold
+            for passed, threshold in (
+                (strict_identity(detection), STORY_BADGE_MIN_MARGIN),
+                (encoded_identity(detection), STORY_BADGE_ENCODED_MIN_MARGIN),
+            )
+            if passed
+        )
+        if detection.margin < required_margin:
             return (
                 None,
-                (f"候选分差不足（ZNCC）：{detection.margin:.3f}<{STORY_BADGE_MIN_MARGIN:.3f}"),
+                (f"候选分差不足（ZNCC）：{detection.margin:.3f}<{required_margin:.3f}"),
             )
         ocr_number, ocr_text = self._story_badge_ocr_number(
             frame,
