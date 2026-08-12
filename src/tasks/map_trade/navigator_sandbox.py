@@ -1328,11 +1328,7 @@ class SandboxNavigationMixin:
                 arrived.state,
                 f"传送到{target.title}后未确认剧情箱庭：{arrived.message}",
             )
-        return NavigationResult(
-            True,
-            ScreenState.SANDBOX,
-            f"{card.card_id}/{target.key}/{target.title}",
-        )
+        return self._confirm_collection_arrival(card, target)
 
     def prepare_collection_main_area(self, card_id: str) -> NavigationResult:
         """Normalize a newly entered story card to its safe/main area."""

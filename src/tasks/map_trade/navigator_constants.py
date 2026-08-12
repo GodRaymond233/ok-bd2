@@ -130,6 +130,14 @@ PROBE_STORY_BADGE_CONFIRM_SECONDS = 0.4
 STORY_BADGE_TEMPLATE_SCORE = 0.95
 STORY_BADGE_PIXEL_SCORE = 0.95
 STORY_BADGE_MIN_MARGIN = 0.05
+# Tutorial-video frames can preserve a strong badge structure while H.264
+# chroma/block compression slightly lowers whole-pixel similarity and the
+# separation from the next number.  Keep the original strict path, and allow
+# this narrower recovery path only when all structural scores stay high.
+STORY_BADGE_ENCODED_TEMPLATE_SCORE = 0.98
+STORY_BADGE_ENCODED_PIXEL_SCORE = 0.94
+STORY_BADGE_ENCODED_ZNCC_SCORE = 0.88
+STORY_BADGE_ENCODED_MIN_MARGIN = 0.04
 STORY_BADGE_CANDIDATE_SCORE = 0.70
 STORY_BADGE_CANDIDATE_PIXEL_SCORE = 0.70
 STORY_BADGE_CANDIDATE_ZNCC_SCORE = 0.50
