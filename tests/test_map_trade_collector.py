@@ -40,6 +40,7 @@ from src.tasks.map_trade.collector import (
     SKILL_OCR_FALLBACK_UPSCALE,
     SKILL_OCR_UPSCALE,
     SUMMON_ACTION,
+    SUPPRESS_ACTION,
     Collector,
     SearchCountdownSession,
     SkillExecutionResult,
@@ -704,6 +705,32 @@ class CollectorSkillTest(unittest.TestCase):
                 for _name, kwargs in calls
             )
         )
+
+    def test_suppress_feedback_accepts_video_wording_with_or_without_de(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        for text in (
+            "已制伏地图内所有怪物。",
+            "已制伏地图内所有的怪物。",
+        ):
+            with self.subTest(text=text):
+                collector = Collector(
+                    SimpleNamespace(
+                        config={},
+                        sleep=lambda *_args: None,
+                        info_set=lambda *_args: None,
+                    ),
+                    SimpleNamespace(
+                        capture=lambda: frame,
+                        ocr_text=lambda *_args, **_kwargs: text,
+                        simplify=lambda value: value,
+                    ),
+                    SimpleNamespace(),
+                    SimpleNamespace(),
+                )
+
+                feedback = collector._read_action_feedback(SUPPRESS_ACTION)
+
+                self.assertEqual("success", feedback.outcome)
 
     def test_absorb_failure_feedback_has_precedence_over_positive_text(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)

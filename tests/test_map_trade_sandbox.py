@@ -37,6 +37,10 @@ from src.tasks.map_trade.navigator import (
     SANDBOX_SKILL_STATE_TEMPLATES,
     SANDBOX_SKILL_UNSELECTED_YELLOW_MAX_RATIO,
     SANDBOX_TEMPLATES,
+    STORY_BADGE_ENCODED_MIN_MARGIN,
+    STORY_BADGE_ENCODED_PIXEL_SCORE,
+    STORY_BADGE_ENCODED_TEMPLATE_SCORE,
+    STORY_BADGE_ENCODED_ZNCC_SCORE,
     STORY_BADGE_MIN_MARGIN,
     STORY_BADGE_OCR_MIN_CONFIDENCE,
     STORY_BADGE_PIXEL_SCORE,
@@ -501,7 +505,77 @@ class StoryBadgeTest(unittest.TestCase):
         detection, reason = navigator._find_story_badge(frame, 6)
 
         self.assertIsNone(detection)
-        self.assertIn("未达到角标双阈值", reason)
+        self.assertIn("未达到角标严格或编码恢复门槛", reason)
+
+    def test_story_badge_encoded_recovery_requires_all_structural_gates(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+
+        for failed_gate, overrides in (
+            ("match", {"score": STORY_BADGE_ENCODED_TEMPLATE_SCORE - 0.001}),
+            ("pixel", {"pixel_score": STORY_BADGE_ENCODED_PIXEL_SCORE - 0.001}),
+            ("zncc", {"zncc_score": STORY_BADGE_ENCODED_ZNCC_SCORE - 0.001}),
+            (
+                "margin",
+                {
+                    "runner_zncc": (
+                        STORY_BADGE_ENCODED_ZNCC_SCORE
+                        - STORY_BADGE_ENCODED_MIN_MARGIN
+                        + 0.001
+                    )
+                },
+            ),
+        ):
+            with self.subTest(failed_gate=failed_gate):
+                score = overrides.get("score", STORY_BADGE_ENCODED_TEMPLATE_SCORE)
+                pixel_score = overrides.get(
+                    "pixel_score",
+                    STORY_BADGE_ENCODED_PIXEL_SCORE,
+                )
+                zncc_score = overrides.get("zncc_score", STORY_BADGE_ENCODED_ZNCC_SCORE)
+                runner_zncc = overrides.get(
+                    "runner_zncc",
+                    zncc_score - STORY_BADGE_ENCODED_MIN_MARGIN,
+                )
+                matches = {
+                    "story_cartridge_badge_06.png": (
+                        MatchResult(
+                            score,
+                            (80, 930),
+                            (29, 29),
+                            pixel_score=pixel_score,
+                            zncc_score=zncc_score,
+                        ),
+                    ),
+                    "story_cartridge_badge_08.png": (
+                        MatchResult(
+                            0.90,
+                            (81, 930),
+                            (29, 29),
+                            pixel_score=0.90,
+                            zncc_score=runner_zncc,
+                        ),
+                    ),
+                }
+                vision = SimpleNamespace(
+                    match_all=lambda _frame, spec, **_kwargs: matches.get(
+                        Path(spec.file_name).name,
+                        (),
+                    ),
+                    ocr_text=lambda *_args, **_kwargs: self.fail(
+                        "rejected encoded candidates must not reach OCR"
+                    ),
+                )
+
+                detection, reason = Navigator(
+                    SimpleNamespace(),
+                    vision,
+                )._find_story_badge(frame, 6)
+
+                self.assertIsNone(detection)
+                self.assertIn(
+                    "候选分差不足" if failed_gate == "margin" else "编码恢复门槛",
+                    reason,
+                )
 
     def test_story_badge_detection_rejects_conflicting_ocr_number(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
