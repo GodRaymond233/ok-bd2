@@ -8,7 +8,6 @@ from qfluentwidgets import FluentIcon
 
 from src.tasks.DailyTask import DailyTask
 from src.tasks.FreeGachaTask import FreeGachaTask
-from src.tasks.MapCollectionTask import MapCollectionTask
 from src.tasks.MapTradeTask import MapTradeTask
 from src.tasks.PVPTask import PVPTask
 from src.tasks.QuickHuntTask import QuickHuntTask
@@ -27,7 +26,6 @@ DAILY_BATCH_CHILDREN = (
     DailyBatchChild("免费抽抽乐", FreeGachaTask),
     DailyBatchChild("广场女神像", SquareGoddessTask),
     DailyBatchChild("自动PVP", PVPTask),
-    DailyBatchChild("跑图", MapCollectionTask),
     DailyBatchChild("跑商", MapTradeTask),
 )
 
@@ -53,7 +51,7 @@ class DailyBatchTask(BaseTask):
         self.name = "一键完成日常"
         self.description = (
             "按顺序执行已开启的公会、小屋、酒馆、快速狩猎、抽抽乐、"
-            "广场、PVP、跑图和跑商。"
+            "广场、PVP和跑商。"
         )
         self.icon = FluentIcon.COMPLETED
         self.group_name = "日常/周常"
