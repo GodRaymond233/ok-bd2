@@ -23,10 +23,11 @@ from src.tasks.map_trade.trader_constants import (  # noqa: F401
     BUY_CONFIRM_POST_CLICK_DELAY,
     BUY_CONFIRM_PRE_CLICK_DELAY,
     BUY_CONFIRM_TIMEOUT,
-    BUY_TO_SELL_OCR_INTERVAL,
+    BUY_TO_SELL_INTERVAL,
     BUY_TO_SELL_POST_CLICK_DELAY,
     BUY_TO_SELL_PRE_CLICK_DELAY,
-    BUY_TO_SELL_SOLD_OUT_KEYWORD,
+    BUY_TO_SELL_SOLD_OUT_STABLE_HITS,
+    BUY_TO_SELL_SOLD_OUT_TEMPLATE,
     BUY_TO_SELL_TIMEOUT,
     CALENDAR_DIR,
     COOK_SUBMENU_TEMPLATE,
@@ -128,31 +129,59 @@ class BuyFlowMixin:
         timeout: float = BUY_TO_SELL_TIMEOUT,
     ) -> bool:
         end_at = monotonic() + max(0.0, timeout)
-        last_text = ""
-        expected = normalize_text(self.vision.simplify(BUY_TO_SELL_SOLD_OUT_KEYWORD))
+        sold_out_hits = 0
+        last_title = ""
+        last_match = None
         while True:
-            text = self.vision.ocr_text(
-                self.vision.capture(),
-                "买后售罄确认",
+            frame = self.vision.capture()
+            title = self.vision.ocr_text(
+                frame,
+                "商店买卖页标题",
+                relative_roi=SHOP_MODE_TITLE_REGION,
             )
-            last_text = text or last_text
-            normalized = normalize_text(self.vision.simplify(text))
-            if expected in normalized:
-                self._status("买后售罄确认", "已命中")
+            last_title = title or last_title
+            normalized_title = normalize_text(self.vision.simplify(title))
+            if "出售" in normalized_title:
+                self._status("商店页面", "出售")
+                self.task.log_info("卖：购买完成后已处于出售页，直接继续出售。")
+                return True
+
+            last_match = self.vision.match(frame, BUY_TO_SELL_SOLD_OUT_TEMPLATE)
+            matched = self.vision.passes(last_match, BUY_TO_SELL_SOLD_OUT_TEMPLATE)
+            sold_out_hits = sold_out_hits + 1 if matched else 0
+            self._status(
+                "买后售罄模板",
+                (
+                    f"{'命中' if matched else '未命中'} "
+                    f"{sold_out_hits}/{BUY_TO_SELL_SOLD_OUT_STABLE_HITS}; "
+                    f"m={last_match.score:.3f}, p={last_match.pixel_score:.3f}, "
+                    f"z={last_match.zncc_score:.3f}"
+                ),
+            )
+            if sold_out_hits >= BUY_TO_SELL_SOLD_OUT_STABLE_HITS:
                 self.task.log_info(
-                    "卖：整帧OCR命中售罄，等待0.5秒后点击出售入口。"
+                    "卖：售罄模板连续命中，等待0.5秒后点击出售入口。"
                 )
                 self.task.sleep(BUY_TO_SELL_PRE_CLICK_DELAY)
                 self.task.operate_click(
                     *SELL_MODE_POINT,
                     after_sleep=BUY_TO_SELL_POST_CLICK_DELAY,
                 )
-                return self._ensure_sell_page(allow_switch=False)
+                return self._ensure_sell_page()
             if monotonic() >= end_at:
                 break
-            self.task.sleep(BUY_TO_SELL_OCR_INTERVAL)
+            self.task.sleep(BUY_TO_SELL_INTERVAL)
+        score_text = (
+            "-"
+            if last_match is None
+            else (
+                f"m={last_match.score:.3f}, p={last_match.pixel_score:.3f}, "
+                f"z={last_match.zncc_score:.3f}"
+            )
+        )
         self.task.log_warning(
-            f"卖：买后等待售罄OCR超时，未切换出售页，OCR={last_text or '-'}。"
+            "卖：买后等待售罄模板稳定命中超时，未切换出售页，"
+            f"title={last_title or '-'}, match={score_text}。"
         )
         return False
 

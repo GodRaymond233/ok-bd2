@@ -12,6 +12,7 @@ from src.tasks.map_trade.models import (
     DAILY_ABSORB_LIMIT,
     DAILY_SUMMON_LIMIT,
     DAILY_SUPPRESS_LIMIT,
+    DEFAULT_RECIPES,
     CollectionActionState,
     CollectionMapRole,
 )
@@ -236,6 +237,7 @@ class ProgressTest(unittest.TestCase):
             self.assertEqual(0, state.daily_suppressions)
             self.assertEqual({"S1"}, state.completed_favorite_cards)
             self.assertEqual(weekly_cycle_key(now), state.cooking_week)
+            self.assertEqual(set(DEFAULT_RECIPES), state.completed_cooking_recipes)
             self.assertEqual(STATE_SCHEMA_VERSION, saved["schema_version"])
 
     def test_schema_two_collection_progress_resets_for_role_specific_flow(self):
@@ -319,6 +321,70 @@ class ProgressTest(unittest.TestCase):
             )
             self.assertEqual({"S1"}, state.completed_favorite_cards)
             self.assertEqual(week, state.cooking_week)
+            self.assertEqual(set(DEFAULT_RECIPES), state.completed_cooking_recipes)
+
+    def test_cooking_progress_is_per_recipe_and_partial_runs_resume(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "progress.json"
+            now = datetime(2026, 8, 10, 12, tzinfo=UTC_PLUS_8)
+            first, second = DEFAULT_RECIPES[:2]
+            store = ProgressStore(path, lambda: now)
+            store.load()
+
+            self.assertTrue(store.should_cook(recipes=(first, second)))
+            self.assertTrue(store.mark_cooking_recipe_complete(first))
+            self.assertFalse(store.mark_cooking_recipe_complete(first))
+            self.assertTrue(store.cooking_recipe_complete(first))
+            self.assertFalse(store.cooking_recipe_complete(second))
+            self.assertTrue(store.should_cook(recipes=(first, second)))
+            self.assertFalse(store.should_cook(recipes=(first,)))
+            self.assertTrue(store.should_cook(every_run=True, recipes=(first,)))
+
+            resumed = ProgressStore(path, lambda: now)
+            state = resumed.load()
+            self.assertEqual({first}, state.completed_cooking_recipes)
+            self.assertTrue(resumed.should_cook(recipes=(first, second)))
+            self.assertTrue(resumed.mark_cooking_recipe_complete(second))
+            self.assertFalse(resumed.should_cook(recipes=(first, second)))
+
+    def test_schema_four_whole_week_cooking_marker_migrates_to_all_recipes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "progress.json"
+            now = datetime(2026, 8, 10, 12, tzinfo=UTC_PLUS_8)
+            week = weekly_cycle_key(now)
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 4,
+                        "weekly_key": week,
+                        "daily_key": daily_cycle_key(now),
+                        "cooking_week": week,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            store = ProgressStore(path, lambda: now)
+            state = store.load()
+            saved = json.loads(path.read_text(encoding="utf-8"))
+
+            self.assertEqual(set(DEFAULT_RECIPES), state.completed_cooking_recipes)
+            self.assertFalse(store.should_cook(recipes=DEFAULT_RECIPES))
+            self.assertEqual(list(DEFAULT_RECIPES), saved["cooking_recipes"])
+            self.assertEqual(STATE_SCHEMA_VERSION, saved["schema_version"])
+
+    def test_weekly_rollover_clears_per_recipe_cooking_progress(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "progress.json"
+            now = [datetime(2026, 8, 16, 12, tzinfo=UTC_PLUS_8)]
+            store = ProgressStore(path, lambda: now[0])
+            store.load()
+            store.mark_cooking_recipe_complete(DEFAULT_RECIPES[0])
+
+            now[0] = datetime(2026, 8, 17, 4, 0, tzinfo=UTC_PLUS_8)
+            state = ProgressStore(path, lambda: now[0]).load()
+
+            self.assertEqual(set(), state.completed_cooking_recipes)
 
     def test_action_ledger_is_idempotent_and_archives_at_daily_rollover(self):
         with tempfile.TemporaryDirectory() as temp_dir:

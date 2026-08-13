@@ -2,6 +2,7 @@ import unittest
 
 import numpy as np
 
+import src.tasks.BaseBD2Task as base_task_module
 import src.tasks.PVPTask as pvp_task_module
 import src.tasks.SquareGoddessTask as square_goddess_task_module
 import src.tasks.task_vision_mixin as task_vision_mixin_module
@@ -13,6 +14,7 @@ from src.tasks import (
     QuickSuppressionTask,
 )
 from src.tasks.BaseBD2Task import BaseBD2Task
+from src.tasks.BD2MapCollectionProbeTask import BD2MapCollectionProbeTask
 from src.tasks.map_trade import (
     action_icons,
     collector_constants,
@@ -20,6 +22,7 @@ from src.tasks.map_trade import (
     vision,
 )
 from src.tasks.map_trade.models import MAP_TRADE_REFERENCE
+from src.tasks.MapCollectionTask import MapCollectionTask
 from src.tasks.MapTradeTask import MapAutomationTaskBase, MapTradeTask
 from src.tasks.PVPTask import PVPTask
 from src.tasks.SquareGoddessTask import SquareGoddessTask
@@ -158,30 +161,41 @@ class InputUnificationTest(unittest.TestCase):
         self.assertEqual([((960, 540), (480, 270), 0.4, 0.2)], task.drags)
 
 
-class PvpOwnershipTest(unittest.TestCase):
-    def test_pvp_special_page_logic_lives_in_pvp_task(self):
-        self.assertFalse(BaseBD2Task._recent_cartridge_is_pvp(object.__new__(BaseBD2Task)))
-        self.assertIsNot(
-            BaseBD2Task._recent_cartridge_is_pvp,
-            PVPTask._recent_cartridge_is_pvp,
+class RecentPvpGuardOwnershipTest(unittest.TestCase):
+    def test_recent_pvp_guard_lives_on_shared_cartridge_entry_base(self):
+        shared_methods = (
+            "_recent_cartridge_is_pvp",
+            "_match_recent_pvp_cartridge",
+            "_load_recent_pvp_cartridge_template",
+            "_handle_recent_cartridge_special_pages",
+            "_pvp_special_page_action",
+            "_is_beijing_monday",
+            "_pvp_special_page_ocr_boxes",
+            "_recent_cartridge_ocr_boxes",
         )
-        self.assertTrue(hasattr(PVPTask, "_match_recent_pvp_cartridge"))
-        self.assertTrue(hasattr(PVPTask, "_handle_recent_cartridge_special_pages"))
-        self.assertTrue(hasattr(PVPTask, "_pvp_special_page_action"))
-        self.assertTrue(hasattr(PVPTask, "_is_beijing_monday"))
-        self.assertTrue(hasattr(PVPTask, "_pvp_special_page_ocr_boxes"))
-        self.assertTrue(hasattr(PVPTask, "_recent_cartridge_ocr_boxes"))
-        self.assertFalse(hasattr(BaseBD2Task, "_match_recent_pvp_cartridge"))
-        self.assertFalse(hasattr(BaseBD2Task, "_handle_recent_cartridge_special_pages"))
-        self.assertFalse(hasattr(BaseBD2Task, "_pvp_special_page_action"))
-        self.assertFalse(hasattr(BaseBD2Task, "_is_beijing_monday"))
-        self.assertFalse(hasattr(BaseBD2Task, "_pvp_special_page_ocr_boxes"))
-        self.assertFalse(hasattr(BaseBD2Task, "_recent_cartridge_ocr_boxes"))
-        self.assertEqual(3, pvp_task_module.RECENT_CARTRIDGE_SPECIAL_PAGE_MAX_ACTIONS)
-        self.assertEqual(3.0, pvp_task_module.RECENT_CARTRIDGE_SPECIAL_PAGE_SECONDS)
+        task_classes = (
+            PVPTask,
+            SquareGoddessTask,
+            MapAutomationTaskBase,
+            MapTradeTask,
+            MapCollectionTask,
+            BD2MapCollectionProbeTask,
+        )
+        for method_name in shared_methods:
+            base_method = getattr(BaseBD2Task, method_name)
+            for task_class in task_classes:
+                with self.subTest(method=method_name, task=task_class.__name__):
+                    task_method = getattr(task_class, method_name)
+                    self.assertIs(
+                        getattr(base_method, "__func__", base_method),
+                        getattr(task_method, "__func__", task_method),
+                    )
+
+        self.assertEqual(3, base_task_module.RECENT_CARTRIDGE_SPECIAL_PAGE_MAX_ACTIONS)
+        self.assertEqual(3.0, base_task_module.RECENT_CARTRIDGE_SPECIAL_PAGE_SECONDS)
         self.assertEqual(
             "cartridge-image2-left-lower-cutout.png",
-            pvp_task_module.RECENT_PVP_CARTRIDGE_TEMPLATE_FILE,
+            base_task_module.RECENT_PVP_CARTRIDGE_TEMPLATE_FILE,
         )
 
 

@@ -14,6 +14,7 @@ from src.tasks.map_trade.models import (
     RECIPE_TEMPLATES,
     STORY_CARDS,
     CalendarEntry,
+    MapPageMode,
     MatchResult,
     NavigationResult,
     ScreenState,
@@ -36,6 +37,9 @@ from src.tasks.map_trade.navigator import (
     QUICK_SWITCH_CARTRIDGE_REGION,
     QUICK_SWITCH_PAGE_KEYWORDS,
     QUICK_SWITCH_TEMPLATE,
+    RETURN_HOME_ANNOUNCEMENT_KEYWORD_GROUPS,
+    RETURN_HOME_ANNOUNCEMENT_MAX_CLICKS,
+    RETURN_HOME_ANNOUNCEMENT_OCR_REGION,
     RETURN_HOME_TIMEOUT,
     SANDBOX_TEMPLATES,
     STORY_BADGE_CANDIDATE_ZNCC_SCORE,
@@ -77,7 +81,8 @@ from src.tasks.map_trade.trader import (
     BUY_CONFIRM_TIMEOUT,
     BUY_TO_SELL_POST_CLICK_DELAY,
     BUY_TO_SELL_PRE_CLICK_DELAY,
-    BUY_TO_SELL_SOLD_OUT_KEYWORD,
+    BUY_TO_SELL_SOLD_OUT_STABLE_HITS,
+    BUY_TO_SELL_SOLD_OUT_TEMPLATE,
     SALE_CONFIRM_POINT,
     SALE_DIALOG_REGION,
     SALE_ITEM_NAME_LEFT_OFFSET_X,
@@ -90,6 +95,7 @@ from src.tasks.map_trade.trader import (
 from src.tasks.map_trade.vision import Vision
 from src.tasks.MapTradeTask import MapTradeTask
 from src.utils.calibration import FHD_1080
+from src.utils.home_confirmation import HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT
 from src.utils.image_utils import relative_roi_frame, scale_reference_roi
 from src.utils.template_resolution import offline_template_scale
 
@@ -140,11 +146,18 @@ class SellFlowTest(unittest.TestCase):
             ocr_calls,
         )
 
-    def test_buy_and_sell_switches_current_shop_after_full_frame_sold_out_ocr(self):
+    def test_buy_and_sell_switches_current_shop_after_stable_sold_out_template(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         ocr_calls = []
         clicks = []
         sleeps = []
+        match = MatchResult(
+            0.96,
+            (408, 248),
+            (25, 15),
+            pixel_score=0.96,
+            zncc_score=0.96,
+        )
         trader = object.__new__(Trader)
         trader.task = SimpleNamespace(
             operate_click=lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep)),
@@ -156,30 +169,73 @@ class SellFlowTest(unittest.TestCase):
 
         def ocr_text(_frame, name, roi=None, relative_roi=None):
             ocr_calls.append((name, roi, relative_roi))
-            if name == "买后售罄确认":
-                return f"洋葱 {BUY_TO_SELL_SOLD_OUT_KEYWORD}"
-            return "出售"
+            return "购买"
 
         trader.vision = SimpleNamespace(
             capture=lambda: frame,
             ocr_text=ocr_text,
             simplify=lambda value: value,
+            match=lambda captured, spec: (
+                match
+                if captured is frame and spec is BUY_TO_SELL_SOLD_OUT_TEMPLATE
+                else self.fail("unexpected template match")
+            ),
+            passes=lambda result, spec: (
+                result is match and spec is BUY_TO_SELL_SOLD_OUT_TEMPLATE
+            ),
         )
+        trader._ensure_sell_page = lambda: True
 
         self.assertTrue(trader._switch_from_completed_buy_to_sell())
         self.assertEqual(
             [(*SELL_MODE_POINT, BUY_TO_SELL_POST_CLICK_DELAY)],
             clicks,
         )
-        self.assertEqual([BUY_TO_SELL_PRE_CLICK_DELAY], sleeps)
         self.assertEqual(
-            ("买后售罄确认", None, None),
-            ocr_calls[0],
+            [BUY_TO_SELL_PRE_CLICK_DELAY],
+            [value for value in sleeps if value == BUY_TO_SELL_PRE_CLICK_DELAY],
         )
+        self.assertEqual(BUY_TO_SELL_SOLD_OUT_STABLE_HITS - 1, sleeps.count(0.25))
         self.assertEqual(
             ("商店买卖页标题", None, SHOP_MODE_TITLE_REGION),
-            ocr_calls[1],
+            ocr_calls[0],
         )
+        self.assertEqual([ocr_calls[0]] * BUY_TO_SELL_SOLD_OUT_STABLE_HITS, ocr_calls)
+
+    def test_buy_and_sell_accepts_sell_page_without_waiting_for_sold_out(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        trader = object.__new__(Trader)
+        trader.task = SimpleNamespace(
+            sleep=lambda *_args: self.fail("出售页不应等待售罄"),
+            operate_click=lambda *_args, **_kwargs: self.fail("出售页不应再次点击"),
+            log_info=lambda *_args, **_kwargs: None,
+        )
+        trader.vision = SimpleNamespace(
+            capture=lambda: frame,
+            ocr_text=lambda *_args, **_kwargs: "出售",
+            simplify=lambda value: value,
+            match=lambda *_args, **_kwargs: self.fail("出售页不应匹配售罄模板"),
+        )
+
+        self.assertTrue(trader._switch_from_completed_buy_to_sell())
+
+    def test_sell_page_switch_retries_when_first_click_is_ignored(self):
+        texts = iter(("购买", "购买", "出售"))
+        clicks = []
+        trader = object.__new__(Trader)
+        trader.task = SimpleNamespace(
+            operate_click=lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep)),
+            sleep=lambda *_args: None,
+            log_warning=lambda *_args: None,
+        )
+        trader.vision = SimpleNamespace(
+            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
+            ocr_text=lambda *_args, **_kwargs: next(texts),
+            simplify=lambda value: value,
+        )
+
+        self.assertTrue(trader._ensure_sell_page())
+        self.assertEqual([(*SELL_MODE_POINT, 0.5)] * 2, clicks)
 
     def test_run_sell_after_buy_reuses_current_shop_without_home_navigation(self):
         actions = []
@@ -849,6 +905,7 @@ class TradeAssetsTest(unittest.TestCase):
             [
                 QUICK_SWITCH_TEMPLATE.file_name,
                 MERCHANT_CLICK_LOCATION_TEMPLATE.file_name,
+                BUY_TO_SELL_SOLD_OUT_TEMPLATE.file_name,
             ]
         )
         templates.extend(spec.file_name for _number, spec in STORY_BADGE_SPECS)
@@ -856,6 +913,33 @@ class TradeAssetsTest(unittest.TestCase):
         for relative_path in templates:
             with self.subTest(template=relative_path):
                 self.assertTrue((template_root / relative_path).is_file())
+
+    def test_sold_out_template_separates_recorded_buy_and_sell_frames(self):
+        fixture_root = ROOT / "tests" / "fixtures" / "map_trade" / "trade_shop"
+        task = SimpleNamespace(
+            config={"跑商识图阈值": 0.72},
+            vision_threshold_key="跑商识图阈值",
+        )
+        vision = Vision(task)
+        results = {}
+        for name in ("before_purchase.png", "after_purchase.png", "sell_page.png"):
+            frame = cv2.imread(str(fixture_root / name), cv2.IMREAD_COLOR)
+            self.assertIsNotNone(frame, name)
+            results[name] = vision.match(frame, BUY_TO_SELL_SOLD_OUT_TEMPLATE)
+
+        self.assertFalse(
+            vision.passes(results["before_purchase.png"], BUY_TO_SELL_SOLD_OUT_TEMPLATE)
+        )
+        self.assertTrue(
+            vision.passes(results["after_purchase.png"], BUY_TO_SELL_SOLD_OUT_TEMPLATE)
+        )
+        self.assertFalse(
+            vision.passes(results["sell_page.png"], BUY_TO_SELL_SOLD_OUT_TEMPLATE)
+        )
+        positive = results["after_purchase.png"]
+        self.assertGreaterEqual(positive.score, 0.95)
+        self.assertGreaterEqual(positive.pixel_score, 0.96)
+        self.assertGreaterEqual(positive.zncc_score, 0.95)
 
 
 class BuyEntryTest(unittest.TestCase):
@@ -1738,6 +1822,38 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
         self.assertFalse(task._run_phases(navigator, phases))
         self.assertEqual(["buy", "home"], actions)
 
+    def test_return_home_exception_keeps_the_original_phase_failure(self):
+        actions = []
+        statuses = {}
+        errors = []
+        diagnostics = []
+        task = object.__new__(MapTradeTask)
+        task.config = {"买": True, "卖": True}
+        task.info_set = statuses.__setitem__
+        task.log_info = lambda *_args: None
+        task.log_warning = lambda *_args: None
+        task.log_error = lambda *args: errors.append(args)
+        task._save_diagnostic = diagnostics.append
+
+        def return_home():
+            actions.append("home")
+            raise RuntimeError("return failed")
+
+        navigator = SimpleNamespace(return_home=return_home)
+        phases = (
+            ("买", "买", lambda: actions.append("buy") or False),
+            ("卖", "卖", lambda: actions.append("sell") or True),
+        )
+
+        self.assertFalse(task._run_phases(navigator, phases))
+        self.assertEqual(["buy", "home"], actions)
+        self.assertEqual("买、返回章节主页", statuses["失败"])
+        self.assertEqual(1, len(errors))
+        self.assertEqual(
+            ["map_trade_买_failed", "map_trade_return_home_error"],
+            diagnostics,
+        )
+
     def test_buy_all_favorites_clicks_ocr_button_center_and_confirmation_point(self):
         clicks = []
         logs = []
@@ -1911,6 +2027,176 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
         self.assertTrue(navigator._wait_for_cartridge_home(timeout=0.0))
         vision.ocr_text = lambda *_args, **_kwargs: ""
         self.assertFalse(navigator._wait_for_cartridge_home(timeout=0.0))
+
+    def test_return_home_update_notice_is_cleared_then_strictly_reconfirmed(self):
+        frames = iter(("notice", "home"))
+        clicks = []
+        result = MatchResult(0.80, (10, 10), (20, 20), pixel_score=0.90)
+        task = SimpleNamespace(
+            config={},
+            sleep=lambda *_args: None,
+            log_warning=lambda *_args, **_kwargs: None,
+            log_info=lambda *_args, **_kwargs: None,
+            operate_click=lambda x, y, after_sleep=0: clicks.append(
+                (x, y, after_sleep)
+            ),
+            clear_temporary_home_announcement_if_needed=lambda **_kwargs: False,
+        )
+
+        def ocr_text(frame, name, **_kwargs):
+            if name == "返回主页公告":
+                return "更新 抢先看 7天内不再显示 前往查看"
+            if name == "主页抽抽乐" and frame == "home":
+                return "抽抽乐"
+            return ""
+
+        vision = SimpleNamespace(
+            capture=lambda: next(frames),
+            match=lambda *_args: result,
+            passes=lambda _match, _spec: False,
+            template_brightness_ratio=lambda frame, *_args: (
+                0.0 if frame == "notice" else 0.80
+            ),
+            ocr_text=ocr_text,
+            simplify=lambda value: value,
+        )
+        navigator = Navigator(task, vision)
+
+        def signals(frame, clear_context=None):
+            if frame == "notice":
+                return False, -1.0, -1.0, 0.0, "", False
+            return True, 0.80, 0.90, 0.80, "抽抽乐", True
+
+        navigator._home_confirmation_signals = signals
+
+        self.assertTrue(
+            navigator._wait_for_cartridge_home(
+                timeout=1.0,
+                allow_return_announcement_cleanup=True,
+            )
+        )
+        self.assertEqual(
+            [(*HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT, 0.2)],
+            clicks,
+        )
+
+    def test_return_home_notice_cleanup_requires_explicit_notice_keywords(self):
+        clicks = []
+        task = SimpleNamespace(
+            config={},
+            log_info=lambda *_args, **_kwargs: None,
+            operate_click=lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep)),
+        )
+        text = {"value": "更新"}
+        vision = SimpleNamespace(
+            ocr_text=lambda _frame, name, relative_roi: text["value"],
+            simplify=lambda value: value,
+        )
+        navigator = Navigator(task, vision)
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+
+        self.assertFalse(
+            navigator._clear_return_home_announcement_if_needed(
+                frame,
+                brightness_ratio=0.0,
+            )
+        )
+        text["value"] = "更新 抢先看"
+        self.assertTrue(
+            navigator._clear_return_home_announcement_if_needed(
+                frame,
+                brightness_ratio=0.0,
+            )
+        )
+        self.assertEqual([(*HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT, 0.2)], clicks)
+        self.assertIn(("更新", "抢先看"), RETURN_HOME_ANNOUNCEMENT_KEYWORD_GROUPS)
+        self.assertEqual(3, RETURN_HOME_ANNOUNCEMENT_MAX_CLICKS)
+        self.assertEqual(
+            (360 / 1920, 180 / 1080, 1560 / 1920, 900 / 1080),
+            RETURN_HOME_ANNOUNCEMENT_OCR_REGION,
+        )
+
+    def test_return_home_notice_fixture_uses_expected_ocr_region_and_keywords(self):
+        frame = cv2.imread(
+            str(
+                ROOT
+                / "tests"
+                / "fixtures"
+                / "map_trade"
+                / "home_return"
+                / "update_notice.png"
+            ),
+            cv2.IMREAD_COLOR,
+        )
+        self.assertIsNotNone(frame)
+        ocr_shapes = []
+
+        def ocr(**kwargs):
+            target = kwargs["frame"]
+            ocr_shapes.append(target.shape)
+            self.assertGreater(int(np.count_nonzero(target)), 0)
+            return [
+                SimpleNamespace(name="7天内不再显示"),
+                SimpleNamespace(name="更新"),
+                SimpleNamespace(name="抢先看"),
+                SimpleNamespace(name="前往查看"),
+            ]
+
+        task = SimpleNamespace(
+            config={"跑商 OCR 阈值": 0.2},
+            ocr=ocr,
+            info_set=lambda *_args, **_kwargs: None,
+            log_info=lambda *_args, **_kwargs: None,
+            operate_click=lambda *_args, **_kwargs: None,
+        )
+        navigator = Navigator(task, Vision(task))
+
+        self.assertTrue(
+            navigator._clear_return_home_announcement_if_needed(
+                frame,
+                brightness_ratio=0.0,
+            )
+        )
+        self.assertEqual([(720, 1200, 3)], ocr_shapes)
+
+    def test_return_home_update_notice_clicks_at_most_three_times(self):
+        clicks = []
+        task = SimpleNamespace(
+            config={},
+            sleep=lambda *_args: None,
+            log_warning=lambda *_args, **_kwargs: None,
+            log_info=lambda *_args, **_kwargs: None,
+            operate_click=lambda x, y, after_sleep=0: clicks.append(
+                (x, y, after_sleep)
+            ),
+            clear_temporary_home_announcement_if_needed=lambda **_kwargs: False,
+        )
+        vision = SimpleNamespace(
+            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
+            ocr_text=lambda *_args, **_kwargs: "更新 抢先看",
+            simplify=lambda value: value,
+        )
+        navigator = Navigator(task, vision)
+        samples = {"count": 0}
+
+        def signals(_frame, clear_context=None):
+            samples["count"] += 1
+            if samples["count"] >= 5:
+                return True, 0.80, 0.90, 0.80, "抽抽乐", True
+            return False, -1.0, -1.0, 0.0, "", False
+
+        navigator._home_confirmation_signals = signals
+
+        self.assertTrue(
+            navigator._wait_for_cartridge_home(
+                timeout=1.0,
+                allow_return_announcement_cleanup=True,
+            )
+        )
+        self.assertEqual(
+            [(*HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT, 0.2)] * 3,
+            clicks,
+        )
 
     def test_screen_classification_only_reports_home_after_all_three_signals(self):
         task = SimpleNamespace(
@@ -2111,7 +2397,7 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
 
         self.assertEqual(ScreenState.SHOP, navigator.classify())
 
-    def test_classify_area_map_card_menu_and_cooking_use_scoped_roi_ocr(self):
+    def test_classify_map_mode_card_menu_and_cooking_use_scoped_signals(self):
         task = SimpleNamespace(config={}, info_set=lambda *_args: None)
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         failed = MatchResult(-1.0, (0, 0), (0, 0))
@@ -2119,7 +2405,6 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
             "界面分类加载": "",
             "界面分类商店页": "",
             "界面分类商店标题": "",
-            "界面分类传送阵": "移动魔法阵",
             "界面分类卡带标题": "",
             "界面分类卡带页": "",
             "界面分类料理标题": "",
@@ -2135,9 +2420,11 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
             simplify=lambda value: value,
         )
         navigator = Navigator(task, vision)
+        map_mode = [MapPageMode.DIRECT_TELEPORT]
+        navigator._detect_map_page_mode = lambda _frame: SimpleNamespace(mode=map_mode[0])
 
         self.assertEqual(ScreenState.AREA_MAP, navigator.classify(frame))
-        texts["界面分类传送阵"] = ""
+        map_mode[0] = MapPageMode.UNKNOWN
         texts["界面分类卡带标题"] = "游戏卡珍藏集"
         self.assertEqual(ScreenState.CARD_MENU, navigator.classify(frame))
         texts["界面分类卡带标题"] = ""
@@ -2168,8 +2455,8 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
                 actions.append(("ocr", keywords, timeout, name, interval, relative_roi)) or True
             )
         )
-        navigator._wait_for_cartridge_home = lambda timeout: (
-            actions.append(("home", timeout)) or True
+        navigator._wait_for_cartridge_home = lambda timeout, **kwargs: (
+            actions.append(("home", timeout, kwargs)) or True
         )
 
         result = navigator.return_home()
@@ -2190,7 +2477,11 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
                 ("click", *DISCOUNT_SHOP_CLOSE_POINT, 0.8),
                 ("reference", 82, 36, 0.8),
                 ("click", *CHAPTER_HOME_POINT, 0.0),
-                ("home", RETURN_HOME_TIMEOUT),
+                (
+                    "home",
+                    RETURN_HOME_TIMEOUT,
+                    {"allow_return_announcement_cleanup": True},
+                ),
             ],
             actions,
         )
@@ -2230,17 +2521,97 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
         )
         navigator = Navigator(task, SimpleNamespace())
         navigator.classify = lambda: ScreenState.SANDBOX
-        navigator._wait_for_cartridge_home = lambda timeout: (
-            actions.append(("wait_home", timeout)) or True
+        navigator._wait_for_cartridge_home = lambda timeout, **kwargs: (
+            actions.append(("wait_home", timeout, kwargs)) or True
         )
 
         result = navigator.return_home()
 
         self.assertTrue(result.success)
         self.assertEqual(
-            [(*CHAPTER_HOME_POINT, 0.0), ("wait_home", RETURN_HOME_TIMEOUT)],
+            [
+                (*CHAPTER_HOME_POINT, 0.0),
+                (
+                    "wait_home",
+                    RETURN_HOME_TIMEOUT,
+                    {"allow_return_announcement_cleanup": True},
+                ),
+            ],
             actions,
         )
+
+    def test_return_home_closes_each_confirmed_map_page_before_home(self):
+        cases = (
+            (
+                ScreenState.AREA_MAP,
+                {
+                    MapPageMode.DIRECT_TELEPORT,
+                    MapPageMode.GENERATE_TELEPORT,
+                },
+            ),
+            (
+                ScreenState.SANDBOX_MAP,
+                {MapPageMode.SANDBOX_LARGE_MAP},
+            ),
+        )
+        for state, expected_modes in cases:
+            with self.subTest(state=state):
+                actions = []
+                task = SimpleNamespace(
+                    config={"加载页面等待秒数": 45.0},
+                    operate_click=lambda x, y, after_sleep=0: actions.append(
+                        ("click", x, y, after_sleep)
+                    ),
+                )
+                navigator = Navigator(task, SimpleNamespace())
+                navigator.classify = lambda: state
+                navigator._close_confirmed_map_page = (
+                    lambda received_modes, **kwargs: (
+                        self.assertEqual(expected_modes, received_modes)
+                        or actions.append(("close", kwargs))
+                        or NavigationResult(True, ScreenState.SANDBOX)
+                    )
+                )
+                navigator._wait_for_cartridge_home = lambda timeout, **kwargs: (
+                    actions.append(("home", timeout, kwargs)) or True
+                )
+
+                result = navigator.return_home()
+
+                self.assertTrue(result.success)
+                self.assertEqual(
+                    [
+                        ("close", {"timeout": 45.0}),
+                        ("click", *CHAPTER_HOME_POINT, 0.0),
+                        (
+                            "home",
+                            RETURN_HOME_TIMEOUT,
+                            {"allow_return_announcement_cleanup": True},
+                        ),
+                    ],
+                    actions,
+                )
+
+    def test_return_home_does_not_click_home_when_map_close_fails(self):
+        task = SimpleNamespace(
+            config={"加载页面等待秒数": 45.0},
+            operate_click=lambda *_args, **_kwargs: self.fail(
+                "failed map close must stop before home click"
+            ),
+        )
+        navigator = Navigator(task, SimpleNamespace())
+        navigator.classify = lambda: ScreenState.AREA_MAP
+        navigator._close_confirmed_map_page = lambda *_args, **_kwargs: NavigationResult(
+            False,
+            ScreenState.AREA_MAP,
+            "视觉模式冲突",
+            map_page_mode=MapPageMode.UNKNOWN,
+        )
+
+        result = navigator.return_home()
+
+        self.assertFalse(result.success)
+        self.assertIn("关闭地图页面失败", result.message)
 
     def test_return_home_from_unknown_page_does_not_click(self):
         task = SimpleNamespace(
@@ -2267,8 +2638,8 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
         navigator.wait_state = lambda wanted, timeout: (
             actions.append((wanted, timeout)) or ScreenState.SANDBOX
         )
-        navigator._wait_for_cartridge_home = lambda timeout: (
-            actions.append(("wait_home", timeout)) or True
+        navigator._wait_for_cartridge_home = lambda timeout, **kwargs: (
+            actions.append(("wait_home", timeout, kwargs)) or True
         )
 
         result = navigator.return_home()
@@ -2278,7 +2649,11 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
             [
                 ({ScreenState.HOME, ScreenState.SANDBOX}, 45.0),
                 (*CHAPTER_HOME_POINT, 0.0),
-                ("wait_home", RETURN_HOME_TIMEOUT),
+                (
+                    "wait_home",
+                    RETURN_HOME_TIMEOUT,
+                    {"allow_return_announcement_cleanup": True},
+                ),
             ],
             actions,
         )

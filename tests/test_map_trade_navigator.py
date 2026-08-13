@@ -11,6 +11,7 @@ import numpy as np
 from src.tasks.map_trade.models import (
     CARD_BY_ID,
     CollectionMapRole,
+    MapPageMode,
     MatchResult,
     NavigationResult,
     ScreenState,
@@ -40,6 +41,11 @@ from src.tasks.map_trade.navigator import (
     Navigator,
     SandboxConfirmation,
 )
+from src.tasks.map_trade.navigator_constants import (
+    SANDBOX_LARGE_MAP_RETURN_RELATIVE_POINT,
+    TELEPORT_MAP_HEADER_OCR_RELATIVE_ROI,
+)
+from src.tasks.map_trade.vision import Vision
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -54,6 +60,7 @@ class NavigatorTest(unittest.TestCase):
         right: bool = False,
         candidate_keys: tuple[str, ...] | None = None,
         teleports: tuple[MatchResult, ...] = (),
+        page_mode: MapPageMode = MapPageMode.DIRECT_TELEPORT,
     ) -> AreaMapContext:
         match = MatchResult(0.99, (100, 100), (30, 30), pixel_score=0.98)
         keys = (
@@ -61,9 +68,9 @@ class NavigatorTest(unittest.TestCase):
         )
         return AreaMapContext(
             frame_shape=(1080, 1920, 3),
-            raw_text=f"移动魔法阵 {text}",
-            normalized_text=f"移动魔法阵{text}",
-            is_area_map=True,
+            raw_text=text,
+            normalized_text=text,
+            map_page_mode=page_mode,
             candidate_target_keys=keys,
             resolved_target_key=target_key if len(keys) == 1 else None,
             left_arrow=match if left else None,
@@ -71,6 +78,41 @@ class NavigatorTest(unittest.TestCase):
             teleports=teleports,
             overlap_arrow=None,
             back_button=match,
+            confirmation_text=(
+                "移动魔法阵 传说"
+                if page_mode == MapPageMode.GENERATE_TELEPORT
+                else "移动魔法阵"
+            ),
+        )
+
+    def test_ensure_card_menu_home_fallback_uses_shared_recent_cartridge_guard(self):
+        calls = []
+        task = SimpleNamespace(
+            open_cartridge_quick_switcher=lambda **kwargs: (
+                calls.append(kwargs) or True
+            )
+        )
+        vision = SimpleNamespace(
+            click_stable_template=lambda *_args, **_kwargs: self.fail(
+                "the shared entry owns quick-switch clicking"
+            )
+        )
+        navigator = Navigator(task, vision)
+        states = iter((ScreenState.UNKNOWN,))
+        navigator.classify = lambda: next(states)
+        navigator.return_home = lambda: NavigationResult(True, ScreenState.HOME)
+        navigator._wait_for_cartridge_home = lambda: True
+        navigator._wait_for_quick_switch_page = lambda: True
+
+        result = navigator.ensure_card_menu()
+
+        self.assertTrue(result.success)
+        self.assertEqual(ScreenState.CARD_MENU, result.state)
+        self.assertEqual(1, len(calls))
+        self.assertIs(calls[0]["ensure_home"], navigator._wait_for_cartridge_home)
+        self.assertIs(
+            calls[0]["confirm_quick_switch_page"],
+            navigator._wait_for_quick_switch_page,
         )
 
     def test_area_map_title_resolution_prefers_longest_nested_story_title(self):
@@ -80,9 +122,214 @@ class NavigatorTest(unittest.TestCase):
             (CollectionMapRole.BATTLE_AREA_2.value,),
             Navigator._target_keys_in_text(
                 card,
-                "移动魔法阵卢戈森林深处",
+                "卢戈森林深处",
             ),
         )
+
+    def test_real_map_page_fixtures_are_mutually_exclusive_across_resolutions(self):
+        fixtures = ROOT / "tests/fixtures/map_trade/map_pages"
+        cases = {
+            "direct": (
+                "移动魔法阵",
+                "",
+                MapPageMode.DIRECT_TELEPORT,
+            ),
+            "generate": (
+                "移动魔法阵 传说",
+                "",
+                MapPageMode.GENERATE_TELEPORT,
+            ),
+            "sandbox_large": (
+                "战斗Ⅱ 卢戈森林深处",
+                "在战场中查看 探索 0 世界地图",
+                MapPageMode.SANDBOX_LARGE_MAP,
+            ),
+        }
+        for height in (720, 1080, 1440, 2160):
+            width = height * 16 // 9
+            for name, (header, footer, expected) in cases.items():
+                with self.subTest(height=height, page=name):
+                    source = cv2.imread(str(fixtures / f"{name}.png"), cv2.IMREAD_COLOR)
+                    self.assertIsNotNone(source)
+                    interpolation = cv2.INTER_AREA if height < 1080 else cv2.INTER_CUBIC
+                    frame = cv2.resize(source, (width, height), interpolation=interpolation)
+                    matcher = Vision(SimpleNamespace(config={}))
+                    vision = SimpleNamespace(
+                        match=matcher.match,
+                        passes=matcher.passes,
+                        simplify=lambda value: value,
+                        ocr_text=lambda _frame, label, **_kwargs: (
+                            footer if label == "箱庭大地图底部控件" else header
+                        ),
+                    )
+                    navigator = Navigator(
+                        SimpleNamespace(info_set=lambda *_args: None),
+                        vision,
+                    )
+
+                    detection = navigator._detect_map_page_mode(frame)
+
+                    self.assertEqual(expected, detection.mode)
+
+    def test_map_page_identity_reads_the_dedicated_upper_left_roi(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        ocr_calls = []
+        navigator = Navigator(
+            SimpleNamespace(info_set=lambda *_args: None),
+            SimpleNamespace(
+                simplify=lambda value: value,
+                ocr_text=lambda _frame, label, **kwargs: (
+                    ocr_calls.append((label, kwargs.get("relative_roi")))
+                    or "移动魔法阵"
+                ),
+            ),
+        )
+        navigator._map_page_template_signal = lambda _frame, spec: (
+            spec.name in {"交互直传页图标", "传送阵地图向前"},
+            spec.name,
+        )
+
+        detection = navigator._detect_map_page_mode(frame)
+
+        self.assertEqual(MapPageMode.DIRECT_TELEPORT, detection.mode)
+        self.assertEqual(
+            [("地图页面左上标题", TELEPORT_MAP_HEADER_OCR_RELATIVE_ROI)],
+            ocr_calls,
+        )
+
+    def test_map_page_open_wait_rejects_trigger_visual_mode_conflict(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task = SimpleNamespace(info_set=lambda *_args: None, sleep=lambda *_args: None)
+        navigator = Navigator(task, SimpleNamespace(capture=lambda: frame))
+        navigator._detect_map_page_mode = lambda _frame: SimpleNamespace(
+            mode=MapPageMode.GENERATE_TELEPORT
+        )
+
+        result = navigator._wait_for_sandbox_map_open(
+            "传送阵交互按钮",
+            expected_mode=MapPageMode.DIRECT_TELEPORT,
+        )
+
+        self.assertFalse(result.success)
+        self.assertEqual(MapPageMode.GENERATE_TELEPORT, result.map_page_mode)
+        self.assertIn("不一致", result.message)
+
+    def test_map_page_open_wait_requires_two_stable_visual_frames(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        captures = []
+        sleeps = []
+        task = SimpleNamespace(
+            info_set=lambda *_args: None,
+            sleep=sleeps.append,
+        )
+        navigator = Navigator(
+            task,
+            SimpleNamespace(capture=lambda: captures.append(frame) or frame),
+        )
+        navigator._detect_map_page_mode = lambda _frame: SimpleNamespace(
+            mode=MapPageMode.DIRECT_TELEPORT
+        )
+
+        result = navigator._wait_for_sandbox_map_open(
+            "传送阵交互按钮",
+            expected_mode=MapPageMode.DIRECT_TELEPORT,
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(MapPageMode.DIRECT_TELEPORT, result.map_page_mode)
+        self.assertEqual(2, len(captures))
+        self.assertEqual([0.5], sleeps)
+
+    def test_sandbox_large_map_requires_two_footer_keywords_and_known_title(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        text = {
+            "地图页面左上标题": "战斗Ⅱ 卢戈森林深处",
+            "箱庭大地图底部控件": "探索 0",
+        }
+        navigator = Navigator(
+            SimpleNamespace(info_set=lambda *_args: None),
+            SimpleNamespace(
+                simplify=lambda value: value,
+                ocr_text=lambda _frame, label, **_kwargs: text[label],
+            ),
+        )
+        navigator._map_page_template_signal = lambda _frame, spec: (
+            True,
+            f"{spec.name}=pass",
+        )
+
+        self.assertEqual(
+            MapPageMode.UNKNOWN,
+            navigator._detect_map_page_mode(frame).mode,
+        )
+        text["箱庭大地图底部控件"] = "在战场中查看 探索 0"
+        self.assertEqual(
+            MapPageMode.SANDBOX_LARGE_MAP,
+            navigator._detect_map_page_mode(frame).mode,
+        )
+        text["地图页面左上标题"] = "未知区域"
+        text["箱庭大地图底部控件"] = "在战场中查看 探索 0 世界地图"
+        self.assertEqual(
+            MapPageMode.UNKNOWN,
+            navigator._detect_map_page_mode(frame).mode,
+        )
+
+    def test_ensure_area_map_recovers_existing_generate_mode(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        navigator = Navigator(SimpleNamespace(), SimpleNamespace(capture=lambda: frame))
+        navigator._detect_map_page_mode = lambda _frame: SimpleNamespace(
+            mode=MapPageMode.GENERATE_TELEPORT
+        )
+
+        result = navigator.ensure_area_map()
+
+        self.assertTrue(result.success)
+        self.assertEqual(ScreenState.AREA_MAP, result.state)
+        self.assertEqual(MapPageMode.GENERATE_TELEPORT, result.map_page_mode)
+
+    def test_unknown_page_mode_never_clicks_teleport_destination(self):
+        navigator = Navigator(
+            SimpleNamespace(info_set=lambda *_args: None),
+            SimpleNamespace(
+                click_client=lambda *_args, **_kwargs: self.fail(
+                    "unknown map mode must never click"
+                )
+            ),
+        )
+        teleport = MatchResult(0.99, (100, 100), (40, 40), 0.95, 0.93)
+
+        self.assertFalse(
+            navigator._click_teleport_map_destination(
+                teleport,
+                (1080, 1920, 3),
+                page_mode=MapPageMode.UNKNOWN,
+            )
+        )
+
+    def test_sandbox_large_map_is_rejected_before_area_controls_are_scanned(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        vision = SimpleNamespace(
+            ocr_text=lambda *_args, **_kwargs: self.fail(
+                "large map must not enter teleport title OCR"
+            ),
+            match=lambda *_args, **_kwargs: self.fail(
+                "large map must not scan teleport controls"
+            ),
+        )
+        navigator = Navigator(
+            SimpleNamespace(info_set=lambda *_args: None),
+            vision,
+        )
+        navigator._detect_map_page_mode = lambda _frame: SimpleNamespace(
+            mode=MapPageMode.SANDBOX_LARGE_MAP,
+            header_text="战斗Ⅱ 卢戈森林深处",
+        )
+
+        context = navigator._area_map_context(frame, CARD_BY_ID["Q_sp1"])
+
+        self.assertFalse(context.is_area_map)
+        self.assertEqual(MapPageMode.SANDBOX_LARGE_MAP, context.map_page_mode)
+        self.assertEqual((), context.teleports)
 
     def test_area_map_scan_skips_unknown_pages_and_confirms_target(self):
         card = CARD_BY_ID["Q_sp1"]
@@ -130,11 +377,13 @@ class NavigatorTest(unittest.TestCase):
         self.assertFalse(moved)
         self.assertIn("多个目标", reason)
 
-    def test_area_map_back_template_uses_recognition_center_without_external_roi(self):
+    def test_area_map_back_template_uses_scoped_finite_scale_matching(self):
         self.assertEqual("image/green/BackButGe.png", AREA_MAP_BACK_TEMPLATE.file_name)
         self.assertIsNone(AREA_MAP_BACK_TEMPLATE.roi)
-        self.assertEqual(0.90, AREA_MAP_BACK_TEMPLATE.threshold)
-        self.assertEqual(0.80, AREA_MAP_BACK_TEMPLATE.min_zncc_score)
+        self.assertIsNotNone(AREA_MAP_BACK_TEMPLATE.relative_roi)
+        self.assertEqual((0.70, 0.75, 0.80), AREA_MAP_BACK_TEMPLATE.scale_ratios)
+        self.assertEqual(0.88, AREA_MAP_BACK_TEMPLATE.threshold)
+        self.assertEqual(0.85, AREA_MAP_BACK_TEMPLATE.min_pixel_score)
 
     def test_area_map_uses_user_confirmed_relative_geometry(self):
         self.assertEqual((289 / 1920, 253 / 1080), AREA_MAP_OPEN_RELATIVE_POINT)
@@ -150,7 +399,8 @@ class NavigatorTest(unittest.TestCase):
         navigator = Navigator(SimpleNamespace(), SimpleNamespace())
         navigator.open_teleport_map_from_sandbox = lambda: NavigationResult(
             True,
-            ScreenState.UNKNOWN,
+            ScreenState.AREA_MAP,
+            map_page_mode=MapPageMode.DIRECT_TELEPORT,
         )
         navigator._wait_for_collection_teleport_map = lambda _card: self._area_context(
             card.targets[0].title,
@@ -199,7 +449,8 @@ class NavigatorTest(unittest.TestCase):
         navigator = Navigator(SimpleNamespace(), vision)
         navigator.open_teleport_map_from_sandbox = lambda: NavigationResult(
             True,
-            ScreenState.UNKNOWN,
+            ScreenState.AREA_MAP,
+            map_page_mode=MapPageMode.DIRECT_TELEPORT,
         )
         navigator._click_teleport_generation = lambda received, shape: (
             generation_calls.append((received, shape)) or True
@@ -249,9 +500,9 @@ class NavigatorTest(unittest.TestCase):
         navigator = Navigator(SimpleNamespace(), vision)
         navigator.open_teleport_map_from_sandbox = lambda: NavigationResult(
             True,
-            ScreenState.UNKNOWN,
+            ScreenState.AREA_MAP,
             "已点击箱庭5号传送阵技能",
-            teleport_map_opened_by_skill=True,
+            map_page_mode=MapPageMode.GENERATE_TELEPORT,
         )
         generation_calls = []
         navigator._click_teleport_generation = lambda received, shape: (
@@ -262,6 +513,7 @@ class NavigatorTest(unittest.TestCase):
             current.key,
             left=True,
             right=True,
+            page_mode=MapPageMode.GENERATE_TELEPORT,
         )
         navigator._move_area_map = lambda _card, _context, direction: (
             moves.append(direction)
@@ -270,6 +522,7 @@ class NavigatorTest(unittest.TestCase):
                 target.key,
                 left=True,
                 teleports=(teleport,),
+                page_mode=MapPageMode.GENERATE_TELEPORT,
             )
         )
         navigator._wait_for_story_sandbox = lambda number: NavigationResult(
@@ -364,6 +617,7 @@ class NavigatorTest(unittest.TestCase):
             True,
             ScreenState.AREA_MAP,
             "交互按钮已确认传送阵地图",
+            map_page_mode=MapPageMode.DIRECT_TELEPORT,
         )
         navigator._click_sandbox_teleport_skill = lambda: self.fail(
             "interaction route must not click the fifth skill"
@@ -373,7 +627,7 @@ class NavigatorTest(unittest.TestCase):
 
         self.assertTrue(result.success)
         self.assertEqual(ScreenState.AREA_MAP, result.state)
-        self.assertFalse(result.teleport_map_opened_by_skill)
+        self.assertEqual(MapPageMode.DIRECT_TELEPORT, result.map_page_mode)
         self.assertEqual(
             [(hand.center, frame.shape, TELEPORT_INTERACTION_CLICK_DELAY)],
             clicks,
@@ -416,13 +670,14 @@ class NavigatorTest(unittest.TestCase):
             True,
             ScreenState.AREA_MAP,
             "技能已确认传送阵地图",
+            map_page_mode=MapPageMode.GENERATE_TELEPORT,
         )
 
         result = navigator.open_teleport_map_from_sandbox()
 
         self.assertTrue(result.success)
         self.assertEqual(ScreenState.AREA_MAP, result.state)
-        self.assertTrue(result.teleport_map_opened_by_skill)
+        self.assertEqual(MapPageMode.GENERATE_TELEPORT, result.map_page_mode)
         self.assertEqual(
             [(skill.center, frame.shape, SANDBOX_MAP_SETTLE_SECONDS)],
             clicks,
@@ -484,6 +739,7 @@ class NavigatorTest(unittest.TestCase):
 
         result = navigator._wait_for_sandbox_map_open(
             "箱庭5号传送阵技能",
+            expected_mode=MapPageMode.GENERATE_TELEPORT,
             detect_skill_failure=True,
         )
 
@@ -506,7 +762,12 @@ class NavigatorTest(unittest.TestCase):
 
         def walk_fallback():
             fallback_calls.append(True)
-            return NavigationResult(True, ScreenState.AREA_MAP, "已通过徒步回退")
+            return NavigationResult(
+                True,
+                ScreenState.AREA_MAP,
+                "已通过徒步回退",
+                map_page_mode=MapPageMode.DIRECT_TELEPORT,
+            )
 
         navigator._walk_to_sandbox_teleport_interaction = walk_fallback
 
@@ -515,7 +776,7 @@ class NavigatorTest(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual(ScreenState.AREA_MAP, result.state)
         self.assertEqual([True], fallback_calls)
-        self.assertFalse(result.teleport_map_opened_by_skill)
+        self.assertEqual(MapPageMode.DIRECT_TELEPORT, result.map_page_mode)
         self.assertIn("徒步回退", result.message)
 
     def test_walk_fallback_selects_unique_navigation_teleport_then_interacts(self):
@@ -571,6 +832,7 @@ class NavigatorTest(unittest.TestCase):
             True,
             ScreenState.AREA_MAP,
             "徒步交互已确认传送阵地图",
+            map_page_mode=MapPageMode.DIRECT_TELEPORT,
         )
 
         result = navigator._walk_to_sandbox_teleport_interaction()
@@ -656,7 +918,11 @@ class NavigatorTest(unittest.TestCase):
 
         selected = []
         navigator._click_teleport_map_destination = (
-            lambda teleport, _shape, opened_by_skill=False: selected.append(teleport) or True
+            lambda teleport, _shape, *, page_mode: (
+                self.assertEqual(MapPageMode.DIRECT_TELEPORT, page_mode)
+                or selected.append(teleport)
+                or True
+            )
         )
         navigator._wait_for_story_sandbox = lambda number: NavigationResult(
             True,
@@ -716,6 +982,7 @@ class NavigatorTest(unittest.TestCase):
         navigator.ensure_area_map = lambda: NavigationResult(
             True,
             ScreenState.AREA_MAP,
+            map_page_mode=MapPageMode.DIRECT_TELEPORT,
         )
         navigator._capture_area_map_context = lambda _card: self._area_context(
             card.targets[2].title,
@@ -809,7 +1076,10 @@ class NavigatorTest(unittest.TestCase):
             passes=lambda *_args: False,
         )
         navigator = Navigator(task, vision)
-        navigator._wait_for_story_sandbox = lambda number: (
+        navigator._detect_map_page_mode = lambda _frame: SimpleNamespace(
+            mode=MapPageMode.DIRECT_TELEPORT
+        )
+        navigator._wait_for_story_sandbox = lambda number, **_kwargs: (
             confirmed_numbers.append(number)
             or NavigationResult(True, ScreenState.SANDBOX, f"Q_sp{number}")
         )
@@ -844,7 +1114,10 @@ class NavigatorTest(unittest.TestCase):
             ),
         )
         navigator = Navigator(task, vision)
-        navigator._wait_for_story_sandbox = lambda number: NavigationResult(
+        navigator._detect_map_page_mode = lambda _frame: SimpleNamespace(
+            mode=MapPageMode.GENERATE_TELEPORT
+        )
+        navigator._wait_for_story_sandbox = lambda number, **_kwargs: NavigationResult(
             True,
             ScreenState.SANDBOX,
             f"Q_sp{number}",
@@ -857,6 +1130,59 @@ class NavigatorTest(unittest.TestCase):
             [(back.center, frame.shape, SANDBOX_MAP_SETTLE_SECONDS)],
             clicks,
         )
+
+    def test_close_sandbox_large_map_uses_its_own_confirmed_relative_point(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        clicks = []
+        task = SimpleNamespace(
+            operate_click=lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep)),
+        )
+        vision = SimpleNamespace(
+            capture=lambda: frame,
+            match=lambda *_args: MatchResult(-1.0, (0, 0), (0, 0)),
+            passes=lambda *_args: False,
+        )
+        navigator = Navigator(task, vision)
+        navigator._detect_map_page_mode = lambda _frame: SimpleNamespace(
+            mode=MapPageMode.SANDBOX_LARGE_MAP
+        )
+        navigator._wait_for_current_sandbox = lambda **_kwargs: NavigationResult(
+            True,
+            ScreenState.SANDBOX,
+        )
+
+        result = navigator._close_confirmed_map_page(
+            {MapPageMode.SANDBOX_LARGE_MAP}
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(
+            [(*SANDBOX_LARGE_MAP_RETURN_RELATIVE_POINT, SANDBOX_MAP_SETTLE_SECONDS)],
+            clicks,
+        )
+        self.assertNotEqual(
+            SANDBOX_LARGE_MAP_RETURN_RELATIVE_POINT,
+            TELEPORT_MAP_RETURN_RELATIVE_POINT,
+        )
+
+    def test_close_map_page_unknown_mode_never_clicks(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task = SimpleNamespace(
+            operate_click=lambda *_args, **_kwargs: self.fail(
+                "unknown page must not use a calibrated return point"
+            ),
+        )
+        navigator = Navigator(task, SimpleNamespace(capture=lambda: frame))
+        navigator._detect_map_page_mode = lambda _frame: SimpleNamespace(
+            mode=MapPageMode.UNKNOWN
+        )
+
+        result = navigator._close_confirmed_map_page(
+            {MapPageMode.DIRECT_TELEPORT}
+        )
+
+        self.assertFalse(result.success)
+        self.assertEqual(ScreenState.UNKNOWN, result.state)
 
     def test_open_story_quick_switcher_from_sandbox_never_detours_through_home(self):
         fixed_clicks = []
@@ -994,12 +1320,16 @@ class NavigatorTest(unittest.TestCase):
                 (point, shape, after_sleep)
             ),
         )
-        navigator.classify = lambda: ScreenState.SANDBOX
+        navigator._detect_map_page_mode = lambda _frame: SimpleNamespace(
+            mode=MapPageMode.UNKNOWN
+        )
+        navigator.classify = lambda _frame=None: ScreenState.SANDBOX
         navigator._click_sandbox_teleport_interaction = lambda: False
         navigator._wait_for_sandbox_map_open = lambda *_args, **_kwargs: NavigationResult(
             True,
             ScreenState.AREA_MAP,
             "技能已确认传送阵地图",
+            map_page_mode=MapPageMode.GENERATE_TELEPORT,
         )
 
         result = navigator.ensure_area_map()
@@ -1023,8 +1353,6 @@ class NavigatorTest(unittest.TestCase):
             @staticmethod
             def ocr_text(received, name, **kwargs):
                 ocr_calls.append((received, name, kwargs.get("relative_roi")))
-                if name == "区域地图确认":
-                    return "移动魔法阵"
                 return "卢戈森林深处"
 
             @staticmethod
@@ -1044,17 +1372,23 @@ class NavigatorTest(unittest.TestCase):
                 return ()
 
         navigator = Navigator(SimpleNamespace(), FakeVision())
+        navigator._detect_map_page_mode = lambda received: (
+            self.assertIs(received, frame)
+            or SimpleNamespace(
+                mode=MapPageMode.DIRECT_TELEPORT,
+                header_text="移动魔法阵",
+            )
+        )
         context = navigator._area_map_context(frame, CARD_BY_ID["Q_sp1"])
 
         self.assertTrue(context.is_area_map)
         self.assertEqual("卢戈森林深处", context.raw_text)
         self.assertEqual("移动魔法阵", context.confirmation_text)
         self.assertEqual(CollectionMapRole.BATTLE_AREA_2.value, context.resolved_target_key)
-        self.assertEqual(2, len(ocr_calls))
+        self.assertEqual(1, len(ocr_calls))
         self.assertTrue(all(call[0] is frame for call in ocr_calls))
-        self.assertEqual(None, ocr_calls[0][2])
-        self.assertEqual("传送阵地图名", ocr_calls[1][1])
-        self.assertEqual(TELEPORT_MAP_TITLE_OCR_RELATIVE_ROI, ocr_calls[1][2])
+        self.assertEqual("传送阵地图名", ocr_calls[0][1])
+        self.assertEqual(TELEPORT_MAP_TITLE_OCR_RELATIVE_ROI, ocr_calls[0][2])
 
     def test_area_map_teleport_template_is_enabled_only_and_strict(self):
         self.assertIs(

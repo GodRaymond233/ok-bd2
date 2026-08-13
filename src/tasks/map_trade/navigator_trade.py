@@ -4,6 +4,7 @@ from time import monotonic
 
 from src.tasks.map_trade.models import (
     MERCHANT_CARD_ID,
+    MapPageMode,
     MatchResult,
     NavigationResult,
     ScreenState,
@@ -300,6 +301,50 @@ class TradeNavigationMixin:
         )
         return False
 
+    def wait_for_q_sp6_sandbox(
+        self,
+        timeout: float,
+        *,
+        interval: float = 0.25,
+    ) -> bool:
+        """Strictly confirm the trade sandbox and the Q_sp6 merchant location.
+
+        The merchant-location template remains scoped to the explicit trade
+        flow.  It is never added to the shared story or PVP classifiers.
+        """
+
+        end_at = monotonic() + max(0.0, timeout)
+        last_state = ScreenState.UNKNOWN
+        last = MatchResult(-1.0, (0, 0), (0, 0))
+        while True:
+            frame = self.vision.capture()
+            last_state = self._classify_trade_frame(frame)
+            last = self.vision.match(frame, MERCHANT_CLICK_LOCATION_TEMPLATE)
+            merchant_passed = self.vision.passes(
+                last,
+                MERCHANT_CLICK_LOCATION_TEMPLATE,
+            )
+            self._status(
+                "Q_sp6商人前确认",
+                (
+                    f"state={last_state.value}; "
+                    f"merchant={'pass' if merchant_passed else 'miss'}; "
+                    f"match={last.score:.3f}; pixel={last.pixel_score:.3f}; "
+                    f"zncc={last.zncc_score:.3f}"
+                ),
+            )
+            if last_state == ScreenState.SANDBOX and merchant_passed:
+                return True
+            if monotonic() >= end_at:
+                break
+            self.task.sleep(interval)
+        self.task.log_warning(
+            "跑商：未同时确认 Q_sp6 箱庭与商人位置，"
+            f"state={last_state.value}, "
+            f"merchant={last.score:.3f}/{last.pixel_score:.3f}/{last.zncc_score:.3f}。"
+        )
+        return False
+
     def _wait_for_bargain_shop_confirmation(self, timeout: float | None = None) -> bool:
         """Wait until the discounted shop page is confirmed by stable OCR.
 
@@ -478,6 +523,27 @@ class TradeNavigationMixin:
             return NavigationResult(True, state)
         if state == ScreenState.SHOP:
             return self._return_home_from_discount_shop()
+        if state in {ScreenState.AREA_MAP, ScreenState.SANDBOX_MAP}:
+            expected_modes = (
+                {
+                    MapPageMode.DIRECT_TELEPORT,
+                    MapPageMode.GENERATE_TELEPORT,
+                }
+                if state == ScreenState.AREA_MAP
+                else {MapPageMode.SANDBOX_LARGE_MAP}
+            )
+            closed = self._close_confirmed_map_page(
+                expected_modes,
+                timeout=self._loading_timeout(),
+            )
+            if not closed.success:
+                return NavigationResult(
+                    False,
+                    closed.state,
+                    f"返回主页前关闭地图页面失败：{closed.message}",
+                    map_page_mode=closed.map_page_mode,
+                )
+            state = ScreenState.SANDBOX
         if state == ScreenState.LOADING:
             state = self.wait_state(
                 {ScreenState.HOME, ScreenState.SANDBOX},
@@ -493,7 +559,10 @@ class TradeNavigationMixin:
             )
 
         self.task.operate_click(*CHAPTER_HOME_POINT, after_sleep=0.0)
-        if self._wait_for_cartridge_home(timeout=RETURN_HOME_TIMEOUT):
+        if self._wait_for_cartridge_home(
+            timeout=RETURN_HOME_TIMEOUT,
+            allow_return_announcement_cleanup=True,
+        ):
             return NavigationResult(True, ScreenState.HOME, "已从箱庭返回主页")
         return NavigationResult(
             False,
@@ -519,7 +588,10 @@ class TradeNavigationMixin:
         self.task.operate_click(*DISCOUNT_SHOP_CLOSE_POINT, after_sleep=0.8)
         self._click_shop_close_control(after_sleep=0.8)
         self._click_chapter_home_button()
-        if self._wait_for_cartridge_home(timeout=RETURN_HOME_TIMEOUT):
+        if self._wait_for_cartridge_home(
+            timeout=RETURN_HOME_TIMEOUT,
+            allow_return_announcement_cleanup=True,
+        ):
             return NavigationResult(True, ScreenState.HOME, "已关闭折扣商店并返回主页")
         return NavigationResult(False, self.classify(), "关闭折扣商店后未在10秒内返回主页")
 

@@ -523,8 +523,9 @@ git diff --check
   私有输入实现。
 - 参考分辨率一律使用 `src/utils/calibration.py` 的校准对象派生；技能槽/技能组中心
   只允许以 `action_icons.py` 为唯一事实来源。
-- PVP 特殊页（最近卡带模板、赛季奖励/晋级/段位下滑）只属于 `PVPTask`；共享快速
-  切换流程通过 `_recent_cartridge_is_pvp` 钩子决定是否启用。
+- “点击最近卡带”前的 PVP 封面门禁，以及命中后对赛季奖励/晋级/段位下滑页的处理，
+  只属于 `BaseBD2Task.open_cartridge_quick_switcher` 这一显式转场边界；不得加入通用
+  地图分类器。PVP 卡带内的箱庭确认与后续入场状态机仍只属于 `PVPTask`。
 - 额度超限是 `mark_target` 的正常 False 结果（并持久化 `depleted_today`），
   不是异常；`Collector.run` 对外只返回 `CollectionResult`，不向编排层抛
   `RuntimeError`。
