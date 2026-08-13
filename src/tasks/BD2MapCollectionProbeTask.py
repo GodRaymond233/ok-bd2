@@ -596,10 +596,15 @@ class BD2MapCollectionProbeTask(MapAutomationTaskBase):
 
             map_entry = navigator.open_teleport_map_from_sandbox()
             value["map_entry_message"] = map_entry.message
-            if not map_entry.success:
+            if not map_entry.success or not map_entry.map_page_mode.is_teleport_map:
                 value["status"] = "teleport_map_entry_failed"
-                value["error"] = map_entry.message
+                value["error"] = (
+                    map_entry.message
+                    if not map_entry.success
+                    else f"传送阵地图视觉模式无效：{map_entry.map_page_mode.value}"
+                )
                 break
+            value["map_page_mode"] = map_entry.map_page_mode.value
 
             scan = self._scan_teleport_map_pages(
                 vision,

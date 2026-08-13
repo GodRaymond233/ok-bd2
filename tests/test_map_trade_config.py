@@ -30,7 +30,7 @@ from src.tasks.MapTradeTask import (
 
 
 class MapTradeLegacyConfigTest(unittest.TestCase):
-    def test_daily_trade_ignores_legacy_cooking_switch(self):
+    def test_daily_trade_runs_cooking_before_buy_and_sell(self):
         actions = []
         task = object.__new__(MapTradeTask)
         task.config = {
@@ -87,7 +87,7 @@ class MapTradeLegacyConfigTest(unittest.TestCase):
         ):
             self.assertTrue(MapTradeTask.run(task))
 
-        self.assertEqual(["buy", "sell", "home"], actions)
+        self.assertEqual(["cooking", "buy", "sell", "home"], actions)
 
 
 class MapTradeConfigTest(unittest.TestCase):
@@ -141,10 +141,13 @@ class MapTradeConfigTest(unittest.TestCase):
         self.assertEqual("每周跑图", collection.name)
         self.assertIn("买", trade.default_config)
         self.assertIn("卖", trade.default_config)
-        self.assertNotIn("料理", trade.description)
-        for mapping_name in ("default_config", "config_description", "config_type"):
+        self.assertIn("料理", trade.description)
+        for mapping_name in ("default_config", "config_description"):
             with self.subTest(mapping=mapping_name):
-                self.assertTrue(COOKING_CONFIG_KEYS.isdisjoint(getattr(trade, mapping_name)))
+                self.assertTrue(COOKING_CONFIG_KEYS.issubset(getattr(trade, mapping_name)))
+        self.assertTrue(
+            {"制作料理", "料理制作周期", "5星料理"}.issubset(trade.config_type)
+        )
         self.assertNotIn("执行跑商", trade.default_config)
         self.assertNotIn("执行地图采集", trade.default_config)
         self.assertIn("执行地图采集", collection.default_config)
@@ -196,7 +199,7 @@ class MapTradeConfigTest(unittest.TestCase):
             trade.config_type["使用在线价表"]["sub_configs"][False],
         )
 
-    def test_load_config_removes_legacy_cooking_keys(self):
+    def test_load_config_preserves_restored_cooking_keys(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             target = Path(temp_dir) / "MapTradeTask.json"
             target.write_text(
@@ -221,7 +224,10 @@ class MapTradeConfigTest(unittest.TestCase):
                 trade.load_config()
 
             self.assertTrue(trade.config["启用"])
-            self.assertTrue(COOKING_CONFIG_KEYS.isdisjoint(trade.config))
+            self.assertTrue(trade.config["制作料理"])
+            self.assertEqual("每周", trade.config["料理制作周期"])
+            self.assertTrue(trade.config["料理保险"])
+            self.assertEqual([], trade.config["5星料理"])
 
     def test_manual_calendar_is_validated_only_when_both_other_sources_are_off(self):
         trade = MapTradeTask(SimpleNamespace(scene=None), SimpleNamespace())

@@ -3,12 +3,6 @@ from __future__ import annotations
 from src.tasks.map_trade.calendar import (
     PriceCalendarClient,
 )
-from src.tasks.map_trade.models import (
-    DEFAULT_RECIPES,
-    MERCHANT_CARD_ID,
-    RECIPE_TEMPLATES,
-    TemplateSpec,
-)
 from src.tasks.map_trade.navigator import Navigator
 from src.tasks.map_trade.progress import ProgressStore
 from src.tasks.map_trade.trader_buy import BuyFlowMixin
@@ -25,10 +19,11 @@ from src.tasks.map_trade.trader_constants import (  # noqa: F401
     BUY_CONFIRM_POST_CLICK_DELAY,
     BUY_CONFIRM_PRE_CLICK_DELAY,
     BUY_CONFIRM_TIMEOUT,
-    BUY_TO_SELL_OCR_INTERVAL,
+    BUY_TO_SELL_INTERVAL,
     BUY_TO_SELL_POST_CLICK_DELAY,
     BUY_TO_SELL_PRE_CLICK_DELAY,
-    BUY_TO_SELL_SOLD_OUT_KEYWORD,
+    BUY_TO_SELL_SOLD_OUT_STABLE_HITS,
+    BUY_TO_SELL_SOLD_OUT_TEMPLATE,
     BUY_TO_SELL_TIMEOUT,
     CALENDAR_DIR,
     COOK_SUBMENU_TEMPLATE,
@@ -70,6 +65,7 @@ from src.tasks.map_trade.trader_constants import (  # noqa: F401
     SHOP_DOWN_SCROLL_INTERVAL,
     SHOP_FIRST_PAGE_MAX_UP_SCROLLS,
     SHOP_MODE_INTERVAL,
+    SHOP_MODE_SWITCH_MAX_CLICKS,
     SHOP_MODE_TIMEOUT,
     SHOP_MODE_TITLE_REGION,
     SHOP_UP_SCROLL_RECOGNITION_INTERVAL,
@@ -90,12 +86,14 @@ from src.tasks.map_trade.trader_constants import (  # noqa: F401
     ShopCartridgeTemplateCandidate,
     split_items,
 )
+from src.tasks.map_trade.trader_cooking import CookingFlowMixin
 from src.tasks.map_trade.trader_pricing import PriceDiscoveryMixin
 from src.tasks.map_trade.trader_sell import SellFlowMixin
 from src.tasks.map_trade.vision import Vision
 
 
 class Trader(
+    CookingFlowMixin,
     BuyFlowMixin,
     SellFlowMixin,
     ShopCartridgeNavigationMixin,
@@ -123,80 +121,16 @@ class Trader(
             sources_path=CALENDAR_DIR / "calendar_sources.json",
         )
 
-    def run_cooking(self) -> bool:
-        every_run = str(self.task.config.get("料理制作周期", "每周")) == "每次"
-        if not self.progress.should_cook(every_run=every_run):
-            self.task.log_info("跑商：本周利润料理已经制作，跳过。")
-            return True
-        configured_recipes = self.task.config.get("5星料理", list(DEFAULT_RECIPES))
-        selected = (
-            split_items(configured_recipes)
-            if isinstance(configured_recipes, str)
-            else tuple(configured_recipes)
-        )
-        if not selected:
-            self.task.log_info("跑商：未选择利润料理，跳过制作。")
-            self.progress.mark_cooking_complete()
-            return True
-
-        entered = self.navigator.select_card(MERCHANT_CARD_ID)
-        if not entered.success:
-            self.task.log_warning(f"料理：{entered.message}")
-            return False
-        self.vision.click_reference(1203, 664, after_sleep=0.8)
-        if not self.vision.click_ocr([r"料理"], roi=(80, 540, 1100, 120), name="料理入口"):
-            self.task.log_warning("料理：技能菜单未识别到料理入口。")
-            return False
-        if self.vision.wait_ocr([r"料理"], 8, "料理菜单", roi=(150, 0, 300, 100)) is None:
-            return False
-
-        insurance = bool(self.task.config.get("料理保险", True))
-        completed = 0
-        for recipe in selected:
-            file_name = RECIPE_TEMPLATES.get(str(recipe))
-            if not file_name:
-                continue
-            spec = TemplateSpec(f"料理-{recipe}", file_name, 0.70, roi=(250, 70, 750, 560))
-            match = None
-            for attempt in range(3):
-                frame = self.vision.capture()
-                candidate = self.vision.match(frame, spec)
-                if candidate.score >= self.vision.threshold_for(spec):
-                    match = candidate
-                    self.vision.click_client(candidate.center, frame.shape, after_sleep=0.7)
-                    break
-                if attempt == 0:
-                    self.vision.drag_reference(
-                        (780, 560), (780, 170), duration=0.55, after_sleep=0.4
-                    )
-                else:
-                    self.vision.drag_reference(
-                        (780, 170), (780, 560), duration=0.55, after_sleep=0.4
-                    )
-            if match is None:
-                self.task.log_warning(f"料理：未找到 {recipe}，跳过。")
-                continue
-            if self.vision.wait_template(COOK_SUBMENU_TEMPLATE, 5) is None:
-                continue
-            if not insurance:
-                self.vision.click_reference(576, 563, after_sleep=0.3)
-            self.vision.click_reference(930, 630, after_sleep=0.8)
-            self.vision.wait_ocr([r"制作中"], 3, f"{recipe}制作状态", roi=(480, 300, 320, 180))
-            self.vision.wait_template(COOK_SUBMENU_TEMPLATE, 20)
-            self.vision.click_reference(82, 36, after_sleep=0.8)
-            completed += 1
-
-        if completed:
-            self.progress.mark_cooking_complete()
-        return completed > 0
-
     def run_trade(self) -> bool:
-        success = True
-        if bool(self.task.config.get("买", True)):
-            success = self.run_buy() and success
-        if bool(self.task.config.get("卖", True)):
-            success = self.run_sell() and success
-        return success
+        phases = (
+            ("制作料理", self.run_cooking),
+            ("买", self.run_buy),
+            ("卖", self.run_sell),
+        )
+        for key, action in phases:
+            if bool(self.task.config.get(key, True)) and not action():
+                return False
+        return True
 
     def _status(self, key: str, value) -> None:
         try:

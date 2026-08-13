@@ -32,6 +32,7 @@ from src.tasks.map_trade.card_status import (
 from src.tasks.map_trade.models import (
     CARD_BY_ID,
     COLLECTABLE_CARDS,
+    MapPageMode,
     MatchResult,
     NavigationResult,
     ScreenState,
@@ -455,7 +456,12 @@ class MapCollectionProbeTaskTest(unittest.TestCase):
 
             @staticmethod
             def open_teleport_map_from_sandbox():
-                return NavigationResult(True, ScreenState.UNKNOWN, "map")
+                return NavigationResult(
+                    True,
+                    ScreenState.AREA_MAP,
+                    "map",
+                    map_page_mode=MapPageMode.DIRECT_TELEPORT,
+                )
 
             @staticmethod
             def return_teleport_map_to_sandbox(number):
@@ -548,7 +554,12 @@ class MapCollectionProbeTaskTest(unittest.TestCase):
                 lambda _value: NavigationResult(True, ScreenState.SANDBOX, "entered")
             )
             open_teleport_map_from_sandbox = staticmethod(
-                lambda: NavigationResult(True, ScreenState.UNKNOWN, "map")
+                lambda: NavigationResult(
+                    True,
+                    ScreenState.AREA_MAP,
+                    "map",
+                    map_page_mode=MapPageMode.DIRECT_TELEPORT,
+                )
             )
             return_teleport_map_to_sandbox = staticmethod(
                 lambda _number: NavigationResult(True, ScreenState.SANDBOX, "returned")

@@ -23,11 +23,28 @@ class ScreenState(str, Enum):
     CARD_MENU = "card_menu"
     SANDBOX = "sandbox"
     AREA_MAP = "area_map"
+    SANDBOX_MAP = "sandbox_map"
     MERCHANT_DIALOG = "merchant_dialog"
     SHOP = "shop"
     COOKING = "cooking"
     LOADING = "loading"
     UNKNOWN = "unknown"
+
+
+class MapPageMode(str, Enum):
+    """Strict visual identity of the three map pages used by story navigation."""
+
+    UNKNOWN = "unknown"
+    DIRECT_TELEPORT = "direct_teleport"
+    GENERATE_TELEPORT = "generate_teleport"
+    SANDBOX_LARGE_MAP = "sandbox_large_map"
+
+    @property
+    def is_teleport_map(self) -> bool:
+        return self in {
+            MapPageMode.DIRECT_TELEPORT,
+            MapPageMode.GENERATE_TELEPORT,
+        }
 
 
 class CollectionMapRole(str, Enum):
@@ -103,7 +120,7 @@ class NavigationResult:
     success: bool
     state: ScreenState
     message: str = ""
-    teleport_map_opened_by_skill: bool = False
+    map_page_mode: MapPageMode = MapPageMode.UNKNOWN
 
 
 @dataclass(frozen=True)
