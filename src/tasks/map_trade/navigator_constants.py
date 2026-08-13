@@ -15,7 +15,7 @@ from src.tasks.map_trade.action_icons import (
     SUMMON_ICON,
 )
 from src.tasks.map_trade.card_status import StoryCardCompletion
-from src.tasks.map_trade.models import CardSpec, MatchResult, TemplateSpec
+from src.tasks.map_trade.models import CardSpec, MapPageMode, MatchResult, TemplateSpec
 from src.utils.calibration import FHD_1080, reference_rect_to_relative_roi
 
 HOME_TEMPLATES = (
@@ -185,6 +185,18 @@ DISCOUNT_SHOP_CLOSE_POINT = (1045 / 1920, 639 / 1080)
 CHAPTER_HOME_POINT = (1797 / 1920, 63 / 1080)
 DISCOUNT_SHOP_CLOSE_TIMEOUT = 5.0
 RETURN_HOME_TIMEOUT = 10.0
+RETURN_HOME_ANNOUNCEMENT_MAX_CLICKS = 3
+RETURN_HOME_ANNOUNCEMENT_OCR_INTERVAL = 0.35
+RETURN_HOME_ANNOUNCEMENT_OCR_REGION = (
+    360 / 1920,
+    180 / 1080,
+    1560 / 1920,
+    900 / 1080,
+)
+RETURN_HOME_ANNOUNCEMENT_KEYWORD_GROUPS = (
+    ("更新", "抢先看"),
+    ("7天内不再显示", "前往查看"),
+)
 SHOP_ENTRY_CLICK_RETRIES = 3
 SHOP_ENTRY_CLICK_INTERVAL = 0.5
 SHOP_CLOSE_CLICK_RETRIES = 2
@@ -424,7 +436,7 @@ class AreaMapContext:
     frame_shape: tuple[int, ...]
     raw_text: str
     normalized_text: str
-    is_area_map: bool
+    map_page_mode: MapPageMode
     candidate_target_keys: tuple[str, ...]
     resolved_target_key: str | None
     left_arrow: MatchResult | None
@@ -433,6 +445,18 @@ class AreaMapContext:
     overlap_arrow: MatchResult | None
     back_button: MatchResult | None
     confirmation_text: str = ""
+
+    @property
+    def is_area_map(self) -> bool:
+        return self.map_page_mode.is_teleport_map
+
+
+@dataclass(frozen=True)
+class MapPageDetection:
+    mode: MapPageMode
+    header_text: str = ""
+    footer_text: str = ""
+    evidence: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -491,6 +515,53 @@ SANDBOX_MAP_TELEPORT_TEMPLATE = TemplateSpec(
     "image/green/SandboxNviTpCircleMapGE.png",
     0.72,
 )
+TELEPORT_MAP_HEADER_OCR_RELATIVE_ROI = (180 / 1920, 0.0, 900 / 1920, 110 / 1080)
+SANDBOX_LARGE_MAP_FOOTER_OCR_RELATIVE_ROI = (
+    100 / 1920,
+    900 / 1080,
+    1850 / 1920,
+    1070 / 1080,
+)
+TELEPORT_MAP_DIRECT_HEADER_TEMPLATE = TemplateSpec(
+    "交互直传页图标",
+    "TeleportMapDirectHeader.png",
+    0.95,
+    relative_roi=(0.09, 0.01, 0.15, 0.10),
+    scale_ratios=(0.95, 1.0, 1.05),
+    min_pixel_score=0.90,
+    minimum_safe_threshold=0.95,
+    min_zncc_score=0.90,
+)
+TELEPORT_MAP_GENERATE_HEADER_TEMPLATE = TemplateSpec(
+    "技能生成页图标",
+    "image/Skill3-1.png",
+    0.95,
+    relative_roi=(0.09, 0.01, 0.15, 0.10),
+    scale_ratios=(0.78, 0.79, 0.80, 0.81, 0.82),
+    min_pixel_score=0.88,
+    minimum_safe_threshold=0.95,
+    min_zncc_score=0.90,
+)
+SANDBOX_LARGE_MAP_LEFT_TEMPLATE = TemplateSpec(
+    "箱庭大地图左箭头",
+    "image/MapLeft.png",
+    0.95,
+    relative_roi=(0.07, 0.35, 0.20, 0.65),
+    scale_ratios=(0.95, 0.975, 1.0, 1.025, 1.05),
+    min_pixel_score=0.90,
+    minimum_safe_threshold=0.95,
+    min_zncc_score=0.90,
+)
+SANDBOX_LARGE_MAP_RIGHT_TEMPLATE = TemplateSpec(
+    "箱庭大地图右箭头",
+    "image/MapRight.png",
+    0.95,
+    relative_roi=(0.35, 0.35, 0.55, 0.65),
+    scale_ratios=(0.95, 0.975, 1.0, 1.025, 1.05),
+    min_pixel_score=0.90,
+    minimum_safe_threshold=0.95,
+    min_zncc_score=0.90,
+)
 TELEPORT_MAP_FORWARD_TEMPLATE = TemplateSpec(
     "传送阵地图向前",
     "image/green/TpMapLeft.png",
@@ -536,9 +607,11 @@ OVERLAP_ARROW_TEMPLATE = TemplateSpec(
 AREA_MAP_BACK_TEMPLATE = TemplateSpec(
     "传送阵地图返回",
     "image/green/BackButGe.png",
-    0.90,
-    minimum_safe_threshold=0.90,
-    min_zncc_score=0.80,
+    0.88,
+    relative_roi=(0.03, 0.0, 0.13, 0.12),
+    scale_ratios=(0.70, 0.75, 0.80),
+    min_pixel_score=0.85,
+    minimum_safe_threshold=0.88,
 )
 AREA_MAP_SCAN_LIMIT = 24
 AREA_MAP_CHANGE_TIMEOUT = 3.0
@@ -554,6 +627,7 @@ TELEPORT_INTERACTION_TIMEOUT = 30.0
 TELEPORT_INTERACTION_CLICK_DELAY = 0.5
 TELEPORT_INTERACTION_POLL_INTERVAL = 0.4
 TELEPORT_MAP_OPEN_TIMEOUT = 10.0
+MAP_PAGE_MODE_STABLE_HITS = 2
 TELEPORT_MAP_TRAVEL_SETTLE_SECONDS = 4.5
 TELEPORT_GENERATION_OCR_KEYWORDS = ("生成魔法阵", "取消", "生成")
 TELEPORT_GENERATION_OCR_TIMEOUT = 8.0
@@ -576,6 +650,11 @@ TELEPORT_MAP_RETURN_REFERENCE_POINT = (136, 52)
 TELEPORT_MAP_RETURN_RELATIVE_POINT = (
     TELEPORT_MAP_RETURN_REFERENCE_POINT[0] / AREA_MAP_REFERENCE_SIZE[0],
     TELEPORT_MAP_RETURN_REFERENCE_POINT[1] / AREA_MAP_REFERENCE_SIZE[1],
+)
+SANDBOX_LARGE_MAP_RETURN_REFERENCE_POINT = (172, 50)
+SANDBOX_LARGE_MAP_RETURN_RELATIVE_POINT = (
+    SANDBOX_LARGE_MAP_RETURN_REFERENCE_POINT[0] / AREA_MAP_REFERENCE_SIZE[0],
+    SANDBOX_LARGE_MAP_RETURN_REFERENCE_POINT[1] / AREA_MAP_REFERENCE_SIZE[1],
 )
 AREA_MAP_TELEPORT_BRIGHT_RADIUS_RATIO = 24 / 52
 AREA_MAP_TELEPORT_BRIGHT_MINIMUM_GRAY = 200

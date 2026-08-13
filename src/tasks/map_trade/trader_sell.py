@@ -28,11 +28,6 @@ from src.tasks.map_trade.trader_constants import (  # noqa: F401
     BUY_CONFIRM_POST_CLICK_DELAY,
     BUY_CONFIRM_PRE_CLICK_DELAY,
     BUY_CONFIRM_TIMEOUT,
-    BUY_TO_SELL_OCR_INTERVAL,
-    BUY_TO_SELL_POST_CLICK_DELAY,
-    BUY_TO_SELL_PRE_CLICK_DELAY,
-    BUY_TO_SELL_SOLD_OUT_KEYWORD,
-    BUY_TO_SELL_TIMEOUT,
     CALENDAR_DIR,
     COOK_SUBMENU_TEMPLATE,
     PROJECT_ROOT,
@@ -73,6 +68,7 @@ from src.tasks.map_trade.trader_constants import (  # noqa: F401
     SHOP_DOWN_SCROLL_INTERVAL,
     SHOP_FIRST_PAGE_MAX_UP_SCROLLS,
     SHOP_MODE_INTERVAL,
+    SHOP_MODE_SWITCH_MAX_CLICKS,
     SHOP_MODE_TIMEOUT,
     SHOP_MODE_TITLE_REGION,
     SHOP_UP_SCROLL_RECOGNITION_INTERVAL,
@@ -124,7 +120,7 @@ class SellFlowMixin:
         allow_switch: bool = True,
     ) -> bool:
         end_at = monotonic() + max(0.0, timeout)
-        switched = False
+        switch_clicks = 0
         last_text = ""
         while True:
             frame = self.vision.capture()
@@ -138,10 +134,17 @@ class SellFlowMixin:
             if "出售" in normalized:
                 self._status("商店页面", "出售")
                 return True
-            if "购买" in normalized and allow_switch and not switched:
-                self._status("商店页面", "购买→出售")
+            if (
+                "购买" in normalized
+                and allow_switch
+                and switch_clicks < SHOP_MODE_SWITCH_MAX_CLICKS
+            ):
+                switch_clicks += 1
+                self._status(
+                    "商店页面",
+                    f"购买→出售 {switch_clicks}/{SHOP_MODE_SWITCH_MAX_CLICKS}",
+                )
                 self.task.operate_click(*SELL_MODE_POINT, after_sleep=0.5)
-                switched = True
                 continue
             if monotonic() >= end_at:
                 break

@@ -8,6 +8,17 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
+from src.tasks.BaseBD2Task import (
+    RECENT_CARTRIDGE_SPECIAL_PAGE_SECONDS,
+    RECENT_PVP_CARTRIDGE_PIXEL_THRESHOLD,
+    RECENT_PVP_CARTRIDGE_TEMPLATE_FILE,
+    RECENT_PVP_CARTRIDGE_TEMPLATE_THRESHOLD,
+    RECENT_PVP_CARTRIDGE_ZNCC_THRESHOLD,
+)
+from src.tasks.BaseBD2Task import TEMPLATE_DIR as RECENT_CARTRIDGE_TEMPLATE_DIR
+from src.tasks.BD2MapCollectionProbeTask import BD2MapCollectionProbeTask
+from src.tasks.MapCollectionTask import MapCollectionTask
+from src.tasks.MapTradeTask import MapTradeTask
 from src.tasks.PVPTask import (
     ENTRY_REFERENCE_HEIGHT,
     ENTRY_REFERENCE_WIDTH,
@@ -36,16 +47,11 @@ from src.tasks.PVPTask import (
     PVP_SUCCESS_LEAVE_REFERENCE_ROI,
     QUICK_PACK_TEMPLATE,
     QUICK_SWITCH_PAGE_PATTERNS,
-    RECENT_CARTRIDGE_SPECIAL_PAGE_SECONDS,
-    RECENT_PVP_CARTRIDGE_PIXEL_THRESHOLD,
-    RECENT_PVP_CARTRIDGE_TEMPLATE_FILE,
-    RECENT_PVP_CARTRIDGE_TEMPLATE_THRESHOLD,
-    RECENT_PVP_CARTRIDGE_ZNCC_THRESHOLD,
     REFERENCE_HEIGHT,
     REFERENCE_WIDTH,
-    TEMPLATE_DIR,
     PVPTask,
 )
+from src.tasks.SquareGoddessTask import SquareGoddessTask
 from src.utils.image_utils import candidate_scales
 
 
@@ -294,6 +300,114 @@ class PVPTaskHelperTest(unittest.TestCase):
             status,
         )
 
+    def test_all_recent_cartridge_tasks_run_shared_pvp_guard(self):
+        for task_class in (
+            PVPTask,
+            SquareGoddessTask,
+            MapTradeTask,
+            MapCollectionTask,
+            BD2MapCollectionProbeTask,
+        ):
+            with self.subTest(task=task_class.__name__):
+                task = object.__new__(task_class)
+                calls = []
+                task._sleep_after_recognition = lambda: calls.append("settle")
+                task.info_set = lambda *_args, **_kwargs: None
+                task.operate_click = lambda *_args, **_kwargs: calls.append("entry")
+                task._recent_cartridge_is_pvp = (
+                    lambda: calls.append("pvp_template") or True
+                )
+                task._handle_recent_cartridge_special_pages = (
+                    lambda: calls.append("pvp_special_page") or True
+                )
+
+                self.assertTrue(
+                    task.open_cartridge_quick_switcher(
+                        ensure_home=lambda: calls.append("home") or True,
+                        click_quick_switch=lambda: calls.append("quick") or True,
+                        confirm_quick_switch_page=lambda: (
+                            calls.append("confirm") or True
+                        ),
+                    )
+                )
+                self.assertEqual(
+                    [
+                        "home",
+                        "pvp_template",
+                        "settle",
+                        "entry",
+                        "pvp_special_page",
+                        "quick",
+                        "confirm",
+                    ],
+                    calls,
+                )
+
+    def test_all_recent_cartridge_tasks_skip_special_pages_for_non_pvp(self):
+        for task_class in (
+            PVPTask,
+            SquareGoddessTask,
+            MapTradeTask,
+            MapCollectionTask,
+            BD2MapCollectionProbeTask,
+        ):
+            with self.subTest(task=task_class.__name__):
+                task = object.__new__(task_class)
+                calls = []
+                task._sleep_after_recognition = lambda: calls.append("settle")
+                task.info_set = lambda *_args, **_kwargs: None
+                task.operate_click = lambda *_args, **_kwargs: calls.append("entry")
+                task._recent_cartridge_is_pvp = (
+                    lambda: calls.append("pvp_template") or False
+                )
+                task._handle_recent_cartridge_special_pages = lambda: self.fail(
+                    "non-PVP recent cartridge must never run special-page OCR"
+                )
+
+                self.assertFalse(
+                    task.open_cartridge_quick_switcher(
+                        ensure_home=lambda: calls.append("home") or True,
+                        click_quick_switch=lambda: calls.append("quick") or False,
+                        confirm_quick_switch_page=lambda: self.fail(
+                            "timed-out non-PVP entry must not confirm a page"
+                        ),
+                    )
+                )
+                self.assertEqual(
+                    ["home", "pvp_template", "settle", "entry", "quick"],
+                    calls,
+                )
+
+    def test_common_cartridge_entry_fails_closed_when_pvp_template_errors(self):
+        task = object.__new__(SquareGoddessTask)
+        task._recent_cartridge_is_pvp = lambda: (_ for _ in ()).throw(
+            RuntimeError("missing recent PVP template")
+        )
+        task._sleep_after_recognition = lambda: self.fail(
+            "template failure must stop before the entry settle delay"
+        )
+        task.operate_click = lambda *_args, **_kwargs: self.fail(
+            "template failure must stop before clicking the recent cartridge"
+        )
+        task.info_set = lambda *_args, **_kwargs: None
+        warnings = []
+        task.log_warning = lambda message, notify=False: warnings.append(
+            (message, notify)
+        )
+
+        self.assertFalse(
+            task.open_cartridge_quick_switcher(
+                ensure_home=lambda: True,
+                click_quick_switch=lambda: self.fail(
+                    "template failure must stop before quick-switch search"
+                ),
+                confirm_quick_switch_page=lambda: self.fail(
+                    "template failure must stop before page confirmation"
+                ),
+            )
+        )
+        self.assertEqual([("missing recent PVP template", True)], warnings)
+
     def test_common_cartridge_entry_stops_when_home_is_not_confirmed(self):
         task = object.__new__(PVPTask)
         task.operate_click = lambda *_args, **_kwargs: self.fail("entry must not be clicked")
@@ -430,7 +544,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         )
 
     def test_recent_pvp_template_asset_and_thresholds(self):
-        template_path = TEMPLATE_DIR / RECENT_PVP_CARTRIDGE_TEMPLATE_FILE
+        template_path = RECENT_CARTRIDGE_TEMPLATE_DIR / RECENT_PVP_CARTRIDGE_TEMPLATE_FILE
         raw = cv2.imread(str(template_path), cv2.IMREAD_UNCHANGED)
 
         self.assertIsNotNone(raw)
@@ -500,6 +614,34 @@ class PVPTaskHelperTest(unittest.TestCase):
 
         self.assertFalse(result.passed)
 
+    def test_recent_pvp_template_matches_live_home_fixture(self):
+        fixture = (
+            Path(__file__).resolve().parent
+            / "fixtures"
+            / "pvp"
+            / "recent_pvp_home_fhd.png"
+        )
+        frame = cv2.imread(str(fixture), cv2.IMREAD_COLOR)
+        self.assertIsNotNone(frame)
+        self.assertEqual((1080, 1920, 3), frame.shape)
+
+        task = object.__new__(SquareGoddessTask)
+        task._recent_pvp_cartridge_template_cache = None
+        result = task._match_recent_pvp_cartridge(frame)
+
+        self.assertTrue(result.passed)
+        self.assertEqual((1659, 935), result.position)
+        self.assertEqual((94, 82), result.size)
+        self.assertGreaterEqual(result.score, RECENT_PVP_CARTRIDGE_TEMPLATE_THRESHOLD)
+        self.assertGreaterEqual(
+            result.pixel_score,
+            RECENT_PVP_CARTRIDGE_PIXEL_THRESHOLD,
+        )
+        self.assertGreaterEqual(
+            result.zncc_score,
+            RECENT_PVP_CARTRIDGE_ZNCC_THRESHOLD,
+        )
+
     def test_recent_pvp_special_pages_click_detected_action_box_center(self):
         cases = (
             ("恭喜晋级。", "确认", (1250, 1324, 60, 32), (2560, 1440)),
@@ -551,6 +693,27 @@ class PVPTaskHelperTest(unittest.TestCase):
         self.assertEqual([], task._recent_cartridge_ocr_boxes())
         self.assertEqual(0.25, ocr_calls[0]["threshold"])
 
+    def test_recent_pvp_special_page_ocr_uses_each_callers_threshold(self):
+        cases = (
+            (PVPTask, "PVP OCR 阈值", 0.21),
+            (SquareGoddessTask, "广场 OCR 阈值", 0.22),
+            (MapTradeTask, "跑商 OCR 阈值", 0.23),
+            (MapCollectionTask, "跑图 OCR 阈值", 0.24),
+            (BD2MapCollectionProbeTask, "跑图 OCR 阈值", 0.25),
+        )
+        for task_class, key, threshold in cases:
+            with self.subTest(task=task_class.__name__, key=key):
+                task = object.__new__(task_class)
+                task.config = {key: threshold}
+                task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+                task.info_set = lambda *_args, **_kwargs: None
+                ocr_calls = []
+                task.ocr = lambda **kwargs: ocr_calls.append(kwargs) or []
+
+                self.assertEqual([], task._recent_cartridge_ocr_boxes())
+                self.assertEqual(threshold, ocr_calls[0]["threshold"])
+                self.assertEqual(720, ocr_calls[0]["target_height"])
+
     def test_recent_pvp_special_pages_can_handle_reward_then_rank_page(self):
         task = object.__new__(PVPTask)
         task._executor = SimpleNamespace(
@@ -585,7 +748,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         )
 
         with patch(
-            "src.tasks.PVPTask.monotonic",
+            "src.tasks.BaseBD2Task.monotonic",
             side_effect=(0.0, 0.5, 1.0, 3.1),
         ):
             self.assertTrue(task._handle_recent_cartridge_special_pages(timeout=3.0))
@@ -628,6 +791,28 @@ class PVPTaskHelperTest(unittest.TestCase):
         self.assertIsNone(reward_target)
         self.assertEqual("恭喜晋级", rank_action)
         self.assertIs(rank_boxes[1], rank_target)
+
+    def test_pvp_special_pages_require_same_frame_text_pairs(self):
+        incomplete_frames = (
+            ("确认",),
+            ("恭喜晋级",),
+            ("段位下滑",),
+            ("点击画面即可返回",),
+            ("赛季奖励",),
+            ("赛季奖励", "确认"),
+        )
+        for texts in incomplete_frames:
+            with self.subTest(texts=texts):
+                boxes = [
+                    SimpleNamespace(name=text, x=0, y=0, width=10, height=10)
+                    for text in texts
+                ]
+                _text, action, target = PVPTask._pvp_special_page_action(
+                    boxes,
+                    allow_season_reward=True,
+                )
+                self.assertEqual("", action)
+                self.assertIsNone(target)
 
     def test_quick_switch_page_requires_all_three_ocr_labels(self):
         task = object.__new__(PVPTask)

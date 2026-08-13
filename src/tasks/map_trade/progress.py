@@ -14,14 +14,16 @@ from src.tasks.map_trade.models import (
     DAILY_SUBMAP_LIMIT,
     DAILY_SUMMON_LIMIT,
     DAILY_SUPPRESS_LIMIT,
+    DEFAULT_RECIPES,
     CollectionActionState,
     CollectionMapRole,
 )
 
 UTC_PLUS_8 = timezone(timedelta(hours=8), name="UTC+8")
-# Version 3 introduced role-specific weekly cards.  Version 4 adds the
-# daily/card/role/action ledger while retaining every existing field.
-STATE_SCHEMA_VERSION = 4
+# Version 3 introduced role-specific weekly cards.  Version 4 added the
+# daily/card/role/action ledger.  Version 5 records cooking per recipe so a
+# partial cooking run remains safely resumable.
+STATE_SCHEMA_VERSION = 5
 VALID_CARD_IDS = frozenset(card.card_id for card in COLLECTABLE_CARDS)
 VALID_TARGET_KEYS = {
     card.card_id: frozenset(target.key for target in card.targets) for card in COLLECTABLE_CARDS
@@ -59,6 +61,7 @@ class ProgressState:
     favorite_week: str = ""
     favorite_cards: list[str] = field(default_factory=list)
     cooking_week: str = ""
+    cooking_recipes: list[str] = field(default_factory=list)
     # One record per ``daily_key/card/map_role/action``.  Values are kept as
     # JSON-compatible dictionaries deliberately; this lets a user inspect or
     # repair a stuck action without importing application classes.
@@ -91,6 +94,10 @@ class ProgressState:
     @property
     def completed_favorite_cards(self) -> set[str]:
         return {shop_id for shop_id in self.favorite_cards if shop_id in VALID_FAVORITE_SHOP_IDS}
+
+    @property
+    def completed_cooking_recipes(self) -> set[str]:
+        return {recipe for recipe in self.cooking_recipes if recipe in DEFAULT_RECIPES}
 
 
 class ProgressStore:
@@ -126,13 +133,19 @@ class ProgressStore:
         # the historical safe reset for those files, but migrate schema 3
         # losslessly: cards, verified cards, daily counters, favorites and
         # cooking state all survive while the new ledger starts empty.
-        if schema_version not in {3, STATE_SCHEMA_VERSION}:
+        if schema_version not in {3, 4, STATE_SCHEMA_VERSION}:
+            cooking_week = str(raw.get("cooking_week", ""))
             self.state = ProgressState(
                 weekly_key=week,
                 daily_key=day,
                 favorite_week=str(raw.get("favorite_week", "")),
                 favorite_cards=self._sanitize_favorite_cards(raw.get("favorite_cards", [])),
-                cooking_week=str(raw.get("cooking_week", "")),
+                cooking_week=cooking_week,
+                cooking_recipes=self._migrate_cooking_recipes(
+                    raw,
+                    cooking_week=cooking_week,
+                    weekly_key=week,
+                ),
             )
             self.save()
             return self.state
@@ -150,6 +163,7 @@ class ProgressStore:
             quarantine,
         )
         archived_records.update(quarantine)
+        cooking_week = str(raw.get("cooking_week", ""))
         self.state = ProgressState(
             weekly_key=week,
             daily_key=str(raw.get("daily_key", day)),
@@ -164,7 +178,12 @@ class ProgressStore:
             ),
             favorite_week=str(raw.get("favorite_week", "")),
             favorite_cards=self._sanitize_favorite_cards(raw.get("favorite_cards", [])),
-            cooking_week=str(raw.get("cooking_week", "")),
+            cooking_week=cooking_week,
+            cooking_recipes=self._migrate_cooking_recipes(
+                raw,
+                cooking_week=cooking_week,
+                weekly_key=week,
+            ),
             action_records=active_records,
             archived_action_records=archived_records,
             observed_counts=self._sanitize_observed_counts(raw.get("observed_counts", {})),
@@ -179,7 +198,7 @@ class ProgressStore:
             self.state.observed_counts = {}
             self.save()
         elif schema_version != STATE_SCHEMA_VERSION:
-            # Persist the schema-4 shape immediately after a schema-3 load.
+            # Persist the current shape immediately after an older compatible load.
             self.save()
         return self.state
 
@@ -210,6 +229,29 @@ class ProgressStore:
         if not isinstance(raw_cards, list):
             return []
         return sorted({str(value) for value in raw_cards} & VALID_FAVORITE_SHOP_IDS)
+
+    @staticmethod
+    def _sanitize_cooking_recipes(raw_recipes) -> list[str]:
+        if not isinstance(raw_recipes, list):
+            return []
+        completed = {str(value) for value in raw_recipes if str(value) in DEFAULT_RECIPES}
+        return [recipe for recipe in DEFAULT_RECIPES if recipe in completed]
+
+    @classmethod
+    def _migrate_cooking_recipes(
+        cls,
+        raw: dict,
+        *,
+        cooking_week: str,
+        weekly_key: str,
+    ) -> list[str]:
+        if "cooking_recipes" in raw:
+            return cls._sanitize_cooking_recipes(raw.get("cooking_recipes"))
+        # Before schema 5, cooking had only one whole-week marker.  Preserve
+        # that meaning by treating all formerly supported recipes as complete.
+        if cooking_week == weekly_key:
+            return list(DEFAULT_RECIPES)
+        return []
 
     @staticmethod
     def _sanitize_verified_cards(raw_cards, cards: dict[str, list[str]]) -> list[str]:
@@ -376,6 +418,11 @@ class ProgressStore:
             "favorite_week": self.state.favorite_week,
             "favorite_cards": sorted(self.state.completed_favorite_cards),
             "cooking_week": self.state.cooking_week,
+            "cooking_recipes": [
+                recipe
+                for recipe in DEFAULT_RECIPES
+                if recipe in self.state.completed_cooking_recipes
+            ],
             "action_records": self.state.action_records,
             "archived_action_records": self.state.archived_action_records,
             "observed_counts": {
@@ -1054,7 +1101,27 @@ class ProgressStore:
     def mark_cooking_complete(self) -> None:
         state = self._require_state()
         state.cooking_week = state.weekly_key
+        state.cooking_recipes = list(DEFAULT_RECIPES)
         self.save()
+
+    def mark_cooking_recipe_complete(self, recipe: str) -> bool:
+        recipe = str(recipe)
+        if recipe not in DEFAULT_RECIPES:
+            raise ValueError(f"invalid cooking recipe: {recipe}")
+        state = self._require_state()
+        completed = state.completed_cooking_recipes
+        if recipe in completed:
+            return False
+        completed.add(recipe)
+        state.cooking_recipes = [value for value in DEFAULT_RECIPES if value in completed]
+        state.cooking_week = (
+            state.weekly_key if completed == set(DEFAULT_RECIPES) else ""
+        )
+        self.save()
+        return True
+
+    def cooking_recipe_complete(self, recipe: str) -> bool:
+        return str(recipe) in self._require_state().completed_cooking_recipes
 
     def should_rebuild_favorites(self, every_run: bool = False) -> bool:
         state = self._require_state()
@@ -1064,9 +1131,19 @@ class ProgressStore:
             or state.completed_favorite_cards != VALID_FAVORITE_SHOP_IDS
         )
 
-    def should_cook(self, every_run: bool = False) -> bool:
+    def should_cook(
+        self,
+        every_run: bool = False,
+        recipes: list[str] | tuple[str, ...] | None = None,
+    ) -> bool:
         state = self._require_state()
-        return every_run or state.cooking_week != state.weekly_key
+        selected = tuple(DEFAULT_RECIPES if recipes is None else recipes)
+        if not selected:
+            return False
+        return every_run or any(
+            str(recipe) not in state.completed_cooking_recipes
+            for recipe in selected
+        )
 
     def _require_state(self) -> ProgressState:
         if self.state is None:

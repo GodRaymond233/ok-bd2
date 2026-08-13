@@ -22,9 +22,6 @@ TRADE_OCR_THRESHOLD_KEY = "跑商 OCR 阈值"
 MAP_VISION_THRESHOLD_KEY = "跑图识图阈值"
 MAP_OCR_THRESHOLD_KEY = "跑图 OCR 阈值"
 
-# Temporary kill switch: keep the cooking implementation and its persisted
-# data intact, but hide the cooking UI and phase until the feature is restored.
-TEMPORARY_COOKING_FEATURE_ENABLED = False
 COOKING_CONFIG_KEYS = frozenset(
     ("制作料理", "料理制作周期", "料理保险", "5星料理")
 )
@@ -150,11 +147,17 @@ class MapAutomationTaskBase(BaseBD2Task):
                     break
         finally:
             self.info_set("当前阶段", "返回章节主页")
-            returned = navigator.return_home()
-            if not returned.success:
+            try:
+                returned = navigator.return_home()
+            except Exception as exc:
                 failed.append("返回章节主页")
-                self.log_warning(returned.message)
+                self.log_error(f"{self.task_log_name}：返回章节主页异常。", exc)
                 self._save_diagnostic(f"{self.diagnostic_prefix}_return_home_error")
+            else:
+                if not returned.success:
+                    failed.append("返回章节主页")
+                    self.log_warning(returned.message)
+                    self._save_diagnostic(f"{self.diagnostic_prefix}_return_home_error")
 
         self.info_set("完成", "、".join(completed) or "-")
         self.info_set("失败", "、".join(failed) or "-")
@@ -188,6 +191,9 @@ class MapTradeTask(MapAutomationTaskBase):
         "主页抽抽乐 OCR",
         "剧情角标",
         "Q_sp6商店点击",
+        "Q_sp6商人前确认",
+        "料理状态",
+        "料理进度",
         "商品卡带页",
         "商品卡带页确认",
         "收藏重建进度",
@@ -205,7 +211,7 @@ class MapTradeTask(MapAutomationTaskBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.name = "每日跑商"
-        self.description = "每日按配置执行买卖。"
+        self.description = "每日按配置依次执行料理制作、购买和出售。"
         self.icon = FluentIcon.SHOPPING_CART
         self.group_name = "日常/周常"
         self.group_icon = FluentIcon.CALENDAR
@@ -265,7 +271,7 @@ class MapTradeTask(MapAutomationTaskBase):
                     "开启后排除出售黑名单中的商品；黑名单优先于出售白名单。"
                 ),
                 "出售黑名单": "用逗号、分号或换行填写禁止出售的商品。",
-                "制作料理": "制作选中的五种 5 星利润料理。",
+                "制作料理": "进入 Q_sp6 后先制作选中的 5 星利润料理，再开始买卖。",
                 "料理制作周期": "每周制作一次，或每次运行都尝试制作。",
                 "料理保险": "开启时每种料理只做 1 份；关闭时选择 MAX。",
                 "5星料理": "可同时选择多种利润料理。",
@@ -309,20 +315,13 @@ class MapTradeTask(MapAutomationTaskBase):
                 "加载页面等待秒数": {"min": 10.0, "max": 120.0, "step": 1.0},
             }
         )
-        if not TEMPORARY_COOKING_FEATURE_ENABLED:
-            for key in COOKING_CONFIG_KEYS:
-                self.default_config.pop(key, None)
-                self.config_description.pop(key, None)
-                self.config_type.pop(key, None)
-
     def load_config(self):
         legacy = _read_config(_config_path(self.__class__.__name__))
         section_values = _trade_section_migration_values(legacy)
         _migrate_collection_config(legacy)
         super().load_config()
         for key, value in section_values.items():
-            if TEMPORARY_COOKING_FEATURE_ENABLED or key not in COOKING_CONFIG_KEYS:
-                self.config[key] = value
+            self.config[key] = value
         key_map = {
             LEGACY_VISION_THRESHOLD_KEY: TRADE_VISION_THRESHOLD_KEY,
             LEGACY_OCR_THRESHOLD_KEY: TRADE_OCR_THRESHOLD_KEY,
@@ -330,11 +329,6 @@ class MapTradeTask(MapAutomationTaskBase):
         for old_key, new_key in key_map.items():
             if new_key not in legacy and old_key in legacy:
                 self.config[new_key] = legacy[old_key]
-        if not TEMPORARY_COOKING_FEATURE_ENABLED:
-            for key in COOKING_CONFIG_KEYS:
-                if key in self.config:
-                    self.config.pop(key, None)
-
     def validate_config(self, key, value):
         current_config = self.config if self.config is not None else self.default_config
         manual_text = None
@@ -370,9 +364,8 @@ class MapTradeTask(MapAutomationTaskBase):
         progress.load()
         trader = Trader(self, vision, navigator, progress)
         phases = (
+            ("制作料理", "制作料理", trader.run_cooking),
             ("买", "买", trader.run_buy),
             ("卖", "卖", trader.run_sell),
         )
-        if TEMPORARY_COOKING_FEATURE_ENABLED:
-            phases += (("制作料理", "制作料理", trader.run_cooking),)
         return self._run_phases(navigator, phases)

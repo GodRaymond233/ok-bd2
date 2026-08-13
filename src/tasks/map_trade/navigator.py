@@ -5,7 +5,7 @@ from time import monotonic
 import numpy as np
 
 from src.tasks.map_trade.card_status import CardStatusDetector
-from src.tasks.map_trade.models import ScreenState
+from src.tasks.map_trade.models import COLLECTABLE_CARDS, MapPageMode, ScreenState
 from src.tasks.map_trade.navigator_constants import (  # noqa: F401
     AREA_MAP_BACK_TEMPLATE,
     AREA_MAP_CHANGE_INTERVAL,
@@ -72,10 +72,17 @@ from src.tasks.map_trade.navigator_constants import (  # noqa: F401
     QUICK_SWITCH_SCROLL_UP_AMOUNT,
     QUICK_SWITCH_SCROLL_UP_COUNT,
     QUICK_SWITCH_TEMPLATE,
+    RETURN_HOME_ANNOUNCEMENT_KEYWORD_GROUPS,
+    RETURN_HOME_ANNOUNCEMENT_MAX_CLICKS,
+    RETURN_HOME_ANNOUNCEMENT_OCR_INTERVAL,
+    RETURN_HOME_ANNOUNCEMENT_OCR_REGION,
     RETURN_HOME_TIMEOUT,
     SANDBOX_CONFIRM_ACTION_TEMPLATES,
     SANDBOX_INTERACTION_PROBE_INTERVAL,
     SANDBOX_INTERACTION_PROBE_TIMEOUT,
+    SANDBOX_LARGE_MAP_FOOTER_OCR_RELATIVE_ROI,
+    SANDBOX_LARGE_MAP_LEFT_TEMPLATE,
+    SANDBOX_LARGE_MAP_RIGHT_TEMPLATE,
     SANDBOX_MAP_SETTLE_SECONDS,
     SANDBOX_MAP_TELEPORT_TEMPLATE,
     SANDBOX_MAP_TELEPORT_TIMEOUT,
@@ -148,8 +155,11 @@ from src.tasks.map_trade.navigator_constants import (  # noqa: F401
     TELEPORT_INTERACTION_POLL_INTERVAL,
     TELEPORT_INTERACTION_TIMEOUT,
     TELEPORT_MAP_BACKWARD_TEMPLATE,
+    TELEPORT_MAP_DIRECT_HEADER_TEMPLATE,
     TELEPORT_MAP_FIRST_PAGE_LIMIT,
     TELEPORT_MAP_FORWARD_TEMPLATE,
+    TELEPORT_MAP_GENERATE_HEADER_TEMPLATE,
+    TELEPORT_MAP_HEADER_OCR_RELATIVE_ROI,
     TELEPORT_MAP_OPEN_TIMEOUT,
     TELEPORT_MAP_RETURN_REFERENCE_POINT,
     TELEPORT_MAP_RETURN_RELATIVE_POINT,
@@ -162,6 +172,7 @@ from src.tasks.map_trade.navigator_constants import (  # noqa: F401
     TRADE_MERCHANT_CONTEXT_TEMPLATE,
     AreaMapContext,
     LocatedStoryCard,
+    MapPageDetection,
     ProbedStoryCard,
     SandboxConfirmation,
     StoryBadgeCandidate,
@@ -173,6 +184,7 @@ from src.tasks.map_trade.navigator_story import StoryCardNavigationMixin
 from src.tasks.map_trade.navigator_trade import TradeNavigationMixin
 from src.tasks.map_trade.vision import Vision, normalize_text
 from src.utils.home_confirmation import (
+    HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT,
     HOME_GACHA_OCR_RELATIVE_ROI,
     home_confirmation_passes,
 )
@@ -183,6 +195,117 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
         self.task = task
         self.vision = vision
         self.card_status = CardStatusDetector(vision)
+
+    def _map_page_template_signal(
+        self,
+        frame: np.ndarray,
+        spec,
+    ) -> tuple[bool, str]:
+        result = self.vision.match(frame, spec)
+        passed = self.vision.passes(result, spec)
+        return passed, (
+            f"{spec.name}={'pass' if passed else 'miss'}"
+            f"(m={result.score:.3f},p={result.pixel_score:.3f},z={result.zncc_score:.3f})"
+        )
+
+    @staticmethod
+    def _known_story_map_title_in_text(normalized_text: str) -> bool:
+        return any(
+            normalize_text(title) in normalized_text
+            for card in COLLECTABLE_CARDS
+            for target in card.targets
+            for title in target.titles
+        )
+
+    def _detect_map_page_mode(self, frame: np.ndarray) -> MapPageDetection:
+        """Identify the three visually distinct map pages from one frame."""
+
+        try:
+            header_text = self.vision.simplify(
+                self.vision.ocr_text(
+                    frame,
+                    "地图页面左上标题",
+                    relative_roi=TELEPORT_MAP_HEADER_OCR_RELATIVE_ROI,
+                )
+            )
+        except Exception as exc:
+            self._status("地图页面左上标题 OCR错误", str(exc))
+            return MapPageDetection(MapPageMode.UNKNOWN)
+
+        normalized_header = normalize_text(header_text)
+        evidence: list[str] = []
+        mode = MapPageMode.UNKNOWN
+        footer_text = ""
+        if normalize_text("移动魔法阵") in normalized_header:
+            direct, direct_evidence = self._map_page_template_signal(
+                frame,
+                TELEPORT_MAP_DIRECT_HEADER_TEMPLATE,
+            )
+            generated, generated_evidence = self._map_page_template_signal(
+                frame,
+                TELEPORT_MAP_GENERATE_HEADER_TEMPLATE,
+            )
+            left, left_evidence = self._map_page_template_signal(
+                frame,
+                TELEPORT_MAP_FORWARD_TEMPLATE,
+            )
+            right, right_evidence = self._map_page_template_signal(
+                frame,
+                TELEPORT_MAP_BACKWARD_TEMPLATE,
+            )
+            evidence.extend(
+                (direct_evidence, generated_evidence, left_evidence, right_evidence)
+            )
+            has_legend = normalize_text("传说") in normalized_header
+            has_teleport_structure = left or right
+            if direct and not generated and not has_legend and has_teleport_structure:
+                mode = MapPageMode.DIRECT_TELEPORT
+            elif generated and not direct and has_legend and has_teleport_structure:
+                mode = MapPageMode.GENERATE_TELEPORT
+        elif self._known_story_map_title_in_text(normalized_header):
+            try:
+                footer_text = self.vision.simplify(
+                    self.vision.ocr_text(
+                        frame,
+                        "箱庭大地图底部控件",
+                        relative_roi=SANDBOX_LARGE_MAP_FOOTER_OCR_RELATIVE_ROI,
+                    )
+                )
+            except Exception as exc:
+                self._status("箱庭大地图底部控件 OCR错误", str(exc))
+                footer_text = ""
+            normalized_footer = normalize_text(footer_text)
+            keyword_hits = sum(
+                normalize_text(keyword) in normalized_footer
+                for keyword in SANDBOX_NAVIGATION_PAGE_KEYWORDS
+            )
+            evidence.append(f"箱庭大地图关键词={keyword_hits}/3")
+            if keyword_hits >= 2:
+                left, left_evidence = self._map_page_template_signal(
+                    frame,
+                    SANDBOX_LARGE_MAP_LEFT_TEMPLATE,
+                )
+                right, right_evidence = self._map_page_template_signal(
+                    frame,
+                    SANDBOX_LARGE_MAP_RIGHT_TEMPLATE,
+                )
+                evidence.extend((left_evidence, right_evidence))
+                if left and right:
+                    mode = MapPageMode.SANDBOX_LARGE_MAP
+
+        self._status(
+            "地图页面模式",
+            (
+                f"mode={mode.value}; header={header_text or '-'}; "
+                f"footer={footer_text or '-'}; {'; '.join(evidence) or 'no-evidence'}"
+            ),
+        )
+        return MapPageDetection(
+            mode,
+            header_text=header_text,
+            footer_text=footer_text,
+            evidence=tuple(evidence),
+        )
 
     def classify(self, frame=None) -> ScreenState:
         """Classify shared map states without trade- or PVP-specific templates."""
@@ -245,17 +368,11 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
         )
         if self._shop_page_text(shop_text):
             return ScreenState.SHOP
-        area_map_text = normalize_text(
-            self.vision.simplify(
-                self.vision.ocr_text(
-                    frame,
-                    "界面分类传送阵",
-                    relative_roi=TELEPORT_MAP_TITLE_OCR_RELATIVE_ROI,
-                )
-            )
-        )
-        if "移动魔法阵" in area_map_text:
+        map_page = self._detect_map_page_mode(frame)
+        if map_page.mode.is_teleport_map:
             return ScreenState.AREA_MAP
+        if map_page.mode == MapPageMode.SANDBOX_LARGE_MAP:
+            return ScreenState.SANDBOX_MAP
         card_text = normalize_text(
             self.vision.simplify(
                 self.vision.ocr_text(
@@ -374,12 +491,20 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
     def _loading_timeout(self) -> float:
         return max(10.0, float(self.task.config.get("加载页面等待秒数", 45.0)))
 
-    def _wait_for_cartridge_home(self, timeout: float = 10.0, interval: float = 0.35) -> bool:
+    def _wait_for_cartridge_home(
+        self,
+        timeout: float = 10.0,
+        interval: float = 0.35,
+        *,
+        allow_return_announcement_cleanup: bool = False,
+    ) -> bool:
         end_at = monotonic() + max(0.0, timeout)
         last_score = -1.0
         last_pixel_score = -1.0
         last_brightness = 0.0
         last_gacha_text = ""
+        last_button_found = False
+        announcement_clicks = 0
         while monotonic() <= end_at:
             frame = self.vision.capture()
             (
@@ -388,12 +513,47 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
                 last_pixel_score,
                 last_brightness,
                 last_gacha_text,
+                last_button_found,
             ) = self._home_confirmation_signals(
                 frame,
-                clear_context="跑商/跑图确认主页",
+                clear_context=(
+                    None
+                    if allow_return_announcement_cleanup
+                    else "跑商/跑图确认主页"
+                ),
             )
             if confirmed:
                 return True
+            return_announcement_detected = (
+                allow_return_announcement_cleanup
+                and self._clear_return_home_announcement_if_needed(
+                    frame,
+                    brightness_ratio=last_brightness,
+                    allow_click=(
+                        announcement_clicks < RETURN_HOME_ANNOUNCEMENT_MAX_CLICKS
+                    ),
+                )
+            )
+            if return_announcement_detected:
+                if announcement_clicks < RETURN_HOME_ANNOUNCEMENT_MAX_CLICKS:
+                    announcement_clicks += 1
+                self.task.sleep(RETURN_HOME_ANNOUNCEMENT_OCR_INTERVAL)
+                continue
+            if allow_return_announcement_cleanup:
+                clear_announcement = getattr(
+                    self.task,
+                    "clear_temporary_home_announcement_if_needed",
+                    None,
+                )
+                if callable(clear_announcement) and clear_announcement(
+                    button_found=last_button_found,
+                    brightness_ratio=last_brightness,
+                    brightness_threshold=HOME_BRIGHTNESS_THRESHOLD,
+                    gacha_ocr_text=last_gacha_text,
+                    context="跑商/跑图确认主页",
+                ):
+                    self.task.sleep(interval)
+                    continue
             self.task.sleep(interval)
         self.task.log_warning(
             "跑商：未同时确认主页按钮、亮度和抽抽乐文字，"
@@ -402,11 +562,58 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
         )
         return False
 
+    def _clear_return_home_announcement_if_needed(
+        self,
+        frame: np.ndarray,
+        *,
+        brightness_ratio: float,
+        allow_click: bool = True,
+    ) -> bool:
+        """Dismiss a verified update notice only inside an explicit home return."""
+
+        if brightness_ratio >= HOME_BRIGHTNESS_THRESHOLD:
+            return False
+        text = self.vision.ocr_text(
+            frame,
+            "返回主页公告",
+            relative_roi=RETURN_HOME_ANNOUNCEMENT_OCR_REGION,
+        )
+        normalized = normalize_text(self.vision.simplify(text))
+        matched_group = next(
+            (
+                keywords
+                for keywords in RETURN_HOME_ANNOUNCEMENT_KEYWORD_GROUPS
+                if all(
+                    normalize_text(self.vision.simplify(keyword)) in normalized
+                    for keyword in keywords
+                )
+            ),
+            None,
+        )
+        self._status("返回主页公告 OCR", text or "-")
+        if matched_group is None:
+            return False
+        if not allow_click:
+            self._status(
+                "返回主页公告清理",
+                f"已达到{RETURN_HOME_ANNOUNCEMENT_MAX_CLICKS}次上限",
+            )
+            return True
+        self.task.log_info(
+            "跑商：返回主页时确认更新公告遮挡，点击公告清理位置后重新严格确认主页，"
+            f"keywords={'+'.join(matched_group)}, brightness={brightness_ratio:.3f}。"
+        )
+        self.task.operate_click(
+            *HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT,
+            after_sleep=0.2,
+        )
+        return True
+
     def _home_confirmation_signals(
         self,
         frame: np.ndarray,
         clear_context: str | None = None,
-    ) -> tuple[bool, float, float, float, str]:
+    ) -> tuple[bool, float, float, float, str, bool]:
         candidates = [(spec, self.vision.match(frame, spec)) for spec in HOME_TEMPLATES]
         spec, result = max(candidates, key=lambda value: value[1].score)
         brightness = self.vision.template_brightness_ratio(frame, spec, result)
@@ -443,7 +650,14 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
                 gacha_ocr_text=gacha_text,
                 context=clear_context,
             )
-        return confirmed, result.score, result.pixel_score, brightness, gacha_text
+        return (
+            confirmed,
+            result.score,
+            result.pixel_score,
+            brightness,
+            gacha_text,
+            button_found,
+        )
 
     def _wait_for_ocr_keywords(
         self,
