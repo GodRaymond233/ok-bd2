@@ -7,9 +7,6 @@ import numpy as np
 from src.tasks.map_trade.models import MatchResult, TemplateSpec
 from src.tasks.SquareGoddessTask import (
     FANTASIA_SQUARE_TEMPLATE,
-    GAMEPLAY_CARTRIDGE_POINT,
-    GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO,
-    GAMEPLAY_CATEGORY_HIGHLIGHT_REGION,
     GODDESS_DAILY_REGION,
     GODDESS_NAVIGATION_MINIMUM_HITS,
     GODDESS_NAVIGATION_TARGET,
@@ -23,6 +20,13 @@ from src.tasks.SquareGoddessTask import (
     SQUARE_HOME_POINT,
     SQUARE_NOTICE_TEMPLATE,
     SquareGoddessTask,
+)
+from src.utils.cartridge_quick_switch import (
+    GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO,
+    LIFE_GAMEPLAY_CATEGORY_HIGHLIGHT_REGION,
+    LIFE_GAMEPLAY_CATEGORY_LABEL,
+    LIFE_GAMEPLAY_CATEGORY_OCR_ROI,
+    LIFE_GAMEPLAY_CATEGORY_POINT,
 )
 
 
@@ -59,7 +63,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
         self.assertFalse(SquareGoddessTask._wait_for_cartridge_home(task))
         self.assertEqual([(169 / 1920, 615 / 1080, 0.2)], announcement_clicks)
 
-    def test_entry_uses_quick_switch_gameplay_and_fixed_seventh_slot(self):
+    def test_entry_uses_quick_switch_life_gameplay_and_fixed_second_slot(self):
         task = object.__new__(SquareGoddessTask)
         task.config = {}
         task.info_set = lambda *_args, **_kwargs: None
@@ -86,7 +90,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
         task.operate_click = (
             lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep))
         )
-        task._wait_for_gameplay_category = lambda: stages.append("highlight") or True
+        task._wait_for_life_gameplay_category = lambda: stages.append("highlight") or True
         task._wait_for_template = (
             lambda spec, **_kwargs: stages.append(("square", spec)) or True
         )
@@ -96,7 +100,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
         self.assertEqual([0.5], sleeps)
         self.assertEqual(
             [
-                (*GAMEPLAY_CARTRIDGE_POINT, 0.0),
+                (*LIFE_GAMEPLAY_CATEGORY_POINT, 0.0),
                 (*SQUARE_CARTRIDGE_SLOT_POINT, 0.0),
             ],
             clicks,
@@ -106,13 +110,32 @@ class SquareGoddessEntryTest(unittest.TestCase):
 
     def test_fixed_points_are_relative_to_1920_by_1080(self):
         self.assertEqual(
-            (989 / REFERENCE_WIDTH, 875 / REFERENCE_HEIGHT),
-            GAMEPLAY_CARTRIDGE_POINT,
+            (1126 / REFERENCE_WIDTH, 875 / REFERENCE_HEIGHT),
+            LIFE_GAMEPLAY_CATEGORY_POINT,
         )
         self.assertEqual(
-            (1230 / REFERENCE_WIDTH, 970 / REFERENCE_HEIGHT),
+            (331 / REFERENCE_WIDTH, 970 / REFERENCE_HEIGHT),
             SQUARE_CARTRIDGE_SLOT_POINT,
         )
+
+    def test_entry_stops_before_slot_when_life_category_is_not_confirmed(self):
+        task = object.__new__(SquareGoddessTask)
+        task.config = {}
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task.open_cartridge_quick_switcher = lambda **_kwargs: True
+        task.sleep = lambda *_args, **_kwargs: None
+        task._wait_for_life_gameplay_category = lambda: False
+        clicks = []
+        task.operate_click = lambda x, y, after_sleep=0: clicks.append(
+            (x, y, after_sleep)
+        )
+        task._wait_for_template = lambda *_args, **_kwargs: self.fail(
+            "square slot must not be clicked before the life category is confirmed"
+        )
+
+        self.assertFalse(SquareGoddessTask._enter_square_from_home(task))
+        self.assertEqual([(*LIFE_GAMEPLAY_CATEGORY_POINT, 0.0)], clicks)
 
     def test_quick_switch_uses_green_template_and_pixel_threshold(self):
         self.assertEqual(
@@ -224,7 +247,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
         task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        text = {"value": "店长游戏卡 角色游戏卡 玩法游戏卡"}
+        text = {"value": "店长游戏卡 角色游戏卡 生活玩法游戏卡带"}
         task._ocr_text = lambda *_args, **_kwargs: text["value"]
         sleeps = []
         task.sleep = lambda seconds: sleeps.append(seconds)
@@ -233,30 +256,31 @@ class SquareGoddessEntryTest(unittest.TestCase):
         text["value"] += " 活动游戏卡"
         self.assertTrue(SquareGoddessTask._wait_for_quick_switch_page(task))
         self.assertEqual(
-            (r"店长游戏卡", r"角色游戏卡", r"玩法游戏卡", r"活动游戏卡"),
+            ("店长游戏卡", "角色游戏卡", "生活玩法游戏卡带", "活动游戏卡"),
             QUICK_SWITCH_PAGE_PATTERNS,
         )
         self.assertEqual(2, sleeps.count(1.0))
 
-    def test_gameplay_category_requires_ocr_and_visual_highlight(self):
+    def test_life_gameplay_category_requires_ocr_and_visual_highlight(self):
         task = object.__new__(SquareGoddessTask)
         task.config = {"玩法类别高亮确认秒数": 0.0}
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
         task.sleep = lambda *_args, **_kwargs: None
-        task._ocr_text = lambda *_args, **_kwargs: "玩法游戏卡"
+        task._ocr_text = lambda *_args, **_kwargs: LIFE_GAMEPLAY_CATEGORY_LABEL
         frame = {"value": np.zeros((1080, 1920, 3), dtype=np.uint8)}
         task.capture_frame = lambda: frame["value"]
 
-        self.assertFalse(SquareGoddessTask._wait_for_gameplay_category(task))
+        self.assertFalse(SquareGoddessTask._wait_for_life_gameplay_category(task))
 
-        left = round(GAMEPLAY_CATEGORY_HIGHLIGHT_REGION[0] * REFERENCE_WIDTH)
-        top = round(GAMEPLAY_CATEGORY_HIGHLIGHT_REGION[1] * REFERENCE_HEIGHT)
-        right = round(GAMEPLAY_CATEGORY_HIGHLIGHT_REGION[2] * REFERENCE_WIDTH)
-        bottom = round(GAMEPLAY_CATEGORY_HIGHLIGHT_REGION[3] * REFERENCE_HEIGHT)
+        left = round(LIFE_GAMEPLAY_CATEGORY_HIGHLIGHT_REGION[0] * REFERENCE_WIDTH)
+        top = round(LIFE_GAMEPLAY_CATEGORY_HIGHLIGHT_REGION[1] * REFERENCE_HEIGHT)
+        right = round(LIFE_GAMEPLAY_CATEGORY_HIGHLIGHT_REGION[2] * REFERENCE_WIDTH)
+        bottom = round(LIFE_GAMEPLAY_CATEGORY_HIGHLIGHT_REGION[3] * REFERENCE_HEIGHT)
         frame["value"][top:bottom, left:right] = 255
 
-        self.assertTrue(SquareGoddessTask._wait_for_gameplay_category(task))
+        self.assertTrue(SquareGoddessTask._wait_for_life_gameplay_category(task))
+        self.assertEqual((1025, 840, 204, 75), LIFE_GAMEPLAY_CATEGORY_OCR_ROI)
         self.assertEqual(0.05, GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO)
 
     def test_goddess_flow_uses_notice_joint_daily_signal_then_prayer(self):

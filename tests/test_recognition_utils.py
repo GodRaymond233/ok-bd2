@@ -243,7 +243,13 @@ class OcrUtilsTest(unittest.TestCase):
         self.assertEqual(normalize_ocr_text("折扣-商店！", alnum_only=True), "折扣商店")
 
     def test_keyword_count_supports_exact_and_fuzzy_matching(self):
-        self.assertEqual(keyword_match_count("最近 剧情游戏卡", ("最近", "玩法游戏卡")), 1)
+        self.assertEqual(
+            keyword_match_count(
+                "最近 剧情游戏卡",
+                ("最近", "战斗玩法游戏卡带"),
+            ),
+            1,
+        )
         self.assertEqual(
             keyword_match_count("返回抽卡页靣", ("返回抽卡页面",), fuzzy_ratio=0.9),
             1,

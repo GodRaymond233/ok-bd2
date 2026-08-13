@@ -13,6 +13,16 @@ from src.tasks.BaseBD2Task import (
 from src.tasks.map_trade.models import MatchResult, TemplateSpec
 from src.utils import task_vision
 from src.utils.calibration import FHD_1080, HD_720, QHD_1440
+from src.utils.cartridge_quick_switch import (
+    BATTLE_GAMEPLAY_CATEGORY_HIGHLIGHT_REGION,
+    BATTLE_GAMEPLAY_CATEGORY_LABEL,
+    BATTLE_GAMEPLAY_CATEGORY_OCR_ROI,
+    BATTLE_GAMEPLAY_CATEGORY_POINT,
+    GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO,
+    RECENT_CATEGORY_LABEL,
+    STORY_CATEGORY_LABEL,
+    category_highlight_ratio,
+)
 from src.utils.home_confirmation import (
     HOME_GACHA_OCR_REFERENCE_ROI,
     home_confirmation_passes,
@@ -37,7 +47,6 @@ PVP_FAILURE_LEAVE_REFERENCE_ROI = (696, 952, 535, 87)
 PVP_SUCCESS_LEAVE_REFERENCE_ROI = (1594, 987, 240, 66)
 PVP_BACK_HOME_REFERENCE_POINT = (100, 54)
 PVP_HUB_NOTICE_SCREEN_ROI = (1381, 865, 62, 45)
-GAMEPLAY_CARTRIDGE_POINT = (988 / REFERENCE_WIDTH, 876 / REFERENCE_HEIGHT)
 PVP_CARTRIDGE_SLOT_POINT = (152 / REFERENCE_WIDTH, 970 / REFERENCE_HEIGHT)
 PVP_AUTO_BATTLE_SCREEN_ROI = (1470, 910, 170, 150)
 PVP_AUTO_BATTLE_CLICK_REFERENCE = (2026, 1291)
@@ -46,7 +55,11 @@ PVP_RESULT_BASE_MINUTES = 20.0
 PVP_SEASON_REWARD_AFTER_CLICK_SECONDS = 3.0
 PVP_RANK_PAGE_AFTER_CLICK_SECONDS = 2.0
 PVP_HUB_SPECIAL_PAGE_GRACE_SECONDS = 2.0
-QUICK_SWITCH_PAGE_PATTERNS = (r"最近", r"剧情游戏卡", r"玩法游戏卡")
+QUICK_SWITCH_PAGE_PATTERNS = (
+    RECENT_CATEGORY_LABEL,
+    STORY_CATEGORY_LABEL,
+    BATTLE_GAMEPLAY_CATEGORY_LABEL,
+)
 HOME_GACHA_OCR_ROI = HOME_GACHA_OCR_REFERENCE_ROI
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_DIR = PROJECT_ROOT / "recognition-assets" / "template-assets"
@@ -64,6 +77,8 @@ class PVPTask(BaseBD2Task):
         "快速切换按钮",
         "卡带选择页 OCR",
         "卡带选择页 OCR 命中",
+        "战斗玩法游戏卡带 OCR",
+        "战斗玩法类别高亮",
         "PVP 箱庭",
         "PVP 入场特殊页面模式",
         "PVP 入场特殊页面 OCR",
@@ -118,6 +133,8 @@ class PVPTask(BaseBD2Task):
                 "主页确认等待秒数": 10.0,
                 "快速卡带等待秒数": 10.0,
                 "卡带选择页确认等待秒数": 10.0,
+                "玩法类别高亮确认秒数": 3.0,
+                "玩法类别高亮像素比例": GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO,
                 "PVP 入场等待秒数": 30.0,
                 "PVP 菜单等待秒数": 12.0,
                 "PVP 战斗开始等待秒数": 30.0,
@@ -149,7 +166,11 @@ class PVPTask(BaseBD2Task):
                 "主页小屋按钮阈值": "进入卡带前确认主页小屋按钮存在的模板匹配阈值。",
                 "快速切换按钮阈值": "识别 QuickSwitchPlayIco.png 快速切换按钮的模板匹配阈值。",
                 "卡带选择页确认等待秒数": (
-                    "点击快速切换按钮后，等待 OCR 同时识别最近、剧情游戏卡和玩法游戏卡的时限。"
+                    "点击快速切换按钮后，等待 OCR 同时识别最近、剧情游戏卡和"
+                    "战斗玩法游戏卡带的时限。"
+                ),
+                "玩法类别高亮像素比例": (
+                    "战斗玩法游戏卡带标签确认为高亮状态所需的最低亮色像素占比。"
                 ),
                 "PVP 箱庭感叹号阈值": "进入 PVP 箱庭后识别 tanhaoGE.png 的模板匹配阈值。",
             }
@@ -231,9 +252,12 @@ class PVPTask(BaseBD2Task):
             self.log_info("镜中之战：未能从主页打开卡带快速切换页面。")
             return False
 
-        self.info_set("当前阶段", "选择玩法游戏卡")
+        self.info_set("当前阶段", "选择战斗玩法游戏卡带")
         self.sleep(0.5)
-        self.operate_click(*GAMEPLAY_CARTRIDGE_POINT, after_sleep=0.5)
+        self.operate_click(*BATTLE_GAMEPLAY_CATEGORY_POINT, after_sleep=0.0)
+        if not self._wait_for_battle_gameplay_category():
+            self.log_info("镜中之战：点击后未确认战斗玩法游戏卡带类别高亮。")
+            return False
 
         self.info_set("当前阶段", "选择 PVP 卡带1号位")
         self.operate_click(*PVP_CARTRIDGE_SLOT_POINT, after_sleep=0.0)
@@ -244,6 +268,43 @@ class PVPTask(BaseBD2Task):
             self._clear_pvp_hub_notice_if_present()
             return True
 
+        return False
+
+    def _wait_for_battle_gameplay_category(self, interval: float = 0.5) -> bool:
+        end_at = monotonic() + float(self.config.get("玩法类别高亮确认秒数", 3.0))
+        last_text = ""
+        last_highlight_ratio = 0.0
+        while monotonic() <= end_at:
+            frame = self.capture_frame()
+            text = self._ocr_text(
+                frame,
+                name="战斗玩法游戏卡带",
+                roi=BATTLE_GAMEPLAY_CATEGORY_OCR_ROI,
+            )
+            last_text = text or last_text
+            last_highlight_ratio = category_highlight_ratio(
+                frame,
+                BATTLE_GAMEPLAY_CATEGORY_HIGHLIGHT_REGION,
+            )
+            self.info_set("战斗玩法游戏卡带 OCR", text or "-")
+            self.info_set("战斗玩法类别高亮", f"{last_highlight_ratio:.3f}")
+            if (
+                self._matches_any(text, [BATTLE_GAMEPLAY_CATEGORY_LABEL])
+                and last_highlight_ratio
+                >= float(
+                    self.config.get(
+                        "玩法类别高亮像素比例",
+                        GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO,
+                    )
+                )
+            ):
+                return True
+            self.sleep(interval)
+
+        self.log_info(
+            "镜中之战：未确认战斗玩法游戏卡带类别高亮，"
+            f"highlight={last_highlight_ratio:.3f}, OCR={last_text or '-'}。"
+        )
         return False
 
     def _wait_for_quick_switch_page(self, interval: float = 0.5) -> bool:
