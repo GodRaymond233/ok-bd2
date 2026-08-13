@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from src.config import config
 from src.tasks.DailyBatchTask import DailyBatchChild, DailyBatchTask
+from src.tasks.MapCollectionTask import MapCollectionTask
 
 
 class _ChildTask:
@@ -42,7 +43,7 @@ class DailyBatchTaskTest(unittest.TestCase):
             config["onetime_tasks"][0],
         )
 
-    def test_config_exposes_seven_child_switches_in_requested_order(self):
+    def test_config_hides_map_collection_and_exposes_remaining_children(self):
         executor = SimpleNamespace(scene=None)
         task = DailyBatchTask(executor, SimpleNamespace())
         expected = [
@@ -51,11 +52,22 @@ class DailyBatchTaskTest(unittest.TestCase):
             "免费抽抽乐",
             "广场女神像",
             "自动PVP",
-            "跑图",
             "跑商",
         ]
         self.assertEqual(expected, task.config_type["启用"]["sub_configs"][True])
         self.assertTrue(all(task.default_config[key] for key in expected))
+        self.assertNotIn("跑图", task.default_config)
+        self.assertNotIn("跑图", task.description)
+
+    def test_weekly_map_collection_card_is_registered_but_hidden(self):
+        executor = SimpleNamespace(scene=None)
+        task = MapCollectionTask(executor, SimpleNamespace())
+
+        self.assertFalse(task.visible)
+        self.assertIn(
+            ["src.tasks.MapCollectionTask", "MapCollectionTask"],
+            config["onetime_tasks"],
+        )
 
     def test_runs_enabled_children_in_order_and_restores_their_configs(self):
         class First:

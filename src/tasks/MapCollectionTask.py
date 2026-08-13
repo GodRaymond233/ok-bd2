@@ -78,7 +78,9 @@ class MapCollectionTask(MapAutomationTaskBase):
         self.icon = FluentIcon.GLOBE
         self.group_name = "日常/周常"
         self.group_icon = FluentIcon.CALENDAR
-        self.visible = True
+        # Keep the implementation and persisted configuration intact while the
+        # weekly map route is temporarily hidden from the production frontend.
+        self.visible = False
 
         self.default_config.update(
             {
