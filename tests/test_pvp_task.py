@@ -22,7 +22,6 @@ from src.tasks.MapTradeTask import MapTradeTask
 from src.tasks.PVPTask import (
     ENTRY_REFERENCE_HEIGHT,
     ENTRY_REFERENCE_WIDTH,
-    GAMEPLAY_CARTRIDGE_POINT,
     HOME_GACHA_OCR_ROI,
     HOME_ICE_TEMPLATE,
     HOME_RICE_TEMPLATE,
@@ -52,6 +51,13 @@ from src.tasks.PVPTask import (
     PVPTask,
 )
 from src.tasks.SquareGoddessTask import SquareGoddessTask
+from src.utils.cartridge_quick_switch import (
+    BATTLE_GAMEPLAY_CATEGORY_HIGHLIGHT_REGION,
+    BATTLE_GAMEPLAY_CATEGORY_LABEL,
+    BATTLE_GAMEPLAY_CATEGORY_OCR_ROI,
+    BATTLE_GAMEPLAY_CATEGORY_POINT,
+    GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO,
+)
 from src.utils.image_utils import candidate_scales
 
 
@@ -820,14 +826,20 @@ class PVPTaskHelperTest(unittest.TestCase):
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
         task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        texts = ["最近 剧情游戏卡", "最近 剧情游戏卡 玩法游戏卡"]
+        texts = [
+            "最近 剧情游戏卡",
+            "最近 剧情游戏卡 战斗玩法游戏卡带",
+        ]
         task._ocr_text = lambda *_args, **_kwargs: texts.pop(0)
         sleeps = []
         task.sleep = lambda seconds: sleeps.append(seconds)
 
         self.assertTrue(PVPTask._wait_for_quick_switch_page(task))
         self.assertEqual([0.5], sleeps)
-        self.assertEqual((r"最近", r"剧情游戏卡", r"玩法游戏卡"), QUICK_SWITCH_PAGE_PATTERNS)
+        self.assertEqual(
+            ("最近", "剧情游戏卡", "战斗玩法游戏卡带"),
+            QUICK_SWITCH_PAGE_PATTERNS,
+        )
 
     def test_quick_switch_page_timeout_stops_entry(self):
         task = object.__new__(PVPTask)
@@ -897,6 +909,28 @@ class PVPTaskHelperTest(unittest.TestCase):
     def test_pvp_uses_fixed_first_gameplay_cartridge_slot(self):
         self.assertEqual((152 / 1920, 970 / 1080), PVP_CARTRIDGE_SLOT_POINT)
 
+    def test_battle_gameplay_category_requires_ocr_and_visual_highlight(self):
+        task = object.__new__(PVPTask)
+        task.config = {"玩法类别高亮确认秒数": 0.0}
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task.sleep = lambda *_args, **_kwargs: None
+        task._ocr_text = lambda *_args, **_kwargs: BATTLE_GAMEPLAY_CATEGORY_LABEL
+        frame = {"value": np.zeros((1080, 1920, 3), dtype=np.uint8)}
+        task.capture_frame = lambda: frame["value"]
+
+        self.assertFalse(PVPTask._wait_for_battle_gameplay_category(task))
+
+        left = round(BATTLE_GAMEPLAY_CATEGORY_HIGHLIGHT_REGION[0] * REFERENCE_WIDTH)
+        top = round(BATTLE_GAMEPLAY_CATEGORY_HIGHLIGHT_REGION[1] * REFERENCE_HEIGHT)
+        right = round(BATTLE_GAMEPLAY_CATEGORY_HIGHLIGHT_REGION[2] * REFERENCE_WIDTH)
+        bottom = round(BATTLE_GAMEPLAY_CATEGORY_HIGHLIGHT_REGION[3] * REFERENCE_HEIGHT)
+        frame["value"][top:bottom, left:right] = 255
+
+        self.assertTrue(PVPTask._wait_for_battle_gameplay_category(task))
+        self.assertEqual((826, 840, 199, 75), BATTLE_GAMEPLAY_CATEGORY_OCR_ROI)
+        self.assertEqual(0.05, GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO)
+
     def test_pvp_hub_uses_1920_roi_and_calibrated_template_scale(self):
         self.assertEqual((793, 39, 340, 35), PVP_MEDALS_TEMPLATE.roi)
         self.assertIsNone(PVP_MEDALS_TEMPLATE.reference_scale)
@@ -929,7 +963,7 @@ class PVPTaskHelperTest(unittest.TestCase):
             self.assertTrue(spec.file_name.startswith("image/"), spec.file_name)
             self.assertTrue((template_root / spec.file_name).is_file(), spec.file_name)
 
-    def test_pvp_entry_clicks_gameplay_then_fixed_first_slot(self):
+    def test_pvp_entry_clicks_battle_gameplay_then_fixed_first_slot(self):
         task = object.__new__(PVPTask)
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
@@ -941,6 +975,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         task._click_template_until = lambda *_args, **_kwargs: self.fail(
             "fixed PVP slot selection must not use template matching"
         )
+        task._wait_for_battle_gameplay_category = lambda: True
         hub_waits = []
         task._wait_for_pvp_hub_after_cart = lambda timeout: hub_waits.append(timeout) or True
         task._clear_pvp_hub_notice_if_present = lambda: None
@@ -950,7 +985,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         self.assertEqual([0.5], sleeps)
         self.assertEqual(
             [
-                (*GAMEPLAY_CARTRIDGE_POINT, 0.5),
+                (*BATTLE_GAMEPLAY_CATEGORY_POINT, 0.0),
                 (*PVP_CARTRIDGE_SLOT_POINT, 0.0),
             ],
             clicks,
@@ -963,6 +998,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         task.log_info = lambda *_args, **_kwargs: None
         task.open_cartridge_quick_switcher = lambda **_kwargs: True
         task.sleep = lambda *_args, **_kwargs: None
+        task._wait_for_battle_gameplay_category = lambda: True
         clicks = []
         task.operate_click = lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep))
         task._wait_for_pvp_hub_after_cart = lambda *_args, **_kwargs: False
@@ -974,11 +1010,30 @@ class PVPTaskHelperTest(unittest.TestCase):
         self.assertFalse(PVPTask._enter_pvp_from_home(task))
         self.assertEqual(
             [
-                (*GAMEPLAY_CARTRIDGE_POINT, 0.5),
+                (*BATTLE_GAMEPLAY_CATEGORY_POINT, 0.0),
                 (*PVP_CARTRIDGE_SLOT_POINT, 0.0),
             ],
             clicks,
         )
+
+    def test_pvp_entry_stops_before_slot_when_battle_category_is_not_confirmed(self):
+        task = object.__new__(PVPTask)
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task.open_cartridge_quick_switcher = lambda **_kwargs: True
+        task.sleep = lambda *_args, **_kwargs: None
+        task._wait_for_battle_gameplay_category = lambda: False
+        clicks = []
+        task.operate_click = lambda x, y, after_sleep=0: clicks.append(
+            (x, y, after_sleep)
+        )
+        task._wait_for_pvp_hub_after_cart = lambda *_args, **_kwargs: self.fail(
+            "PVP slot must not be clicked before the battle category is confirmed"
+        )
+        task.config = {}
+
+        self.assertFalse(PVPTask._enter_pvp_from_home(task))
+        self.assertEqual([(*BATTLE_GAMEPLAY_CATEGORY_POINT, 0.0)], clicks)
 
     def test_matches_any_normalizes_ocr_text(self):
         self.assertTrue(PVPTask._matches_any("战斗 开始", [r"战斗开始"]))
@@ -1017,7 +1072,13 @@ class PVPTaskHelperTest(unittest.TestCase):
 
     def test_pvp_label_click_point_uses_leftmost_lower_label(self):
         boxes = [
-            SimpleNamespace(name="玩法游戏卡8/8可进行PVP", x=470, y=590, width=360, height=30),
+            SimpleNamespace(
+                name="战斗玩法游戏卡带3/3可进行PVP",
+                x=470,
+                y=590,
+                width=360,
+                height=30,
+            ),
             SimpleNamespace(name="PvP", x=1500, y=775, width=56, height=28),
             SimpleNamespace(name="PvP", x=410, y=775, width=56, height=28),
         ]
@@ -1034,7 +1095,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         entries = [
             ("游戏卡珍藏集", 0.91),
             ("角色游戏卡", 0.70),
-            ("玩法游戏卡", 0.76),
+            ("战斗玩法游戏卡带", 0.76),
         ]
 
         self.assertTrue(
@@ -1044,29 +1105,37 @@ class PVPTaskHelperTest(unittest.TestCase):
                 [
                     (r"游戏卡珍藏[集级]", 0.90),
                     (r"角色游戏卡", 0.70),
-                    (r"玩法游戏卡", 0.70),
+                    (r"战斗玩法游戏卡带", 0.70),
                 ],
             )
         )
         self.assertTrue(
             PVPTask._ocr_requirements_met(
                 task,
-                [("游戏卡珍藏级", 0.91), ("角色游戏卡", 0.80), ("玩法游戏卡", 0.80)],
+                [
+                    ("游戏卡珍藏级", 0.91),
+                    ("角色游戏卡", 0.80),
+                    ("战斗玩法游戏卡带", 0.80),
+                ],
                 [
                     (r"游戏卡珍藏[集级]", 0.90),
                     (r"角色游戏卡", 0.70),
-                    (r"玩法游戏卡", 0.70),
+                    (r"战斗玩法游戏卡带", 0.70),
                 ],
             )
         )
         self.assertFalse(
             PVPTask._ocr_requirements_met(
                 task,
-                [("游戏卡珍藏集", 0.89), ("角色游戏卡", 0.80), ("玩法游戏卡", 0.80)],
+                [
+                    ("游戏卡珍藏集", 0.89),
+                    ("角色游戏卡", 0.80),
+                    ("战斗玩法游戏卡带", 0.80),
+                ],
                 [
                     (r"游戏卡珍藏[集级]", 0.90),
                     (r"角色游戏卡", 0.70),
-                    (r"玩法游戏卡", 0.70),
+                    (r"战斗玩法游戏卡带", 0.70),
                 ],
             )
         )

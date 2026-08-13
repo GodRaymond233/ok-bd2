@@ -10,6 +10,17 @@ from src.tasks.BaseBD2Task import BaseBD2Task
 from src.tasks.map_trade.models import MatchResult, TemplateSpec
 from src.utils import task_vision
 from src.utils.calibration import FHD_1080, HD_720, QHD_1440
+from src.utils.cartridge_quick_switch import (
+    CHARACTER_CATEGORY_LABEL,
+    EVENT_CATEGORY_LABEL,
+    GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO,
+    LIFE_GAMEPLAY_CATEGORY_HIGHLIGHT_REGION,
+    LIFE_GAMEPLAY_CATEGORY_LABEL,
+    LIFE_GAMEPLAY_CATEGORY_OCR_ROI,
+    LIFE_GAMEPLAY_CATEGORY_POINT,
+    SHOPKEEPER_CATEGORY_LABEL,
+    category_highlight_ratio,
+)
 from src.utils.home_confirmation import (
     HOME_GACHA_OCR_REFERENCE_ROI,
     home_confirmation_passes,
@@ -26,24 +37,14 @@ HD720_REFERENCE_WIDTH = HD_720.width
 HD720_REFERENCE_HEIGHT = HD_720.height
 ENTRY_REFERENCE_WIDTH = QHD_1440.width
 ENTRY_REFERENCE_HEIGHT = QHD_1440.height
-SQUARE_CARD_LIST_SWIPE_COUNT = 1
-GAMEPLAY_CARTRIDGE_POINT = (989 / REFERENCE_WIDTH, 875 / REFERENCE_HEIGHT)
-SQUARE_CARTRIDGE_SLOT_POINT = (1230 / REFERENCE_WIDTH, 970 / REFERENCE_HEIGHT)
+SQUARE_CARTRIDGE_SLOT_POINT = (331 / REFERENCE_WIDTH, 970 / REFERENCE_HEIGHT)
 SQUARE_HOME_POINT = (1797 / REFERENCE_WIDTH, 63 / REFERENCE_HEIGHT)
 QUICK_SWITCH_PAGE_PATTERNS = (
-    r"店长游戏卡",
-    r"角色游戏卡",
-    r"玩法游戏卡",
-    r"活动游戏卡",
+    SHOPKEEPER_CATEGORY_LABEL,
+    CHARACTER_CATEGORY_LABEL,
+    LIFE_GAMEPLAY_CATEGORY_LABEL,
+    EVENT_CATEGORY_LABEL,
 )
-GAMEPLAY_CATEGORY_HIGHLIGHT_REGION = (
-    876 / REFERENCE_WIDTH,
-    840 / REFERENCE_HEIGHT,
-    1101 / REFERENCE_WIDTH,
-    915 / REFERENCE_HEIGHT,
-)
-GAMEPLAY_CATEGORY_OCR_ROI = (876, 840, 225, 75)
-GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO = 0.05
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_DIR = PROJECT_ROOT / "recognition-assets" / "template-assets"
 
@@ -60,8 +61,8 @@ class SquareGoddessTask(BaseBD2Task):
         "快速切换按钮",
         "卡带选择页 OCR",
         "卡带选择页 OCR 命中",
-        "玩法游戏卡 OCR",
-        "玩法类别高亮",
+        "生活玩法游戏卡带 OCR",
+        "生活玩法类别高亮",
         "梦幻广场",
         "广场感叹号",
         "女神像许愿 OCR",
@@ -85,7 +86,9 @@ class SquareGoddessTask(BaseBD2Task):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.name = "广场女神像"
-        self.description = "从快速切换页的玩法游戏卡7号位进入梦幻广场并完成女神像许愿。"
+        self.description = (
+            "从快速切换页的生活玩法游戏卡带2号位进入梦幻广场并完成女神像许愿。"
+        )
         self.icon = FluentIcon.GAME
         self.group_name = "日常/周常"
         self.group_icon = FluentIcon.CALENDAR
@@ -128,7 +131,9 @@ class SquareGoddessTask(BaseBD2Task):
                 "广场 OCR 阈值": "广场入场流程 OCR 使用的最低可信度。",
                 "主页小屋按钮阈值": "从主页进入卡带前确认小屋按钮存在的阈值。",
                 "快速切换按钮阈值": "识别 QuickSwitchPlayIco.png 快速切换按钮的模板匹配阈值。",
-                "玩法类别高亮像素比例": "玩法游戏卡标签确认为高亮状态所需的最低亮色像素占比。",
+                "玩法类别高亮像素比例": (
+                    "生活玩法游戏卡带标签确认为高亮状态所需的最低亮色像素占比。"
+                ),
                 "广场入场等待秒数": "点击广场卡带后等待梦幻广场场景出现的最长时间。",
                 "广场感叹号等待秒数": "进入广场后等待并点击感叹号小任务的最长时间。",
                 "祈祷完成后感叹号等待秒数": (
@@ -215,14 +220,14 @@ class SquareGoddessTask(BaseBD2Task):
             self.log_info("广场女神像：未能从主页打开卡带快速切换页面。")
             return False
 
-        self.info_set("当前阶段", "选择玩法游戏卡")
+        self.info_set("当前阶段", "选择生活玩法游戏卡带")
         self.sleep(0.5)
-        self.operate_click(*GAMEPLAY_CARTRIDGE_POINT, after_sleep=0.0)
-        if not self._wait_for_gameplay_category():
-            self.log_info("广场女神像：点击后未确认玩法游戏卡类别高亮。")
+        self.operate_click(*LIFE_GAMEPLAY_CATEGORY_POINT, after_sleep=0.0)
+        if not self._wait_for_life_gameplay_category():
+            self.log_info("广场女神像：点击后未确认生活玩法游戏卡带类别高亮。")
             return False
 
-        self.info_set("当前阶段", "选择广场卡带7号位")
+        self.info_set("当前阶段", "选择广场卡带2号位")
         self.operate_click(*SQUARE_CARTRIDGE_SLOT_POINT, after_sleep=0.0)
 
         if self._wait_for_template(
@@ -356,7 +361,7 @@ class SquareGoddessTask(BaseBD2Task):
         )
         return False
 
-    def _wait_for_gameplay_category(self, interval: float = 0.5) -> bool:
+    def _wait_for_life_gameplay_category(self, interval: float = 0.5) -> bool:
         end_at = monotonic() + float(self.config.get("玩法类别高亮确认秒数", 3.0))
         last_text = ""
         last_highlight_ratio = 0.0
@@ -364,18 +369,18 @@ class SquareGoddessTask(BaseBD2Task):
             frame = self.capture_frame()
             text = self._ocr_text(
                 frame,
-                name="玩法游戏卡",
-                roi=GAMEPLAY_CATEGORY_OCR_ROI,
+                name="生活玩法游戏卡带",
+                roi=LIFE_GAMEPLAY_CATEGORY_OCR_ROI,
             )
             last_text = text or last_text
-            last_highlight_ratio = self._bright_neutral_ratio(
+            last_highlight_ratio = category_highlight_ratio(
                 frame,
-                GAMEPLAY_CATEGORY_HIGHLIGHT_REGION,
+                LIFE_GAMEPLAY_CATEGORY_HIGHLIGHT_REGION,
             )
-            self.info_set("玩法游戏卡 OCR", text or "-")
-            self.info_set("玩法类别高亮", f"{last_highlight_ratio:.3f}")
+            self.info_set("生活玩法游戏卡带 OCR", text or "-")
+            self.info_set("生活玩法类别高亮", f"{last_highlight_ratio:.3f}")
             if (
-                self._matches_any(text, [r"玩法游戏卡"])
+                self._matches_any(text, [LIFE_GAMEPLAY_CATEGORY_LABEL])
                 and last_highlight_ratio
                 >= float(
                     self.config.get(
@@ -388,7 +393,7 @@ class SquareGoddessTask(BaseBD2Task):
             self.sleep(interval)
 
         self.log_info(
-            "广场女神像：未确认玩法游戏卡类别高亮，"
+            "广场女神像：未确认生活玩法游戏卡带类别高亮，"
             f"highlight={last_highlight_ratio:.3f}, OCR={last_text or '-'}。"
         )
         return False
@@ -1149,32 +1154,6 @@ class SquareGoddessTask(BaseBD2Task):
     def _crop_reference(frame, roi: tuple[int, int, int, int] | None):
         return reference_roi_frame(frame, roi, (REFERENCE_WIDTH, REFERENCE_HEIGHT))[2]
 
-    @staticmethod
-    def _bright_neutral_ratio(
-        frame: np.ndarray,
-        relative_roi: tuple[float, float, float, float],
-        minimum_gray: int = 170,
-        maximum_channel_spread: int = 35,
-    ) -> float:
-        frame_height, frame_width = frame.shape[:2]
-        left = max(0, min(frame_width, round(relative_roi[0] * frame_width)))
-        top = max(0, min(frame_height, round(relative_roi[1] * frame_height)))
-        right = max(left, min(frame_width, round(relative_roi[2] * frame_width)))
-        bottom = max(top, min(frame_height, round(relative_roi[3] * frame_height)))
-        region = frame[top:bottom, left:right]
-        if region.size == 0:
-            return 0.0
-        if region.ndim == 2:
-            return float(np.mean(region >= minimum_gray))
-        color = region[..., :3].astype(np.int16)
-        channel_min = np.min(color, axis=2)
-        channel_spread = np.max(color, axis=2) - channel_min
-        highlighted = (channel_min >= minimum_gray) & (
-            channel_spread <= maximum_channel_spread
-        )
-        return float(np.mean(highlighted))
-
-
 HOME_TEMPLATE = TemplateSpec(
     name="home",
     file_name="home.png",
@@ -1212,29 +1191,6 @@ QUICK_SWITCH_TEMPLATE = TemplateSpec(
     candidate_center_roi=(650 / 1920, 950 / 1080, 1050 / 1920, 1045 / 1080),
     minimum_safe_threshold=0.88,
     min_zncc_score=0.85,
-)
-
-REFERENCE_CARD_TEMPLATE = TemplateSpec(
-    name="reference_card",
-    file_name="Q_evilcastle.png",
-    threshold_key="恶魔城卡带阈值",
-    default_threshold=0.70,
-)
-
-SQUARE_ENTRY_CARD_TEMPLATE = TemplateSpec(
-    name="square_entry_card",
-    file_name="Q_square.png",
-    threshold_key="广场入口卡带阈值",
-    default_threshold=0.78,
-)
-
-SQUARE_QCARD_TEMPLATE = TemplateSpec(
-    name="square_qcard",
-    file_name="image/Qcard_Square.png",
-    threshold_key="广场入口卡带阈值",
-    default_threshold=0.78,
-    roi=SquareGoddessTask._mf_roi(18, 588, 1227, 79),
-    green_mask=True,
 )
 
 FANTASIA_SQUARE_TEMPLATE = TemplateSpec(

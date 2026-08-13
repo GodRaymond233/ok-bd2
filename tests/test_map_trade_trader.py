@@ -1232,14 +1232,15 @@ class BuyEntryTest(unittest.TestCase):
         self.assertEqual([MERCHANT_CLICK_LOCATION_TEMPLATE], matched_specs)
         self.assertEqual([], warnings)
 
-    def test_buy_entry_uses_six_quick_page_labels_and_story_badge_templates(self):
+    def test_buy_entry_uses_seven_quick_page_labels_and_story_badge_templates(self):
         self.assertEqual(
             (
+                "最近",
                 "店长游戏卡",
                 "剧情游戏卡",
                 "角色游戏卡",
-                "玩法游戏卡",
-                "最近",
+                "战斗玩法游戏卡带",
+                "生活玩法游戏卡带",
                 "活动游戏卡",
             ),
             QUICK_SWITCH_PAGE_KEYWORDS,
@@ -2658,13 +2659,18 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
             actions,
         )
 
-    def test_buy_quick_page_requires_all_six_labels(self):
+    def test_buy_quick_page_requires_all_seven_labels(self):
         task = SimpleNamespace(
             config={},
             sleep=lambda *_args: None,
             log_warning=lambda *_args, **_kwargs: None,
         )
-        text = {"value": "店长游戏卡 剧情游戏卡 角色游戏卡 玩法游戏卡 最近"}
+        text = {
+            "value": (
+                "最近 店长游戏卡 剧情游戏卡 角色游戏卡 "
+                "战斗玩法游戏卡带 生活玩法游戏卡带"
+            )
+        }
         vision = SimpleNamespace(
             capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
             ocr_text=lambda *_args: text["value"],

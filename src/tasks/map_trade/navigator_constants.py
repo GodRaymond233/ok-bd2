@@ -17,6 +17,7 @@ from src.tasks.map_trade.action_icons import (
 from src.tasks.map_trade.card_status import StoryCardCompletion
 from src.tasks.map_trade.models import CardSpec, MapPageMode, MatchResult, TemplateSpec
 from src.utils.calibration import FHD_1080, reference_rect_to_relative_roi
+from src.utils.cartridge_quick_switch import QUICK_SWITCH_PAGE_LABELS
 
 HOME_TEMPLATES = (
     TemplateSpec("主页", "home.png", 0.72, min_pixel_score=0.80),
@@ -94,14 +95,7 @@ CLASSIFY_COOKING_MATERIALS_RELATIVE_ROI = reference_rect_to_relative_roi(
     CLASSIFY_COOKING_MATERIALS_REFERENCE_ROI,
     FHD_1080,
 )
-QUICK_SWITCH_PAGE_KEYWORDS = (
-    "店长游戏卡",
-    "剧情游戏卡",
-    "角色游戏卡",
-    "玩法游戏卡",
-    "最近",
-    "活动游戏卡",
-)
+QUICK_SWITCH_PAGE_KEYWORDS = QUICK_SWITCH_PAGE_LABELS
 STORY_CATEGORY_POINT = (557 / 1920, 877 / 1080)
 STORY_CATEGORY_HIGHLIGHT_REGION = (
     445 / 1920,
