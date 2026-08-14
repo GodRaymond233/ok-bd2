@@ -108,6 +108,7 @@ def resolve_game_exe_path(
     running_path: str | os.PathLike[str] | None = None,
     env: dict[str, str] | None = None,
 ) -> str:
+    """Resolve the game executable for diagnostics and optional direct-launch use."""
     exe_names = get_game_exe_names(env)
     explicit_game_path = _env(env, ENV_GAME_PATH, "")
     if explicit_game_path:
@@ -160,6 +161,7 @@ def calculate_pc_exe_path(running_path: str | os.PathLike[str] | None) -> str:
 
 
 def seed_device_manager_game_path(device_manager, env: dict[str, str] | None = None) -> str:
+    """Seed a direct game path for diagnostics; normal startup seeds the Starter."""
     path = resolve_game_exe_path(env=env)
     if path and getattr(device_manager, "config", None) is not None:
         if device_manager.config.get("pc_full_path") != path:
