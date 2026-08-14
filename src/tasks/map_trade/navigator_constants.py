@@ -144,6 +144,24 @@ STORY_BADGE_OCR_INNER_HEIGHT = 208
 STORY_BADGE_OCR_VERTICAL_BORDER = 32
 STORY_BADGE_OCR_HORIZONTAL_BORDER = 40
 STORY_BADGE_CLUSTER_RADIUS = 12
+# The quick-switch bar lays out cartridge slots on a stable 3/32-width lattice.
+# Low-resolution clients can blur one badge enough to miss the strict identity
+# gate, while the neighbouring candidate centers still preserve that lattice.
+# Use those centers only as a location signal, then reclassify at the slightly
+# tighter inner-badge scale; identity remains protected by independent score,
+# pixel, ZNCC, and runner-up-margin gates below.
+STORY_BADGE_GRID_SPACING_RATIO = 3 / 32
+STORY_BADGE_GRID_MAX_CLIENT_SCALE = 0.85
+STORY_BADGE_GRID_MIN_ANCHORS = 5
+STORY_BADGE_GRID_MIN_VISIBLE_FRACTION = 0.60
+STORY_BADGE_GRID_ALIGNMENT_TOLERANCE_RATIO = 0.02
+STORY_BADGE_GRID_LOCAL_TOLERANCE_RATIO = 0.03
+STORY_BADGE_GRID_VERTICAL_TOLERANCE_RATIO = 0.006
+STORY_BADGE_GRID_REFERENCE_SCALE = 27 / 29
+STORY_BADGE_GRID_TEMPLATE_SCORE = 0.95
+STORY_BADGE_GRID_PIXEL_SCORE = 0.90
+STORY_BADGE_GRID_ZNCC_SCORE = 0.70
+STORY_BADGE_GRID_MIN_MARGIN = 0.05
 Q_SP6_STORY_NUMBER = 6
 STORY_BADGE_SPECS = tuple(
     (
@@ -405,12 +423,21 @@ class StoryBadgeDetection:
     runner_up: StoryBadgeCandidate | None
     ocr_text: str = ""
     ocr_number: int | None = None
+    recovery_mode: str = ""
 
     @property
     def margin(self) -> float:
         if self.runner_up is None:
             return -1.0
         return self.best.discrimination_score - self.runner_up.discrimination_score
+
+
+@dataclass(frozen=True)
+class StoryBadgeGrid:
+    spacing: float
+    phase: float
+    center_y: float
+    anchors: int
 
 
 @dataclass(frozen=True)
@@ -663,4 +690,3 @@ FIRST_CARD_SKIP_TEMPLATE = TemplateSpec(
     roi=(915, 9, 265, 68),
 )
 FIRST_CARD_CONFIRM_REGION = (626, 368, 186, 293)
-
