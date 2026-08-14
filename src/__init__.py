@@ -3,7 +3,6 @@ import os
 from src.game_path import (
     get_configured_game_path,
     get_configured_install_dir,
-    get_configured_launcher_path,
     get_game_exe_config_value,
     get_launcher_exe_config_value,
 )
@@ -28,7 +27,6 @@ GAME_INSTALL_DIR = get_configured_install_dir()
 GAME_EXE = get_game_exe_config_value()
 GAME_PATH = get_configured_game_path()
 LAUNCHER_EXE = get_launcher_exe_config_value()
-LAUNCHER_PATH = get_configured_launcher_path()
 HWND_CLASS = os.environ.get("OK_BD2_HWND_CLASS", "UnityWndClass")
 LAUNCHER_HWND_CLASS = os.environ.get("OK_BD2_LAUNCHER_HWND_CLASS", "")
 

@@ -5,6 +5,7 @@ import tomllib
 from pathlib import Path
 
 from ok import Box
+from ok.util.GlobalConfig import create_basic_options
 
 from src import GAME_EXE, HWND_CLASS
 from src.compat.windows_graphics import enable_windows_10_wgc
@@ -31,6 +32,23 @@ def runtime_version(project_file: Path | None = None) -> str:
 enable_windows_10_wgc()
 install_responsive_task_config_ui()
 
+DX11_OPTION = "Launch with DX11"
+
+
+def validate_basic_option(key, value):
+    if key == DX11_OPTION and bool(value):
+        return (
+            False,
+            "ok-bd2 通过 Neowiz Starter 启动游戏，暂不支持由程序强制传递 DX11 参数。",
+        )
+    return True, ""
+
+
+basic_options = create_basic_options()
+basic_options.validator = validate_basic_option
+basic_options.config_type = dict(basic_options.config_type or {})
+basic_options.config_type[DX11_OPTION] = {"hidden": True}
+
 def blur_area(width, height):
     return Box(width * 0, height * 0.9769, to_x=width * 0.0943, to_y=height * 1)
 
@@ -40,7 +58,7 @@ config = {
     "debug": False,
     "use_gui": True,
     "config_folder": "configs",
-    "global_configs": [],
+    "global_configs": [basic_options],
     "blur_area": blur_area,
     "gui_icon": "icons/icon.png",
     "wait_until_before_delay": 0,

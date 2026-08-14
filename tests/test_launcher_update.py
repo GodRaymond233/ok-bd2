@@ -5,6 +5,17 @@ from src.config import config
 
 
 class LauncherUpdateConfigTest(unittest.TestCase):
+    def test_dx11_option_is_hidden_and_rejects_enablement_for_starter_launch(self):
+        basic_options = config["global_configs"][0]
+        self.assertEqual("Basic Options", basic_options.name)
+        self.assertFalse(basic_options.default_config["Launch with DX11"])
+        self.assertTrue(basic_options.config_type["Launch with DX11"]["hidden"])
+        self.assertEqual(
+            (False, "ok-bd2 通过 Neowiz Starter 启动游戏，暂不支持由程序强制传递 DX11 参数。"),
+            basic_options.validator("Launch with DX11", True),
+        )
+        self.assertEqual((True, ""), basic_options.validator("Launch with DX11", False))
+
     def test_launcher_update_targets_verified_v0114_launcher(self):
         self.assertEqual(
             {

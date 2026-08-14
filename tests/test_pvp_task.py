@@ -1497,7 +1497,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         task = object.__new__(PVPTask)
         task.config = {}
         task.info_set = lambda *_args, **_kwargs: None
-        task._wait_for_pvp_hub_or_confirm = lambda timeout: ("hub", "", None)
+        task._wait_for_pvp_hub_or_confirm = lambda **_kwargs: ("hub", "", None)
         task._click_frame_point = lambda *_args, **_kwargs: self.fail(
             "confirm should not be clicked after hub is detected"
         )
@@ -1511,7 +1511,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         clicks = []
         waits = []
 
-        task._wait_for_pvp_hub_or_confirm = lambda timeout: (
+        task._wait_for_pvp_hub_or_confirm = lambda **_kwargs: (
             "confirm",
             "恭喜晋级 确认",
             (960.0, 1030.0),
@@ -1537,7 +1537,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         task = object.__new__(PVPTask)
         task.config = {}
         task.info_set = lambda *_args, **_kwargs: None
-        task._wait_for_pvp_hub_or_confirm = lambda timeout: (
+        task._wait_for_pvp_hub_or_confirm = lambda **_kwargs: (
             "timeout",
             "战斗 离开",
             None,
@@ -1563,21 +1563,29 @@ class PVPTaskHelperTest(unittest.TestCase):
                 ("hub", "", None),
             )
         )
-        task._wait_for_pvp_hub_or_confirm = lambda timeout: (
-            waits.append(timeout) or next(states)
+        task._wait_for_pvp_hub_or_confirm = lambda **kwargs: (
+            waits.append((kwargs["timeout"], kwargs["return_on_leave"])) or next(states)
         )
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         task.capture_frame = lambda: frame
+        task._leave_button_ocr = lambda _frame: (
+            "失败页:- | 成功页:离开",
+            (1714.0, 1017.0),
+        )
         clicks = []
         task._click_frame_point = lambda seen_frame, point, after_sleep=0.0: clicks.append(
             (seen_frame, point, after_sleep)
         )
 
-        self.assertTrue(PVPTask._ensure_pvp_hub_after_leave(task))
-        self.assertEqual([10.0, 10.0], waits)
+        with patch(
+            "src.tasks.PVPTask.monotonic",
+            side_effect=(100.0, 100.0, 102.0),
+        ):
+            self.assertTrue(PVPTask._ensure_pvp_hub_after_leave(task))
+        self.assertEqual([(10.0, True), (8.0, False)], waits)
         self.assertEqual(1, len(clicks))
         self.assertIs(frame, clicks[0][0])
-        self.assertEqual(((1728.0, 1008.0), 2.0), clicks[0][1:])
+        self.assertEqual(((1714.0, 1017.0), 2.0), clicks[0][1:])
 
     def test_ensure_pvp_hub_after_leave_never_retries_leave_twice(self):
         task = object.__new__(PVPTask)
@@ -1589,15 +1597,23 @@ class PVPTaskHelperTest(unittest.TestCase):
                 ("leave", "成功页:离开", (1728.0, 1008.0)),
             )
         )
-        task._wait_for_pvp_hub_or_confirm = lambda timeout: next(states)
+        task._wait_for_pvp_hub_or_confirm = lambda **_kwargs: next(states)
         task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task._leave_button_ocr = lambda _frame: (
+            "失败页:- | 成功页:离开",
+            (1714.0, 1017.0),
+        )
         clicks = []
         task._click_frame_point = lambda _frame, point, after_sleep=0.0: clicks.append(
             (point, after_sleep)
         )
 
-        self.assertFalse(PVPTask._ensure_pvp_hub_after_leave(task))
-        self.assertEqual([((1728.0, 1008.0), 2.0)], clicks)
+        with patch(
+            "src.tasks.PVPTask.monotonic",
+            side_effect=(100.0, 100.0, 102.0),
+        ):
+            self.assertFalse(PVPTask._ensure_pvp_hub_after_leave(task))
+        self.assertEqual([((1714.0, 1017.0), 2.0)], clicks)
 
     def test_wait_for_pvp_hub_or_confirm_detects_full_frame_confirm_center(self):
         task = object.__new__(PVPTask)
@@ -1675,6 +1691,45 @@ class PVPTaskHelperTest(unittest.TestCase):
             ("leave", "失败页:- | 成功页:离开", (1714.0, 1017.0)),
             PVPTask._wait_for_pvp_hub_or_confirm(task, timeout=1.0),
         )
+
+    def test_wait_for_pvp_hub_or_confirm_waits_through_leave_after_retry(self):
+        task = object.__new__(PVPTask)
+        task.config = {}
+        task.info_set = lambda *_args, **_kwargs: None
+        frames = []
+
+        def capture_frame():
+            frame = np.full((1080, 1920, 3), len(frames), dtype=np.uint8)
+            frames.append(frame)
+            return frame
+
+        task.capture_frame = capture_frame
+        scores = iter((0.1, 0.1, 0.95))
+        task._match = lambda _frame, _spec: SimpleNamespace(score=next(scores))
+        task._passes = lambda result, _spec: result.score >= 0.9
+
+        def fake_ocr(frame, name, roi=None):
+            frame_index = int(frame[0, 0, 0])
+            if frame_index < 2 and name == "pvp_leave_success":
+                return [SimpleNamespace(name="离开", x=70, y=15, width=100, height=30)]
+            return []
+
+        task._ocr_boxes = fake_ocr
+        sleeps = []
+        task.sleep = sleeps.append
+
+        with patch(
+            "src.tasks.PVPTask.monotonic",
+            side_effect=(0.0, 0.1, 1.0, 2.0),
+        ):
+            result = PVPTask._wait_for_pvp_hub_or_confirm(
+                task,
+                timeout=5.0,
+                return_on_leave=False,
+            )
+
+        self.assertEqual(("hub", "失败页:- | 成功页:离开", None), result)
+        self.assertEqual([0.5, 0.5], sleeps)
 
     def test_drag_client_uses_foreground_operate(self):
         operates = []

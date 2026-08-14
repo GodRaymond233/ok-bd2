@@ -121,8 +121,14 @@ python main_debug.py
 ```
 
 自动启动时程序会启动 Neowiz 的 `Browndust2Starter.exe`，再等待游戏窗口出现。
-启动器路径会依次从显式环境变量、运行中的启动器、`PROGRAMDATA` 下的标准目录和
-Windows 卸载注册表中查找，不依赖某一台电脑的固定盘符。
+启动器路径会依次从显式环境变量、运行中的启动器、框架提供的当前运行路径同级或
+父级目录、`PROGRAMDATA` 下的标准目录和 Windows 卸载注册表中查找，不依赖某一台
+电脑的固定盘符。
+
+> [!NOTE]
+> `ok-bd2` 经 Neowiz Starter 启动游戏，无法保证 Starter 会把未知的 DX11 参数继续
+> 传给游戏本体。因此程序会隐藏并禁用框架的“Launch with DX11”选项，避免该设置
+> 看似开启但实际静默失效；是否支持强制 DX11 仍需后续实机验证 Starter 的参数转发。
 
 ## 使用前检查
 

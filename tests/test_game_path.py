@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from src.game_path import (
     calculate_pc_exe_path,
+    get_launcher_exe_names,
     resolve_game_exe_path,
     resolve_launcher_exe_path,
     seed_device_manager_game_path,
@@ -53,6 +54,29 @@ class GamePathTest(unittest.TestCase):
 
             env = {"OK_BD2_LAUNCHER_PATH": str(launcher_path)}
             self.assertEqual(resolve_launcher_exe_path(env=env), str(launcher_path))
+
+    def test_resolve_launcher_exe_path_prefers_running_starter(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            launcher_path = Path(temp_dir) / "Browndust2Starter.exe"
+            launcher_path.write_bytes(b"")
+
+            with patch(
+                "src.game_path.find_running_launcher_path",
+                return_value=str(launcher_path),
+            ):
+                self.assertEqual(resolve_launcher_exe_path(env={}), str(launcher_path))
+
+    def test_launcher_exe_names_accept_comma_separated_overrides(self):
+        self.assertEqual(
+            ["PrimaryStarter.exe", "FallbackStarter.exe"],
+            get_launcher_exe_names(
+                {
+                    "OK_BD2_LAUNCHER_EXE": (
+                        " PrimaryStarter.exe, FallbackStarter.exe "
+                    )
+                }
+            ),
+        )
 
     def test_resolve_launcher_exe_path_uses_programdata_layout(self):
         with tempfile.TemporaryDirectory() as temp_dir:
