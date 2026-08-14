@@ -128,6 +128,13 @@ class BD2Interaction(PostMessageInteraction):
                     self.unblock_input()
             return result
 
+    def wait_until_idle(self, timeout: float = 2.0) -> bool:
+        """Wait until the current mouse operation releases the interaction lock."""
+        acquired = self._input_lock.acquire(timeout=max(0.0, timeout))
+        if acquired:
+            self._input_lock.release()
+        return acquired
+
     def _restore_cursor(self):
         time.sleep(0.025)
         try:

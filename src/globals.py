@@ -26,12 +26,14 @@ class Globals(QObject):
         from ok import og
 
         from src.game_path import seed_device_manager_game_path
+        from src.ui.feedback_report import install_feedback_report
         from src.ui.live_screenshot import install_live_screenshot
 
         game_path = seed_device_manager_game_path(og.device_manager)
         if game_path:
             logger.info(f"seed BD2 game path {game_path}")
         install_live_screenshot(main_window.start_tab)
+        install_feedback_report(main_window.start_tab)
 
     def get_thread_pool_executor(self, max_workers: int = 6) -> ThreadPoolExecutor:
         if (
