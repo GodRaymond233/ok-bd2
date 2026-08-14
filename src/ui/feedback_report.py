@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, Slot
+from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal, Slot
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMessageBox,
+    QProgressDialog,
     QTextEdit,
     QVBoxLayout,
 )
@@ -168,44 +169,129 @@ class ReportReadyDialog(QDialog):
         self.accept()
 
 
+class _ReportBuildSignals(QObject):
+    succeeded = Signal(object)
+    failed = Signal(str)
+
+
+class _ReportBuildJob(QRunnable):
+    def __init__(
+        self,
+        manager: DiagnosticsManager,
+        snapshot: DiagnosticSnapshot,
+        description: str,
+        include_screenshot: bool,
+    ):
+        super().__init__()
+        self.manager = manager
+        self.snapshot = snapshot
+        self.description = description
+        self.include_screenshot = include_screenshot
+        self.signals = _ReportBuildSignals()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            result = self.manager.build_report(
+                self.snapshot,
+                self.description,
+                include_screenshot=self.include_screenshot,
+            )
+        except Exception as exc:
+            self.signals.failed.emit(f"{type(exc).__name__}: {exc}")
+            return
+        self.signals.succeeded.emit(result)
+
+
 class FeedbackReportController(QObject):
     def __init__(self, start_tab, manager: DiagnosticsManager):
         super().__init__(start_tab)
         self.start_tab = start_tab
         self.manager = manager
         self._busy = False
+        self._snapshot: DiagnosticSnapshot | None = None
+        self._executor = None
+        self._progress_dialog: QProgressDialog | None = None
+        self._build_job: _ReportBuildJob | None = None
 
     @Slot()
     def create_report(self) -> None:
         if self._busy:
             return
         self._busy = True
-        snapshot = None
         try:
             from ok import og
 
-            executor = getattr(og, "executor", None)
+            self._executor = getattr(og, "executor", None)
             device_manager = getattr(og, "device_manager", None)
-            snapshot = self.manager.prepare(
-                executor=executor,
-                device_manager=device_manager,
-            )
-
-            dialog = FeedbackReportDialog(snapshot, self.start_tab.window())
-            if dialog.exec() != QDialog.DialogCode.Accepted:
-                self.manager.resume(snapshot, executor)
-                return
+            preferred_frame, preferred_age = self._latest_preview_frame()
 
             QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
             try:
-                result = self.manager.build_report(
-                    snapshot,
-                    dialog.description,
-                    include_screenshot=dialog.include_screenshot.isChecked(),
+                self._snapshot = self.manager.prepare(
+                    executor=self._executor,
+                    device_manager=device_manager,
+                    preferred_frame=preferred_frame,
+                    preferred_frame_age_seconds=preferred_age,
                 )
             finally:
                 QApplication.restoreOverrideCursor()
 
+            dialog = FeedbackReportDialog(self._snapshot, self.start_tab.window())
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                self.manager.resume(self._snapshot, self._executor)
+                self._reset_state()
+                return
+
+            self._start_build(
+                dialog.description,
+                include_screenshot=dialog.include_screenshot.isChecked(),
+            )
+        except Exception as exc:
+            self._close_progress()
+            self._resume_after_failure()
+            self._show_error(str(exc))
+            self._reset_state()
+
+    def _latest_preview_frame(self):
+        widget = getattr(self.start_tab, "live_screenshot_widget", None)
+        latest_frame = getattr(widget, "latest_frame", None)
+        if not callable(latest_frame):
+            return None, None
+        try:
+            return latest_frame(max_age_seconds=2.0)
+        except Exception:
+            return None, None
+
+    def _start_build(self, description: str, *, include_screenshot: bool) -> None:
+        if self._snapshot is None:
+            raise RuntimeError("诊断现场尚未准备完成")
+
+        progress = QProgressDialog(self.start_tab.window())
+        progress.setWindowTitle("生成问题报告")
+        progress.setLabelText("正在脱敏并打包诊断信息…")
+        progress.setRange(0, 0)
+        progress.setCancelButton(None)
+        progress.setMinimumDuration(0)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.show()
+        self._progress_dialog = progress
+
+        job = _ReportBuildJob(
+            self.manager,
+            self._snapshot,
+            description,
+            include_screenshot,
+        )
+        job.signals.succeeded.connect(self._build_succeeded)
+        job.signals.failed.connect(self._build_failed)
+        self._build_job = job
+        QThreadPool.globalInstance().start(job)
+
+    @Slot(object)
+    def _build_succeeded(self, result: ReportResult) -> None:
+        self._close_progress()
+        try:
             QApplication.clipboard().setText(result.group_message)
             try:
                 from ok.util.explorer import reveal_in_explorer
@@ -216,21 +302,46 @@ class FeedbackReportController(QObject):
 
             ready_dialog = ReportReadyDialog(result, self.start_tab.window())
             ready_dialog.exec()
-            if ready_dialog.resume_requested:
-                self.manager.resume(snapshot, executor)
+            if ready_dialog.resume_requested and self._snapshot is not None:
+                self.manager.resume(self._snapshot, self._executor)
         except Exception as exc:
-            if snapshot is not None:
-                try:
-                    from ok import og
-
-                    self.manager.resume(snapshot, getattr(og, "executor", None))
-                except Exception:
-                    pass
-            from ok.gui.util.Alert import alert_error
-
-            alert_error(f"生成问题报告失败：{exc}", tray=True)
+            self._resume_after_failure()
+            self._show_error(str(exc))
         finally:
-            self._busy = False
+            self._reset_state()
+
+    @Slot(str)
+    def _build_failed(self, error: str) -> None:
+        self._close_progress()
+        self._resume_after_failure()
+        self._show_error(error)
+        self._reset_state()
+
+    def _resume_after_failure(self) -> None:
+        if self._snapshot is None:
+            return
+        try:
+            self.manager.resume(self._snapshot, self._executor)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _show_error(error: str) -> None:
+        from ok.gui.util.Alert import alert_error
+
+        alert_error(f"生成问题报告失败：{error}", tray=True)
+
+    def _close_progress(self) -> None:
+        if self._progress_dialog is not None:
+            self._progress_dialog.close()
+            self._progress_dialog.deleteLater()
+            self._progress_dialog = None
+
+    def _reset_state(self) -> None:
+        self._busy = False
+        self._snapshot = None
+        self._executor = None
+        self._build_job = None
 
 
 def install_feedback_report(start_tab) -> None:

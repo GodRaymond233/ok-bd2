@@ -2,6 +2,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 import cv2
+import numpy as np
 from ok.gui.widget.Card import Card
 from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QImage, QPixmap
@@ -242,6 +243,28 @@ class LiveScreenshotWidget(QWidget):
             bytes_per_line,
             QImage.Format_RGB888,
         ).copy()
+
+    def latest_frame(self, max_age_seconds: float = 2.0):
+        """Return a BGR copy of the latest frame already delivered to the UI."""
+        image = self.preview._image
+        if image is None or image.isNull() or self._last_frame_at <= 0:
+            return None, None
+
+        age = max(0.0, time.time() - self._last_frame_at)
+        if age > max(0.0, max_age_seconds):
+            return None, age
+
+        converted = image.convertToFormat(QImage.Format_RGB888)
+        height = converted.height()
+        width = converted.width()
+        bytes_per_line = converted.bytesPerLine()
+        rgb_rows = np.frombuffer(
+            converted.bits(),
+            dtype=np.uint8,
+            count=height * bytes_per_line,
+        ).reshape(height, bytes_per_line)
+        rgb = rgb_rows[:, : width * 3].reshape(height, width, 3)
+        return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), age
 
     def _display_frame(self, image: QImage, status: str):
         if not self._active:

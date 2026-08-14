@@ -30,6 +30,7 @@ from src.tasks.map_trade.navigator import (
     HOME_TEMPLATES,
     MERCHANT_CLICK_LOCATION_FAILURE_MESSAGE,
     MERCHANT_CLICK_LOCATION_TEMPLATE,
+    Q_SP6_BARGAIN_CLICK_DELAY,
     Q_SP6_BARGAIN_OCR_TIMEOUT,
     Q_SP6_BARGAIN_RECHECK_DELAY,
     Q_SP6_SHOP_PRIORITY_TIMEOUT,
@@ -1041,7 +1042,10 @@ class BuyEntryTest(unittest.TestCase):
             ],
             keyword_checks,
         )
-        self.assertEqual([Q_SP6_BARGAIN_RECHECK_DELAY], sleeps)
+        self.assertEqual(
+            [Q_SP6_BARGAIN_RECHECK_DELAY, Q_SP6_BARGAIN_CLICK_DELAY],
+            sleeps,
+        )
 
     def test_buy_entry_uses_initial_merchant_template_before_home_navigation(self):
         clicks = []
@@ -1092,14 +1096,18 @@ class BuyEntryTest(unittest.TestCase):
             ],
             keyword_checks,
         )
-        self.assertEqual([Q_SP6_BARGAIN_RECHECK_DELAY], sleeps)
+        self.assertEqual(
+            [Q_SP6_BARGAIN_RECHECK_DELAY, Q_SP6_BARGAIN_CLICK_DELAY],
+            sleeps,
+        )
 
     def test_buy_entry_does_not_click_bargain_before_bargain_ocr(self):
         clicks = []
+        sleeps = []
         task = SimpleNamespace(
             config={},
             operate_click=lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep)),
-            sleep=lambda *_args: None,
+            sleep=sleeps.append,
             log_warning=lambda *_args, **_kwargs: None,
         )
         navigator = Navigator(task, SimpleNamespace())
@@ -1112,6 +1120,7 @@ class BuyEntryTest(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertEqual("商店页面未识别到砍价入口", result.message)
         self.assertEqual([], clicks)
+        self.assertEqual([Q_SP6_BARGAIN_RECHECK_DELAY], sleeps)
 
     def test_buy_entry_stops_when_shop_page_is_not_confirmed_after_bargain(self):
         clicks = []

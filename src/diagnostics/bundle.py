@@ -53,7 +53,6 @@ class ReportBundleBuilder:
 
         with tempfile.TemporaryDirectory(
             prefix=f".{report_id}-",
-            dir=self.output_dir,
         ) as temp_dir_name:
             stage = Path(temp_dir_name)
             files: list[dict[str, Any]] = []
@@ -83,7 +82,8 @@ class ReportBundleBuilder:
             )
             files.append(_file_record(stage, "state/trace.jsonl"))
 
-            flush_ok_logging()
+            if not flush_ok_logging():
+                omissions.append("log_flush_incomplete")
             log_text, log_sources = self._recent_logs()
             if log_text:
                 _write_text(stage / "logs" / "recent.log", log_text)

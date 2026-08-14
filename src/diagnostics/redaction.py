@@ -5,12 +5,14 @@ import platform
 import re
 from pathlib import Path
 
-_BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
+_AUTH_SCHEME_RE = re.compile(
+    r"(?i)\b(?:Bearer|Basic|Token)\s+[A-Za-z0-9._~+/=-]+"
+)
 _EMAIL_RE = re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
 _SECRET_RE = re.compile(
-    r"(?i)(?P<quote>[\"']?)\b(?P<key>authorization|api[_-]?key|access[_-]?token|"
-    r"refresh[_-]?token|id[_-]?token|client[_-]?secret|private[_-]?key|token|secret|"
-    r"password|passwd|cookie|session)\b(?P=quote)"
+    r"(?i)(?P<quote>[\"']?)(?P<key>[A-Z0-9_-]{0,64}(?:authorization|api[_-]?key|"
+    r"access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|"
+    r"private[_-]?key|token|secret|password|passwd|cookie|session))(?P=quote)"
     r"(?P<sep>\s*[:=]\s*)"
     r"(?P<value>\"[^\"]*\"|'[^']*'|[^\s,;]+)"
 )
@@ -64,7 +66,7 @@ class DiagnosticRedactor:
         for value in self._known_values:
             text = re.sub(re.escape(value), "<LOCAL_ID>", text, flags=re.IGNORECASE)
 
-        text = _BEARER_RE.sub("Bearer <REDACTED>", text)
+        text = _AUTH_SCHEME_RE.sub("<REDACTED>", text)
         text = _SECRET_RE.sub(
             lambda match: f"{match.group('quote')}{match.group('key')}"
             f"{match.group('quote')}{match.group('sep')}<REDACTED>",
