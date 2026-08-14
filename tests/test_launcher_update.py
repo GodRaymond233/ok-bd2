@@ -1,10 +1,55 @@
 import re
 import unittest
+from unittest.mock import Mock
 
+from src.compat.starter_launch import (
+    BROWNDUST2_LAUNCH_URI,
+    starter_launch_arguments,
+    wrap_starter_execute,
+)
 from src.config import config
 
 
 class LauncherUpdateConfigTest(unittest.TestCase):
+    def test_starter_launch_includes_official_shortcut_uri(self):
+        self.assertEqual(
+            f'"{BROWNDUST2_LAUNCH_URI}"',
+            starter_launch_arguments(
+                r"C:\ProgramData\Neowiz\Browndust2Starter\Browndust2Starter.exe"
+            ),
+        )
+
+    def test_starter_launch_preserves_additional_arguments(self):
+        self.assertEqual(
+            f'"{BROWNDUST2_LAUNCH_URI}" --future-option',
+            starter_launch_arguments(
+                r"C:\ProgramData\Neowiz\Browndust2Starter\Browndust2Starter.exe",
+                "--future-option",
+            ),
+        )
+
+    def test_non_starter_launch_arguments_are_unchanged(self):
+        self.assertEqual(
+            "--existing-option",
+            starter_launch_arguments(r"D:\Games\OtherLauncher.exe", "--existing-option"),
+        )
+
+    def test_starter_execute_wrapper_forwards_uri_to_ok_script(self):
+        original_execute = Mock(return_value=True)
+        wrapped_execute = wrap_starter_execute(original_execute)
+
+        self.assertTrue(
+            wrapped_execute(
+                r"C:\ProgramData\Neowiz\Browndust2Starter\Browndust2Starter.exe",
+                start_method="start",
+            )
+        )
+        original_execute.assert_called_once_with(
+            r"C:\ProgramData\Neowiz\Browndust2Starter\Browndust2Starter.exe",
+            arguments=f'"{BROWNDUST2_LAUNCH_URI}"',
+            start_method="start",
+        )
+
     def test_dx11_option_is_hidden_and_rejects_enablement_for_starter_launch(self):
         basic_options = config["global_configs"][0]
         self.assertEqual("Basic Options", basic_options.name)

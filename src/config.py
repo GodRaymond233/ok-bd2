@@ -8,6 +8,7 @@ from ok import Box
 from ok.util.GlobalConfig import create_basic_options
 
 from src import GAME_EXE, HWND_CLASS
+from src.compat.starter_launch import enable_starter_launch_uri
 from src.compat.windows_graphics import enable_windows_10_wgc
 from src.game_path import calculate_pc_exe_path
 from src.interaction.BD2Interaction import BD2Interaction
@@ -30,6 +31,7 @@ def runtime_version(project_file: Path | None = None) -> str:
     return version
 
 enable_windows_10_wgc()
+enable_starter_launch_uri()
 install_responsive_task_config_ui()
 
 DX11_OPTION = "Launch with DX11"
