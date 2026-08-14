@@ -36,9 +36,21 @@ class DiagnosticsManager:
             app_version=app_version,
         )
 
-    def prepare(self, *, executor=None, device_manager=None) -> DiagnosticSnapshot:
+    def prepare(
+        self,
+        *,
+        executor=None,
+        device_manager=None,
+        preferred_frame=None,
+        preferred_frame_age_seconds: float | None = None,
+    ) -> DiagnosticSnapshot:
         warnings: list[str] = []
-        frame, frame_age = _capture_frame(executor, device_manager, warnings)
+        frame, frame_age = _capture_frame(
+            executor,
+            warnings,
+            preferred_frame=preferred_frame,
+            preferred_frame_age_seconds=preferred_frame_age_seconds,
+        )
         method = _capture_method(executor, device_manager)
         method_name = _capture_method_name(method)
 
@@ -82,38 +94,37 @@ class DiagnosticsManager:
         return True
 
 
-def _capture_frame(executor, device_manager, warnings: list[str]):
+def _capture_frame(
+    executor,
+    warnings: list[str],
+    *,
+    preferred_frame=None,
+    preferred_frame_age_seconds: float | None = None,
+):
     frame = None
     frame_age = None
-    stale_frame = None
-    if executor is not None:
+    if preferred_frame is not None:
+        try:
+            frame = preferred_frame.copy()
+            frame_age = preferred_frame_age_seconds
+        except Exception as exc:
+            warnings.append(f"复制实时预览画面失败：{type(exc).__name__}")
+            frame = None
+
+    if frame is None and executor is not None:
         try:
             candidate = executor.nullable_frame()
             if candidate is not None:
-                stale_frame = candidate.copy()
+                frame = candidate.copy()
                 last_frame_time = float(getattr(executor, "_last_frame_time", 0.0))
                 if last_frame_time > 0:
                     frame_age = max(0.0, time.time() - last_frame_time)
-                if frame_age is None or frame_age <= 1.0:
-                    frame = stale_frame
         except Exception as exc:
             warnings.append(f"读取最近游戏画面失败：{type(exc).__name__}")
             frame = None
 
-    method = _capture_method(executor, device_manager)
-    if frame is None and method is not None:
-        try:
-            if not hasattr(method, "connected") or method.connected():
-                frame = method.get_frame()
-                if frame is not None:
-                    frame = frame.copy()
-                    frame_age = 0.0
-        except Exception as exc:
-            warnings.append(f"采集游戏画面失败：{type(exc).__name__}")
-            frame = None
-    if frame is None and stale_frame is not None:
-        warnings.append("实时游戏画面不可用，已使用执行器保存的上一帧")
-        frame = stale_frame
+    if frame is not None and frame_age is not None and frame_age > 1.0:
+        warnings.append("最近游戏画面已超过 1 秒，报告中会标记帧龄")
     return frame, frame_age
 
 

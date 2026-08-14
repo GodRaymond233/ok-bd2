@@ -53,6 +53,7 @@ from src.tasks.map_trade.navigator_constants import (  # noqa: F401
     PROBE_QUICK_SWITCH_SCROLL_SETTLE_SECONDS,
     PROBE_QUICK_SWITCH_SCROLL_STEPS,
     PROBE_STORY_BADGE_CONFIRM_SECONDS,
+    Q_SP6_BARGAIN_CLICK_DELAY,
     Q_SP6_BARGAIN_OCR_TIMEOUT,
     Q_SP6_BARGAIN_RECHECK_DELAY,
     Q_SP6_SHOP_PAGE_KEYWORDS,
@@ -226,6 +227,7 @@ class TradeNavigationMixin:
             "砍价入口",
         ):
             return NavigationResult(False, self.classify(), "商店页面未识别到砍价入口")
+        self.task.sleep(Q_SP6_BARGAIN_CLICK_DELAY)
         self.task.operate_click(*BARGAIN_POINT, after_sleep=0.0)
 
         bargain_tip = "使用砍价技能后可享受商店折扣价"

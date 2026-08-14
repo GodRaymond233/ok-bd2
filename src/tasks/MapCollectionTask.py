@@ -76,11 +76,16 @@ class MapCollectionTask(MapAutomationTaskBase):
             "战斗区域1、2各执行吸收、召集、压制。第14章暂时跳过。"
         )
         self.icon = FluentIcon.GLOBE
-        self.group_name = "日常/周常"
-        self.group_icon = FluentIcon.CALENDAR
-        # Keep the implementation and persisted configuration intact while the
-        # weekly map route is temporarily hidden from the production frontend.
-        self.visible = False
+        if bool(getattr(self._app, "debug", False)):
+            self.group_name = "内测功能"
+            self.group_icon = FluentIcon.DEVELOPER_TOOLS
+            self.visible = True
+        else:
+            self.group_name = "日常/周常"
+            self.group_icon = FluentIcon.CALENDAR
+            # Keep the implementation and persisted configuration intact while
+            # the weekly map route is hidden from the production frontend.
+            self.visible = False
 
         self.default_config.update(
             {

@@ -1,3 +1,4 @@
+import ast
 import hashlib
 import json
 import tempfile
@@ -5,6 +6,7 @@ import time
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -70,6 +72,10 @@ class _CaptureMethodStub:
     def get_name():
         return "WGC"
 
+    @staticmethod
+    def get_frame():
+        raise AssertionError("diagnostics must not capture from the UI thread")
+
 
 class _DeviceManagerStub:
     def __init__(self, interaction):
@@ -102,6 +108,30 @@ class DiagnosticRedactorTest(unittest.TestCase):
         self.assertIn("<EMAIL>", result)
         self.assertIn("<REDACTED", result)
 
+    def test_redacts_prefixed_credentials_and_authorization_schemes(self):
+        source = (
+            "bot_token=abcdefgh123 auth_token=xyz bot_secret=s3cr3t "
+            "db_password=hunter2 Authorization: Basic dXNlcjpwYXNz "
+            "proxy_authorization=Token opaque-token Authorization=Bearer bearer-token"
+        )
+
+        result = DiagnosticRedactor().redact(source)
+
+        for secret in (
+            "abcdefgh123",
+            "xyz",
+            "s3cr3t",
+            "hunter2",
+            "dXNlcjpwYXNz",
+            "opaque-token",
+            "bearer-token",
+        ):
+            self.assertNotIn(secret, result)
+        self.assertIn("bot_token=<REDACTED>", result)
+        self.assertIn("auth_token=<REDACTED>", result)
+        self.assertIn("bot_secret=<REDACTED>", result)
+        self.assertIn("db_password=<REDACTED>", result)
+
 
 class DiagnosticsManagerTest(unittest.TestCase):
     def test_prepare_captures_before_pause_waits_for_mouse_and_can_resume(self):
@@ -132,6 +162,30 @@ class DiagnosticsManagerTest(unittest.TestCase):
             self.assertEqual(1, executor.start_calls)
             self.assertFalse(executor.paused)
 
+    def test_prepare_prefers_background_live_preview_frame(self):
+        executor_frame = np.full((24, 32, 3), 32, dtype=np.uint8)
+        preview_frame = np.full((24, 32, 3), 224, dtype=np.uint8)
+        interaction = _InteractionStub()
+        executor = _ExecutorStub(executor_frame, interaction)
+        device_manager = _DeviceManagerStub(interaction)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = DiagnosticsManager(
+                project_root=Path(temp_dir),
+                output_dir=Path(temp_dir),
+                app_version="0.1.test",
+            )
+
+            snapshot = manager.prepare(
+                executor=executor,
+                device_manager=device_manager,
+                preferred_frame=preview_frame,
+                preferred_frame_age_seconds=0.03,
+            )
+
+        self.assertTrue(np.array_equal(preview_frame, snapshot.frame))
+        self.assertIsNot(preview_frame, snapshot.frame)
+        self.assertEqual(0.03, snapshot.frame_age_seconds)
+
     def test_prepare_records_unconfirmed_safe_point(self):
         interaction = _InteractionStub(idle=False)
         executor = _ExecutorStub(None, interaction)
@@ -147,6 +201,59 @@ class DiagnosticsManagerTest(unittest.TestCase):
 
         self.assertFalse(snapshot.safe_point_reached)
         self.assertTrue(any("鼠标操作" in warning for warning in snapshot.warnings))
+
+
+class InteractionSafetyContractTest(unittest.TestCase):
+    def test_all_mouse_entry_points_use_the_diagnostic_input_lock(self):
+        interaction_path = (
+            Path(__file__).resolve().parents[1]
+            / "src"
+            / "interaction"
+            / "BD2Interaction.py"
+        )
+        module = ast.parse(interaction_path.read_text(encoding="utf-8"))
+        interaction_class = next(
+            node
+            for node in module.body
+            if isinstance(node, ast.ClassDef) and node.name == "BD2Interaction"
+        )
+        methods = {
+            node.name: node
+            for node in interaction_class.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        mouse_entry_points = {
+            "click",
+            "scroll",
+            "operate",
+            "move",
+            "swipe",
+            "right_click",
+            "mouse_down",
+            "update_mouse_pos",
+            "mouse_up",
+            "move_mouse_relative",
+        }
+
+        self.assertLessEqual(mouse_entry_points, methods.keys())
+        for method_name in mouse_entry_points:
+            with self.subTest(method=method_name):
+                lock_contexts = [
+                    item.context_expr
+                    for node in ast.walk(methods[method_name])
+                    if isinstance(node, ast.With)
+                    for item in node.items
+                ]
+                self.assertTrue(
+                    any(
+                        isinstance(context, ast.Attribute)
+                        and isinstance(context.value, ast.Name)
+                        and context.value.id == "self"
+                        and context.attr == "_input_lock"
+                        for context in lock_contexts
+                    ),
+                    f"{method_name} must hold _input_lock",
+                )
 
 
 class ReportBundleBuilderTest(unittest.TestCase):
@@ -239,6 +346,23 @@ class ReportBundleBuilderTest(unittest.TestCase):
                 manifest = json.loads(archive.read("manifest.json"))
                 self.assertNotIn("screenshots/current.webp", archive.namelist())
                 self.assertIn("screenshot_declined", manifest["omissions"])
+
+    def test_manifest_records_incomplete_log_flush(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            builder = ReportBundleBuilder(
+                project_root=root,
+                output_dir=root / "output",
+                app_version="0.1.23",
+            )
+            snapshot = DiagnosticSnapshot(captured_at="2026-08-14T13:00:00+08:00")
+
+            with patch("src.diagnostics.bundle.flush_ok_logging", return_value=False):
+                result = builder.build(snapshot, "日志可能尚未刷新", include_screenshot=False)
+
+            with zipfile.ZipFile(result.archive_path) as archive:
+                manifest = json.loads(archive.read("manifest.json"))
+                self.assertIn("log_flush_incomplete", manifest["omissions"])
 
     def test_requires_a_description(self):
         with tempfile.TemporaryDirectory() as temp_dir:

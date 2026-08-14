@@ -59,15 +59,23 @@ class DailyBatchTaskTest(unittest.TestCase):
         self.assertNotIn("跑图", task.default_config)
         self.assertNotIn("跑图", task.description)
 
-    def test_weekly_map_collection_card_is_registered_but_hidden(self):
+    def test_formal_weekly_map_collection_card_is_registered_but_hidden(self):
         executor = SimpleNamespace(scene=None)
-        task = MapCollectionTask(executor, SimpleNamespace())
+        task = MapCollectionTask(executor, SimpleNamespace(debug=False))
 
         self.assertFalse(task.visible)
+        self.assertEqual("日常/周常", task.group_name)
         self.assertIn(
             ["src.tasks.MapCollectionTask", "MapCollectionTask"],
             config["onetime_tasks"],
         )
+
+    def test_debug_weekly_map_collection_card_moves_to_internal_testing_group(self):
+        executor = SimpleNamespace(scene=None)
+        task = MapCollectionTask(executor, SimpleNamespace(debug=True))
+
+        self.assertTrue(task.visible)
+        self.assertEqual("内测功能", task.group_name)
 
     def test_runs_enabled_children_in_order_and_restores_their_configs(self):
         class First:

@@ -135,6 +135,37 @@ class BD2Interaction(PostMessageInteraction):
             self._input_lock.release()
         return acquired
 
+    def move(self, x, y, down_btn=0):
+        with self._input_lock:
+            return super().move(x, y, down_btn=down_btn)
+
+    def swipe(self, x1, y1, x2, y2, duration=3, settle_time=0):
+        with self._input_lock:
+            return super().swipe(
+                x1,
+                y1,
+                x2,
+                y2,
+                duration=duration,
+                settle_time=settle_time,
+            )
+
+    def right_click(self, x=-1, y=-1, move_back=False, name=None):
+        with self._input_lock:
+            return super().right_click(x, y, move_back=move_back, name=name)
+
+    def mouse_down(self, x=-1, y=-1, name=None, key="left"):
+        with self._input_lock:
+            return super().mouse_down(x, y, name=name, key=key)
+
+    def update_mouse_pos(self, x, y, activate=True):
+        with self._input_lock:
+            return super().update_mouse_pos(x, y, activate=activate)
+
+    def mouse_up(self, key="left"):
+        with self._input_lock:
+            return super().mouse_up(key=key)
+
     def _restore_cursor(self):
         time.sleep(0.025)
         try:
@@ -149,9 +180,10 @@ class BD2Interaction(PostMessageInteraction):
         self.user32.BlockInput(False)
 
     def move_mouse_relative(self, dx, dy):
-        mi = MOUSEINPUT(dx, dy, 0, 1, 0, None)
-        i = INPUT(0, mi)
-        SendInput(1, ctypes.pointer(i), ctypes.sizeof(INPUT))
+        with self._input_lock:
+            mi = MOUSEINPUT(dx, dy, 0, 1, 0, None)
+            i = INPUT(0, mi)
+            SendInput(1, ctypes.pointer(i), ctypes.sizeof(INPUT))
 
     def try_activate(self):
         if self._activate_required:
