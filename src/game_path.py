@@ -6,9 +6,13 @@ from pathlib import Path
 
 DEFAULT_GAME_EXE = "BrownDust II.exe"
 DEFAULT_INSTALL_DIR = Path(r"D:\Neowiz\Browndust2\Browndust2_10000001")
+DEFAULT_LAUNCHER_EXE = "Browndust2Starter.exe"
 ENV_GAME_EXE = "OK_BD2_GAME_EXE"
 ENV_GAME_PATH = "OK_BD2_GAME_PATH"
 ENV_INSTALL_DIR = "OK_BD2_INSTALL_DIR"
+ENV_LAUNCHER_EXE = "OK_BD2_LAUNCHER_EXE"
+ENV_LAUNCHER_PATH = "OK_BD2_LAUNCHER_PATH"
+ENV_LAUNCHER_INSTALL_DIR = "OK_BD2_LAUNCHER_INSTALL_DIR"
 
 REGISTRY_MATCH_TOKENS = ("browndust", "brown dust", "neowiz")
 REGISTRY_VALUE_NAMES = (
@@ -32,6 +36,18 @@ def get_game_exe_config_value(env: dict[str, str] | None = None) -> str | list[s
     return names[0] if len(names) == 1 else names
 
 
+def get_launcher_exe_names(env: dict[str, str] | None = None) -> list[str]:
+    value = _env(env, ENV_LAUNCHER_EXE, DEFAULT_LAUNCHER_EXE)
+    names = [_clean_path_part(part) for part in value.split(",")]
+    names = [name for name in names if name]
+    return names or [DEFAULT_LAUNCHER_EXE]
+
+
+def get_launcher_exe_config_value(env: dict[str, str] | None = None) -> str | list[str]:
+    names = get_launcher_exe_names(env)
+    return names[0] if len(names) == 1 else names
+
+
 def get_configured_install_dir(env: dict[str, str] | None = None) -> str:
     return _env(env, ENV_INSTALL_DIR, str(DEFAULT_INSTALL_DIR))
 
@@ -43,8 +59,31 @@ def get_configured_game_path(env: dict[str, str] | None = None) -> str:
     return str(Path(get_configured_install_dir(env)) / get_game_exe_names(env)[0])
 
 
+def get_configured_launcher_install_dir(env: dict[str, str] | None = None) -> str:
+    program_data = _env(env, "PROGRAMDATA", r"C:\ProgramData")
+    default_dir = Path(program_data) / "Neowiz" / "Browndust2Starter"
+    return _env(env, ENV_LAUNCHER_INSTALL_DIR, str(default_dir))
+
+
+def get_configured_launcher_path(env: dict[str, str] | None = None) -> str:
+    configured = _env(env, ENV_LAUNCHER_PATH, "")
+    if configured:
+        return configured
+    return str(
+        Path(get_configured_launcher_install_dir(env)) / get_launcher_exe_names(env)[0]
+    )
+
+
 def find_running_game_path(env: dict[str, str] | None = None) -> str:
-    exe_names = {name.lower() for name in get_game_exe_names(env)}
+    return _find_running_executable_path(get_game_exe_names(env))
+
+
+def find_running_launcher_path(env: dict[str, str] | None = None) -> str:
+    return _find_running_executable_path(get_launcher_exe_names(env))
+
+
+def _find_running_executable_path(exe_names: Iterable[str]) -> str:
+    allowed_names = {name.lower() for name in exe_names}
     try:
         import psutil
     except Exception:
@@ -57,7 +96,7 @@ def find_running_game_path(env: dict[str, str] | None = None) -> str:
         except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess):
             continue
 
-        if name not in exe_names and Path(exe_path).name.lower() not in exe_names:
+        if name not in allowed_names and Path(exe_path).name.lower() not in allowed_names:
             continue
         path = Path(exe_path)
         if path.is_file():
@@ -91,12 +130,45 @@ def resolve_game_exe_path(
     return _existing_game_path(candidates, exe_names)
 
 
+def resolve_launcher_exe_path(
+    running_path: str | os.PathLike[str] | None = None,
+    env: dict[str, str] | None = None,
+) -> str:
+    launcher_names = get_launcher_exe_names(env)
+    explicit_launcher_path = _env(env, ENV_LAUNCHER_PATH, "")
+    if explicit_launcher_path:
+        launcher_path = _existing_game_path([explicit_launcher_path], launcher_names)
+        if launcher_path:
+            return launcher_path
+
+    running_launcher_path = find_running_launcher_path(env)
+    if running_launcher_path:
+        return running_launcher_path
+
+    candidates: list[Path] = []
+    if running_path:
+        candidates.extend(_candidate_paths_from_source(running_path, launcher_names))
+
+    candidates.append(Path(get_configured_launcher_path(env)))
+    candidates.extend(_registry_candidate_paths(launcher_names))
+    return _existing_game_path(candidates, launcher_names)
+
+
 def calculate_pc_exe_path(running_path: str | os.PathLike[str] | None) -> str:
-    return resolve_game_exe_path(running_path) or str(running_path or "")
+    """Return the Starter executable that ok-script should launch."""
+    return resolve_launcher_exe_path(running_path)
 
 
 def seed_device_manager_game_path(device_manager, env: dict[str, str] | None = None) -> str:
     path = resolve_game_exe_path(env=env)
+    if path and getattr(device_manager, "config", None) is not None:
+        if device_manager.config.get("pc_full_path") != path:
+            device_manager.config["pc_full_path"] = path
+    return path
+
+
+def seed_device_manager_launch_path(device_manager, env: dict[str, str] | None = None) -> str:
+    path = resolve_launcher_exe_path(env=env)
     if path and getattr(device_manager, "config", None) is not None:
         if device_manager.config.get("pc_full_path") != path:
             device_manager.config["pc_full_path"] = path

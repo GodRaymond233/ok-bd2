@@ -3,7 +3,9 @@ import os
 from src.game_path import (
     get_configured_game_path,
     get_configured_install_dir,
+    get_configured_launcher_path,
     get_game_exe_config_value,
+    get_launcher_exe_config_value,
 )
 
 
@@ -19,20 +21,14 @@ def _ensure_system32_in_path() -> None:
         os.environ["PATH"] = path_value + (os.pathsep if path_value else "") + system32
 
 
-def _exe_from_env(name: str, default: str) -> str | list[str]:
-    value = os.environ.get(name, default).strip()
-    if "," not in value:
-        return value
-    return [part.strip() for part in value.split(",") if part.strip()]
-
-
 _ensure_system32_in_path()
 
 GAME_NAME = "BD2"
 GAME_INSTALL_DIR = get_configured_install_dir()
 GAME_EXE = get_game_exe_config_value()
 GAME_PATH = get_configured_game_path()
-LAUNCHER_EXE = _exe_from_env("OK_BD2_LAUNCHER_EXE", "BrownDust2Launcher.exe")
+LAUNCHER_EXE = get_launcher_exe_config_value()
+LAUNCHER_PATH = get_configured_launcher_path()
 HWND_CLASS = os.environ.get("OK_BD2_HWND_CLASS", "UnityWndClass")
 LAUNCHER_HWND_CLASS = os.environ.get("OK_BD2_LAUNCHER_HWND_CLASS", "")
 

@@ -38,6 +38,7 @@ from src.tasks.PVPTask import (
     PVP_MEDALS_TEMPLATE,
     PVP_NO_FIND_TEMPLATES,
     PVP_RANK_PAGE_AFTER_CLICK_SECONDS,
+    PVP_RESULT_CLOSE_AFTER_SECONDS,
     PVP_RESULT_CLOSE_SCREEN_POINT,
     PVP_RESULT_SCREEN_ROI,
     PVP_SEASON_REWARD_AFTER_CLICK_SECONDS,
@@ -1191,7 +1192,10 @@ class PVPTaskHelperTest(unittest.TestCase):
 
         self.assertTrue(PVPTask._wait_result_and_leave(task, 4))
         self.assertEqual([1.0], sleeps)
-        self.assertEqual([(*PVP_RESULT_CLOSE_SCREEN_POINT, 0.0)], screen_clicks)
+        self.assertEqual(
+            [(*PVP_RESULT_CLOSE_SCREEN_POINT, PVP_RESULT_CLOSE_AFTER_SECONDS)],
+            screen_clicks,
+        )
         self.assertEqual(4, calls["min_matches"])
         self.assertEqual(5 * 60, calls["timeout"])
         self.assertEqual("PVP 结算", calls["name"])
@@ -1548,6 +1552,53 @@ class PVPTaskHelperTest(unittest.TestCase):
 
         self.assertFalse(PVPTask._ensure_pvp_hub_after_leave(task))
 
+    def test_ensure_pvp_hub_after_leave_retries_visible_leave_once(self):
+        task = object.__new__(PVPTask)
+        task.config = {}
+        task.info_set = lambda *_args, **_kwargs: None
+        waits = []
+        states = iter(
+            (
+                ("leave", "成功页:离开", (1728.0, 1008.0)),
+                ("hub", "", None),
+            )
+        )
+        task._wait_for_pvp_hub_or_confirm = lambda timeout: (
+            waits.append(timeout) or next(states)
+        )
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task.capture_frame = lambda: frame
+        clicks = []
+        task._click_frame_point = lambda seen_frame, point, after_sleep=0.0: clicks.append(
+            (seen_frame, point, after_sleep)
+        )
+
+        self.assertTrue(PVPTask._ensure_pvp_hub_after_leave(task))
+        self.assertEqual([10.0, 10.0], waits)
+        self.assertEqual(1, len(clicks))
+        self.assertIs(frame, clicks[0][0])
+        self.assertEqual(((1728.0, 1008.0), 2.0), clicks[0][1:])
+
+    def test_ensure_pvp_hub_after_leave_never_retries_leave_twice(self):
+        task = object.__new__(PVPTask)
+        task.config = {}
+        task.info_set = lambda *_args, **_kwargs: None
+        states = iter(
+            (
+                ("leave", "成功页:离开", (1728.0, 1008.0)),
+                ("leave", "成功页:离开", (1728.0, 1008.0)),
+            )
+        )
+        task._wait_for_pvp_hub_or_confirm = lambda timeout: next(states)
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        clicks = []
+        task._click_frame_point = lambda _frame, point, after_sleep=0.0: clicks.append(
+            (point, after_sleep)
+        )
+
+        self.assertFalse(PVPTask._ensure_pvp_hub_after_leave(task))
+        self.assertEqual([((1728.0, 1008.0), 2.0)], clicks)
+
     def test_wait_for_pvp_hub_or_confirm_detects_full_frame_confirm_center(self):
         task = object.__new__(PVPTask)
         task.config = {}
@@ -1601,6 +1652,27 @@ class PVPTaskHelperTest(unittest.TestCase):
 
         self.assertEqual(
             ("hub", "", None),
+            PVPTask._wait_for_pvp_hub_or_confirm(task, timeout=1.0),
+        )
+
+    def test_wait_for_pvp_hub_or_confirm_detects_still_visible_leave(self):
+        task = object.__new__(PVPTask)
+        task.config = {}
+        task.info_set = lambda *_args, **_kwargs: None
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task._match = lambda _frame, _spec: SimpleNamespace(score=0.1)
+        task._passes = lambda _result, _spec: False
+
+        def fake_ocr(_frame, name, roi=None):
+            if name == "pvp_leave_success":
+                return [SimpleNamespace(name="离开", x=70, y=15, width=100, height=30)]
+            return []
+
+        task._ocr_boxes = fake_ocr
+        task.sleep = lambda *_args, **_kwargs: self.fail("leave should be immediate")
+
+        self.assertEqual(
+            ("leave", "失败页:- | 成功页:离开", (1714.0, 1017.0)),
             PVPTask._wait_for_pvp_hub_or_confirm(task, timeout=1.0),
         )
 

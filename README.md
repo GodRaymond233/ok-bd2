@@ -112,11 +112,17 @@ PyAppify 发布 tag 只标识更新交付批次，详情见
 如果游戏安装路径或窗口信息与默认配置不同，可以在启动前设置环境变量：
 
 ```powershell
+$env:OK_BD2_LAUNCHER_PATH = "C:\Path\To\Browndust2Starter.exe"
+$env:OK_BD2_LAUNCHER_EXE = "Browndust2Starter.exe"
 $env:OK_BD2_GAME_PATH = "D:\Path\To\BrownDust II.exe"
 $env:OK_BD2_GAME_EXE = "BrownDust II.exe"
 $env:OK_BD2_HWND_CLASS = "UnityWndClass"
 python main_debug.py
 ```
+
+自动启动时程序会启动 Neowiz 的 `Browndust2Starter.exe`，再等待游戏窗口出现。
+启动器路径会依次从显式环境变量、运行中的启动器、`PROGRAMDATA` 下的标准目录和
+Windows 卸载注册表中查找，不依赖某一台电脑的固定盘符。
 
 ## 使用前检查
 
@@ -172,6 +178,11 @@ python main_debug.py
 
 确认游戏已经启动，并检查 `OK_BD2_GAME_PATH`、`OK_BD2_GAME_EXE`、
 `OK_BD2_HWND_CLASS` 是否符合你的本机环境。
+
+**程序无法自动启动游戏怎么办？**
+
+检查 Neowiz Starter 是否已经安装；非标准安装位置可通过
+`OK_BD2_LAUNCHER_PATH` 指定完整的 `Browndust2Starter.exe` 路径。
 
 **识别结果不稳定怎么办？**
 
