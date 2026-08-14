@@ -1,0 +1,45 @@
+from __future__ import annotations
+
+import importlib
+import ntpath
+from functools import wraps
+
+from src.game_path import DEFAULT_LAUNCHER_EXE
+
+BROWNDUST2_LAUNCH_URI = "browndust2:games/10000001?usn=0"
+_PATCH_MARKER = "_ok_bd2_starter_uri_enabled"
+
+
+def starter_launch_arguments(game_cmd: object, arguments: str | None = None) -> str | None:
+    """Add the URI used by the official Brown Dust 2 desktop shortcut."""
+    command_path = str(game_cmd or "").strip().strip('"')
+    if ntpath.basename(command_path).lower() != DEFAULT_LAUNCHER_EXE.lower():
+        return arguments
+
+    launch_uri = f'"{BROWNDUST2_LAUNCH_URI}"'
+    return f"{launch_uri} {arguments}" if arguments else launch_uri
+
+
+def enable_starter_launch_uri() -> None:
+    """Teach ok-script 1.0.190 to pass the required URI to the Neowiz Starter."""
+    start_controller = importlib.import_module("ok.gui.StartController")
+    current_execute = start_controller.execute
+    if getattr(current_execute, _PATCH_MARKER, False):
+        return
+
+    start_controller.execute = wrap_starter_execute(current_execute)
+
+
+def wrap_starter_execute(current_execute):
+    """Wrap ok-script's execute function without changing non-Starter launches."""
+
+    @wraps(current_execute)
+    def execute_with_starter_uri(game_cmd, arguments=None, start_method="start"):
+        return current_execute(
+            game_cmd,
+            arguments=starter_launch_arguments(game_cmd, arguments),
+            start_method=start_method,
+        )
+
+    setattr(execute_with_starter_uri, _PATCH_MARKER, True)
+    return execute_with_starter_uri
