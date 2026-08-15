@@ -1,6 +1,7 @@
+import os
 import re
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from src.compat.starter_launch import (
     BROWNDUST2_LAUNCH_URI,
@@ -27,6 +28,22 @@ class LauncherUpdateConfigTest(unittest.TestCase):
                 "--future-option",
             ),
         )
+
+    def test_starter_launch_accepts_configured_executable_names(self):
+        with patch.dict(
+            os.environ,
+            {
+                "OK_BD2_LAUNCHER_EXE": (
+                    "PrimaryStarter.exe, FallbackStarter.exe"
+                )
+            },
+        ):
+            for executable_name in ("PrimaryStarter.exe", "FallbackStarter.exe"):
+                with self.subTest(executable_name=executable_name):
+                    self.assertEqual(
+                        f'"{BROWNDUST2_LAUNCH_URI}"',
+                        starter_launch_arguments(rf"D:\Launchers\{executable_name}"),
+                    )
 
     def test_non_starter_launch_arguments_are_unchanged(self):
         self.assertEqual(
