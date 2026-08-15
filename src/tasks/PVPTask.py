@@ -18,6 +18,7 @@ from src.utils.cartridge_quick_switch import (
     BATTLE_GAMEPLAY_CATEGORY_LABEL,
     BATTLE_GAMEPLAY_CATEGORY_OCR_ROI,
     BATTLE_GAMEPLAY_CATEGORY_POINT,
+    FIXED_CARTRIDGE_SLOT_PRE_CLICK_DELAY_SECONDS,
     GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO,
     RECENT_CATEGORY_LABEL,
     STORY_CATEGORY_LABEL,
@@ -55,6 +56,9 @@ PVP_RESULT_BASE_MINUTES = 20.0
 PVP_RESULT_CLOSE_AFTER_SECONDS = 1.5
 PVP_SEASON_REWARD_AFTER_CLICK_SECONDS = 3.0
 PVP_RANK_PAGE_AFTER_CLICK_SECONDS = 2.0
+# A real promotion flow shows the confirm text while the page is still fading
+# in. Waiting for a fresh frame avoids clicking a stale/transient OCR result.
+PVP_RANK_CONFIRM_SETTLE_SECONDS = 1.5
 PVP_HUB_SPECIAL_PAGE_GRACE_SECONDS = 2.0
 QUICK_SWITCH_PAGE_PATTERNS = (
     RECENT_CATEGORY_LABEL,
@@ -97,6 +101,7 @@ class PVPTask(BaseBD2Task):
         "PVP 离开点击",
         "PVP 升降级确认 OCR",
         "PVP 升降级确认",
+        "PVP 升降级确认稳定",
         "PVP 返回主页",
         "PVP AP不足 OCR",
         "匹配错误",
@@ -199,7 +204,7 @@ class PVPTask(BaseBD2Task):
             start_state = self._start_auto_battle(current_multiplier)
             if start_state == "ap_depleted":
                 self.info_set("状态", "免费 AP 已耗尽。")
-                self.log_info("镜中之战：免费 AP 已耗尽，流程结束。", notify=True)
+                self.log_completion("镜中之战：免费 AP 已耗尽，流程结束。")
                 return True
             if start_state == "ap_shortage":
                 if current_multiplier != 1:
@@ -208,6 +213,7 @@ class PVPTask(BaseBD2Task):
                     self.info_set("目标倍率", current_multiplier)
                     continue
                 self.info_set("状态", "1 倍仍 AP 不足。")
+                self.log_completion("镜中之战：1 倍 AP 仍不足，流程结束。")
                 return True
             if start_state != "started":
                 self.info_set("状态", "未能开始战斗。")
@@ -218,11 +224,11 @@ class PVPTask(BaseBD2Task):
                 return False
 
             self.info_set("状态", "镜中之战完成并返回主页。")
-            self.log_info("镜中之战：自动战斗完成并返回主页。", notify=True)
+            self.log_completion("镜中之战：自动战斗完成并返回主页。")
             return True
 
         self.info_set("状态", "达到最多战斗轮次。")
-        self.log_info(f"镜中之战：达到最多战斗轮次 {max_rounds}，停止。")
+        self.log_completion(f"镜中之战：达到最多战斗轮次 {max_rounds}，停止。")
         return True
 
     def _ensure_pvp_hub(self) -> bool:
@@ -261,6 +267,7 @@ class PVPTask(BaseBD2Task):
             return False
 
         self.info_set("当前阶段", "选择 PVP 卡带1号位")
+        self.sleep(FIXED_CARTRIDGE_SLOT_PRE_CLICK_DELAY_SECONDS)
         self.operate_click(*PVP_CARTRIDGE_SLOT_POINT, after_sleep=0.0)
 
         if self._wait_for_pvp_hub_after_cart(
@@ -766,6 +773,36 @@ class PVPTask(BaseBD2Task):
                 self.info_set("PVP 返回主页", "离开重试后仍停留在结算页")
                 return False
 
+            if state == "confirm":
+                self.sleep(PVP_RANK_CONFIRM_SETTLE_SECONDS)
+                frame = self.capture_frame()
+                settled_text, settled_point = self._confirm_button_ocr(frame)
+                text = settled_text or text
+                self.info_set(
+                    "PVP 升降级确认稳定",
+                    (
+                        f"{PVP_RANK_CONFIRM_SETTLE_SECONDS:.1f}秒后新帧"
+                        + ("识别到确认"
+                           if settled_point is not None
+                           else "未再识别到确认")
+                    ),
+                )
+                if settled_point is None:
+                    self.info_set("PVP 升降级确认", "确认可能是动画瞬态，继续等待")
+                    continue
+                point = settled_point
+
+                self.info_set(
+                    "PVP 升降级确认",
+                    f"稳定新帧OCR中心=({point[0]:.0f},{point[1]:.0f})",
+                )
+                self._click_frame_point(frame, point, after_sleep=1.0)
+                return self._wait_for_template(
+                    PVP_MEDALS_TEMPLATE,
+                    timeout=timeout,
+                    name="PVP 箱庭",
+                )
+
             break
 
         self.info_set("PVP 升降级确认 OCR", text or "-")
@@ -806,16 +843,8 @@ class PVPTask(BaseBD2Task):
                 self.info_set("PVP 返回主页", "已回到 PVP 箱庭")
                 return "hub", last_text, None
 
-            boxes = self._ocr_boxes(frame, "PVP 升降级确认")
-            text = " ".join(
-                str(getattr(box, "name", ""))
-                for box in boxes
-                if getattr(box, "name", "")
-            )
+            text, point = self._confirm_button_ocr(frame)
             last_text = text or last_text
-            self.info_set("PVP 升降级确认 OCR", text or "-")
-            confirm_box = self._find_first_ocr_box(boxes, ("确认", "确定"))
-            point = self._ocr_box_center(confirm_box) if confirm_box is not None else None
             if point is not None:
                 return "confirm", text, point
 
@@ -837,6 +866,21 @@ class PVPTask(BaseBD2Task):
         if last_leave_point is not None:
             return "leave", last_leave_text, last_leave_point
         return "timeout", last_text, None
+
+    def _confirm_button_ocr(
+        self,
+        frame,
+    ) -> tuple[str, tuple[float, float] | None]:
+        boxes = self._ocr_boxes(frame, "PVP 升降级确认")
+        text = " ".join(
+            str(getattr(box, "name", ""))
+            for box in boxes
+            if getattr(box, "name", "")
+        )
+        self.info_set("PVP 升降级确认 OCR", text or "-")
+        confirm_box = self._find_first_ocr_box(boxes, ("确认", "确定"))
+        point = self._ocr_box_center(confirm_box) if confirm_box is not None else None
+        return text, point
 
     def _return_home_from_pvp_hub(self) -> bool:
         self.info_set("当前阶段", "返回主页")

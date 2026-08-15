@@ -52,6 +52,8 @@ LIFE_GAMEPLAY_CATEGORY_HIGHLIGHT_REGION = (
 LIFE_GAMEPLAY_CATEGORY_OCR_ROI = (1025, 840, 204, 75)
 
 GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO = 0.05
+# Only fixed slot selections wait here; recognition-derived center clicks do not.
+FIXED_CARTRIDGE_SLOT_PRE_CLICK_DELAY_SECONDS = 0.8
 
 
 def category_highlight_ratio(

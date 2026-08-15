@@ -166,6 +166,7 @@ class MapAutomationTaskBase(BaseBD2Task):
             self.info_set("状态", f"{self.task_log_name}部分流程未完成。")
             return False
         self.info_set("状态", f"{self.task_log_name}完成。")
+        self.log_completion(f"{self.task_log_name}：所有已开启流程完成。")
         return True
 
     def _save_diagnostic(self, name: str) -> None:

@@ -7,6 +7,7 @@ from src.utils.cartridge_quick_switch import (
     BATTLE_GAMEPLAY_CATEGORY_HIGHLIGHT_REGION,
     BATTLE_GAMEPLAY_CATEGORY_LABEL,
     BATTLE_GAMEPLAY_CATEGORY_POINT,
+    FIXED_CARTRIDGE_SLOT_PRE_CLICK_DELAY_SECONDS,
     GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO,
     LIFE_GAMEPLAY_CATEGORY_HIGHLIGHT_REGION,
     LIFE_GAMEPLAY_CATEGORY_LABEL,
@@ -21,6 +22,9 @@ FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "quick_switch"
 
 
 class CartridgeQuickSwitchLayoutTest(unittest.TestCase):
+    def test_fixed_slot_pre_click_delay_is_800_ms(self):
+        self.assertEqual(0.8, FIXED_CARTRIDGE_SLOT_PRE_CLICK_DELAY_SECONDS)
+
     def test_new_page_labels_and_category_points_follow_left_to_right_layout(self):
         self.assertEqual(
             (

@@ -89,7 +89,7 @@ class _BD2InputProbeTask(BaseBD2Task):
             info_label=self.input_test_label,
         )
         self.info_set(self.input_test_label, str(output_path))
-        self.log_info(f"BD2 输入测试完成：{output_path}", notify=True)
+        self.log_completion(f"BD2 输入测试完成：{output_path}")
         return True
 
     def _diagnostic_lines(self) -> list[str]:

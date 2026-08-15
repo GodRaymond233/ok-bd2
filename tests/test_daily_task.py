@@ -174,6 +174,23 @@ class DailyTaskHelperTest(unittest.TestCase):
         self.assertEqual(["rice"], calls)
         self.assertIsNone(task._quick_hunt_test_action)
 
+    def test_quick_hunt_success_emits_standalone_completion_notification(self):
+        task = object.__new__(QuickHuntTask)
+        task._quick_hunt_test_action = None
+        task.config = {"启用": True}
+        task.info_set = lambda *_args, **_kwargs: None
+        notifications = []
+        task.log_info = lambda message, notify=False: notifications.append(
+            (message, notify)
+        )
+        task.run_quick_hunt = lambda: True
+
+        self.assertTrue(QuickHuntTask.run(task))
+        self.assertEqual(
+            [("快速狩猎：流程完成并返回主页。", True)],
+            notifications,
+        )
+
     def test_quick_hunt_entry_inspection_does_not_click(self):
         task = object.__new__(QuickHuntTask)
         task.config = {

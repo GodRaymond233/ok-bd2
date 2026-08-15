@@ -17,6 +17,31 @@ free_gacha_module = importlib.import_module("src.tasks.FreeGachaTask")
 
 
 class FreeGachaTaskHelperTest(unittest.TestCase):
+    def test_successful_run_emits_standalone_completion_notification(self):
+        task = object.__new__(FreeGachaTask)
+        task.config = {"启用": True}
+        task.info_set = lambda *_args, **_kwargs: None
+        notifications = []
+        task.log_info = lambda message, notify=False: notifications.append(
+            (message, notify)
+        )
+        task._click_reference = lambda *_args, **_kwargs: None
+        task._wait_loading_or_gacha_page = lambda *_args, **_kwargs: (
+            "target",
+            True,
+            "抽抽乐",
+        )
+        task._wait_for_gacha_page = lambda *_args, **_kwargs: True
+        task._run_free_section = lambda *_args, **_kwargs: True
+        task._sleep_after_recognition = lambda: None
+        task._wait_loading_or_home_confirmation = lambda *_args, **_kwargs: True
+
+        self.assertTrue(FreeGachaTask.run(task))
+        self.assertEqual(
+            [("白嫖抽抽乐：流程完成。", True)],
+            notifications,
+        )
+
     def test_keyword_match_count_ignores_spaces_and_case(self):
         text = "So PERFECT！ 简直是无可挑剔的 masterpiece…！"
 

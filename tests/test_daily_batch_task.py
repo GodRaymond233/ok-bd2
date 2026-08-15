@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from src.config import config
 from src.tasks.DailyBatchTask import DailyBatchChild, DailyBatchTask
 from src.tasks.MapCollectionTask import MapCollectionTask
+from src.tasks.task_notifications import log_task_completion
 
 
 class _ChildTask:
@@ -132,6 +133,45 @@ class DailyBatchTaskTest(unittest.TestCase):
 
         self.assertFalse(DailyBatchTask.run(task))
         self.assertEqual([("failed", True)], calls)
+
+    def test_child_completion_is_silent_and_batch_emits_one_overview(self):
+        class NotifyingChild:
+            pass
+
+        notifications = []
+        child = _ChildTask("child", [])
+        child.log_info = lambda message, notify=False: notifications.append(
+            ("child", message, notify)
+        )
+
+        def run_child():
+            log_task_completion(child, "子任务完成。")
+            return True
+
+        child.run = run_child
+        specs = (DailyBatchChild("子任务", NotifyingChild),)
+        task, _resets = self.make_task(
+            {NotifyingChild: child},
+            specs,
+            {"启用": True, "子任务": True},
+        )
+        task.log_info = lambda message, notify=False: notifications.append(
+            ("batch", message, notify)
+        )
+
+        self.assertTrue(DailyBatchTask.run(task))
+        self.assertEqual(
+            [
+                ("batch", "一键完成日常：开始 子任务。", False),
+                ("child", "子任务完成。", False),
+                ("batch", "一键完成日常：子任务 完成。", False),
+                ("batch", "一键完成日常完成：已执行 1 项，跳过 0 项。", True),
+            ],
+            notifications,
+        )
+        self.assertFalse(
+            hasattr(child, "_completion_notification_suppression_depth")
+        )
 
 
 if __name__ == "__main__":

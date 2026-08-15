@@ -1832,6 +1832,34 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
         self.assertFalse(task._run_phases(navigator, phases))
         self.assertEqual(["buy", "home"], actions)
 
+    def test_successful_phases_emit_standalone_completion_notification(self):
+        actions = []
+        notifications = []
+        task = object.__new__(MapTradeTask)
+        task.config = {"买": True, "卖": False}
+        task.task_log_name = "跑商"
+        task.info_set = lambda *_args: None
+        task.log_info = lambda message, notify=False: notifications.append(
+            (message, notify)
+        )
+        task.log_warning = lambda *_args: None
+        task.log_error = lambda *_args: None
+        task._save_diagnostic = lambda *_args: None
+        navigator = SimpleNamespace(
+            return_home=lambda: (
+                actions.append("home")
+                or NavigationResult(True, ScreenState.HOME)
+            )
+        )
+        phases = (
+            ("买", "买", lambda: actions.append("buy") or True),
+            ("卖", "卖", lambda: actions.append("sell") or True),
+        )
+
+        self.assertTrue(task._run_phases(navigator, phases))
+        self.assertEqual(["buy", "home"], actions)
+        self.assertEqual(("跑商：所有已开启流程完成。", True), notifications[-1])
+
     def test_return_home_exception_keeps_the_original_phase_failure(self):
         actions = []
         statuses = {}

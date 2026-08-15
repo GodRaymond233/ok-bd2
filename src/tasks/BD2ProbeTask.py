@@ -49,5 +49,5 @@ class BD2ProbeTask(BaseBD2Task):
             lines.append(f"{box.name}\t{box.confidence:.3f}\t{box}")
 
         output_path = self.write_probe_text("bd2_probe_ocr_latest.txt", lines)
-        self.log_info(f"BD2 截图 OCR 探针完成：{output_path}", notify=True)
+        self.log_completion(f"BD2 截图 OCR 探针完成：{output_path}")
         return True

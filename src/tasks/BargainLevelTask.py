@@ -116,7 +116,7 @@ class BargainLevelTask(BaseBD2Task):
             if can_upgrade:
                 self.info_set("状态", "已可以升星。")
                 self.info_set("结果", "已可以升星")
-                self.log_info("刷砍价等级：检测到“升星”，已可以升星。", notify=True)
+                self.log_completion("刷砍价等级：检测到“升星”，已可以升星。")
                 return True
 
     def _run_cycle(self) -> bool:
