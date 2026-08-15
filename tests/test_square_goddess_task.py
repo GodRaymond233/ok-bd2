@@ -22,6 +22,7 @@ from src.tasks.SquareGoddessTask import (
     SquareGoddessTask,
 )
 from src.utils.cartridge_quick_switch import (
+    FIXED_CARTRIDGE_SLOT_PRE_CLICK_DELAY_SECONDS,
     GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO,
     LIFE_GAMEPLAY_CATEGORY_HIGHLIGHT_REGION,
     LIFE_GAMEPLAY_CATEGORY_LABEL,
@@ -97,7 +98,10 @@ class SquareGoddessEntryTest(unittest.TestCase):
 
         self.assertTrue(SquareGoddessTask._enter_square_from_home(task))
         self.assertEqual(["home", ("quick", QUICK_SWITCH_TEMPLATE), "page"], stages[:3])
-        self.assertEqual([0.5], sleeps)
+        self.assertEqual(
+            [0.5, FIXED_CARTRIDGE_SLOT_PRE_CLICK_DELAY_SECONDS],
+            sleeps,
+        )
         self.assertEqual(
             [
                 (*LIFE_GAMEPLAY_CATEGORY_POINT, 0.0),
@@ -351,7 +355,10 @@ class SquareGoddessEntryTest(unittest.TestCase):
         task = object.__new__(SquareGoddessTask)
         task.config = {"启用": True}
         task.info_set = lambda *_args, **_kwargs: None
-        task.log_info = lambda *_args, **_kwargs: None
+        notifications = []
+        task.log_info = lambda message, notify=False: notifications.append(
+            (message, notify)
+        )
         stages = []
         task._enter_square_from_home = lambda: stages.append("enter") or True
         task._pray_at_goddess = lambda: stages.append("pray") or True
@@ -359,6 +366,13 @@ class SquareGoddessEntryTest(unittest.TestCase):
 
         self.assertTrue(SquareGoddessTask.run(task))
         self.assertEqual(["enter", "pray", "home"], stages)
+        self.assertEqual(
+            [
+                ("广场女神像：开始从主页进入梦幻广场。", False),
+                ("广场女神像：许愿完成并返回主页。", True),
+            ],
+            notifications,
+        )
 
     def test_square_return_home_uses_relative_home_point_and_restores_timeout(self):
         task = object.__new__(SquareGoddessTask)

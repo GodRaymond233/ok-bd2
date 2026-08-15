@@ -145,4 +145,6 @@ class QuickHuntTask(
         self.info_set("状态", "快速狩猎启动。")
         success = self.run_quick_hunt()
         self.info_set("状态", "快速狩猎完成。" if success else "快速狩猎失败。")
+        if success:
+            self.log_completion("快速狩猎：流程完成并返回主页。")
         return success

@@ -12,6 +12,10 @@ from src.tasks.MapTradeTask import MapTradeTask
 from src.tasks.PVPTask import PVPTask
 from src.tasks.QuickHuntTask import QuickHuntTask
 from src.tasks.SquareGoddessTask import SquareGoddessTask
+from src.tasks.task_notifications import (
+    log_task_completion,
+    suppress_task_completion_notifications,
+)
 
 
 @dataclass(frozen=True)
@@ -116,15 +120,16 @@ class DailyBatchTask(BaseTask):
                 # its own top-level 启用 gate transparent to the batch runner.
                 task.config = ChainMap({"启用": True}, original_config or {})
                 task.info_clear()
-                if bool(task.run()):
-                    completed.append(child.config_key)
-                    self.log_info(f"一键完成日常：{child.config_key} 完成。")
-                else:
-                    failed.append(child.config_key)
-                    stop_remaining = True
-                    self.log_warning(
-                        f"一键完成日常：{child.config_key} 失败，停止后续子任务。"
-                    )
+                with suppress_task_completion_notifications(task):
+                    if bool(task.run()):
+                        completed.append(child.config_key)
+                        self.log_info(f"一键完成日常：{child.config_key} 完成。")
+                    else:
+                        failed.append(child.config_key)
+                        stop_remaining = True
+                        self.log_warning(
+                            f"一键完成日常：{child.config_key} 失败，停止后续子任务。"
+                        )
             except Exception as exc:
                 failed.append(child.config_key)
                 stop_remaining = True
@@ -145,5 +150,8 @@ class DailyBatchTask(BaseTask):
             return False
 
         self.info_set("状态", "一键完成日常完成。")
-        self.log_info("一键完成日常：所有已开启子任务执行完成。", notify=True)
+        log_task_completion(
+            self,
+            f"一键完成日常完成：已执行 {len(completed)} 项，跳过 {len(skipped)} 项。",
+        )
         return True

@@ -118,7 +118,7 @@ class FreeGachaTask(BaseBD2Task):
             return False
 
         self.info_set("状态", "白嫖抽抽乐完成。")
-        self.log_info("白嫖抽抽乐：流程完成。", notify=True)
+        self.log_completion("白嫖抽抽乐：流程完成。")
         return True
 
     def _run_free_section(

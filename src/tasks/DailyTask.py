@@ -218,9 +218,8 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
         self.info_set("失败", str(failed))
         self.info_set("跳过", str(skipped))
         self.info_set("状态", "公会、小屋、酒馆结束。")
-        self.log_info(
-            f"公会、小屋、酒馆结束：完成={success}, 失败={failed}, 跳过={skipped}",
-            notify=True,
+        self.log_completion(
+            f"公会、小屋、酒馆结束：完成={success}, 失败={failed}, 跳过={skipped}"
         )
         return not failed
 

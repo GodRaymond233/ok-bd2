@@ -37,6 +37,7 @@ from src.tasks.PVPTask import (
     PVP_LOC_RESET_TEMPLATE,
     PVP_MEDALS_TEMPLATE,
     PVP_NO_FIND_TEMPLATES,
+    PVP_RANK_CONFIRM_SETTLE_SECONDS,
     PVP_RANK_PAGE_AFTER_CLICK_SECONDS,
     PVP_RESULT_CLOSE_AFTER_SECONDS,
     PVP_RESULT_CLOSE_SCREEN_POINT,
@@ -57,6 +58,7 @@ from src.utils.cartridge_quick_switch import (
     BATTLE_GAMEPLAY_CATEGORY_LABEL,
     BATTLE_GAMEPLAY_CATEGORY_OCR_ROI,
     BATTLE_GAMEPLAY_CATEGORY_POINT,
+    FIXED_CARTRIDGE_SLOT_PRE_CLICK_DELAY_SECONDS,
     GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO,
 )
 from src.utils.image_utils import candidate_scales
@@ -983,7 +985,10 @@ class PVPTaskHelperTest(unittest.TestCase):
         task.config = {}
 
         self.assertTrue(PVPTask._enter_pvp_from_home(task))
-        self.assertEqual([0.5], sleeps)
+        self.assertEqual(
+            [0.5, FIXED_CARTRIDGE_SLOT_PRE_CLICK_DELAY_SECONDS],
+            sleeps,
+        )
         self.assertEqual(
             [
                 (*BATTLE_GAMEPLAY_CATEGORY_POINT, 0.0),
@@ -1145,7 +1150,10 @@ class PVPTaskHelperTest(unittest.TestCase):
         task = object.__new__(PVPTask)
         task.config = {"启用": True, "竞技场战斗倍数": 10, "最多战斗轮次": 3}
         task.info_set = lambda *_args, **_kwargs: None
-        task.log_info = lambda *_args, **_kwargs: None
+        notifications = []
+        task.log_info = lambda message, notify=False: notifications.append(
+            (message, notify)
+        )
         task._ensure_pvp_hub = lambda: True
         task.sleep = lambda *_args, **_kwargs: None
         starts = []
@@ -1161,6 +1169,10 @@ class PVPTaskHelperTest(unittest.TestCase):
 
         self.assertTrue(PVPTask.run(task))
         self.assertEqual([10, 1], starts)
+        self.assertEqual(
+            ("镜中之战：免费 AP 已耗尽，流程结束。", True),
+            notifications[-1],
+        )
 
     def test_wait_result_uses_dynamic_timeout_and_majority_roi(self):
         task = object.__new__(PVPTask)
@@ -1509,6 +1521,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         task.config = {}
         task.info_set = lambda *_args, **_kwargs: None
         clicks = []
+        sleeps = []
         waits = []
 
         task._wait_for_pvp_hub_or_confirm = lambda **_kwargs: (
@@ -1518,6 +1531,11 @@ class PVPTaskHelperTest(unittest.TestCase):
         )
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         task.capture_frame = lambda: frame
+        task.sleep = sleeps.append
+        task._confirm_button_ocr = lambda _frame: (
+            "恭喜晋级 确认",
+            (970.0, 1040.0),
+        )
         task._click_frame_point = lambda seen_frame, point, after_sleep=0.0: clicks.append(
             (seen_frame, point, after_sleep)
         )
@@ -1529,9 +1547,37 @@ class PVPTaskHelperTest(unittest.TestCase):
         task._wait_for_template = fake_wait_for_template
 
         self.assertTrue(PVPTask._ensure_pvp_hub_after_leave(task))
+        self.assertEqual([PVP_RANK_CONFIRM_SETTLE_SECONDS], sleeps)
         self.assertIs(frame, clicks[0][0])
-        self.assertEqual(((960.0, 1030.0), 1.0), clicks[0][1:])
+        self.assertEqual(((970.0, 1040.0), 1.0), clicks[0][1:])
         self.assertEqual([(PVP_MEDALS_TEMPLATE, 10.0, "PVP 箱庭")], waits)
+
+    def test_ensure_pvp_hub_after_leave_rechecks_confirm_after_settle_delay(self):
+        task = object.__new__(PVPTask)
+        task.config = {}
+        task.info_set = lambda *_args, **_kwargs: None
+        states = iter(
+            (
+                ("confirm", "恭喜晋级 确认", (960.0, 1030.0)),
+                ("hub", "", None),
+            )
+        )
+        task._wait_for_pvp_hub_or_confirm = lambda **_kwargs: next(states)
+        sleeps = []
+        task.sleep = sleeps.append
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        confirm_results = iter(
+            (
+                ("恭喜晋级", None),
+            )
+        )
+        task._confirm_button_ocr = lambda _frame: next(confirm_results)
+        task._click_frame_point = lambda *_args, **_kwargs: self.fail(
+            "transient confirm must not be clicked"
+        )
+
+        self.assertTrue(PVPTask._ensure_pvp_hub_after_leave(task))
+        self.assertEqual([PVP_RANK_CONFIRM_SETTLE_SECONDS], sleeps)
 
     def test_ensure_pvp_hub_after_leave_timeout_does_not_blind_click(self):
         task = object.__new__(PVPTask)

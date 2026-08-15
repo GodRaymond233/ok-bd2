@@ -675,7 +675,7 @@ class BD2MapCollectionProbeTask(MapAutomationTaskBase):
             f"完成{sum(value['status'] == 'completed' for value in results)}/{len(cards)}。",
         )
         if success:
-            self.log_info(f"剧情卡带完成度与地图读取测试完成：{markdown_report}", notify=True)
+            self.log_completion(f"剧情卡带完成度与地图读取测试完成：{markdown_report}")
         else:
             failed = next(
                 (value for value in results if value["status"] != "completed"),

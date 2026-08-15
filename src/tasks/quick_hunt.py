@@ -370,7 +370,7 @@ class QuickHuntFeatureMixin:
 
             result = "通过" if success else "失败"
             self._status_set("快速狩猎测试状态", f"{label}：{result}；{detail}")
-            self.log_info(f"快速狩猎测试结束：{label}，{result}，{detail}", notify=True)
+            self.log_completion(f"快速狩猎测试结束：{label}，{result}，{detail}")
             return success
         except Exception as exc:
             self._status_set("快速狩猎测试状态", f"{label}：异常")

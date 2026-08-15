@@ -13,6 +13,7 @@ from src.utils.calibration import FHD_1080, HD_720, QHD_1440
 from src.utils.cartridge_quick_switch import (
     CHARACTER_CATEGORY_LABEL,
     EVENT_CATEGORY_LABEL,
+    FIXED_CARTRIDGE_SLOT_PRE_CLICK_DELAY_SECONDS,
     GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO,
     LIFE_GAMEPLAY_CATEGORY_HIGHLIGHT_REGION,
     LIFE_GAMEPLAY_CATEGORY_LABEL,
@@ -183,6 +184,7 @@ class SquareGoddessTask(BaseBD2Task):
             self.info_set("状态", "女神像许愿完成，但未能返回主页。")
             return False
         self.info_set("状态", "女神像许愿完成并返回主页。")
+        self.log_completion("广场女神像：许愿完成并返回主页。")
         return True
 
     def _return_home_from_square(self) -> bool:
@@ -228,6 +230,7 @@ class SquareGoddessTask(BaseBD2Task):
             return False
 
         self.info_set("当前阶段", "选择广场卡带2号位")
+        self.sleep(FIXED_CARTRIDGE_SLOT_PRE_CLICK_DELAY_SECONDS)
         self.operate_click(*SQUARE_CARTRIDGE_SLOT_POINT, after_sleep=0.0)
 
         if self._wait_for_template(

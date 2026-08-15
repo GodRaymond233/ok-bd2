@@ -14,6 +14,7 @@ from PIL import Image
 
 from src.scene.BD2Scene import BD2Scene
 from src.scene.ScreenPosition import ScreenPosition
+from src.tasks.task_notifications import log_task_completion
 from src.utils.home_confirmation import (
     HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT,
     home_temporary_announcement_detected,
@@ -87,6 +88,11 @@ class BaseBD2Task(BaseTask):
                 "识别成功后等待秒数": "识别成功后，执行下一步点击或切换操作前等待多久。",
             }
         )
+
+    def log_completion(self, message: str) -> None:
+        """Publish a completion popup unless this task is running as a batch child."""
+
+        log_task_completion(self, message)
 
     @property
     def thread_pool_executor(self) -> ThreadPoolExecutor | None:
