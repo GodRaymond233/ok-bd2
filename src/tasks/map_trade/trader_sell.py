@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from time import monotonic
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -31,7 +32,9 @@ from src.tasks.map_trade.trader_constants import (  # noqa: F401
     CALENDAR_DIR,
     COOK_SUBMENU_TEMPLATE,
     PROJECT_ROOT,
-    SALE_120_PERCENT_PATTERN,
+    SALE_120_PERCENT_MARKER_MAX_RESULTS,
+    SALE_120_PERCENT_MARKER_PEAK_RADIUS,
+    SALE_120_PERCENT_MARKER_TEMPLATE,
     SALE_AVAILABLE_PATTERN,
     SALE_CLOSE_POINT,
     SALE_COMPLETION_INTERVAL,
@@ -42,6 +45,7 @@ from src.tasks.map_trade.trader_constants import (  # noqa: F401
     SALE_DIALOG_TIMEOUT,
     SALE_DIALOG_TITLE_REGION,
     SALE_FULL_PAGE_OCR_TARGET_HEIGHT,
+    SALE_FULL_PAGE_OCR_TARGET_HEIGHTS,
     SALE_ITEM_NAME_LEFT_OFFSET_X,
     SALE_MAX_POINT,
     SALE_MIN_POINT,
@@ -261,13 +265,19 @@ class SellFlowMixin:
         while True:
             located = self._wait_sale_item_candidates(entry)
             if located is None:
-                if sold_count:
+                if sold_count and getattr(self, "_last_sale_unavailable", False):
                     self._last_sale_unavailable = False
                     self._last_sale_reason = ""
                     self.task.log_info(
                         f"卖：{entry.item}当前商店页已无剩余可出售组，共出售{sold_count}组。"
                     )
                     return True
+                if sold_count:
+                    self.task.log_warning(
+                        f"卖：{entry.item}出售后仍可见商品名但120%标志未确认"
+                        f"（{getattr(self, '_last_sale_reason', '') or '未知原因'}），"
+                        "不能判定当前页已售完。"
+                    )
                 return False
 
             candidates, frame = located
@@ -380,107 +390,168 @@ class SellFlowMixin:
         self.task.log_warning(f"卖：{entry.item}全画面多目标定位失败：{last_reason}")
         return None
 
+    @staticmethod
+    def _sale_name_matches(
+        normalized: str,
+        normalized_names: tuple[str, ...],
+    ) -> bool:
+        if not normalized:
+            return False
+        return any(
+            name and (name in normalized or normalized in name)
+            for name in normalized_names
+        )
+
+    def _sale_template_percent_boxes(self, frame: np.ndarray) -> list[object]:
+        """Return real rendered ↑120% markers from the shared template matcher."""
+
+        matches = self.vision.match_all(
+            frame,
+            SALE_120_PERCENT_MARKER_TEMPLATE,
+            minimum_score=self.vision.threshold_for(SALE_120_PERCENT_MARKER_TEMPLATE),
+            peak_radius=SALE_120_PERCENT_MARKER_PEAK_RADIUS,
+            max_results=SALE_120_PERCENT_MARKER_MAX_RESULTS,
+        )
+        boxes = [
+            SimpleNamespace(
+                name="↑120%",
+                confidence=result.score,
+                x=result.position[0],
+                y=result.position[1],
+                width=result.size[0],
+                height=result.size[1],
+            )
+            for result in matches
+        ]
+        self._status(
+            "出售120%模板",
+            f"命中{len(boxes)}个："
+            + "、".join(
+                f"({box.x + box.width // 2},{box.y + box.height // 2})"
+                for box in boxes
+            ),
+        )
+        return boxes
+
     def _locate_sale_items(
         self,
         entry: CalendarEntry,
         frame: np.ndarray,
     ) -> list[SaleItemCandidate]:
-        """Return every OCR-confirmed sale card for one calendar entry.
+        """Return sale cards confirmed by OCR names and marker templates.
 
-        The left-side 120% marker is paired one-to-one with the closest
-        matching item name.  This keeps one marker from validating multiple
-        OCR names when the page contains several identical sale cards.
+        OCR is used only to find candidate item names.  The left-side ↑120%
+        marker must come from the real rendered template and is paired
+        one-to-one with that name.  This avoids treating a corrupted numeric
+        OCR string such as ``4120%`` as a premium marker.
         """
 
         _height, width = frame.shape[:2]
         names = (entry.item, *entry.aliases, *ITEM_ALIASES.get(entry.item, ()))
         normalized_names = tuple(self._normal(value) for value in names if value)
-        name_boxes: list[object] = []
-        percent_boxes: list[object] = []
-        for box in self.vision.ocr_boxes(
-            frame,
-            "出售商品列表",
-            target_height=SALE_FULL_PAGE_OCR_TARGET_HEIGHT,
-        ):
-            text = str(getattr(box, "name", ""))
-            normalized = self._normal(text)
-            if SALE_120_PERCENT_PATTERN.search(normalized):
-                percent_boxes.append(box)
-            if any(
-                name and (name in normalized or normalized in name)
-                for name in normalized_names
-            ):
-                name_boxes.append(box)
-        if not name_boxes:
-            self._last_sale_unavailable = True
-            self._last_sale_reason = "全画面OCR未识别到商品名"
-            return []
-        if not percent_boxes:
-            self._last_sale_unavailable = True
-            self._last_sale_reason = "全画面OCR未识别到120%"
-            return []
-        name_boxes = self._deduplicate_ocr_boxes(name_boxes)
-        percent_boxes = self._deduplicate_ocr_boxes(percent_boxes)
-        if not name_boxes:
-            self._last_sale_unavailable = True
-            self._last_sale_reason = "全画面OCR商品名框几何无效"
-            return []
-        if not percent_boxes:
-            self._last_sale_unavailable = True
-            self._last_sale_reason = "全画面OCR 120%框几何无效"
-            return []
-        offset_x = round(SALE_ITEM_NAME_LEFT_OFFSET_X * width / 1920)
-        ordered_names = sorted(
-            name_boxes,
-            key=lambda box: (
-                self._ocr_box_center(box) or (10**9, 10**9)
-            )[1:],
+        # The deduplicator is geometry-only; template boxes expose the same
+        # x/y/width/height fields as OCR boxes.
+        percent_boxes = self._deduplicate_ocr_boxes(
+            self._sale_template_percent_boxes(frame)
         )
-        possible_matches: dict[int, list[int]] = {}
-        percent_to_names: dict[int, list[int]] = {}
-        for name_index, name_box in enumerate(ordered_names):
-            center = self._ocr_box_center(name_box)
-            if center is None:
-                continue
-            probe = (center[0] - offset_x, center[1])
-            matches = [
-                index
-                for index, percent_box in enumerate(percent_boxes)
-                if self._ocr_box_contains(percent_box, probe)
-            ]
-            possible_matches[name_index] = matches
-            for percent_index in matches:
-                percent_to_names.setdefault(percent_index, []).append(name_index)
+        if not percent_boxes:
+            self._last_sale_unavailable = False
+            self._last_sale_reason = "↑120%模板未命中"
+            return []
+        saw_item_name = False
+        saw_ocr_output = False
+        last_reason = ""
+        for target_height in SALE_FULL_PAGE_OCR_TARGET_HEIGHTS:
+            name_boxes: list[object] = []
+            ocr_boxes = self.vision.ocr_boxes(
+                frame,
+                "出售商品列表",
+                target_height=target_height,
+            )
+            saw_ocr_output = saw_ocr_output or bool(ocr_boxes)
+            for box in ocr_boxes:
+                text = str(getattr(box, "name", ""))
+                normalized = self._normal(text)
+                if self._sale_name_matches(normalized, normalized_names):
+                    name_boxes.append(box)
 
-        candidates: list[SaleItemCandidate] = []
-        for name_index, name_box in enumerate(ordered_names):
-            center = self._ocr_box_center(name_box)
-            if center is None:
+            if not name_boxes:
+                if not saw_item_name:
+                    last_reason = "全画面OCR未识别到商品名"
                 continue
-            matches = possible_matches.get(name_index, [])
-            if len(matches) == 1 and len(percent_to_names[matches[0]]) == 1:
-                percent_box = percent_boxes[matches[0]]
-                candidates.append(
-                    SaleItemCandidate(
-                        center=center,
-                        name_box=name_box,
-                        percent_box=percent_box,
+            saw_item_name = True
+
+            name_boxes = self._deduplicate_ocr_boxes(name_boxes)
+            if not name_boxes:
+                last_reason = "全画面OCR商品名框几何无效"
+                continue
+
+            offset_x = round(SALE_ITEM_NAME_LEFT_OFFSET_X * width / 1920)
+            ordered_names = sorted(
+                name_boxes,
+                key=lambda box: (
+                    self._ocr_box_center(box) or (10**9, 10**9)
+                )[1:],
+            )
+            possible_matches: dict[int, list[int]] = {}
+            percent_to_names: dict[int, list[int]] = {}
+            for name_index, name_box in enumerate(ordered_names):
+                center = self._ocr_box_center(name_box)
+                if center is None:
+                    continue
+                probe = (center[0] - offset_x, center[1])
+                matches = [
+                    index
+                    for index, percent_box in enumerate(percent_boxes)
+                    if self._ocr_box_contains(percent_box, probe)
+                ]
+                possible_matches[name_index] = matches
+                for percent_index in matches:
+                    percent_to_names.setdefault(percent_index, []).append(name_index)
+
+            candidates: list[SaleItemCandidate] = []
+            for name_index, name_box in enumerate(ordered_names):
+                center = self._ocr_box_center(name_box)
+                if center is None:
+                    continue
+                matches = possible_matches.get(name_index, [])
+                if len(matches) == 1 and len(percent_to_names[matches[0]]) == 1:
+                    percent_box = percent_boxes[matches[0]]
+                    candidates.append(
+                        SaleItemCandidate(
+                            center=center,
+                            name_box=name_box,
+                            percent_box=percent_box,
+                        )
                     )
-                )
 
-        if not candidates:
-            self._last_sale_unavailable = True
-            self._last_sale_reason = "商品名左侧115参考像素未落在120%框内"
-            return []
-        self._last_sale_unavailable = False
-        self._last_sale_reason = ""
-        candidates.sort(key=lambda candidate: (candidate.center[1], candidate.center[0]))
-        self._status(
-            "出售商品定位",
-            f"{entry.item}候选{len(candidates)}组："
-            + "、".join(str(candidate.center) for candidate in candidates),
-        )
-        return candidates
+            if candidates:
+                self._last_sale_unavailable = False
+                self._last_sale_reason = ""
+                candidates.sort(
+                    key=lambda candidate: (candidate.center[1], candidate.center[0])
+                )
+                self._status(
+                    "出售商品定位",
+                    f"{entry.item}候选{len(candidates)}组："
+                    + "、".join(str(candidate.center) for candidate in candidates),
+                )
+                return candidates
+            last_reason = (
+                "商品名左侧参考像素未落在↑120%模板框内"
+            )
+
+        if not saw_ocr_output:
+            self._last_sale_unavailable = False
+            self._last_sale_reason = "全画面OCR未返回任何文本"
+        else:
+            # Remaining markers can belong to other sale cards. Treat this
+            # entry as unavailable only after every name-OCR height fails;
+            # a template miss has already returned above and can never be
+            # converted into a sold-out result by the caller.
+            self._last_sale_unavailable = not saw_item_name
+            self._last_sale_reason = last_reason or "全画面OCR未形成可用商品候选"
+        return []
 
     def _sale_name_signature(
         self,
@@ -505,10 +576,7 @@ class SellFlowMixin:
         ):
             text = str(getattr(box, "name", ""))
             normalized = self._normal(text)
-            if not any(
-                name and (name in normalized or normalized in name)
-                for name in normalized_names
-            ):
+            if not self._sale_name_matches(normalized, normalized_names):
                 continue
             matching_boxes.append(box)
         for box in self._deduplicate_ocr_boxes(matching_boxes):
@@ -671,10 +739,7 @@ class SellFlowMixin:
                 relative_roi=SALE_DIALOG_TITLE_REGION,
             )
             normalized = self._normal(text)
-            if any(
-                name and (name in normalized or normalized in name)
-                for name in normalized_names
-            ):
+            if self._sale_name_matches(normalized, normalized_names):
                 return True
             if monotonic() >= end_at:
                 return False
@@ -805,4 +870,3 @@ class SellFlowMixin:
         if any(value is None for value in values):
             return None
         return tuple(float(value) for value in values)
-

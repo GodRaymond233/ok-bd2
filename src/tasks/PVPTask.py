@@ -46,7 +46,10 @@ PVP_RESULT_SCREEN_ROI = (932, 368, 699, 704)
 PVP_RESULT_CLOSE_SCREEN_POINT = (1585, 410)
 PVP_FAILURE_LEAVE_REFERENCE_ROI = (696, 952, 535, 87)
 PVP_SUCCESS_LEAVE_REFERENCE_ROI = (1594, 987, 240, 66)
-PVP_BACK_HOME_REFERENCE_POINT = (100, 54)
+# The PVP hub uses the same top-right sandbox home entry as the validated
+# chapter-sandbox calibration.  The old (100, 54) point hovered the applied-
+# effects status icon instead of leaving the hub.
+PVP_BACK_HOME_REFERENCE_POINT = (1797, 63)
 PVP_HUB_NOTICE_SCREEN_ROI = (1381, 865, 62, 45)
 PVP_CARTRIDGE_SLOT_POINT = (152 / REFERENCE_WIDTH, 970 / REFERENCE_HEIGHT)
 PVP_AUTO_BATTLE_SCREEN_ROI = (1470, 910, 170, 150)
@@ -896,11 +899,40 @@ class PVPTask(BaseBD2Task):
             )
 
         self.info_set("PVP 返回主页", "已确认 PVP 箱庭")
+        home_timeout = max(
+            0.0,
+            float(self.config.get("PVP 返回主页等待秒数", 20.0)),
+        )
         self._click_reference(*PVP_BACK_HOME_REFERENCE_POINT, after_sleep=2.0)
         self._wait_loading_if_present("PVP 返回主页")
-        home_ok = self._wait_for_home(
-            timeout=float(self.config.get("PVP 返回主页等待秒数", 20.0))
-        )
+        home_deadline = monotonic() + home_timeout
+        home_ok = self._wait_for_home(timeout=home_timeout / 2.0)
+        if not home_ok:
+            remaining = home_deadline - monotonic()
+            if remaining > 0.0:
+                second_home_timeout = min(
+                    remaining,
+                    max(0.0, home_timeout - home_timeout / 2.0),
+                )
+                frame = self.capture_frame()
+                hub = self._match(frame, PVP_MEDALS_TEMPLATE)
+                self.info_set("PVP 箱庭", f"{hub.score:.3f}")
+                if self._passes(hub, PVP_MEDALS_TEMPLATE):
+                    self.info_set("PVP 返回主页", "首次点击后仍在PVP箱庭，重试一次")
+                    self._click_reference(
+                        *PVP_BACK_HOME_REFERENCE_POINT,
+                        after_sleep=2.0,
+                    )
+                    self._wait_loading_if_present("PVP 返回主页")
+                    second_home_timeout = min(
+                        second_home_timeout,
+                        home_deadline - monotonic(),
+                    )
+                    home_ok = self._wait_for_home(timeout=second_home_timeout)
+                else:
+                    self.info_set("PVP 返回主页", "未确认主页且未确认仍处PVP箱庭")
+                    home_ok = self._wait_for_home(timeout=second_home_timeout)
+
         self.info_set("PVP 返回主页", "通过" if home_ok else "失败")
         return home_ok
 
