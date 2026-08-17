@@ -1,5 +1,7 @@
+import gc
 import os
 import unittest
+import weakref
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -9,10 +11,10 @@ from ok.gui.tasks.LabelAndSwitchButton import LabelAndSwitchButton
 from ok.gui.tasks.LabelAndTextEdit import LabelAndTextEdit
 from ok.gui.tasks.LabelAndWidget import LabelAndWidget
 from ok.gui.tasks.TaskCard import TaskCard
-from PySide6.QtCore import QRect, Qt
+from PySide6.QtCore import SIGNAL, QCoreApplication, QEvent, QRect, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QPushButton
-from qfluentwidgets import FluentIcon
+from qfluentwidgets import FluentIcon, qconfig
 
 from src.ui.responsive_task_config import ResponsiveFlowWidget, install_responsive_task_config_ui
 
@@ -277,6 +279,48 @@ class ResponsiveTaskConfigUiTest(unittest.TestCase):
         self.app.processEvents()
         self.assertFalse(card.isExpand)
         card.close()
+
+
+
+    def test_task_card_badge_and_category_styling_are_applied(self):
+        stub = _TaskCardStub()
+        stub.group_name = "日常/周常"
+        card = TaskCard(stub, onetime=False)
+        self.assertTrue(getattr(card, "_bd2_badge_installed", False))
+        self.assertIsNotNone(getattr(card, "badge_label", None))
+        self.assertEqual("日常", card.badge_label.text())
+        self.assertIn("QLabel#bd2CategoryBadge", card.badge_label.styleSheet())
+        card.close()
+
+    def test_default_task_card_badge_without_group(self):
+        card = TaskCard(_TaskCardStub(), onetime=False)
+        self.assertEqual("任务", card.badge_label.text())
+        card.close()
+
+    def test_batch_daily_task_card_has_special_badge(self):
+        stub = _TaskCardStub()
+        stub.name = "一键完成日常"
+        stub.group_name = "日常/周常"
+        card = TaskCard(stub, onetime=False)
+        self.assertEqual("日常合辑", card.badge_label.text())
+        card.close()
+
+    def test_theme_callback_does_not_retain_destroyed_task_card(self):
+        theme_signal = SIGNAL("themeChanged(PyObject)")
+        receivers_before = qconfig.receivers(theme_signal)
+        card = TaskCard(_TaskCardStub(), onetime=False)
+        card_ref = weakref.ref(card)
+        self.assertEqual(receivers_before + 1, qconfig.receivers(theme_signal))
+        card.deleteLater()
+        del card
+
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        self.app.processEvents()
+        gc.collect()
+
+        self.assertIsNone(card_ref())
+        self.assertEqual(receivers_before, qconfig.receivers(theme_signal))
+        qconfig.themeChanged.emit(qconfig.theme)
 
 
 if __name__ == "__main__":

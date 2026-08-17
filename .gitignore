@@ -6,6 +6,7 @@ pyappify_dist/
 pyappify-*.log
 pyappify-*.pid
 vs-buildtools-install.*
+/config/
 configs/
 screenshots/
 logs/
