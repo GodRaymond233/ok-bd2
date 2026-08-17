@@ -84,13 +84,29 @@ SELL_MODE_POINT = (173 / 1920, 250 / 1080)
 SHOP_MODE_TIMEOUT = 4.0
 SHOP_MODE_INTERVAL = 0.25
 SHOP_MODE_SWITCH_MAX_CLICKS = 3
-# 卖：在对应卡带页全画面 OCR 定位商品名与 120% 溢价，不再依赖排序后首格固定位置。
+# 卖：在对应卡带页用 OCR 定位商品名，用真实模板定位 ↑120% 标志。
 # 商品名识别框中心向左偏移量（1920×1080 参考像素，运行时按客户区宽度同比缩放）。
 SALE_ITEM_NAME_LEFT_OFFSET_X = 115
-# 全帧 OCR 目标高度：1920×1080 实测 720 缩放下 ↑120% 会被误读成 41209，
-# 原生 1080 也误读为 4120%；900 可稳定读出 120%。
+# 全帧 OCR 目标高度：仅用于商品名识别重试。↑120% 标志本身不再依赖 OCR。
 SALE_FULL_PAGE_OCR_TARGET_HEIGHT = 900
-SALE_120_PERCENT_PATTERN = re.compile(r"120\s*%")
+# 售出一组后的短暂重排/动画仍可能让 900 高度漏读商品名；
+# 保持 900 优先，并在同一帧追加相邻 OCR 高度。
+SALE_FULL_PAGE_OCR_TARGET_HEIGHTS = (900, 840, 960)
+# Deprecated compatibility re-export for older modules.  Sale location must
+# use SALE_120_PERCENT_MARKER_TEMPLATE instead of OCR for ↑120%.
+SALE_120_PERCENT_PATTERN = re.compile(r"(?<!\d)120\s*%")
+# 模板来自真实出售页 1920×1080 ROI (493,563,52,14)。720p 下采样时，
+# 不同 marker 的亚像素相位会让单一缩放漏检；相邻缩放可覆盖三个真实标志。
+SALE_120_PERCENT_MARKER_TEMPLATE = TemplateSpec(
+    "sale_120_percent_marker",
+    "shop/sale_120_percent_marker.png",
+    0.88,
+    scale_ratios=(0.95, 0.99, 1.0, 1.005, 1.05),
+    min_pixel_score=0.93,
+    minimum_safe_threshold=0.88,
+)
+SALE_120_PERCENT_MARKER_MAX_RESULTS = 40
+SALE_120_PERCENT_MARKER_PEAK_RADIUS = 5
 SALE_DIALOG_REGION = (
     470 / 1920,
     294 / 1080,
@@ -111,8 +127,8 @@ SALE_SLIDER_REGION = (
 SALE_DIALOG_TITLE_REGION = (
     495 / 1920,
     310 / 1080,
-    300 / 1920,
-    80 / 1080,
+    795 / 1920,
+    390 / 1080,
 )
 SALE_DIALOG_TIMEOUT = 5.0
 SALE_OCR_INTERVAL = 0.25
@@ -179,4 +195,3 @@ def split_items(value: str | list[str] | tuple[str, ...]) -> tuple[str, ...]:
     else:
         values = value
     return tuple(str(item).strip() for item in values if str(item).strip())
-

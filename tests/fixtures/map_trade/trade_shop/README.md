@@ -12,5 +12,11 @@ desktop, notification, and Codex UI regions are excluded.
 | `after_purchase.png` | 43.0s | Accepted after the sold-out labels appear. |
 | `sell_page.png` | 61.5s | Rejected after switching to the sell page. |
 
+`sale_120_markers_fhd.png` is a privacy-minimized 2026-08-16 live sell-page
+frame. Only three exact `52x14` rendered `↑120%` marker ROIs at
+`(493,563)`, `(825,563)`, and `(1157,563)` are retained; every other pixel is
+black. It regression-tests the real marker rendering without retaining the
+shop page, account information, or surrounding game state.
+
 The source recording was supplied by the repository owner for diagnosing and
 regression-testing this automation flow.

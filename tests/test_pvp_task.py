@@ -17,6 +17,7 @@ from src.tasks.BaseBD2Task import (
 )
 from src.tasks.BaseBD2Task import TEMPLATE_DIR as RECENT_CARTRIDGE_TEMPLATE_DIR
 from src.tasks.BD2MapCollectionProbeTask import BD2MapCollectionProbeTask
+from src.tasks.map_trade.navigator_constants import CHAPTER_HOME_POINT
 from src.tasks.MapCollectionTask import MapCollectionTask
 from src.tasks.MapTradeTask import MapTradeTask
 from src.tasks.PVPTask import (
@@ -1428,7 +1429,88 @@ class PVPTaskHelperTest(unittest.TestCase):
         self.assertEqual([(PVP_MEDALS_TEMPLATE, 10.0, "PVP 箱庭")], wait_calls)
         self.assertEqual([(*PVP_BACK_HOME_REFERENCE_POINT, 2.0)], clicks)
         self.assertEqual(["PVP 返回主页"], loading_calls)
-        self.assertEqual([20.0], home_calls)
+        self.assertEqual([10.0], home_calls)
+
+    def test_return_home_from_pvp_hub_retries_once_when_hub_remains(self):
+        task = object.__new__(PVPTask)
+        task.config = {}
+        task.info_set = lambda *_args, **_kwargs: None
+        clicks = []
+        loading_calls = []
+        home_calls = []
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+
+        task._wait_for_template = lambda *_args, **_kwargs: True
+        task._click_reference = lambda x, y, after_sleep=0.0: clicks.append(
+            (x, y, after_sleep)
+        )
+        task._wait_loading_if_present = lambda name: loading_calls.append(name)
+        task._wait_for_home = lambda timeout: home_calls.append(timeout) or (
+            len(home_calls) == 2
+        )
+        task.capture_frame = lambda: frame
+        task._match = lambda _frame, _spec: SimpleNamespace(score=0.9)
+        task._passes = lambda _result, _spec: True
+
+        self.assertTrue(PVPTask._return_home_from_pvp_hub(task))
+        self.assertEqual(
+            [(*PVP_BACK_HOME_REFERENCE_POINT, 2.0)] * 2,
+            clicks,
+        )
+        self.assertEqual(["PVP 返回主页"] * 2, loading_calls)
+        self.assertEqual(10.0, home_calls[0])
+        self.assertAlmostEqual(10.0, home_calls[1], places=5)
+
+    def test_return_home_without_hub_signal_uses_remaining_time_without_second_click(self):
+        task = object.__new__(PVPTask)
+        task.config = {}
+        task.info_set = lambda *_args, **_kwargs: None
+        clicks = []
+        home_calls = []
+
+        task._wait_for_template = lambda *_args, **_kwargs: True
+        task._click_reference = lambda x, y, after_sleep=0.0: clicks.append(
+            (x, y, after_sleep)
+        )
+        task._wait_loading_if_present = lambda _name: None
+        task._wait_for_home = lambda timeout: home_calls.append(timeout) or (
+            len(home_calls) == 2
+        )
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task._match = lambda _frame, _spec: SimpleNamespace(score=0.1)
+        task._passes = lambda _result, _spec: False
+
+        self.assertTrue(PVPTask._return_home_from_pvp_hub(task))
+        self.assertEqual([(*PVP_BACK_HOME_REFERENCE_POINT, 2.0)], clicks)
+        self.assertEqual(10.0, home_calls[0])
+        self.assertAlmostEqual(10.0, home_calls[1], places=5)
+
+    def test_return_home_reference_uses_validated_sandbox_home_point(self):
+        self.assertEqual((1797, 63), PVP_BACK_HOME_REFERENCE_POINT)
+        self.assertEqual((1920, 1080), (REFERENCE_WIDTH, REFERENCE_HEIGHT))
+        self.assertEqual(
+            CHAPTER_HOME_POINT,
+            (
+                PVP_BACK_HOME_REFERENCE_POINT[0] / REFERENCE_WIDTH,
+                PVP_BACK_HOME_REFERENCE_POINT[1] / REFERENCE_HEIGHT,
+            ),
+        )
+
+        task = object.__new__(PVPTask)
+        clicks = {}
+
+        def fake_operate_click(x, y, after_sleep=0):
+            clicks["x"] = x
+            clicks["y"] = y
+            clicks["after_sleep"] = after_sleep
+
+        task.operate_click = fake_operate_click
+        task._click_reference(*PVP_BACK_HOME_REFERENCE_POINT, after_sleep=2.0)
+
+        self.assertEqual(
+            (*CHAPTER_HOME_POINT, 2.0),
+            (clicks["x"], clicks["y"], clicks["after_sleep"]),
+        )
 
     def test_click_leave_button_checks_both_regions_and_clicks_failure_target(self):
         task = object.__new__(PVPTask)
