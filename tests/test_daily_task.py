@@ -76,7 +76,9 @@ class DailyTaskHelperTest(unittest.TestCase):
         self.assertNotIn("执行公会签到", task.default_config)
         self.assertNotIn("执行快速狩猎", task.default_config)
         self.assertNotIn("快速狩猎圣石属性", task.default_config)
+        self.assertTrue(task.default_config["启用"])
         self.assertIn("快速狩猎 OCR 阈值", task.default_config)
+        self.assertNotIn("快速狩猎章节图", task.default_config)
 
         test_keys = (
             "快速狩猎入口测试",
@@ -85,6 +87,17 @@ class DailyTaskHelperTest(unittest.TestCase):
             "快速狩猎完整测试",
         )
         visible_keys = task.config_type["启用"]["sub_configs"][True]
+        for key in (
+            "识别成功后等待秒数",
+            "快速狩猎冒险航线",
+            "快速狩猎狩猎场",
+            "快速狩猎圣石洞穴",
+            "快速狩猎双倍策略",
+            "快速狩猎资源倾向",
+            "快速狩猎米饭分配",
+        ):
+            self.assertIn(key, visible_keys)
+        self.assertNotIn("快速狩猎章节图", visible_keys)
         for key in test_keys:
             with self.subTest(key=key):
                 self.assertIn(key, visible_keys)
@@ -142,6 +155,31 @@ class DailyTaskHelperTest(unittest.TestCase):
         )
         self.assertEqual(0.88, hydrated_config["主页亮度比例阈值"])
         self.assertEqual(27.0, hydrated_config["主页确认等待秒数"])
+
+    def test_quick_hunt_legacy_config_restores_branches_and_drops_chapter(self):
+        task = object.__new__(QuickHuntTask)
+        task.default_config = {}
+        task.config_description = {}
+        task.config_type = {}
+        with patch("src.tasks.DailyTask.BaseBD2Task.__init__", return_value=None):
+            QuickHuntTask.__init__(task)
+
+        hydrated_config = Config.__new__(Config)
+        hydrated_config.validator = None
+        modified = hydrated_config.verify_config(
+            {
+                "识别成功后等待秒数": 1.0,
+                "快速狩猎章节图": "低练度·章节1",
+            },
+            task.default_config,
+        )
+
+        self.assertTrue(modified)
+        self.assertTrue(hydrated_config["启用"])
+        self.assertTrue(hydrated_config["快速狩猎狩猎场"])
+        self.assertTrue(hydrated_config["快速狩猎冒险航线"])
+        self.assertTrue(hydrated_config["快速狩猎圣石洞穴"])
+        self.assertNotIn("快速狩猎章节图", hydrated_config)
 
     def test_quick_hunt_button_queues_selected_test_action(self):
         task = object.__new__(QuickHuntTask)
@@ -230,7 +268,6 @@ class DailyTaskHelperTest(unittest.TestCase):
         task.config = {
             "快速狩猎模板阈值": 0.78,
             "快速狩猎像素相似度阈值": 0.72,
-            "快速狩猎章节图": "低练度·章节1",
         }
         task.capture_frame = lambda: np.zeros((720, 1280, 3), dtype=np.uint8)
         statuses = {}
@@ -264,7 +301,7 @@ class DailyTaskHelperTest(unittest.TestCase):
         task._quick_vision = lambda: FakeVision()
 
         self.assertTrue(task._quick_hunt_inspect_menu())
-        self.assertEqual(11, len(ocr_calls))
+        self.assertEqual(10, len(ocr_calls))
         self.assertEqual("测试-菜单标题", statuses["快速狩猎菜单 OCR"])
         self.assertIn("通过", statuses["快速狩猎收起模板"])
         self.assertIn("金币=非双倍", statuses["快速狩猎双倍识别"])
@@ -809,62 +846,6 @@ class DailyTaskHelperTest(unittest.TestCase):
 
         self.assertEqual("opened", task._quick_hunt_open_menu())
 
-    def test_quick_hunt_map_scan_scrolls_down_at_most_six_times_and_clicks_ocr_center(self):
-        task = object.__new__(QuickHuntTask)
-        task.config = {"快速狩猎章节图": "矿石·章节7"}
-        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        task.info_set = lambda *_args, **_kwargs: None
-        task.log_info = lambda *_args, **_kwargs: None
-        scrolls = []
-        task._quick_hunt_scroll_map_once = lambda: scrolls.append("down")
-        target = SimpleNamespace(
-            name="蜥蜴人祭坛",
-            x=400,
-            y=300,
-            width=100,
-            height=50,
-        )
-
-        class FakeVision:
-            def __init__(self):
-                self.calls = 0
-                self.clicks = []
-
-            def ocr_boxes(self, _frame, _name, relative_roi=None):
-                self.calls += 1
-                self.relative_roi = relative_roi
-                return [target] if self.calls == 3 else []
-
-            def click_client(self, point, _shape, after_sleep=0.0):
-                self.clicks.append((point, after_sleep))
-
-        vision = FakeVision()
-        task._quick_vision = lambda: vision
-
-        self.assertTrue(task._quick_hunt_select_hunting_ground())
-        self.assertEqual(["down", "down"], scrolls)
-        self.assertEqual(QUICK_HUNT_MAP_SCAN_ROI, vision.relative_roi)
-        self.assertEqual([((450, 325), 0.8)], vision.clicks)
-
-    def test_quick_hunt_map_scan_stops_after_exactly_six_downward_scrolls(self):
-        task = object.__new__(QuickHuntTask)
-        task.config = {"快速狩猎章节图": "木材·章节9"}
-        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        task.info_set = lambda *_args, **_kwargs: None
-        task.log_info = lambda *_args, **_kwargs: None
-        scrolls = []
-        task._quick_hunt_scroll_map_once = lambda: scrolls.append("down")
-
-        class FakeVision:
-            def ocr_boxes(self, _frame, _name, relative_roi=None):
-                self.relative_roi = relative_roi
-                return []
-
-        task._quick_vision = lambda: FakeVision()
-
-        self.assertFalse(task._quick_hunt_select_hunting_ground())
-        self.assertEqual(["down"] * 6, scrolls)
-
     def test_quick_hunt_double_scan_accepts_upper_and_lower_matches_together(self):
         task = object.__new__(QuickHuntTask)
         task.config = {
@@ -957,7 +938,7 @@ class DailyTaskHelperTest(unittest.TestCase):
         self.assertTrue(task._quick_hunt_select_adventure_route())
         self.assertEqual(["金币"], clicks)
 
-    def test_quick_hunt_mf_scheduler_has_no_reset_or_leftover_fallback(self):
+    def test_quick_hunt_scheduler_uses_current_default_hunting_ground(self):
         task = object.__new__(QuickHuntTask)
         task.config = {
             "快速狩猎狩猎场": True,
@@ -968,7 +949,9 @@ class DailyTaskHelperTest(unittest.TestCase):
         task.log_info = lambda *_args, **_kwargs: None
         calls = []
         task._quick_hunt_resource_empty = lambda _resource: False
-        task._quick_hunt_select_hunting_ground = lambda: calls.append("hunt") or True
+        task._quick_hunt_select_hunting_ground = lambda: self.fail(
+            "current default hunting ground must not be changed"
+        )
         task._quick_hunt_select_adventure_route = (
             lambda: calls.append("adventure-no-double") or False
         )
@@ -979,7 +962,6 @@ class DailyTaskHelperTest(unittest.TestCase):
         self.assertTrue(task._quick_hunt_run_rice_scheduler())
         self.assertEqual(
             [
-                "hunt",
                 ("狩猎场", "MIN"),
                 "adventure-no-double",
             ],
@@ -1029,7 +1011,9 @@ class DailyTaskHelperTest(unittest.TestCase):
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
         task._quick_hunt_resource_empty = lambda _resource: False
-        task._quick_hunt_select_hunting_ground = lambda: True
+        task._quick_hunt_select_hunting_ground = lambda: self.fail(
+            "current default hunting ground must not be changed"
+        )
         calls = []
         task._quick_hunt_execute_current_map = (
             lambda mode, stage: calls.append((stage, mode)) or "done"
@@ -1234,7 +1218,7 @@ class DailyTaskHelperTest(unittest.TestCase):
         self.assertTrue(task.run_quick_hunt())
         self.assertEqual(["open", "rice", "crystal", "home"], calls)
 
-    def test_quick_hunt_rice_failure_still_runs_crystal_before_returning_home(self):
+    def test_quick_hunt_rice_failure_skips_crystal_and_returns_home(self):
         task = object.__new__(QuickHuntTask)
         task.config = {"快速狩猎圣石洞穴": True}
         task.info_set = lambda *_args, **_kwargs: None
@@ -1245,7 +1229,7 @@ class DailyTaskHelperTest(unittest.TestCase):
         task._quick_hunt_return_home = lambda: calls.append("home") or True
 
         self.assertFalse(task.run_quick_hunt())
-        self.assertEqual(["rice-failed", "crystal", "home"], calls)
+        self.assertEqual(["rice-failed", "home"], calls)
 
     def test_quick_hunt_return_home_uses_fixed_point_and_three_signal_confirmation(self):
         task = object.__new__(QuickHuntTask)

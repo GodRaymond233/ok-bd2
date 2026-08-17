@@ -323,6 +323,7 @@ def install_responsive_task_config_ui():
 
     original_label_init = LabelAndWidget.__init__
     original_add_widget = LabelAndWidget.add_widget
+    original_add_layout = LabelAndWidget.add_layout
     original_config_resize_event = ConfigCard.resizeEvent
     original_task_card_init = TaskCard.__init__
 
@@ -346,6 +347,13 @@ def install_responsive_task_config_ui():
         widget_index = self.layout.indexOf(widget)
         if widget_index >= 0:
             self.layout.setStretch(widget_index, 2)
+
+    def responsive_add_layout(self, layout, stretch=1):
+        original_add_layout(self, layout, stretch=stretch)
+        # Button and file-selector rows add a QLayout instead of a QWidget.
+        # Give their text column real width so wrapped descriptions cannot be
+        # measured one character per line and inflate the row by hundreds of pixels.
+        self.layout.setStretch(0, 3)
 
     original_text_edit_init = LabelAndTextEdit.__init__
 
@@ -417,6 +425,7 @@ def install_responsive_task_config_ui():
 
     LabelAndWidget.__init__ = responsive_label_init
     LabelAndWidget.add_widget = responsive_add_widget
+    LabelAndWidget.add_layout = responsive_add_layout
     LabelAndTextEdit.__init__ = responsive_text_edit_init
     LabelAndTextEdit._update_width = responsive_text_edit_width
     ConfigCard._adjustViewSize = responsive_adjust_view_size

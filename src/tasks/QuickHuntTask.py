@@ -60,7 +60,6 @@ class QuickHuntTask(
         "快速狩猎地图 OCR",
         "快速狩猎圣石 OCR",
         "快速狩猎圣石数量",
-        "快速狩猎章节 OCR",
         "快速狩猎收起模板",
         "快速狩猎双倍识别",
         "快速狩猎模板阈值",
@@ -125,12 +124,26 @@ class QuickHuntTask(
             }
         )
 
-        visible_keys = list(QUICK_HUNT_CHILD_CONFIG_KEYS)
+        visible_keys = ["识别成功后等待秒数", *QUICK_HUNT_CHILD_CONFIG_KEYS]
         ocr_index = visible_keys.index("快速狩猎像素相似度阈值") + 1
         visible_keys.insert(ocr_index, "快速狩猎 OCR 阈值")
         visible_keys.extend(("主页亮度比例阈值", "主页确认等待秒数"))
+        self.default_config["启用"] = True
         self.config_description["启用"] = "是否执行独立的快速狩猎任务。"
         self.config_type["启用"] = {"sub_configs": {True: visible_keys}}
+        ordered_keys = ("启用", *visible_keys)
+        self.default_config = {
+            **{
+                key: self.default_config[key]
+                for key in ordered_keys
+                if key in self.default_config
+            },
+            **{
+                key: value
+                for key, value in self.default_config.items()
+                if key not in ordered_keys
+            },
+        }
 
     def run(self):
         test_action = getattr(self, "_quick_hunt_test_action", None)

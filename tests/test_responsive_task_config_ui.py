@@ -2,6 +2,7 @@ import gc
 import os
 import unittest
 import weakref
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -16,6 +17,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QPushButton
 from qfluentwidgets import FluentIcon, qconfig
 
+from src.tasks.QuickHuntTask import QuickHuntTask
 from src.ui.responsive_task_config import ResponsiveFlowWidget, install_responsive_task_config_ui
 
 
@@ -153,6 +155,7 @@ class ResponsiveTaskConfigUiTest(unittest.TestCase):
 
     def test_install_is_idempotent_after_ok_script_1_0_190_import(self):
         original_init = LabelAndWidget.__init__
+        original_add_layout = LabelAndWidget.add_layout
         original_flow = __import__(
             "ok.gui.tasks.LabelAndMultiSelection", fromlist=["FlowLayout"]
         ).FlowLayout
@@ -161,6 +164,7 @@ class ResponsiveTaskConfigUiTest(unittest.TestCase):
         install_responsive_task_config_ui()
 
         self.assertIs(original_init, LabelAndWidget.__init__)
+        self.assertIs(original_add_layout, LabelAndWidget.add_layout)
         self.assertIs(original_flow, ResponsiveFlowWidget)
 
     def test_config_card_visibility_updates_expanded_height(self):
@@ -303,6 +307,58 @@ class ResponsiveTaskConfigUiTest(unittest.TestCase):
         stub.group_name = "日常/周常"
         card = TaskCard(stub, onetime=False)
         self.assertEqual("日常合辑", card.badge_label.text())
+        card.close()
+
+    def test_quick_hunt_task_card_restores_branch_configuration(self):
+        task = object.__new__(QuickHuntTask)
+        task.default_config = {}
+        task.config_description = {}
+        task.config_type = {}
+        with patch("src.tasks.QuickHuntTask.BaseBD2Task.__init__", return_value=None):
+            QuickHuntTask.__init__(task)
+
+        task.config = _ConfigStub(task.default_config)
+        task.is_custom = False
+        task.instructions = ""
+        task._enabled = False
+        task._paused = False
+        task.running = False
+        task.first_run_alert = ""
+        task.show_create_shortcut = False
+
+        card = TaskCard(task, onetime=False)
+        card.resize(2200, card.height())
+        card.show()
+        self.app.processEvents()
+        card.setExpand(True)
+        QTest.qWait(300)
+        self.app.processEvents()
+
+        for key in (
+            "启用",
+            "快速狩猎冒险航线",
+            "快速狩猎狩猎场",
+            "快速狩猎圣石洞穴",
+            "快速狩猎双倍策略",
+            "快速狩猎资源倾向",
+            "快速狩猎米饭分配",
+            "快速狩猎入口测试",
+            "快速狩猎菜单测试",
+            "快速狩猎圣石测试",
+            "快速狩猎完整测试",
+        ):
+            self.assertIn(key, card.config_widget_by_key)
+            self.assertTrue(card.config_widget_by_key[key].isVisibleTo(card))
+        self.assertNotIn("快速狩猎章节图", card.config_widget_by_key)
+        button_keys = (
+            "快速狩猎入口测试",
+            "快速狩猎菜单测试",
+            "快速狩猎圣石测试",
+            "快速狩猎完整测试",
+        )
+        for key in button_keys:
+            self.assertLessEqual(card.config_widget_by_key[key].height(), 96)
+        self.assertLess(card.height(), 1500)
         card.close()
 
     def test_theme_callback_does_not_retain_destroyed_task_card(self):

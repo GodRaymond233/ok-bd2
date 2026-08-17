@@ -24,7 +24,6 @@ QUICK_HUNT_CHILD_CONFIG_KEYS = (
     "快速狩猎双倍策略",
     "快速狩猎资源倾向",
     "快速狩猎米饭分配",
-    "快速狩猎章节图",
     "快速狩猎模板阈值",
     "快速狩猎像素相似度阈值",
     "快速狩猎界面等待秒数",
@@ -98,12 +97,6 @@ QUICK_HUNT_RETURN_POINT = (101, 55)
 
 QUICK_HUNT_STONE_ELEMENTS = ("火", "水", "风", "光", "暗")
 
-QUICK_HUNT_HUNTING_GROUNDS = {
-    "低练度·章节1": re.compile(r"野猪洞穴"),
-    "矿石·章节7": re.compile(r"蜥.?蜴.?人.?祭坛"),
-    "木材·章节9": re.compile(r"守山人休息处"),
-}
-
 QUICK_HUNT_RETURN_MAP_PATTERNS = (
     ("野猪洞穴", re.compile(r"野猪洞穴")),
     ("蜥蜴人祭坛", re.compile(r"蜥.?蜴.?人.?祭坛")),
@@ -144,7 +137,6 @@ class QuickHuntConfigMixin:
         '快速狩猎双倍策略': "优先双倍",
         '快速狩猎资源倾向': "金币",
         '快速狩猎米饭分配': "狩猎场x1 / 双倍图MAX",
-        '快速狩猎章节图': "低练度·章节1",
         '快速狩猎模板阈值': 0.78,
         '快速狩猎像素相似度阈值': 0.72,
         '快速狩猎界面等待秒数': 8.0,
@@ -158,14 +150,13 @@ class QuickHuntConfigMixin:
     quick_hunt_config_description = {
         '执行快速狩猎': "按  路径消耗免费米饭和火把。",
         '快速狩猎冒险航线': "消耗米饭扫荡金币或经验冒险航线。",
-        '快速狩猎狩猎场': "消耗米饭扫荡配置的章节狩猎场。",
+        '快速狩猎狩猎场': "不切换关卡，直接消耗米饭扫荡游戏当前默认狩猎场。",
         '快速狩猎圣石洞穴': "读取五种圣石数量并扫荡当前最少的属性洞穴。",
         '快速狩猎双倍策略': "优先双倍会检测金币和经验并在都双倍时选择金币；"
         "强制双倍优先配置资源；忽视双倍固定选择金币。",
         '快速狩猎资源倾向': "强制双倍策略下优先检查金币或经验。",
         '快速狩猎米饭分配': "狩猎场 MIN 时双倍冒险航线使用 MAX；"
         "狩猎场 MAX 时跳过冒险航线。",
-        '快速狩猎章节图': "选择章节1、章节7或章节9狩猎场。",
         '快速狩猎模板阈值': "快速狩猎模板匹配最低分数。",
         '快速狩猎像素相似度阈值': "快速狩猎模板还必须达到的像素相似度。",
         '快速狩猎界面等待秒数': "等待狩猎菜单、地图和按钮出现的最长时间。",
@@ -190,7 +181,6 @@ class QuickHuntConfigMixin:
                         "快速狩猎双倍策略",
                         "快速狩猎资源倾向",
                         "快速狩猎米饭分配",
-                        "快速狩猎章节图",
                         "快速狩猎模板阈值",
                         "快速狩猎像素相似度阈值",
                         "快速狩猎界面等待秒数",
@@ -213,10 +203,6 @@ class QuickHuntConfigMixin:
             '快速狩猎米饭分配': {
                 "type": "drop_down",
                 "options": ["狩猎场x1 / 双倍图MAX", "狩猎场MAX / 跳过冒险航线"],
-            },
-            '快速狩猎章节图': {
-                "type": "drop_down",
-                "options": ["低练度·章节1", "矿石·章节7", "木材·章节9"],
             },
             '快速狩猎模板阈值': {"min": 0.5, "max": 0.95, "step": 0.01},
             '快速狩猎像素相似度阈值': {
@@ -424,18 +410,6 @@ class QuickHuntFeatureMixin:
             text = vision.ocr_text(frame, name, relative_roi=roi)
             self._status_set(status_key, text or "-")
 
-        chapter = str(self.config.get("快速狩猎章节图", "低练度·章节1"))
-        chapter_entry = QUICK_HUNT_HUNTING_GROUNDS.get(chapter)
-        if chapter_entry is None:
-            self._status_set("快速狩猎章节 OCR", f"缺少映射：{chapter}")
-        else:
-            chapter_text = vision.ocr_text(
-                frame,
-                f"测试-{chapter}",
-                relative_roi=QUICK_HUNT_MAP_SCAN_ROI,
-            )
-            self._status_set("快速狩猎章节 OCR", chapter_text or "-")
-
         collapse = self._quick_spec(QUICK_HUNT_LIST_COLLAPSE_TEMPLATE)
         collapse_match = vision.match(frame, collapse)
         self._status_set(
@@ -459,7 +433,7 @@ class QuickHuntFeatureMixin:
         try:
             rice_ok = self._quick_hunt_run_rice_scheduler()
             success = success and rice_ok
-            if bool(self.config.get("快速狩猎圣石洞穴", True)):
+            if rice_ok and bool(self.config.get("快速狩猎圣石洞穴", True)):
                 crystal_ok = self._quick_hunt_run_crystal_cave()
                 success = success and crystal_ok
         finally:
@@ -586,8 +560,7 @@ class QuickHuntFeatureMixin:
         hunting_mode, adventure_mode = self._quick_hunt_count_modes()
 
         if hunting_enabled:
-            if not self._quick_hunt_select_hunting_ground():
-                return False
+            self.log_info("快速狩猎：狩猎场使用游戏当前默认关卡，不切换章节。")
             result = self._quick_hunt_execute_current_map(hunting_mode, "狩猎场")
             if result == "failed":
                 return False
@@ -670,40 +643,6 @@ class QuickHuntFeatureMixin:
             return False
         self._status_set("快速狩猎火把", "已耗尽" if result == "depleted" else "完成")
         return True
-
-    def _quick_hunt_select_hunting_ground(self) -> bool:
-        chapter = str(self.config.get("快速狩猎章节图", "低练度·章节1"))
-        target_pattern = QUICK_HUNT_HUNTING_GROUNDS.get(chapter)
-        if target_pattern is None:
-            self.log_info(f"快速狩猎：缺少狩猎场映射：{chapter}")
-            return False
-        vision = self._quick_vision()
-        for scroll_index in range(7):
-            frame = self.capture_frame()
-            boxes = vision.ocr_boxes(
-                frame,
-                f"选择狩猎场-{chapter}-滚轮{scroll_index}",
-                relative_roi=QUICK_HUNT_MAP_SCAN_ROI,
-            )
-            recognized = []
-            target_box = None
-            for box in boxes:
-                value = self._normalize_text(getattr(box, "name", ""))
-                for label, pattern in QUICK_HUNT_HUNTING_GROUNDS.items():
-                    if pattern.search(value):
-                        recognized.append(label)
-                if target_pattern.search(value):
-                    target_box = box
-            self._status_set("快速狩猎章节 OCR", "、".join(dict.fromkeys(recognized)) or "-")
-            if target_box is not None:
-                point = self._quick_hunt_box_center(target_box)
-                if point is not None:
-                    vision.click_client(point, frame.shape, after_sleep=0.8)
-                    return True
-            if scroll_index < 6:
-                self._quick_hunt_scroll_map_once()
-        self.log_info(f"快速狩猎：滚轮向下最多6次仍未识别到目标狩猎场：{chapter}")
-        return False
 
     def _quick_hunt_select_adventure_route(self) -> str | None:
         preferred = str(self.config.get("快速狩猎资源倾向", "金币"))
@@ -1114,32 +1053,3 @@ class QuickHuntFeatureMixin:
             max(0.0, min(1.0, y / 720)),
             after_sleep=after_sleep,
         )
-
-    def _quick_hunt_scroll_map_once(self) -> None:
-        frame = self.capture_frame()
-        frame_height, frame_width = frame.shape[:2]
-        left, top, right, bottom = QUICK_HUNT_MAP_SCAN_ROI
-        point = (
-            round(frame_width * (left + right) / 2),
-            round(frame_height * (top + bottom) / 2),
-        )
-        interaction = getattr(self.executor, "interaction", None)
-        if interaction is None or not hasattr(interaction, "scroll"):
-            raise RuntimeError("当前交互对象不支持鼠标滚轮")
-
-        def action():
-            import win32api
-
-            if hasattr(interaction, "force_activate"):
-                interaction.force_activate()
-            elif hasattr(interaction, "try_activate"):
-                interaction.try_activate()
-            capture = getattr(interaction, "capture", None)
-            screen_point = point
-            if capture is not None and hasattr(capture, "get_abs_cords"):
-                screen_point = capture.get_abs_cords(point[0], point[1])
-            win32api.SetCursorPos(screen_point)
-            interaction.scroll(point[0], point[1], -1)
-
-        self.operate(action, block=True, restore_cursor=True)
-        self.sleep(0.35)

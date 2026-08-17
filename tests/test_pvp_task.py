@@ -29,9 +29,9 @@ from src.tasks.PVPTask import (
     HOME_TEMPLATE,
     PVP_AUTO_BATTLE_CLICK_REFERENCE,
     PVP_AUTO_BATTLE_SCREEN_ROI,
-    PVP_BACK_HOME_REFERENCE_POINT,
     PVP_CARTRIDGE_SLOT_POINT,
     PVP_FAILURE_LEAVE_REFERENCE_ROI,
+    PVP_HOME_POINT,
     PVP_HUB_NOTICE_SCREEN_ROI,
     PVP_HUB_NOTICE_TEMPLATE,
     PVP_HUB_SPECIAL_PAGE_GRACE_SECONDS,
@@ -1405,7 +1405,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         self.assertTrue(PVPTask._ensure_pvp_hub(task))
         self.assertEqual([True], cleared)
 
-    def test_return_home_from_pvp_hub_clicks_back_reference_and_checks_home(self):
+    def test_return_home_from_pvp_hub_clicks_top_right_home_and_checks_home(self):
         task = object.__new__(PVPTask)
         task.config = {}
         task.info_set = lambda *_args, **_kwargs: None
@@ -1419,7 +1419,7 @@ class PVPTaskHelperTest(unittest.TestCase):
             return True
 
         task._wait_for_template = fake_wait_for_template
-        task._click_reference = lambda x, y, after_sleep=0.0: clicks.append(
+        task.operate_click = lambda x, y, after_sleep=0.0: clicks.append(
             (x, y, after_sleep)
         )
         task._wait_loading_if_present = lambda name: loading_calls.append(name)
@@ -1427,7 +1427,8 @@ class PVPTaskHelperTest(unittest.TestCase):
 
         self.assertTrue(PVPTask._return_home_from_pvp_hub(task))
         self.assertEqual([(PVP_MEDALS_TEMPLATE, 10.0, "PVP 箱庭")], wait_calls)
-        self.assertEqual([(*PVP_BACK_HOME_REFERENCE_POINT, 2.0)], clicks)
+        self.assertEqual([(*PVP_HOME_POINT, 2.0)], clicks)
+        self.assertEqual((1797 / 1920, 63 / 1080), PVP_HOME_POINT)
         self.assertEqual(["PVP 返回主页"], loading_calls)
         self.assertEqual([10.0], home_calls)
 
