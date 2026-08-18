@@ -286,6 +286,50 @@ class QuestCardTest(QuestUiTestBase):
         self.assertEqual(card.height(), collapsed)
         card.close()
 
+    def test_expand_and_collapse_animate_progressively(self):
+        """Animation is the sole height writer mid-flight (2026-08-18 jank fix).
+
+        Regression for the user-reported "expand has almost no frames, collapse
+        flashes": the resize chain used to overwrite the animation's height
+        every frame (expand snapped straight to full; collapse oscillated
+        between the animation value and the header height).  The heights must
+        now progress monotonically through real intermediate values.
+        """
+        from ok.gui.tasks.TaskCard import TaskCard
+        from PySide6.QtTest import QTest
+
+        self.fresh_store()
+        card = TaskCard(_make_batch_stub(), onetime=True)
+        card.resize(1000, card.height())
+        card.show()
+        self.app.processEvents()
+
+        def sample(ms=450, step=16):
+            heights = []
+            elapsed = 0
+            while elapsed < ms:
+                QTest.qWait(step)
+                heights.append(card.height())
+                elapsed += step
+            return heights
+
+        collapsed = card.height()
+        card.setExpand(True)
+        expand_heights = sample()
+        expanded = card.height()
+        self.assertGreater(expanded, collapsed + 100)
+        growing = {h for h in expand_heights if collapsed < h < expanded}
+        self.assertGreaterEqual(len(growing), 3)  # real intermediate frames
+        self.assertEqual(expand_heights, sorted(expand_heights))  # no snap-back
+
+        card.setExpand(False)
+        collapse_heights = sample()
+        self.assertEqual(card.height(), collapsed)
+        shrinking = {h for h in collapse_heights if collapsed < h < expanded}
+        self.assertGreaterEqual(len(shrinking), 3)
+        self.assertEqual(collapse_heights, sorted(collapse_heights, reverse=True))
+        card.close()
+
     def test_batch_child_switches_follow_master_switch(self):
         from ok.gui.tasks.TaskCard import TaskCard
 

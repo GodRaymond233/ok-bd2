@@ -21,6 +21,14 @@ The shared 1s heartbeat is dirty-checked: a visible card whose seal state,
 meta text, width and expand state are all unchanged costs only two small
 string computations — no ``setText``, no stylesheet writes and no
 height-for-width layout walks, so the tick never triggers a page relayout.
+
+Expand/collapse animation rule (2026-08-18, user-reported jank + collapse
+flashback): while ``expandAni`` is running it is the ONLY writer of the
+card's total height.  The resize chain (``_adjustViewSize`` /
+``apply_quest_chrome``) must not write the height mid-flight — otherwise
+every animation frame is immediately overwritten by the final height, which
+reads as a two-frame expand and a flickering collapse.  Content height is
+cached per view width so a frame costs no height-for-width walk either.
 """
 
 from __future__ import annotations
@@ -28,7 +36,7 @@ from __future__ import annotations
 import time
 from weakref import ref
 
-from PySide6.QtCore import QObject, Qt, QTimer
+from PySide6.QtCore import QAbstractAnimation, QObject, Qt, QTimer
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import QLabel, QWidget
 
@@ -174,8 +182,14 @@ class QuestSealDot(QWidget):
         painter.end()
 
 
-def _content_height(card) -> int:
-    """Same height-for-width math as the responsive patch's content sizing."""
+def _animation_running(card) -> bool:
+    """True while the expand/collapse animation owns the card's height."""
+    ani = getattr(card, "expandAni", None)
+    return bool(ani is not None and ani.state() == QAbstractAnimation.Running)
+
+
+def _measure_content_height(card) -> int:
+    """The height-for-width walk over the card's config rows (expensive)."""
     width = max(0, card.view.width())
     if card.viewLayout.hasHeightForWidth():
         height = card.viewLayout.heightForWidth(width)
@@ -184,12 +198,30 @@ def _content_height(card) -> int:
     return card.viewLayout.sizeHint().height()
 
 
+def _content_height(card) -> int:
+    """Cached content height; the walk only runs on width/content changes.
+
+    Content changes funnel through ``_adjustViewSize`` (framework contract:
+    sub-config sync, config updates, initial build), which invalidates the
+    cache; width changes are caught by the width key.
+    """
+    width = max(0, card.view.width())
+    cache = getattr(card, "_quest_content_cache", None)
+    if cache is not None and cache[0] == width:
+        return cache[1]
+    height = _measure_content_height(card)
+    card._quest_content_cache = (width, height)
+    return height
+
+
 def apply_quest_chrome(card) -> None:
     """Sync header height, viewport margins and total height.
 
     Every write is guarded by a difference check so repeated calls reach a
     fixed point instead of re-triggering resizeEvent forever; a reentrancy
     guard covers the synchronous resizeEvent -> adjust -> chrome cycle.
+    While the expand animation runs it owns the total height — chrome only
+    keeps the header and margins in sync and leaves the height alone.
     """
     if getattr(card, "_quest_chrome_busy", False):
         return
@@ -204,6 +236,8 @@ def apply_quest_chrome(card) -> None:
         if card.viewportMargins().top() != header_height:
             card.setViewportMargins(0, header_height, 0, 0)
 
+        if _animation_running(card):
+            return
         target = header_height + _content_height(card) if card.isExpand else header_height
         if card.height() != target:
             card.setFixedHeight(target)
@@ -355,10 +389,35 @@ def _chain_config_card_methods() -> None:
 
     original_resize = ConfigCard.resizeEvent
 
+    def quest_adjust_view_size(self):
+        # Content may have changed outside the animation window: re-measure.
+        # Mid-animation the content cannot change — reuse the cached height so
+        # a frame costs no height-for-width walk, and never write the total
+        # height while the animation owns it.
+        if not _animation_running(self):
+            self._quest_content_cache = None
+        content_height = _content_height(self)
+        self.spaceWidget.setFixedHeight(content_height)
+        if self.isExpand and not _animation_running(self):
+            self.setFixedHeight(self.card.height() + content_height)
+
+    def quest_expand_value_changed(self):
+        # Sole height writer while the animation runs; cache hit, no walk.
+        content_height = _content_height(self)
+        header_height = self.card.height()
+        self.setFixedHeight(
+            max(
+                header_height + content_height - self.verticalScrollBar().value(),
+                header_height,
+            )
+        )
+
     def quest_resize_event(self, event):
         original_resize(self, event)
         apply_quest_chrome(self)
 
+    ConfigCard._adjustViewSize = quest_adjust_view_size
+    ConfigCard._onExpandValueChanged = quest_expand_value_changed
     ConfigCard.resizeEvent = quest_resize_event
     ConfigCard._quest_chrome_chained = True
 
