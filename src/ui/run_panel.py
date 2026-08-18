@@ -461,7 +461,12 @@ def _install_run_panel_for(tab_class) -> bool:
             # init creates the panel.
             return
 
-        current_task = og.executor.current_task
+        executor = getattr(og, "executor", None)
+        if executor is None:
+            run_panel.hide()
+            return
+
+        current_task = executor.current_task
         if current_task is not None and self.in_current_list(current_task):
             current_info_run = (id(current_task), getattr(current_task, "start_time", None))
             if current_info_run != self.current_info_run:
@@ -471,7 +476,7 @@ def _install_run_panel_for(tab_class) -> bool:
         if self.current_info_run == self.dismissed_info_run and self.last_task is not None:
             run_panel.hide()
             return
-        if og.executor.current_task is None and not self.keep_info_when_done:
+        if executor.current_task is None and not self.keep_info_when_done:
             run_panel.hide()
         elif self.last_task is not None:
             if not run_panel.isVisible():
