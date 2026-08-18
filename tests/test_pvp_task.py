@@ -29,9 +29,9 @@ from src.tasks.PVPTask import (
     HOME_TEMPLATE,
     PVP_AUTO_BATTLE_CLICK_REFERENCE,
     PVP_AUTO_BATTLE_SCREEN_ROI,
+    PVP_BACK_HOME_REFERENCE_POINT,
     PVP_CARTRIDGE_SLOT_POINT,
     PVP_FAILURE_LEAVE_REFERENCE_ROI,
-    PVP_HOME_POINT,
     PVP_HUB_NOTICE_SCREEN_ROI,
     PVP_HUB_NOTICE_TEMPLATE,
     PVP_HUB_SPECIAL_PAGE_GRACE_SECONDS,
@@ -1427,8 +1427,14 @@ class PVPTaskHelperTest(unittest.TestCase):
 
         self.assertTrue(PVPTask._return_home_from_pvp_hub(task))
         self.assertEqual([(PVP_MEDALS_TEMPLATE, 10.0, "PVP 箱庭")], wait_calls)
-        self.assertEqual([(*PVP_HOME_POINT, 2.0)], clicks)
-        self.assertEqual((1797 / 1920, 63 / 1080), PVP_HOME_POINT)
+        self.assertEqual([(*CHAPTER_HOME_POINT, 2.0)], clicks)
+        self.assertEqual(
+            CHAPTER_HOME_POINT,
+            (
+                PVP_BACK_HOME_REFERENCE_POINT[0] / REFERENCE_WIDTH,
+                PVP_BACK_HOME_REFERENCE_POINT[1] / REFERENCE_HEIGHT,
+            ),
+        )
         self.assertEqual(["PVP 返回主页"], loading_calls)
         self.assertEqual([10.0], home_calls)
 
