@@ -92,6 +92,20 @@ class ProgressState:
         return card_id in self.verified_cards and self.card_complete(card_id)
 
     @property
+    def weekly_collection_complete(self) -> bool:
+        """Whether every currently supported weekly card is complete and verified."""
+        from src.tasks.map_trade.collector_constants import (
+            UNSUPPORTED_COLLECTION_CARD_NUMBERS,
+        )
+
+        supported = (
+            card
+            for card in COLLECTABLE_CARDS
+            if card.number not in UNSUPPORTED_COLLECTION_CARD_NUMBERS
+        )
+        return all(self.card_verified(card.card_id) for card in supported)
+
+    @property
     def completed_favorite_cards(self) -> set[str]:
         return {shop_id for shop_id in self.favorite_cards if shop_id in VALID_FAVORITE_SHOP_IDS}
 

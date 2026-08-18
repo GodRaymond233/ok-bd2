@@ -1,9 +1,15 @@
+import tempfile
 import unittest
 from types import SimpleNamespace
 
 from src.config import config
-from src.tasks.DailyBatchTask import DailyBatchChild, DailyBatchTask
+from src.tasks.DailyBatchTask import (
+    RUN_MODE_INCOMPLETE,
+    DailyBatchChild,
+    DailyBatchTask,
+)
 from src.tasks.MapCollectionTask import MapCollectionTask
+from src.tasks.run_history import RunHistoryStore, set_default_store
 from src.tasks.task_notifications import log_task_completion
 
 
@@ -27,7 +33,8 @@ class DailyBatchTaskTest(unittest.TestCase):
         task = object.__new__(DailyBatchTask)
         task.child_tasks = child_specs
         task.config = task_config
-        task.info_set = lambda *_args, **_kwargs: None
+        task.info = {}
+        task.info_set = lambda key, value: task.info.__setitem__(key, value)
         task.log_info = lambda *_args, **_kwargs: None
         task.log_warning = lambda *_args, **_kwargs: None
         task.log_error = lambda *_args, **_kwargs: None
@@ -171,6 +178,86 @@ class DailyBatchTaskTest(unittest.TestCase):
         )
         self.assertFalse(
             hasattr(child, "_completion_notification_suppression_depth")
+        )
+
+    def test_incomplete_mode_skips_children_completed_today_without_mutating_config(self):
+        class First:
+            pass
+
+        class Second:
+            pass
+
+        calls = []
+        first = _ChildTask("first", calls)
+        second = _ChildTask("second", calls)
+        specs = (
+            DailyBatchChild("第一项", First),
+            DailyBatchChild("第二项", Second),
+        )
+        task, _resets = self.make_task(
+            {First: first, Second: second},
+            specs,
+            {"启用": True, "第一项": True, "第二项": True},
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = RunHistoryStore(f"{temp_dir}/history.json")
+            set_default_store(store)
+            store.record_task_done(
+                SimpleNamespace(
+                    name="first",
+                    start_time=0,
+                    info={"状态": "first 完成。"},
+                )
+            )
+            original_config = task.config
+            try:
+                self.assertTrue(DailyBatchTask.run(task, RUN_MODE_INCOMPLETE))
+            finally:
+                set_default_store(None)
+
+        self.assertEqual([("second", True)], calls)
+        self.assertIs(original_config, task.config)
+        self.assertEqual("第一项", task.info.get("跳过"))
+
+    def test_requested_run_mode_is_transient_and_next_run_defaults_to_all(self):
+        class First:
+            pass
+
+        class Second:
+            pass
+
+        calls = []
+        first = _ChildTask("first", calls)
+        second = _ChildTask("second", calls)
+        specs = (
+            DailyBatchChild("第一项", First),
+            DailyBatchChild("第二项", Second),
+        )
+        task, _resets = self.make_task(
+            {First: first, Second: second},
+            specs,
+            {"启用": True, "第一项": True, "第二项": True},
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = RunHistoryStore(f"{temp_dir}/history.json")
+            set_default_store(store)
+            store.record_task_done(
+                SimpleNamespace(
+                    name="first",
+                    start_time=0,
+                    info={"状态": "first 完成。"},
+                )
+            )
+            try:
+                task.request_run_mode(RUN_MODE_INCOMPLETE)
+                self.assertTrue(DailyBatchTask.run(task))
+                self.assertTrue(DailyBatchTask.run(task))
+            finally:
+                set_default_store(None)
+
+        self.assertEqual(
+            [("second", True), ("first", True), ("second", True)],
+            calls,
         )
 
 

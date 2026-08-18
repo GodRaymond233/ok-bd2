@@ -92,8 +92,9 @@ def _make_batch_stub():
 
 
 class _ExecutorStub:
-    def __init__(self, onetime_tasks=(), current_task=None, by_class=None):
+    def __init__(self, onetime_tasks=(), current_task=None, by_class=None, trigger_tasks=()):
         self.onetime_tasks = list(onetime_tasks)
+        self.trigger_tasks = list(trigger_tasks)
         self.current_task = current_task
         self.paused = False
         self._by_class = dict(by_class or {})
@@ -364,6 +365,59 @@ class BannerTest(QuestUiTestBase):
         finally:
             og.executor = _ExecutorStub()
 
+    def test_banner_excludes_disabled_children(self):
+        from src.tasks.DailyTask import DailyTask
+        from src.tasks.PVPTask import PVPTask
+        from src.ui.quest_banner import commission_items
+
+        store = self.fresh_store()
+        batch = _make_batch_stub()
+        batch.config["自动PVP"] = False
+        daily = _TaskStub(name="公会、小屋、酒馆")
+        pvp = _TaskStub(name="镜中之战")
+        og.executor = _ExecutorStub(
+            [batch, daily, pvp], by_class={DailyTask: daily, PVPTask: pvp}
+        )
+        try:
+            self.assertEqual(
+                [name for name, _done in commission_items(store)],
+                ["公会、小屋、酒馆"],
+            )
+        finally:
+            og.executor = _ExecutorStub()
+
+    def test_banner_requests_transient_batch_modes(self):
+        from src.tasks.DailyTask import DailyTask
+        from src.tasks.PVPTask import PVPTask
+        from src.ui.quest_banner import DailyBoardBanner
+
+        self.fresh_store()
+        batch = _make_batch_stub()
+        batch.requested_modes = []
+        batch.request_run_mode = batch.requested_modes.append
+        daily = _TaskStub(name="公会、小屋、酒馆")
+        pvp = _TaskStub(name="镜中之战")
+        og.executor = _ExecutorStub(
+            [batch, daily, pvp], by_class={DailyTask: daily, PVPTask: pvp}
+        )
+        starts = []
+        original_app = og.app
+        og.app = SimpleNamespace(
+            tr=lambda value: value,
+            start_controller=SimpleNamespace(start=lambda task: starts.append(task)),
+        )
+        try:
+            banner = DailyBoardBanner()
+            banner._start_remaining()
+            self.assertEqual(batch.requested_modes, ["incomplete"])
+            self.assertEqual(starts, [batch])
+            banner._start_all()
+            self.assertEqual(batch.requested_modes, ["incomplete", "all"])
+            banner.close()
+        finally:
+            og.app = original_app
+            og.executor = _ExecutorStub()
+
 
 class RunPanelTest(QuestUiTestBase):
     def test_running_batch_renders_segments_grid_and_rows(self):
@@ -494,6 +548,29 @@ class TaskTabIntegrationTest(QuestUiTestBase):
         self.assertTrue(hasattr(tab, "run_panel"))
         self.assertFalse(hasattr(tab, "quest_banner"))
         tab.close()
+
+    def test_trigger_tab_reuses_run_panel_for_current_trigger(self):
+        from ok.gui.tasks.TriggerTaskTab import TriggerTaskTab
+
+        self.fresh_store()
+        task = _TaskStub(name="自动登录")
+        task.enabled = True
+        task.start_time = 1000.0
+        task.info = {"状态": "实时触发中"}
+        og.executor = _ExecutorStub(current_task=task, trigger_tasks=[task])
+        try:
+            tab = TriggerTaskTab()
+            self.app.processEvents()
+            self.assertTrue(hasattr(tab, "run_panel"))
+            tab.update_info_table()
+            self.assertFalse(tab.run_panel.isHidden())
+            self.assertEqual(tab.run_panel.pill.text(), "运行中")
+            og.executor.current_task = None
+            tab.update_info_table()
+            self.assertTrue(tab.run_panel.isHidden())
+            tab.close()
+        finally:
+            og.executor = _ExecutorStub()
 
 
 class NavSectionsTest(QuestUiTestBase):

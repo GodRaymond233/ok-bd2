@@ -1,10 +1,10 @@
 """Daily-board banner and page status bar for the 日常/周常 tab (mockup V2).
 
 The banner summarizes "今日委托": one ring with done/total, the names still
-missing, the Beijing 04:00 refresh hint and a single primary action that starts
-一键完成日常.  A commission counts as done when the run history has a
-successful finish since the last refresh — no matter whether it ran standalone
-or inside the batch (run_history fans batch results out to children).
+missing, the Beijing 04:00 refresh hint and actions for running all selected
+children or only today's incomplete children. Daily commissions count a
+successful run from the run history; the weekly map card uses ProgressStore's
+verified collection ledger.
 
 The status bar is the page footer: executor state, capture method and the next
 refresh anchor.
@@ -18,8 +18,9 @@ from ok import Logger
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
-from qfluentwidgets import FluentIcon, PrimaryPushButton
+from qfluentwidgets import FluentIcon, PrimaryPushButton, PushButton
 
+from src.tasks.DailyBatchTask import RUN_MODE_ALL, RUN_MODE_INCOMPLETE
 from src.tasks.run_history import default_store
 from src.ui.quest_cards import WEEKLY_TASK_NAMES
 from src.ui.quest_theme import MONO_FONT, on_theme_changed, palette
@@ -85,8 +86,10 @@ class DailyBoardBanner(QFrame):
         self.title_label.setObjectName("dailyBoardTitle")
         self.sub_label = QLabel(self)
         self.sub_label.setObjectName("dailyBoardSub")
+        self.remaining_button = PushButton(FluentIcon.PLAY, "执行剩余", self)
+        self.remaining_button.clicked.connect(self._start_remaining)
         self.start_button = PrimaryPushButton(FluentIcon.PLAY, BATCH_TASK_NAME, self)
-        self.start_button.clicked.connect(self._start_batch)
+        self.start_button.clicked.connect(self._start_all)
 
         text_column = QVBoxLayout()
         text_column.setContentsMargins(0, 0, 0, 0)
@@ -99,6 +102,7 @@ class DailyBoardBanner(QFrame):
         layout.setSpacing(16)
         layout.addWidget(self.ring, 0, Qt.AlignVCenter)
         layout.addLayout(text_column, 1)
+        layout.addWidget(self.remaining_button, 0, Qt.AlignVCenter)
         layout.addWidget(self.start_button, 0, Qt.AlignVCenter)
 
         self._timer = QTimer(self)
@@ -129,11 +133,18 @@ class DailyBoardBanner(QFrame):
         super().hideEvent(event)
         self._timer.stop()
 
-    def _start_batch(self):
+    def _start_all(self):
+        self._start_batch(RUN_MODE_ALL)
+
+    def _start_remaining(self):
+        self._start_batch(RUN_MODE_INCOMPLETE)
+
+    def _start_batch(self, run_mode: str):
         from ok import og
 
         task = _find_batch_task()
         if task is not None and not og.executor.current_task:
+            task.request_run_mode(run_mode)
             og.app.start_controller.start(task)
 
     def refresh(self, *_args):
@@ -159,6 +170,9 @@ class DailyBoardBanner(QFrame):
         executor = getattr(og, "executor", None)
         busy = bool(executor is not None and executor.current_task is not None)
         self.start_button.setEnabled(not busy and _find_batch_task() is not None)
+        self.remaining_button.setEnabled(
+            not busy and bool(remaining) and _find_batch_task() is not None
+        )
         self.start_button.setText("执行中…" if busy else BATCH_TASK_NAME)
 
 
@@ -247,6 +261,8 @@ def commission_items(store=None) -> list[tuple[str, bool]]:
     if batch is not None:
         executor = getattr(og, "executor", None)
         for child in getattr(batch, "child_tasks", ()):
+            if not bool(getattr(batch, "config", {}).get(child.config_key, True)):
+                continue
             child_task = None
             if executor is not None:
                 try:
@@ -259,8 +275,20 @@ def commission_items(store=None) -> list[tuple[str, bool]]:
     for task in getattr(getattr(og, "executor", None), "onetime_tasks", []) or []:
         name = str(getattr(task, "name", ""))
         if name in WEEKLY_TASK_NAMES and getattr(task, "visible", True):
-            items.append((name, store.is_completed_this_week(name)))
+            items.append((name, _weekly_task_completed(name, store)))
     return items
+
+
+def _weekly_task_completed(task_name: str, history_store) -> bool:
+    if task_name != "每周跑图":
+        return history_store.is_completed_this_week(task_name)
+    try:
+        from src.tasks.map_trade.progress import ProgressStore
+
+        return ProgressStore().load().weekly_collection_complete
+    except Exception as exc:
+        logger.error(f"read weekly collection progress failed: {exc}")
+        return False
 
 
 def _find_batch_task():

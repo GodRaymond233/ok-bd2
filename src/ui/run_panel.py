@@ -435,17 +435,14 @@ class RunPanel(QFrame):
             self.rows.addWidget(row)
 
 
-def install_run_panel() -> bool:
-    """Swap OneTimeTaskTab's 信息/值 table for the run summary panel."""
-    from ok.gui.tasks.OneTimeTaskTab import OneTimeTaskTab
-
-    if getattr(OneTimeTaskTab, "_run_panel_installed", False):
+def _install_run_panel_for(tab_class) -> bool:
+    if getattr(tab_class, "_run_panel_installed", False):
         return False
 
-    original_init = OneTimeTaskTab.__init__
+    original_init = tab_class.__init__
 
-    def quest_init(self, is_standalone=True, group_name=None):
-        original_init(self, is_standalone=is_standalone, group_name=group_name)
+    def quest_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
         self.run_panel = RunPanel(self.view)
         self.run_panel.on_close = self.close_task_info
         self.run_panel.hide()
@@ -460,8 +457,8 @@ def install_run_panel() -> bool:
 
         run_panel = getattr(self, "run_panel", None)
         if run_panel is None:
-            # TaskTab.__init__ calls update_info_table before the chained
-            # OneTimeTaskTab init creates the panel.
+            # TaskTab.__init__ calls update_info_table before the chained tab
+            # init creates the panel.
             return
 
         current_task = og.executor.current_task
@@ -489,16 +486,26 @@ def install_run_panel() -> bool:
 
     def quest_update_task_info(self, task):
         # The framework renders the raw info table here; the run panel renders
-        # from quest_update_info_table instead.  Kept as a no-op so the 1s
+        # from quest_update_info_table instead. Kept as a no-op so the 1s
         # timer path stays intact.
         if task is None:
             run_panel = getattr(self, "run_panel", None)
             if run_panel is not None:
                 run_panel.hide()
 
-    OneTimeTaskTab.__init__ = quest_init
-    OneTimeTaskTab.update_info_table = quest_update_info_table
-    OneTimeTaskTab.close_task_info = quest_close_task_info
-    OneTimeTaskTab.update_task_info = quest_update_task_info
-    OneTimeTaskTab._run_panel_installed = True
+    tab_class.__init__ = quest_init
+    tab_class.update_info_table = quest_update_info_table
+    tab_class.close_task_info = quest_close_task_info
+    tab_class.update_task_info = quest_update_task_info
+    tab_class._run_panel_installed = True
     return True
+
+
+def install_run_panel() -> bool:
+    """Swap one-time and trigger task info tables for the shared run panel."""
+    from ok.gui.tasks.OneTimeTaskTab import OneTimeTaskTab
+    from ok.gui.tasks.TriggerTaskTab import TriggerTaskTab
+
+    installed_onetime = _install_run_panel_for(OneTimeTaskTab)
+    installed_trigger = _install_run_panel_for(TriggerTaskTab)
+    return installed_onetime or installed_trigger

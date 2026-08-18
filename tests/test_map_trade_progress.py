@@ -6,6 +6,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 
+from src.tasks.map_trade.collector_constants import UNSUPPORTED_COLLECTION_CARD_NUMBERS
 from src.tasks.map_trade.models import (
     CARD_BY_ID,
     COLLECTABLE_CARDS,
@@ -28,6 +29,28 @@ from tests.helpers.map_trade import _seed_action_records
 
 
 class ProgressTest(unittest.TestCase):
+    def test_weekly_collection_completion_uses_verified_supported_cards(self):
+        from src.tasks.map_trade.progress import ProgressState
+
+        state = ProgressState(weekly_key="2026-08-17", daily_key="2026-08-18")
+        self.assertFalse(state.weekly_collection_complete)
+
+        for card in COLLECTABLE_CARDS:
+            if card.number in UNSUPPORTED_COLLECTION_CARD_NUMBERS:
+                continue
+            state.cards[card.card_id] = [target.key for target in card.targets]
+            state.verified_cards.append(card.card_id)
+
+        self.assertTrue(state.weekly_collection_complete)
+
+        supported = next(
+            card
+            for card in COLLECTABLE_CARDS
+            if card.number not in UNSUPPORTED_COLLECTION_CARD_NUMBERS
+        )
+        state.verified_cards.remove(supported.card_id)
+        self.assertFalse(state.weekly_collection_complete)
+
     def test_daily_cycle_changes_at_four_am(self):
         before = datetime(2026, 7, 13, 3, 59, tzinfo=UTC_PLUS_8)
         after = datetime(2026, 7, 13, 4, 0, tzinfo=UTC_PLUS_8)
