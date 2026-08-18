@@ -31,6 +31,12 @@ DAILY_BOARD_GROUP = "日常/周常"
 BATCH_TASK_NAME = "一键完成日常"
 
 
+def _set_label_text(label, text: str) -> None:
+    """setText with a same-value guard so quiet ticks cost no relayout."""
+    if label.text() != text:
+        label.setText(text)
+
+
 class ProgressRing(QWidget):
     """Mockup donut: track ring + accent arc + centered 'done/total'."""
 
@@ -156,14 +162,16 @@ class DailyBoardBanner(QFrame):
 
         self.ring.set_progress(done, total)
         if remaining:
-            self.title_label.setText(f"今日委托 · 还剩 {len(remaining)} 项")
+            title = f"今日委托 · 还剩 {len(remaining)} 项"
             names = "、".join(remaining[:4])
             if len(remaining) > 4:
                 names += f" 等 {len(remaining)} 项"
-            self.sub_label.setText(f"{names} 未完成 · 服务器 04:00 刷新(北京时间)")
+            sub = f"{names} 未完成 · 服务器 04:00 刷新(北京时间)"
         else:
-            self.title_label.setText("今日委托已全部完成")
-            self.sub_label.setText("服务器 04:00 刷新(北京时间),跑商库存 08:00 刷新")
+            title = "今日委托已全部完成"
+            sub = "服务器 04:00 刷新(北京时间),跑商库存 08:00 刷新"
+        _set_label_text(self.title_label, title)
+        _set_label_text(self.sub_label, sub)
 
         from ok import og
 
@@ -173,7 +181,9 @@ class DailyBoardBanner(QFrame):
         self.remaining_button.setEnabled(
             not busy and bool(remaining) and _find_batch_task() is not None
         )
-        self.start_button.setText("执行中…" if busy else BATCH_TASK_NAME)
+        start_text = "执行中…" if busy else BATCH_TASK_NAME
+        if self.start_button.text() != start_text:
+            self.start_button.setText(start_text)
 
 
 class QuestStatusBar(QWidget):
@@ -235,9 +245,13 @@ class QuestStatusBar(QWidget):
         if capture is not None:
             capture_text = f"捕获 {type(capture).__name__} · 已连接"
 
-        self._labels[0].setText(executor_text)
-        self._labels[1].setText(capture_text)
-        self._labels[2].setText(f"下个刷新 · {_next_refresh_text()}")
+        texts = (
+            executor_text,
+            capture_text,
+            f"下个刷新 · {_next_refresh_text()}",
+        )
+        for label, text in zip(self._labels, texts):
+            _set_label_text(label, text)
 
 
 def _next_refresh_text(now: float | None = None) -> str:

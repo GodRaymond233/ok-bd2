@@ -1,19 +1,26 @@
 """Quest-style task card chrome (mockup V2, 2026-08-18).
 
-Adds three things on top of the framework's ``TaskCard`` (and Codex's
+Adds two things on top of the framework's ``TaskCard`` (and Codex's
 responsive patch):
 
 * a painted status seal dot on the left of the header (running / done-today /
   idle), replacing the always-hidden icon slot;
 * a mono "meta" line under the description with the last-run summary from
-  ``src.tasks.run_history`` and the live stage while running;
-* for the batch card (一键完成日常), the child on/off switches are re-homed
-  from the collapsed expand view into an always-visible sub panel attached
-  under the header, one widget per config key so there is no state to sync.
+  ``src.tasks.run_history`` and the live stage while running.
+
+The batch card (一键完成日常) keeps its child on/off switches inside the normal
+expand view: like every other task card, they appear only after clicking the
+card to expand it (2026-08-18 user correction — an earlier always-visible
+sub panel under the header was a misreading of the mockup).
 
 Badge chips are recolored to the mockup token palette (合辑=accent, 日常=ok,
 跑商=info, PVP=warn, 内测=beta, neutral gray for 刷级/测试) and refreshed with
 the qfluentwidgets theme.
+
+The shared 1s heartbeat is dirty-checked: a visible card whose seal state,
+meta text, width and expand state are all unchanged costs only two small
+string computations — no ``setText``, no stylesheet writes and no
+height-for-width layout walks, so the tick never triggers a page relayout.
 """
 
 from __future__ import annotations
@@ -23,7 +30,7 @@ from weakref import ref
 
 from PySide6.QtCore import QObject, Qt, QTimer
 from PySide6.QtGui import QColor, QPainter
-from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLabel, QWidget
 
 from src.tasks.run_history import day_start_ts, default_store
 from src.ui.quest_theme import MONO_FONT, palette
@@ -167,22 +174,6 @@ class QuestSealDot(QWidget):
         painter.end()
 
 
-def quest_sub_height(card) -> int:
-    panel = getattr(card, "_quest_sub_panel", None)
-    if panel is None:
-        return 0
-    rows = [row for row in getattr(panel, "_quest_rows", []) if not row.isHidden()]
-    if not rows:
-        return 0
-    layout = panel.layout()
-    width = max(card.width(), 200)
-    if layout.hasHeightForWidth():
-        height = layout.heightForWidth(width)
-        if height >= 0:
-            return height
-    return layout.sizeHint().height()
-
-
 def _content_height(card) -> int:
     """Same height-for-width math as the responsive patch's content sizing."""
     width = max(0, card.view.width())
@@ -194,7 +185,7 @@ def _content_height(card) -> int:
 
 
 def apply_quest_chrome(card) -> None:
-    """Sync header height, viewport margins, sub panel and total height.
+    """Sync header height, viewport margins and total height.
 
     Every write is guarded by a difference check so repeated calls reach a
     fixed point instead of re-triggering resizeEvent forever; a reentrancy
@@ -208,22 +199,12 @@ def apply_quest_chrome(card) -> None:
         meta_visible = bool(meta is not None and meta.text())
         header_height = HEADER_HEIGHT_WITH_META if meta_visible else HEADER_HEIGHT_PLAIN
 
-        panel = getattr(card, "_quest_sub_panel", None)
-        if panel is not None and 0 < card.width() != panel.width():
-            # Give the rows a realistic width before asking their height-for-width.
-            panel.resize(card.width(), panel.height())
-        sub_height = quest_sub_height(card)
-
         if card.card.height() != header_height:
             card.card.setFixedHeight(header_height)
-        top = header_height + sub_height
-        if card.viewportMargins().top() != top:
-            card.setViewportMargins(0, top, 0, 0)
-        if panel is not None:
-            panel.setGeometry(0, header_height, max(card.width(), 0), sub_height)
-            panel.setVisible(sub_height > 0)
+        if card.viewportMargins().top() != header_height:
+            card.setViewportMargins(0, header_height, 0, 0)
 
-        target = top + _content_height(card) if card.isExpand else top
+        target = header_height + _content_height(card) if card.isExpand else header_height
         if card.height() != target:
             card.setFixedHeight(target)
     finally:
@@ -285,6 +266,8 @@ class _CardRefresher(QObject):
             alive.append(card_ref)
             if theme_flipped:
                 _apply_quest_theme(card)
+                # Force one chrome recompute per card after a theme flip.
+                card._quest_refresh_key = None
             if card.isVisible():
                 refresh_quest_card(card)
         self._cards = alive
@@ -301,16 +284,28 @@ def _get_refresher() -> _CardRefresher:
 
 
 def refresh_quest_card(card) -> None:
+    """Dirty-checked per-card refresh.
+
+    The seal state and meta text are recomputed every tick (cheap, in-memory),
+    but widgets are only touched when one of the values that can change the
+    layout actually changed; content-height changes from config edits reach
+    ``apply_quest_chrome`` through the resize/config-sync paths instead.
+    """
     task = card.task
     onetime = getattr(card, "_quest_onetime", True)
     state = seal_state(task, onetime=onetime)
-    card._quest_seal.set_state(state)
-
     text = meta_text(task) if onetime else ""
+
+    key = (state, text, card.width(), card.isExpand)
+    if key == getattr(card, "_quest_refresh_key", None):
+        return
+    card._quest_refresh_key = key
+
+    card._quest_seal.set_state(state)
     meta = card._quest_meta
-    meta.setVisible(bool(text))
-    if text:
+    if text != meta.text():
         meta.setText(text)
+    meta.setVisible(bool(text))
     apply_quest_chrome(card)
 
 
@@ -337,26 +332,6 @@ def _install_seal_and_meta(card) -> None:
     card.card.vBoxLayout.addWidget(meta)
 
 
-def _style_sub_panel(card, tokens) -> None:
-    panel = getattr(card, "_quest_sub_panel", None)
-    if panel is None:
-        return
-    rows = panel._quest_rows
-    panel.setStyleSheet(
-        f"QWidget#questSubPanel {{ background-color: {tokens['card']};"
-        f" border-top: 1px solid {tokens['line']}; }}"
-    )
-    for row in rows:
-        row.setStyleSheet(
-            f"QWidget[questSubRow=true] {{ border-bottom: 1px solid {tokens['line']};"
-            " background: transparent; }"
-        )
-    if rows:
-        rows[-1].setStyleSheet(
-            "QWidget[questSubRow=true] { border: none; background: transparent; }"
-        )
-
-
 def _apply_quest_theme(card) -> None:
     """Single per-card theme refresh (keeps one themeChanged receiver)."""
     tokens = palette()
@@ -367,48 +342,9 @@ def _apply_quest_theme(card) -> None:
             f" font-family: {MONO_FONT}; font-size: 11px; background: transparent; }}"
         )
     _restyle_badge(card, tokens)
-    _style_sub_panel(card, tokens)
     seal = getattr(card, "_quest_seal", None)
     if seal is not None:
         seal.update()
-
-
-def _install_sub_panel(card, task) -> None:
-    """Re-home the batch child switches into an always-visible panel."""
-    child_keys = [child.config_key for child in getattr(task, "child_tasks", ())]
-    widgets = [
-        card.config_widget_by_key[key] for key in child_keys if key in card.config_widget_by_key
-    ]
-    if not widgets:
-        return
-
-    panel = QWidget(card)
-    panel.setObjectName("questSubPanel")
-    layout = QVBoxLayout(panel)
-    layout.setContentsMargins(0, 0, 0, 6)
-    layout.setSpacing(0)
-    for widget in widgets:
-        card.viewLayout.removeWidget(widget)
-        widget.setParent(panel)
-        widget.setProperty("questSubRow", True)
-        layout.addWidget(widget)
-    card._quest_sub_panel = panel
-    panel._quest_rows = widgets
-
-    # Re-home the rows again whenever the framework re-syncs sub-config
-    # visibility/order (it re-inserts sub-config widgets into the view layout).
-    def _rehome(*_args):
-        for widget in widgets:
-            if widget.parentWidget() is not panel:
-                card.viewLayout.removeWidget(widget)
-                widget.setParent(panel)
-                layout.addWidget(widget)
-        apply_quest_chrome(card)
-
-    master = card.config_widget_by_key.get("启用")
-    master_switch = getattr(master, "switch_button", None)
-    if master_switch is not None:
-        master_switch.checkedChanged.connect(_rehome)
 
 
 def _chain_config_card_methods() -> None:
@@ -419,31 +355,10 @@ def _chain_config_card_methods() -> None:
 
     original_resize = ConfigCard.resizeEvent
 
-    def quest_adjust_view_size(self):
-        # Sub-panel-aware replacement for the responsive patch's version; for
-        # cards without a sub panel quest_sub_height() is 0 and the behavior
-        # is identical (space widget + expanded full height in one writer).
-        content_height = _content_height(self)
-        self.spaceWidget.setFixedHeight(content_height)
-        if self.isExpand:
-            self.setFixedHeight(self.card.height() + quest_sub_height(self) + content_height)
-
-    def quest_expand_value_changed(self):
-        content_height = _content_height(self)
-        header_height = self.card.height() + quest_sub_height(self)
-        self.setFixedHeight(
-            max(
-                header_height + content_height - self.verticalScrollBar().value(),
-                header_height,
-            )
-        )
-
     def quest_resize_event(self, event):
         original_resize(self, event)
         apply_quest_chrome(self)
 
-    ConfigCard._adjustViewSize = quest_adjust_view_size
-    ConfigCard._onExpandValueChanged = quest_expand_value_changed
     ConfigCard.resizeEvent = quest_resize_event
     ConfigCard._quest_chrome_chained = True
 
@@ -461,9 +376,7 @@ def install_quest_cards() -> bool:
     def quest_task_card_init(self, task, onetime):
         original_task_card_init(self, task, onetime)
         self._quest_onetime = bool(onetime)
-        self._quest_sub_panel = None
         _install_seal_and_meta(self)
-        _install_sub_panel(self, task)
         _apply_quest_theme(self)
         refresh_quest_card(self)
         _get_refresher().register(self)

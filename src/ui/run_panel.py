@@ -6,6 +6,11 @@ and — for the batch task — a segmented progress bar plus a per-child status
 grid.  Everything below the header is derived from ``task.info``, so any task
 that fills the standard keys (状态/当前子任务/完成/失败/跳过/Log) renders
 correctly without task-specific UI code.
+
+``render`` runs on the tab's 1s timer and the done panel stays visible, so
+every section is dirty-checked: unchanged content never re-creates widgets,
+re-applies stylesheets or re-enters layout — the per-second tick collapses to
+a few string comparisons plus the one elapsed-time label that actually ticks.
 """
 
 from __future__ import annotations
@@ -129,6 +134,8 @@ class RunPanel(QFrame):
         self._task = None
         self.on_close = None
         self._grid_signature = None
+        self._rows_signature = None
+        self._pill_kind = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 12, 16, 14)
@@ -225,7 +232,7 @@ class RunPanel(QFrame):
             " border-radius: 10px; padding: 2px 10px; font-size: 11px; font-weight: 500;"
         )
 
-    _pill_kind = "done"
+    _pill_kind = None
 
     # ---------------- ops ----------------
 
@@ -266,9 +273,10 @@ class RunPanel(QFrame):
             return
         info = getattr(task, "info", {}) or {}
         state = run_state(task)
-        self._pill_kind = state
-        self.pill.setText(_PILL_TEXT[state])
-        self._restyle_pill()
+        if state != self._pill_kind:
+            self._pill_kind = state
+            self.pill.setText(_PILL_TEXT[state])
+            self._restyle_pill()
 
         from ok import og
 
@@ -277,15 +285,24 @@ class RunPanel(QFrame):
             if getattr(og, "app", None)
             else str(task.name)
         )
-        self.name_label.setText(name)
-        self.time_label.setText(_elapsed_text(task))
+        if name != self.name_label.text():
+            self.name_label.setText(name)
+        elapsed = _elapsed_text(task)
+        if elapsed != self.time_label.text():
+            self.time_label.setText(elapsed)
 
         running = state in ("run", "pause")
-        self.pause_button.setVisible(running)
-        self.pause_button.setText("继续" if state == "pause" else "暂停")
-        self.stop_button.setVisible(running)
-        self.logs_button.setVisible(not running)
-        self.close_button.setVisible(not running)
+        pause_text = "继续" if state == "pause" else "暂停"
+        if pause_text != self.pause_button.text():
+            self.pause_button.setText(pause_text)
+        for button, visible in (
+            (self.pause_button, running),
+            (self.stop_button, running),
+            (self.logs_button, not running),
+            (self.close_button, not running),
+        ):
+            if button.isHidden() == visible:
+                button.setVisible(visible)
 
         self._render_batch(task, info, running)
         self._render_rows(task, info, state)
@@ -329,7 +346,9 @@ class RunPanel(QFrame):
             legend_parts.append(f"执行中 {current}")
         if todo:
             legend_parts.append(f"待执行 {len(todo)}")
-        self.legend.setText("　".join(legend_parts))
+        legend_text = "　".join(legend_parts)
+        if legend_text != self.legend.text():
+            self.legend.setText(legend_text)
         self.segbar.show()
         self.legend.show()
 
@@ -404,6 +423,14 @@ class RunPanel(QFrame):
         log_line = str(info.get("Log", "") or "")
         if log_line:
             rows.append(("最近日志", log_line, ""))
+
+        from qfluentwidgets import isDarkTheme
+
+        # Row colors bake in the palette; rebuild when the theme flips.
+        signature = (tuple(rows), isDarkTheme())
+        if signature == self._rows_signature:
+            return
+        self._rows_signature = signature
 
         while self.rows.count():
             item = self.rows.takeAt(0)

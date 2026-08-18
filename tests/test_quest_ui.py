@@ -237,7 +237,7 @@ class QuestCardTest(QuestUiTestBase):
         self.assertFalse(card._quest_meta.text())
         card.close()
 
-    def test_batch_card_rehomes_child_switches_into_sub_panel(self):
+    def test_batch_card_child_switches_live_in_expand_view(self):
         from ok.gui.tasks.TaskCard import TaskCard
 
         self.fresh_store()
@@ -245,25 +245,20 @@ class QuestCardTest(QuestUiTestBase):
         card.show()
         self.app.processEvents()
 
-        panel = card._quest_sub_panel
-        self.assertIsNotNone(panel)
+        # No always-visible panel: child switches stay inside the expand view
+        # like every other task card's config rows.
+        self.assertFalse(hasattr(card, "_quest_sub_panel"))
         for key in ("公会、小屋、酒馆", "自动PVP"):
             widget = card.config_widget_by_key[key]
-            self.assertIs(widget.parentWidget(), panel)
-            self.assertEqual(card.viewLayout.indexOf(widget), -1)
-
-        from src.ui.quest_cards import quest_sub_height
-
-        self.assertGreater(quest_sub_height(card), 0)
-        collapsed_height = card.card.height() + quest_sub_height(card)
-        self.assertEqual(card.height(), collapsed_height)
+            self.assertIs(widget.parentWidget(), card.view)
+            self.assertGreaterEqual(card.viewLayout.indexOf(widget), 0)
+        # Collapsed card is header-only.
+        self.assertEqual(card.height(), card.card.height())
         card.close()
 
-    def test_batch_card_expand_and_collapse_keep_sub_panel_geometry(self):
+    def test_batch_card_expand_and_collapse_reveal_child_switches(self):
         from ok.gui.tasks.TaskCard import TaskCard
         from PySide6.QtTest import QTest
-
-        from src.ui.quest_cards import quest_sub_height
 
         self.fresh_store()
         card = TaskCard(_make_batch_stub(), onetime=True)
@@ -271,9 +266,7 @@ class QuestCardTest(QuestUiTestBase):
         card.show()
         self.app.processEvents()
 
-        sub_height = quest_sub_height(card)
-        self.assertGreater(sub_height, 0)
-        collapsed = card.card.height() + sub_height
+        collapsed = card.card.height()
         self.assertEqual(card.height(), collapsed)
 
         card.setExpand(True)
@@ -281,20 +274,20 @@ class QuestCardTest(QuestUiTestBase):
         self.app.processEvents()
         self.assertTrue(card.isExpand)
         self.assertGreater(card.height(), collapsed)
-        # The always-visible panel stays attached right under the header.
-        self.assertEqual(card._quest_sub_panel.geometry().y(), card.card.height())
+        for key in ("公会、小屋、酒馆", "自动PVP"):
+            self.assertFalse(card.config_widget_by_key[key].isHidden())
 
         card.setExpand(False)
         QTest.qWait(300)
         self.app.processEvents()
         self.assertFalse(card.isExpand)
+        # Fixed point: collapse returns to exactly the header height (the
+        # anti-oscillation regression for the single-height-writer rule).
         self.assertEqual(card.height(), collapsed)
         card.close()
 
-    def test_batch_sub_panel_collapses_when_master_switch_off(self):
+    def test_batch_child_switches_follow_master_switch(self):
         from ok.gui.tasks.TaskCard import TaskCard
-
-        from src.ui.quest_cards import apply_quest_chrome, quest_sub_height
 
         self.fresh_store()
         task = _make_batch_stub()
@@ -302,18 +295,49 @@ class QuestCardTest(QuestUiTestBase):
         card = TaskCard(task, onetime=True)
         card.show()
         self.app.processEvents()
-        apply_quest_chrome(card)
 
-        self.assertEqual(quest_sub_height(card), 0)
-        self.assertEqual(card.height(), card.card.height())
+        for key in ("公会、小屋、酒馆", "自动PVP"):
+            self.assertTrue(card.config_widget_by_key[key].isHidden())
 
         # Turn the master switch back on through the real switch widget.
         master = card.config_widget_by_key["启用"]
         master.switch_button.setChecked(True)
         self.app.processEvents()
-        self.assertGreater(quest_sub_height(card), 0)
         for key in ("公会、小屋、酒馆", "自动PVP"):
-            self.assertIs(card.config_widget_by_key[key].parentWidget(), card._quest_sub_panel)
+            widget = card.config_widget_by_key[key]
+            self.assertFalse(widget.isHidden())
+            self.assertIs(widget.parentWidget(), card.view)
+        card.close()
+
+    def test_refresh_skips_widget_writes_when_nothing_changed(self):
+        from unittest import mock
+
+        from ok.gui.tasks.TaskCard import TaskCard
+
+        from src.ui import quest_cards
+
+        self.fresh_store()
+        task = _TaskStub(name="快速狩猎")
+        card = TaskCard(task, onetime=True)
+        card.show()
+        self.app.processEvents()
+        quest_cards.refresh_quest_card(card)
+
+        # A quiet 1s tick must not touch chrome (no height-for-width walks,
+        # no setFixedHeight, no page relayout).
+        with mock.patch.object(quest_cards, "apply_quest_chrome") as chrome:
+            quest_cards.refresh_quest_card(card)
+            chrome.assert_not_called()
+
+        # A real change (task starts running) must still refresh immediately.
+        task.enabled = True
+        task.info = {"当前子任务": "购买"}
+        with mock.patch.object(
+            quest_cards, "apply_quest_chrome", wraps=quest_cards.apply_quest_chrome
+        ) as chrome:
+            quest_cards.refresh_quest_card(card)
+            chrome.assert_called_once()
+        self.assertIn("进行中", card._quest_meta.text())
         card.close()
 
 
@@ -506,6 +530,33 @@ class RunPanelTest(QuestUiTestBase):
         self.assertEqual(run_state(task), "run")
         task.paused = True
         self.assertEqual(run_state(task), "pause")
+
+    def test_render_reuses_row_widgets_when_info_unchanged(self):
+        from src.ui.run_panel import RunPanel
+
+        self.fresh_store()
+        task = _TaskStub(name="快速狩猎")
+        task.enabled = False
+        task.start_time = 1000.0
+        task.info = {"状态": "快速狩猎完成。", "Log": "快速狩猎：完成"}
+        panel = RunPanel()
+        panel.render(task)
+        first_rows = [panel.rows.itemAt(i).widget() for i in range(panel.rows.count())]
+        self.assertTrue(first_rows)
+        self.assertEqual(panel.pill.text(), "已完成")
+
+        # The 1s timer re-renders a visible done panel forever; with unchanged
+        # info the row widgets must survive (no deleteLater/new-widget churn).
+        panel.render(task)
+        second_rows = [panel.rows.itemAt(i).widget() for i in range(panel.rows.count())]
+        self.assertEqual(first_rows, second_rows)
+        self.assertEqual(panel.pill.text(), "已完成")
+
+        task.info = {**task.info, "Log": "快速狩猎：新日志"}
+        panel.render(task)
+        third_rows = [panel.rows.itemAt(i).widget() for i in range(panel.rows.count())]
+        self.assertNotEqual(first_rows, third_rows)
+        panel.close()
 
 
 class TaskTabIntegrationTest(QuestUiTestBase):
