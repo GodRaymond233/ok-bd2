@@ -13,6 +13,7 @@ from src.compat.windows_graphics import enable_windows_10_wgc
 from src.game_path import calculate_pc_exe_path
 from src.interaction.BD2Interaction import BD2Interaction
 from src.process_feature import process_feature
+from src.ui.quest_ui import install_quest_ui
 from src.ui.responsive_task_config import install_responsive_task_config_ui
 
 # This marker is replaced with the Git tag when PyAppify creates the update
@@ -33,6 +34,7 @@ def runtime_version(project_file: Path | None = None) -> str:
 enable_windows_10_wgc()
 enable_starter_launch_uri()
 install_responsive_task_config_ui()
+install_quest_ui()
 
 DX11_OPTION = "Launch with DX11"
 
