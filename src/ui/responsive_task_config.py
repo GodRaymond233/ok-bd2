@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from weakref import ref
 
-from PySide6.QtCore import QPoint, QRect, QSize, Qt
+from PySide6.QtCore import QEasingCurve, QPoint, QPointF, QRect, QSize, Qt
 from PySide6.QtWidgets import (
-    QApplication,
     QHBoxLayout,
     QLabel,
     QLayout,
@@ -18,6 +17,15 @@ from qfluentwidgets import (
     isDarkTheme,
     qconfig,
 )
+
+
+def _build_expand_easing() -> QEasingCurve:
+    curve = QEasingCurve(QEasingCurve.Type.BezierSpline)
+    curve.addCubicBezierSegment(QPointF(0.4, 0.0), QPointF(0.2, 1.0), QPointF(1.0, 1.0))
+    return curve
+
+
+_EXPAND_EASING = _build_expand_easing()
 
 
 class WrappingFlowLayout(QLayout):
@@ -405,16 +413,41 @@ def install_responsive_task_config_ui():
         self._adjustViewSize()
         self.isExpand = is_expand
         self.setProperty("isExpand", is_expand)
-        self.setStyle(QApplication.style())
+        # Re-polish this card after changing the dynamic selector without
+        # replacing the application style for the whole widget subtree.
+        style = self.style()
+        style.unpolish(self)
+        style.polish(self)
+        self.update()
 
-        content_height = responsive_config_content_height(self)
+        # _adjustViewSize() has just measured the current content and applied
+        # it to the spacer.  Reuse that value instead of walking the layout a
+        # second time during the same toggle.
+        content_height = self.spaceWidget.height()
+
+        # Perceived smoothness is bounded by the largest single-frame jump, not
+        # by the tick rate: an ease that leaves the start value abruptly reads
+        # as a jump even at vsync cadence.  (0.4, 0, 0.2, 1) eases in from
+        # ~1px/frame, carries the travel through the middle, and cushions into
+        # the end over several sub-pixel frames.  Duration scales with distance
+        # so per-frame travel stays comparable across card sizes; collapse runs
+        # slightly quicker, which reads as responsive rather than hurried.
+        base_duration = min(420, max(280, int(240 + content_height * 0.28)))
+        self.expandAni.setEasingCurve(_EXPAND_EASING)
+
         if is_expand:
+            self.expandAni.setDuration(base_duration)
             self.verticalScrollBar().setValue(content_height)
             self.expandAni.setStartValue(content_height)
             self.expandAni.setEndValue(0)
         else:
+            # End on content_height, not scrollbar maximum(): height clamps at
+            # the header, so any value past content_height produces no motion.
+            # Overshooting it spends part of the duration on a frozen card and
+            # doubles the travel in the frames that do move.
+            self.expandAni.setDuration(int(base_duration * 0.85))
             self.expandAni.setStartValue(0)
-            self.expandAni.setEndValue(self.verticalScrollBar().maximum())
+            self.expandAni.setEndValue(content_height)
 
         self.expandAni.start()
         self.card.expandButton.setExpand(is_expand)

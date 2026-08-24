@@ -390,12 +390,12 @@ def _chain_config_card_methods() -> None:
     original_resize = ConfigCard.resizeEvent
 
     def quest_adjust_view_size(self):
-        # Content may have changed outside the animation window: re-measure.
-        # Mid-animation the content cannot change — reuse the cached height so
-        # a frame costs no height-for-width walk, and never write the total
-        # height while the animation owns it.
-        if not _animation_running(self):
-            self._quest_content_cache = None
+        # Content changes funnel through here (sub-config sync, config
+        # updates, resize).  The cache is always dropped — a funnel call is
+        # event-driven, so at most one frame re-walks and re-caches — but the
+        # total-height write still waits for the animation to release
+        # ownership, and the timing driver aborts onto the fresh geometry.
+        self._quest_content_cache = None
         content_height = _content_height(self)
         self.spaceWidget.setFixedHeight(content_height)
         if self.isExpand and not _animation_running(self):

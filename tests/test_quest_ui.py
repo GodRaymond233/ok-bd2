@@ -113,6 +113,7 @@ class _ExecutorStub:
 
 
 def _install_all():
+    from src.ui.expand_timing import install_expand_timing
     from src.ui.quest_banner import install_quest_tab_chrome
     from src.ui.quest_cards import install_quest_cards
     from src.ui.responsive_task_config import install_responsive_task_config_ui
@@ -122,6 +123,7 @@ def _install_all():
     install_quest_cards()
     install_run_panel()
     install_quest_tab_chrome()
+    install_expand_timing()
 
 
 class QuestUiTestBase(unittest.TestCase):
@@ -740,6 +742,171 @@ class NavSectionsTest(QuestUiTestBase):
         # Second install is a no-op.
         self.assertFalse(nav_sections.install_nav_sections(window))
         self.assertEqual(len(panel.headers), 2)
+
+
+class ExpandTimingTest(QuestUiTestBase):
+    def setUp(self):
+        from src.ui import expand_timing
+
+        expand_timing.set_expand_timing_enabled(True)
+
+    def tearDown(self):
+        from src.ui import expand_timing
+
+        expand_timing.set_expand_timing_enabled(True)
+
+    def _make_card(self):
+        from ok.gui.tasks.TaskCard import TaskCard
+
+        self.fresh_store()
+        card = TaskCard(_make_batch_stub(), onetime=True)
+        card.resize(1000, card.height())
+        card.show()
+        self.app.processEvents()
+        return card
+
+    def test_drive_honors_sole_writer_gate_and_cleans_shadows(self):
+        """While the driver animates, the sole-writer gates must see the
+        animation as running; after it ends every instance shadow is gone."""
+        from PySide6.QtTest import QTest
+
+        from src.ui import expand_timing
+        from src.ui.quest_cards import _animation_running
+
+        card = self._make_card()
+        collapsed = card.height()
+        ani = card.expandAni
+        card.setExpand(True)
+        QTest.qWait(60)
+        mid_gate = _animation_running(card)
+        mid_driver = expand_timing._DRIVERS.get(card) is not None
+        QTest.qWait(420)
+
+        self.assertTrue(mid_gate, "deferral gates must hold mid-drive")
+        self.assertTrue(mid_driver)
+        self.assertFalse(_animation_running(card))
+        self.assertIsNone(expand_timing._DRIVERS.get(card))
+        self.assertNotIn("state", ani.__dict__)
+        self.assertNotIn("start", ani.__dict__)
+        from PySide6.QtCore import QAbstractAnimation
+
+        self.assertEqual(ani.state(), QAbstractAnimation.Stopped)
+        self.assertEqual(card.verticalScrollBar().value(), 0)
+        self.assertGreater(card.height(), collapsed + 100)
+        card.close()
+
+    def test_reversal_mid_drive_lands_opposite_terminal(self):
+        from PySide6.QtTest import QTest
+
+        card = self._make_card()
+        collapsed = card.height()
+        card.setExpand(True)
+        QTest.qWait(60)  # mid-drive
+        card.setExpand(False)
+        QTest.qWait(420)
+
+        self.assertEqual(card.height(), collapsed)
+        # The driver must land exactly on the configured end value, which for
+        # a collapse is the measured content height.
+        self.assertEqual(card.verticalScrollBar().value(), card.expandAni.endValue())
+        card.setExpand(True)
+        QTest.qWait(420)
+        self.assertEqual(card.verticalScrollBar().value(), 0)
+        card.close()
+
+    def test_kill_switch_runs_native_animation(self):
+        from PySide6.QtCore import QAbstractAnimation
+        from PySide6.QtTest import QTest
+
+        from src.ui import expand_timing
+
+        card = self._make_card()
+        collapsed = card.height()
+        expand_timing.set_expand_timing_enabled(False)
+        card.setExpand(True)
+        self.assertEqual(card.expandAni.state(), QAbstractAnimation.Running)
+        self.assertIsNone(expand_timing._DRIVERS.get(card))
+        QTest.qWait(450)
+        self.assertGreater(card.height(), collapsed + 100)
+        card.close()
+
+    def test_mid_drive_resize_lands_recomputed_terminal(self):
+        from PySide6.QtTest import QTest
+
+        from src.ui import expand_timing
+        from src.ui.quest_cards import _animation_running, _content_height
+
+        card = self._make_card()
+        header = card.card.height()
+        card.setExpand(True)
+        QTest.qWait(60)  # mid-drive
+        card.resize(760, card.height())
+        QTest.qWait(60)
+
+        # The geometry change aborts the drive and lands the expand terminal
+        # re-measured at the new width, long before the original duration.
+        self.assertFalse(_animation_running(card))
+        self.assertIsNone(expand_timing._DRIVERS.get(card))
+        self.assertEqual(card.verticalScrollBar().value(), 0)
+        self.assertEqual(card.height(), header + _content_height(card))
+
+        card.setExpand(False)
+        QTest.qWait(60)  # mid-collapse
+        card.resize(1000, card.height())
+        QTest.qWait(60)
+
+        # Collapse terminal must be the content height re-measured after the
+        # resize, not the value captured at toggle time.
+        self.assertIsNone(expand_timing._DRIVERS.get(card))
+        self.assertEqual(card.height(), header)
+        self.assertEqual(card.verticalScrollBar().value(), _content_height(card))
+        card.close()
+
+    def test_mid_drive_content_change_lands_recomputed_terminal(self):
+        from PySide6.QtTest import QTest
+
+        from src.ui import expand_timing
+        from src.ui.quest_cards import _content_height
+
+        card = self._make_card()
+        header = card.card.height()
+        card.setExpand(True)
+        QTest.qWait(60)  # mid-drive
+        spacer_before = card.spaceWidget.height()
+
+        # A config row disappearing goes through the framework funnel:
+        # re-measure with the cache dropped, spacer updated, drive aborted.
+        card.config_widget_by_key["自动PVP"].setVisible(False)
+        card._adjustViewSize()
+        self.assertLess(card.spaceWidget.height(), spacer_before)
+        QTest.qWait(60)
+
+        self.assertIsNone(expand_timing._DRIVERS.get(card))
+        self.assertEqual(card.verticalScrollBar().value(), 0)
+        self.assertEqual(card.height(), header + _content_height(card))
+        card.close()
+
+    def test_adjust_view_size_mid_drive_keeps_animation_sole_writer(self):
+        from PySide6.QtTest import QTest
+
+        card = self._make_card()
+        card.setExpand(True)
+        QTest.qWait(60)  # mid-drive
+        mid_height = card.height()
+        card._adjustViewSize()
+
+        # A same-geometry re-measure must not write the card height mid-drive;
+        # the spacer stays the content funnel for the abort probe.
+        self.assertEqual(card.height(), mid_height)
+        self.assertLess(
+            mid_height, card.card.height() + card.spaceWidget.height()
+        )
+
+        QTest.qWait(420)
+        self.assertEqual(
+            card.height(), card.card.height() + card.spaceWidget.height()
+        )
+        card.close()
 
 
 if __name__ == "__main__":
