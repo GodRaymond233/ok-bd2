@@ -85,28 +85,30 @@ SHOP_MODE_TIMEOUT = 4.0
 SHOP_MODE_INTERVAL = 0.25
 SHOP_MODE_SWITCH_MAX_CLICKS = 3
 # 卖：在对应卡带页用 OCR 定位商品名，用真实模板定位 ↑120% 标志。
-# 商品名识别框中心向左偏移量（1920×1080 参考像素，运行时按客户区宽度同比缩放）。
-SALE_ITEM_NAME_LEFT_OFFSET_X = 115
+# 商品名识别框左侧的局部 ↑120% 搜索区（1920×1080 参考像素，运行时按
+# 客户区宽高分别同比缩放）。标志识别必须由商品名 OCR 驱动，禁止脱离商品
+# 在全画面搜索。
+SALE_MARKER_SEARCH_WIDTH = 150
+SALE_MARKER_VERTICAL_PADDING = 12
 # 全帧 OCR 目标高度：仅用于商品名识别重试。↑120% 标志本身不再依赖 OCR。
 SALE_FULL_PAGE_OCR_TARGET_HEIGHT = 900
 # 售出一组后的短暂重排/动画仍可能让 900 高度漏读商品名；
 # 保持 900 优先，并在同一帧追加相邻 OCR 高度。
 SALE_FULL_PAGE_OCR_TARGET_HEIGHTS = (900, 840, 960)
-# Deprecated compatibility re-export for older modules.  Sale location must
-# use SALE_120_PERCENT_MARKER_TEMPLATE instead of OCR for ↑120%.
-SALE_120_PERCENT_PATTERN = re.compile(r"(?<!\d)120\s*%")
-# 模板来自真实出售页 1920×1080 ROI (493,563,52,14)。720p 下采样时，
-# 不同 marker 的亚像素相位会让单一缩放漏检；相邻缩放可覆盖三个真实标志。
-SALE_120_PERCENT_MARKER_TEMPLATE = TemplateSpec(
-    "sale_120_percent_marker",
-    "shop/sale_120_percent_marker.png",
-    0.88,
+# beta 模板移除了人工标注中不稳定的数字像素，仅在商品名左侧局部 ROI 内
+# 使用；全局误匹配由局部空间门禁阻断。
+SALE_120_PERCENT_MARKER_BETA_TEMPLATE = TemplateSpec(
+    "sale_120_percent_marker_beta",
+    "shop/sale_120_percent_marker_beta_transparent.png",
+    0.80,
     scale_ratios=(0.95, 0.99, 1.0, 1.005, 1.05),
     min_pixel_score=0.93,
-    minimum_safe_threshold=0.88,
+    minimum_safe_threshold=0.80,
 )
+SALE_120_PERCENT_MARKER_TEMPLATE = SALE_120_PERCENT_MARKER_BETA_TEMPLATE
 SALE_120_PERCENT_MARKER_MAX_RESULTS = 40
 SALE_120_PERCENT_MARKER_PEAK_RADIUS = 5
+SALE_MARKER_MIN_MARGIN = 0.03
 SALE_DIALOG_REGION = (
     470 / 1920,
     294 / 1080,

@@ -46,7 +46,9 @@ from src.tasks.map_trade.trader_constants import (  # noqa: F401
     SALE_DIALOG_TITLE_REGION,
     SALE_FULL_PAGE_OCR_TARGET_HEIGHT,
     SALE_FULL_PAGE_OCR_TARGET_HEIGHTS,
-    SALE_ITEM_NAME_LEFT_OFFSET_X,
+    SALE_MARKER_MIN_MARGIN,
+    SALE_MARKER_SEARCH_WIDTH,
+    SALE_MARKER_VERTICAL_PADDING,
     SALE_MAX_POINT,
     SALE_MIN_POINT,
     SALE_OCR_INTERVAL,
@@ -94,6 +96,7 @@ from src.tasks.map_trade.trader_constants import (  # noqa: F401
     split_items,
 )
 from src.tasks.map_trade.vision import normalize_text
+from src.utils.image_utils import to_gray
 
 
 class SellFlowMixin:
@@ -387,7 +390,7 @@ class SellFlowMixin:
             if monotonic() >= end_at:
                 break
             self.task.sleep(interval)
-        self.task.log_warning(f"卖：{entry.item}全画面多目标定位失败：{last_reason}")
+        self.task.log_warning(f"卖：{entry.item}商品名与左侧120%局部定位失败：{last_reason}")
         return None
 
     @staticmethod
@@ -402,8 +405,61 @@ class SellFlowMixin:
             for name in normalized_names
         )
 
-    def _sale_template_percent_boxes(self, frame: np.ndarray) -> list[object]:
-        """Return real rendered ↑120% markers from the shared template matcher."""
+    @classmethod
+    def _sale_marker_search_roi(
+        cls,
+        name_box: object,
+        frame_shape: tuple[int, ...],
+    ) -> tuple[int, int, int, int] | None:
+        geometry = cls._ocr_box_geometry(name_box)
+        if geometry is None:
+            return None
+        x, y, width, height = geometry
+        frame_height, frame_width = frame_shape[:2]
+        scale_x = frame_width / 1920.0
+        scale_y = frame_height / 1080.0
+        search_width = round(SALE_MARKER_SEARCH_WIDTH * scale_x)
+        padding = round(SALE_MARKER_VERTICAL_PADDING * scale_y)
+        left = max(0, round(x) - search_width)
+        top = max(0, round(y) - padding)
+        right = min(frame_width, round(x))
+        bottom = min(frame_height, round(y + height) + padding)
+        if right <= left or bottom <= top:
+            return None
+        return left, top, right - left, bottom - top
+
+    @staticmethod
+    def _sale_roi_overlap_ratio(
+        first: tuple[int, int, int, int],
+        second: tuple[int, int, int, int],
+    ) -> float:
+        first_left, first_top, first_width, first_height = first
+        second_left, second_top, second_width, second_height = second
+        intersection_width = max(
+            0,
+            min(first_left + first_width, second_left + second_width)
+            - max(first_left, second_left),
+        )
+        intersection_height = max(
+            0,
+            min(first_top + first_height, second_top + second_height)
+            - max(first_top, second_top),
+        )
+        smaller_area = min(
+            first_width * first_height,
+            second_width * second_height,
+        )
+        if smaller_area <= 0:
+            return 0.0
+        return (intersection_width * intersection_height) / smaller_area
+
+    def _sale_template_percent_boxes(
+        self,
+        frame: np.ndarray,
+        search_roi: tuple[int, int, int, int],
+        gray_frame: np.ndarray,
+    ) -> list[object]:
+        """Return ↑120% markers only from one item-name-driven ROI."""
 
         matches = self.vision.match_all(
             frame,
@@ -411,6 +467,8 @@ class SellFlowMixin:
             minimum_score=self.vision.threshold_for(SALE_120_PERCENT_MARKER_TEMPLATE),
             peak_radius=SALE_120_PERCENT_MARKER_PEAK_RADIUS,
             max_results=SALE_120_PERCENT_MARKER_MAX_RESULTS,
+            search_roi=search_roi,
+            gray_frame=gray_frame,
         )
         boxes = [
             SimpleNamespace(
@@ -423,14 +481,7 @@ class SellFlowMixin:
             )
             for result in matches
         ]
-        self._status(
-            "出售120%模板",
-            f"命中{len(boxes)}个："
-            + "、".join(
-                f"({box.x + box.width // 2},{box.y + box.height // 2})"
-                for box in boxes
-            ),
-        )
+        boxes.sort(key=lambda box: float(box.confidence), reverse=True)
         return boxes
 
     def _locate_sale_items(
@@ -440,27 +491,26 @@ class SellFlowMixin:
     ) -> list[SaleItemCandidate]:
         """Return sale cards confirmed by OCR names and marker templates.
 
-        OCR is used only to find candidate item names.  The left-side ↑120%
+        OCR is used only to find candidate item names. The left-side ↑120%
         marker must come from the real rendered template and is paired
-        one-to-one with that name.  This avoids treating a corrupted numeric
-        OCR string such as ``4120%`` as a premium marker.
+        one-to-one with that name. This avoids treating a corrupted numeric OCR
+        string such as ``4120%`` as a premium marker.
         """
 
-        _height, width = frame.shape[:2]
         names = (entry.item, *entry.aliases, *ITEM_ALIASES.get(entry.item, ()))
         normalized_names = tuple(self._normal(value) for value in names if value)
-        # The deduplicator is geometry-only; template boxes expose the same
-        # x/y/width/height fields as OCR boxes.
-        percent_boxes = self._deduplicate_ocr_boxes(
-            self._sale_template_percent_boxes(frame)
-        )
-        if not percent_boxes:
-            self._last_sale_unavailable = False
-            self._last_sale_reason = "↑120%模板未命中"
-            return []
         saw_item_name = False
         saw_ocr_output = False
+        specific_local_failure = False
         last_reason = ""
+        gray_frame: np.ndarray | None = None
+        searched_roi_results: list[
+            tuple[tuple[int, int, int, int], list[object]]
+        ] = []
+        roi_searches = 0
+        reused_rois = 0
+        marker_hits = 0
+
         for target_height in SALE_FULL_PAGE_OCR_TARGET_HEIGHTS:
             name_boxes: list[object] = []
             ocr_boxes = self.vision.ocr_boxes(
@@ -484,46 +534,93 @@ class SellFlowMixin:
             name_boxes = self._deduplicate_ocr_boxes(name_boxes)
             if not name_boxes:
                 last_reason = "全画面OCR商品名框几何无效"
+                specific_local_failure = True
                 continue
 
-            offset_x = round(SALE_ITEM_NAME_LEFT_OFFSET_X * width / 1920)
             ordered_names = sorted(
                 name_boxes,
                 key=lambda box: (
                     self._ocr_box_center(box) or (10**9, 10**9)
                 )[1:],
             )
-            possible_matches: dict[int, list[int]] = {}
-            percent_to_names: dict[int, list[int]] = {}
-            for name_index, name_box in enumerate(ordered_names):
-                center = self._ocr_box_center(name_box)
-                if center is None:
-                    continue
-                probe = (center[0] - offset_x, center[1])
-                matches = [
-                    index
-                    for index, percent_box in enumerate(percent_boxes)
-                    if self._ocr_box_contains(percent_box, probe)
-                ]
-                possible_matches[name_index] = matches
-                for percent_index in matches:
-                    percent_to_names.setdefault(percent_index, []).append(name_index)
-
             candidates: list[SaleItemCandidate] = []
-            for name_index, name_box in enumerate(ordered_names):
+            for name_box in ordered_names:
                 center = self._ocr_box_center(name_box)
                 if center is None:
                     continue
-                matches = possible_matches.get(name_index, [])
-                if len(matches) == 1 and len(percent_to_names[matches[0]]) == 1:
-                    percent_box = percent_boxes[matches[0]]
-                    candidates.append(
-                        SaleItemCandidate(
-                            center=center,
-                            name_box=name_box,
-                            percent_box=percent_box,
+                search_roi = self._sale_marker_search_roi(name_box, frame.shape)
+                if search_roi is None:
+                    last_reason = "商品名或局部模板框几何无效"
+                    specific_local_failure = True
+                    continue
+
+                cached_boxes = next(
+                    (
+                        boxes
+                        for searched_roi, boxes in searched_roi_results
+                        if self._sale_roi_overlap_ratio(search_roi, searched_roi) >= 0.90
+                    ),
+                    None,
+                )
+                if cached_boxes is None:
+                    if gray_frame is None:
+                        gray_frame = to_gray(frame)
+                    percent_boxes = self._deduplicate_ocr_boxes(
+                        self._sale_template_percent_boxes(
+                            frame,
+                            search_roi,
+                            gray_frame,
                         )
                     )
+                    searched_roi_results.append((search_roi, percent_boxes))
+                    roi_searches += 1
+                    marker_hits += len(percent_boxes)
+                else:
+                    roi_left, roi_top, roi_width, roi_height = search_roi
+                    roi_right = roi_left + roi_width
+                    roi_bottom = roi_top + roi_height
+                    percent_boxes = [
+                        box
+                        for box in cached_boxes
+                        if roi_left <= box.x
+                        and roi_top <= box.y
+                        and box.x + box.width <= roi_right
+                        and box.y + box.height <= roi_bottom
+                    ]
+                    reused_rois += 1
+
+                if not percent_boxes:
+                    if not specific_local_failure:
+                        last_reason = "商品名左侧局部ROI未命中↑120%模板"
+                    continue
+                if len(percent_boxes) > 1 and (
+                    percent_boxes[0].confidence - percent_boxes[1].confidence
+                    < SALE_MARKER_MIN_MARGIN
+                ):
+                    last_reason = "商品名左侧局部ROI模板候选不唯一"
+                    specific_local_failure = True
+                    continue
+
+                percent_box = percent_boxes[0]
+                _, name_y, _, name_height = self._ocr_box_geometry(name_box)
+                _, marker_y, _, marker_height = self._ocr_box_geometry(percent_box)
+                vertical_overlap = min(
+                    name_y + name_height,
+                    marker_y + marker_height,
+                ) - max(name_y, marker_y)
+                # At non-16:9 sizes independent axis scaling can leave a marker
+                # inside the padded ROI without overlapping the item-name row.
+                if vertical_overlap <= 0:
+                    last_reason = "局部↑120%模板与商品名框几何关系非法"
+                    specific_local_failure = True
+                    continue
+                candidates.append(
+                    SaleItemCandidate(
+                        center=center,
+                        name_box=name_box,
+                        percent_box=percent_box,
+                    )
+                )
 
             if candidates:
                 self._last_sale_unavailable = False
@@ -532,23 +629,29 @@ class SellFlowMixin:
                     key=lambda candidate: (candidate.center[1], candidate.center[0])
                 )
                 self._status(
+                    "出售120%局部模板",
+                    f"{entry.item}搜索{roi_searches}个ROI，复用{reused_rois}个，"
+                    f"命中{marker_hits}个模板。",
+                )
+                self._status(
                     "出售商品定位",
                     f"{entry.item}候选{len(candidates)}组："
                     + "、".join(str(candidate.center) for candidate in candidates),
                 )
                 return candidates
-            last_reason = (
-                "商品名左侧参考像素未落在↑120%模板框内"
-            )
 
+        self._status(
+            "出售120%局部模板",
+            f"{entry.item}搜索{roi_searches}个ROI，复用{reused_rois}个，"
+            f"命中{marker_hits}个模板。",
+        )
         if not saw_ocr_output:
             self._last_sale_unavailable = False
             self._last_sale_reason = "全画面OCR未返回任何文本"
         else:
-            # Remaining markers can belong to other sale cards. Treat this
-            # entry as unavailable only after every name-OCR height fails;
-            # a template miss has already returned above and can never be
-            # converted into a sold-out result by the caller.
+            # OCR returned page text, but every height missed this item name: the
+            # caller may treat the entry as unavailable. Once the name is seen,
+            # any local template or geometry miss remains a recognition failure.
             self._last_sale_unavailable = not saw_item_name
             self._last_sale_reason = last_reason or "全画面OCR未形成可用商品候选"
         return []

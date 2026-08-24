@@ -190,15 +190,32 @@ class Vision:
         minimum_score: float,
         peak_radius: int = 5,
         max_results: int = 60,
+        search_roi: tuple[int, int, int, int] | None = None,
+        gray_frame: np.ndarray | None = None,
     ) -> tuple[MatchResult, ...]:
-        """Return independent local template peaks in full-client coordinates."""
+        """Return independent template peaks in full-client coordinates.
+
+        ``search_roi`` is an optional x/y/width/height crop supplied by a
+        higher-level recognizer. Template scaling still uses the full frame,
+        while returned positions remain full-frame coordinates. ``gray_frame``
+        lets one polling pass reuse a single full-frame conversion across ROIs.
+        """
 
         template, mask = self._load(spec)
-        gray = self._gray(frame)
+        gray = gray_frame if gray_frame is not None else self._gray(frame)
         frame_height, frame_width = gray.shape[:2]
         left = top = 0
         search = gray
-        if offline_template_uses_main_region(spec.file_name):
+        if search_roi is not None:
+            roi_x, roi_y, roi_width, roi_height = search_roi
+            roi_right = int(roi_x) + max(0, int(roi_width))
+            roi_bottom = int(roi_y) + max(0, int(roi_height))
+            left = max(0, min(frame_width, int(roi_x)))
+            top = max(0, min(frame_height, int(roi_y)))
+            right = max(left, min(frame_width, roi_right))
+            bottom = max(top, min(frame_height, roi_bottom))
+            search = gray[top:bottom, left:right]
+        elif offline_template_uses_main_region(spec.file_name):
             left, top, right, bottom = offline_template_search_region(
                 spec.file_name,
                 frame_width,

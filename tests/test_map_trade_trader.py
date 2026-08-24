@@ -84,6 +84,7 @@ from src.tasks.map_trade.trader import (
     BUY_TO_SELL_PRE_CLICK_DELAY,
     BUY_TO_SELL_SOLD_OUT_STABLE_HITS,
     BUY_TO_SELL_SOLD_OUT_TEMPLATE,
+    SALE_120_PERCENT_MARKER_BETA_TEMPLATE,
     SALE_120_PERCENT_MARKER_MAX_RESULTS,
     SALE_120_PERCENT_MARKER_PEAK_RADIUS,
     SALE_120_PERCENT_MARKER_TEMPLATE,
@@ -91,7 +92,6 @@ from src.tasks.map_trade.trader import (
     SALE_DIALOG_REGION,
     SALE_DIALOG_TITLE_REGION,
     SALE_FULL_PAGE_OCR_TARGET_HEIGHTS,
-    SALE_ITEM_NAME_LEFT_OFFSET_X,
     SALE_MAX_POINT,
     SALE_OCR_INTERVAL,
     SALE_SLIDER_REGION,
@@ -116,7 +116,20 @@ class SellFlowTest(unittest.TestCase):
 
         def match_all(frame, spec, **kwargs):
             match_calls.append((frame, spec, kwargs))
-            return tuple(markers)
+            search_roi = kwargs.get("search_roi")
+            if search_roi is None:
+                return tuple(markers)
+            left, top, width, height = search_roi
+            right = left + width
+            bottom = top + height
+            return tuple(
+                marker
+                for marker in markers
+                if left <= marker.position[0]
+                and top <= marker.position[1]
+                and marker.position[0] + marker.size[0] <= right
+                and marker.position[1] + marker.size[1] <= bottom
+            )
 
         trader.vision = SimpleNamespace(
             ocr_boxes=ocr_boxes,
@@ -415,7 +428,7 @@ class SellFlowTest(unittest.TestCase):
 
         self.assertFalse(trader.run_sell())
 
-    def test_locate_sale_items_match_name_and_120_percent_with_left_offset(self):
+    def test_locate_sale_items_matches_120_percent_only_in_each_name_left_roi(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         boxes = [
             self._text_box("4120%", 492, 451, 56, 13),
@@ -444,20 +457,21 @@ class SellFlowTest(unittest.TestCase):
             [candidate.center for candidate in candidates],
         )
         self.assertEqual((493, 563), (candidates[0].percent_box.x, candidates[0].percent_box.y))
-        self.assertEqual(115, SALE_ITEM_NAME_LEFT_OFFSET_X)
-        self.assertEqual(1, len(match_calls))
-        self.assertIs(frame, match_calls[0][0])
-        self.assertIs(SALE_120_PERCENT_MARKER_TEMPLATE, match_calls[0][1])
-        self.assertEqual(
-            {
-                "minimum_score": SALE_120_PERCENT_MARKER_TEMPLATE.threshold,
-                "peak_radius": SALE_120_PERCENT_MARKER_PEAK_RADIUS,
-                "max_results": SALE_120_PERCENT_MARKER_MAX_RESULTS,
-            },
-            match_calls[0][2],
+        self.assertEqual(3, len(match_calls))
+        self.assertTrue(all(call[0] is frame for call in match_calls))
+        self.assertTrue(
+            all(call[1] is SALE_120_PERCENT_MARKER_TEMPLATE for call in match_calls)
         )
+        self.assertEqual(
+            [(463, 548, 150, 47), (795, 548, 150, 47), (1127, 548, 150, 47)],
+            [call[2]["search_roi"] for call in match_calls],
+        )
+        for _frame, _spec, kwargs in match_calls:
+            self.assertEqual(SALE_120_PERCENT_MARKER_TEMPLATE.threshold, kwargs["minimum_score"])
+            self.assertEqual(SALE_120_PERCENT_MARKER_PEAK_RADIUS, kwargs["peak_radius"])
+            self.assertEqual(SALE_120_PERCENT_MARKER_MAX_RESULTS, kwargs["max_results"])
 
-    def test_locate_sale_items_reject_when_probe_not_in_120_percent_box(self):
+    def test_locate_sale_items_rejects_marker_outside_name_left_roi(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         boxes = [
             self._text_box("水果罐头", 613, 560, 42, 23),
@@ -476,7 +490,7 @@ class SellFlowTest(unittest.TestCase):
         )
         self.assertFalse(trader._last_sale_unavailable)
         self.assertEqual(
-            "商品名左侧参考像素未落在↑120%模板框内",
+            "商品名左侧局部ROI未命中↑120%模板",
             trader._last_sale_reason,
         )
 
@@ -545,21 +559,21 @@ class SellFlowTest(unittest.TestCase):
         self.assertEqual([900, 840], target_heights)
         self.assertFalse(trader._last_sale_unavailable)
 
-    def test_locate_sale_items_ignores_bad_percent_ocr_when_template_misses(self):
+    def test_locate_sale_items_ignores_bad_percent_ocr_when_local_template_misses(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         target_heights = []
         boxes = [
             self._text_box("4120%", 492, 451, 56, 13),
             self._text_box("4129", 824, 451, 56, 13),
             self._text_box("120", 1156, 451, 52, 14),
-            self._text_box("胡萝卜", 945, 560, 42, 23),
+            self._text_box("水果罐头", 945, 560, 42, 23),
         ]
 
         def ocr_boxes(_frame, _name, target_height=900):
             target_heights.append(target_height)
             return boxes
 
-        trader, _match_calls = self._make_sale_template_trader(ocr_boxes, ())
+        trader, match_calls = self._make_sale_template_trader(ocr_boxes, ())
 
         self.assertEqual(
             [],
@@ -568,9 +582,13 @@ class SellFlowTest(unittest.TestCase):
                 frame,
             ),
         )
-        self.assertEqual([], target_heights)
+        self.assertEqual([900, 840, 960], target_heights)
+        self.assertEqual(1, len(match_calls))
         self.assertFalse(trader._last_sale_unavailable)
-        self.assertEqual("↑120%模板未命中", trader._last_sale_reason)
+        self.assertEqual(
+            "商品名左侧局部ROI未命中↑120%模板",
+            trader._last_sale_reason,
+        )
 
     def test_locate_sale_items_with_no_ocr_output_is_not_marked_sold_out(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -593,11 +611,34 @@ class SellFlowTest(unittest.TestCase):
         self.assertFalse(trader._last_sale_unavailable)
         self.assertEqual("全画面OCR未返回任何文本", trader._last_sale_reason)
 
-    def test_locate_sale_items_scale_left_offset_at_720p(self):
+    def test_name_missed_with_other_page_text_is_marked_unavailable(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        target_heights = []
+        other_item = self._text_box("胡萝卜", 613, 560, 42, 23)
+        trader, match_calls = self._make_sale_template_trader(
+            lambda _frame, _name, target_height=900: (
+                target_heights.append(target_height) or [other_item]
+            ),
+            (self._marker_result(493, 563),),
+        )
+
+        self.assertEqual(
+            [],
+            trader._locate_sale_items(
+                CalendarEntry("白糖", "S2:苍蓝魔女"),
+                frame,
+            ),
+        )
+        self.assertEqual([900, 840, 960], target_heights)
+        self.assertEqual([], match_calls)
+        self.assertTrue(trader._last_sale_unavailable)
+        self.assertEqual("全画面OCR未识别到商品名", trader._last_sale_reason)
+
+    def test_locate_sale_items_scales_left_roi_at_720p(self):
         frame = np.zeros((720, 1280, 3), dtype=np.uint8)
         boxes = [
             self._text_box("4120%", 328, 375, 35, 9),
-            # 720p：偏移 115*1280/1920≈77；商品名中心(430,379) 左移77 → (353,379)。
+            # 720p 下 150px 参考搜索宽度缩放为 100px，仍覆盖名称左侧标志。
             self._text_box("水果罐头", 409, 372, 42, 15),
         ]
         trader, _match_calls = self._make_sale_template_trader(
@@ -637,7 +678,7 @@ class SellFlowTest(unittest.TestCase):
             [candidate.center for candidate in candidates],
         )
 
-    def test_locate_sale_items_rejects_ambiguous_one_to_many_pairing(self):
+    def test_locate_sale_items_rejects_ambiguous_local_template_candidates(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         boxes = [
             self._text_box("兽肉", 598, 560, 44, 23),
@@ -645,13 +686,16 @@ class SellFlowTest(unittest.TestCase):
         ]
         trader, _match_calls = self._make_sale_template_trader(
             lambda *_args, **_kwargs: boxes,
-            (self._marker_result(480, 550, 220, 40),),
+            (
+                self._marker_result(480, 562),
+                self._marker_result(490, 562),
+            ),
         )
 
         self.assertEqual([], trader._locate_sale_items(CalendarEntry("兽肉", "S3"), frame))
         self.assertFalse(trader._last_sale_unavailable)
         self.assertEqual(
-            "商品名左侧参考像素未落在↑120%模板框内",
+            "商品名左侧局部ROI模板候选不唯一",
             trader._last_sale_reason,
         )
 
@@ -1185,6 +1229,7 @@ class TradeAssetsTest(unittest.TestCase):
                 QUICK_SWITCH_TEMPLATE.file_name,
                 MERCHANT_CLICK_LOCATION_TEMPLATE.file_name,
                 BUY_TO_SELL_SOLD_OUT_TEMPLATE.file_name,
+                SALE_120_PERCENT_MARKER_BETA_TEMPLATE.file_name,
                 SALE_120_PERCENT_MARKER_TEMPLATE.file_name,
             ]
         )
@@ -1262,6 +1307,27 @@ class TradeAssetsTest(unittest.TestCase):
                         result.pixel_score,
                         SALE_120_PERCENT_MARKER_TEMPLATE.min_pixel_score,
                     )
+
+    def test_beta_marker_matches_inside_name_driven_local_roi_with_full_frame_position(self):
+        fixture_path = (
+            ROOT / "tests" / "fixtures" / "map_trade" / "trade_shop" / "sale_120_markers_fhd.png"
+        )
+        frame = cv2.imread(str(fixture_path), cv2.IMREAD_COLOR)
+        self.assertIsNotNone(frame)
+        task = SimpleNamespace(config={}, vision_threshold_key="跑图跑商识图阈值")
+        vision = Vision(task)
+        results = vision.match_all(
+            frame,
+            SALE_120_PERCENT_MARKER_BETA_TEMPLATE,
+            minimum_score=SALE_120_PERCENT_MARKER_BETA_TEMPLATE.threshold,
+            peak_radius=SALE_120_PERCENT_MARKER_PEAK_RADIUS,
+            max_results=SALE_120_PERCENT_MARKER_MAX_RESULTS,
+            search_roi=(463, 548, 150, 47),
+        )
+
+        self.assertEqual([(493, 563)], [result.position for result in results])
+        self.assertGreaterEqual(results[0].score, 0.99)
+        self.assertGreaterEqual(results[0].pixel_score, 0.97)
 
     def test_sold_out_template_separates_recorded_buy_and_sell_frames(self):
         fixture_root = ROOT / "tests" / "fixtures" / "map_trade" / "trade_shop"
