@@ -8,8 +8,9 @@ from ok import Box
 from ok.util.GlobalConfig import create_basic_options
 
 from src import GAME_EXE, HWND_CLASS
+from src.compat.main_window_geometry import install_main_window_geometry_debounce
 from src.compat.starter_launch import enable_starter_launch_uri
-from src.compat.windows_graphics import enable_windows_10_wgc
+from src.compat.windows_graphics import WGC_MIN_CAPTURE_SIZE, enable_windows_10_wgc
 from src.game_path import calculate_pc_exe_path
 from src.interaction.BD2Interaction import BD2Interaction
 from src.process_feature import process_feature
@@ -33,6 +34,7 @@ def runtime_version(project_file: Path | None = None) -> str:
 
 enable_windows_10_wgc()
 enable_starter_launch_uri()
+install_main_window_geometry_debounce()
 install_responsive_task_config_ui()
 install_quest_ui()
 
@@ -103,7 +105,7 @@ config = {
     },
     "supported_resolution": {
         "ratio": "16:9",
-        "min_size": (1280, 720),
+        "min_size": WGC_MIN_CAPTURE_SIZE,
         "resize_to": [
             (3840, 2160),
             (2560, 1440),

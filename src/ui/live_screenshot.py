@@ -379,6 +379,17 @@ def install_live_screenshot(start_tab) -> None:
         if card is not None:
             card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
             side_layout.addWidget(card, 0)
+
+    from src.ui.manual_resolution import ManualResolutionWidget
+
+    manual_resolution_widget = ManualResolutionWidget(side_column)
+    manual_resolution_card = Card(
+        "手动调整分辨率",
+        manual_resolution_widget,
+        stretch=0,
+    )
+    manual_resolution_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+    side_layout.addWidget(manual_resolution_card, 0)
     side_layout.addStretch(1)
     lower_layout.addWidget(side_column, 1)
 
@@ -388,6 +399,8 @@ def install_live_screenshot(start_tab) -> None:
     start_tab.live_screenshot_widget = live_widget
     start_tab.live_screenshot_card = live_card
     start_tab.live_screenshot_row = lower_row
+    start_tab.manual_resolution_widget = manual_resolution_widget
+    start_tab.manual_resolution_card = manual_resolution_card
     start_tab._bd2_live_screenshot_installed = True
 
 
