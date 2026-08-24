@@ -310,6 +310,12 @@ class ResponsiveTaskConfigUiTest(unittest.TestCase):
         card.close()
 
     def test_quick_hunt_task_card_restores_branch_configuration(self):
+        # The product chain hides maintenance rows (阈值/等待秒数/测试);
+        # install it explicitly so this module is order-independent.
+        from src.ui.hide_config_rows import install_hide_config_rows
+
+        install_hide_config_rows()
+
         task = object.__new__(QuickHuntTask)
         task.default_config = {}
         task.config_description = {}
@@ -342,22 +348,26 @@ class ResponsiveTaskConfigUiTest(unittest.TestCase):
             "快速狩猎双倍策略",
             "快速狩猎资源倾向",
             "快速狩猎米饭分配",
-            "快速狩猎入口测试",
-            "快速狩猎菜单测试",
-            "快速狩猎圣石测试",
-            "快速狩猎完整测试",
         ):
             self.assertIn(key, card.config_widget_by_key)
             self.assertTrue(card.config_widget_by_key[key].isVisibleTo(card))
         self.assertNotIn("快速狩猎章节图", card.config_widget_by_key)
-        button_keys = (
+        # Maintenance rows are hidden; their config values stay readable.
+        for key in (
+            "快速狩猎模板阈值",
+            "快速狩猎像素相似度阈值",
+            "快速狩猎界面等待秒数",
+            "快速狩猎结算等待秒数",
             "快速狩猎入口测试",
             "快速狩猎菜单测试",
             "快速狩猎圣石测试",
             "快速狩猎完整测试",
-        )
-        for key in button_keys:
-            self.assertLessEqual(card.config_widget_by_key[key].height(), 96)
+            "识别成功后等待秒数",
+            "主页亮度比例阈值",
+            "主页确认等待秒数",
+        ):
+            self.assertNotIn(key, card.config_widget_by_key)
+        self.assertIn("快速狩猎模板阈值", task.default_config)
         self.assertLess(card.height(), 1500)
         card.close()
 

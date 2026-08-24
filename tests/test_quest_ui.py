@@ -744,6 +744,113 @@ class NavSectionsTest(QuestUiTestBase):
         self.assertEqual(len(panel.headers), 2)
 
 
+class HiddenConfigRowsTest(QuestUiTestBase):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        from src.ui.hide_config_rows import install_hide_config_rows
+
+        install_hide_config_rows()
+
+    def test_token_rows_are_not_created_and_values_survive(self):
+        from ok.gui.tasks.TaskCard import TaskCard
+
+        values = {
+            "启用": True,
+            "跑商等待秒数": 2.5,
+            "跑商OCR阈值": 0.9,
+            "识别间隔秒数": 1.2,
+            "结算基准等待分钟": 3,
+            "高亮像素比例": 0.85,
+            "关键词最低命中数": 2,
+            "单步重试次数": 3,
+            "运行模式": "标准",
+        }
+        task = _TaskStub(name="每日跑商", config=_ConfigStub(values))
+        task.default_config = dict(values)
+        task.config_description = {key: key for key in values}
+        card = TaskCard(task, onetime=True)
+
+        for key in values:
+            if key in ("启用", "运行模式"):
+                self.assertIn(key, card.config_widget_by_key)
+            else:
+                self.assertNotIn(key, card.config_widget_by_key)
+        self.assertEqual(task.config["跑商等待秒数"], 2.5)
+        self.assertEqual(task.config["跑商OCR阈值"], 0.9)
+        self.assertEqual(task.config["单步重试次数"], 3)
+
+    def test_sub_config_children_matching_tokens_stay_hidden(self):
+        from ok.gui.tasks.TaskCard import TaskCard
+
+        values = {"执行": True, "每步等待秒数": 2, "保留子项": True}
+        task = _TaskStub(name="测试合辑", config=_ConfigStub(values))
+        task.default_config = dict(values)
+        task.config_description = {key: key for key in values}
+        task.config_type = {"执行": {"sub_configs": {True: ["每步等待秒数", "保留子项"]}}}
+        card = TaskCard(task, onetime=True)
+
+        self.assertIn("执行", card.config_widget_by_key)
+        self.assertNotIn("每步等待秒数", card.config_widget_by_key)
+        self.assertIn("保留子项", card.config_widget_by_key)
+        # The token key was stripped from the rule so it cannot come back
+        # through the sub-config recursion (which ignores 'hidden').
+        self.assertEqual(task.config_type["执行"]["sub_configs"][True], ["保留子项"])
+
+
+    def test_string_sub_config_rule_is_also_stripped(self):
+        from ok.gui.tasks.TaskCard import TaskCard
+
+        values = {"执行": True, "每步等待秒数": 2}
+        task = _TaskStub(name="测试合辑", config=_ConfigStub(values))
+        task.default_config = dict(values)
+        task.config_description = {key: key for key in values}
+        task.config_type = {"执行": {"sub_configs": {True: "每步等待秒数"}}}
+        card = TaskCard(task, onetime=True)
+
+        self.assertIn("执行", card.config_widget_by_key)
+        self.assertNotIn("每步等待秒数", card.config_widget_by_key)
+        self.assertEqual(task.config_type["执行"]["sub_configs"][True], [])
+
+    def test_task_without_matches_is_untouched(self):
+        task = _TaskStub(name="广场女神像", config=_ConfigStub({"启用": True}))
+        task.default_config = {"启用": True}
+        task.config_description = {"启用": "启用"}
+        task.config_type = None
+
+        from src.ui.hide_config_rows import mark_hidden_config_keys
+
+        self.assertEqual(mark_hidden_config_keys(task), 0)
+        self.assertIsNone(task.config_type)
+
+
+class ExpandDurationTest(QuestUiTestBase):
+    def test_duration_scales_with_content_and_collapses_faster(self):
+        from ok.gui.tasks.TaskCard import TaskCard
+        from PySide6.QtCore import QEasingCurve
+
+        values = {"启用": True, "运行模式": "标准", "说明文本": "一段说明"}
+        task = _TaskStub(name="每日跑商", config=_ConfigStub(values))
+        task.default_config = dict(values)
+        task.config_description = {key: key for key in values}
+        card = TaskCard(task, onetime=True)
+        card.show()
+        self.app.processEvents()
+
+        card.setExpand(True)
+        base = min(420, max(280, int(240 + card.spaceWidget.height() * 0.28)))
+        self.assertEqual(card.expandAni.duration(), base)
+        self.assertEqual(
+            card.expandAni.easingCurve().type(), QEasingCurve.Type.BezierSpline
+        )
+        self.assertEqual(card.expandAni.endValue(), 0)
+
+        card.setExpand(False)
+        self.assertEqual(card.expandAni.duration(), int(base * 0.85))
+        # Collapse ends on content_height, not the scrollbar maximum.
+        self.assertEqual(card.expandAni.endValue(), card.spaceWidget.height())
+
+
 class ExpandTimingTest(QuestUiTestBase):
     def setUp(self):
         from src.ui import expand_timing
@@ -768,6 +875,7 @@ class ExpandTimingTest(QuestUiTestBase):
     def test_drive_honors_sole_writer_gate_and_cleans_shadows(self):
         """While the driver animates, the sole-writer gates must see the
         animation as running; after it ends every instance shadow is gone."""
+        from PySide6.QtCore import QAbstractAnimation
         from PySide6.QtTest import QTest
 
         from src.ui import expand_timing
@@ -788,8 +896,6 @@ class ExpandTimingTest(QuestUiTestBase):
         self.assertIsNone(expand_timing._DRIVERS.get(card))
         self.assertNotIn("state", ani.__dict__)
         self.assertNotIn("start", ani.__dict__)
-        from PySide6.QtCore import QAbstractAnimation
-
         self.assertEqual(ani.state(), QAbstractAnimation.Stopped)
         self.assertEqual(card.verticalScrollBar().value(), 0)
         self.assertGreater(card.height(), collapsed + 100)
@@ -898,14 +1004,10 @@ class ExpandTimingTest(QuestUiTestBase):
         # A same-geometry re-measure must not write the card height mid-drive;
         # the spacer stays the content funnel for the abort probe.
         self.assertEqual(card.height(), mid_height)
-        self.assertLess(
-            mid_height, card.card.height() + card.spaceWidget.height()
-        )
+        self.assertLess(mid_height, card.card.height() + card.spaceWidget.height())
 
         QTest.qWait(420)
-        self.assertEqual(
-            card.height(), card.card.height() + card.spaceWidget.height()
-        )
+        self.assertEqual(card.height(), card.card.height() + card.spaceWidget.height())
         card.close()
 
 
