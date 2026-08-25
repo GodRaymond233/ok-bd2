@@ -113,6 +113,39 @@ class DailyBatchTaskTest(unittest.TestCase):
         self.assertIs(original_second_config, second.config)
         self.assertEqual(2, len(resets))
 
+    def test_progress_is_published_after_each_child(self):
+        class First:
+            pass
+
+        class Second:
+            pass
+
+        first = _ChildTask("first", [])
+        second = _ChildTask("second", [])
+        specs = (
+            DailyBatchChild("第一项", First),
+            DailyBatchChild("第二项", Second),
+        )
+        task, _resets = self.make_task(
+            {First: first, Second: second},
+            specs,
+            {"启用": True, "第一项": True, "第二项": True},
+        )
+        observed = []
+        original_run = second.run
+
+        def second_run():
+            # By the time the second child runs, the first must already be
+            # published so the run panel can paint its live segments.
+            observed.append(task.info.get("完成"))
+            return original_run()
+
+        second.run = second_run
+
+        self.assertTrue(DailyBatchTask.run(task))
+        self.assertEqual(["第一项"], observed)
+        self.assertEqual("第一项、第二项", task.info.get("完成"))
+
     def test_failure_stops_later_children_and_disabled_switch_is_skipped(self):
         class Skipped:
             pass

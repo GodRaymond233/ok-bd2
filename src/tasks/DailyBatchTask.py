@@ -126,6 +126,15 @@ class DailyBatchTask(BaseTask):
         failed: list[str] = []
         skipped: list[str] = []
         stop_remaining = False
+
+        def publish_outcome() -> None:
+            # Live per-child progress feeds the run panel's segments and
+            # cells during the run; the same keys are written once more with
+            # the final values after the loop.
+            self.info_set("完成", "、".join(completed) or "-")
+            self.info_set("失败", "、".join(failed) or "-")
+            self.info_set("跳过", "、".join(skipped) or "-")
+
         self.info_set("状态", "一键完成日常启动。")
         self.info_set(
             "运行模式",
@@ -135,17 +144,20 @@ class DailyBatchTask(BaseTask):
         for child in self.child_tasks:
             if not bool(self.config.get(child.config_key, True)) or stop_remaining:
                 skipped.append(child.config_key)
+                publish_outcome()
                 continue
 
             task = self.executor.get_task_by_class(child.task_class)
             if task is None:
                 failed.append(child.config_key)
+                publish_outcome()
                 stop_remaining = True
                 self.log_error(f"一键完成日常：未找到子任务 {child.config_key}。")
                 continue
 
             if history is not None and history.is_completed_today(str(task.name)):
                 skipped.append(child.config_key)
+                publish_outcome()
                 self.log_info(f"一键完成日常：{child.config_key} 今日已完成，跳过。")
                 continue
 
@@ -161,15 +173,18 @@ class DailyBatchTask(BaseTask):
                 with suppress_task_completion_notifications(task):
                     if bool(task.run()):
                         completed.append(child.config_key)
+                        publish_outcome()
                         self.log_info(f"一键完成日常：{child.config_key} 完成。")
                     else:
                         failed.append(child.config_key)
+                        publish_outcome()
                         stop_remaining = True
                         self.log_warning(
                             f"一键完成日常：{child.config_key} 失败，停止后续子任务。"
                         )
             except Exception as exc:
                 failed.append(child.config_key)
+                publish_outcome()
                 stop_remaining = True
                 self.log_error(
                     f"一键完成日常：{child.config_key} 异常，停止后续子任务。",

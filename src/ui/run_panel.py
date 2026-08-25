@@ -398,6 +398,8 @@ class RunPanel(QFrame):
                 icon, color = "·", tokens["ink_faint"]
             if name in doing:
                 cell_bg, cell_border = tokens["accent_soft"], rgba(tokens["accent"], 0.5)
+            elif name in failed:
+                cell_bg, cell_border = tokens["warn_soft"], rgba(tokens["warn"], 0.45)
             else:
                 cell_bg, cell_border = tokens["inset"], tokens["line"]
             cell = QLabel(self.grid_container)
