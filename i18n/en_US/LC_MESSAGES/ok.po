@@ -1,0 +1,454 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: ok-bd2 1.0\n"
+"Language: en_US\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgid "4号位"
+msgstr "Slot 4"
+
+msgid "5号位"
+msgstr "Slot 5"
+
+msgid "5星料理"
+msgstr "5-star dishes"
+
+msgid "BD2"
+msgstr "BD2"
+
+msgid "BD2 鼠标单击测试"
+msgstr "BD2 mouse click test"
+
+msgid "BD2 鼠标滚轮测试"
+msgstr "BD2 mouse wheel test"
+
+msgid "BDXConfirm 点击 X 百分比"
+msgstr "BDXConfirm click X percentage"
+
+msgid "BDXConfirm 点击 Y 百分比"
+msgstr "BDXConfirm click Y percentage"
+
+msgid "Discord Webhook"
+msgstr "Discord Webhook"
+
+msgid "F10"
+msgstr "F10"
+
+msgid "F11"
+msgstr "F11"
+
+msgid "F12"
+msgstr "F12"
+
+msgid "F9"
+msgstr "F9"
+
+msgid "一键完成日常"
+msgstr "Complete dailies"
+
+msgid "不切换关卡，直接消耗米饭扫荡游戏当前默认狩猎场。"
+msgstr "Spend rice to sweep the game's current default hunting ground without switching stages."
+
+msgid "买"
+msgstr "Buy"
+
+msgid "从主页进入公会，领取每日签到奖励。"
+msgstr "Enter the guild from the home screen and claim the daily check-in reward."
+
+msgid "从主页进入小屋，确认到达后返回主页。"
+msgstr "Enter the home from the main screen, confirm arrival, and return to the main screen."
+
+msgid "从快速切换页的生活玩法游戏卡带2号位进入梦幻广场并完成女神像许愿。"
+msgstr "Enter Glutti Square from slot 2 of the Life cartridge list and complete the goddess statue wish."
+
+msgid "从首页进入快速狩猎，调度米饭并补充数量最少的属性圣石。"
+msgstr "Open Quick Hunt, allocate rice, and replenish the elemental crystals with the lowest stock."
+
+msgid "任务状态确认"
+msgstr "Task status confirmation"
+
+msgid "优先双倍"
+msgstr "Prefer bonus stages"
+
+msgid "优先双倍会检测金币和经验并在都双倍时选择金币；强制双倍优先配置资源；忽视双倍固定选择金币。"
+msgstr "Prefer bonus checks gold and EXP and chooses gold when both are doubled; force bonus prioritizes the configured resource; ignore bonus always chooses gold."
+
+msgid "使用出售白名单"
+msgstr "Use sell allowlist"
+
+msgid "使用出售黑名单"
+msgstr "Use sell blocklist"
+
+msgid "使用在线价表"
+msgstr "Use online price table"
+
+msgid "使用程序默认价表"
+msgstr "Use built-in price table"
+
+msgid "免费抽抽乐"
+msgstr "Free draws"
+
+msgid "公会、小屋、酒馆"
+msgstr "Guild, home, and pub"
+
+msgid "公告清理点击 X 百分比"
+msgstr "Notice cleanup click X percentage"
+
+msgid "公告清理点击 Y 百分比"
+msgstr "Notice cleanup click Y percentage"
+
+msgid "关闭程序默认价表后使用；在线获取失败时回退本地缓存。"
+msgstr "Used after disabling the built-in price table; falls back to the local cache if the online request fails."
+
+msgid "内测功能"
+msgstr "Experimental features"
+
+msgid "出售保险"
+msgstr "Safe selling"
+
+msgid "出售白名单"
+msgstr "Sell allowlist"
+
+msgid "出售黑名单"
+msgstr "Sell blocklist"
+
+msgid "制作料理"
+msgstr "Cook dishes"
+
+msgid "刷几号位"
+msgstr "Skill slot"
+
+msgid "刷压制等级"
+msgstr "Level up Suppress"
+
+msgid "刷砍价等级"
+msgstr "Level up Bargain"
+
+msgid "区域上 Y 百分比"
+msgstr "Region top Y percentage"
+
+msgid "区域下 Y 百分比"
+msgstr "Region bottom Y percentage"
+
+msgid "区域右 X 百分比"
+msgstr "Region right X percentage"
+
+msgid "区域左 X 百分比"
+msgstr "Region left X percentage"
+
+msgid "卖"
+msgstr "Sell"
+
+msgid "卢戈山参烤串"
+msgstr "Lugo wild ginseng skewer"
+
+msgid "可同时选择多种利润料理。"
+msgstr "Multiple profitable dishes can be selected."
+
+msgid "向上"
+msgstr "Up"
+
+msgid "向下"
+msgstr "Down"
+
+msgid "启用"
+msgstr "Enable"
+
+msgid "在指定区域内单击聚焦，并测试向上或向下滚动鼠标滚轮。"
+msgstr "Click inside the specified region to focus it, then test scrolling the mouse wheel up or down."
+
+msgid "在第一章战斗地图中开始，同时要求第二章也处于战斗地图中"
+msgstr "Start on the Chapter 1 battle map; Chapter 2 must also be on its battle map"
+
+msgid "在第六章商人处开始"
+msgstr "Start at the Chapter 6 merchant"
+
+msgid "地狱火紫菜包饭"
+msgstr "Hellfire gimbap"
+
+msgid "小屋按钮点击 X 百分比"
+msgstr "Home button click X percentage"
+
+msgid "小屋按钮点击 Y 百分比"
+msgstr "Home button click Y percentage"
+
+msgid "广场女神像"
+msgstr "Square goddess statue"
+
+msgid "开启后使用下面的1920×1080参考像素点；关闭时继续使用原百分比配置。"
+msgstr "When enabled, use the 1920x1080 reference pixel below; when disabled, keep using the percentage setting."
+
+msgid "开启后排除出售黑名单中的商品；黑名单优先于出售白名单。"
+msgstr "When enabled, exclude items in the sell blocklist. The blocklist takes priority over the allowlist."
+
+msgid "开启时只出售最高价表和出售白名单的交集；关闭时出售价表中全部允许出售的商品。"
+msgstr "When enabled, sell only items present in both the highest-price table and the sell allowlist. When disabled, sell every permitted item in the price table."
+
+msgid "开启时每种料理只做 1 份；关闭时选择 MAX。"
+msgstr "When enabled, cook one of each dish. When disabled, select MAX."
+
+msgid "开启时每种普通目标只卖最小数量；默认关闭并选择 MAX。价表中带保留量的商品始终优先执行保留规则。"
+msgstr "When enabled, sell only the minimum amount of each normal target. By default this is disabled and MAX is selected. Reserve rules in the price table always take priority."
+
+msgid "强制双倍"
+msgstr "Force bonus stages"
+
+msgid "强制双倍策略下优先检查金币或经验。"
+msgstr "Choose whether gold or EXP is checked first when forcing bonus stages."
+
+msgid "快速狩猎"
+msgstr "Quick Hunt"
+
+msgid "快速狩猎冒险航线"
+msgstr "Quick Hunt adventure path"
+
+msgid "快速狩猎双倍策略"
+msgstr "Quick Hunt bonus strategy"
+
+msgid "快速狩猎圣石洞穴"
+msgstr "Quick Hunt crystal caves"
+
+msgid "快速狩猎狩猎场"
+msgstr "Quick Hunt hunting ground"
+
+msgid "快速狩猎米饭分配"
+msgstr "Quick Hunt rice allocation"
+
+msgid "快速狩猎资源倾向"
+msgstr "Quick Hunt resource preference"
+
+msgid "忽视双倍"
+msgstr "Ignore bonus stages"
+
+msgid "打开经营管理弹窗并执行一键获得。"
+msgstr "Open the management window and use Claim All."
+
+msgid "执行一键收菜"
+msgstr "Run Claim All"
+
+msgid "执行公会签到"
+msgstr "Run guild check-in"
+
+msgid "执行公会签到、小屋签到和酒馆一键收菜。"
+msgstr "Run the guild check-in, home check-in, and pub Claim All tasks."
+
+msgid "执行地图采集"
+msgstr "Run map collection"
+
+msgid "执行小屋签到"
+msgstr "Run home check-in"
+
+msgid "按周进度处理剧情卡带；每日吸收上限21次，因此最多完成7张。第14章在专用流程完成前安全跳过。"
+msgstr "Process story cartridges using weekly progress. The daily Absorb limit is 21, so at most seven cartridges are completed. Chapter 14 is safely skipped until its dedicated flow is ready."
+
+msgid "按周进度跑剧情卡带；每天最多7张，每张安全区吸收1次，战斗区域1、2各执行吸收、召集、压制。第14章暂时跳过。"
+msgstr "Run story cartridges using weekly progress, up to seven per day. Use Absorb once in each safe area, then Absorb, Gather, and Suppress in battle areas 1 and 2. Chapter 14 is temporarily skipped."
+
+msgid "按每日08:00库存批次进入 Q_sp6 完成砍价，并按本地卡带与灰星坐标表重建收藏。"
+msgstr "Use the daily 08:00 inventory batch to enter Q_sp6, complete Bargain, and rebuild favorites from the local cartridge and empty-star tables."
+
+msgid "按每日23:00刷新后的有效日期出售最高价商品。"
+msgstr "Sell highest-price items using the effective date after the daily 23:00 refresh."
+
+msgid "按顺序执行已开启的公会、小屋、酒馆、快速狩猎、抽抽乐、广场、PVP和跑商。"
+msgstr "Run enabled guild, home, pub, Quick Hunt, free draw, square, PVP, and trading tasks in order."
+
+msgid "收藏重建周期"
+msgstr "Favorites rebuild cycle"
+
+msgid "料理保险"
+msgstr "Safe cooking"
+
+msgid "料理制作周期"
+msgstr "Cooking cycle"
+
+msgid "日常/周常"
+msgstr "Daily / weekly"
+
+msgid "是否允许一键完成日常按顺序执行已开启的子任务。"
+msgstr "Allow Complete Dailies to run enabled subtasks in order."
+
+msgid "是否在一键完成日常中执行免费抽抽乐。"
+msgstr "Run Free Draws as part of Complete Dailies."
+
+msgid "是否在一键完成日常中执行公会、小屋、酒馆。"
+msgstr "Run Guild, Home, and Pub as part of Complete Dailies."
+
+msgid "是否在一键完成日常中执行广场女神像。"
+msgstr "Run Square Goddess Statue as part of Complete Dailies."
+
+msgid "是否在一键完成日常中执行快速狩猎。"
+msgstr "Run Quick Hunt as part of Complete Dailies."
+
+msgid "是否在一键完成日常中执行自动PVP。"
+msgstr "Run Auto PVP as part of Complete Dailies."
+
+msgid "是否在一键完成日常中执行跑商。"
+msgstr "Run Trading as part of Complete Dailies."
+
+msgid "是否执行独立的快速狩猎任务。"
+msgstr "Run the standalone Quick Hunt task."
+
+msgid "是否执行白嫖抽抽乐任务。"
+msgstr "Run the free draw task."
+
+msgid "最多战斗轮次"
+msgstr "Maximum battle rounds"
+
+msgid "每周"
+msgstr "Weekly"
+
+msgid "每周制作一次，或每次运行都尝试制作。"
+msgstr "Cook once per week, or attempt cooking on every run."
+
+msgid "每周只重建一次收藏；每次会强制重新核对；永不则只购买当前收藏。"
+msgstr "Weekly rebuilds favorites once per week; Every run rechecks them each time; Never buys only the current favorites."
+
+msgid "每周跑图"
+msgstr "Weekly map collection"
+
+msgid "每日按配置依次执行料理制作、购买和出售。"
+msgstr "Run cooking, buying, and selling each day according to the configuration."
+
+msgid "每日跑商"
+msgstr "Daily trading"
+
+msgid "每次"
+msgstr "Every run"
+
+msgid "永不"
+msgstr "Never"
+
+msgid "测试"
+msgstr "Test"
+
+msgid "测试在指定屏幕百分比位置单击鼠标。"
+msgstr "Test a mouse click at the specified screen percentage coordinates."
+
+msgid "消耗米饭扫荡金币或经验冒险航线。"
+msgstr "Spend rice to sweep the gold or EXP adventure path."
+
+msgid "游戏启动后自动登录游戏"
+msgstr "Log in automatically after the game starts"
+
+msgid "滚轮方向"
+msgstr "Wheel direction"
+
+msgid "滚轮测试区域上边界相对游戏客户区的纵向百分比。"
+msgstr "Top edge of the wheel test region as a vertical percentage of the game client area."
+
+msgid "滚轮测试区域下边界相对游戏客户区的纵向百分比。"
+msgstr "Bottom edge of the wheel test region as a vertical percentage of the game client area."
+
+msgid "滚轮测试区域右边界相对游戏客户区的横向百分比。"
+msgstr "Right edge of the wheel test region as a horizontal percentage of the game client area."
+
+msgid "滚轮测试区域左边界相对游戏客户区的横向百分比。"
+msgstr "Left edge of the wheel test region as a horizontal percentage of the game client area."
+
+msgid "点击 X 百分比"
+msgstr "Click X percentage"
+
+msgid "点击 Y 百分比"
+msgstr "Click Y percentage"
+
+msgid "点击单个点位置坐标"
+msgstr "Use reference pixel coordinates"
+
+msgid "煤炭饼干"
+msgstr "Coal cookies"
+
+msgid "狩猎场 MIN 时双倍冒险航线使用 MAX；狩猎场 MAX 时跳过冒险航线。"
+msgstr "When the hunting ground uses MIN, bonus adventure paths use MAX. When the hunting ground uses MAX, skip adventure paths."
+
+msgid "狩猎场MAX / 跳过冒险航线"
+msgstr "Hunting ground MAX / skip adventure path"
+
+msgid "狩猎场x1 / 双倍图MAX"
+msgstr "Hunting ground x1 / bonus stage MAX"
+
+msgid "用逗号、分号或换行填写禁止出售的商品。"
+msgstr "Enter items that must not be sold, separated by commas, semicolons, or line breaks."
+
+msgid "用逗号、分号或换行追加物品；五种已选利润料理始终纳入出售白名单。"
+msgstr "Add items separated by commas, semicolons, or line breaks. The five selected profitable dishes are always included in the sell allowlist."
+
+msgid "登录按钮点击 X 百分比"
+msgstr "Login button click X percentage"
+
+msgid "登录按钮点击 Y 百分比"
+msgstr "Login button click Y percentage"
+
+msgid "白嫖抽抽乐"
+msgstr "Free draws"
+
+msgid "目标鸡尾酒消耗倍率，支持 1、4、5、10、20、40。AP 不足时会临时降到 1。"
+msgstr "Target cocktail consumption multiplier. Supports 1, 4, 5, 10, 20, and 40. Falls back to 1 when AP is insufficient."
+
+msgid "程序默认价表和在线价表均关闭后使用。必须包含 1-31 日，每行格式：日期=物品@商店,物品@商店；空日期写成 29=。"
+msgstr "Used when both the built-in and online price tables are disabled. Must contain days 1-31, one per line in the form day=item@shop,item@shop. Use an empty entry such as 29= for a day with no items."
+
+msgid "竞技场战斗倍数"
+msgstr "Arena battle multiplier"
+
+msgid "经验"
+msgstr "EXP"
+
+msgid "自动PVP"
+msgstr "Auto PVP"
+
+msgid "自动刷级"
+msgstr "Automatic skill leveling"
+
+msgid "自动登录游戏"
+msgstr "Automatic login"
+
+msgid "自定义最高价表"
+msgstr "Custom highest-price table"
+
+msgid "读取五种圣石数量并扫荡当前最少的属性洞穴。"
+msgstr "Read the quantities of all five crystals and sweep the elemental cave with the lowest stock."
+
+msgid "跑商"
+msgstr "Trading"
+
+msgid "进入 Q_sp6 后先制作选中的 5 星利润料理，再开始买卖。"
+msgstr "After entering Q_sp6, cook the selected profitable 5-star dishes before buying and selling."
+
+msgid "进行pvp自动战斗。"
+msgstr "Run automatic PVP battles."
+
+msgid "选择向上或向下滚动。"
+msgstr "Choose whether to scroll up or down."
+
+msgid "选择循环开启4号位或5号位压制，默认4号位。"
+msgstr "Choose whether to repeatedly activate Suppress in slot 4 or 5. The default is slot 4."
+
+msgid "透明沙拉"
+msgstr "Transparent salad"
+
+msgid "金币"
+msgstr "Gold"
+
+msgid "镜中之战"
+msgstr "Mirror Wars"
+
+msgid "闪闪铁板虾"
+msgstr "Sizzling griddle shrimp"
+
+msgid "防止识别异常导致无限循环的最大战斗轮次。"
+msgstr "Maximum number of battle rounds, preventing recognition failures from causing an infinite loop."
+
+msgid "领取服装和装备的所有免费抽抽乐。"
+msgstr "Claim all free costume and gear draws."
+
+msgid "默认使用随程序附带、由作者确认的价表；关闭后才显示在线价表。"
+msgstr "Use the author-verified price table included with the app by default. The online price table is shown only after this is disabled."
+
+msgid "鼠标点击位置的横向百分比，范围 0 到 100。"
+msgstr "Horizontal percentage of the mouse click position, from 0 to 100."
+
+msgid "鼠标点击位置的纵向百分比，范围 0 到 100。"
+msgstr "Vertical percentage of the mouse click position, from 0 to 100."
