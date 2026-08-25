@@ -33,6 +33,7 @@ cached per view width so a frame costs no height-for-width walk either.
 
 from __future__ import annotations
 
+import math
 import time
 from html import escape
 from weakref import ref
@@ -42,7 +43,7 @@ from PySide6.QtGui import QBrush, QColor, QLinearGradient, QPainter
 from PySide6.QtWidgets import QLabel, QWidget
 
 from src.tasks.run_history import day_start_ts, default_store
-from src.ui.quest_theme import MONO_FONT, palette, rgba
+from src.ui.quest_theme import MONO_FONT, palette
 
 # Tasks with weekly (Monday 04:00 Beijing) instead of daily refresh semantics.
 WEEKLY_TASK_NAMES = {"每周跑图"}
@@ -148,8 +149,87 @@ def meta_text(task, store=None) -> str:
     return f"上次运行 · {when} · {status}"
 
 
+_DOT_RADIUS = 5.5
+_BREATH_PERIOD_MS = 1600
+
+
+def _tinted(hex_color: str, alpha: float) -> QColor:
+    """QColor from '#RRGGBB' with alpha.
+
+    QColor's own rgba() string parser rejects float alphas and silently
+    yields opaque black, so alpha must go through setAlphaF — never build
+    painter colors from the QSS-oriented rgba() helper.
+    """
+    color = QColor(hex_color)
+    color.setAlphaF(alpha)
+    return color
+
+
+def _breath_phase(now_ms: float | None = None) -> float:
+    """Shared 0→1 sine phase so every running seal breathes in sync."""
+    now_ms = time.monotonic() * 1000 if now_ms is None else now_ms
+    phase = (now_ms % _BREATH_PERIOD_MS) / _BREATH_PERIOD_MS
+    return 0.5 - 0.5 * math.cos(2 * math.pi * phase)
+
+
+class _SealBreathDriver(QObject):
+    """Refresh-cadence repaint driver for running seals.
+
+    Stopped whenever no seal is in the run state, so a quiet page pays
+    nothing; ticks follow the display refresh rate (Qt's unified timer
+    beats against high-refresh screens — the fluent_motion lesson).
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._seals: list[ref] = []
+        self._timer = QTimer(self)
+        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._timer.timeout.connect(self._tick)
+
+    def register(self, seal) -> None:
+        self._seals.append(ref(seal))
+        self.sync()
+
+    def sync(self) -> None:
+        alive = []
+        running = False
+        for seal_ref in self._seals:
+            seal = seal_ref()
+            if seal is None:
+                continue
+            alive.append(seal_ref)
+            running = running or seal._state == "run"
+        self._seals = alive
+        if running and not self._timer.isActive():
+            from src.ui.fluent_motion import _refresh_interval_ms
+
+            self._timer.start(_refresh_interval_ms())
+        elif not running and self._timer.isActive():
+            self._timer.stop()
+
+    def _tick(self) -> None:
+        self.sync()
+        if not self._timer.isActive():
+            return
+        for seal_ref in self._seals:
+            seal = seal_ref()
+            if seal is not None and seal._state == "run":
+                seal.update()
+
+
+_breath_driver: _SealBreathDriver | None = None
+
+
+def _get_breath_driver() -> _SealBreathDriver:
+    global _breath_driver
+    if _breath_driver is None:
+        _breath_driver = _SealBreathDriver()
+    return _breath_driver
+
+
 class QuestSealDot(QWidget):
-    """A 9px status dot, theme-aware, with an accent halo while running."""
+    """An 11px status dot, theme-aware, with a breathing halo while running."""
 
     SIZE = 22
 
@@ -157,38 +237,40 @@ class QuestSealDot(QWidget):
         super().__init__(parent)
         self._state = "idle"
         self.setFixedSize(self.SIZE, self.SIZE)
+        _get_breath_driver().register(self)
 
     def set_state(self, state: str) -> None:
         if state != self._state:
             self._state = state
+            _get_breath_driver().sync()
             self.update()
 
     def paintEvent(self, _event):
         tokens = palette()
-        color = {
-            "run": tokens["accent"],
-            "ok": tokens["ok"],
-        }.get(self._state, tokens["seal_idle"])
         painter = QPainter(self)
         painter.setRenderHints(QPainter.Antialiasing)
         painter.setPen(Qt.NoPen)
         center = self.SIZE / 2
         if self._state == "run":
-            painter.setBrush(QColor(tokens["accent_soft"]))
-            painter.drawEllipse(int(center - 10), int(center - 10), 20, 20)
-            painter.setBrush(QColor(rgba(tokens["accent"], 0.28)))
-            painter.drawEllipse(QPointF(center, center), 6.5, 6.5)
-            gradient = QLinearGradient(center, center - 4.5, center, center + 4.5)
+            breath = _breath_phase()
+            halo_radius = _DOT_RADIUS + 1.0 + 3.5 * breath
+            painter.setBrush(_tinted(tokens["accent"], 0.30 - 0.20 * breath))
+            painter.drawEllipse(QPointF(center, center), halo_radius, halo_radius)
+            gradient = QLinearGradient(
+                center, center - _DOT_RADIUS, center, center + _DOT_RADIUS
+            )
             gradient.setColorAt(0, QColor(tokens["accent_hi"]))
             gradient.setColorAt(1, QColor(tokens["accent_deep"]))
             painter.setBrush(QBrush(gradient))
         elif self._state == "ok":
-            painter.setBrush(QColor(rgba(tokens["ok"], 0.25)))
-            painter.drawEllipse(QPointF(center, center), 7, 7)
-            painter.setBrush(QColor(color))
+            painter.setBrush(_tinted(tokens["ok"], 0.25))
+            painter.drawEllipse(
+                QPointF(center, center), _DOT_RADIUS + 1.5, _DOT_RADIUS + 1.5
+            )
+            painter.setBrush(QColor(tokens["ok"]))
         else:
-            painter.setBrush(QColor(color))
-        painter.drawEllipse(int(center - 4.5), int(center - 4.5), 9, 9)
+            painter.setBrush(QColor(tokens["seal_idle"]))
+        painter.drawEllipse(QPointF(center, center), _DOT_RADIUS, _DOT_RADIUS)
         painter.end()
 
 

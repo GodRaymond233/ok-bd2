@@ -387,6 +387,48 @@ class QuestCardTest(QuestUiTestBase):
         card.close()
 
 
+class SealDotTest(QuestUiTestBase):
+    def test_run_seal_halo_is_accent_tint_never_black(self):
+        # Regression: QColor("rgba(...,0.28)") rejects float alphas and
+        # silently paints opaque black — painter colors go through setAlphaF.
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QImage
+
+        from src.ui.quest_cards import QuestSealDot
+
+        seal = QuestSealDot()
+        seal.set_state("run")
+        seal.setAttribute(Qt.WA_TranslucentBackground, True)
+        image = QImage(22, 22, QImage.Format_ARGB32)
+        image.fill(Qt.transparent)
+        seal.render(image)
+
+        halo = image.pixelColor(11, 5)  # inside the halo ring at any breath phase
+        self.assertGreater(halo.blue(), halo.red())
+        self.assertLess(halo.alpha(), 200)
+        center = image.pixelColor(11, 11)
+        self.assertGreater(center.blue(), 150)
+
+    def test_breath_driver_tracks_run_state(self):
+        from weakref import ref
+
+        from src.ui.quest_cards import QuestSealDot, _breath_phase, _SealBreathDriver
+
+        driver = _SealBreathDriver()
+        seal = QuestSealDot()
+        driver._seals.append(ref(seal))
+        seal.set_state("run")
+        driver.sync()
+        self.assertTrue(driver._timer.isActive())
+        seal.set_state("ok")
+        driver.sync()
+        self.assertFalse(driver._timer.isActive())
+
+        self.assertAlmostEqual(_breath_phase(0), 0.0)
+        self.assertAlmostEqual(_breath_phase(400), 0.5)
+        self.assertAlmostEqual(_breath_phase(800), 1.0, places=5)
+
+
 class BannerTest(QuestUiTestBase):
     def test_commission_items_and_banner_counts(self):
         from src.tasks.DailyTask import DailyTask

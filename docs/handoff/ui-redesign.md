@@ -19,7 +19,8 @@
 - 独立评审 3 LOW 已闭环：`ring.update()` 进 `_apply_style`（主题翻转重绘，基线既有结构顺手修复）、任务卡圆角补齐、SegmentedBar 段类型注解收紧为 `tuple[int,str] | tuple[int,str,str]`。
 - 门禁：816 项全套测试 + ruff + compileall + diff check + 键盘扫描全过；离屏渲染截图（深浅双主题）已目检。
 - 同分支第二轮（字体）：全局字体栈改为 MiSans → Microsoft YaHei UI → Microsoft YaHei → Segoe UI（`quest_theme.apply_app_font()`，在 `Globals.on_show_main_window` 调用，缺字体的机器按栈回退）；MONO_FONT 改 JetBrains Mono → Cascadia Mono → Cascadia Code → Consolas → YaHei UI（末尾补 CJK 回退族，修中西文混排）；环形进度数字用 Cascadia Mono。**注意 Qt offscreen 平台拿不到系统字体库，字体渲染验证必须走真实 QPA**（离屏窗口 grab，见 `.local-dev/scripts/render_aesthetic_v3.py --real`）。本机 MiSans 仅 Regular 字重，900 标题为 Qt 合成加粗，观感已目检可接受。
-- 待办：Codex 合并决策；实机目检真实字体下 900 字重表现与渐变晕染观感。
+- 同分支第三轮（状态印修复，用户实机反馈）：**QColor 的 rgba() 字符串解析拒绝 0-1 浮点 alpha，静默变成不透明黑**——painter 侧着色必须 `QColor(hex)` + `setAlphaF()`，QSS 字符串才能用 `quest_theme.rgba()`；回归测试 `SealDotTest.test_run_seal_halo_is_accent_tint_never_black` 钉住。圆点 9→11px；run 态加呼吸效果（`_SealBreathDriver`：正弦相位 1600ms 周期、`_refresh_interval_ms` 刷新率驱动，无 run 态 seal 时定时器停止、稳态零开销）。
+- 待办：Codex 合并决策；实机目检 900 字重表现、渐变晕染与状态印呼吸观感。
 
 ## Confirmed Findings
 
