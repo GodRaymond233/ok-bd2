@@ -277,14 +277,14 @@ def apply_task_card_badge_and_style(card, task):
         HeaderSettingCard {{
             background-color: {bg};
             border: 1px solid {border};
-            border-radius: 8px;
+            border-radius: 14px;
         }}
         #view {{
             background-color: {view_bg};
             border: 1px solid {view_border};
             border-top: none;
-            border-bottom-left-radius: 8px;
-            border-bottom-right-radius: 8px;
+            border-bottom-left-radius: 14px;
+            border-bottom-right-radius: 14px;
         }}
         #scrollWidget {{
             border: none;
@@ -292,8 +292,8 @@ def apply_task_card_badge_and_style(card, task):
         }}
         QLabel#titleLabel {{
             color: {title_color};
-            font-size: 14px;
-            font-weight: 600;
+            font-size: 15px;
+            font-weight: 700;
         }}
         QLabel#contentLabel {{
             color: {content_color};

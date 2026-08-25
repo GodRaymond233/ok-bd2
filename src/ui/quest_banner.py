@@ -16,14 +16,14 @@ import time
 
 from ok import Logger
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QBrush, QColor, QConicalGradient, QFont, QPainter, QPen
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 from qfluentwidgets import FluentIcon, PrimaryPushButton, PushButton
 
 from src.tasks.DailyBatchTask import RUN_MODE_ALL, RUN_MODE_INCOMPLETE
 from src.tasks.run_history import default_store
 from src.ui.quest_cards import WEEKLY_TASK_NAMES
-from src.ui.quest_theme import MONO_FONT, on_theme_changed, palette
+from src.ui.quest_theme import MONO_FONT, mix, on_theme_changed, palette
 
 logger = Logger.get_logger(__name__)
 
@@ -44,7 +44,7 @@ class ProgressRing(QWidget):
         super().__init__(parent)
         self._done = 0
         self._total = 0
-        self.setFixedSize(64, 64)
+        self.setFixedSize(72, 72)
 
     def set_progress(self, done: int, total: int) -> None:
         if (done, total) != (self._done, self._total):
@@ -55,7 +55,7 @@ class ProgressRing(QWidget):
         tokens = palette()
         painter = QPainter(self)
         painter.setRenderHints(QPainter.Antialiasing)
-        side = 54
+        side = 60
         offset = (self.width() - side) // 2
         rect = (offset, offset, side, side)
 
@@ -65,7 +65,10 @@ class ProgressRing(QWidget):
         painter.drawArc(*rect, 0, 360 * 16)
 
         if self._total > 0 and self._done > 0:
-            pen = QPen(QColor(tokens["accent"]), 6)
+            gradient = QConicalGradient(self.rect().center(), 90)
+            gradient.setColorAt(0, QColor(tokens["accent_hi"]))
+            gradient.setColorAt(1, QColor(tokens["accent_deep"]))
+            pen = QPen(QBrush(gradient), 6)
             pen.setCapStyle(Qt.RoundCap)
             painter.setPen(pen)
             span = int(-360 * 16 * min(self._done, self._total) / self._total)
@@ -73,8 +76,8 @@ class ProgressRing(QWidget):
 
         painter.setPen(QColor(tokens["accent"]))
         font = painter.font()
-        font.setPointSize(13)
-        font.setBold(True)
+        font.setPointSize(14)
+        font.setWeight(QFont.Weight.Black)
         painter.setFont(font)
         painter.drawText(self.rect(), Qt.AlignCenter, f"{self._done}/{self._total}")
         painter.end()
@@ -121,14 +124,19 @@ class DailyBoardBanner(QFrame):
 
     def _apply_style(self):
         tokens = palette()
+        glow = mix(tokens["card"], tokens["accent"], 0.06)
         self.setStyleSheet(
-            f"QFrame#dailyBoardBanner {{ background-color: {tokens['card']};"
-            f" border: 1px solid {tokens['line']}; border-radius: 8px; }}"
-            f" QLabel#dailyBoardTitle {{ color: {tokens['ink']}; font-size: 14px;"
-            " font-weight: 700; background: transparent; }"
+            f"QFrame#dailyBoardBanner {{ background: qradialgradient(spread:pad,"
+            f" cx:0, cy:0, radius:1.2, fx:0, fy:0, stop:0 {glow},"
+            f" stop:0.55 {tokens['card']}, stop:1 {tokens['card']});"
+            f" border: 1px solid {tokens['line']}; border-radius: 14px; }}"
+            f" QLabel#dailyBoardTitle {{ color: {tokens['ink']}; font-size: 15px;"
+            " font-weight: 900; background: transparent; }"
             f" QLabel#dailyBoardSub {{ color: {tokens['ink_dim']}; font-size: 12px;"
             " background: transparent; }"
         )
+        # Ring colors bake into its paintEvent; force a repaint on theme flips.
+        self.ring.update()
 
     def showEvent(self, event):
         super().showEvent(event)

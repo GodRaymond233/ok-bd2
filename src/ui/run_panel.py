@@ -19,12 +19,12 @@ import time
 
 from ok import Logger
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QPainter
+from PySide6.QtGui import QBrush, QColor, QLinearGradient, QPainter
 from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 from qfluentwidgets import FluentIcon, PushButton, ToolButton
 
 from src.tasks.run_history import contains_joined_name
-from src.ui.quest_theme import MONO_FONT, on_theme_changed, palette
+from src.ui.quest_theme import MONO_FONT, mix, on_theme_changed, palette, rgba
 
 logger = Logger.get_logger(__name__)
 
@@ -83,16 +83,16 @@ class SegmentedBar(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._segments: list[tuple[int, str]] = []
+        self._segments: list[tuple[int, str] | tuple[int, str, str]] = []
         self.setFixedHeight(8)
 
-    def set_segments(self, segments: list[tuple[int, str]]) -> None:
+    def set_segments(self, segments: list[tuple[int, str] | tuple[int, str, str]]) -> None:
         if segments != self._segments:
             self._segments = list(segments)
             self.update()
 
     def paintEvent(self, _event):
-        total = sum(count for count, _ in self._segments)
+        total = sum(segment[0] for segment in self._segments)
         if total <= 0:
             return
         painter = QPainter(self)
@@ -100,12 +100,20 @@ class SegmentedBar(QWidget):
         x = 0.0
         gap = 2
         width = self.width()
-        for index, (count, color) in enumerate(self._segments):
+        for index, segment in enumerate(self._segments):
+            count, color = segment[0], segment[1]
+            gradient_to = segment[2] if len(segment) > 2 else None
             if count <= 0:
                 continue
             seg_width = max(2.0, width * count / total - (gap if index else 0))
             painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor(color))
+            if gradient_to is not None:
+                gradient = QLinearGradient(x, 0, x + seg_width, 0)
+                gradient.setColorAt(0, QColor(color))
+                gradient.setColorAt(1, QColor(gradient_to))
+                painter.setBrush(QBrush(gradient))
+            else:
+                painter.setBrush(QColor(color))
             painter.drawRoundedRect(int(x), 0, int(seg_width), self.height(), 4, 4)
             x += seg_width + gap
         painter.end()
@@ -138,7 +146,7 @@ class RunPanel(QFrame):
         self._pill_kind = None
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 12, 16, 14)
+        root.setContentsMargins(20, 16, 20, 16)
         root.setSpacing(10)
 
         # ---- header: pill + name + time + ops ----
@@ -203,11 +211,14 @@ class RunPanel(QFrame):
 
     def _apply_style(self):
         tokens = palette()
+        wash = mix(tokens["card"], tokens["accent"], 0.07)
         self.setStyleSheet(
-            f"QFrame#runPanel {{ background-color: {tokens['card']};"
-            f" border: 1px solid {tokens['line']}; border-radius: 8px; }}"
-            f" QLabel#runPanelName {{ color: {tokens['ink']}; font-size: 14px;"
-            " font-weight: 700; background: transparent; }"
+            f"QFrame#runPanel {{ background: qradialgradient(spread:pad, cx:1, cy:0,"
+            f" radius:1.3, fx:1, fy:0, stop:0 {wash}, stop:0.5 {tokens['card']},"
+            f" stop:1 {tokens['card']});"
+            f" border: 1px solid {rgba(tokens['accent'], 0.35)}; border-radius: 14px; }}"
+            f" QLabel#runPanelName {{ color: {tokens['ink']}; font-size: 15px;"
+            " font-weight: 900; background: transparent; }"
             f" QLabel#runPanelTime {{ color: {tokens['ink_dim']};"
             f" font-family: {MONO_FONT}; font-size: 11px; background: transparent; }}"
             f" QLabel#runPanelLegend {{ color: {tokens['ink_dim']}; font-size: 12px;"
@@ -229,7 +240,7 @@ class RunPanel(QFrame):
         color, soft = colors.get(self._pill_kind, colors["done"])
         self.pill.setStyleSheet(
             f"color: {color}; background-color: {soft}; border: 1px solid {color};"
-            " border-radius: 10px; padding: 2px 10px; font-size: 11px; font-weight: 500;"
+            " border-radius: 11px; padding: 2px 10px; font-size: 11px; font-weight: 700;"
         )
 
     _pill_kind = None
@@ -333,7 +344,7 @@ class RunPanel(QFrame):
                 (len(done), tokens["ok"]),
                 (len(failed), tokens["warn"]),
                 (len(skipped), tokens["seg_skip"]),
-                (len(doing), tokens["accent"]),
+                (len(doing), tokens["accent_deep"], tokens["accent_hi"]),
                 (len(todo), tokens["line_strong"]),
             ]
         )
@@ -385,14 +396,18 @@ class RunPanel(QFrame):
                 icon, color = "▶", tokens["accent"]
             else:
                 icon, color = "·", tokens["ink_faint"]
+            if name in doing:
+                cell_bg, cell_border = tokens["accent_soft"], rgba(tokens["accent"], 0.5)
+            else:
+                cell_bg, cell_border = tokens["inset"], tokens["line"]
             cell = QLabel(self.grid_container)
             cell.setStyleSheet(
-                f"QLabel {{ color: {tokens['ink_dim']}; background-color: {tokens['inset']};"
-                f" border: 1px solid {tokens['line']}; border-radius: 6px;"
-                " padding: 6px 10px; font-size: 12px; }"
+                f"QLabel {{ color: {tokens['ink_dim']}; background-color: {cell_bg};"
+                f" border: 1px solid {cell_border}; border-radius: 10px;"
+                " padding: 8px 12px; font-size: 12px; }"
             )
             cell.setText(f"<span style='color:{color}'>{icon}</span>&nbsp;&nbsp;{name}")
-            self.grid.addWidget(cell, index // 4, index % 4)
+            self.grid.addWidget(cell, index // 3, index % 3)
 
     def _render_rows(self, task, info, state: str) -> None:
         rows: list[tuple[str, str, str]] = []  # (key, value, tone)
@@ -448,7 +463,7 @@ class RunPanel(QFrame):
             row_layout.setContentsMargins(0, 0, 0, 0)
             row_layout.setSpacing(12)
             key_label = QLabel(key, row)
-            key_label.setFixedWidth(64)
+            key_label.setFixedWidth(76)
             key_label.setStyleSheet(
                 f"color: {tokens['ink_faint']}; font-size: 11px; background: transparent;"
             )

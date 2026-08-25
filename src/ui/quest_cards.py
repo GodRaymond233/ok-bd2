@@ -34,14 +34,15 @@ cached per view width so a frame costs no height-for-width walk either.
 from __future__ import annotations
 
 import time
+from html import escape
 from weakref import ref
 
-from PySide6.QtCore import QAbstractAnimation, QObject, Qt, QTimer
-from PySide6.QtGui import QColor, QPainter
+from PySide6.QtCore import QAbstractAnimation, QObject, QPointF, Qt, QTimer
+from PySide6.QtGui import QBrush, QColor, QLinearGradient, QPainter
 from PySide6.QtWidgets import QLabel, QWidget
 
 from src.tasks.run_history import day_start_ts, default_store
-from src.ui.quest_theme import MONO_FONT, palette
+from src.ui.quest_theme import MONO_FONT, palette, rgba
 
 # Tasks with weekly (Monday 04:00 Beijing) instead of daily refresh semantics.
 WEEKLY_TASK_NAMES = {"每周跑图"}
@@ -170,14 +171,23 @@ class QuestSealDot(QWidget):
         }.get(self._state, tokens["seal_idle"])
         painter = QPainter(self)
         painter.setRenderHints(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
         center = self.SIZE / 2
         if self._state == "run":
-            halo = QColor(tokens["accent_soft"])
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(halo)
+            painter.setBrush(QColor(tokens["accent_soft"]))
             painter.drawEllipse(int(center - 10), int(center - 10), 20, 20)
-        painter.setBrush(QColor(color))
-        painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(rgba(tokens["accent"], 0.28)))
+            painter.drawEllipse(QPointF(center, center), 6.5, 6.5)
+            gradient = QLinearGradient(center, center - 4.5, center, center + 4.5)
+            gradient.setColorAt(0, QColor(tokens["accent_hi"]))
+            gradient.setColorAt(1, QColor(tokens["accent_deep"]))
+            painter.setBrush(QBrush(gradient))
+        elif self._state == "ok":
+            painter.setBrush(QColor(rgba(tokens["ok"], 0.25)))
+            painter.drawEllipse(QPointF(center, center), 7, 7)
+            painter.setBrush(QColor(color))
+        else:
+            painter.setBrush(QColor(color))
         painter.drawEllipse(int(center - 4.5), int(center - 4.5), 9, 9)
         painter.end()
 
@@ -317,6 +327,28 @@ def _get_refresher() -> _CardRefresher:
     return _refresher
 
 
+def _meta_display(state: str, text: str) -> str:
+    """Meta line for display: tint the " · "-separated prefix by seal state.
+
+    Returns plain text when there is no tint (the label stylesheet's ink_faint
+    owns the color); a single rich-text span when tinted.  Everything stays in
+    the 11px mono face from the stylesheet.
+    """
+    if not text:
+        return ""
+    tone = None
+    if state == "run":
+        tone = palette()["accent"]
+    elif state == "ok":
+        tone = palette()["ok"]
+    if tone is None:
+        return text
+    head, sep, rest = text.partition(" · ")
+    if not sep:
+        return f"<span style='color:{tone}'>{escape(head)}</span>"
+    return f"<span style='color:{tone}'>{escape(head)}</span> · {escape(rest)}"
+
+
 def refresh_quest_card(card) -> None:
     """Dirty-checked per-card refresh.
 
@@ -337,8 +369,13 @@ def refresh_quest_card(card) -> None:
 
     card._quest_seal.set_state(state)
     meta = card._quest_meta
-    if text != meta.text():
-        meta.setText(text)
+    display = _meta_display(state, text)
+    # Compare against the last rendered string, not meta.text(): rich text
+    # makes text() return the HTML source, and the rendered string also
+    # captures the theme-dependent tint so a theme flip re-renders.
+    if display != getattr(card, "_quest_meta_display", None):
+        card._quest_meta_display = display
+        meta.setText(display)
     meta.setVisible(bool(text))
     apply_quest_chrome(card)
 

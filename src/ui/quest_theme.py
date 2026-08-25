@@ -26,6 +26,7 @@ _LIGHT = {
     "ink_faint": "#8A8A8A",
     "accent": "#0F6CBD",
     "accent_hi": "#115EA3",
+    "accent_deep": "#0B5A9E",
     "accent_soft": "rgba(15,108,189,0.10)",
     "ok": "#107C10",
     "ok_soft": "rgba(16,124,16,0.08)",
@@ -53,6 +54,7 @@ _DARK = {
     "ink_faint": "#7F7F7F",
     "accent": "#479EF5",
     "accent_hi": "#62ABF5",
+    "accent_deep": "#2B7CD3",
     "accent_soft": "rgba(71,158,245,0.14)",
     "ok": "#54B054",
     "ok_soft": "rgba(84,176,84,0.12)",
@@ -78,15 +80,35 @@ def palette(dark: bool | None = None) -> dict[str, str]:
 
 def chip_qss(color: str, soft: str) -> str:
     """Badge chip style: tinted text, soft background, thin colored border."""
-    r, g, b = _hex_rgb(color)
     return (
         f"color: {color};"
         f" background-color: {soft};"
-        f" border: 1px solid rgba({r},{g},{b},0.35);"
-        " border-radius: 4px;"
+        f" border: 1px solid {rgba(color, 0.38)};"
+        " border-radius: 5px;"
         " padding: 1px 7px;"
         " font-size: 11px;"
-        " font-weight: 500;"
+        " font-weight: 700;"
+    )
+
+
+def rgba(hex_color: str, alpha: float) -> str:
+    """'#RRGGBB' + alpha → 'rgba(r,g,b,a)' for QSS."""
+    r, g, b = _hex_rgb(hex_color)
+    return f"rgba({r},{g},{b},{alpha:.2f})"
+
+
+def mix(base: str, tint: str, t: float) -> str:
+    """Opaque blend of ``tint`` into ``base`` ('#RRGGBB').
+
+    Qt QSS stacks no background layers, so the mockup's translucent accent
+    wash over a card is baked as an opaque gradient stop instead.
+    """
+    r1, g1, b1 = _hex_rgb(base)
+    r2, g2, b2 = _hex_rgb(tint)
+    return "#{:02X}{:02X}{:02X}".format(
+        round(r1 + (r2 - r1) * t),
+        round(g1 + (g2 - g1) * t),
+        round(b1 + (b2 - b1) * t),
     )
 
 
