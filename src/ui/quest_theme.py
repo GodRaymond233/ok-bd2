@@ -11,8 +11,32 @@ from __future__ import annotations
 
 from qfluentwidgets import isDarkTheme
 
-BODY_FONT = '"Noto Sans SC", "Microsoft YaHei", "Segoe UI", sans-serif'
-MONO_FONT = '"JetBrains Mono", "Consolas", monospace'
+BODY_FONT = '"MiSans", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif'
+MONO_FONT = (
+    '"JetBrains Mono", "Cascadia Mono", "Cascadia Code", Consolas,'
+    ' "Microsoft YaHei UI", monospace'
+)
+
+# Preferred global UI font stack, best first; absent families are skipped so
+# machines without MiSans degrade to the stock Windows UI fonts.
+APP_FONT_FAMILIES = ("MiSans", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI")
+
+
+def apply_app_font() -> None:
+    """Set the app-wide font to the preferred stack (keeps the default size)."""
+    from PySide6.QtGui import QFontDatabase
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance()
+    if app is None:
+        return
+    available = set(QFontDatabase.families())
+    families = [name for name in APP_FONT_FAMILIES if name in available]
+    if not families:
+        return
+    font = app.font()
+    font.setFamilies(families)
+    app.setFont(font)
 
 _LIGHT = {
     "bg": "#F3F3F3",

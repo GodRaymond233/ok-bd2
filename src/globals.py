@@ -30,6 +30,9 @@ class Globals(QObject):
         from src.ui.fluent_motion import install_fluent_page_transition, install_start_list_motion
         from src.ui.live_screenshot import install_live_screenshot
         from src.ui.nav_sections import install_nav_sections
+        from src.ui.quest_theme import apply_app_font
+
+        apply_app_font()
 
         launch_path = seed_device_manager_launch_path(og.device_manager)
         if launch_path:

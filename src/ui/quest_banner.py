@@ -76,6 +76,7 @@ class ProgressRing(QWidget):
 
         painter.setPen(QColor(tokens["accent"]))
         font = painter.font()
+        font.setFamilies(["Cascadia Mono", "Cascadia Code", "Consolas"])
         font.setPointSize(14)
         font.setWeight(QFont.Weight.Black)
         painter.setFont(font)

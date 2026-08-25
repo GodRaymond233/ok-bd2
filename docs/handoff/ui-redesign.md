@@ -18,7 +18,8 @@
 - 改动只涉及样式层（5 文件，无行为变化）：quest_theme 增 `accent_deep` token 与 `rgba()`/`mix()` helper（QSS 不支持多层背景，晕染用不透明预混色烘焙）；横幅/运行面板 14px 圆角 + 淡蓝径向晕染 + 标题 900 字重；环形进度 72px + 锥形渐变；状态印 run 双层光晕+垂直渐变、ok 柔光晕；meta 行双色富文本（前缀按状态着色，心跳比较缓存的 display 串而非 `meta.text()`——富文本下 text() 返回 HTML 源串，直接比较会让每秒心跳误触发）；运行面板强调色描边、分段条执行中段渐变、子任务格 4→3 列 + doing 高亮、键名列宽 76；responsive_task_config 任务卡框架 8px→14px 圆角、标题 15px/700（标题字重/字号变化不影响 50/68 固定头高公式）。
 - 独立评审 3 LOW 已闭环：`ring.update()` 进 `_apply_style`（主题翻转重绘，基线既有结构顺手修复）、任务卡圆角补齐、SegmentedBar 段类型注解收紧为 `tuple[int,str] | tuple[int,str,str]`。
 - 门禁：816 项全套测试 + ruff + compileall + diff check + 键盘扫描全过；离屏渲染截图（深浅双主题）已目检。
-- 待办：Codex 合并决策；实机目检真实字体下 900 字重表现（Microsoft YaHei 无 Black 字重会回退 Bold，Noto Sans SC 有 900）与渐变晕染观感。
+- 同分支第二轮（字体）：全局字体栈改为 MiSans → Microsoft YaHei UI → Microsoft YaHei → Segoe UI（`quest_theme.apply_app_font()`，在 `Globals.on_show_main_window` 调用，缺字体的机器按栈回退）；MONO_FONT 改 JetBrains Mono → Cascadia Mono → Cascadia Code → Consolas → YaHei UI（末尾补 CJK 回退族，修中西文混排）；环形进度数字用 Cascadia Mono。**注意 Qt offscreen 平台拿不到系统字体库，字体渲染验证必须走真实 QPA**（离屏窗口 grab，见 `.local-dev/scripts/render_aesthetic_v3.py --real`）。本机 MiSans 仅 Regular 字重，900 标题为 Qt 合成加粗，观感已目检可接受。
+- 待办：Codex 合并决策；实机目检真实字体下 900 字重表现与渐变晕染观感。
 
 ## Confirmed Findings
 
