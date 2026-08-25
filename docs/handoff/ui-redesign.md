@@ -12,6 +12,14 @@
 - 展开动画快照回放层是本域后续独立任务，**未合并**，见 `ui-expand-transition.md`。
 - 状态：核心已合并、随开发版日用；5 项遗留决策/实现交回 Codex（见 Remaining）；实机体感未系统回告。
 
+## 2026-08-25 美学打磨轮（aesthetic-v3，用户已批准 mockup）
+
+- 新视觉稿 `.local-dev/experiments/ui-aesthetic-v3-20260825/mockup.html`（白+蓝 Fluent 配色不变，首轮鎏金方案被用户否决后改回）；用户批准后落地到分支 `claude/ui-aesthetic-v3-20260825`（worktree `D:\ok-bd2-claude-aesthetic-v3-20260825`）。
+- 改动只涉及样式层（5 文件，无行为变化）：quest_theme 增 `accent_deep` token 与 `rgba()`/`mix()` helper（QSS 不支持多层背景，晕染用不透明预混色烘焙）；横幅/运行面板 14px 圆角 + 淡蓝径向晕染 + 标题 900 字重；环形进度 72px + 锥形渐变；状态印 run 双层光晕+垂直渐变、ok 柔光晕；meta 行双色富文本（前缀按状态着色，心跳比较缓存的 display 串而非 `meta.text()`——富文本下 text() 返回 HTML 源串，直接比较会让每秒心跳误触发）；运行面板强调色描边、分段条执行中段渐变、子任务格 4→3 列 + doing 高亮、键名列宽 76；responsive_task_config 任务卡框架 8px→14px 圆角、标题 15px/700（标题字重/字号变化不影响 50/68 固定头高公式）。
+- 独立评审 3 LOW 已闭环：`ring.update()` 进 `_apply_style`（主题翻转重绘，基线既有结构顺手修复）、任务卡圆角补齐、SegmentedBar 段类型注解收紧为 `tuple[int,str] | tuple[int,str,str]`。
+- 门禁：816 项全套测试 + ruff + compileall + diff check + 键盘扫描全过；离屏渲染截图（深浅双主题）已目检。
+- 待办：Codex 合并决策；实机目检真实字体下 900 字重表现（Microsoft YaHei 无 Black 字重会回退 Bold，Noto Sans SC 有 900）与渐变晕染观感。
+
 ## Confirmed Findings
 
 - `4b85dab` 时期 `default_config` 缺"启用"键导致三连锁：开关不渲染、用户保存值被丢弃、sub_configs 无挂载点（`547cc7a` 修复，审查确认定位准确）。
