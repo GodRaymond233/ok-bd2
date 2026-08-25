@@ -41,6 +41,7 @@ class BuildWorkflowTest(unittest.TestCase):
 
     def test_required_workflow_scripts_are_packaged(self):
         scripts = (
+            "check_commit_attribution.py",
             "check_dependency_exports.ps1",
             "prepare_pyappify_launcher.ps1",
             "prepare_release_notes.ps1",
@@ -51,6 +52,13 @@ class BuildWorkflowTest(unittest.TestCase):
         for script in scripts:
             with self.subTest(script=script):
                 self.assertTrue((ROOT / "scripts" / script).is_file())
+
+    def test_test_workflow_checks_complete_commit_attribution(self):
+        self.assertIn("          fetch-depth: 0", self.test_workflow)
+        self.assertIn(
+            "run: python scripts/check_commit_attribution.py",
+            self.test_workflow,
+        )
 
     def test_launcher_script_supports_both_compression_modes(self):
         script = (ROOT / "scripts" / "prepare_pyappify_launcher.ps1").read_text(
