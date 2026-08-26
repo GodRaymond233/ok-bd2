@@ -3,8 +3,11 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import numpy as np
+
 from src.compat.windows_graphics import (
     ResizeStabilityGate,
+    _capture_can_produce_visible_frame,
     _capture_identity_signature,
     _valid_capture_size,
     patch_windows_graphics_capture_class,
@@ -12,6 +15,43 @@ from src.compat.windows_graphics import (
 
 
 class WindowsGraphicsCompatibilityTest(unittest.TestCase):
+    def test_first_frame_probe_waits_past_black_frame_for_visible_content(self):
+        blank_frame = np.zeros((720, 1280, 4), dtype=np.uint8)
+        blank_frame[:, :, 3] = 255
+        capture = SimpleNamespace(
+            get_frame=Mock(
+                side_effect=(
+                    blank_frame,
+                    np.ones((720, 1280, 3), dtype=np.uint8),
+                )
+            ),
+            get_name=Mock(return_value="Windows Graphics Capture"),
+        )
+        fake_time = SimpleNamespace(
+            monotonic=Mock(side_effect=(0.0, 0.0, 0.1)),
+            sleep=Mock(),
+        )
+
+        with patch("src.compat.windows_graphics.time", fake_time):
+            self.assertTrue(_capture_can_produce_visible_frame(capture, 1.5))
+
+        self.assertEqual(2, capture.get_frame.call_count)
+
+    def test_first_frame_probe_rejects_continuous_black_frames(self):
+        capture = SimpleNamespace(
+            get_frame=Mock(return_value=np.zeros((720, 1280, 3), dtype=np.uint8)),
+            get_name=Mock(return_value="Windows Graphics Capture"),
+        )
+        fake_time = SimpleNamespace(
+            monotonic=Mock(side_effect=(0.0, 0.0, 1.6)),
+            sleep=Mock(),
+        )
+
+        with patch("src.compat.windows_graphics.time", fake_time):
+            self.assertFalse(_capture_can_produce_visible_frame(capture, 1.5))
+
+        capture.get_frame.assert_called_once_with()
+
     def test_resize_gate_requires_one_continuously_stable_size(self):
         gate = ResizeStabilityGate(delay_seconds=0.8)
 

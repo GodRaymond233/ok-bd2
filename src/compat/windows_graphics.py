@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
+import numpy as np
 import ok
 from ok.device.capture_methods import update as capture_update
 from ok.util import window as ok_window
@@ -69,6 +70,38 @@ def _valid_capture_size(size: object) -> bool:
     width, height = _capture_size(size)
     min_width, min_height = WGC_MIN_CAPTURE_SIZE
     return width >= min_width and height >= min_height
+
+
+def _frame_has_visible_pixels(frame: object) -> bool:
+    if not isinstance(frame, np.ndarray) or frame.size == 0:
+        return False
+    if frame.ndim >= 3 and frame.shape[2] >= 3:
+        frame = frame[:, :, :3]
+    return bool(np.any(frame))
+
+
+def _capture_can_produce_visible_frame(capture: object, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    blank_frames = 0
+    while time.monotonic() < deadline:
+        try:
+            frame = capture.get_frame()
+        except Exception as exc:
+            logger.warning(f"{capture.get_name()} did not produce a frame: {exc}")
+            return False
+        if frame is not None:
+            if _frame_has_visible_pixels(frame):
+                return True
+            blank_frames += 1
+        time.sleep(0.05)
+    if blank_frames:
+        logger.warning(
+            f"{capture.get_name()} produced only blank frames within {timeout}s; "
+            "trying the next capture method"
+        )
+    else:
+        logger.warning(f"{capture.get_name()} did not produce a frame within {timeout}s")
+    return False
 
 
 def _capture_identity_signature(hwnd_window: object) -> tuple:
@@ -259,3 +292,4 @@ def enable_windows_10_wgc() -> None:
 
     patch_hwnd_capture_target_signature(HwndWindow)
     patch_windows_graphics_capture_class(WindowsGraphicsCaptureMethod)
+    capture_update._capture_can_produce_frame = _capture_can_produce_visible_frame
