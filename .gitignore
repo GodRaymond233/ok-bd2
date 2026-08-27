@@ -22,6 +22,10 @@ probe_outputs/
 thread_dumps.txt
 upstream/
 
+# Internal AI handoff notes and local-only archives (keep in .local-dev/)
+/docs/handoff/
+/output/
+
 # Python
 __pycache__/
 *.py[cod]

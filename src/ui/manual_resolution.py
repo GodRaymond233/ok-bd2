@@ -55,7 +55,11 @@ class Win32WindowBackend:
 
     @staticmethod
     def is_maximized(hwnd: int) -> bool:
-        return bool(win32gui.IsZoomed(hwnd))
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        is_zoomed = user32.IsZoomed
+        is_zoomed.argtypes = (wintypes.HWND,)
+        is_zoomed.restype = wintypes.BOOL
+        return bool(is_zoomed(hwnd))
 
     @staticmethod
     def restore(hwnd: int) -> None:

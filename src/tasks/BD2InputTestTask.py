@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Callable
 
 import numpy as np
+from ok.device.intercation import PostMessageInteraction
 from ok.util.process import is_admin
 from qfluentwidgets import FluentIcon
 
@@ -20,6 +21,7 @@ WHEEL_DIRECTIONS = {"向上": 1, "向下": -1}
 REFERENCE_POINT_MODE_KEY = "点击单个点位置坐标"
 REFERENCE_POINT_X_KEY = "单点横坐标像素"
 REFERENCE_POINT_Y_KEY = "单点纵坐标像素"
+BACKGROUND_MOUSE_MOVE_KEY = "先发送后台移动消息"
 
 
 class _BD2InputProbeTask(BaseBD2Task):
@@ -165,6 +167,7 @@ class _BD2InputProbeTask(BaseBD2Task):
     def _action_display_name(action_name: str) -> str:
         names = {
             "mouse_click": "鼠标单击",
+            "background_mouse_click": "后台鼠标单击",
             "mouse_wheel_up": "鼠标滚轮向上",
             "mouse_wheel_down": "鼠标滚轮向下",
         }
@@ -216,7 +219,7 @@ class BD2MouseClickInputTestTask(_BD2InputProbeTask):
         )
         self._add_reference_point_config(173, 54)
 
-    def run(self):
+    def _configured_click_point(self) -> tuple[bool, float, float]:
         use_reference_point = bool(self.config.get(REFERENCE_POINT_MODE_KEY, False))
         if use_reference_point:
             click_x, click_y = self._configured_reference_point(173, 54)
@@ -227,6 +230,10 @@ class BD2MouseClickInputTestTask(_BD2InputProbeTask):
             click_y = self._percent_to_relative(
                 self._config_value("点击 Y 百分比", "Click Y Percent", 5)
             )
+        return use_reference_point, click_x, click_y
+
+    def run(self):
+        use_reference_point, click_x, click_y = self._configured_click_point()
         return self.run_input_probe(
             "mouse_click",
             [
@@ -235,6 +242,63 @@ class BD2MouseClickInputTestTask(_BD2InputProbeTask):
                 f"click={click_x:.6f},{click_y:.6f}",
             ],
             lambda _frame: self.operate_click(click_x, click_y),
+        )
+
+
+class BD2BackgroundMouseClickInputTestTask(BD2MouseClickInputTestTask):
+    output_prefix = "bd2_background_mouse_click_input_test"
+    output_latest = "bd2_background_mouse_click_input_test_latest.txt"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.name = "BD2 后台鼠标点击测试"
+        self.description = (
+            "仅向游戏窗口发送鼠标消息，不移动物理鼠标，也不屏蔽用户键盘或鼠标输入。"
+        )
+        self.default_config[BACKGROUND_MOUSE_MOVE_KEY] = True
+        self.config_description[BACKGROUND_MOUSE_MOVE_KEY] = (
+            "开启时先发送后台鼠标移动消息再点击；关闭时只发送按下和抬起消息。"
+        )
+
+    def run(self):
+        use_reference_point, click_x, click_y = self._configured_click_point()
+        send_move = bool(self.config.get(BACKGROUND_MOUSE_MOVE_KEY, True))
+        return self.run_input_probe(
+            "background_mouse_click",
+            [
+                "coordinate_mode="
+                + ("reference_pixel_point" if use_reference_point else "percent_point"),
+                f"click={click_x:.6f},{click_y:.6f}",
+                f"post_mouse_move={str(send_move).lower()}",
+                "physical_cursor_move=false",
+                "block_input=false",
+            ],
+            lambda frame: self._perform_background_click(frame, click_x, click_y, send_move),
+        )
+
+    def _perform_background_click(
+        self,
+        frame: np.ndarray,
+        relative_x: float,
+        relative_y: float,
+        send_move: bool,
+    ) -> None:
+        interaction = getattr(self.executor, "interaction", None)
+        if not isinstance(interaction, PostMessageInteraction):
+            raise RuntimeError("当前交互对象不支持 PostMessage 后台点击")
+
+        height, width = frame.shape[:2]
+        x = int(width * relative_x)
+        y = int(height * relative_y)
+        PostMessageInteraction.click(
+            interaction,
+            x,
+            y,
+            move_back=False,
+            name="bd2_background_mouse_click",
+            down_time=0.02,
+            move=send_move,
+            key="left",
         )
 
 

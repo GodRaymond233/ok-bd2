@@ -10,6 +10,7 @@ DEBUG_ONETIME_TASKS = [
     ["src.tasks.BD2MapCollectionProbeTask", "BD2MapCollectionProbeTask"],
     ["src.tasks.BD2OneTimeTask", "BD2OneTimeTask"],
     ["src.tasks.BD2DiagnosisTask", "BD2DiagnosisTask"],
+    ["src.tasks.BD2InputTestTask", "BD2BackgroundMouseClickInputTestTask"],
 ]
 
 

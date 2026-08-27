@@ -20,6 +20,10 @@ class DebugRegistryTest(unittest.TestCase):
                 ["src.tasks.BD2MapCollectionProbeTask", "BD2MapCollectionProbeTask"],
                 ["src.tasks.BD2OneTimeTask", "BD2OneTimeTask"],
                 ["src.tasks.BD2DiagnosisTask", "BD2DiagnosisTask"],
+                [
+                    "src.tasks.BD2InputTestTask",
+                    "BD2BackgroundMouseClickInputTestTask",
+                ],
             ],
             DEBUG_ONETIME_TASKS,
         )
@@ -27,9 +31,9 @@ class DebugRegistryTest(unittest.TestCase):
     def test_install_debug_tasks_is_idempotent(self):
         cfg = {"onetime_tasks": [["src.tasks.DailyBatchTask", "DailyBatchTask"]]}
         install_debug_tasks(cfg)
-        self.assertEqual(5, len(cfg["onetime_tasks"]))
+        self.assertEqual(6, len(cfg["onetime_tasks"]))
         install_debug_tasks(cfg)
-        self.assertEqual(5, len(cfg["onetime_tasks"]))
+        self.assertEqual(6, len(cfg["onetime_tasks"]))
         for registration in DEBUG_ONETIME_TASKS:
             self.assertIn(registration, cfg["onetime_tasks"])
 

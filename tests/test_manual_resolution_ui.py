@@ -1,6 +1,7 @@
 import os
 import unittest
 from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -14,6 +15,7 @@ from src.ui.manual_resolution import (
     MANUAL_RESOLUTIONS,
     ManualResolutionError,
     ManualResolutionWidget,
+    Win32WindowBackend,
     WindowResizeResult,
     _ResizeJob,
     format_resolution,
@@ -186,6 +188,19 @@ class ManualResolutionTest(unittest.TestCase):
             ),
             MANUAL_RESOLUTIONS,
         )
+
+    def test_win32_backend_reads_maximized_state_from_user32(self):
+        is_zoomed = Mock(return_value=1)
+        user32 = SimpleNamespace(IsZoomed=is_zoomed)
+
+        with patch(
+            "src.ui.manual_resolution.ctypes.WinDLL",
+            return_value=user32,
+        ) as win_dll:
+            self.assertTrue(Win32WindowBackend.is_maximized(101))
+
+        win_dll.assert_called_once_with("user32", use_last_error=True)
+        is_zoomed.assert_called_once_with(101)
 
     def test_widget_lists_resolutions_and_defaults_to_1080p(self):
         widget = ManualResolutionWidget()

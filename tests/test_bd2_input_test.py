@@ -1,13 +1,17 @@
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
+from ok.device.intercation import PostMessageInteraction
 
 from src.tasks.BD2InputTestTask import (
+    BACKGROUND_MOUSE_MOVE_KEY,
     DEFAULT_WHEEL_REGION,
     REFERENCE_POINT_MODE_KEY,
     REFERENCE_POINT_X_KEY,
     REFERENCE_POINT_Y_KEY,
+    BD2BackgroundMouseClickInputTestTask,
     BD2MouseClickInputTestTask,
     BD2MouseWheelInputTestTask,
 )
@@ -140,6 +144,59 @@ class BD2MouseClickInputTestTaskTest(unittest.TestCase):
         task.run()
 
         self.assertEqual([(43 / 1920, 974 / 1080)], clicks)
+
+
+class BD2BackgroundMouseClickInputTestTaskTest(unittest.TestCase):
+    def test_debug_task_metadata_and_default_message_move(self):
+        task = BD2BackgroundMouseClickInputTestTask(
+            SimpleNamespace(scene=None),
+            SimpleNamespace(),
+        )
+
+        self.assertEqual("BD2 后台鼠标点击测试", task.name)
+        self.assertEqual("测试", task.group_name)
+        self.assertTrue(task.visible)
+        self.assertTrue(task.default_config[BACKGROUND_MOUSE_MOVE_KEY])
+
+    def test_run_uses_reference_point_and_configured_message_move(self):
+        task = object.__new__(BD2BackgroundMouseClickInputTestTask)
+        task.config = {
+            REFERENCE_POINT_MODE_KEY: True,
+            REFERENCE_POINT_X_KEY: 173,
+            REFERENCE_POINT_Y_KEY: 54,
+            BACKGROUND_MOUSE_MOVE_KEY: False,
+        }
+        clicks = []
+        task._perform_background_click = lambda frame, x, y, send_move: clicks.append(
+            (frame.shape, x, y, send_move)
+        )
+        task.run_input_probe = lambda _name, _details, action: action(
+            np.zeros((1080, 1920, 3), dtype=np.uint8)
+        )
+
+        task.run()
+
+        self.assertEqual([((1080, 1920, 3), 173 / 1920, 54 / 1080, False)], clicks)
+
+    def test_background_click_bypasses_bd2_physical_click_override(self):
+        task = object.__new__(BD2BackgroundMouseClickInputTestTask)
+        interaction = object.__new__(PostMessageInteraction)
+        task._executor = SimpleNamespace(interaction=interaction)
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+
+        with patch.object(PostMessageInteraction, "click", autospec=True) as click:
+            task._perform_background_click(frame, 0.25, 0.75, True)
+
+        click.assert_called_once_with(
+            interaction,
+            320,
+            540,
+            move_back=False,
+            name="bd2_background_mouse_click",
+            down_time=0.02,
+            move=True,
+            key="left",
+        )
 
 
 if __name__ == "__main__":
