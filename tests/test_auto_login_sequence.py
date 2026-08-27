@@ -33,6 +33,8 @@ class AutoLoginSequenceTest(unittest.TestCase):
             "小屋按钮遮挡阈值": 0.62,
             "小屋亮度比例阈值": 0.75,
             "主页 UI 等待宽限秒数": 15.0,
+            "登录后主页总等待秒数": 300.0,
+            "登录超时重试间隔秒数": 60.0,
             "小屋按钮点击 X 百分比": 8.6979,
             "小屋按钮点击 Y 百分比": 14.3519,
             "公告清理点击 X 百分比": 8.8020833333,
@@ -47,6 +49,7 @@ class AutoLoginSequenceTest(unittest.TestCase):
         task._home_bright_since = None
         task._login_clicked_at = None
         task._waiting_home_since = None
+        task._login_retry_not_before = 0.0
         task._last_clear_click_at = 0.0
         task._last_confirm_click_at = 0.0
         task._last_download_click_at = 0.0
@@ -430,6 +433,108 @@ class AutoLoginSequenceTest(unittest.TestCase):
         self.assertAlmostEqual(0.650926, clicks[0][1])
         self.assertEqual(2.0, clicks[0][2])
         self.assertEqual("waiting_loading", task._state)
+        self.assertIsNotNone(task._login_clicked_at)
+        self.assertGreater(task._login_clicked_at, 0.0)
+        self.assertEqual(0.0, task._login_retry_not_before)
+
+    def test_waiting_loading_keeps_login_click_timestamp_for_hard_timeout(self):
+        task = self._task()
+        task._state = "waiting_loading"
+        clicked_at = monotonic()
+        task._login_clicked_at = clicked_at
+        task._match = lambda _frame, _spec: MatchResult(-1.0, (0, 0), (0, 0))
+
+        AutoLoginTask._wait_loading_then_home(
+            task,
+            np.zeros((10, 10, 3), dtype=np.uint8),
+        )
+
+        self.assertEqual("waiting_home", task._state)
+        self.assertEqual(clicked_at, task._login_clicked_at)
+
+    def test_login_wait_hard_timeout_resets_state_and_backs_off(self):
+        task = self._task()
+        task._state = "waiting_home"
+        task._login_clicked_at = monotonic() - 301.0
+        task._waiting_home_since = monotonic() - 301.0
+        statuses = {}
+        task.info_set = lambda key, value: statuses.__setitem__(key, value)
+        warnings = []
+        task.log_warning = lambda message, notify=False: warnings.append(
+            (message, notify)
+        )
+        task._match = lambda _frame, _spec: MatchResult(-1.0, (0, 0), (0, 0))
+
+        AutoLoginTask._wait_loading_then_home(
+            task,
+            np.zeros((1440, 2560, 3), dtype=np.uint8),
+        )
+
+        self.assertEqual("waiting", task._state)
+        self.assertIsNone(task._login_clicked_at)
+        self.assertIsNone(task._waiting_home_since)
+        self.assertEqual("登录后等待主页超时", statuses["状态"])
+        self.assertEqual("等待登录页", statuses["阶段"])
+        self.assertEqual(1, len(warnings))
+        self.assertIn("超时", warnings[0][0])
+        self.assertTrue(warnings[0][1])
+        self.assertGreaterEqual(
+            task._login_retry_not_before,
+            monotonic() + 60.0 - 1.0,
+        )
+
+        info_calls = []
+        task.info_set = lambda key, value: info_calls.append((key, value))
+        task.capture_frame = lambda: self.fail("退避期内不得重新抓帧识别")
+        task.trigger_interval = 0
+
+        self.assertFalse(AutoLoginTask.run(task))
+        self.assertEqual([], info_calls)
+
+    def test_run_resumes_login_flow_after_backoff_expires(self):
+        task = self._task()
+        task._state = "waiting"
+        task._login_retry_not_before = monotonic() - 1.0
+        task.trigger_interval = 0
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task._match = lambda _frame, _spec: MatchResult(-1.0, (0, 0), (0, 0))
+        task.ocr = lambda *_args, **_kwargs: []
+        info_calls = []
+        task.info_set = lambda key, value: info_calls.append((key, value))
+
+        self.assertFalse(AutoLoginTask.run(task))
+
+        self.assertIn(("内部状态", "waiting"), info_calls)
+        self.assertFalse(task._finished)
+
+    def test_successful_home_confirmation_clears_login_retry_backoff(self):
+        task = self._task()
+        task._state = "clearing"
+        task._login_retry_not_before = monotonic() + 60.0
+        task._home_bright_since = monotonic() - 5.0
+        task._home_brightness_ratio = lambda _frame: 1.0
+        task._home_gacha_ocr_text = lambda _frame: "抽抽乐"
+        statuses = {}
+        task.info_set = lambda key, value: statuses.__setitem__(key, value)
+        task.log_info = lambda *_args, **_kwargs: None
+        logged_in = []
+        task.mark_logged_in = lambda: logged_in.append(True)
+        task._match = lambda _frame, _spec: MatchResult(
+            0.9,
+            (120, 130),
+            (90, 90),
+            pixel_score=0.9,
+        )
+
+        AutoLoginTask._clear_popups_until_home(
+            task,
+            np.zeros((1440, 2560, 3), dtype=np.uint8),
+        )
+
+        self.assertEqual([True], logged_in)
+        self.assertTrue(task._finished)
+        self.assertEqual("done", task._state)
+        self.assertEqual(0.0, task._login_retry_not_before)
 
     def test_login_page_ocr_error_keeps_task_schedulable(self):
         task = self._task()

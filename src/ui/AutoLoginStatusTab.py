@@ -3,6 +3,8 @@ from PySide6.QtCore import QEvent, QTimer
 from PySide6.QtWidgets import QGridLayout, QWidget
 from qfluentwidgets import BodyLabel, CaptionLabel, FluentIcon, StrongBodyLabel, SubtitleLabel
 
+from src.tasks.BaseBD2Task import task_info_snapshot
+
 REFRESH_INTERVAL_MS = 500
 MISSING = object()
 
@@ -86,7 +88,7 @@ class AutoLoginStatusTab(CustomTab):
                     )
                 )
 
-            info = getattr(task, "info", {}) or {}
+            info = task_info_snapshot(task)
             for key, value in info.items():
                 if key in seen_keys:
                     continue
@@ -144,7 +146,7 @@ class AutoLoginStatusTab(CustomTab):
         )
 
     def _has_status(self, task) -> bool:
-        return bool(getattr(task, "info", None)) or bool(getattr(task, "status_keys", None))
+        return bool(task_info_snapshot(task)) or bool(getattr(task, "status_keys", None))
 
     def _base_status_rows(self, task):
         status = self._task_status(task)
@@ -175,7 +177,7 @@ class AutoLoginStatusTab(CustomTab):
         for key in getattr(task, "status_keys", []) or []:
             if key not in keys:
                 keys.append(key)
-        for key in (getattr(task, "info", {}) or {}).keys():
+        for key in task_info_snapshot(task):
             if key not in keys:
                 keys.append(key)
         return keys
@@ -185,8 +187,15 @@ class AutoLoginStatusTab(CustomTab):
         return labels.get(key, key)
 
     def _task_value(self, task, key):
-        for mapping_name in ("info", "config", "default_config"):
-            value = self._mapping_value(getattr(task, mapping_name, None), key)
+        # ``info`` must go through the snapshot (it is mutated from the
+        # executor thread); config/default_config are UI-thread-owned dicts.
+        mappings = (
+            task_info_snapshot(task),
+            getattr(task, "config", None),
+            getattr(task, "default_config", None),
+        )
+        for mapping in mappings:
+            value = self._mapping_value(mapping, key)
             if value is not MISSING:
                 return value
         return "-"

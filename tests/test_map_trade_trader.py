@@ -2967,11 +2967,19 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
 
     def test_return_home_from_sandbox_clicks_home_once(self):
         actions = []
+        matched_specs = []
         task = SimpleNamespace(
             config={},
             operate_click=lambda x, y, after_sleep=0: actions.append((x, y, after_sleep)),
+            sleep=lambda *_args: None,
         )
-        navigator = Navigator(task, SimpleNamespace())
+        vision = SimpleNamespace(
+            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
+            match=lambda _frame, spec: matched_specs.append(spec)
+            or MatchResult(-1.0, (0, 0), (0, 0)),
+            passes=lambda *_args: False,
+        )
+        navigator = Navigator(task, vision)
         navigator.classify = lambda: ScreenState.SANDBOX
         navigator._wait_for_cartridge_home = lambda timeout, **kwargs: (
             actions.append(("wait_home", timeout, kwargs)) or True
@@ -2991,6 +2999,7 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
             ],
             actions,
         )
+        self.assertGreaterEqual(len(matched_specs), len(CHAPTER_HOME_TEMPLATES))
 
     def test_return_home_closes_each_confirmed_map_page_before_home(self):
         cases = (
@@ -3014,8 +3023,14 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
                     operate_click=lambda x, y, after_sleep=0: actions.append(
                         ("click", x, y, after_sleep)
                     ),
+                    sleep=lambda *_args: None,
                 )
-                navigator = Navigator(task, SimpleNamespace())
+                vision = SimpleNamespace(
+                    capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
+                    match=lambda *_args: MatchResult(-1.0, (0, 0), (0, 0)),
+                    passes=lambda *_args: False,
+                )
+                navigator = Navigator(task, vision)
                 navigator.classify = lambda: state
                 navigator._close_confirmed_map_page = (
                     lambda received_modes, **kwargs: (
@@ -3084,8 +3099,14 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
         task = SimpleNamespace(
             config={"加载页面等待秒数": 45.0},
             operate_click=lambda x, y, after_sleep=0: actions.append((x, y, after_sleep)),
+            sleep=lambda *_args: None,
         )
-        navigator = Navigator(task, SimpleNamespace())
+        vision = SimpleNamespace(
+            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
+            match=lambda *_args: MatchResult(-1.0, (0, 0), (0, 0)),
+            passes=lambda *_args: False,
+        )
+        navigator = Navigator(task, vision)
         navigator.classify = lambda: ScreenState.LOADING
         navigator.wait_state = lambda wanted, timeout: (
             actions.append((wanted, timeout)) or ScreenState.SANDBOX

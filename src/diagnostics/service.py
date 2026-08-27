@@ -67,7 +67,7 @@ class DiagnosticsManager:
             frame=frame,
             frame_age_seconds=frame_age,
             capture_method=method_name,
-            task=_task_snapshot(executor),
+            task=_task_snapshot(executor, warnings),
             executor_was_running=executor_was_running,
             safe_point_reached=safe_point_reached,
             warnings=tuple(warnings),
@@ -169,7 +169,7 @@ def _wait_for_interaction_idle(executor, device_manager, timeout: float = 2.0) -
         return False
 
 
-def _task_snapshot(executor) -> dict[str, Any]:
+def _task_snapshot(executor, warnings: list[str] | None = None) -> dict[str, Any]:
     task = getattr(executor, "current_task", None) if executor is not None else None
     if task is None:
         return {"class": "未运行任务"}
@@ -178,11 +178,22 @@ def _task_snapshot(executor) -> dict[str, Any]:
         "class": type(task).__name__,
         "paused": bool(getattr(task, "paused", False)),
     }
-    info = getattr(task, "info", {})
+    # Strict capture: unlike the swallowing ``task_info_snapshot`` fallback
+    # (kept resilient for UI timers), a failed copy here must be reported in
+    # the report warnings instead of silently dropping the task state.
     try:
-        current_info = dict(info)
-    except (TypeError, RuntimeError):
+        snapshot = getattr(task, "info_snapshot", None)
+        if callable(snapshot):
+            current_info = snapshot()
+        else:
+            current_info = dict(getattr(task, "info", None) or {})
+        if not isinstance(current_info, dict):
+            raise TypeError(f"info_snapshot returned {type(current_info).__name__}")
+    except Exception as exc:
         current_info = {}
+        if warnings is not None:
+            reason = str(exc) or type(exc).__name__
+            warnings.append(f"任务 {type(task).__name__} 状态快照失败：{reason}")
     for key in _TASK_INFO_KEYS:
         if key in current_info:
             result[key] = current_info[key]

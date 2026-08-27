@@ -32,7 +32,10 @@ from src.tasks.map_trade.trader import (
     STAR_TEMPLATE_THRESHOLD,
     Trader,
 )
+from src.tasks.map_trade.trader_constants import SHOP_CARTRIDGE_OCR_RELATIVE_ROI
 from src.tasks.map_trade.vision import Vision
+from src.utils.calibration import FHD_1080
+from src.utils.image_utils import relative_roi_frame, scale_reference_roi
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -400,6 +403,32 @@ class ShopAndCatalogTest(unittest.TestCase):
         self.assertAlmostEqual(((117 + 959) / 2) / 1080, SHOP_CARTRIDGE_SCROLL_POINT[1])
         self.assertEqual(SHOP_CARTRIDGE_RECOGNITION_REGION, spec.relative_roi)
 
+    def test_shop_cartridge_ocr_relative_roi_matches_fhd_rect_at_supported_resolutions(self):
+        reference_rect = (200, 70, 300, 1010)
+        for bounds in SHOP_CARTRIDGE_OCR_RELATIVE_ROI:
+            self.assertGreaterEqual(bounds, 0.0)
+            self.assertLessEqual(bounds, 1.0)
+        self.assertEqual(1.0, SHOP_CARTRIDGE_OCR_RELATIVE_ROI[3])
+        self.assertEqual(SHOP_CARTRIDGE_RECOGNITION_REGION, SHOP_CARTRIDGE_OCR_RELATIVE_ROI)
+
+        for frame_width, frame_height in (
+            (1280, 720),
+            (1920, 1080),
+            (2560, 1440),
+            (3840, 2160),
+        ):
+            with self.subTest(size=(frame_width, frame_height)):
+                frame = np.zeros((frame_height, frame_width, 3), dtype=np.uint8)
+                expected = scale_reference_roi(
+                    reference_rect,
+                    (frame_width, frame_height),
+                    FHD_1080.size,
+                )
+                left, top, crop = relative_roi_frame(frame, SHOP_CARTRIDGE_OCR_RELATIVE_ROI)
+                self.assertEqual(expected[:2], (left, top))
+                self.assertEqual((expected[3], expected[2]), crop.shape[:2])
+                self.assertGreater(crop.size, 0)
+
     def test_shop_cartridge_keeps_strict_local_threshold(self):
         trader = object.__new__(Trader)
         trader.vision = SimpleNamespace(threshold_for=lambda _spec: 0.72)
@@ -508,6 +537,66 @@ class ShopAndCatalogTest(unittest.TestCase):
         )
 
         self.assertEqual({}, trader._confirmed_shop_cartridge_detections(frame))
+
+    def test_shop_cartridge_competition_pairs_full_frame_ocr_and_template_at_1440p(self):
+        # OCR 框契约：ocr_boxes 返回的框必须已是完整客户区坐标（相对 ROI 裁剪偏移
+        # 已加回），模板候选与竞争比较才能在 1440p 帧上与 1080p 基线一致地配对。
+        frame = np.zeros((1440, 2560, 3), dtype=np.uint8)
+        scale = 4 / 3
+        scores = {
+            "shop/cartridges/story_cartridge_17.png": 0.981,
+            "shop/cartridges/story_cartridge_11.png": 0.858,
+            "shop/cartridges/story_cartridge_01.png": 0.794,
+        }
+
+        def match_all(_frame, spec, **_kwargs):
+            score = scores.get(spec.file_name)
+            if score is None:
+                return ()
+            center = (round(235 * scale), round(184 * scale))
+            return (MatchResult(score, center, (104, 76), pixel_score=0.95),)
+
+        scaled_ocr_boxes = [
+            SimpleNamespace(
+                name="剧情游戏卡 17",
+                confidence=0.953,
+                x=round(318 * scale),
+                y=round(184 * scale),
+                width=round(140 * scale),
+                height=round(23 * scale),
+            ),
+            SimpleNamespace(
+                name="试炼之路",
+                confidence=0.992,
+                x=round(318 * scale),
+                y=round(213 * scale),
+                width=round(90 * scale),
+                height=round(24 * scale),
+            ),
+        ]
+        ocr_calls = []
+        task = SimpleNamespace(
+            info_set=lambda *_args, **_kwargs: None,
+            log_warning=lambda *_args, **_kwargs: None,
+        )
+        trader = object.__new__(Trader)
+        trader.task = task
+        trader.vision = SimpleNamespace(
+            match_all=match_all,
+            ocr_boxes=lambda _frame, _name, **kwargs: ocr_calls.append(kwargs)
+            or scaled_ocr_boxes,
+            threshold_for=lambda _spec: 0.72,
+        )
+
+        confirmed = trader._confirmed_shop_cartridge_detections(frame)
+
+        self.assertEqual({"S17"}, confirmed.keys())
+        detection = confirmed["S17"]
+        self.assertEqual("S11", detection.runner_up.shop_id)
+        self.assertAlmostEqual(0.123, detection.margin, places=3)
+        self.assertEqual("S17", detection.ocr.shop_id)
+        self.assertEqual(1.0, detection.ocr.name_similarity)
+        self.assertEqual([{"relative_roi": SHOP_CARTRIDGE_OCR_RELATIVE_ROI}], ocr_calls)
 
     def test_catalog_excludes_pinned_cards(self):
         ids = {card.card_id for card in COLLECTABLE_CARDS}

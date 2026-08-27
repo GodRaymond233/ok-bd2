@@ -88,6 +88,10 @@ class FreeGachaTask(BaseBD2Task):
             return True
 
         self.info_set("状态", "启动白嫖抽抽乐。")
+        if not self._wait_for_home_confirmation("白嫖抽抽乐入口前主页确认"):
+            self.info_set("状态", "白嫖抽抽乐入口前主页确认失败。")
+            self.log_info("白嫖抽抽乐：入口前未同时确认主页按钮、亮度和抽抽乐文字，不点击抽抽乐入口。")
+            return False
         self._click_reference(162, 986, after_sleep=0.5)
         loading_state, gacha_found, _ = self._wait_loading_or_gacha_page("进入抽卡页")
         if loading_state == "stuck":

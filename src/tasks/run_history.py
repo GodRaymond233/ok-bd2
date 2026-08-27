@@ -22,6 +22,8 @@ from typing import Any
 from ok import Logger
 from ok.util.file import get_relative_path, read_json_file, write_json_file
 
+from src.tasks.BaseBD2Task import task_info_snapshot
+
 logger = Logger.get_logger(__name__)
 
 # Brown Dust II refreshes daily content at 04:00 Beijing time (UTC+8, no DST).
@@ -133,7 +135,7 @@ class RunHistoryStore:
         finished = time.time() if finished is None else finished
         started = getattr(task, "start_time", 0) or 0
         duration = max(0.0, finished - started) if started else None
-        info = getattr(task, "info", {}) or {}
+        info = task_info_snapshot(task)
 
         self._records[str(task.name)] = {
             "finished": finished,

@@ -1,6 +1,7 @@
 """Map-trade sandbox tests (split from test_map_trade.py)."""
 
 import unittest
+from itertools import cycle
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -45,6 +46,7 @@ from src.tasks.map_trade.navigator import (
     STORY_BADGE_OCR_MIN_CONFIDENCE,
     STORY_BADGE_PIXEL_SCORE,
     STORY_BADGE_TEMPLATE_SCORE,
+    STORY_SANDBOX_SWITCH_WINDOW,
     Navigator,
     SandboxConfirmation,
 )
@@ -336,11 +338,13 @@ class SandboxConfirmationTest(unittest.TestCase):
 
         with patch(
             "src.tasks.map_trade.navigator_sandbox.monotonic",
-            side_effect=[100.0] * 6 + [101.0],
+            side_effect=[100.0] * 20,
         ):
-            result = navigator._wait_for_current_sandbox(timeout=0.1, interval=0.0)
+            result = navigator._wait_for_current_sandbox(timeout=2.0, interval=0.0)
 
         self.assertFalse(result.success)
+        self.assertIn("点击技能组1后连续", result.message)
+        self.assertIn("帧仍识别为技能组2，切换失败", result.message)
         self.assertEqual(
             [
                 (
@@ -351,6 +355,50 @@ class SandboxConfirmationTest(unittest.TestCase):
             ],
             clicks,
         )
+        self.assertEqual(1 + STORY_SANDBOX_SWITCH_WINDOW, len(captures))
+
+    def test_story_sandbox_group_two_alternating_with_none_does_not_fail_early(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        confirmations = cycle(
+            (
+                SandboxConfirmation(1, 2, 3, 2),
+                SandboxConfirmation(1, 2, 3, None),
+            )
+        )
+        captures = []
+        clicks = []
+        task = SimpleNamespace(
+            info_set=lambda *_args: None,
+            operate_click=lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep)),
+            sleep=lambda *_args: None,
+        )
+        navigator = Navigator(
+            task,
+            SimpleNamespace(capture=lambda: captures.append(frame) or frame),
+        )
+        navigator.classify = lambda _frame=None: ScreenState.SANDBOX
+        navigator._match_story_sandbox_signals = lambda _frame: next(confirmations)
+
+        with patch(
+            "src.tasks.map_trade.navigator_sandbox.monotonic",
+            side_effect=[100.0] * 9 + [101.0],
+        ):
+            result = navigator._wait_for_current_sandbox(timeout=0.1, interval=0.0)
+
+        self.assertFalse(result.success)
+        self.assertEqual("未稳定确认当前剧情卡带箱庭", result.message)
+        self.assertNotIn("切换失败", result.message)
+        self.assertEqual(
+            [
+                (
+                    SANDBOX_SKILL_SLOT_1_RELATIVE_POINT[0],
+                    SANDBOX_SKILL_SLOT_1_RELATIVE_POINT[1],
+                    0.5,
+                )
+            ],
+            clicks,
+        )
+        self.assertEqual(8, len(captures))
 
 
 class StoryBadgeTest(unittest.TestCase):

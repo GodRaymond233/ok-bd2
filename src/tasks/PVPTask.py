@@ -57,6 +57,8 @@ PVP_AUTO_BATTLE_CLICK_REFERENCE = (2026, 1291)
 PVP_STAGE_CLICK_REFERENCE_OFFSET = (0, -75)
 PVP_RESULT_BASE_MINUTES = 20.0
 PVP_RESULT_CLOSE_AFTER_SECONDS = 1.5
+PVP_BATTLE_ONGOING_PATTERN = r"正在进行"
+PVP_AP_SHORTAGE_PATTERN = r"不足"
 PVP_SEASON_REWARD_AFTER_CLICK_SECONDS = 3.0
 PVP_RANK_PAGE_AFTER_CLICK_SECONDS = 2.0
 # A real promotion flow shows the confirm text while the page is still fading
@@ -537,12 +539,43 @@ class PVPTask(BaseBD2Task):
 
         if not self._ensure_free_ap_enabled():
             return "failed"
-        self._ensure_multiplier(multiplier)
+        if not self._ensure_multiplier(multiplier):
+            return "failed"
         self._select_max_battle_count()
 
         self.info_set("当前阶段", "点击战斗开始")
         self.info_set("PVP 开始战斗 OCR", "跳过前置 OCR，按固定比例点击")
-        self._click_screen_reference(1381, 1061, after_sleep=10.0)
+        self._click_screen_reference(1381, 1061, after_sleep=2.0)
+        return self._wait_battle_start_or_ap_shortage(multiplier)
+
+    def _wait_battle_start_or_ap_shortage(self, multiplier: int) -> str:
+        timeout = float(self.config.get("PVP 战斗开始等待秒数", 30.0))
+        deadline = monotonic() + max(0.0, timeout)
+        while monotonic() <= deadline:
+            frame = self.capture_frame()
+            if frame is not None:
+                battle_text = self._ocr_text(
+                    frame,
+                    name="PVP 战斗中",
+                    roi=self._mf_roi(50, 576, 203, 69),
+                )
+                if self._matches_any(battle_text, [PVP_BATTLE_ONGOING_PATTERN]):
+                    self.info_set("PVP 战斗中 OCR", battle_text)
+                    return "started"
+
+                ap_text = self._ocr_text(frame, name="PVP AP不足")
+                if self._matches_any(ap_text, [PVP_AP_SHORTAGE_PATTERN]):
+                    self.info_set("PVP AP不足 OCR", ap_text)
+                    if multiplier > 1:
+                        return "ap_shortage"
+                    return "ap_depleted"
+
+            self.sleep(0.5)
+
+        self.log_warning(
+            "镜中之战：点击开始后未识别到战斗开始或 AP 不足信号，"
+            "按结算等待继续。"
+        )
         return "started"
 
     def _ensure_free_ap_enabled(self) -> bool:
@@ -565,7 +598,13 @@ class PVPTask(BaseBD2Task):
         crop = self._crop_screen_reference(frame, FREE_AP_SWITCH_SCREEN_ROI)
         if crop.size == 0:
             return False
-        b, g, r = cv2.split(crop)
+        # Capture backends produce 3-channel (BGR) or 4-channel (BGRA) frames;
+        # only the first three channels carry the switch colour, and any other
+        # shape must fail closed instead of raising.
+        if crop.ndim != 3 or crop.shape[2] < 3:
+            self.log_info(f"镜中之战：免费AP开关区域帧形状异常 {crop.shape}。")
+            return False
+        b, g, r = crop[..., 0], crop[..., 1], crop[..., 2]
         yellow = (r > 150) & (g > 110) & (b < 90)
         yellow_ratio = float(np.mean(yellow))
         self.info_set("PVP 免费AP", f"开关黄色占比 {yellow_ratio:.3f}")
@@ -640,7 +679,9 @@ class PVPTask(BaseBD2Task):
             timeout=result_timeout,
             name="PVP 结算",
             roi=self._screen_reference_roi_to_reference_roi(PVP_RESULT_SCREEN_ROI),
-            extra_wait_patterns=[(r"正在进行", self._mf_roi(50, 576, 203, 69), "PVP 战斗中 OCR")],
+            extra_wait_patterns=[
+                (PVP_BATTLE_ONGOING_PATTERN, self._mf_roi(50, 576, 203, 69), "PVP 战斗中 OCR")
+            ],
         )
         self.info_set("PVP 结算 OCR", result_text or "-")
         if not result_found:

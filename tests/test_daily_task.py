@@ -347,10 +347,69 @@ class DailyTaskHelperTest(unittest.TestCase):
         task.capture_frame = lambda: np.zeros((10, 10, 3), dtype=np.uint8)
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
+        task._wait_for_home_confirmation = lambda *_args, **_kwargs: True
         task._match = lambda _frame, _spec: MatchResult(-1.0, (0, 0), (0, 0))
         task._click_reference = lambda *_args, **_kwargs: self.fail("should not click")
 
         self.assertFalse(DailyTask.run_guild_sign_in(task))
+
+    def _guard_task(self, config):
+        task = object.__new__(DailyTask)
+        task.config = config
+        confirmations = []
+        task._wait_for_home_confirmation = (
+            lambda name, *_args, **_kwargs: confirmations.append(name) or False
+        )
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task.capture_frame = lambda: self.fail(
+            "入口主页确认失败时不得先抓帧做模板搜索"
+        )
+        task._click_reference = lambda *_args, **_kwargs: self.fail(
+            "入口主页确认失败时不得点击"
+        )
+        task.operate_click = lambda *_args, **_kwargs: self.fail(
+            "入口主页确认失败时不得点击"
+        )
+        return task, confirmations
+
+    def test_guild_sign_in_requires_home_confirmation_before_entry(self):
+        task, confirmations = self._guard_task({"公会入口阈值": 0.78})
+
+        self.assertFalse(DailyTask.run_guild_sign_in(task))
+        self.assertEqual(["公会签到入口前主页确认"], confirmations)
+
+    def test_my_home_sign_in_requires_home_confirmation_before_entry(self):
+        task, confirmations = self._guard_task({"小屋页面等待秒数": 12.0})
+
+        self.assertFalse(DailyTask.run_my_home_sign_in(task))
+        self.assertEqual(["小屋签到入口前主页确认"], confirmations)
+
+    def test_business_collect_requires_home_confirmation_before_entry(self):
+        task, confirmations = self._guard_task({"一键收菜菜单等待秒数": 8.0})
+
+        self.assertFalse(DailyTask.run_business_collect(task))
+        self.assertEqual(["一键收菜入口前主页确认"], confirmations)
+
+    def test_daily_run_counts_home_confirmation_failure_without_clicks(self):
+        task = object.__new__(DailyTask)
+        task.config = {
+            "启用": True,
+            "执行公会签到": True,
+            "执行小屋签到": False,
+            "执行一键收菜": False,
+        }
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task.log_error = lambda *_args, **_kwargs: None
+        task._wait_for_home_confirmation = lambda *_args, **_kwargs: False
+        actions = []
+        task.capture_frame = lambda: actions.append("capture")
+        task._click_reference = lambda *_args, **_kwargs: actions.append("click")
+        task.operate_click = lambda *_args, **_kwargs: actions.append("click")
+
+        self.assertFalse(DailyTask.run(task))
+        self.assertEqual([], actions)
 
     def test_guild_finished_template_still_enters_guild(self):
         task = object.__new__(DailyTask)

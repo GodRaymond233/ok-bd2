@@ -28,6 +28,20 @@ class _TaskStub:
         }
 
 
+class _RacyInfoDict(dict):
+    """Dict whose copy fails the way concurrent mutation does.
+
+    Overriding ``__iter__`` keeps CPython's dict-merge off the exact-dict fast
+    path so the copy goes through ``keys()``; both raise RuntimeError.
+    """
+
+    def __iter__(self):
+        raise RuntimeError("dictionary changed size during iteration")
+
+    def keys(self):
+        raise RuntimeError("dictionary changed size during iteration")
+
+
 class _InteractionStub:
     def __init__(self, idle=True):
         self.idle = idle
@@ -201,6 +215,33 @@ class DiagnosticsManagerTest(unittest.TestCase):
 
         self.assertFalse(snapshot.safe_point_reached)
         self.assertTrue(any("鼠标操作" in warning for warning in snapshot.warnings))
+
+    def test_prepare_reports_task_info_snapshot_failure(self):
+        task = _TaskStub()
+        task.info = _RacyInfoDict(task.info)
+        interaction = _InteractionStub()
+        executor = _ExecutorStub(None, interaction)
+        executor.current_task = task
+        device_manager = _DeviceManagerStub(interaction)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = DiagnosticsManager(
+                project_root=Path(temp_dir),
+                output_dir=Path(temp_dir),
+                app_version="0.1.test",
+            )
+
+            snapshot = manager.prepare(executor=executor, device_manager=device_manager)
+
+        # The task identity survives; only the info payload is dropped.
+        self.assertEqual("_TaskStub", snapshot.task["class"])
+        self.assertIn("paused", snapshot.task)
+        self.assertNotIn("状态", snapshot.task)
+        self.assertNotIn("当前阶段", snapshot.task)
+        self.assertTrue(
+            any(
+                "任务 _TaskStub 状态快照失败" in warning for warning in snapshot.warnings
+            )
+        )
 
 
 class InteractionSafetyContractTest(unittest.TestCase):

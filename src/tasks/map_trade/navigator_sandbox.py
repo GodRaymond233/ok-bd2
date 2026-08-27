@@ -385,6 +385,7 @@ class SandboxNavigationMixin:
         sandbox_hits = 0
         skill_group_switch_attempted = False
         switch_group_one_history: list[bool] = []
+        group_two_streak = 0
         while monotonic() <= end_at:
             frame = self.vision.capture()
             last_state = self.classify(frame)
@@ -413,8 +414,28 @@ class SandboxNavigationMixin:
                     )
                     sandbox_hits = 0
                     if confirmation.skill_group == 2:
-                        switch_group_one_history.clear()
+                        group_two_streak += 1
+                        if group_two_streak >= STORY_SANDBOX_SWITCH_WINDOW:
+                            self._status(
+                                "箱庭技能组切换",
+                                (
+                                    f"点击技能组1后连续{group_two_streak}帧"
+                                    "仍识别为技能组2，切换失败"
+                                ),
+                            )
+                            return NavigationResult(
+                                False,
+                                last_state,
+                                (
+                                    f"点击技能组1后连续"
+                                    f"{STORY_SANDBOX_SWITCH_WINDOW}"
+                                    "帧仍识别为技能组2，切换失败"
+                                ),
+                            )
+                    else:
+                        group_two_streak = 0
                 elif skill_group_switch_attempted:
+                    group_two_streak = 0
                     switch_group_one_history.append(confirmation.passed)
                     del switch_group_one_history[:-STORY_SANDBOX_SWITCH_WINDOW]
                     window_hits = sum(switch_group_one_history)

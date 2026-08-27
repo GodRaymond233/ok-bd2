@@ -42,6 +42,7 @@ from PySide6.QtCore import QAbstractAnimation, QObject, QPointF, Qt, QTimer
 from PySide6.QtGui import QBrush, QColor, QLinearGradient, QPainter
 from PySide6.QtWidgets import QLabel, QWidget
 
+from src.tasks.BaseBD2Task import task_info_snapshot
 from src.tasks.run_history import day_start_ts, default_store
 from src.ui.quest_theme import MONO_FONT, palette
 
@@ -130,7 +131,7 @@ def seal_state(task, store=None, onetime=True) -> str:
 def meta_text(task, store=None) -> str:
     """Live stage while running, otherwise the last-run summary line."""
     if getattr(task, "enabled", False):
-        info = getattr(task, "info", {}) or {}
+        info = task_info_snapshot(task)
         stage = info.get("当前子任务") or info.get("状态") or ""
         prefix = "已暂停" if getattr(task, "paused", False) else "进行中"
         return f"{prefix} · {stage}" if stage else prefix

@@ -45,6 +45,9 @@ RECENT_PVP_CARTRIDGE_PIXEL_THRESHOLD = 0.95
 RECENT_PVP_CARTRIDGE_ZNCC_THRESHOLD = 0.85
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_DIR = PROJECT_ROOT / "recognition-assets" / "template-assets"
+# Shared lock for task instances whose ``__init__`` never ran (object.__new__);
+# see ``BaseBD2Task._task_info_lock``.
+_INFO_FALLBACK_LOCK = threading.RLock()
 
 
 @dataclass(frozen=True)
@@ -74,6 +77,14 @@ class BaseBD2Task(BaseTask):
         self.default_box = ScreenPosition(self)
         self._last_interval_action_time = {}
         self._action_interval_lock = threading.Lock()
+        # ``task.info`` is a plain dict shared between the TaskExecutor worker
+        # thread (info_set/info_clear/log_* and DailyBatchTask child resets)
+        # and UI/diagnostics readers.  All mutations go through the mutators
+        # below, which serialize on this lock so readers can take a consistent
+        # copy via ``info_snapshot``/``task_info_snapshot``.  ``run_task_by_class``
+        # rebinds ``task.info`` as a raw attribute, so every locked section must
+        # re-read the attribute instead of caching the dict.
+        self._info_lock = threading.RLock()
         self._last_home_announcement_clear_at = 0.0
         self._recent_pvp_cartridge_template_cache: (
             tuple[np.ndarray, np.ndarray] | None
@@ -93,6 +104,48 @@ class BaseBD2Task(BaseTask):
         """Publish a completion popup unless this task is running as a batch child."""
 
         log_task_completion(self, message)
+
+    def _task_info_lock(self) -> threading.RLock:
+        """The per-instance info lock, or a shared fallback for odd instances.
+
+        Tests routinely build tasks via ``object.__new__`` without running
+        ``__init__``; those instances have no ``_info_lock`` yet still go through
+        these overrides, so they fall back to one process-wide lock instead of
+        raising ``AttributeError``.
+        """
+        lock = self.__dict__.get("_info_lock")
+        return _INFO_FALLBACK_LOCK if lock is None else lock
+
+    def info_clear(self) -> None:
+        with self._task_info_lock():
+            super().info_clear()
+
+    def info_incr(self, key, inc=1):
+        with self._task_info_lock():
+            return super().info_incr(key, inc)
+
+    def info_add_to_list(self, key, item):
+        with self._task_info_lock():
+            return super().info_add_to_list(key, item)
+
+    def info_set(self, key, value):
+        with self._task_info_lock():
+            return super().info_set(key, value)
+
+    def info_add(self, key, count=1):
+        with self._task_info_lock():
+            return super().info_add(key, count)
+
+    def info_snapshot(self) -> dict:
+        """A consistent point-in-time copy of ``self.info``.
+
+        The copy is taken under the same lock as every mutator, so it can never
+        observe a half-applied update or hit "dictionary changed size during
+        iteration".  ``self.info`` is re-read inside the lock because
+        ``run_task_by_class`` rebinds the attribute as a whole.
+        """
+        with self._task_info_lock():
+            return dict(getattr(self, "info", None) or {})
 
     @property
     def thread_pool_executor(self) -> ThreadPoolExecutor | None:
@@ -738,3 +791,23 @@ class BaseBD2Task(BaseTask):
             time_out=time_out,
             raise_if_not_found=raise_if_not_found,
         )
+
+
+def task_info_snapshot(task) -> dict:
+    """Best-effort thread-safe copy of ``task.info`` for any task object.
+
+    ``BaseBD2Task`` (and subclasses) expose a locked ``info_snapshot``; tasks
+    outside that hierarchy — ok-framework tasks such as ``BD2TriggerTask`` or
+    plain stubs — only get an unlocked ``dict`` copy.  For those, a concurrent
+    mutation can still surface as ``RuntimeError`` mid-copy, which is swallowed
+    into an empty snapshot so UI/diagnostics readers stay alive.
+    Callers that must know about snapshot failures (diagnostics) perform their
+    own strict copy instead of relying on this fallback.
+    """
+    snapshot = getattr(task, "info_snapshot", None)
+    if callable(snapshot):
+        return snapshot()
+    try:
+        return dict(getattr(task, "info", None) or {})
+    except RuntimeError:
+        return {}

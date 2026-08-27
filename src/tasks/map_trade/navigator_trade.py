@@ -560,7 +560,7 @@ class TradeNavigationMixin:
                 "当前页面没有已确认的安全返回路径，未执行点击",
             )
 
-        self.task.operate_click(*CHAPTER_HOME_POINT, after_sleep=0.0)
+        self._click_chapter_home_button()
         if self._wait_for_cartridge_home(
             timeout=RETURN_HOME_TIMEOUT,
             allow_return_announcement_cleanup=True,

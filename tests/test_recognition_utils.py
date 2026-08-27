@@ -1,8 +1,12 @@
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+import cv2
 import numpy as np
 
+from src.utils import task_vision
 from src.utils.image_utils import (
     StableMatchObservation,
     best_pixel_valid_match,
@@ -23,6 +27,7 @@ from src.utils.ocr_utils import (
     keyword_match_count,
     normalize_ocr_text,
 )
+from src.utils.vision_models import MatchResult, TemplateSpec
 
 
 class ImageRecognitionUtilsTest(unittest.TestCase):
@@ -258,6 +263,105 @@ class OcrUtilsTest(unittest.TestCase):
     def test_fuzzy_match_rejects_empty_values(self):
         self.assertFalse(fuzzy_substring_match("", "确认", 0.9))
         self.assertFalse(fuzzy_substring_match("确认", "", 0.9))
+
+
+class TaskVisionMatchTemplateTest(unittest.TestCase):
+    FRAME_HEIGHT = 48
+    FRAME_WIDTH = 64
+    # The frame below keeps 30 * min(width/1920, height/1080) exactly at 1.0,
+    # so a root-group spec with this reference scale matches unscaled.
+    REFERENCE_SCALE = 30.0
+    PATCH_TOP = 20
+    PATCH_LEFT = 10
+
+    def _probe_pattern(self):
+        return np.fromfunction(
+            lambda row, col: 20 + 4 * col + 7 * row,
+            (10, 16),
+            dtype=float,
+        ).astype(np.uint8)
+
+    def _probe_template(self):
+        pattern = self._probe_pattern()
+        return np.dstack([pattern, pattern, pattern])
+
+    def _make_frame(self, channels):
+        frame = np.full(
+            (self.FRAME_HEIGHT, self.FRAME_WIDTH, channels),
+            60,
+            dtype=np.uint8,
+        )
+        patch = self._probe_pattern()
+        frame[self.PATCH_TOP : self.PATCH_TOP + 10, self.PATCH_LEFT : self.PATCH_LEFT + 16] = (
+            np.dstack([patch] * channels)
+        )
+        return frame
+
+    def _write_template(self, directory):
+        path = Path(directory) / "match-template-probe.png"
+        self.assertTrue(cv2.imwrite(str(path), self._probe_template()))
+        return path.name
+
+    def _make_spec(self, name, file_name):
+        return TemplateSpec(
+            name,
+            file_name,
+            threshold=0.9,
+            reference_scale=self.REFERENCE_SCALE,
+        )
+
+    def test_match_template_grayscales_the_frame_exactly_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            file_name = self._write_template(directory)
+            spec = self._make_spec("gray probe", file_name)
+            frame = self._make_frame(3)
+            gray_template = to_gray(self._probe_template())
+
+            def loader(_template_dir, _spec):
+                return gray_template, None
+
+            converted_shapes = []
+            original_to_gray = task_vision.image_utils.to_gray
+
+            def counting_to_gray(image):
+                converted_shapes.append(image.shape)
+                return original_to_gray(image)
+
+            with patch.object(task_vision.image_utils, "to_gray", counting_to_gray):
+                result = task_vision.match_template(
+                    frame,
+                    spec,
+                    {},
+                    Path(directory),
+                    loader=loader,
+                )
+
+            self.assertEqual([frame.shape], converted_shapes)
+            self.assertGreater(result.score, 0.95)
+            self.assertEqual(
+                (self.PATCH_LEFT, self.PATCH_TOP),
+                result.position,
+            )
+            self.assertEqual((16, 10), result.size)
+
+    def test_match_template_accepts_bgra_frames(self):
+        with tempfile.TemporaryDirectory() as directory:
+            file_name = self._write_template(directory)
+            spec = self._make_spec("bgra probe", file_name)
+
+            result = task_vision.match_template(
+                self._make_frame(4),
+                spec,
+                {},
+                Path(directory),
+            )
+
+            self.assertIsInstance(result, MatchResult)
+            self.assertGreater(result.score, 0.95)
+            self.assertEqual(
+                (self.PATCH_LEFT, self.PATCH_TOP),
+                result.position,
+            )
 
 
 if __name__ == "__main__":

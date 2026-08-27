@@ -3,15 +3,18 @@
 import json
 import tempfile
 import unittest
+import urllib.error
 from datetime import (
     date,
     datetime,
+    timedelta,
 )
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from src.tasks.map_trade.calendar import (
+    MAX_CALENDAR_CACHE_AGE,
     PURCHASE_STOCK_REFRESH_HOUR,
     SALE_PRICE_REFRESH_HOUR,
     PriceCalendarClient,
@@ -149,8 +152,9 @@ class CalendarTest(unittest.TestCase):
             self.assertEqual("bundled", loaded.source)
             fetch.assert_not_called()
 
-    def test_online_failure_uses_valid_cache_without_reenabling_bundled(self):
+    def test_online_failure_uses_fresh_cache_without_reenabling_bundled(self):
         payload = json.loads(BUNDLED_CALENDAR.read_text(encoding="utf-8"))
+        now = datetime(2026, 7, 19, 23, 30, tzinfo=UTC_PLUS_8)
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)
             sources = temp / "sources.json"
@@ -158,19 +162,219 @@ class CalendarTest(unittest.TestCase):
                 json.dumps({"global": ["https://invalid.test/calendar.json"]}), encoding="utf-8"
             )
             cache = temp / "cache.json"
-            cache.write_text(
-                json.dumps({"source": "old", "etag": "x", "payload": payload}), encoding="utf-8"
+            envelope = {"source": "old", "etag": "x", "payload": payload}
+            cache.write_text(json.dumps(envelope), encoding="utf-8")
+            legacy_client = PriceCalendarClient(
+                BUNDLED_CALENDAR, cache, sources, now_provider=lambda: now
             )
-            client = PriceCalendarClient(BUNDLED_CALENDAR, cache, sources)
+            with patch.object(legacy_client, "_fetch", side_effect=OSError("offline")):
+                # 旧格式缓存缺少 cached_at，无法确认时效，必须拒绝而不是继续使用。
+                with self.assertRaisesRegex(RuntimeError, "本地缓存已过期"):
+                    legacy_client.load(use_bundled=False, use_online=True)
+
+            envelope["cached_at"] = "2026-07-19T22:00:00+08:00"
+            cache.write_text(json.dumps(envelope), encoding="utf-8")
+            fresh_client = PriceCalendarClient(
+                BUNDLED_CALENDAR, cache, sources, now_provider=lambda: now
+            )
+            with patch.object(fresh_client, "_fetch", side_effect=OSError("offline")):
+                self.assertEqual(
+                    "cache",
+                    fresh_client.load(use_bundled=False, use_online=True).source,
+                )
+            cache.write_text("broken", encoding="utf-8")
+            broken_client = PriceCalendarClient(
+                BUNDLED_CALENDAR, cache, sources, now_provider=lambda: now
+            )
+            with patch.object(broken_client, "_fetch", side_effect=OSError("offline")):
+                with self.assertRaisesRegex(RuntimeError, "在线价表和本地缓存均不可用"):
+                    broken_client.load(use_bundled=False, use_online=True)
+
+    def test_online_failure_rejects_cache_older_than_max_age_in_same_month(self):
+        self.assertEqual(timedelta(hours=24), MAX_CALENDAR_CACHE_AGE)
+        now = datetime(2026, 7, 19, 12, 0, tzinfo=UTC_PLUS_8)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = self._offline_client(Path(temp_dir), "2026-07-18T11:00:00+08:00", now)
+            with patch.object(client, "_fetch", side_effect=OSError("offline")):
+                with self.assertRaisesRegex(RuntimeError, "本地缓存已过期"):
+                    client.load(use_bundled=False, use_online=True)
+
+    def test_online_failure_accepts_cache_exactly_at_max_age_boundary(self):
+        now = datetime(2026, 7, 19, 12, 0, tzinfo=UTC_PLUS_8)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = self._offline_client(Path(temp_dir), "2026-07-18T12:00:00+08:00", now)
             with patch.object(client, "_fetch", side_effect=OSError("offline")):
                 self.assertEqual(
                     "cache",
                     client.load(use_bundled=False, use_online=True).source,
                 )
-            cache.write_text("broken", encoding="utf-8")
+
+    def test_online_failure_rejects_cross_month_cache_even_when_recent(self):
+        scenarios = (
+            # 上月末缓存，次月初读取：年龄仅 2.5 小时但出售价表日期已跨月。
+            ("2026-07-31T22:00:00+08:00", datetime(2026, 8, 1, 0, 30, tzinfo=UTC_PLUS_8)),
+            # 月末 23:00 后读取：出售价表日期已翻到次月，即使缓存仅 1 小时也拒绝。
+            ("2026-07-31T22:30:00+08:00", datetime(2026, 7, 31, 23, 30, tzinfo=UTC_PLUS_8)),
+        )
+        for cached_at, now in scenarios:
+            with self.subTest(cached_at=cached_at):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    client = self._offline_client(Path(temp_dir), cached_at, now)
+                    with patch.object(client, "_fetch", side_effect=OSError("offline")):
+                        with self.assertRaisesRegex(RuntimeError, "本地缓存已过期"):
+                            client.load(use_bundled=False, use_online=True)
+
+    def test_http_304_with_fresh_cache_returns_cache_without_refetch(self):
+        payload = json.loads(BUNDLED_CALENDAR.read_text(encoding="utf-8"))
+        url = "https://example.test/calendar.json"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            sources = temp / "sources.json"
+            sources.write_text(json.dumps({"global": [url]}), encoding="utf-8")
+            cache = temp / "cache.json"
+            cache.write_text(
+                json.dumps(
+                    {
+                        "source": url,
+                        "etag": '"etag-v1"',
+                        "cached_at": "2026-07-19T22:00:00+08:00",
+                        "payload": payload,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            client = PriceCalendarClient(
+                BUNDLED_CALENDAR,
+                cache,
+                sources,
+                now_provider=lambda: datetime(2026, 7, 19, 23, 30, tzinfo=UTC_PLUS_8),
+            )
+            with patch.object(
+                client,
+                "_fetch",
+                side_effect=urllib.error.HTTPError(url, 304, "Not Modified", None, None),
+            ) as fetch:
+                loaded = client.load(use_bundled=False, use_online=True)
+
+            self.assertEqual("cache", loaded.source)
+            fetch.assert_called_once_with(url, etag='"etag-v1"')
+
+    def test_http_304_with_stale_cache_drops_etag_and_refetches(self):
+        payload_bytes = BUNDLED_CALENDAR.read_bytes()
+        url = "https://example.test/calendar.json"
+        calls: list[tuple[str, str]] = []
+
+        def fetch(url_arg: str, etag: str = ""):
+            calls.append((url_arg, etag))
+            if etag:
+                raise urllib.error.HTTPError(url_arg, 304, "Not Modified", None, None)
+            return (
+                parse_calendar_payload(payload_bytes, source=url_arg),
+                payload_bytes,
+                '"etag-v2"',
+            )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            sources = temp / "sources.json"
+            sources.write_text(json.dumps({"global": [url]}), encoding="utf-8")
+            cache = temp / "cache.json"
+            cache.write_text(
+                json.dumps(
+                    {
+                        "source": url,
+                        "etag": '"etag-v1"',
+                        "cached_at": "2026-07-18T11:00:00+08:00",
+                        "payload": json.loads(payload_bytes.decode("utf-8")),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            client = PriceCalendarClient(
+                BUNDLED_CALENDAR,
+                cache,
+                sources,
+                now_provider=lambda: datetime(2026, 7, 19, 12, 0, tzinfo=UTC_PLUS_8),
+            )
+            with patch.object(client, "_fetch", side_effect=fetch):
+                loaded = client.load(use_bundled=False, use_online=True)
+
+            self.assertEqual(url, loaded.source)
+            self.assertEqual([(url, '"etag-v1"'), (url, "")], calls)
+            envelope = json.loads(cache.read_text(encoding="utf-8"))
+            self.assertEqual('"etag-v2"', envelope["etag"])
+
+    def test_http_304_with_stale_cache_continues_to_next_source_when_refetch_fails(self):
+        payload_bytes = BUNDLED_CALENDAR.read_bytes()
+        first_url = "https://first.test/calendar.json"
+        second_url = "https://second.test/calendar.json"
+        calls: list[tuple[str, str]] = []
+
+        def fetch(url_arg: str, etag: str = ""):
+            calls.append((url_arg, etag))
+            if url_arg == first_url:
+                if etag:
+                    raise urllib.error.HTTPError(url_arg, 304, "Not Modified", None, None)
+                raise OSError("refetch failed")
+            return (
+                parse_calendar_payload(payload_bytes, source=url_arg),
+                payload_bytes,
+                '"etag-v2"',
+            )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            sources = temp / "sources.json"
+            sources.write_text(
+                json.dumps({"global": [first_url, second_url]}), encoding="utf-8"
+            )
+            cache = temp / "cache.json"
+            cache.write_text(
+                json.dumps(
+                    {
+                        "source": first_url,
+                        "etag": '"etag-v1"',
+                        "cached_at": "2026-07-18T11:00:00+08:00",
+                        "payload": json.loads(payload_bytes.decode("utf-8")),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            client = PriceCalendarClient(
+                BUNDLED_CALENDAR,
+                cache,
+                sources,
+                now_provider=lambda: datetime(2026, 7, 19, 12, 0, tzinfo=UTC_PLUS_8),
+            )
+            with patch.object(client, "_fetch", side_effect=fetch):
+                loaded = client.load(use_bundled=False, use_online=True)
+
+            self.assertEqual(second_url, loaded.source)
+            self.assertEqual(
+                [(first_url, '"etag-v1"'), (first_url, ""), (second_url, "")], calls
+            )
+
+    def test_write_cache_records_timezone_aware_beijing_timestamp(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache = Path(temp_dir) / "cache.json"
+            client = PriceCalendarClient(BUNDLED_CALENDAR, cache)
+            client._write_cache(
+                BUNDLED_CALENDAR.read_bytes(), '"etag-v1"', "https://example.test/calendar.json"
+            )
+            envelope = json.loads(cache.read_text(encoding="utf-8"))
+            cached_at = datetime.fromisoformat(str(envelope["cached_at"]))
+            self.assertIsNotNone(cached_at.tzinfo)
+            self.assertEqual(timedelta(hours=8), cached_at.utcoffset())
+
+    def test_naive_cached_at_is_interpreted_as_beijing_time(self):
+        now = datetime(2026, 8, 27, 12, 0, tzinfo=UTC_PLUS_8)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = self._offline_client(Path(temp_dir), "2026-08-27T10:00:00", now)
             with patch.object(client, "_fetch", side_effect=OSError("offline")):
-                with self.assertRaisesRegex(RuntimeError, "在线价表和本地缓存均不可用"):
-                    client.load(use_bundled=False, use_online=True)
+                self.assertEqual(
+                    "cache",
+                    client.load(use_bundled=False, use_online=True).source,
+                )
 
     def test_manual_calendar_is_used_only_when_bundled_and_online_are_disabled(self):
         client = PriceCalendarClient(BUNDLED_CALENDAR)
@@ -273,6 +477,22 @@ class CalendarTest(unittest.TestCase):
         )
         self.assertNotIn("烤蜂蜜苹果", DEFAULT_SALE_WHITELIST)
         self.assertNotIn("桑格利亚酒", DEFAULT_SALE_WHITELIST)
+
+    @staticmethod
+    def _offline_client(
+        temp: Path, cached_at: str | None, now: datetime
+    ) -> PriceCalendarClient:
+        payload = json.loads(BUNDLED_CALENDAR.read_text(encoding="utf-8"))
+        envelope: dict[str, object] = {"source": "old", "etag": "x", "payload": payload}
+        if cached_at is not None:
+            envelope["cached_at"] = cached_at
+        cache = temp / "cache.json"
+        cache.write_text(json.dumps(envelope), encoding="utf-8")
+        sources = temp / "sources.json"
+        sources.write_text(
+            json.dumps({"global": ["https://invalid.test/calendar.json"]}), encoding="utf-8"
+        )
+        return PriceCalendarClient(BUNDLED_CALENDAR, cache, sources, now_provider=lambda: now)
 
     @staticmethod
     def _manual(replacement: str = "") -> str:

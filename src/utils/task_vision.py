@@ -73,29 +73,31 @@ def _search_region(
     spec: TemplateSpec,
     frame: np.ndarray,
     roi_reference_size: tuple[int, int] | None,
-) -> tuple[int, int, np.ndarray]:
-    """Return the matching crop and its top-left offset for one spec."""
+) -> tuple[int, int, np.ndarray, int, int]:
+    """Return the matching crop, its top-left offset and the full frame size."""
 
     gray = image_utils.to_gray(frame)
     frame_height, frame_width = gray.shape[:2]
     if spec.relative_roi is not None:
-        return image_utils.relative_roi_frame(gray, spec.relative_roi)
+        left, top, crop = image_utils.relative_roi_frame(gray, spec.relative_roi)
+        return left, top, crop, frame_width, frame_height
     if (
         spec.roi is not None
         and not template_resolution.offline_template_uses_main_region(spec.file_name)
     ):
-        return image_utils.reference_roi_frame(
+        left, top, crop = image_utils.reference_roi_frame(
             gray,
             spec.roi,
             roi_reference_size
             or template_resolution.OFFLINE_TEMPLATE_REFERENCE_RESOLUTIONS["root"],
         )
+        return left, top, crop, frame_width, frame_height
     left, top, right, bottom = template_resolution.offline_template_search_region(
         spec.file_name,
         frame_width,
         frame_height,
     )
-    return left, top, gray[top:bottom, left:right]
+    return left, top, gray[top:bottom, left:right], frame_width, frame_height
 
 
 def match_template(
@@ -121,11 +123,12 @@ def match_template(
             cache=cache,
         )
     template, mask = loader(template_dir, spec)
-    left, top, search = _search_region(spec, frame, roi_reference_size)
+    left, top, search, frame_width, frame_height = _search_region(
+        spec, frame, roi_reference_size
+    )
     if search.size == 0:
         return EMPTY_MATCH
 
-    frame_height, frame_width = image_utils.to_gray(frame).shape[:2]
     if template_threshold is None:
         template_threshold = resolve_match_threshold(spec, config, for_matching=True)
     center_bounds = None

@@ -26,6 +26,7 @@ class FreeGachaTaskHelperTest(unittest.TestCase):
             (message, notify)
         )
         task._click_reference = lambda *_args, **_kwargs: None
+        task._wait_for_home_confirmation = lambda *_args, **_kwargs: True
         task._wait_loading_or_gacha_page = lambda *_args, **_kwargs: (
             "target",
             True,
@@ -41,6 +42,27 @@ class FreeGachaTaskHelperTest(unittest.TestCase):
             [("白嫖抽抽乐：流程完成。", True)],
             notifications,
         )
+
+    def test_run_requires_home_confirmation_before_entry_click(self):
+        task = object.__new__(FreeGachaTask)
+        task.config = {"启用": True}
+        confirmations = []
+        task._wait_for_home_confirmation = (
+            lambda name, *_args, **_kwargs: confirmations.append(name) or False
+        )
+        statuses = []
+        task.info_set = lambda key, value: statuses.append((key, value))
+        task.log_info = lambda *_args, **_kwargs: None
+        task._click_reference = lambda *_args, **_kwargs: self.fail(
+            "入口主页确认失败时不得点击"
+        )
+        task.operate_click = lambda *_args, **_kwargs: self.fail(
+            "入口主页确认失败时不得点击"
+        )
+
+        self.assertFalse(FreeGachaTask.run(task))
+        self.assertEqual(["白嫖抽抽乐入口前主页确认"], confirmations)
+        self.assertIn(("状态", "白嫖抽抽乐入口前主页确认失败。"), statuses)
 
     def test_keyword_match_count_ignores_spaces_and_case(self):
         text = "So PERFECT！ 简直是无可挑剔的 masterpiece…！"

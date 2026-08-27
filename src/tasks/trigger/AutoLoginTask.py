@@ -34,6 +34,7 @@ class AutoLoginTask(BaseBD2Task):
         "阶段",
         "内部状态",
         "最后动作",
+        "状态",
         "BrownDustX",
         "BrownDustX 阈值",
         "BrownDustX 像素",
@@ -99,6 +100,8 @@ class AutoLoginTask(BaseBD2Task):
                 "主页 OCR 阈值": 0.2,
                 "主页 UI 等待宽限秒数": 15.0,
                 "主页连续确认秒数": 3.0,
+                "登录后主页总等待秒数": 300.0,
+                "登录超时重试间隔秒数": 60.0,
                 "BDXConfirm 点击 X 百分比": 50.0,
                 "BDXConfirm 点击 Y 百分比": 67.5926,
                 "登录按钮点击 X 百分比": 72.2396,
@@ -115,6 +118,7 @@ class AutoLoginTask(BaseBD2Task):
         self._home_bright_since: float | None = None
         self._login_clicked_at: float | None = None
         self._waiting_home_since: float | None = None
+        self._login_retry_not_before = 0.0
         self._last_clear_click_at = 0.0
         self._last_confirm_click_at = 0.0
         self._last_download_click_at = 0.0
@@ -146,6 +150,9 @@ class AutoLoginTask(BaseBD2Task):
 
     def run(self):
         if self._finished:
+            return False
+
+        if self._login_retry_not_before and monotonic() < self._login_retry_not_before:
             return False
 
         try:
@@ -424,15 +431,15 @@ class AutoLoginTask(BaseBD2Task):
         )
         self._state = "waiting_loading"
         self._home_bright_since = None
-        self._login_clicked_at = None
+        self._login_clicked_at = monotonic()
         self._waiting_home_since = monotonic()
         self._last_clear_click_at = 0.0
+        self._login_retry_not_before = 0.0
 
     def _wait_loading_then_home(self, frame) -> bool:
         now = monotonic()
 
         if self._state == "waiting_loading":
-            self._login_clicked_at = None
             if self._waiting_home_since is None:
                 self._waiting_home_since = now
 
@@ -446,6 +453,10 @@ class AutoLoginTask(BaseBD2Task):
             self._waiting_home_since = None
             self.info_set("加载页面", "-")
             return self._clear_popups_until_home(frame, home_button, home_spec)
+
+        if self._login_wait_timed_out(now):
+            self._handle_login_wait_timeout(now)
+            return False
 
         loading = self._match(frame, LOADING_TEMPLATE)
         self.info_set("加载页面", f"{loading.score:.3f}")
@@ -495,6 +506,24 @@ class AutoLoginTask(BaseBD2Task):
         self._set_action(f"登录后等待 home.png 出现 {elapsed:.1f}/{grace_seconds:.1f} 秒。")
         self.log_info(f"自动登录：登录后等待小屋按钮出现，home={home_button.score:.3f}")
         return False
+
+    def _login_wait_timed_out(self, now: float) -> bool:
+        if self._login_clicked_at is None:
+            return False
+        total_seconds = float(self.config.get("登录后主页总等待秒数", 300.0))
+        return now - self._login_clicked_at > total_seconds
+
+    def _handle_login_wait_timeout(self, now: float) -> None:
+        waited = now - (self._login_clicked_at or 0.0)
+        retry_delay = float(self.config.get("登录超时重试间隔秒数", 60.0))
+        self.log_warning(
+            f"自动登录：登录后等待主页 UI 超时，已等待 {waited:.0f} 秒，"
+            f"重置登录流程并延后 {retry_delay:.0f} 秒重试。",
+            notify=True,
+        )
+        self.info_set("状态", "登录后等待主页超时")
+        self._reset_login_state()
+        self._login_retry_not_before = now + retry_delay
 
     def _clear_popups_until_home(
         self,
@@ -555,6 +584,7 @@ class AutoLoginTask(BaseBD2Task):
                 self.mark_logged_in()
                 self._finished = True
                 self._state = "done"
+                self._login_retry_not_before = 0.0
                 self._set_stage("已完成")
                 self._set_action("主页三项信号已连续确认，自动登录流程结束。")
                 self.log_info(

@@ -7,6 +7,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Callable
 
 from src.tasks.map_trade.models import KNOWN_SHOPS, CalendarEntry
 
@@ -15,6 +16,7 @@ MAX_CALENDAR_BYTES = 256 * 1024
 UTC_PLUS_8 = timezone(timedelta(hours=8), name="UTC+8")
 SALE_PRICE_REFRESH_HOUR = 23
 PURCHASE_STOCK_REFRESH_HOUR = 8
+MAX_CALENDAR_CACHE_AGE = timedelta(hours=24)
 
 
 def _china_time(now: datetime) -> datetime:
@@ -41,6 +43,26 @@ def purchase_stock_date(now: datetime) -> date:
     if localized.hour < PURCHASE_STOCK_REFRESH_HOUR:
         localized -= timedelta(days=1)
     return localized.date()
+
+
+def _cache_is_expired(envelope: dict | None, now: datetime) -> bool:
+    """Return True when the cached envelope is unusable or too old for the current sale table."""
+
+    if not isinstance(envelope, dict):
+        return True
+    raw_cached_at = envelope.get("cached_at")
+    if not isinstance(raw_cached_at, str) or not raw_cached_at.strip():
+        return True
+    try:
+        cached_at = datetime.fromisoformat(raw_cached_at)
+    except ValueError:
+        return True
+    now_beijing = _china_time(now)
+    cached_at_beijing = _china_time(cached_at)
+    if now_beijing - cached_at_beijing > MAX_CALENDAR_CACHE_AGE:
+        return True
+    sale_date = sale_price_calendar_date(now_beijing)
+    return (cached_at_beijing.year, cached_at_beijing.month) != (sale_date.year, sale_date.month)
 
 
 @dataclass(frozen=True)
@@ -164,11 +186,13 @@ class PriceCalendarClient:
         cache_path: Path | str = Path("configs") / "map_trade_price_cache.json",
         sources_path: Path | None = None,
         timeout: float = 5.0,
+        now_provider: Callable[[], datetime] | None = None,
     ) -> None:
         self.bundled_path = bundled_path
         self.cache_path = Path(cache_path)
         self.sources_path = sources_path
         self.timeout = timeout
+        self.now_provider = now_provider or (lambda: datetime.now(UTC_PLUS_8))
 
     def load(
         self,
@@ -183,6 +207,7 @@ class PriceCalendarClient:
         if not use_online:
             return parse_manual_calendar(manual_text)
 
+        now = self._now()
         cached_envelope = self._read_cache_envelope()
         try:
             sources = self._sources()
@@ -199,8 +224,9 @@ class PriceCalendarClient:
             except urllib.error.HTTPError as exc:
                 if exc.code == 304 and cached_envelope and cached_envelope.get("source") == url:
                     cached = self._calendar_from_envelope(cached_envelope)
-                    if cached is not None:
+                    if cached is not None and not _cache_is_expired(cached_envelope, now):
                         return cached
+                    # 缓存损坏或已过期：不带 ETag 重新获取该源，失败再尝试后续在线源。
                     try:
                         loaded, payload, response_etag = self._fetch(url)
                         self._write_cache(payload, response_etag, url)
@@ -212,9 +238,15 @@ class PriceCalendarClient:
                 continue
 
         cached = self._read_cache()
-        if cached is not None:
+        cache_expired = _cache_is_expired(cached_envelope, now)
+        if cached is not None and not cache_expired:
             return cached
+        if cached_envelope is not None and cache_expired:
+            raise RuntimeError("在线价表不可用，本地缓存已过期")
         raise RuntimeError("在线价表和本地缓存均不可用")
+
+    def _now(self) -> datetime:
+        return _china_time(self.now_provider())
 
     def _sources(self) -> tuple[str, ...]:
         if self.sources_path is None or not self.sources_path.exists():
@@ -252,7 +284,7 @@ class PriceCalendarClient:
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
         parsed = json.loads(payload.decode("utf-8"))
         envelope = {
-            "cached_at": datetime.now().isoformat(timespec="seconds"),
+            "cached_at": datetime.now(UTC_PLUS_8).isoformat(timespec="seconds"),
             "etag": etag,
             "source": source,
             "payload": parsed,

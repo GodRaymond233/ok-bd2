@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from src.tasks.map_trade.models import MatchResult, TemplateSpec
+from src.utils.calibration import FHD_1080, reference_rect_to_relative_roi
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 CALENDAR_DIR = PROJECT_ROOT / "assets" / "map_trade"
@@ -15,7 +16,12 @@ SHOP_CARTRIDGE_SCROLL_POINT = (
     (SHOP_CARTRIDGE_SCROLL_REGION[1] + SHOP_CARTRIDGE_SCROLL_REGION[3]) / 2,
 )
 SHOP_CARTRIDGE_SCALE_RATIOS = (0.95, 1.0, 1.05)
-SHOP_CARTRIDGE_OCR_ROI = (200, 70, 300, 1010)
+# 商品卡带竞争 OCR 区域：1920×1080 参考矩形 (200, 70, 300, 1010) 的 LTRB 相对形式。
+# 必须走 ocr_boxes 的 relative_roi 路径；roi= 路径按 720p 参考缩放，会裁错区域。
+SHOP_CARTRIDGE_OCR_RELATIVE_ROI = reference_rect_to_relative_roi(
+    (200, 70, 300, 1010),
+    FHD_1080,
+)
 SHOP_CARTRIDGE_CANDIDATE_SCORE = 0.70
 SHOP_CARTRIDGE_CONFIRM_SCORE = 0.78
 SHOP_CARTRIDGE_MIN_MARGIN = 0.08

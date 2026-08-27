@@ -55,7 +55,7 @@ from src.tasks.map_trade.trader_constants import (  # noqa: F401
     SHOP_CARTRIDGE_MIN_MARGIN,
     SHOP_CARTRIDGE_NAME_MIN_SIMILARITY,
     SHOP_CARTRIDGE_OCR_MIN_CONFIDENCE,
-    SHOP_CARTRIDGE_OCR_ROI,
+    SHOP_CARTRIDGE_OCR_RELATIVE_ROI,
     SHOP_CARTRIDGE_OCR_ROW_LINK_RADIUS,
     SHOP_CARTRIDGE_RECOGNITION_REGION,
     SHOP_CARTRIDGE_ROW_CLUSTER_RADIUS,
@@ -222,7 +222,7 @@ class ShopCartridgeNavigationMixin:
         for box in self.vision.ocr_boxes(
             frame,
             "商品卡带竞争",
-            roi=SHOP_CARTRIDGE_OCR_ROI,
+            relative_roi=SHOP_CARTRIDGE_OCR_RELATIVE_ROI,
         ):
             try:
                 x = float(box.x)

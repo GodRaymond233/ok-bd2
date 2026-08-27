@@ -1150,30 +1150,123 @@ class PVPTaskHelperTest(unittest.TestCase):
     def test_run_falls_back_to_one_multiplier_when_ap_shortage(self):
         task = object.__new__(PVPTask)
         task.config = {"启用": True, "竞技场战斗倍数": 10, "最多战斗轮次": 3}
-        task.info_set = lambda *_args, **_kwargs: None
+        infos = {}
+        task.info_set = lambda key, value: infos.__setitem__(key, value)
         notifications = []
         task.log_info = lambda message, notify=False: notifications.append(
             (message, notify)
         )
+        task.log_warning = lambda *_args, **_kwargs: None
         task._ensure_pvp_hub = lambda: True
         task.sleep = lambda *_args, **_kwargs: None
+        task._click_template_until = lambda *_args, **_kwargs: True
+
+        def fake_wait_for_ocr_patterns(_patterns, timeout, name, **_kwargs):
+            if name == "PVP 自动战斗":
+                return True, "自动战斗"
+            if name == "PVP 自动战斗菜单":
+                return True, "鲜血鸡尾酒"
+            return False, ""
+
+        task._wait_for_ocr_patterns = fake_wait_for_ocr_patterns
+        task._click_ocr_pattern_center = lambda *_args, **_kwargs: True
+        task._ensure_free_ap_enabled = lambda: True
         starts = []
+        task._ensure_multiplier = lambda multiplier: starts.append(multiplier) or True
+        task._select_max_battle_count = lambda: None
+        task._click_screen_reference = lambda *_args, **_kwargs: None
+        task.capture_frame = lambda: np.zeros((1440, 2560, 3), dtype=np.uint8)
 
-        def fake_start(multiplier):
-            starts.append(multiplier)
-            if len(starts) == 1:
-                return "ap_shortage"
-            return "ap_depleted"
+        def fake_ocr_text(_frame, name, roi=None):
+            if name == "PVP 战斗中":
+                return ""
+            if name == "PVP AP不足":
+                return "鲜血鸡尾酒不足"
+            return ""
 
-        task._start_auto_battle = fake_start
-        task._wait_result_and_leave = lambda: self.fail("battle should not start")
+        task._ocr_text = fake_ocr_text
+        task._wait_result_and_leave = lambda *_args, **_kwargs: self.fail(
+            "battle should not start"
+        )
 
         self.assertTrue(PVPTask.run(task))
         self.assertEqual([10, 1], starts)
+        self.assertEqual("鲜血鸡尾酒不足", infos["PVP AP不足 OCR"])
         self.assertEqual(
             ("镜中之战：免费 AP 已耗尽，流程结束。", True),
             notifications[-1],
         )
+
+    def _make_battle_window_task(self):
+        harness = SimpleNamespace(
+            infos={},
+            warnings=[],
+            sleeps=[],
+            texts={"PVP 战斗中": "", "PVP AP不足": ""},
+        )
+        task = object.__new__(PVPTask)
+        task.config = {}
+        task.info_set = lambda key, value: harness.infos.__setitem__(key, value)
+        task.log_warning = lambda message, notify=False: harness.warnings.append(message)
+        task.sleep = harness.sleeps.append
+        task.capture_frame = lambda: np.zeros((1440, 2560, 3), dtype=np.uint8)
+        task._ocr_text = lambda _frame, name, roi=None: harness.texts.get(name, "")
+        return task, harness
+
+    def test_battle_start_window_prefers_battle_signal_over_ap_shortage(self):
+        task, harness = self._make_battle_window_task()
+        harness.texts["PVP 战斗中"] = "正在进行"
+        harness.texts["PVP AP不足"] = "鲜血鸡尾酒不足"
+
+        self.assertEqual("started", PVPTask._wait_battle_start_or_ap_shortage(task, 4))
+        self.assertEqual("正在进行", harness.infos["PVP 战斗中 OCR"])
+        self.assertNotIn("PVP AP不足 OCR", harness.infos)
+        self.assertEqual([], harness.sleeps)
+
+    def test_battle_start_window_reports_ap_shortage_above_multiplier_one(self):
+        task, harness = self._make_battle_window_task()
+        harness.texts["PVP AP不足"] = "鲜血鸡尾酒不足"
+
+        self.assertEqual(
+            "ap_shortage",
+            PVPTask._wait_battle_start_or_ap_shortage(task, 4),
+        )
+        self.assertEqual("鲜血鸡尾酒不足", harness.infos["PVP AP不足 OCR"])
+
+    def test_battle_start_window_reports_ap_depleted_at_multiplier_one(self):
+        task, harness = self._make_battle_window_task()
+        harness.texts["PVP AP不足"] = "鲜血鸡尾酒不足"
+
+        self.assertEqual(
+            "ap_depleted",
+            PVPTask._wait_battle_start_or_ap_shortage(task, 1),
+        )
+        self.assertEqual("鲜血鸡尾酒不足", harness.infos["PVP AP不足 OCR"])
+
+    def test_battle_start_window_times_out_to_settlement_wait(self):
+        task, harness = self._make_battle_window_task()
+        task.config = {"PVP 战斗开始等待秒数": 30.0}
+
+        with patch(
+            "src.tasks.PVPTask.monotonic",
+            side_effect=(0.0, 0.0, 100.0),
+        ):
+            self.assertEqual(
+                "started",
+                PVPTask._wait_battle_start_or_ap_shortage(task, 1),
+            )
+
+        self.assertEqual([0.5], harness.sleeps)
+        self.assertEqual(1, len(harness.warnings))
+
+    def test_battle_start_window_skips_none_frames(self):
+        task, harness = self._make_battle_window_task()
+        frames = iter((None, np.zeros((1440, 2560, 3), dtype=np.uint8)))
+        task.capture_frame = lambda: next(frames, None)
+        harness.texts["PVP 战斗中"] = "正在进行"
+
+        self.assertEqual("started", PVPTask._wait_battle_start_or_ap_shortage(task, 1))
+        self.assertEqual([0.5], harness.sleeps)
 
     def test_wait_result_uses_dynamic_timeout_and_majority_roi(self):
         task = object.__new__(PVPTask)
@@ -1895,6 +1988,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         task.config = {}
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
+        task.log_warning = lambda *_args, **_kwargs: None
         template_clicks = []
 
         def fake_click_template_until(*args, **kwargs):
@@ -1903,13 +1997,21 @@ class PVPTaskHelperTest(unittest.TestCase):
 
         task._click_template_until = fake_click_template_until
         task._ensure_free_ap_enabled = lambda: True
-        task._ensure_multiplier = lambda _multiplier: None
+        task._ensure_multiplier = lambda _multiplier: True
         task._select_max_battle_count = lambda: None
         auto_clicks = []
         task._click_ocr_pattern_center = lambda *args, **kwargs: (
             auto_clicks.append((args, kwargs)) or True
         )
-        task._ocr_text = lambda *_args, **_kwargs: self.fail("start click should not wait for OCR")
+        task.capture_frame = lambda: np.zeros((1440, 2560, 3), dtype=np.uint8)
+        task.sleep = lambda *_args, **_kwargs: None
+
+        def fake_ocr_text(_frame, name, roi=None):
+            if name == "PVP 战斗中":
+                return "正在进行"
+            return ""
+
+        task._ocr_text = fake_ocr_text
         clicks = []
 
         def fake_wait_for_ocr_patterns(_patterns, timeout, name, **_kwargs):
@@ -1944,18 +2046,28 @@ class PVPTaskHelperTest(unittest.TestCase):
             auto_clicks,
         )
         self.assertNotIn((*PVP_AUTO_BATTLE_CLICK_REFERENCE, 1.0), clicks)
-        self.assertIn((1381, 1061, 10.0), clicks)
+        self.assertIn((1381, 1061, 2.0), clicks)
 
     def test_start_auto_battle_falls_back_to_relative_point_when_ocr_box_is_unavailable(self):
         task = object.__new__(PVPTask)
         task.config = {}
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
+        task.log_warning = lambda *_args, **_kwargs: None
         task._click_template_until = lambda *_args, **_kwargs: True
         task._ensure_free_ap_enabled = lambda: True
-        task._ensure_multiplier = lambda _multiplier: None
+        task._ensure_multiplier = lambda _multiplier: True
         task._select_max_battle_count = lambda: None
         task._click_ocr_pattern_center = lambda *_args, **_kwargs: False
+        task.capture_frame = lambda: np.zeros((1440, 2560, 3), dtype=np.uint8)
+        task.sleep = lambda *_args, **_kwargs: None
+
+        def fake_ocr_text(_frame, name, roi=None):
+            if name == "PVP 战斗中":
+                return "正在进行"
+            return ""
+
+        task._ocr_text = fake_ocr_text
         clicks = []
         task._click_screen_reference = lambda x, y, after_sleep=0.0: clicks.append(
             (x, y, after_sleep)
@@ -1972,7 +2084,81 @@ class PVPTaskHelperTest(unittest.TestCase):
 
         self.assertEqual("started", PVPTask._start_auto_battle(task, 1))
         self.assertIn((*PVP_AUTO_BATTLE_CLICK_REFERENCE, 1.0), clicks)
-        self.assertIn((1381, 1061, 10.0), clicks)
+        self.assertIn((1381, 1061, 2.0), clicks)
+
+    def test_start_auto_battle_fails_when_multiplier_not_confirmed(self):
+        task = object.__new__(PVPTask)
+        task.config = {}
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task.log_warning = lambda *_args, **_kwargs: None
+        task._click_template_until = lambda *_args, **_kwargs: True
+
+        def fake_wait_for_ocr_patterns(_patterns, timeout, name, **_kwargs):
+            if name == "PVP 自动战斗":
+                return True, "自动战斗"
+            if name == "PVP 自动战斗菜单":
+                return True, "鲜血鸡尾酒"
+            return False, ""
+
+        task._wait_for_ocr_patterns = fake_wait_for_ocr_patterns
+        task._click_ocr_pattern_center = lambda *_args, **_kwargs: True
+        task._ensure_free_ap_enabled = lambda: True
+        multiplier_calls = []
+        task._ensure_multiplier = (
+            lambda multiplier: multiplier_calls.append(multiplier) or False
+        )
+        task._select_max_battle_count = lambda: self.fail(
+            "battle count must not be selected when multiplier is unconfirmed"
+        )
+        task.capture_frame = lambda: self.fail("start window must not run on failure")
+        clicks = []
+        task._click_screen_reference = lambda x, y, after_sleep=0.0: clicks.append(
+            (x, y, after_sleep)
+        )
+
+        self.assertEqual("failed", PVPTask._start_auto_battle(task, 10))
+        self.assertEqual([10], multiplier_calls)
+        self.assertEqual([], clicks)
+
+    def _make_free_ap_task(self, frame):
+        harness = SimpleNamespace(infos={}, logs=[])
+        task = object.__new__(PVPTask)
+        task.capture_frame = lambda: frame
+        task.info_set = lambda key, value: harness.infos.__setitem__(key, value)
+        task.log_info = lambda message, notify=False: harness.logs.append(message)
+        return task, harness
+
+    def test_free_ap_switch_on_accepts_three_channel_yellow_frame(self):
+        task, harness = self._make_free_ap_task(
+            np.full((1440, 2560, 3), (60, 140, 200), dtype=np.uint8)
+        )
+
+        self.assertTrue(PVPTask._free_ap_switch_on(task))
+        self.assertEqual("开关黄色占比 1.000", harness.infos["PVP 免费AP"])
+
+    def test_free_ap_switch_on_ignores_alpha_in_four_channel_frame(self):
+        task, _harness = self._make_free_ap_task(
+            np.full((1440, 2560, 4), (60, 140, 200, 255), dtype=np.uint8)
+        )
+
+        self.assertTrue(PVPTask._free_ap_switch_on(task))
+
+    def test_free_ap_switch_on_rejects_grayscale_frame(self):
+        task, harness = self._make_free_ap_task(
+            np.zeros((1440, 2560), dtype=np.uint8)
+        )
+
+        self.assertFalse(PVPTask._free_ap_switch_on(task))
+        self.assertEqual(1, len(harness.logs))
+
+    def test_free_ap_switch_on_rejects_empty_crop(self):
+        task, harness = self._make_free_ap_task(
+            np.zeros((10, 10, 3), dtype=np.uint8)
+        )
+
+        self.assertFalse(PVPTask._free_ap_switch_on(task))
+        self.assertEqual([], harness.logs)
 
     def test_click_ocr_pattern_center_uses_reference_roi_and_box_center(self):
         task = object.__new__(PVPTask)

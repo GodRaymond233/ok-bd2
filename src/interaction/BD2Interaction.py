@@ -119,6 +119,7 @@ class BD2Interaction(PostMessageInteraction):
                 result = fun()
             except Exception as e:
                 logger.error("operate exception", e)
+                raise
             finally:
                 if is_outer_operate:
                     self._operating = False

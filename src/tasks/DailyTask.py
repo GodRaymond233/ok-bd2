@@ -224,6 +224,9 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
         return not failed
 
     def run_guild_sign_in(self) -> bool:
+        if not self._wait_for_home_confirmation("公会签到入口前主页确认"):
+            return False
+
         frame = self.capture_frame()
         guild, guild_spec = self._match_best(frame, GUILD_ENTRY_TEMPLATES)
         self.info_set("公会入口", f"{guild.score:.3f}")
@@ -274,6 +277,9 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
         return home_ok
 
     def run_my_home_sign_in(self) -> bool:
+        if not self._wait_for_home_confirmation("小屋签到入口前主页确认"):
+            return False
+
         self._click_reference(166, 158, after_sleep=0.5)
         loading_state, found = self._wait_loading_or_template(
             "小屋签到",
@@ -310,6 +316,9 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
         return home_ok
 
     def run_business_collect(self) -> bool:
+        if not self._wait_for_home_confirmation("一键收菜入口前主页确认"):
+            return False
+
         self._click_reference(165, 260, after_sleep=1.0)
         found, text = self._wait_for_ocr_keywords(
             [

@@ -23,6 +23,7 @@ from PySide6.QtGui import QBrush, QColor, QLinearGradient, QPainter
 from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 from qfluentwidgets import FluentIcon, PushButton, ToolButton
 
+from src.tasks.BaseBD2Task import task_info_snapshot
 from src.tasks.run_history import contains_joined_name
 from src.ui.quest_theme import MONO_FONT, mix, on_theme_changed, palette, rgba
 
@@ -58,7 +59,7 @@ def _elapsed_text(task, now: float | None = None) -> str:
 
 def run_state(task) -> str:
     """One of run / pause / done / abort / fail for the status pill."""
-    info = getattr(task, "info", {}) or {}
+    info = task_info_snapshot(task)
     if getattr(task, "enabled", False):
         return "pause" if getattr(task, "paused", False) else "run"
     status = str(info.get(_STATUS_KEY, ""))
@@ -282,7 +283,7 @@ class RunPanel(QFrame):
         self._task = task
         if task is None:
             return
-        info = getattr(task, "info", {}) or {}
+        info = task_info_snapshot(task)
         state = run_state(task)
         if state != self._pill_kind:
             self._pill_kind = state
