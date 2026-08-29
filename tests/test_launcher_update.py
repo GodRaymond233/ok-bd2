@@ -4,30 +4,45 @@ import unittest
 from unittest.mock import Mock, patch
 
 from src.compat.starter_launch import (
-    BROWNDUST2_LAUNCH_URI,
     starter_launch_arguments,
+    starter_launch_uri,
     wrap_starter_execute,
 )
 from src.config import config
 
 
 class LauncherUpdateConfigTest(unittest.TestCase):
+    def starter_uri_context(self, game_id: str = "10000001"):
+        return patch("src.compat.starter_launch.get_launch_game_id", return_value=game_id)
+
     def test_starter_launch_includes_official_shortcut_uri(self):
-        self.assertEqual(
-            f'"{BROWNDUST2_LAUNCH_URI}"',
-            starter_launch_arguments(
-                r"C:\ProgramData\Neowiz\Browndust2Starter\Browndust2Starter.exe"
-            ),
-        )
+        with self.starter_uri_context():
+            self.assertEqual(
+                '"browndust2:games/10000001?usn=0"',
+                starter_launch_arguments(
+                    r"C:\ProgramData\Neowiz\Browndust2Starter\Browndust2Starter.exe"
+                ),
+            )
+
+    def test_starter_launch_uses_registered_china_game_id(self):
+        with self.starter_uri_context("10000002"):
+            self.assertEqual(
+                '"browndust2:games/10000002?usn=0"',
+                starter_launch_arguments(
+                    r"C:\ProgramData\Neowiz\Browndust2Starter\Browndust2Starter.exe"
+                ),
+            )
+            self.assertEqual(starter_launch_uri(), "browndust2:games/10000002?usn=0")
 
     def test_starter_launch_preserves_additional_arguments(self):
-        self.assertEqual(
-            f'"{BROWNDUST2_LAUNCH_URI}" --future-option',
-            starter_launch_arguments(
-                r"C:\ProgramData\Neowiz\Browndust2Starter\Browndust2Starter.exe",
-                "--future-option",
-            ),
-        )
+        with self.starter_uri_context():
+            self.assertEqual(
+                '"browndust2:games/10000001?usn=0" --future-option',
+                starter_launch_arguments(
+                    r"C:\ProgramData\Neowiz\Browndust2Starter\Browndust2Starter.exe",
+                    "--future-option",
+                ),
+            )
 
     def test_starter_launch_accepts_configured_executable_names(self):
         with patch.dict(
@@ -40,10 +55,11 @@ class LauncherUpdateConfigTest(unittest.TestCase):
         ):
             for executable_name in ("PrimaryStarter.exe", "FallbackStarter.exe"):
                 with self.subTest(executable_name=executable_name):
-                    self.assertEqual(
-                        f'"{BROWNDUST2_LAUNCH_URI}"',
-                        starter_launch_arguments(rf"D:\Launchers\{executable_name}"),
-                    )
+                    with self.starter_uri_context():
+                        self.assertEqual(
+                            '"browndust2:games/10000001?usn=0"',
+                            starter_launch_arguments(rf"D:\Launchers\{executable_name}"),
+                        )
 
     def test_non_starter_launch_arguments_are_unchanged(self):
         self.assertEqual(
@@ -55,15 +71,16 @@ class LauncherUpdateConfigTest(unittest.TestCase):
         original_execute = Mock(return_value=True)
         wrapped_execute = wrap_starter_execute(original_execute)
 
-        self.assertTrue(
-            wrapped_execute(
-                r"C:\ProgramData\Neowiz\Browndust2Starter\Browndust2Starter.exe",
-                start_method="start",
+        with self.starter_uri_context():
+            self.assertTrue(
+                wrapped_execute(
+                    r"C:\ProgramData\Neowiz\Browndust2Starter\Browndust2Starter.exe",
+                    start_method="start",
+                )
             )
-        )
         original_execute.assert_called_once_with(
             r"C:\ProgramData\Neowiz\Browndust2Starter\Browndust2Starter.exe",
-            arguments=f'"{BROWNDUST2_LAUNCH_URI}"',
+            arguments='"browndust2:games/10000001?usn=0"',
             start_method="start",
         )
 

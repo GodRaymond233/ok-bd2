@@ -7,12 +7,16 @@ from pathlib import Path
 DEFAULT_GAME_EXE = "BrownDust II.exe"
 DEFAULT_INSTALL_DIR = Path(r"D:\Neowiz\Browndust2\Browndust2_10000001")
 DEFAULT_LAUNCHER_EXE = "Browndust2Starter.exe"
+DEFAULT_LAUNCH_GAME_ID = "10000001"
 ENV_GAME_EXE = "OK_BD2_GAME_EXE"
 ENV_GAME_PATH = "OK_BD2_GAME_PATH"
 ENV_INSTALL_DIR = "OK_BD2_INSTALL_DIR"
 ENV_LAUNCHER_EXE = "OK_BD2_LAUNCHER_EXE"
 ENV_LAUNCHER_PATH = "OK_BD2_LAUNCHER_PATH"
 ENV_LAUNCHER_INSTALL_DIR = "OK_BD2_LAUNCHER_INSTALL_DIR"
+ENV_LAUNCH_GAME_ID = "OK_BD2_LAUNCH_GAME_ID"
+
+NEOWIZ_STARTER_KEY = r"Software\Neowiz\Browndust2Starter"
 
 REGISTRY_MATCH_TOKENS = ("browndust", "brown dust", "neowiz")
 REGISTRY_VALUE_NAMES = (
@@ -74,6 +78,63 @@ def get_configured_launcher_path(env: dict[str, str] | None = None) -> str:
     )
 
 
+def get_launch_game_id(env: dict[str, str] | None = None) -> str:
+    """Return the game id the Starter has registered for this user.
+
+    The Starter keys each install under HKCU by a numeric service id (the
+    global build registers 10000001, the China build 10000002); launching a
+    game id without registration makes the Starter show its install wizard.
+    """
+    override = _env(env, ENV_LAUNCH_GAME_ID, "")
+    if override:
+        return override
+
+    games = _neowiz_registered_games()
+    if not games:
+        return DEFAULT_LAUNCH_GAME_ID
+    for game_id, install_path, _execute in games:
+        if Path(install_path).is_dir():
+            return game_id
+    return games[0][0]
+
+
+def _neowiz_registered_games() -> list[tuple[str, str, str]]:
+    """Return (game_id, install_path, exe_name) sorted by id from HKCU registration."""
+    if os.name != "nt":
+        return []
+
+    try:
+        import winreg
+    except Exception:
+        return []
+
+    try:
+        root_key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, NEOWIZ_STARTER_KEY)
+    except OSError:
+        return []
+
+    games: list[tuple[str, str, str]] = []
+    with root_key:
+        index = 0
+        while True:
+            try:
+                subkey_name = winreg.EnumKey(root_key, index)
+            except OSError:
+                break
+            index += 1
+            if not subkey_name.isdigit():
+                continue
+            try:
+                with winreg.OpenKey(root_key, subkey_name) as game_key:
+                    install_path = str(winreg.QueryValueEx(game_key, "path")[0]).strip()
+                    execute = str(winreg.QueryValueEx(game_key, "execute")[0] or "").strip()
+            except OSError:
+                continue
+            if install_path:
+                games.append((subkey_name, install_path, execute or DEFAULT_GAME_EXE))
+    return sorted(games)
+
+
 def find_running_game_path(env: dict[str, str] | None = None) -> str:
     return _find_running_executable_path(get_game_exe_names(env))
 
@@ -124,6 +185,7 @@ def resolve_game_exe_path(
     if running_path:
         candidates.extend(_candidate_paths_from_source(running_path, exe_names))
 
+    candidates.extend(_registered_game_candidates(exe_names))
     candidates.append(Path(get_configured_game_path(env)))
     candidates.extend(_common_install_candidates(env, exe_names))
     candidates.extend(_registry_candidate_paths(exe_names))
@@ -224,6 +286,15 @@ def _candidate_paths_from_root(root: Path, exe_names: Iterable[str]) -> list[Pat
     for name in exe_names:
         candidates.append(root / name)
         candidates.append(root / "Browndust2_10000001" / name)
+    return candidates
+
+
+def _registered_game_candidates(exe_names: Iterable[str]) -> list[Path]:
+    candidates: list[Path] = []
+    for _game_id, install_path, execute in _neowiz_registered_games():
+        root = Path(install_path)
+        candidates.append(root / execute)
+        candidates.extend(_candidate_paths_from_root(root, exe_names))
     return candidates
 
 

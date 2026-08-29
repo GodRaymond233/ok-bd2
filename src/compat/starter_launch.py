@@ -4,10 +4,14 @@ import importlib
 import ntpath
 from functools import wraps
 
-from src.game_path import get_launcher_exe_names
+from src.game_path import get_launch_game_id, get_launcher_exe_names
 
-BROWNDUST2_LAUNCH_URI = "browndust2:games/10000001?usn=0"
 _PATCH_MARKER = "_ok_bd2_starter_uri_enabled"
+
+
+def starter_launch_uri() -> str:
+    """The URI used by the official Brown Dust 2 desktop shortcut for the installed build."""
+    return f"browndust2:games/{get_launch_game_id()}?usn=0"
 
 
 def starter_launch_arguments(game_cmd: object, arguments: str | None = None) -> str | None:
@@ -17,7 +21,7 @@ def starter_launch_arguments(game_cmd: object, arguments: str | None = None) -> 
     if ntpath.basename(command_path).casefold() not in launcher_names:
         return arguments
 
-    launch_uri = f'"{BROWNDUST2_LAUNCH_URI}"'
+    launch_uri = f'"{starter_launch_uri()}"'
     return f"{launch_uri} {arguments}" if arguments else launch_uri
 
 

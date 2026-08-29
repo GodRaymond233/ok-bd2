@@ -6,12 +6,63 @@ from unittest.mock import patch
 
 from src.game_path import (
     calculate_pc_exe_path,
+    get_launch_game_id,
     get_launcher_exe_names,
     resolve_game_exe_path,
     resolve_launcher_exe_path,
     seed_device_manager_game_path,
     seed_device_manager_launch_path,
 )
+
+
+class LaunchGameIdTest(unittest.TestCase):
+    def test_env_override_wins(self):
+        self.assertEqual(
+            get_launch_game_id({"OK_BD2_LAUNCH_GAME_ID": "10000009"}),
+            "10000009",
+        )
+
+    def test_falls_back_to_default_without_registration(self):
+        with patch("src.game_path._neowiz_registered_games", return_value=[]):
+            self.assertEqual(get_launch_game_id(env={}), "10000001")
+
+    def test_prefers_registration_with_existing_install_path(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            install_dir = Path(temp_dir) / "BrownDust2_10000002"
+            install_dir.mkdir()
+            registrations = [
+                ("10000001", r"D:\missing\Browndust2_10000001", "BrownDust II.exe"),
+                ("10000002", str(install_dir), "BrownDust II.exe"),
+            ]
+            with patch("src.game_path._neowiz_registered_games", return_value=registrations):
+                self.assertEqual(get_launch_game_id(env={}), "10000002")
+
+    def test_uses_registration_even_when_path_missing(self):
+        registrations = [
+            ("10000002", r"E:\gone\Browndust2_10000002", "BrownDust II.exe"),
+        ]
+        with patch("src.game_path._neowiz_registered_games", return_value=registrations):
+            self.assertEqual(get_launch_game_id(env={}), "10000002")
+
+    def test_resolve_game_exe_path_uses_registered_install(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            install_dir = Path(temp_dir) / "Browndust2_10000002"
+            install_dir.mkdir()
+            game_path = install_dir / "BrownDust II.exe"
+            game_path.write_bytes(b"")
+            registrations = [
+                ("10000002", str(install_dir), "BrownDust II.exe"),
+            ]
+
+            with (
+                patch("src.game_path.find_running_game_path", return_value=""),
+                patch("src.game_path._registry_install_values", return_value=[]),
+                patch("src.game_path._neowiz_registered_games", return_value=registrations),
+            ):
+                self.assertEqual(
+                    resolve_game_exe_path(env={}),
+                    str(game_path),
+                )
 
 
 class GamePathTest(unittest.TestCase):
