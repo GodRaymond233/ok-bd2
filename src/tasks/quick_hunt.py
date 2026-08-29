@@ -75,6 +75,11 @@ QUICK_HUNT_CRYSTAL_TITLE_ROI = _quick_hunt_relative_roi(340, 452, 235, 128)
 
 QUICK_HUNT_STONE_LIST_ROI = QUICK_HUNT_CRYSTAL_TITLE_ROI
 
+# 狩猎菜单左列"圣石洞穴"入口（图标+文字）区域；识别点击优先于固定参考点。
+QUICK_HUNT_CRYSTAL_CLICK_ROI = _quick_hunt_relative_roi(260, 520, 100, 400)
+
+QUICK_HUNT_CRYSTAL_ENTRY_PATTERN = r"圣石洞穴"
+
 QUICK_HUNT_STONE_COUNT_ROI = _quick_hunt_relative_roi(1794, 288, 1689, 80)
 
 QUICK_HUNT_DOUBLE_ROI = _quick_hunt_relative_roi(168, 337, 135, 205)
@@ -607,15 +612,7 @@ class QuickHuntFeatureMixin:
 
     def _quick_hunt_run_crystal_cave(self) -> bool:
         self._status_set("快速狩猎当前阶段", "圣石洞穴")
-        self._click_reference(*QUICK_HUNT_CRYSTAL_POINT, after_sleep=0.8)
-        text, _box = self._quick_hunt_wait_ocr(
-            [r"[火水风光暗].?洞穴"],
-            QUICK_HUNT_CRYSTAL_TITLE_ROI,
-            self._quick_hunt_ui_timeout(),
-            name="圣石洞穴确认",
-        )
-        if not text:
-            self.log_info("快速狩猎：点击圣石洞穴后未确认属性洞穴列表。")
+        if not self._quick_hunt_enter_crystal_cave():
             return False
         if self._quick_hunt_resource_empty("火把"):
             self._status_set("快速狩猎火把", "0，跳过")
@@ -643,6 +640,40 @@ class QuickHuntFeatureMixin:
             return False
         self._status_set("快速狩猎火把", "已耗尽" if result == "depleted" else "完成")
         return True
+
+    def _quick_hunt_enter_crystal_cave(self, attempts: int = 3) -> bool:
+        """Open the crystal cave panel and confirm the attribute cave list.
+
+        结算"点击画面即可返回"的关闭动画可能吞掉紧随其后的点击，单次盲点
+        定胜负会让整个快速狩猎确定性失败；这里优先 OCR 识别左列"圣石洞穴"
+        文字框点击其中心，识别不到再回退固定参考点，确认失败在有限次数内重试。
+        """
+        confirm_timeout = max(3.0, self._quick_hunt_ui_timeout() / 2.0)
+        confirm_patterns = [r"[火水风光暗].?洞穴"]
+        for attempt in range(1, max(1, attempts) + 1):
+            clicked = self._quick_hunt_click_ocr(
+                [QUICK_HUNT_CRYSTAL_ENTRY_PATTERN],
+                QUICK_HUNT_CRYSTAL_CLICK_ROI,
+                2.0,
+                name="圣石洞穴入口",
+            )
+            if not clicked:
+                self._click_reference(*QUICK_HUNT_CRYSTAL_POINT, after_sleep=0.8)
+            text, _box = self._quick_hunt_wait_ocr(
+                confirm_patterns,
+                QUICK_HUNT_CRYSTAL_TITLE_ROI,
+                confirm_timeout,
+                name="圣石洞穴确认",
+            )
+            if text:
+                return True
+            self.log_info(
+                f"快速狩猎：圣石洞穴第{attempt}/{max(1, attempts)}次点击未确认"
+                "属性洞穴列表"
+                + ("，重试。" if attempt < max(1, attempts) else "。")
+            )
+        self.log_info("快速狩猎：点击圣石洞穴后未确认属性洞穴列表。")
+        return False
 
     def _quick_hunt_select_adventure_route(self) -> str | None:
         preferred = str(self.config.get("快速狩猎资源倾向", "金币"))

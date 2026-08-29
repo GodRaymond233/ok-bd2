@@ -24,6 +24,8 @@ from src.tasks.quick_hunt import (
     QUICK_HUNT_ADVENTURE_MAP_PATTERNS,
     QUICK_HUNT_BUTTON_ROI,
     QUICK_HUNT_COUNT_ROI,
+    QUICK_HUNT_CRYSTAL_CLICK_ROI,
+    QUICK_HUNT_CRYSTAL_ENTRY_PATTERN,
     QUICK_HUNT_CRYSTAL_POINT,
     QUICK_HUNT_CRYSTAL_TITLE_ROI,
     QUICK_HUNT_DIALOG_ROI,
@@ -1152,10 +1154,74 @@ class DailyTaskHelperTest(unittest.TestCase):
         )
 
         self.assertTrue(task._quick_hunt_run_crystal_cave())
-        self.assertEqual([(177, 449, {"after_sleep": 0.8})], clicks)
-        self.assertIn("光", selected[0][0][0])
-        self.assertEqual(QUICK_HUNT_CRYSTAL_TITLE_ROI, selected[0][1])
+        self.assertEqual([], clicks)
+        self.assertEqual(
+            ([QUICK_HUNT_CRYSTAL_ENTRY_PATTERN], QUICK_HUNT_CRYSTAL_CLICK_ROI, "圣石洞穴入口"),
+            selected[0],
+        )
+        self.assertIn("光", selected[1][0][0])
+        self.assertEqual(QUICK_HUNT_CRYSTAL_TITLE_ROI, selected[1][1])
         self.assertEqual([("MAX", "光属性圣石")], executions)
+
+    def test_quick_hunt_crystal_entry_falls_back_to_reference_point(self):
+        task = object.__new__(QuickHuntTask)
+        task.config = {"快速狩猎界面等待秒数": 8.0}
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        clicks = []
+        task._click_reference = lambda x, y, **kwargs: clicks.append((x, y, kwargs))
+        task._quick_hunt_click_ocr = lambda *_args, **_kwargs: False
+        confirm_calls = []
+
+        def fake_wait_ocr(patterns, roi, timeout, name):
+            confirm_calls.append((patterns, roi, timeout, name))
+            return ("火之洞穴 水之洞穴 风之洞穴 光之洞穴 暗之洞穴", SimpleNamespace())
+
+        task._quick_hunt_wait_ocr = fake_wait_ocr
+        task._quick_hunt_resource_empty = lambda _resource: True
+
+        self.assertTrue(task._quick_hunt_run_crystal_cave())
+        self.assertEqual([(177, 449, {"after_sleep": 0.8})], clicks)
+        self.assertEqual(1, len(confirm_calls))
+        self.assertEqual(
+            ([r"[火水风光暗].?洞穴"], QUICK_HUNT_CRYSTAL_TITLE_ROI), confirm_calls[0][:2]
+        )
+
+    def test_quick_hunt_crystal_retries_when_panel_confirmation_fails(self):
+        task = object.__new__(QuickHuntTask)
+        task.config = {"快速狩猎界面等待秒数": 8.0}
+        task.info_set = lambda *_args, **_kwargs: None
+        logs = []
+        task.log_info = lambda message, *_args, **_kwargs: logs.append(message)
+        entry_clicks = []
+        task._quick_hunt_click_ocr = (
+            lambda patterns, roi, _timeout, name: entry_clicks.append((patterns, roi))
+            or True
+        )
+        confirm_results = iter([("", None), ("", None), ("火之洞穴 水之洞穴", None)])
+        task._quick_hunt_wait_ocr = lambda *_args, **_kwargs: next(confirm_results)
+        task._quick_hunt_resource_empty = lambda _resource: True
+
+        self.assertTrue(task._quick_hunt_run_crystal_cave())
+        self.assertEqual(3, len(entry_clicks))
+        self.assertTrue(
+            all(roi == QUICK_HUNT_CRYSTAL_CLICK_ROI for _patterns, roi in entry_clicks)
+        )
+        self.assertEqual(2, sum("重试" in message for message in logs))
+
+    def test_quick_hunt_crystal_fails_after_exhausted_retries_without_torch_check(self):
+        task = object.__new__(QuickHuntTask)
+        task.config = {"快速狩猎界面等待秒数": 8.0}
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task._quick_hunt_click_ocr = lambda *_args, **_kwargs: False
+        task._click_reference = lambda *args, **kwargs: None
+        task._quick_hunt_wait_ocr = lambda *_args, **_kwargs: ("", None)
+        resource_checks = []
+        task._quick_hunt_resource_empty = lambda resource: resource_checks.append(resource) or True
+
+        self.assertFalse(task._quick_hunt_run_crystal_cave())
+        self.assertEqual([], resource_checks)
 
     def test_quick_hunt_adventure_map_is_verified_before_consuming_rice(self):
         task = object.__new__(QuickHuntTask)
