@@ -260,19 +260,23 @@ class OcrUtilsTest(unittest.TestCase):
             1,
         )
 
-    def test_keyword_count_folds_traditional_and_simplified_scripts(self):
+    def test_keyword_count_matches_simplified_only(self):
+        # 2026-08-29 取消繁体识别：关键字按简体精确匹配，繁体/混简繁读数不再归一命中。
         self.assertEqual(
-            keyword_match_count("取消 一鍵獲得", ("一键获得", "取消")),
+            keyword_match_count("取消 一键获得", ("一键获得", "取消")),
             2,
         )
-        # OCR 混简繁输出（同一弹窗两次读数各翻转了部分字形）也必须命中。
+        self.assertEqual(
+            keyword_match_count("取消 一鍵獲得", ("一键获得", "取消")),
+            1,
+        )
         self.assertEqual(
             keyword_match_count("餐廳營業额現狀", ("餐厅营业额现状",)),
-            1,
+            0,
         )
         self.assertEqual(
             keyword_match_count("一键獲得", ("一键获得",)),
-            1,
+            0,
         )
 
     def test_fuzzy_match_rejects_empty_values(self):

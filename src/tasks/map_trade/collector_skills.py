@@ -247,10 +247,9 @@ class SkillExecutionMixin:
                 relative_roi=ACTION_FEEDBACK_RELATIVE_ROI,
                 target_height=1080,
             )
-            # OpenCC/engine variants may emit traditional characters or join
-            # neighbouring text.  Normalize before scoring, and make the
-            # explicit failure keyword win ties (or a stronger positive
-            # token) so ``没有可以吸收`` can never be treated as success.
+            # OCR 只输出简体中文（繁体转换已取消）；引擎可能粘连相邻文本，
+            # 先归一再打分，并让显式失败关键字在平分（或更强正向词）时获胜，
+            # 确保 ``没有可以吸收`` 不会被当成成功。
             try:
                 normalized = self.vision.simplify(text)
             except AttributeError:

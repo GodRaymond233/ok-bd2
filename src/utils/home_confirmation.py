@@ -11,7 +11,7 @@ HOME_GACHA_OCR_RELATIVE_ROI = (
     1047 / 1080,
 )
 HOME_GACHA_OCR_KEYWORD = "抽抽乐"
-HOME_GACHA_OCR_ALIASES = (HOME_GACHA_OCR_KEYWORD, "抽抽樂")
+HOME_GACHA_OCR_ALIASES = (HOME_GACHA_OCR_KEYWORD,)
 HOME_ANNOUNCEMENT_CLEAR_REFERENCE_POINT = (169, 615)
 HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT = (
     HOME_ANNOUNCEMENT_CLEAR_REFERENCE_POINT[0] / 1920,
@@ -27,11 +27,12 @@ HOME_LEFT_COLUMN_OCR_RELATIVE_ROI = (
     540 / 1920,
     320 / 1080,
 )
-# 每组关键词 = (简体, 繁体)；子串命中任一别名即该组计 1 票。
+# 每组关键词为简体（OCR 只识别简体中文，2026-08-29 取消繁体识别别名）；
+# 子串命中即该组计 1 票。
 HOME_LEFT_COLUMN_KEYWORD_GROUPS = (
-    ("我的小屋", "我的小屋"),
-    ("格鲁TALK", "格魯TALK"),
-    ("街机游戏", "街機遊戲"),
+    ("我的小屋",),
+    ("格鲁TALK",),
+    ("街机游戏",),
 )
 HOME_LEFT_COLUMN_REQUIRED_HITS = 2
 
