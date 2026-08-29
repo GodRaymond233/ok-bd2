@@ -34,18 +34,25 @@ def _apply_report_dialog_theme(dialog: QDialog) -> None:
                 background-color: {colors['bg_panel']};
                 color: {colors['ink']};
             }}
-            QLabel {{ color: {colors['ink']}; }}
-            QLabel#bd2ReportHint {{ color: {colors['ink_dim']}; }}
-            QLabel#bd2ReportPrivacy {{ color: {colors['ink_faint']}; }}
-            QLabel#bd2ReportPauseNotice {{ color: {colors['warn_ink']}; }}
+            QLabel {{ color: {colors['ink']}; background: transparent; }}
+            QLabel#bd2ReportTitle {{ color: {colors['ink']}; font-size: 20px; font-weight: 900; }}
+            QLabel#bd2ReportHint {{ color: {colors['ink_dim']}; font-size: 12px; }}
+            QLabel#bd2ReportStatus {{ color: {colors['ink_dim']}; font-size: 12px; }}
+            QLabel#bd2ReportPrivacy {{ color: {colors['ink_faint']}; font-size: 11px; }}
+            QLabel#bd2ReportPauseNotice {{
+                color: {colors['warn_ink']}; font-size: 11px; font-weight: 600;
+                padding: 6px 10px; border-radius: 6px;
+                background-color: {colors['warn_soft']};
+            }}
             QTextEdit {{
                 background-color: {colors['card']};
                 color: {colors['ink']};
                 border: 1px solid {colors['line_strong']};
-                border-radius: 3px;
+                border-radius: 9px;
+                padding: 8px;
                 selection-background-color: {colors['accent_deep']};
             }}
-            QCheckBox {{ color: {colors['ink']}; }}
+            QCheckBox {{ color: {colors['ink']}; spacing: 7px; }}
             """
         )
 
@@ -58,12 +65,11 @@ class FeedbackReportDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("生成问题报告")
         self.setModal(True)
-        self.setMinimumWidth(560)
+        self.setMinimumWidth(640)
         _apply_report_dialog_theme(self)
 
         title = QLabel("请描述刚才遇到的问题")
         title.setObjectName("bd2ReportTitle")
-        title.setStyleSheet("font-size: 18px; font-weight: 600;")
 
         hint = QLabel("一句话说明“做了什么、看到了什么”即可，例如：跑商砍价后一直停在商店门口。")
         hint.setObjectName("bd2ReportHint")
@@ -75,9 +81,13 @@ class FeedbackReportDialog(QDialog):
         self.description_edit.setMaximumHeight(110)
 
         self.preview = QLabel()
+        self.preview.setObjectName("bd2ReportPreview")
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview.setMinimumHeight(220)
-        self.preview.setStyleSheet("background: #111; border-radius: 6px; color: #bbb;")
+        self.preview.setStyleSheet(
+            "background: #111; border: 1px solid rgba(255,255,255,0.10);"
+            " border-radius: 10px; color: rgba(255,255,255,0.68);"
+        )
         if snapshot.frame is not None:
             image = LiveScreenshotWidget._frame_to_image(snapshot.frame)
             self.preview.setPixmap(
@@ -113,8 +123,8 @@ class FeedbackReportDialog(QDialog):
         button_row.addWidget(create_button)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(22, 22, 22, 18)
-        layout.setSpacing(12)
+        layout.setContentsMargins(28, 26, 28, 22)
+        layout.setSpacing(14)
         layout.addWidget(title)
         layout.addWidget(hint)
         layout.addWidget(self.description_edit)
@@ -143,17 +153,17 @@ class ReportReadyDialog(QDialog):
         self.resume_requested = False
         self.setWindowTitle("问题报告已生成")
         self.setModal(True)
-        self.setMinimumWidth(560)
+        self.setMinimumWidth(640)
         _apply_report_dialog_theme(self)
 
         title = QLabel(f"报告 {result.report_id} 已生成")
         title.setObjectName("bd2ReportTitle")
-        title.setStyleSheet("font-size: 18px; font-weight: 600;")
 
         status = QLabel(
             "反馈文字已复制到剪贴板，ZIP 文件也已在资源管理器中选中。"
             "把两者一起发到群里即可。"
         )
+        status.setObjectName("bd2ReportStatus")
         status.setWordWrap(True)
 
         message = QTextEdit()
@@ -181,8 +191,8 @@ class ReportReadyDialog(QDialog):
         button_row.addWidget(resume_button)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(22, 22, 22, 18)
-        layout.setSpacing(12)
+        layout.setContentsMargins(28, 26, 28, 22)
+        layout.setSpacing(14)
         layout.addWidget(title)
         layout.addWidget(status)
         layout.addWidget(message)
