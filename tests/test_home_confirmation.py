@@ -53,7 +53,8 @@ class HomeConfirmationTest(unittest.TestCase):
 
     def test_ocr_match_normalizes_spacing(self):
         self.assertTrue(home_gacha_ocr_matches("抽 抽 乐"))
-        self.assertTrue(home_gacha_ocr_matches("抽抽樂"))
+        # 2026-08-29 取消繁体识别：繁体读数不再命中。
+        self.assertFalse(home_gacha_ocr_matches("抽抽樂"))
         self.assertFalse(home_gacha_ocr_matches("启动游戏"))
 
     def test_left_column_hits_counts_keyword_groups(self):
@@ -61,8 +62,8 @@ class HomeConfirmationTest(unittest.TestCase):
             3,
             home_left_column_hits("我的小屋 经营管理格鲁TALK 街机游戏"),
         )
-        # 粘框子串命中 + 繁体别名各计 1 票。
-        self.assertEqual(2, home_left_column_hits("经营管理格鲁TALK 街機遊戲"))
+        # 粘框子串命中计 1 票；繁体读数不再命中（2026-08-29 取消繁体识别）。
+        self.assertEqual(1, home_left_column_hits("经营管理格鲁TALK 街機遊戲"))
         self.assertEqual(1, home_left_column_hits("我的小屋"))
         self.assertEqual(0, home_left_column_hits("设置 公告"))
         self.assertEqual(len(HOME_LEFT_COLUMN_KEYWORD_GROUPS), 3)

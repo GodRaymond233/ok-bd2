@@ -8,7 +8,6 @@ from typing import Iterable
 
 import cv2
 import numpy as np
-from opencc import OpenCC
 
 from src.tasks.map_trade.models import (
     MAP_TRADE_REFERENCE,
@@ -58,7 +57,6 @@ class Vision:
     def __init__(self, task) -> None:
         self.task = task
         self._templates: dict[str, tuple[np.ndarray, np.ndarray | None]] = {}
-        self._opencc = OpenCC("t2s")
 
     @staticmethod
     def reference_point(x: float, y: float, width: int, height: int) -> tuple[int, int]:
@@ -777,7 +775,9 @@ class Vision:
         return False
 
     def simplify(self, text: str) -> str:
-        return self._opencc.convert(str(text))
+        # OCR 只识别简体中文（2026-08-29 取消繁体识别）：不再做繁转简转换，
+        # 仅保留 str 归一以稳定既有调用面（测试桩同为恒等）。
+        return str(text)
 
     @staticmethod
     def star_is_yellow(image: np.ndarray, match: MatchResult) -> bool:

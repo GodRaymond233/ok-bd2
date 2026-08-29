@@ -307,7 +307,7 @@ class DailyTaskHelperTest(unittest.TestCase):
         self.assertIn("金币=非双倍", statuses["快速狩猎双倍识别"])
 
     def test_keyword_match_count_ignores_spaces_and_case(self):
-        text = "签到 成功\n獎勵已發送至信箱"
+        text = "签到 成功\n奖励已发放至邮箱"
 
         self.assertEqual(
             2,
@@ -317,8 +317,9 @@ class DailyTaskHelperTest(unittest.TestCase):
             ),
         )
 
-    def test_business_collect_keywords_match_reported_ocr_frames(self):
-        # BUG-20260829-06：RPT-20260829-143029 两帧失败 OCR 的弹窗相关原文。
+    def test_business_collect_keywords_ignore_traditional_frames(self):
+        # BUG-20260829-06 的繁体服帧：2026-08-29 起取消繁体识别，
+        # 仅「取消」繁简同形可命中（1 < minimum_matches=2，判定失败为预期）。
         traditional_frame = (
             "Lv.30 餐廳營業額現狀 - 立即前往 累計獎勵 結算 "
             "Lv.3 魚籠捕獲現狀 立即前往 LV.21釣魚 907/10000(9%) "
@@ -331,9 +332,41 @@ class DailyTaskHelperTest(unittest.TestCase):
 
         for frame in (traditional_frame, mixed_script_frame):
             self.assertEqual(
-                5,
+                1,
                 DailyTask._keyword_match_count(frame, BUSINESS_COLLECT_KEYWORDS),
             )
+
+    def test_business_collect_keywords_match_simplified_client_ocr_frames(self):
+        # BUG-20260829-011：RPT-20260829-190031 国服简体客户端两帧失败 OCR 的弹窗相关
+        # 原文。「一键获得」被 OCR 漏读首字成「键获得」，靠其余弹窗文案命中。
+        cn_frame_one = (
+            "永远DE刹那 X269K 124,565 39,784,979 154,429 ！ Q D-4 我的小屋 好友 公会 "
+            "24:00:00 经营管理 格鲁TALK D-24 X Lv.30餐馆营业额现状 亲 立刻前往 战术教材 "
+            "通行证 快速狩 ● 累计奖励 24:00:00 99360 2592 结算 心契之约 "
+            "LV.3 渔笼收获情况 立刻前往 LV.28 钓鱼 5782/17700(32%) 获得经验值+1027 "
+            "● 累计奖励 D-4 24:00:00 回收 助手工作情况 立刻前往 •• ©累计奖励 0 D-11 "
+            "24:00:00 12 16 获得 TAME 取消 键获得 普通战斗解锁 Evil Castle"
+        )
+        cn_frame_two = cn_frame_one.replace(
+            "12 16 获得 TAME 取消 键获得", "获得 VITTAMER 取消 键获得"
+        )
+
+        for frame in (cn_frame_one, cn_frame_two):
+            count = DailyTask._keyword_match_count(frame, BUSINESS_COLLECT_KEYWORDS)
+            self.assertEqual(4, count)
+            # run_business_collect 的 minimum_matches=2 门槛。
+            self.assertGreaterEqual(count, 2)
+
+    def test_business_collect_keywords_do_not_match_home_screen(self):
+        # BUG-20260829-011：主页画面（含经营管理入口文字）不得误命中弹窗关键字。
+        home_frame = (
+            "D-4 我的小屋 好友 公会联合战 0 0 24:00:00 经营管理 格鲁TALK 亲密度 街机 儿游戏"
+        )
+
+        self.assertEqual(
+            0,
+            DailyTask._keyword_match_count(home_frame, BUSINESS_COLLECT_KEYWORDS),
+        )
 
     def test_reference_click_uses_1920_by_1080_ratios(self):
         task = object.__new__(DailyTask)
