@@ -157,8 +157,8 @@ class BuildWorkflowTest(unittest.TestCase):
     def test_release_notes_fall_back_to_previous_tag_when_sync_start_is_empty(self):
         script = ROOT / "scripts" / "prepare_release_notes.ps1"
         with tempfile.TemporaryDirectory(dir=ROOT) as temporary_directory:
-            output_name = f"{Path(temporary_directory).name}-release-notes.md"
-            output_path = ROOT / output_name
+            output_name = "release-notes.md"
+            output_path = Path(temporary_directory) / output_name
             result = subprocess.run(
                 [
                     "pwsh",
@@ -174,7 +174,7 @@ class BuildWorkflowTest(unittest.TestCase):
                     "-ReleaseTag",
                     "v1.1.2",
                     "-OutputPath",
-                    output_name,
+                    str(Path(Path(temporary_directory).name) / output_name),
                 ],
                 cwd=ROOT,
                 capture_output=True,
