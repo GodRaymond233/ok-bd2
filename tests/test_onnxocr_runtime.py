@@ -95,12 +95,23 @@ def _fake_openvino_module():
 
 class OnnxOcrRuntimeTest(unittest.TestCase):
     def test_onnxocr_version_and_async_parser_contract(self):
-        self.assertEqual("0.0.20", importlib.metadata.version("onnxocr-ppocrv5"))
+        self.assertEqual("0.0.22", importlib.metadata.version("onnxocr-ppocrv5"))
         parser = infer_args()
         self.assertEqual(1, parser.parse_args([]).openvino_num_requests)
         self.assertEqual(
             3, parser.parse_args(["--openvino_num_requests", "3"]).openvino_num_requests
         )
+
+    def test_installed_predict_base_does_not_enumerate_available_devices(self):
+        # onnxocr 0.0.20 called core.available_devices during init, which also
+        # initializes the OpenVINO GPU plugin and crashed with 0xc0000005 on
+        # some GPU driver stacks (BUG-20260829-03); 0.0.22 probes NPU lazily.
+        spec = importlib.util.find_spec("onnxocr.predict_base")
+        self.assertIsNotNone(spec)
+        source = Path(spec.origin).read_text(encoding="utf-8")
+        # 0.0.22 keeps the phrase inside an explanatory comment only.
+        self.assertNotIn("devices = core.available_devices", source)
+        self.assertIn('core.get_property("NPU", "AVAILABLE_DEVICES")', source)
 
     def test_async_infer_queue_default_and_explicit_jobs_are_bounded(self):
         _FakeAsyncInferQueue.instances.clear()

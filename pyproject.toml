@@ -10,7 +10,7 @@ dependencies = [
     "msvc-runtime>=14.44.35112",
     "ok-script==1.0.190",
     "numpy>=2.4.0",
-    "onnxocr-ppocrv5==0.0.20",
+    "onnxocr-ppocrv5==0.0.22",
     "opencc>=1.2.0",
     "opencv-python>=4.13.0.92",
     "openvino>=2026.1.0",

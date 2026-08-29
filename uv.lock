@@ -194,7 +194,7 @@ requires-dist = [
     { name = "msvc-runtime", specifier = ">=14.44.35112" },
     { name = "numpy", specifier = ">=2.4.0" },
     { name = "ok-script", specifier = "==1.0.190" },
-    { name = "onnxocr-ppocrv5", specifier = "==0.0.20" },
+    { name = "onnxocr-ppocrv5", specifier = "==0.0.22" },
     { name = "opencc", specifier = ">=1.2.0" },
     { name = "opencv-python", specifier = ">=4.13.0.92" },
     { name = "openvino", specifier = ">=2026.1.0" },
@@ -233,16 +233,16 @@ wheels = [
 
 [[package]]
 name = "onnxocr-ppocrv5"
-version = "0.0.20"
+version = "0.0.22"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pillow", marker = "sys_platform == 'win32'" },
     { name = "pyclipper", marker = "sys_platform == 'win32'" },
     { name = "shapely", marker = "sys_platform == 'win32'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a5/16/8de3bfdc9e6bd3d37b216203a4d5813ae162ad40c3dd3ca2f7e20217fe34/onnxocr_ppocrv5-0.0.20.tar.gz", hash = "sha256:8e66895702d7eb6924d1c75c8e148e8e61a734be16c8cec7b09db7344558edd0", size = 19164731, upload-time = "2026-08-10T05:38:12.51Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b5/6b/3ad789899e7da9008e83a477abf55551696622234de0e23cb96912e1e958/onnxocr_ppocrv5-0.0.22.tar.gz", hash = "sha256:08ca735a2038e5fc61038935b9010438f33b7e63f0eea7c5ecf468a56ee48bb5", size = 19168126, upload-time = "2026-08-28T09:50:29.045Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/71/18/df6ef9b68877f08afb48c80c1e30f9b310093327a94109ce9b4fbf680976/onnxocr_ppocrv5-0.0.20-py3-none-any.whl", hash = "sha256:eaa728d3a19c648bba201c92227d87f2f59f4e32d615ba06e7f6873263ab267a", size = 19176274, upload-time = "2026-08-10T05:38:02.771Z" },
+    { url = "https://files.pythonhosted.org/packages/d8/f9/84b4217ee8524d9b057523bb7deb7e339d39c7131dbe532cefdbb4955d74/onnxocr_ppocrv5-0.0.22-py3-none-any.whl", hash = "sha256:b98271ce876d9720c788c437d69f63469cad53cb19945da843dbbe46f8a1271a", size = 19176168, upload-time = "2026-08-28T09:50:26.214Z" },
 ]
 
 [[package]]

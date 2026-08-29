@@ -30,7 +30,7 @@ numpy==2.4.6 ; sys_platform == 'win32'
     #   shapely
 ok-script==1.0.190 ; sys_platform == 'win32'
     # via ok-bd2
-onnxocr-ppocrv5==0.0.20 ; sys_platform == 'win32'
+onnxocr-ppocrv5==0.0.22 ; sys_platform == 'win32'
     # via ok-bd2
 opencc==1.4.1 ; sys_platform == 'win32'
     # via ok-bd2

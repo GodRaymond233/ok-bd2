@@ -28,19 +28,19 @@ class DependencyManagementTest(unittest.TestCase):
 
     def test_onnxocr_is_exactly_pinned_with_pypi_provenance(self):
         dependencies = self.pyproject["project"]["dependencies"]
-        self.assertIn("onnxocr-ppocrv5==0.0.20", dependencies)
-        self.assertIn("onnxocr-ppocrv5==0.0.20", self.runtime_requirements)
-        self.assertIn("onnxocr-ppocrv5==0.0.20", self.dev_requirements)
+        self.assertIn("onnxocr-ppocrv5==0.0.22", dependencies)
+        self.assertIn("onnxocr-ppocrv5==0.0.22", self.runtime_requirements)
+        self.assertIn("onnxocr-ppocrv5==0.0.22", self.dev_requirements)
 
         package = next(item for item in self.lock["package"] if item["name"] == "onnxocr-ppocrv5")
-        self.assertEqual("0.0.20", package["version"])
+        self.assertEqual("0.0.22", package["version"])
         self.assertEqual(
-            "sha256:8e66895702d7eb6924d1c75c8e148e8e61a734be16c8cec7b09db7344558edd0",
+            "sha256:08ca735a2038e5fc61038935b9010438f33b7e63f0eea7c5ecf468a56ee48bb5",
             package["sdist"]["hash"],
         )
         self.assertEqual(1, len(package["wheels"]))
         self.assertEqual(
-            "sha256:eaa728d3a19c648bba201c92227d87f2f59f4e32d615ba06e7f6873263ab267a",
+            "sha256:b98271ce876d9720c788c437d69f63469cad53cb19945da843dbbe46f8a1271a",
             package["wheels"][0]["hash"],
         )
 
