@@ -7,6 +7,7 @@ from src.tasks.quick_hunt import (
     QuickHuntFeatureMixin,
 )
 from src.tasks.task_vision_mixin import TaskVisionMixin
+from src.utils.home_confirmation import HOME_DIMMED_P95_THRESHOLD_DEFAULT
 
 DAILY_ONLY_CONFIG_KEYS = (
     "执行公会签到",
@@ -65,7 +66,7 @@ class QuickHuntTask(
         "快速狩猎模板阈值",
         "快速狩猎像素相似度阈值",
         "快速狩猎 OCR 阈值",
-        "主页亮度比例阈值",
+        "主页压暗阈值",
         "主页确认等待秒数",
         "匹配错误",
         "Log",
@@ -107,19 +108,19 @@ class QuickHuntTask(
         }
         self.default_config.update(
             {
-                "主页亮度比例阈值": 0.75,
+                "主页压暗阈值": HOME_DIMMED_P95_THRESHOLD_DEFAULT,
                 "主页确认等待秒数": 10.0,
             }
         )
         self.config_description.update(
             {
-                "主页亮度比例阈值": "确认已返回主页所需的最低亮色像素比例。",
+                "主页压暗阈值": "主页左列灰度 p95 低于该值视为被公告压暗（0-255）。",
                 "主页确认等待秒数": "点击主页按钮后确认已返回主页的最长等待时间。",
             }
         )
         self.config_type.update(
             {
-                "主页亮度比例阈值": {"min": 0.5, "max": 0.95, "step": 0.01},
+                "主页压暗阈值": {"min": 100.0, "max": 250.0, "step": 5.0},
                 "主页确认等待秒数": {"min": 2.0, "max": 30.0, "step": 1.0},
             }
         )
@@ -127,7 +128,7 @@ class QuickHuntTask(
         visible_keys = ["识别成功后等待秒数", *QUICK_HUNT_CHILD_CONFIG_KEYS]
         ocr_index = visible_keys.index("快速狩猎像素相似度阈值") + 1
         visible_keys.insert(ocr_index, "快速狩猎 OCR 阈值")
-        visible_keys.extend(("主页亮度比例阈值", "主页确认等待秒数"))
+        visible_keys.extend(("主页压暗阈值", "主页确认等待秒数"))
         self.default_config["启用"] = True
         self.config_description["启用"] = "是否执行独立的快速狩猎任务。"
         self.config_type["启用"] = {"sub_configs": {True: visible_keys}}

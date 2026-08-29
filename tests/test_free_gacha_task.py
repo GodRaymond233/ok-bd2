@@ -5,7 +5,6 @@ import numpy as np
 
 from src.tasks.FreeGachaTask import (
     BACK_PAGE_KEYWORDS,
-    HOME_BUTTON_TEMPLATES,
     LOADING_TEMPLATE,
     REFERENCE_HEIGHT,
     REFERENCE_WIDTH,
@@ -134,7 +133,7 @@ class FreeGachaTaskHelperTest(unittest.TestCase):
             "加载页面阈值": 0.72,
             "loading 出现等待秒数": 1.0,
             "loading 消失等待秒数": 1.0,
-            "主页亮度比例阈值": 0.75,
+            "主页压暗阈值": 185.0,
         }
         task.capture_frame = lambda: np.zeros((10, 10, 3), dtype=np.uint8)
         task.info_set = lambda *_args, **_kwargs: None
@@ -160,59 +159,41 @@ class FreeGachaTaskHelperTest(unittest.TestCase):
             FreeGachaTask._wait_loading_or_home_confirmation(task, "返回主页")
         )
 
-    def test_home_confirmation_requires_button_brightness_and_gacha_ocr(self):
+    def test_home_confirmation_requires_keyword_votes_brightness_and_gacha_ocr(self):
         task = object.__new__(FreeGachaTask)
-        task.config = {"主页亮度比例阈值": 0.75}
+        task.config = {"主页压暗阈值": 185.0}
         task.info_set = lambda *_args, **_kwargs: None
-        result = type(
-            "Result",
-            (),
-            {"score": 0.9, "pixel_score": 0.9},
-        )()
-        brightness = {"value": 0.8}
+        left_text = {"value": "我的小屋 经营管理格鲁TALK 街机游戏"}
         gacha_text = {"value": "抽抽乐"}
-        button_found = {"value": True}
 
         class FakeVision:
-            def match(self, _frame, _spec):
-                return result
+            def ocr_text(self, _frame, name, relative_roi=None):
+                self.last_relative_roi = relative_roi
+                return left_text["value"] if "左列" in name else gacha_text["value"]
 
-            def template_brightness_ratio(self, _frame, _spec, _result):
-                return brightness["value"]
+        vision = FakeVision()
+        task._quick_vision = lambda: vision
+        bright_frame = np.full((1080, 1920, 3), 255, dtype=np.uint8)
+        dimmed_frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
 
-            def ocr_text(self, _frame, _name, relative_roi=None):
-                self.relative_roi = relative_roi
-                return gacha_text["value"]
-
-            def passes(self, _result, _spec):
-                return button_found["value"]
-
-        task._home_vision = lambda: FakeVision()
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-
-        self.assertTrue(task._home_confirmation_signals(frame, "返回主页")[0])
-        button_found["value"] = False
-        self.assertFalse(task._home_confirmation_signals(frame, "返回主页")[0])
-        button_found["value"] = True
-        brightness["value"] = 0.74
-        self.assertFalse(task._home_confirmation_signals(frame, "返回主页")[0])
-        announcement_signals = []
-        task.clear_temporary_home_announcement_if_needed = (
-            lambda **signals: announcement_signals.append(signals)
+        confirmed, left_hits, p95_brightness, text = task._home_confirmation_signals(
+            bright_frame,
+            "返回主页",
         )
-        self.assertFalse(
-            task._home_confirmation_signals(
-                frame,
-                "返回主页",
-                clear_context="抽抽乐返回主页",
-            )[0]
-        )
-        self.assertEqual(1, len(announcement_signals))
-        self.assertEqual("抽抽乐返回主页", announcement_signals[0]["context"])
-        brightness["value"] = 0.8
+        self.assertTrue(confirmed)
+        self.assertEqual(3, left_hits)
+        self.assertEqual(255.0, p95_brightness)
+        self.assertEqual("抽抽乐", text)
+
+        left_text["value"] = "我的小屋"
+        self.assertFalse(task._home_confirmation_signals(bright_frame, "返回主页")[0])
+
+        left_text["value"] = "我的小屋 格鲁TALK 街机游戏"
+        self.assertFalse(task._home_confirmation_signals(dimmed_frame, "返回主页")[0])
+
         gacha_text["value"] = ""
-        self.assertFalse(task._home_confirmation_signals(frame, "返回主页")[0])
-        self.assertEqual(3, len(HOME_BUTTON_TEMPLATES))
+        self.assertFalse(task._home_confirmation_signals(bright_frame, "返回主页")[0])
+        self.assertIsNotNone(vision.last_relative_roi)
 
     def test_result_skip_clicks_for_duration_then_polls_ocr_until_ticket_page(self):
         task = object.__new__(FreeGachaTask)

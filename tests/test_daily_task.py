@@ -42,8 +42,6 @@ from src.tasks.quick_hunt import (
 )
 from src.tasks.QuickHuntTask import QuickHuntTask
 from src.tasks.task_vision_mixin import (
-    HOME_ICE_TEMPLATE,
-    HOME_RICE_TEMPLATE,
     LOADING_TEMPLATE,
     REFERENCE_HEIGHT,
     REFERENCE_WIDTH,
@@ -124,10 +122,10 @@ class DailyTaskHelperTest(unittest.TestCase):
             QuickHuntTask.__init__(task)
 
         expected_configs = {
-            "主页亮度比例阈值": (
-                0.75,
-                "确认已返回主页所需的最低亮色像素比例。",
-                {"min": 0.5, "max": 0.95, "step": 0.01},
+            "主页压暗阈值": (
+                185.0,
+                "主页左列灰度 p95 低于该值视为被公告压暗（0-255）。",
+                {"min": 100.0, "max": 250.0, "step": 5.0},
             ),
             "主页确认等待秒数": (
                 10.0,
@@ -144,7 +142,7 @@ class DailyTaskHelperTest(unittest.TestCase):
         persisted_config = dict(task.default_config)
         persisted_config.update(
             {
-                "主页亮度比例阈值": 0.88,
+                "主页压暗阈值": 210.0,
                 "主页确认等待秒数": 27.0,
             }
         )
@@ -154,7 +152,7 @@ class DailyTaskHelperTest(unittest.TestCase):
         self.assertFalse(
             hydrated_config.verify_config(persisted_config, task.default_config)
         )
-        self.assertEqual(0.88, hydrated_config["主页亮度比例阈值"])
+        self.assertEqual(210.0, hydrated_config["主页压暗阈值"])
         self.assertEqual(27.0, hydrated_config["主页确认等待秒数"])
 
     def test_quick_hunt_legacy_config_restores_branches_and_drops_chapter(self):
@@ -235,14 +233,13 @@ class DailyTaskHelperTest(unittest.TestCase):
         task.config = {
             "快速狩猎模板阈值": 0.78,
             "快速狩猎像素相似度阈值": 0.72,
-            "主页亮度比例阈值": 0.75,
+            "主页压暗阈值": 185.0,
         }
         task.capture_frame = lambda: np.zeros((720, 1280, 3), dtype=np.uint8)
         task._quick_hunt_home_signals = lambda _frame: (
             True,
-            MatchResult(0.9, (0, 0), (10, 10), pixel_score=0.85),
-            HOME_RICE_TEMPLATE,
-            0.8,
+            3,
+            255.0,
             "抽抽乐",
         )
         task._quick_hunt_entry_red_state = lambda _frame: (
@@ -261,7 +258,7 @@ class DailyTaskHelperTest(unittest.TestCase):
         self.assertIn("通过", statuses["快速狩猎首页按钮"])
         self.assertIn("point=(1188, 158)", statuses["快速狩猎红点识别"])
         self.assertIn("红色", statuses["快速狩猎红点识别"])
-        self.assertEqual("0.800/0.750", statuses["快速狩猎主页亮度"])
+        self.assertEqual("p95=255/185", statuses["快速狩猎主页亮度"])
         self.assertEqual("抽抽乐", statuses["快速狩猎主页抽抽乐 OCR"])
 
     def test_quick_hunt_menu_inspection_reports_ocr_and_templates_without_clicking(self):
@@ -565,8 +562,6 @@ class DailyTaskHelperTest(unittest.TestCase):
         for original_spec in (
             GUILD_MAIN_ACTIVE_TEMPLATE,
             GUILD_MAIN_FINISHED_TEMPLATE,
-            HOME_ICE_TEMPLATE,
-            HOME_RICE_TEMPLATE,
         ):
             spec = replace(original_spec, green_mask=False)
             self.assertTrue(spec.file_name.startswith("image/green/"))
@@ -778,34 +773,31 @@ class DailyTaskHelperTest(unittest.TestCase):
         self.assertEqual((0, 0, 255), bgr)
         self.assertEqual((0, 255, 255), hsv)
 
-    def test_quick_hunt_home_requires_button_brightness_and_gacha_ocr(self):
+    def test_quick_hunt_home_requires_keyword_votes_brightness_and_gacha_ocr(self):
         task = object.__new__(QuickHuntTask)
-        task.config = {"主页亮度比例阈值": 0.75}
-        match = MatchResult(0.9, (0, 0), (10, 10), pixel_score=0.85)
-        task._match_best = lambda _frame, _specs: (match, HOME_RICE_TEMPLATE)
-        task._passes = lambda _match, _spec: True
-        task._home_brightness_ratio = lambda _frame: 0.7
+        task.config = {"主页压暗阈值": 185.0}
+        left_text = ["我的小屋 经营管理格鲁TALK 街机游戏"]
         gacha_text = ["抽抽乐"]
 
         class FakeVision:
-            def ocr_text(self, _frame, _name, relative_roi=None):
+            def ocr_text(self, _frame, name, relative_roi=None):
                 self.relative_roi = relative_roi
-                return gacha_text[0]
+                return left_text[0] if "左列" in name else gacha_text[0]
 
         task._quick_vision = lambda: FakeVision()
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        bright_frame = np.full((1080, 1920, 3), 255, dtype=np.uint8)
+        dimmed_frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
 
-        self.assertFalse(task._quick_hunt_home_signals(frame)[0])
+        self.assertTrue(task._quick_hunt_home_signals(bright_frame)[0])
 
-        task._home_brightness_ratio = lambda _frame: 0.8
-        self.assertTrue(task._quick_hunt_home_signals(frame)[0])
+        left_text[0] = "我的小屋"
+        self.assertFalse(task._quick_hunt_home_signals(bright_frame)[0])
 
-        task._passes = lambda _match, _spec: False
-        self.assertFalse(task._quick_hunt_home_signals(frame)[0])
+        left_text[0] = "我的小屋 格鲁TALK 街机游戏"
+        self.assertFalse(task._quick_hunt_home_signals(dimmed_frame)[0])
 
-        task._passes = lambda _match, _spec: True
         gacha_text[0] = ""
-        self.assertFalse(task._quick_hunt_home_signals(frame)[0])
+        self.assertFalse(task._quick_hunt_home_signals(bright_frame)[0])
 
     def test_quick_hunt_open_menu_prefers_home_ocr_center(self):
         task = object.__new__(QuickHuntTask)
@@ -1311,25 +1303,13 @@ class DailyTaskHelperTest(unittest.TestCase):
 
     def test_quick_hunt_return_home_uses_fixed_point_and_three_signal_confirmation(self):
         task = object.__new__(QuickHuntTask)
-        task.config = {"主页亮度比例阈值": 0.75}
+        task.config = {"主页压暗阈值": 185.0}
         task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
         task.info_set = lambda *_args, **_kwargs: None
         signals = iter(
             (
-                (
-                    False,
-                    MatchResult(0.9, (0, 0), (10, 10), pixel_score=0.85),
-                    HOME_RICE_TEMPLATE,
-                    0.8,
-                    "-",
-                ),
-                (
-                    True,
-                    MatchResult(0.9, (0, 0), (10, 10), pixel_score=0.85),
-                    HOME_RICE_TEMPLATE,
-                    0.8,
-                    "抽抽乐",
-                ),
+                (False, 1, 120.0, "-"),
+                (True, 3, 253.0, "抽抽乐"),
             )
         )
         task._quick_hunt_home_signals = lambda _frame: next(signals)
@@ -1342,19 +1322,18 @@ class DailyTaskHelperTest(unittest.TestCase):
 
     def test_quick_hunt_return_home_clears_announcement_before_clicking_back(self):
         task = object.__new__(QuickHuntTask)
-        task.config = {"主页亮度比例阈值": 0.75}
+        task.config = {"主页压暗阈值": 185.0}
         task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
         task.info_set = lambda *_args, **_kwargs: None
-        match = MatchResult(0.9, (0, 0), (10, 10), pixel_score=0.85)
         signals = iter(
             (
-                (False, match, HOME_RICE_TEMPLATE, 0.419, "抽抽乐"),
-                (True, match, HOME_RICE_TEMPLATE, 0.8, "抽抽乐"),
+                (False, 3, 126.0, "抽抽乐"),
+                (True, 3, 253.0, "抽抽乐"),
             )
         )
         task._quick_hunt_home_signals = lambda _frame: next(signals)
         task._quick_hunt_current_map_context = lambda _frame: "野猪洞穴"
-        task._passes = lambda *_args, **_kwargs: True
+        task._home_p95_threshold = lambda: 185.0
         announcement_signals = []
         task.clear_temporary_home_announcement_if_needed = (
             lambda **values: announcement_signals.append(values) or True

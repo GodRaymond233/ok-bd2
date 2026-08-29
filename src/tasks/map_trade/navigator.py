@@ -40,8 +40,7 @@ from src.tasks.map_trade.navigator_constants import (  # noqa: F401
     FIRST_CARD_INSERT_REGION,
     FIRST_CARD_SKIP_TEMPLATE,
     HAND_TEMPLATE,
-    HOME_BRIGHTNESS_THRESHOLD,
-    HOME_TEMPLATES,
+    HOME_DIMMED_P95_THRESHOLD,
     LOADING_TEMPLATE,
     MERCHANT_CLICK_LOCATION_FAILURE_MESSAGE,
     MERCHANT_CLICK_LOCATION_TEMPLATE,
@@ -187,7 +186,11 @@ from src.tasks.map_trade.vision import Vision, normalize_text
 from src.utils.home_confirmation import (
     HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT,
     HOME_GACHA_OCR_RELATIVE_ROI,
+    HOME_LEFT_COLUMN_OCR_RELATIVE_ROI,
+    HOME_LEFT_COLUMN_REQUIRED_HITS,
     home_confirmation_passes,
+    home_left_column_hits,
+    home_left_column_p95_brightness,
 )
 
 
@@ -500,21 +503,17 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
         allow_return_announcement_cleanup: bool = False,
     ) -> bool:
         end_at = monotonic() + max(0.0, timeout)
-        last_score = -1.0
-        last_pixel_score = -1.0
-        last_brightness = 0.0
+        last_left_hits = 0
+        last_p95 = 0.0
         last_gacha_text = ""
-        last_button_found = False
         announcement_clicks = 0
         while monotonic() <= end_at:
             frame = self.vision.capture()
             (
                 confirmed,
-                last_score,
-                last_pixel_score,
-                last_brightness,
+                last_left_hits,
+                last_p95,
                 last_gacha_text,
-                last_button_found,
             ) = self._home_confirmation_signals(
                 frame,
                 clear_context=(
@@ -529,7 +528,7 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
                 allow_return_announcement_cleanup
                 and self._clear_return_home_announcement_if_needed(
                     frame,
-                    brightness_ratio=last_brightness,
+                    brightness=last_p95,
                     allow_click=(
                         announcement_clicks < RETURN_HOME_ANNOUNCEMENT_MAX_CLICKS
                     ),
@@ -547,9 +546,10 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
                     None,
                 )
                 if callable(clear_announcement) and clear_announcement(
-                    button_found=last_button_found,
-                    brightness_ratio=last_brightness,
-                    brightness_threshold=HOME_BRIGHTNESS_THRESHOLD,
+                    left_hits=last_left_hits,
+                    required_left_hits=HOME_LEFT_COLUMN_REQUIRED_HITS,
+                    brightness=last_p95,
+                    brightness_threshold=HOME_DIMMED_P95_THRESHOLD,
                     gacha_ocr_text=last_gacha_text,
                     context="跑商/跑图确认主页",
                 ):
@@ -557,9 +557,9 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
                     continue
             self.task.sleep(interval)
         self.task.log_warning(
-            "跑商：未同时确认主页按钮、亮度和抽抽乐文字，"
-            f"button={last_score:.3f}/{last_pixel_score:.3f}, "
-            f"brightness={last_brightness:.3f}, ocr={last_gacha_text or '-'}。"
+            "跑商：未同时确认左列关键词、亮度和抽抽乐文字，"
+            f"left={last_left_hits}/{HOME_LEFT_COLUMN_REQUIRED_HITS}, "
+            f"p95={last_p95:.0f}/{HOME_DIMMED_P95_THRESHOLD:.0f}, ocr={last_gacha_text or '-'}。"
         )
         return False
 
@@ -567,12 +567,12 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
         self,
         frame: np.ndarray,
         *,
-        brightness_ratio: float,
+        brightness: float,
         allow_click: bool = True,
     ) -> bool:
         """Dismiss a verified update notice only inside an explicit home return."""
 
-        if brightness_ratio >= HOME_BRIGHTNESS_THRESHOLD:
+        if brightness >= HOME_DIMMED_P95_THRESHOLD:
             return False
         text = self.vision.ocr_text(
             frame,
@@ -602,7 +602,7 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
             return True
         self.task.log_info(
             "跑商：返回主页时确认更新公告遮挡，点击公告清理位置后重新严格确认主页，"
-            f"keywords={'+'.join(matched_group)}, brightness={brightness_ratio:.3f}。"
+            f"keywords={'+'.join(matched_group)}, p95={brightness:.0f}。"
         )
         self.task.operate_click(
             *HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT,
@@ -614,28 +614,30 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
         self,
         frame: np.ndarray,
         clear_context: str | None = None,
-    ) -> tuple[bool, float, float, float, str, bool]:
-        candidates = [(spec, self.vision.match(frame, spec)) for spec in HOME_TEMPLATES]
-        spec, result = max(candidates, key=lambda value: value[1].score)
-        brightness = self.vision.template_brightness_ratio(frame, spec, result)
-        button_found = self.vision.passes(result, spec)
-        gacha_text = ""
-        if button_found:
-            gacha_text = self.vision.ocr_text(
-                frame,
-                "主页抽抽乐",
-                relative_roi=HOME_GACHA_OCR_RELATIVE_ROI,
-            )
-        self._status(
-            "主页小屋按钮",
-            f"{result.score:.3f}/{result.pixel_score:.3f}",
+    ) -> tuple[bool, int, float, str]:
+        left_text = self.vision.ocr_text(
+            frame,
+            "主页左列",
+            relative_roi=HOME_LEFT_COLUMN_OCR_RELATIVE_ROI,
         )
-        self._status("主页亮度", f"{brightness:.3f}")
+        left_hits = home_left_column_hits(left_text)
+        p95_brightness = home_left_column_p95_brightness(frame)
+        gacha_text = self.vision.ocr_text(
+            frame,
+            "主页抽抽乐",
+            relative_roi=HOME_GACHA_OCR_RELATIVE_ROI,
+        )
+        self._status(
+            "主页左列关键词",
+            f"{left_hits}/{HOME_LEFT_COLUMN_REQUIRED_HITS}",
+        )
+        self._status("主页亮度p95", f"{p95_brightness:.0f}")
         self._status("主页抽抽乐 OCR", gacha_text or "-")
         confirmed = home_confirmation_passes(
-            button_found=button_found,
-            brightness_ratio=brightness,
-            brightness_threshold=HOME_BRIGHTNESS_THRESHOLD,
+            left_hits=left_hits,
+            required_left_hits=HOME_LEFT_COLUMN_REQUIRED_HITS,
+            brightness=p95_brightness,
+            brightness_threshold=HOME_DIMMED_P95_THRESHOLD,
             gacha_ocr_text=gacha_text,
         )
         clear_announcement = getattr(
@@ -645,19 +647,18 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
         )
         if clear_context is not None and not confirmed and callable(clear_announcement):
             clear_announcement(
-                button_found=button_found,
-                brightness_ratio=brightness,
-                brightness_threshold=HOME_BRIGHTNESS_THRESHOLD,
+                left_hits=left_hits,
+                required_left_hits=HOME_LEFT_COLUMN_REQUIRED_HITS,
+                brightness=p95_brightness,
+                brightness_threshold=HOME_DIMMED_P95_THRESHOLD,
                 gacha_ocr_text=gacha_text,
                 context=clear_context,
             )
         return (
             confirmed,
-            result.score,
-            result.pixel_score,
-            brightness,
+            left_hits,
+            p95_brightness,
             gacha_text,
-            button_found,
         )
 
     def _wait_for_ocr_keywords(

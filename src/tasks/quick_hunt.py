@@ -9,13 +9,13 @@ from time import monotonic
 import cv2
 import numpy as np
 
-from src.tasks.map_trade.models import MatchResult, TemplateSpec
+from src.tasks.map_trade.models import TemplateSpec
 from src.tasks.task_vision_mixin import (
-    HOME_TEMPLATE,
     REFERENCE_HEIGHT,
     REFERENCE_WIDTH,
     TaskVisionMixin,
 )
+from src.utils.home_confirmation import HOME_LEFT_COLUMN_REQUIRED_HITS
 
 QUICK_HUNT_CHILD_CONFIG_KEYS = (
     "快速狩猎冒险航线",
@@ -369,12 +369,12 @@ class QuickHuntFeatureMixin:
         """Inspect entry signals without moving the mouse or clicking."""
 
         frame = self.capture_frame()
-        home_ok, home_button, home_spec, home_ratio, gacha_text = (
+        home_ok, left_hits, p95_brightness, gacha_text = (
             self._quick_hunt_home_signals(frame)
         )
         self._status_set(
             "快速狩猎首页按钮",
-            f"{home_spec.file_name}={home_button.score:.3f}/{home_button.pixel_score:.3f}"
+            f"左列关键词 {left_hits}/{HOME_LEFT_COLUMN_REQUIRED_HITS}"
             f"({'通过' if home_ok else '未通过'})",
         )
         is_red, point, bgr, hsv = self._quick_hunt_entry_red_state(frame)
@@ -384,7 +384,7 @@ class QuickHuntFeatureMixin:
         )
         self._status_set(
             "快速狩猎主页亮度",
-            f"{home_ratio:.3f}/{self._home_ratio_threshold():.3f}",
+            f"p95={p95_brightness:.0f}/{self._home_p95_threshold():.0f}",
         )
         self._status_set("快速狩猎主页抽抽乐 OCR", gacha_text or "-")
         return True
@@ -446,27 +446,26 @@ class QuickHuntFeatureMixin:
     def _quick_hunt_home_signals(
         self,
         frame,
-    ) -> tuple[bool, MatchResult, TemplateSpec, float, str]:
+    ) -> tuple[bool, int, float, str]:
         return self._home_confirmation_signals(frame, "快速狩猎主页抽抽乐")
 
     def _wait_for_quick_hunt_home(self, interval: float = 0.35) -> bool:
         end_at = monotonic() + float(self.config.get("主页确认等待秒数", 10.0))
-        last_button = self._empty_match()
-        last_spec = HOME_TEMPLATE
-        last_ratio = 0.0
+        last_left_hits = 0
+        last_p95 = 0.0
         last_gacha_text = ""
         while monotonic() <= end_at:
             frame = self.capture_frame()
-            home_ok, last_button, last_spec, last_ratio, last_gacha_text = (
+            home_ok, last_left_hits, last_p95, last_gacha_text = (
                 self._quick_hunt_home_signals(frame)
             )
             self._status_set(
                 "快速狩猎首页按钮",
-                f"{last_spec.file_name}={last_button.score:.3f}/{last_button.pixel_score:.3f}",
+                f"左列关键词 {last_left_hits}/{HOME_LEFT_COLUMN_REQUIRED_HITS}",
             )
             self._status_set(
                 "快速狩猎主页亮度",
-                f"{last_ratio:.3f}/{self._home_ratio_threshold():.3f}",
+                f"p95={last_p95:.0f}/{self._home_p95_threshold():.0f}",
             )
             self._status_set(
                 "快速狩猎主页抽抽乐 OCR",
@@ -475,19 +474,20 @@ class QuickHuntFeatureMixin:
             if home_ok:
                 return True
             self.clear_temporary_home_announcement_if_needed(
-                button_found=self._passes(last_button, last_spec),
-                brightness_ratio=last_ratio,
-                brightness_threshold=self._home_ratio_threshold(),
+                left_hits=last_left_hits,
+                required_left_hits=HOME_LEFT_COLUMN_REQUIRED_HITS,
+                brightness=last_p95,
+                brightness_threshold=self._home_p95_threshold(),
                 gacha_ocr_text=last_gacha_text,
                 context="快速狩猎确认主页",
             )
             self.sleep(interval)
 
         self.log_info(
-            "快速狩猎：未同时确认首页小屋按钮、亮度和抽抽乐文字，"
-            f"template={last_spec.file_name}, "
-            f"button={last_button.score:.3f}/{last_button.pixel_score:.3f}, "
-            f"ratio={last_ratio:.3f}, ocr={last_gacha_text or '-'}。"
+            "快速狩猎：未同时确认左列关键词、亮度和抽抽乐文字，"
+            f"left={last_left_hits}/{HOME_LEFT_COLUMN_REQUIRED_HITS}, "
+            f"p95={last_p95:.0f}/{self._home_p95_threshold():.0f}, "
+            f"ocr={last_gacha_text or '-'}。"
         )
         return False
 
@@ -984,22 +984,23 @@ class QuickHuntFeatureMixin:
                 "快速狩猎返回位置 OCR",
                 self._quick_hunt_current_map_context(frame),
             )
-            home_ok, button, spec, ratio, gacha_text = self._quick_hunt_home_signals(frame)
+            home_ok, left_hits, p95_brightness, gacha_text = self._quick_hunt_home_signals(frame)
             self._status_set(
                 "快速狩猎首页按钮",
-                f"{spec.file_name}={button.score:.3f}/{button.pixel_score:.3f}",
+                f"左列关键词 {left_hits}/{HOME_LEFT_COLUMN_REQUIRED_HITS}",
             )
             self._status_set(
                 "快速狩猎主页亮度",
-                f"{ratio:.3f}/{self._home_ratio_threshold():.3f}",
+                f"p95={p95_brightness:.0f}/{self._home_p95_threshold():.0f}",
             )
             self._status_set("快速狩猎主页抽抽乐 OCR", gacha_text or "-")
             if home_ok:
                 return True
             if self.clear_temporary_home_announcement_if_needed(
-                button_found=self._passes(button, spec),
-                brightness_ratio=ratio,
-                brightness_threshold=self._home_ratio_threshold(),
+                left_hits=left_hits,
+                required_left_hits=HOME_LEFT_COLUMN_REQUIRED_HITS,
+                brightness=p95_brightness,
+                brightness_threshold=self._home_p95_threshold(),
                 gacha_ocr_text=gacha_text,
                 context="快速狩猎返回主页",
             ):

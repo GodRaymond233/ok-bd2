@@ -32,22 +32,28 @@ from src.utils.cartridge_quick_switch import (
 
 
 class SquareGoddessEntryTest(unittest.TestCase):
-    def test_home_requires_button_brightness_and_gacha_ocr(self):
+    def test_home_requires_keyword_votes_brightness_and_gacha_ocr(self):
         task = object.__new__(SquareGoddessTask)
         task.config = {
             "主页确认等待秒数": 0.0,
-            "主页亮度比例阈值": 0.75,
+            "主页压暗阈值": 185.0,
         }
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
         task.sleep = lambda *_args, **_kwargs: None
-        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        match = MatchResult(0.9, (0, 0), (10, 10), pixel_score=0.9)
-        task._match = lambda *_args, **_kwargs: match
-        task._passes = lambda *_args, **_kwargs: True
-        task._home_brightness_ratio = lambda _frame: 0.8
+        bright_frame = np.full((1080, 1920, 3), 255, dtype=np.uint8)
+        dimmed_frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        frame = {"value": bright_frame}
+        task.capture_frame = lambda: frame["value"]
+        left_text = {"value": "我的小屋 格鲁TALK 街机游戏"}
         gacha_text = {"value": ""}
-        task._ocr_text = lambda *_args, **_kwargs: gacha_text["value"]
+
+        def fake_ocr(_frame, name, roi=None):
+            if name == "主页左列":
+                return left_text["value"]
+            return gacha_text["value"]
+
+        task._ocr_text = fake_ocr
         task._sleep_after_recognition = lambda: None
         announcement_clicks = []
         task.operate_click = lambda x, y, after_sleep=0.0: announcement_clicks.append(
@@ -57,10 +63,10 @@ class SquareGoddessEntryTest(unittest.TestCase):
         self.assertFalse(SquareGoddessTask._wait_for_cartridge_home(task))
         gacha_text["value"] = "抽抽乐"
         self.assertTrue(SquareGoddessTask._wait_for_cartridge_home(task))
-        task._home_brightness_ratio = lambda _frame: 0.74
+        frame["value"] = dimmed_frame
         self.assertFalse(SquareGoddessTask._wait_for_cartridge_home(task))
-        task._home_brightness_ratio = lambda _frame: 0.8
-        task._passes = lambda *_args, **_kwargs: False
+        frame["value"] = bright_frame
+        left_text["value"] = "我的小屋"
         self.assertFalse(SquareGoddessTask._wait_for_cartridge_home(task))
         self.assertEqual([(169 / 1920, 615 / 1080, 0.2)], announcement_clicks)
 
@@ -409,19 +415,21 @@ class SquareGoddessEntryTest(unittest.TestCase):
 
     def test_square_return_home_retries_when_chat_input_confirms_click_was_ignored(self):
         task = object.__new__(SquareGoddessTask)
-        task.config = {"主页亮度比例阈值": 0.75}
+        task.config = {"主页压暗阈值": 185.0}
         statuses = {}
         task.info_set = lambda key, value: statuses.__setitem__(key, value)
         logs = []
         task.log_info = logs.append
         task.sleep = lambda *_args, **_kwargs: None
-        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        match = MatchResult(0.9, (0, 0), (10, 10), pixel_score=0.9)
-        task._match = lambda *_args, **_kwargs: match
-        task._passes = lambda *_args, **_kwargs: True
-        task._home_brightness_ratio = lambda _frame: 0.8
+        task.capture_frame = lambda: np.full((1080, 1920, 3), 255, dtype=np.uint8)
         ocr_texts = iter(("输入", "抽抽乐"))
-        task._ocr_text = lambda *_args, **_kwargs: next(ocr_texts)
+
+        def fake_ocr(_frame, name, roi=None):
+            if name == "主页左列":
+                return "我的小屋 格鲁TALK 街机游戏"
+            return next(ocr_texts)
+
+        task._ocr_text = fake_ocr
         task.clear_temporary_home_announcement_if_needed = (
             lambda **_kwargs: False
         )
@@ -451,16 +459,18 @@ class SquareGoddessEntryTest(unittest.TestCase):
 
     def test_square_return_home_does_not_retry_without_square_chat_signal(self):
         task = object.__new__(SquareGoddessTask)
-        task.config = {"主页亮度比例阈值": 0.75}
+        task.config = {"主页压暗阈值": 185.0}
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
         task.sleep = lambda *_args, **_kwargs: None
-        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        match = MatchResult(0.9, (0, 0), (10, 10), pixel_score=0.9)
-        task._match = lambda *_args, **_kwargs: match
-        task._passes = lambda *_args, **_kwargs: True
-        task._home_brightness_ratio = lambda _frame: 0.8
-        task._ocr_text = lambda *_args, **_kwargs: ""
+        task.capture_frame = lambda: np.full((1080, 1920, 3), 255, dtype=np.uint8)
+
+        def fake_ocr(_frame, name, roi=None):
+            if name == "主页左列":
+                return "我的小屋 格鲁TALK 街机游戏"
+            return ""
+
+        task._ocr_text = fake_ocr
         task.clear_temporary_home_announcement_if_needed = (
             lambda **_kwargs: False
         )
@@ -490,17 +500,19 @@ class SquareGoddessEntryTest(unittest.TestCase):
 
     def test_square_return_home_stops_after_retry_budget_is_exhausted(self):
         task = object.__new__(SquareGoddessTask)
-        task.config = {"主页亮度比例阈值": 0.75}
+        task.config = {"主页压暗阈值": 185.0}
         task.info_set = lambda *_args, **_kwargs: None
         logs = []
         task.log_info = logs.append
         task.sleep = lambda *_args, **_kwargs: None
-        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        match = MatchResult(0.9, (0, 0), (10, 10), pixel_score=0.9)
-        task._match = lambda *_args, **_kwargs: match
-        task._passes = lambda *_args, **_kwargs: True
-        task._home_brightness_ratio = lambda _frame: 0.8
-        task._ocr_text = lambda *_args, **_kwargs: "输入"
+        task.capture_frame = lambda: np.full((1080, 1920, 3), 255, dtype=np.uint8)
+
+        def fake_ocr(_frame, name, roi=None):
+            if name == "主页左列":
+                return "我的小屋 格鲁TALK 街机游戏"
+            return "输入"
+
+        task._ocr_text = fake_ocr
         task.clear_temporary_home_announcement_if_needed = (
             lambda **_kwargs: False
         )

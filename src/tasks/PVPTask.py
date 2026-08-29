@@ -25,8 +25,13 @@ from src.utils.cartridge_quick_switch import (
     category_highlight_ratio,
 )
 from src.utils.home_confirmation import (
+    HOME_DIMMED_P95_THRESHOLD_DEFAULT,
     HOME_GACHA_OCR_REFERENCE_ROI,
+    HOME_LEFT_COLUMN_OCR_REFERENCE_ROI,
+    HOME_LEFT_COLUMN_REQUIRED_HITS,
     home_confirmation_passes,
+    home_left_column_hits,
+    home_left_column_p95_brightness,
 )
 from src.utils.image_utils import (
     reference_roi_frame,
@@ -139,7 +144,7 @@ class PVPTask(BaseBD2Task):
                 "竞技场战斗倍数": 1,
                 "最多战斗轮次": 12,
                 "加载页面阈值": 0.72,
-                "主页亮度比例阈值": 0.75,
+                "主页压暗阈值": HOME_DIMMED_P95_THRESHOLD_DEFAULT,
                 "PVP OCR 阈值": 0.2,
                 "主页确认等待秒数": 10.0,
                 "快速卡带等待秒数": 10.0,
@@ -153,7 +158,6 @@ class PVPTask(BaseBD2Task):
                 "PVP 离开等待秒数": 20.0,
                 "PVP 返回箱庭等待秒数": 10.0,
                 "PVP 返回主页等待秒数": 20.0,
-                "主页小屋按钮阈值": 0.70,
                 "快速切换按钮阈值": 0.88,
                 "PVP 箱庭阈值": 0.78,
                 "PVP 箱庭感叹号阈值": 0.72,
@@ -174,7 +178,7 @@ class PVPTask(BaseBD2Task):
                 "PVP 结算基准等待分钟": "1 倍自动战斗结算最长等待时间，实际等待为该值除以倍率。",
                 "PVP 返回箱庭等待秒数": "离开结算后等待回到 PVP 箱庭的最长时间。",
                 "PVP 返回主页等待秒数": "从 PVP 箱庭返回主页后的主页确认最长时间。",
-                "主页小屋按钮阈值": "进入卡带前确认主页小屋按钮存在的模板匹配阈值。",
+                "主页压暗阈值": "主页左列灰度 p95 低于该值视为被公告压暗（0-255）。",
                 "快速切换按钮阈值": "识别 QuickSwitchPlayIco.png 快速切换按钮的模板匹配阈值。",
                 "卡带选择页确认等待秒数": (
                     "点击快速切换按钮后，等待 OCR 同时识别最近、剧情游戏卡和"
@@ -348,34 +352,40 @@ class PVPTask(BaseBD2Task):
     def _wait_for_cartridge_home(self, interval: float = 0.35) -> bool:
         self.info_set("当前阶段", "确认主页")
         end_at = monotonic() + float(self.config.get("主页确认等待秒数", 10.0))
-        last_button_score = -1.0
-        last_ratio = 0.0
+        last_left_hits = 0
+        last_p95 = 0.0
         last_gacha_text = ""
         while monotonic() <= end_at:
             frame = self.capture_frame()
-            home_ok, last_button_score, last_ratio, gacha_text = (
+            home_ok, last_left_hits, last_p95, gacha_text = (
                 self._home_confirmation_signals(frame)
             )
             last_gacha_text = gacha_text or last_gacha_text
-            self.info_set("主页小屋按钮", f"{last_button_score:.3f}")
-            self.info_set("主页亮度", f"{last_ratio:.3f}")
+            self.info_set(
+                "主页左列关键词",
+                f"{last_left_hits}/{HOME_LEFT_COLUMN_REQUIRED_HITS}",
+            )
+            self.info_set(
+                "主页亮度p95",
+                f"{last_p95:.0f}/{self._home_p95_threshold():.0f}",
+            )
             self.info_set("主页抽抽乐 OCR", gacha_text or "-")
             if home_ok:
                 return True
             self.clear_temporary_home_announcement_if_needed(
-                button_found=last_button_score
-                >= float(self.config.get("主页小屋按钮阈值", 0.70)),
-                brightness_ratio=last_ratio,
-                brightness_threshold=self._home_ratio_threshold(),
+                left_hits=last_left_hits,
+                required_left_hits=HOME_LEFT_COLUMN_REQUIRED_HITS,
+                brightness=last_p95,
+                brightness_threshold=self._home_p95_threshold(),
                 gacha_ocr_text=gacha_text,
                 context="镜中之战确认主页",
             )
             self.sleep(interval)
 
         self.log_info(
-            "镜中之战：未联合确认主页按钮、亮度和抽抽乐文字，"
-            f"button={last_button_score:.3f}, ratio={last_ratio:.3f}, "
-            f"ocr={last_gacha_text or '-'}。"
+            "镜中之战：未联合确认左列关键词、亮度和抽抽乐文字，"
+            f"left={last_left_hits}/{HOME_LEFT_COLUMN_REQUIRED_HITS}, "
+            f"p95={last_p95:.0f}, ocr={last_gacha_text or '-'}。"
         )
         return False
 
@@ -981,42 +991,52 @@ class PVPTask(BaseBD2Task):
         end_at = monotonic() + max(0.0, timeout)
         while monotonic() <= end_at:
             frame = self.capture_frame()
-            home_ok, button_score, ratio, gacha_text = self._home_confirmation_signals(frame)
-            self.info_set("主页小屋按钮", f"{button_score:.3f}")
-            self.info_set("主页亮度", f"{ratio:.3f}")
+            home_ok, left_hits, p95_brightness, gacha_text = (
+                self._home_confirmation_signals(frame)
+            )
+            self.info_set(
+                "主页左列关键词",
+                f"{left_hits}/{HOME_LEFT_COLUMN_REQUIRED_HITS}",
+            )
+            self.info_set(
+                "主页亮度p95",
+                f"{p95_brightness:.0f}/{self._home_p95_threshold():.0f}",
+            )
             self.info_set("主页抽抽乐 OCR", gacha_text or "-")
             if home_ok:
                 return True
             self.clear_temporary_home_announcement_if_needed(
-                button_found=button_score
-                >= float(self.config.get("主页小屋按钮阈值", 0.70)),
-                brightness_ratio=ratio,
-                brightness_threshold=self._home_ratio_threshold(),
+                left_hits=left_hits,
+                required_left_hits=HOME_LEFT_COLUMN_REQUIRED_HITS,
+                brightness=p95_brightness,
+                brightness_threshold=self._home_p95_threshold(),
                 gacha_ocr_text=gacha_text,
                 context="PVP 返回主页",
             )
             self.sleep(interval)
         return False
 
-    def _home_confirmation_signals(self, frame) -> tuple[bool, float, float, str]:
-        home_button = max(
-            (self._match(frame, spec) for spec in HOME_TEMPLATES),
-            key=lambda result: result.score,
+    def _home_confirmation_signals(self, frame) -> tuple[bool, int, float, str]:
+        left_text = self._ocr_text(
+            frame,
+            name="主页左列",
+            roi=HOME_LEFT_COLUMN_OCR_REFERENCE_ROI,
         )
-        ratio = self._home_brightness_ratio(frame)
+        left_hits = home_left_column_hits(left_text)
+        p95_brightness = home_left_column_p95_brightness(frame)
         gacha_text = self._ocr_text(
             frame,
             name="主页抽抽乐",
             roi=HOME_GACHA_OCR_REFERENCE_ROI,
         )
         confirmed = home_confirmation_passes(
-            button_found=home_button.score
-            >= float(self.config.get("主页小屋按钮阈值", 0.70)),
-            brightness_ratio=ratio,
-            brightness_threshold=self._home_ratio_threshold(),
+            left_hits=left_hits,
+            required_left_hits=HOME_LEFT_COLUMN_REQUIRED_HITS,
+            brightness=p95_brightness,
+            brightness_threshold=self._home_p95_threshold(),
             gacha_ocr_text=gacha_text,
         )
-        return confirmed, home_button.score, ratio, gacha_text
+        return confirmed, left_hits, p95_brightness, gacha_text
 
     def _recover_stage_position(self) -> None:
         if self._click_template_until(
@@ -1371,18 +1391,6 @@ class PVPTask(BaseBD2Task):
                 self.log_warning(f"{message}；{exc}", notify=True)
             return empty
 
-    def _home_brightness_ratio(self, frame) -> float:
-        return max(self._home_brightness_ratio_for_template(frame, spec) for spec in HOME_TEMPLATES)
-
-    def _home_brightness_ratio_for_template(self, frame, spec: TemplateSpec) -> float:
-        return task_vision.brightness_ratio(
-            frame,
-            spec,
-            (222 / ENTRY_REFERENCE_WIDTH, 211 / ENTRY_REFERENCE_HEIGHT),
-            TEMPLATE_DIR,
-            cache=self._templates,
-        )
-
     def _load_template(self, spec: TemplateSpec) -> tuple[np.ndarray, np.ndarray | None]:
         return task_vision.load_template(TEMPLATE_DIR, spec, cache=self._templates)
 
@@ -1584,8 +1592,8 @@ class PVPTask(BaseBD2Task):
         )
         self.drag_client(start_client, end_client, duration=duration, after_sleep=after_sleep)
 
-    def _home_ratio_threshold(self) -> float:
-        return float(self.config.get("主页亮度比例阈值", 0.75))
+    def _home_p95_threshold(self) -> float:
+        return float(self.config.get("主页压暗阈值", HOME_DIMMED_P95_THRESHOLD_DEFAULT))
 
     def _ocr_requirements_met(
         self,
@@ -1712,31 +1720,6 @@ LOADING_TEMPLATE = TemplateSpec(
     threshold_key="加载页面阈值",
     default_threshold=0.72,
 )
-
-HOME_TEMPLATE = TemplateSpec(
-    name="home",
-    file_name="home.png",
-    threshold_key="主页亮度比例阈值",
-    default_threshold=0.75,
-)
-
-HOME_ICE_TEMPLATE = TemplateSpec(
-    name="home_ice",
-    file_name="image/green/MainHomeIceGE.png",
-    threshold_key="主页亮度比例阈值",
-    default_threshold=0.75,
-    green_mask=True,
-)
-
-HOME_RICE_TEMPLATE = TemplateSpec(
-    name="home_rice",
-    file_name="image/green/MainHomeRIceGE.png",
-    threshold_key="主页亮度比例阈值",
-    default_threshold=0.75,
-    green_mask=True,
-)
-
-HOME_TEMPLATES = (HOME_TEMPLATE, HOME_ICE_TEMPLATE, HOME_RICE_TEMPLATE)
 
 QUICK_PACK_TEMPLATE = TemplateSpec(
     name="quick_pack",

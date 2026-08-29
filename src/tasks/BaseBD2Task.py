@@ -453,16 +453,18 @@ class BaseBD2Task(BaseTask):
     def clear_temporary_home_announcement_if_needed(
         self,
         *,
-        button_found: bool,
-        brightness_ratio: float,
+        left_hits: int,
+        required_left_hits: int,
+        brightness: float,
         brightness_threshold: float,
         gacha_ocr_text: object,
         context: str,
     ) -> bool:
         """Clear a dimming announcement only when the other two home signals pass."""
         if not home_temporary_announcement_detected(
-            button_found=button_found,
-            brightness_ratio=brightness_ratio,
+            left_hits=left_hits,
+            required_left_hits=required_left_hits,
+            brightness=brightness,
             brightness_threshold=brightness_threshold,
             gacha_ocr_text=gacha_ocr_text,
         ):
@@ -479,11 +481,11 @@ class BaseBD2Task(BaseTask):
         clear_x, clear_y = HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT
         self.info_set(
             "主页临时公告",
-            f"{context}：亮度 {brightness_ratio:.3f}/{brightness_threshold:.3f}",
+            f"{context}：亮度 {brightness:.3f}/{brightness_threshold:.3f}",
         )
         self.log_info(
-            f"{context}：主页按钮和抽抽乐 OCR 已命中但亮度不足，"
-            f"按登录公告流程点击清理位置，ratio={brightness_ratio:.3f}, "
+            f"{context}：左列关键词和抽抽乐 OCR 已命中但亮度不足，"
+            f"按登录公告流程点击清理位置，brightness={brightness:.3f}, "
             f"x={clear_x:.2%}, y={clear_y:.2%}。"
         )
         self._sleep_after_recognition()

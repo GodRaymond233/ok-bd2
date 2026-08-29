@@ -563,8 +563,11 @@ class AutoLoginTask(BaseBD2Task):
         self.info_set("主页抽抽乐 OCR", gacha_text or "-")
 
         confirmed = home_confirmation_passes(
-            button_found=home_found,
-            brightness_ratio=ratio,
+            # 模板锚点兼容桥接：登录状态机仍依赖 home 模板出现/压暗语义，
+            # 折算为 1 票锚点 + 模板相对亮度（0-1），待后续单独迁移 OCR 三信号。
+            left_hits=int(bool(home_found)),
+            required_left_hits=1,
+            brightness=ratio,
             brightness_threshold=self._home_ratio_threshold(),
             gacha_ocr_text=gacha_text,
         )
@@ -608,8 +611,10 @@ class AutoLoginTask(BaseBD2Task):
         self.info_set("小屋亮度比例", f"{ratio:.3f}")
         self.info_set("主页抽抽乐 OCR", gacha_text or "-")
         confirmed = home_confirmation_passes(
-            button_found=self._passes(home_button, home_spec),
-            brightness_ratio=ratio,
+            # 模板锚点兼容桥接：见上方同款注释。
+            left_hits=int(bool(self._passes(home_button, home_spec))),
+            required_left_hits=1,
+            brightness=ratio,
             brightness_threshold=self._home_ratio_threshold(),
             gacha_ocr_text=gacha_text,
         )

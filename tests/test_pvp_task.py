@@ -24,9 +24,7 @@ from src.tasks.PVPTask import (
     ENTRY_REFERENCE_HEIGHT,
     ENTRY_REFERENCE_WIDTH,
     HOME_GACHA_OCR_ROI,
-    HOME_ICE_TEMPLATE,
-    HOME_RICE_TEMPLATE,
-    HOME_TEMPLATE,
+    LOADING_TEMPLATE,
     PVP_AUTO_BATTLE_CLICK_REFERENCE,
     PVP_AUTO_BATTLE_SCREEN_ROI,
     PVP_BACK_HOME_REFERENCE_POINT,
@@ -68,7 +66,7 @@ from src.utils.image_utils import candidate_scales
 class PVPTaskHelperTest(unittest.TestCase):
     def test_match_without_roi_uses_full_frame(self):
         task = object.__new__(PVPTask)
-        task.config = {"主页亮度比例阈值": 0.75}
+        task.config = {"加载页面阈值": 0.72}
         task._match_pause_until = 0.0
         task._missing_template_names = set()
         task._match_error_names = set()
@@ -103,7 +101,7 @@ class PVPTaskHelperTest(unittest.TestCase):
                 return_value=1.0,
             ),
         ):
-            result = PVPTask._match(task, frame, HOME_TEMPLATE)
+            result = PVPTask._match(task, frame, LOADING_TEMPLATE)
 
         np.testing.assert_array_equal(response_mock.call_args.args[0], frame)
         self.assertEqual(frame.shape, response_mock.call_args.args[0].shape)
@@ -875,22 +873,28 @@ class PVPTaskHelperTest(unittest.TestCase):
         self.assertFalse(PVPTask._wait_for_quick_switch_page(task))
         self.assertIn("未确认卡带选择页", logs[0])
 
-    def test_cartridge_home_requires_button_brightness_and_gacha_ocr(self):
+    def test_cartridge_home_requires_keyword_votes_brightness_and_gacha_ocr(self):
         task = object.__new__(PVPTask)
         task.config = {
             "主页确认等待秒数": 0.0,
-            "主页小屋按钮阈值": 0.70,
-            "主页亮度比例阈值": 0.75,
+            "主页压暗阈值": 185.0,
         }
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
-        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        task._match = lambda *_args, **_kwargs: SimpleNamespace(score=0.80)
-        task._home_brightness_ratio = lambda _frame: 0.74
+        bright_frame = np.full((1080, 1920, 3), 255, dtype=np.uint8)
+        dimmed_frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        frame = {"value": dimmed_frame}
+        task.capture_frame = lambda: frame["value"]
         ocr_calls = []
-        task._ocr_text = lambda _frame, name, roi=None: (
-            ocr_calls.append((name, roi)) or "抽抽乐"
-        )
+
+        def fake_ocr(_frame, name, roi=None):
+            ocr_calls.append((name, roi))
+            if name == "主页左列":
+                return "我的小屋 经营管理格鲁TALK 街机游戏"
+            return gacha_text["value"]
+
+        gacha_text = {"value": "抽抽乐"}
+        task._ocr_text = fake_ocr
         task.sleep = lambda *_args, **_kwargs: None
         task._sleep_after_recognition = lambda: None
         announcement_clicks = []
@@ -901,30 +905,33 @@ class PVPTaskHelperTest(unittest.TestCase):
         self.assertFalse(PVPTask._wait_for_cartridge_home(task))
         self.assertEqual([(169 / 1920, 615 / 1080, 0.2)], announcement_clicks)
 
-        task._home_brightness_ratio = lambda _frame: 0.80
-        task._ocr_text = lambda *_args, **_kwargs: ""
+        frame["value"] = bright_frame
+        gacha_text["value"] = ""
         self.assertFalse(PVPTask._wait_for_cartridge_home(task))
 
-        task._ocr_text = lambda _frame, name, roi=None: (
-            ocr_calls.append((name, roi)) or "抽抽乐"
-        )
+        gacha_text["value"] = "抽抽乐"
         self.assertTrue(PVPTask._wait_for_cartridge_home(task))
         self.assertIn(("主页抽抽乐", HOME_GACHA_OCR_ROI), ocr_calls)
 
     def test_return_home_uses_same_three_signal_confirmation(self):
         task = object.__new__(PVPTask)
-        task.config = {}
+        task.config = {"主页压暗阈值": 185.0}
         task.info_set = lambda *_args, **_kwargs: None
-        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task.capture_frame = lambda: np.full((1080, 1920, 3), 255, dtype=np.uint8)
         task._is_beijing_monday = lambda: True
-        task._match = lambda *_args, **_kwargs: SimpleNamespace(score=0.80)
-        task._home_brightness_ratio = lambda _frame: 0.80
-        task._ocr_text = lambda *_args, **_kwargs: "主页其他文字"
         task.sleep = lambda *_args, **_kwargs: None
+
+        def fake_ocr(_frame, name, roi=None):
+            if name == "主页左列":
+                return "我的小屋 格鲁TALK 街机游戏"
+            return gacha_text["value"]
+
+        gacha_text = {"value": "主页其他文字"}
+        task._ocr_text = fake_ocr
 
         self.assertFalse(PVPTask._wait_for_home(task, timeout=0.0))
 
-        task._ocr_text = lambda *_args, **_kwargs: "抽抽乐"
+        gacha_text["value"] = "抽抽乐"
         self.assertTrue(PVPTask._wait_for_home(task, timeout=0.0))
 
     def test_pvp_uses_fixed_first_gameplay_cartridge_slot(self):
@@ -972,8 +979,6 @@ class PVPTaskHelperTest(unittest.TestCase):
     def test_pvp_assets_use_image_folder(self):
         template_root = Path("recognition-assets/template-assets")
         specs = (
-            HOME_ICE_TEMPLATE,
-            HOME_RICE_TEMPLATE,
             PVP_MEDALS_TEMPLATE,
             PVP_STAGE_TEMPLATE,
             PVP_LOC_RESET_TEMPLATE,

@@ -363,7 +363,7 @@ class ResponsiveTaskConfigUiTest(unittest.TestCase):
             "快速狩猎圣石测试",
             "快速狩猎完整测试",
             "识别成功后等待秒数",
-            "主页亮度比例阈值",
+            "主页压暗阈值",
             "主页确认等待秒数",
         ):
             self.assertNotIn(key, card.config_widget_by_key)

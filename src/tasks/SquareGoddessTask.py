@@ -23,8 +23,13 @@ from src.utils.cartridge_quick_switch import (
     category_highlight_ratio,
 )
 from src.utils.home_confirmation import (
+    HOME_DIMMED_P95_THRESHOLD_DEFAULT,
     HOME_GACHA_OCR_REFERENCE_ROI,
+    HOME_LEFT_COLUMN_OCR_REFERENCE_ROI,
+    HOME_LEFT_COLUMN_REQUIRED_HITS,
     home_confirmation_passes,
+    home_left_column_hits,
+    home_left_column_p95_brightness,
 )
 from src.utils.image_utils import (
     reference_roi_frame,
@@ -101,9 +106,8 @@ class SquareGoddessTask(BaseBD2Task):
         self.default_config.update(
             {
                 "启用": True,
-                "主页亮度比例阈值": 0.75,
+                "主页压暗阈值": HOME_DIMMED_P95_THRESHOLD_DEFAULT,
                 "主页确认等待秒数": 10.0,
-                "主页小屋按钮阈值": 0.70,
                 "快速卡带等待秒数": 10.0,
                 "快速切换按钮阈值": 0.88,
                 "卡带选择页确认等待秒数": 10.0,
@@ -130,7 +134,7 @@ class SquareGoddessTask(BaseBD2Task):
         self.config_description.update(
             {
                 "广场 OCR 阈值": "广场入场流程 OCR 使用的最低可信度。",
-                "主页小屋按钮阈值": "从主页进入卡带前确认小屋按钮存在的阈值。",
+                "主页压暗阈值": "主页左列灰度 p95 低于该值视为被公告压暗（0-255）。",
                 "快速切换按钮阈值": "识别 QuickSwitchPlayIco.png 快速切换按钮的模板匹配阈值。",
                 "玩法类别高亮像素比例": (
                     "生活玩法游戏卡带标签确认为高亮状态所需的最低亮色像素占比。"
@@ -257,9 +261,8 @@ class SquareGoddessTask(BaseBD2Task):
             else max(0.0, float(timeout))
         )
         end_at = monotonic() + wait_seconds
-        last_button_score = -1.0
-        last_button_pixel = -1.0
-        last_ratio = 0.0
+        last_left_hits = 0
+        last_p95 = 0.0
         last_gacha_text = ""
         remaining_home_clicks = max(0, int(retry_home_clicks))
         total_home_clicks = max(
@@ -275,31 +278,40 @@ class SquareGoddessTask(BaseBD2Task):
         )
         while monotonic() <= end_at:
             frame = self.capture_frame()
-            candidates = [(spec, self._match(frame, spec)) for spec in HOME_TEMPLATES]
-            home_spec, home_button = max(candidates, key=lambda value: value[1].score)
-            last_button_score = home_button.score
-            last_button_pixel = home_button.pixel_score
-            last_ratio = self._home_brightness_ratio(frame)
+            left_text = self._ocr_text(
+                frame,
+                name="主页左列",
+                roi=HOME_LEFT_COLUMN_OCR_REFERENCE_ROI,
+            )
+            last_left_hits = home_left_column_hits(left_text)
+            last_p95 = home_left_column_p95_brightness(frame)
             last_gacha_text = self._ocr_text(
                 frame,
                 name="主页抽抽乐",
                 roi=HOME_GACHA_OCR_REFERENCE_ROI,
             )
-            self.info_set("主页小屋按钮", f"{last_button_score:.3f}")
-            self.info_set("主页亮度", f"{last_ratio:.3f}")
+            self.info_set(
+                "主页左列关键词",
+                f"{last_left_hits}/{HOME_LEFT_COLUMN_REQUIRED_HITS}",
+            )
+            self.info_set(
+                "主页亮度p95",
+                f"{last_p95:.0f}/{self._home_p95_threshold():.0f}",
+            )
             self.info_set("主页抽抽乐 OCR", last_gacha_text or "-")
-            button_found = self._passes(home_button, home_spec)
             if home_confirmation_passes(
-                button_found=button_found,
-                brightness_ratio=last_ratio,
-                brightness_threshold=self._home_ratio_threshold(),
+                left_hits=last_left_hits,
+                required_left_hits=HOME_LEFT_COLUMN_REQUIRED_HITS,
+                brightness=last_p95,
+                brightness_threshold=self._home_p95_threshold(),
                 gacha_ocr_text=last_gacha_text,
             ):
                 return True
             self.clear_temporary_home_announcement_if_needed(
-                button_found=button_found,
-                brightness_ratio=last_ratio,
-                brightness_threshold=self._home_ratio_threshold(),
+                left_hits=last_left_hits,
+                required_left_hits=HOME_LEFT_COLUMN_REQUIRED_HITS,
+                brightness=last_p95,
+                brightness_threshold=self._home_p95_threshold(),
                 gacha_ocr_text=last_gacha_text,
                 context="广场女神像返回主页",
             )
@@ -329,9 +341,9 @@ class SquareGoddessTask(BaseBD2Task):
             self.sleep(interval)
 
         self.log_info(
-            "广场女神像：未同时确认主页按钮、亮度和抽抽乐文字，"
-            f"button={last_button_score:.3f}/{last_button_pixel:.3f}, "
-            f"ratio={last_ratio:.3f}, ocr={last_gacha_text or '-'}。"
+            "广场女神像：未同时确认左列关键词、亮度和抽抽乐文字，"
+            f"left={last_left_hits}/{HOME_LEFT_COLUMN_REQUIRED_HITS}, "
+            f"p95={last_p95:.0f}, ocr={last_gacha_text or '-'}。"
         )
         return False
 
@@ -943,18 +955,6 @@ class SquareGoddessTask(BaseBD2Task):
                 self.log_warning(f"{message}；{exc}", notify=True)
             return empty
 
-    def _home_brightness_ratio(self, frame) -> float:
-        return max(self._home_brightness_ratio_for_template(frame, spec) for spec in HOME_TEMPLATES)
-
-    def _home_brightness_ratio_for_template(self, frame, spec: TemplateSpec) -> float:
-        return task_vision.brightness_ratio(
-            frame,
-            spec,
-            (222 / ENTRY_REFERENCE_WIDTH, 211 / ENTRY_REFERENCE_HEIGHT),
-            TEMPLATE_DIR,
-            cache=self._templates,
-        )
-
     def _load_template(self, spec: TemplateSpec) -> tuple[np.ndarray, np.ndarray | None]:
         return task_vision.load_template(TEMPLATE_DIR, spec, cache=self._templates)
 
@@ -1046,8 +1046,8 @@ class SquareGoddessTask(BaseBD2Task):
         )
         self.drag_client(start_client, end_client, duration=duration, after_sleep=after_sleep)
 
-    def _home_ratio_threshold(self) -> float:
-        return float(self.config.get("主页亮度比例阈值", 0.75))
+    def _home_p95_threshold(self) -> float:
+        return float(self.config.get("主页压暗阈值", HOME_DIMMED_P95_THRESHOLD_DEFAULT))
 
     @staticmethod
     def _mf_point(x: int, y: int) -> tuple[int, int]:
@@ -1156,31 +1156,6 @@ class SquareGoddessTask(BaseBD2Task):
     @staticmethod
     def _crop_reference(frame, roi: tuple[int, int, int, int] | None):
         return reference_roi_frame(frame, roi, (REFERENCE_WIDTH, REFERENCE_HEIGHT))[2]
-
-HOME_TEMPLATE = TemplateSpec(
-    name="home",
-    file_name="home.png",
-    threshold_key="主页小屋按钮阈值",
-    default_threshold=0.70,
-)
-
-HOME_ICE_TEMPLATE = TemplateSpec(
-    name="home_ice",
-    file_name="image/green/MainHomeIceGE.png",
-    threshold_key="主页小屋按钮阈值",
-    default_threshold=0.70,
-    green_mask=True,
-)
-
-HOME_RICE_TEMPLATE = TemplateSpec(
-    name="home_rice",
-    file_name="image/green/MainHomeRIceGE.png",
-    threshold_key="主页小屋按钮阈值",
-    default_threshold=0.70,
-    green_mask=True,
-)
-
-HOME_TEMPLATES = (HOME_TEMPLATE, HOME_ICE_TEMPLATE, HOME_RICE_TEMPLATE)
 
 QUICK_SWITCH_TEMPLATE = TemplateSpec(
     name="quick_switch",

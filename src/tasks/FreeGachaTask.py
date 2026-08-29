@@ -7,13 +7,9 @@ from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task
 from src.tasks.map_trade.models import MatchResult, TemplateSpec
-from src.tasks.map_trade.vision import Vision
+from src.tasks.task_vision_mixin import TaskVisionMixin
 from src.utils import task_vision
 from src.utils.calibration import FHD_1080
-from src.utils.home_confirmation import (
-    HOME_GACHA_OCR_RELATIVE_ROI,
-    home_confirmation_passes,
-)
 from src.utils.image_utils import (
     to_gray,
 )
@@ -26,8 +22,8 @@ TEMPLATE_DIR = PROJECT_ROOT / "recognition-assets" / "template-assets"
 KEYWORD_MATCH_RATIO = 0.9
 
 
-class FreeGachaTask(BaseBD2Task):
-    vision_threshold_key = "主页小屋按钮阈值"
+class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
+    vision_threshold_key = "加载页面阈值"
     ocr_threshold_key = "抽卡 OCR 阈值"
 
     def __init__(self, *args, **kwargs):
@@ -47,8 +43,7 @@ class FreeGachaTask(BaseBD2Task):
                 "启用": True,
                 "加载页面阈值": 0.72,
                 "返回按钮阈值": 0.76,
-                "主页小屋按钮阈值": 0.72,
-                "主页亮度比例阈值": 0.75,
+                "主页压暗阈值": 185.0,
                 "抽卡 OCR 阈值": 0.2,
                 "loading 出现等待秒数": 6.0,
                 "loading 消失等待秒数": 35.0,
@@ -70,6 +65,7 @@ class FreeGachaTask(BaseBD2Task):
         self.config_description.update(
             {
                 "启用": "是否执行白嫖抽抽乐任务。",
+                "主页压暗阈值": "主页左列灰度 p95 低于该值视为被公告压暗（0-255）。",
                 "抽卡页面关键词最低命中数": "确认已进入抽卡页所需的 OCR 关键词数量。",
                 "确认弹窗关键词最低命中数": "确认抽抽乐弹窗所需的 OCR 关键词数量。",
                 "结果跳过连续点击秒数": "抽卡结果页连续点击跳过按钮的最长时间。",
@@ -90,7 +86,7 @@ class FreeGachaTask(BaseBD2Task):
         self.info_set("状态", "启动白嫖抽抽乐。")
         if not self._wait_for_home_confirmation("白嫖抽抽乐入口前主页确认"):
             self.info_set("状态", "白嫖抽抽乐入口前主页确认失败。")
-            self.log_info("白嫖抽抽乐：入口前未同时确认主页按钮、亮度和抽抽乐文字，不点击抽抽乐入口。")
+            self.log_info("白嫖抽抽乐：入口前未同时确认左列关键词、亮度和抽抽乐文字，不点击抽抽乐入口。")
             return False
         self._click_reference(162, 986, after_sleep=0.5)
         loading_state, gacha_found, _ = self._wait_loading_or_gacha_page("进入抽卡页")
@@ -428,94 +424,11 @@ class FreeGachaTask(BaseBD2Task):
         self.info_set(f"{name} 关键字", f"{count}/{len(keywords)}")
         return count >= minimum_matches, text
 
-    def _wait_for_home_confirmation(
-        self,
-        name: str,
-        interval: float = 0.35,
-    ) -> bool:
-        end_at = monotonic() + float(self.config.get("主页确认等待秒数", 10.0))
-        last_button_score = -1.0
-        last_pixel_score = -1.0
-        last_ratio = 0.0
-        last_gacha_text = ""
-        while monotonic() <= end_at:
-            frame = self.capture_frame()
-            (
-                confirmed,
-                last_button_score,
-                last_pixel_score,
-                last_ratio,
-                last_gacha_text,
-            ) = self._home_confirmation_signals(
-                frame,
-                name,
-                clear_context=name,
-            )
-            if confirmed:
-                return True
-            self.sleep(interval)
-
-        self.log_info(
-            f"{name}：未同时确认主页按钮、亮度和抽抽乐文字，"
-            f"button={last_button_score:.3f}/{last_pixel_score:.3f}, "
-            f"ratio={last_ratio:.3f}, ocr={last_gacha_text or '-'}。"
-        )
-        return False
-
     def _home_confirmation_ok(self, frame, name: str) -> bool:
-        confirmed, _score, _pixel_score, _ratio, _text = (
-            self._home_confirmation_signals(
-                frame,
-                name,
-                clear_context=name,
-            )
+        confirmed, _left_hits, _p95_brightness, _text = (
+            self._home_confirmation_signals(frame, f"{name} 抽抽乐")
         )
         return confirmed
-
-    def _home_confirmation_signals(
-        self,
-        frame,
-        name: str,
-        clear_context: str | None = None,
-    ) -> tuple[bool, float, float, float, str]:
-        vision = self._home_vision()
-        candidates = [(spec, vision.match(frame, spec)) for spec in HOME_BUTTON_TEMPLATES]
-        spec, result = max(candidates, key=lambda value: value[1].score)
-        ratio = vision.template_brightness_ratio(frame, spec, result)
-        gacha_text = vision.ocr_text(
-            frame,
-            f"{name} 抽抽乐",
-            relative_roi=HOME_GACHA_OCR_RELATIVE_ROI,
-        )
-        self.info_set(
-            f"{name} 小屋按钮",
-            f"{spec.file_name}={result.score:.3f}/{result.pixel_score:.3f}",
-        )
-        self.info_set(f"{name} 亮度", f"{ratio:.3f}")
-        self.info_set(f"{name} 抽抽乐 OCR", gacha_text or "-")
-        button_found = vision.passes(result, spec)
-        confirmed = home_confirmation_passes(
-            button_found=button_found,
-            brightness_ratio=ratio,
-            brightness_threshold=self._home_ratio_threshold(),
-            gacha_ocr_text=gacha_text,
-        )
-        if clear_context is not None and not confirmed:
-            self.clear_temporary_home_announcement_if_needed(
-                button_found=button_found,
-                brightness_ratio=ratio,
-                brightness_threshold=self._home_ratio_threshold(),
-                gacha_ocr_text=gacha_text,
-                context=clear_context,
-            )
-        return confirmed, result.score, result.pixel_score, ratio, gacha_text
-
-    def _home_vision(self) -> Vision:
-        vision = getattr(self, "_home_confirmation_vision", None)
-        if vision is None:
-            vision = Vision(self)
-            self._home_confirmation_vision = vision
-        return vision
 
     def _match(self, frame, spec: TemplateSpec) -> MatchResult:
         empty = MatchResult(-1.0, (0, 0), (0, 0))
@@ -567,9 +480,6 @@ class FreeGachaTask(BaseBD2Task):
 
         return " ".join(box.name for box in boxes if getattr(box, "name", ""))
 
-    def _home_ratio_threshold(self) -> float:
-        return float(self.config.get("主页亮度比例阈值", 0.75))
-
     def _click_reference(self, x: int, y: int, after_sleep: float = 0.0):
         self.operate_click(
             max(0.0, min(1.0, x / REFERENCE_WIDTH)),
@@ -605,24 +515,6 @@ BACK_TEMPLATE = TemplateSpec(
     file_name="back.png",
     threshold_key="返回按钮阈值",
     default_threshold=0.76,
-)
-
-HOME_BUTTON_TEMPLATES = (
-    TemplateSpec("主页", "home.png", 0.72, min_pixel_score=0.80),
-    TemplateSpec(
-        "主页冰淇淋",
-        "image/green/MainHomeIceGE.png",
-        0.72,
-        green_mask=True,
-        min_pixel_score=0.80,
-    ),
-    TemplateSpec(
-        "主页米饭",
-        "image/green/MainHomeRIceGE.png",
-        0.72,
-        green_mask=True,
-        min_pixel_score=0.80,
-    ),
 )
 
 GACHA_PAGE_KEYWORDS = [

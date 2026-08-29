@@ -4,6 +4,7 @@ from src.tasks.BaseBD2Task import BaseBD2Task
 from src.tasks.map_trade.models import TemplateSpec
 from src.tasks.quick_hunt import QuickHuntConfigMixin
 from src.tasks.task_vision_mixin import TaskVisionMixin
+from src.utils.home_confirmation import HOME_DIMMED_P95_THRESHOLD_DEFAULT
 
 GUILD_TEMPLATE = TemplateSpec(
     name="guild",
@@ -119,7 +120,7 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
         "一键收菜返回主页 抽抽乐 OCR",
         "一键收菜返回主页结果",
         "加载页面阈值",
-        "主页亮度比例阈值",
+        "主页压暗阈值",
         "日常 OCR 阈值",
         "loading 出现等待秒数",
         "loading 消失等待秒数",
@@ -168,7 +169,7 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
                 '公会签到成功阈值': 0.76,
                 '小屋页面阈值': 0.76,
                 '加载页面阈值': 0.72,
-                '主页亮度比例阈值': 0.75,
+                '主页压暗阈值': HOME_DIMMED_P95_THRESHOLD_DEFAULT,
                 '日常 OCR 阈值': 0.2,
                 'loading 出现等待秒数': 6.0,
                 'loading 消失等待秒数': 35.0,

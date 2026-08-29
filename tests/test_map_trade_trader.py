@@ -28,7 +28,6 @@ from src.tasks.map_trade.navigator import (
     DISCOUNT_SHOP_CLOSE_KEYWORDS,
     DISCOUNT_SHOP_CLOSE_POINT,
     DISCOUNT_SHOP_CLOSE_TIMEOUT,
-    HOME_TEMPLATES,
     MERCHANT_CLICK_LOCATION_FAILURE_MESSAGE,
     MERCHANT_CLICK_LOCATION_TEMPLATE,
     Q_SP6_BARGAIN_CLICK_DELAY,
@@ -1773,7 +1772,6 @@ class BuyEntryTest(unittest.TestCase):
         self.assertEqual(0.88, QUICK_SWITCH_TEMPLATE.minimum_safe_threshold)
         self.assertEqual(0.85, QUICK_SWITCH_TEMPLATE.min_zncc_score)
         self.assertIsNotNone(QUICK_SWITCH_TEMPLATE.candidate_center_roi)
-        self.assertTrue(all(spec.min_pixel_score == 0.80 for spec in HOME_TEMPLATES))
 
     def test_merchant_interaction_uses_location_match_center(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -2545,7 +2543,7 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
             warnings,
         )
 
-    def test_buy_home_confirmation_requires_button_brightness_and_ocr(self):
+    def test_buy_home_confirmation_requires_keyword_votes_brightness_and_ocr(self):
         announcement_signals = []
         task = SimpleNamespace(
             config={},
@@ -2555,25 +2553,31 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
                 announcement_signals.append(signals) if not announcement_signals else None
             ),
         )
-        result = MatchResult(0.80, (10, 10), (20, 20), pixel_score=0.90)
-        brightness = {"value": 0.74}
+        bright_frame = np.full((1080, 1920, 3), 255, dtype=np.uint8)
+        dimmed_frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        frame = {"value": dimmed_frame}
+        gacha_text = {"value": "抽抽乐"}
+
+        def ocr_text(_frame, name, **_kwargs):
+            if name == "主页左列":
+                return "我的小屋 经营管理格鲁TALK 街机游戏"
+            return gacha_text["value"]
+
         vision = SimpleNamespace(
-            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
-            match=lambda *_args: result,
-            passes=lambda *_args: True,
-            template_brightness_ratio=lambda *_args: brightness["value"],
-            ocr_text=lambda *_args, **_kwargs: "抽抽乐",
+            capture=lambda: frame["value"],
+            ocr_text=ocr_text,
+            simplify=lambda value: value,
         )
         navigator = Navigator(task, vision)
 
         self.assertFalse(navigator._wait_for_cartridge_home(timeout=0.0))
         self.assertEqual(1, len(announcement_signals))
-        self.assertTrue(announcement_signals[0]["button_found"])
-        self.assertEqual(0.74, announcement_signals[0]["brightness_ratio"])
+        self.assertEqual(3, announcement_signals[0]["left_hits"])
+        self.assertEqual(0.0, announcement_signals[0]["brightness"])
         self.assertEqual("抽抽乐", announcement_signals[0]["gacha_ocr_text"])
-        brightness["value"] = 0.80
+        frame["value"] = bright_frame
         self.assertTrue(navigator._wait_for_cartridge_home(timeout=0.0))
-        vision.ocr_text = lambda *_args, **_kwargs: ""
+        gacha_text["value"] = ""
         self.assertFalse(navigator._wait_for_cartridge_home(timeout=0.0))
 
     def test_return_home_update_notice_is_cleared_then_strictly_reconfirmed(self):
@@ -2612,8 +2616,8 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
 
         def signals(frame, clear_context=None):
             if frame == "notice":
-                return False, -1.0, -1.0, 0.0, "", False
-            return True, 0.80, 0.90, 0.80, "抽抽乐", True
+                return False, 0, 0.0, ""
+            return True, 3, 253.0, "抽抽乐"
 
         navigator._home_confirmation_signals = signals
 
@@ -2646,14 +2650,14 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
         self.assertFalse(
             navigator._clear_return_home_announcement_if_needed(
                 frame,
-                brightness_ratio=0.0,
+                brightness=0.0,
             )
         )
         text["value"] = "更新 抢先看"
         self.assertTrue(
             navigator._clear_return_home_announcement_if_needed(
                 frame,
-                brightness_ratio=0.0,
+                brightness=0.0,
             )
         )
         self.assertEqual([(*HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT, 0.2)], clicks)
@@ -2702,7 +2706,7 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
         self.assertTrue(
             navigator._clear_return_home_announcement_if_needed(
                 frame,
-                brightness_ratio=0.0,
+                brightness=0.0,
             )
         )
         self.assertEqual([(720, 1200, 3)], ocr_shapes)
@@ -2730,8 +2734,8 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
         def signals(_frame, clear_context=None):
             samples["count"] += 1
             if samples["count"] >= 5:
-                return True, 0.80, 0.90, 0.80, "抽抽乐", True
-            return False, -1.0, -1.0, 0.0, "", False
+                return True, 3, 253.0, "抽抽乐"
+            return False, 0, 0.0, ""
 
         navigator._home_confirmation_signals = signals
 
@@ -2751,15 +2755,21 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
             config={},
             info_set=lambda *_args, **_kwargs: None,
         )
-        result = MatchResult(0.80, (10, 10), (20, 20), pixel_score=0.90)
+        result = MatchResult(-1.0, (0, 0), (0, 0))
         gacha_text = {"value": ""}
+        left_text = {"value": "我的小屋 格鲁TALK 街机游戏"}
+
+        def ocr_text(_frame, name, **_kwargs):
+            if name == "主页左列":
+                return left_text["value"]
+            return gacha_text["value"]
+
         vision = SimpleNamespace(
-            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
+            capture=lambda: np.full((1080, 1920, 3), 255, dtype=np.uint8),
             match=lambda *_args: result,
-            passes=lambda *_args: True,
+            passes=lambda *_args: False,
             threshold_for=lambda spec: spec.threshold,
-            template_brightness_ratio=lambda *_args: 0.80,
-            ocr_text=lambda *_args, **_kwargs: gacha_text["value"],
+            ocr_text=ocr_text,
             simplify=lambda value: value,
         )
         navigator = Navigator(task, vision)
@@ -2767,6 +2777,8 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
         self.assertNotEqual(ScreenState.HOME, navigator.classify())
         gacha_text["value"] = "抽抽乐"
         self.assertEqual(ScreenState.HOME, navigator.classify())
+        left_text["value"] = "设置 公告"
+        self.assertNotEqual(ScreenState.HOME, navigator.classify())
 
     def test_loading_ocr_rejects_high_score_low_fidelity_sandbox_candidate(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)

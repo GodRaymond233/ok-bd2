@@ -19,23 +19,6 @@ from src.tasks.map_trade.models import CardSpec, MapPageMode, MatchResult, Templ
 from src.utils.calibration import FHD_1080, reference_rect_to_relative_roi
 from src.utils.cartridge_quick_switch import QUICK_SWITCH_PAGE_LABELS
 
-HOME_TEMPLATES = (
-    TemplateSpec("主页", "home.png", 0.72, min_pixel_score=0.80),
-    TemplateSpec(
-        "主页冰淇淋",
-        "image/green/MainHomeIceGE.png",
-        0.72,
-        green_mask=True,
-        min_pixel_score=0.80,
-    ),
-    TemplateSpec(
-        "主页米饭",
-        "image/green/MainHomeRIceGE.png",
-        0.72,
-        green_mask=True,
-        min_pixel_score=0.80,
-    ),
-)
 QUICK_SWITCH_TEMPLATE = TemplateSpec(
     "快速切换按钮",
     "image/green/QuickSwitchPlayIco.png",
@@ -266,7 +249,7 @@ CHAPTER_HOME_TEMPLATES = (
         relative_roi=CHAPTER_HOME_RELATIVE_ROI,
     ),
 )
-HOME_BRIGHTNESS_THRESHOLD = 0.75
+HOME_DIMMED_P95_THRESHOLD = 185.0
 STORY_SANDBOX_STABLE_HITS = 2
 STORY_SANDBOX_SWITCH_WINDOW = 5
 STORY_SANDBOX_SWITCH_WINDOW_HITS = 3

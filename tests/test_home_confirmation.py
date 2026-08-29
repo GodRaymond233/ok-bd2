@@ -1,14 +1,35 @@
 import unittest
 
+import numpy as np
+
 from src.utils.home_confirmation import (
     HOME_ANNOUNCEMENT_CLEAR_REFERENCE_POINT,
     HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT,
+    HOME_DIMMED_P95_THRESHOLD_DEFAULT,
     HOME_GACHA_OCR_REFERENCE_ROI,
     HOME_GACHA_OCR_RELATIVE_ROI,
+    HOME_LEFT_COLUMN_KEYWORD_GROUPS,
+    HOME_LEFT_COLUMN_OCR_REFERENCE_ROI,
+    HOME_LEFT_COLUMN_OCR_RELATIVE_ROI,
+    HOME_LEFT_COLUMN_REQUIRED_HITS,
     home_confirmation_passes,
     home_gacha_ocr_matches,
+    home_left_column_hits,
+    home_left_column_p95_brightness,
     home_temporary_announcement_detected,
 )
+
+
+def _passing_kwargs(**overrides):
+    kwargs = {
+        "left_hits": HOME_LEFT_COLUMN_REQUIRED_HITS,
+        "required_left_hits": HOME_LEFT_COLUMN_REQUIRED_HITS,
+        "brightness": 253.0,
+        "brightness_threshold": HOME_DIMMED_P95_THRESHOLD_DEFAULT,
+        "gacha_ocr_text": "抽抽乐",
+    }
+    kwargs.update(overrides)
+    return kwargs
 
 
 class HomeConfirmationTest(unittest.TestCase):
@@ -17,6 +38,12 @@ class HomeConfirmationTest(unittest.TestCase):
         self.assertEqual(
             (110 / 1920, 993 / 1080, 205 / 1920, 1047 / 1080),
             HOME_GACHA_OCR_RELATIVE_ROI,
+        )
+        # 左列大 ROI：整列一次 OCR，禁止单标签小 ROI（BUG-20260829-01 实测标定）。
+        self.assertEqual((110, 165, 430, 155), HOME_LEFT_COLUMN_OCR_REFERENCE_ROI)
+        self.assertEqual(
+            (110 / 1920, 165 / 1080, 540 / 1920, 320 / 1080),
+            HOME_LEFT_COLUMN_OCR_RELATIVE_ROI,
         )
         self.assertEqual((169, 615), HOME_ANNOUNCEMENT_CLEAR_REFERENCE_POINT)
         self.assertEqual(
@@ -29,40 +56,66 @@ class HomeConfirmationTest(unittest.TestCase):
         self.assertTrue(home_gacha_ocr_matches("抽抽樂"))
         self.assertFalse(home_gacha_ocr_matches("启动游戏"))
 
+    def test_left_column_hits_counts_keyword_groups(self):
+        self.assertEqual(
+            3,
+            home_left_column_hits("我的小屋 经营管理格鲁TALK 街机游戏"),
+        )
+        # 粘框子串命中 + 繁体别名各计 1 票。
+        self.assertEqual(2, home_left_column_hits("经营管理格鲁TALK 街機遊戲"))
+        self.assertEqual(1, home_left_column_hits("我的小屋"))
+        self.assertEqual(0, home_left_column_hits("设置 公告"))
+        self.assertEqual(len(HOME_LEFT_COLUMN_KEYWORD_GROUPS), 3)
+        self.assertEqual(2, HOME_LEFT_COLUMN_REQUIRED_HITS)
+
+    def test_left_column_p95_brightness_scales_with_client_size(self):
+        bright = np.full((1080, 1920, 3), 255, dtype=np.uint8)
+        dark = np.zeros((720, 1280, 3), dtype=np.uint8)
+        self.assertEqual(255.0, home_left_column_p95_brightness(bright))
+        self.assertEqual(0.0, home_left_column_p95_brightness(dark))
+        self.assertEqual(0.0, home_left_column_p95_brightness(None))
+
+        # 非参考分辨率下 ROI 随客户区缩放：半幅亮半幅暗时 p95 反映亮侧。
+        half = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        half[:, :960] = 255
+        self.assertGreater(
+            home_left_column_p95_brightness(half),
+            HOME_DIMMED_P95_THRESHOLD_DEFAULT,
+        )
+
     def test_confirmation_requires_all_three_signals(self):
-        complete = {
-            "button_found": True,
-            "brightness_ratio": 0.8,
-            "brightness_threshold": 0.75,
-            "gacha_ocr_text": "抽抽乐",
-        }
-        self.assertTrue(home_confirmation_passes(**complete))
+        self.assertTrue(home_confirmation_passes(**_passing_kwargs()))
 
         for key, value in (
-            ("button_found", False),
-            ("brightness_ratio", 0.74),
+            ("left_hits", HOME_LEFT_COLUMN_REQUIRED_HITS - 1),
+            ("brightness", HOME_DIMMED_P95_THRESHOLD_DEFAULT - 1),
             ("gacha_ocr_text", ""),
         ):
-            signals = dict(complete)
-            signals[key] = value
+            signals = _passing_kwargs(**{key: value})
             self.assertFalse(home_confirmation_passes(**signals), key)
 
+    def test_legacy_template_anchor_bridge_requires_one_vote(self):
+        signals = _passing_kwargs(
+            left_hits=1,
+            required_left_hits=1,
+            brightness=0.8,
+            brightness_threshold=0.75,
+        )
+        self.assertTrue(home_confirmation_passes(**signals))
+        self.assertFalse(
+            home_confirmation_passes(**_passing_kwargs(left_hits=0, required_left_hits=1))
+        )
+
     def test_temporary_announcement_requires_only_brightness_to_fail(self):
-        announcement = {
-            "button_found": True,
-            "brightness_ratio": 0.419,
-            "brightness_threshold": 0.75,
-            "gacha_ocr_text": "抽抽乐",
-        }
+        announcement = _passing_kwargs(brightness=126.0)
         self.assertTrue(home_temporary_announcement_detected(**announcement))
 
         for key, value in (
-            ("button_found", False),
-            ("brightness_ratio", 0.75),
+            ("left_hits", HOME_LEFT_COLUMN_REQUIRED_HITS - 1),
+            ("brightness", HOME_DIMMED_P95_THRESHOLD_DEFAULT),
             ("gacha_ocr_text", ""),
         ):
-            signals = dict(announcement)
-            signals[key] = value
+            signals = _passing_kwargs(**{key: value})
             self.assertFalse(home_temporary_announcement_detected(**signals), key)
 
 
