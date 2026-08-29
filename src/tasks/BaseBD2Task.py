@@ -520,16 +520,51 @@ class BaseBD2Task(BaseTask):
         if recent_cartridge_is_pvp:
             self._handle_recent_cartridge_special_pages()
         self.info_set("当前阶段", "寻找快速切换按钮")
-        if not click_quick_switch():
-            if not recent_cartridge_is_pvp:
-                return False
-            handled_after_timeout = self._handle_recent_cartridge_special_pages()
-            if not handled_after_timeout:
-                return False
-            self.info_set("当前阶段", "特殊页面后重试快速切换按钮")
-            if not click_quick_switch():
-                return False
+        quick_switch_opened = click_quick_switch()
+        if not quick_switch_opened:
+            if recent_cartridge_is_pvp:
+                handled_after_timeout = self._handle_recent_cartridge_special_pages()
+                if not handled_after_timeout:
+                    self._save_flow_diagnostic("cartridge_quick_switch_failed")
+                    return False
+                self.info_set("当前阶段", "特殊页面后重试快速切换按钮")
+                quick_switch_opened = click_quick_switch()
+            else:
+                quick_switch_opened = self._retry_recent_cartridge_entry(
+                    ensure_home=ensure_home,
+                    click_quick_switch=click_quick_switch,
+                )
+        if not quick_switch_opened:
+            self._save_flow_diagnostic("cartridge_quick_switch_failed")
+            return False
         return bool(confirm_quick_switch_page())
+
+    def _retry_recent_cartridge_entry(
+        self,
+        ensure_home: Callable[[], bool],
+        click_quick_switch: Callable[[], bool],
+    ) -> bool:
+        """Re-click the recent cartridge once after a lost confirmed-home click.
+
+        The first click can be dropped game-side without opening the panel
+        (BUG-20260829-07: three identical clicks timed out for 10s each, the
+        same click worked right after an app restart). Guarded by a fresh home
+        confirmation so the entry point is never pressed over an open panel.
+        """
+        self.info_set("当前阶段", "重试点击最近卡带")
+        if not ensure_home():
+            return False
+        self._sleep_after_recognition()
+        self.info_set("当前阶段", "点击最近卡带")
+        self.operate_click(*CARTRIDGE_RECENT_ENTRY_POINT, after_sleep=0.0)
+        return click_quick_switch()
+
+    def _save_flow_diagnostic(self, name: str) -> None:
+        """Persist a failure frame; report bundles pick up *_failed/_error stems."""
+        try:
+            self.save_frame(name, self.capture_frame())
+        except Exception as exc:
+            self.log_warning(f"诊断截图保存失败：{exc}")
 
     def _recent_cartridge_is_pvp(self) -> bool:
         """Detect whether clicking the recent cartridge may open a PVP page."""

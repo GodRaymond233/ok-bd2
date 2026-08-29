@@ -480,6 +480,7 @@ class PVPTask(BaseBD2Task):
             f"hub={last_hub_score:.3f}, special_page_ocr={last_text or '-'}, "
             f"handled={','.join(sorted(handled)) or '-'}。"
         )
+        self._save_flow_diagnostic("pvp_hub_entry_failed")
         return False
 
     def _clear_pvp_hub_notice_if_present(self) -> None:
@@ -524,6 +525,8 @@ class PVPTask(BaseBD2Task):
         )
         self.info_set("PVP 自动战斗 OCR", text or "-")
         if not found_auto:
+            self.log_info("镜中之战：点击舞台后未出现自动战斗菜单。")
+            self._save_flow_diagnostic("pvp_auto_battle_failed")
             return "failed"
 
         if not self._click_ocr_pattern_center(

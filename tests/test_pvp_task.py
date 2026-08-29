@@ -388,6 +388,8 @@ class PVPTaskHelperTest(unittest.TestCase):
                 task._handle_recent_cartridge_special_pages = lambda: self.fail(
                     "non-PVP recent cartridge must never run special-page OCR"
                 )
+                diagnostics = []
+                task._save_flow_diagnostic = diagnostics.append
 
                 self.assertFalse(
                     task.open_cartridge_quick_switcher(
@@ -399,8 +401,22 @@ class PVPTaskHelperTest(unittest.TestCase):
                     )
                 )
                 self.assertEqual(
-                    ["home", "pvp_template", "settle", "entry", "quick"],
+                    [
+                        "home",
+                        "pvp_template",
+                        "settle",
+                        "entry",
+                        "quick",
+                        "home",
+                        "settle",
+                        "entry",
+                        "quick",
+                    ],
                     calls,
+                )
+                self.assertEqual(
+                    ["cartridge_quick_switch_failed"],
+                    diagnostics,
                 )
 
     def test_common_cartridge_entry_fails_closed_when_pvp_template_errors(self):
@@ -462,6 +478,8 @@ class PVPTaskHelperTest(unittest.TestCase):
         task._handle_recent_cartridge_special_pages = lambda: False
         status = []
         task.info_set = lambda key, value: status.append((key, value))
+        diagnostics = []
+        task._save_flow_diagnostic = diagnostics.append
 
         self.assertFalse(
             task.open_cartridge_quick_switcher(
@@ -477,6 +495,10 @@ class PVPTaskHelperTest(unittest.TestCase):
             ],
             status,
         )
+        self.assertEqual(
+            ["cartridge_quick_switch_failed"],
+            diagnostics,
+        )
 
     def test_common_cartridge_entry_rescans_special_pages_after_quick_timeout(self):
         task = object.__new__(PVPTask)
@@ -488,6 +510,8 @@ class PVPTaskHelperTest(unittest.TestCase):
         task._handle_recent_cartridge_special_pages = (
             lambda: calls.append("dialog") or False
         )
+        diagnostics = []
+        task._save_flow_diagnostic = diagnostics.append
 
         self.assertFalse(
             task.open_cartridge_quick_switcher(
@@ -499,6 +523,10 @@ class PVPTaskHelperTest(unittest.TestCase):
             )
         )
         self.assertEqual(["dialog", "quick", "dialog"], calls)
+        self.assertEqual(
+            ["cartridge_quick_switch_failed"],
+            diagnostics,
+        )
 
     def test_common_cartridge_entry_retries_quick_switch_after_late_special_page(self):
         task = object.__new__(PVPTask)
@@ -550,13 +578,16 @@ class PVPTaskHelperTest(unittest.TestCase):
 
     def test_non_pvp_recent_cartridge_does_not_rescan_special_pages_after_timeout(self):
         task = object.__new__(PVPTask)
-        task.operate_click = lambda *_args, **_kwargs: None
+        entry_clicks = []
+        task.operate_click = lambda *_args, **_kwargs: entry_clicks.append("entry")
         task._sleep_after_recognition = lambda: None
         task.info_set = lambda *_args, **_kwargs: None
         task._recent_cartridge_is_pvp = lambda: False
         task._handle_recent_cartridge_special_pages = lambda: self.fail(
             "non-PVP recent cartridge must never scan PVP special pages"
         )
+        diagnostics = []
+        task._save_flow_diagnostic = diagnostics.append
 
         self.assertFalse(
             task.open_cartridge_quick_switcher(
@@ -566,6 +597,79 @@ class PVPTaskHelperTest(unittest.TestCase):
                     "page must not be confirmed after quick-switch timeout"
                 ),
             )
+        )
+        self.assertEqual(["entry", "entry"], entry_clicks)
+        self.assertEqual(
+            ["cartridge_quick_switch_failed"],
+            diagnostics,
+        )
+
+    def test_non_pvp_entry_recovers_after_one_lost_cartridge_click(self):
+        task = object.__new__(PVPTask)
+        calls = []
+        quick_results = iter((False, True))
+        task.operate_click = lambda *_args, **_kwargs: calls.append("entry")
+        task._sleep_after_recognition = lambda: calls.append("settle")
+        task.info_set = lambda *_args, **_kwargs: None
+        task._recent_cartridge_is_pvp = lambda: calls.append("template") or False
+        task._handle_recent_cartridge_special_pages = lambda: self.fail(
+            "non-PVP recent cartridge must never scan PVP special pages"
+        )
+        diagnostics = []
+        task._save_flow_diagnostic = diagnostics.append
+
+        self.assertTrue(
+            task.open_cartridge_quick_switcher(
+                ensure_home=lambda: calls.append("home") or True,
+                click_quick_switch=lambda: next(quick_results),
+                confirm_quick_switch_page=lambda: calls.append("confirm") or True,
+            )
+        )
+        self.assertEqual(
+            [
+                "home",
+                "template",
+                "settle",
+                "entry",
+                "home",
+                "settle",
+                "entry",
+                "confirm",
+            ],
+            calls,
+        )
+        self.assertEqual([], diagnostics)
+
+    def test_non_pvp_entry_retry_requires_fresh_home_confirmation(self):
+        task = object.__new__(PVPTask)
+        calls = []
+        home_results = iter((True, False))
+        task.operate_click = lambda *_args, **_kwargs: calls.append("entry")
+        task._sleep_after_recognition = lambda: calls.append("settle")
+        task.info_set = lambda *_args, **_kwargs: None
+        task._recent_cartridge_is_pvp = lambda: False
+        task._handle_recent_cartridge_special_pages = lambda: self.fail(
+            "non-PVP recent cartridge must never scan PVP special pages"
+        )
+        diagnostics = []
+        task._save_flow_diagnostic = diagnostics.append
+
+        self.assertFalse(
+            task.open_cartridge_quick_switcher(
+                ensure_home=lambda: next(home_results),
+                click_quick_switch=lambda: calls.append("quick") or False,
+                confirm_quick_switch_page=lambda: self.fail(
+                    "page must not be confirmed after quick-switch timeout"
+                ),
+            )
+        )
+        self.assertEqual(
+            ["settle", "entry", "quick"],
+            calls,
+        )
+        self.assertEqual(
+            ["cartridge_quick_switch_failed"],
+            diagnostics,
         )
 
     def test_recent_pvp_template_asset_and_thresholds(self):
@@ -2107,6 +2211,36 @@ class PVPTaskHelperTest(unittest.TestCase):
         self.assertEqual("started", PVPTask._start_auto_battle(task, 1))
         self.assertIn((*PVP_AUTO_BATTLE_CLICK_REFERENCE, 1.0), clicks)
         self.assertIn((1381, 1061, 2.0), clicks)
+
+    def test_start_auto_battle_timeout_saves_failure_diagnostic(self):
+        task = object.__new__(PVPTask)
+        task.config = {}
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task.log_warning = lambda *_args, **_kwargs: None
+        task._click_template_until = lambda *_args, **_kwargs: True
+        task._wait_for_ocr_patterns = lambda *_args, **_kwargs: (False, "2 0")
+        diagnostics = []
+        task._save_flow_diagnostic = diagnostics.append
+
+        self.assertEqual("failed", PVPTask._start_auto_battle(task, 1))
+        self.assertEqual(["pvp_auto_battle_failed"], diagnostics)
+
+    def test_wait_for_pvp_hub_timeout_saves_failure_diagnostic(self):
+        task = object.__new__(PVPTask)
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task.capture_frame = lambda: self.fail(
+            "expired deadline must not sample frames"
+        )
+        diagnostics = []
+        task._save_flow_diagnostic = diagnostics.append
+
+        with patch("src.tasks.PVPTask.monotonic", side_effect=(0.0, 1.0)):
+            self.assertFalse(
+                PVPTask._wait_for_pvp_hub_after_cart(task, timeout=0.0)
+            )
+        self.assertEqual(["pvp_hub_entry_failed"], diagnostics)
 
     def test_start_auto_battle_fails_when_multiplier_not_confirmed(self):
         task = object.__new__(PVPTask)
