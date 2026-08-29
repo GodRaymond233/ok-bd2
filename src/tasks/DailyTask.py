@@ -56,7 +56,18 @@ MY_HOME_TEMPLATE = TemplateSpec(
     default_threshold=0.76,
 )
 
-GUILD_SUCCESS_KEYWORDS = ["签到成功", "奖励已发放至邮箱"]
+# 繁体客户端实际文案（BUG-20260829-06 实测转录）：簽到成功/獎勵已發送至信箱。
+# keyword_match_count 已统一繁转简，关键字一律写简体。
+GUILD_SUCCESS_KEYWORDS = ["签到成功", "奖励已发送至信箱"]
+
+# 经营管理弹窗实际文案：餐廳營業額現狀/魚籠捕獲現狀/助手工作現況/取消/一鍵獲得。
+BUSINESS_COLLECT_KEYWORDS = [
+    "餐厅营业额现状",
+    "鱼笼捕获现状",
+    "助手工作现况",
+    "取消",
+    "一键获得",
+]
 
 
 class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
@@ -321,13 +332,7 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
 
         self._click_reference(165, 260, after_sleep=1.0)
         found, text = self._wait_for_ocr_keywords(
-            [
-                "餐厅营业额现状",
-                "鱼笼收获情况",
-                "助手工作情况",
-                "取消",
-                "一键获得",
-            ],
+            BUSINESS_COLLECT_KEYWORDS,
             timeout=float(self.config.get("一键收菜菜单等待秒数", 8.0)),
             minimum_matches=2,
             name="business_collect",

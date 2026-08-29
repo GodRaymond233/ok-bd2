@@ -7,6 +7,7 @@ import numpy as np
 from ok.util.config import Config
 
 from src.tasks.DailyTask import (
+    BUSINESS_COLLECT_KEYWORDS,
     GUILD_FINISHED_TEMPLATE,
     GUILD_MAIN_ACTIVE_TEMPLATE,
     GUILD_MAIN_FINISHED_TEMPLATE,
@@ -307,15 +308,33 @@ class DailyTaskHelperTest(unittest.TestCase):
         self.assertIn("金币=非双倍", statuses["快速狩猎双倍识别"])
 
     def test_keyword_match_count_ignores_spaces_and_case(self):
-        text = "签到 成功\n奖励已发放至邮箱"
+        text = "签到 成功\n獎勵已發送至信箱"
 
         self.assertEqual(
             2,
             DailyTask._keyword_match_count(
                 text,
-                ["签到成功", "奖励已发放至邮箱", "不存在"],
+                [*GUILD_SUCCESS_KEYWORDS, "不存在"],
             ),
         )
+
+    def test_business_collect_keywords_match_reported_ocr_frames(self):
+        # BUG-20260829-06：RPT-20260829-143029 两帧失败 OCR 的弹窗相关原文。
+        traditional_frame = (
+            "Lv.30 餐廳營業額現狀 - 立即前往 累計獎勵 結算 "
+            "Lv.3 魚籠捕獲現狀 立即前往 LV.21釣魚 907/10000(9%) "
+            "回收 助手工作現況 可於夢幻廣場遊戲卡帶>领地中配置助手工作後解鎖 "
+            "取消 一鍵獲得"
+        )
+        mixed_script_frame = traditional_frame.replace(
+            "餐廳營業額現狀", "餐廳營業额現狀"
+        ).replace("一鍵獲得", "一键獲得")
+
+        for frame in (traditional_frame, mixed_script_frame):
+            self.assertEqual(
+                5,
+                DailyTask._keyword_match_count(frame, BUSINESS_COLLECT_KEYWORDS),
+            )
 
     def test_reference_click_uses_1920_by_1080_ratios(self):
         task = object.__new__(DailyTask)
