@@ -8,6 +8,7 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
+import cv2
 import numpy as np
 
 from src.diagnostics.bundle import MAX_ARCHIVE_BYTES, ReportBundleBuilder
@@ -387,6 +388,54 @@ class ReportBundleBuilderTest(unittest.TestCase):
                 manifest = json.loads(archive.read("manifest.json"))
                 self.assertNotIn("screenshots/current.webp", archive.namelist())
                 self.assertIn("screenshot_declined", manifest["omissions"])
+
+    def test_packages_recent_failure_frames_but_not_regular_probe_images(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            probe_outputs = root / "probe_outputs"
+            probe_outputs.mkdir()
+            frame = np.full((40, 60, 3), 128, dtype=np.uint8)
+            failed_name = "map_trade_\u4e70_failed.png"
+            success, encoded = cv2.imencode(".png", frame)
+            self.assertTrue(success)
+            (probe_outputs / failed_name).write_bytes(encoded.tobytes())
+            (probe_outputs / "map_trade_return_home_error.png").write_bytes(
+                encoded.tobytes()
+            )
+            (probe_outputs / "ordinary_probe.png").write_bytes(encoded.tobytes())
+
+            builder = ReportBundleBuilder(
+                project_root=root,
+                output_dir=root / "output",
+                app_version="1.1.2",
+            )
+            result = builder.build(
+                DiagnosticSnapshot(captured_at="2026-08-29T12:00:00+08:00"),
+                "跑商买入失败",
+                include_screenshot=False,
+            )
+
+            with zipfile.ZipFile(result.archive_path) as archive:
+                names = set(archive.namelist())
+                self.assertIn(
+                    "screenshots/diagnostic/map_trade_\u4e70_failed.webp",
+                    names,
+                )
+                self.assertIn(
+                    "screenshots/diagnostic/map_trade_return_home_error.webp",
+                    names,
+                )
+                self.assertNotIn("screenshots/diagnostic/ordinary_probe.webp", names)
+                manifest = json.loads(archive.read("manifest.json"))
+                diagnostic_frames = manifest["capture"]["diagnostic_frames"]
+                self.assertEqual(2, len(diagnostic_frames))
+                self.assertEqual(
+                    {
+                        failed_name,
+                        "map_trade_return_home_error.png",
+                    },
+                    {item["source"] for item in diagnostic_frames},
+                )
 
     def test_manifest_records_incomplete_log_flush(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -8,6 +8,7 @@ HOME_GACHA_OCR_RELATIVE_ROI = (
     1047 / 1080,
 )
 HOME_GACHA_OCR_KEYWORD = "抽抽乐"
+HOME_GACHA_OCR_ALIASES = (HOME_GACHA_OCR_KEYWORD, "抽抽樂")
 HOME_ANNOUNCEMENT_CLEAR_REFERENCE_POINT = (169, 615)
 HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT = (
     HOME_ANNOUNCEMENT_CLEAR_REFERENCE_POINT[0] / 1920,
@@ -16,7 +17,11 @@ HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT = (
 
 
 def home_gacha_ocr_matches(text: object) -> bool:
-    return normalize_ocr_text(HOME_GACHA_OCR_KEYWORD) in normalize_ocr_text(text)
+    normalized_text = normalize_ocr_text(text)
+    return any(
+        normalize_ocr_text(keyword) in normalized_text
+        for keyword in HOME_GACHA_OCR_ALIASES
+    )
 
 
 def home_confirmation_passes(

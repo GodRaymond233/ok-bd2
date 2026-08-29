@@ -24,18 +24,39 @@ if ($releaseSubject -ne $expectedSubject) {
 
 $releaseAuthor = git log -1 --format=%an $releaseCommit
 $mainEntries = [System.Collections.Generic.List[string]]::new()
-foreach ($line in @(git log -1 --format=%b $releaseCommit)) {
-    $entry = ($line -replace '^\s*[-*]\s+', '').Trim()
-    if ([string]::IsNullOrWhiteSpace($entry)) {
-        continue
+$releaseDetails = @(git log -1 --format=%b $releaseCommit)
+$nonEmptyDetails = @(
+    foreach ($line in $releaseDetails) {
+        $entry = ($line -replace '^\s*[-*]\s+', '').Trim()
+        if (-not [string]::IsNullOrWhiteSpace($entry)) {
+            $entry
+        }
     }
+)
+$allConventional = $nonEmptyDetails.Count -gt 0
+foreach ($entry in $nonEmptyDetails) {
     if ($entry -notmatch '^(feat|fix|refactor|perf|docs|test|build|ci|chore|style|revert)(\([^)]+\))?:\s+.+$') {
-        throw "Release detail must use Conventional Commits format: $entry"
+        $allConventional = $false
+        break
     }
-    if ($entry -notmatch '\s+\([^)]+\)$') {
-        $entry = "$entry ($releaseAuthor)"
+}
+
+if (-not $allConventional -and $nonEmptyDetails.Count -gt 0) {
+    $freeformEntry = ($nonEmptyDetails -join ' ') -replace '\s+', ' '
+    $mainEntries.Add("- $freeformEntry ($releaseAuthor)")
+} else {
+    foreach ($entry in $nonEmptyDetails) {
+        if ([string]::IsNullOrWhiteSpace($entry)) {
+            continue
+        }
+        if ($entry -notmatch '^(feat|fix|refactor|perf|docs|test|build|ci|chore|style|revert)(\([^)]+\))?:\s+.+$') {
+            throw "Release detail must use Conventional Commits format: $entry"
+        }
+        if ($entry -notmatch '\s+\([^)]+\)$') {
+            $entry = "$entry ($releaseAuthor)"
+        }
+        $mainEntries.Add("- $entry")
     }
-    $mainEntries.Add("- $entry")
 }
 if ($mainEntries.Count -eq 0) {
     throw "Release commit $releaseCommit has no version details."

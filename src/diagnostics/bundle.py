@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import cv2
+import numpy as np
 
 from src.diagnostics.models import DiagnosticSnapshot, ReportResult
 from src.diagnostics.redaction import DiagnosticRedactor
@@ -22,6 +23,9 @@ MAX_DESCRIPTION_CHARS = 2000
 MAX_LOG_BYTES = 4 * 1024 * 1024
 MAX_SCREENSHOT_BYTES = 6 * 1024 * 1024
 MAX_ARCHIVE_BYTES = 15 * 1024 * 1024
+MAX_DIAGNOSTIC_FRAME_COUNT = 8
+MAX_DIAGNOSTIC_FRAME_BYTES = 4 * 1024 * 1024
+MAX_SINGLE_DIAGNOSTIC_FRAME_BYTES = 700 * 1024
 
 
 class ReportBundleBuilder:
@@ -106,6 +110,10 @@ class ReportBundleBuilder:
             else:
                 omissions.append("screenshot_declined")
 
+            diagnostic_frames, diagnostic_omissions = self._diagnostic_frames(stage)
+            files.extend(diagnostic_frames["files"])
+            omissions.extend(diagnostic_omissions)
+
             manifest = {
                 "schema_version": SCHEMA_VERSION,
                 "report_id": report_id,
@@ -120,6 +128,7 @@ class ReportBundleBuilder:
                     **screenshot_meta,
                     "method": self.redactor.redact(snapshot.capture_method or "unknown"),
                     "frame_age_seconds": snapshot.frame_age_seconds,
+                    "diagnostic_frames": diagnostic_frames["metadata"],
                 },
                 "task": self._redact_mapping(snapshot.task),
                 "safe_point_reached": snapshot.safe_point_reached,
@@ -182,6 +191,70 @@ class ReportBundleBuilder:
             group_message=group_message,
             manifest=manifest,
         )
+
+    def _diagnostic_frames(self, stage: Path) -> tuple[dict[str, Any], list[str]]:
+        """Package recent task failure frames without collecting arbitrary probes."""
+
+        source_dir = self.project_root / "probe_outputs"
+        candidates = sorted(
+            (
+                path
+                for path in source_dir.glob("*.png")
+                if path.is_file() and path.stem.endswith(("_failed", "_error"))
+            ),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )[:MAX_DIAGNOSTIC_FRAME_COUNT]
+        metadata: list[dict[str, Any]] = []
+        files: list[dict[str, Any]] = []
+        omissions: list[str] = []
+        total_bytes = 0
+
+        for source in candidates:
+            try:
+                # cv2.imread does not reliably handle non-ASCII Windows paths.
+                frame = cv2.imdecode(
+                    np.fromfile(source, dtype=np.uint8),
+                    cv2.IMREAD_UNCHANGED,
+                )
+                if frame is None:
+                    raise ValueError("无法读取图片")
+                encoded, image_meta = _encode_frame(
+                    frame,
+                    max_bytes=MAX_SINGLE_DIAGNOSTIC_FRAME_BYTES,
+                )
+                if encoded is None:
+                    omissions.append(f"diagnostic_frame_exceeded_limit:{source.name}")
+                    continue
+                if total_bytes + len(encoded) > MAX_DIAGNOSTIC_FRAME_BYTES:
+                    omissions.append("diagnostic_frames_exceeded_limit")
+                    break
+
+                relative_path = f"screenshots/diagnostic/{source.stem}.webp"
+                output_path = stage / relative_path
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_bytes(encoded)
+                files.append(_file_record(stage, relative_path))
+                metadata.append(
+                    {
+                        "path": relative_path,
+                        "source": source.name,
+                        "captured_at": datetime.fromtimestamp(
+                            source.stat().st_mtime
+                        ).astimezone().isoformat(timespec="seconds"),
+                        "original_resolution": image_meta.get("original_resolution"),
+                        "exported_resolution": image_meta.get("exported_resolution"),
+                        "format": image_meta.get("format", "webp"),
+                    }
+                )
+                total_bytes += len(encoded)
+            except (OSError, ValueError, cv2.error):
+                omissions.append(f"diagnostic_frame_unavailable:{source.name}")
+                continue
+
+        if not candidates:
+            omissions.append("diagnostic_frames_unavailable")
+        return {"files": files, "metadata": metadata}, omissions
 
     def _normalize_description(self, description: str) -> str:
         normalized = " ".join(str(description).split())[:MAX_DESCRIPTION_CHARS]
@@ -329,7 +402,11 @@ def _read_tail(path: Path, limit: int) -> str:
     return text
 
 
-def _encode_frame(frame) -> tuple[bytes | None, dict[str, Any]]:
+def _encode_frame(
+    frame,
+    *,
+    max_bytes: int = MAX_SCREENSHOT_BYTES,
+) -> tuple[bytes | None, dict[str, Any]]:
     image = frame.copy()
     height, width = image.shape[:2]
     original_resolution = f"{width}x{height}"
@@ -348,7 +425,7 @@ def _encode_frame(frame) -> tuple[bytes | None, dict[str, Any]]:
             candidate,
             [cv2.IMWRITE_WEBP_QUALITY, quality],
         )
-        if success and len(encoded) <= MAX_SCREENSHOT_BYTES:
+        if success and len(encoded) <= max_bytes:
             exported_height, exported_width = candidate.shape[:2]
             return encoded.tobytes(), {
                 "included": True,
