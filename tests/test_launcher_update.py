@@ -24,7 +24,7 @@ class LauncherUpdateConfigTest(unittest.TestCase):
                 ),
             )
 
-    def test_starter_launch_uses_registered_china_game_id(self):
+    def test_starter_launch_supports_another_registered_game_id(self):
         with self.starter_uri_context("10000002"):
             self.assertEqual(
                 '"browndust2:games/10000002?usn=0"',

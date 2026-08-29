@@ -81,9 +81,9 @@ def get_configured_launcher_path(env: dict[str, str] | None = None) -> str:
 def get_launch_game_id(env: dict[str, str] | None = None) -> str:
     """Return the game id the Starter has registered for this user.
 
-    The Starter keys each install under HKCU by a numeric service id (the
-    global build registers 10000001, the China build 10000002); launching a
-    game id without registration makes the Starter show its install wizard.
+    The Starter keys each install under HKCU by a numeric service id. The id is
+    opaque to ok-bd2; launching an unregistered game id makes the Starter show
+    its install wizard.
     """
     override = _env(env, ENV_LAUNCH_GAME_ID, "")
     if override:

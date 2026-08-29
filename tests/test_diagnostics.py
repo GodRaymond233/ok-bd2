@@ -1,17 +1,23 @@
 import ast
 import hashlib
 import json
+import os
 import tempfile
 import time
 import unittest
 import zipfile
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
 import cv2
 import numpy as np
 
-from src.diagnostics.bundle import MAX_ARCHIVE_BYTES, ReportBundleBuilder
+from src.diagnostics.bundle import (
+    MAX_ARCHIVE_BYTES,
+    MAX_DIAGNOSTIC_FRAME_LOOKBACK_SECONDS,
+    ReportBundleBuilder,
+)
 from src.diagnostics.models import DiagnosticSnapshot
 from src.diagnostics.redaction import DiagnosticRedactor
 from src.diagnostics.service import DiagnosticsManager
@@ -21,6 +27,7 @@ class _TaskStub:
     paused = False
 
     def __init__(self):
+        self.start_time = time.time() - 5
         self.info = {
             "状态": "等待商店页面",
             "当前阶段": "购买商品",
@@ -170,6 +177,7 @@ class DiagnosticsManagerTest(unittest.TestCase):
             self.assertTrue(np.array_equal(frame, snapshot.frame))
             self.assertIsNot(frame, snapshot.frame)
             self.assertEqual("WGC", snapshot.capture_method)
+            self.assertEqual(executor.current_task.start_time, snapshot.task_started_at)
             self.assertEqual("购买商品", snapshot.task["当前阶段"])
             self.assertNotIn("OCR 文本", snapshot.task)
 
@@ -372,6 +380,12 @@ class ReportBundleBuilderTest(unittest.TestCase):
     def test_declined_screenshot_is_recorded_without_image(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
+            probe_outputs = root / "probe_outputs"
+            probe_outputs.mkdir()
+            frame = np.full((40, 60, 3), 128, dtype=np.uint8)
+            success, encoded = cv2.imencode(".png", frame)
+            self.assertTrue(success)
+            (probe_outputs / "pvp_auto_battle_failed.png").write_bytes(encoded.tobytes())
             builder = ReportBundleBuilder(
                 project_root=root,
                 output_dir=root / "output",
@@ -387,9 +401,15 @@ class ReportBundleBuilderTest(unittest.TestCase):
             with zipfile.ZipFile(result.archive_path) as archive:
                 manifest = json.loads(archive.read("manifest.json"))
                 self.assertNotIn("screenshots/current.webp", archive.namelist())
+                self.assertNotIn(
+                    "screenshots/diagnostic/pvp_auto_battle_failed.webp",
+                    archive.namelist(),
+                )
+                self.assertEqual([], manifest["capture"]["diagnostic_frames"])
                 self.assertIn("screenshot_declined", manifest["omissions"])
+                self.assertIn("diagnostic_frames_declined", manifest["omissions"])
 
-    def test_packages_recent_failure_frames_but_not_regular_probe_images(self):
+    def test_packages_recent_failure_frames_with_consent_but_not_regular_probe_images(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             probe_outputs = root / "probe_outputs"
@@ -409,10 +429,11 @@ class ReportBundleBuilderTest(unittest.TestCase):
                 output_dir=root / "output",
                 app_version="1.1.2",
             )
+            captured_at = datetime.now().astimezone().isoformat(timespec="seconds")
             result = builder.build(
-                DiagnosticSnapshot(captured_at="2026-08-29T12:00:00+08:00"),
+                DiagnosticSnapshot(captured_at=captured_at),
                 "跑商买入失败",
-                include_screenshot=False,
+                include_screenshot=True,
             )
 
             with zipfile.ZipFile(result.archive_path) as archive:
@@ -436,6 +457,86 @@ class ReportBundleBuilderTest(unittest.TestCase):
                     },
                     {item["source"] for item in diagnostic_frames},
                 )
+
+    def test_excludes_failure_frames_outside_current_report_window(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            probe_outputs = root / "probe_outputs"
+            probe_outputs.mkdir()
+            frame = np.full((40, 60, 3), 128, dtype=np.uint8)
+            success, encoded = cv2.imencode(".png", frame)
+            self.assertTrue(success)
+            old_path = probe_outputs / "old_task_failed.png"
+            recent_path = probe_outputs / "current_task_error.png"
+            old_path.write_bytes(encoded.tobytes())
+            recent_path.write_bytes(encoded.tobytes())
+
+            captured_epoch = time.time()
+            old_epoch = captured_epoch - MAX_DIAGNOSTIC_FRAME_LOOKBACK_SECONDS - 1
+            os.utime(old_path, (old_epoch, old_epoch))
+            os.utime(recent_path, (captured_epoch - 2, captured_epoch - 2))
+
+            builder = ReportBundleBuilder(
+                project_root=root,
+                output_dir=root / "output",
+                app_version="1.1.2",
+            )
+            captured_at = datetime.fromtimestamp(captured_epoch).astimezone().isoformat(
+                timespec="seconds"
+            )
+            result = builder.build(
+                DiagnosticSnapshot(captured_at=captured_at),
+                "当前任务失败",
+                include_screenshot=True,
+            )
+
+            with zipfile.ZipFile(result.archive_path) as archive:
+                names = set(archive.namelist())
+                self.assertNotIn("screenshots/diagnostic/old_task_failed.webp", names)
+                self.assertIn("screenshots/diagnostic/current_task_error.webp", names)
+
+    def test_task_start_time_excludes_previous_run_failure_frames(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            probe_outputs = root / "probe_outputs"
+            probe_outputs.mkdir()
+            frame = np.full((40, 60, 3), 128, dtype=np.uint8)
+            success, encoded = cv2.imencode(".png", frame)
+            self.assertTrue(success)
+            previous_path = probe_outputs / "previous_run_failed.png"
+            current_path = probe_outputs / "current_run_failed.png"
+            previous_path.write_bytes(encoded.tobytes())
+            current_path.write_bytes(encoded.tobytes())
+
+            captured_epoch = time.time()
+            os.utime(previous_path, (captured_epoch - 20, captured_epoch - 20))
+            os.utime(current_path, (captured_epoch - 2, captured_epoch - 2))
+            task_started_at = captured_epoch - 10
+
+            builder = ReportBundleBuilder(
+                project_root=root,
+                output_dir=root / "output",
+                app_version="1.1.2",
+            )
+            captured_at = datetime.fromtimestamp(captured_epoch).astimezone().isoformat(
+                timespec="seconds"
+            )
+            result = builder.build(
+                DiagnosticSnapshot(
+                    captured_at=captured_at,
+                    task_started_at=task_started_at,
+                ),
+                "当前任务失败",
+                include_screenshot=True,
+            )
+
+            with zipfile.ZipFile(result.archive_path) as archive:
+                names = set(archive.namelist())
+                self.assertNotIn(
+                    "screenshots/diagnostic/previous_run_failed.webp",
+                    names,
+                )
+                self.assertIn("screenshots/diagnostic/current_run_failed.webp", names)
 
     def test_manifest_records_incomplete_log_flush(self):
         with tempfile.TemporaryDirectory() as temp_dir:

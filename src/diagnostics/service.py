@@ -45,6 +45,7 @@ class DiagnosticsManager:
         preferred_frame_age_seconds: float | None = None,
     ) -> DiagnosticSnapshot:
         warnings: list[str] = []
+        task_started_at = _task_started_at(executor)
         frame, frame_age = _capture_frame(
             executor,
             warnings,
@@ -71,6 +72,7 @@ class DiagnosticsManager:
             executor_was_running=executor_was_running,
             safe_point_reached=safe_point_reached,
             warnings=tuple(warnings),
+            task_started_at=task_started_at,
         )
 
     def build_report(
@@ -92,6 +94,17 @@ class DiagnosticsManager:
             return False
         executor.start()
         return True
+
+
+def _task_started_at(executor) -> float | None:
+    if executor is None:
+        return None
+    try:
+        task = executor.current_task
+        started_at = float(getattr(task, "start_time", 0) or 0)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return started_at if started_at > 0 else None
 
 
 def _capture_frame(

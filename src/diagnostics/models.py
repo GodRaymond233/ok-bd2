@@ -17,6 +17,7 @@ class DiagnosticSnapshot:
     executor_was_running: bool = False
     safe_point_reached: bool = True
     warnings: tuple[str, ...] = ()
+    task_started_at: float | None = None
 
 
 @dataclass(frozen=True)

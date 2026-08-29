@@ -26,6 +26,8 @@ MAX_ARCHIVE_BYTES = 15 * 1024 * 1024
 MAX_DIAGNOSTIC_FRAME_COUNT = 8
 MAX_DIAGNOSTIC_FRAME_BYTES = 4 * 1024 * 1024
 MAX_SINGLE_DIAGNOSTIC_FRAME_BYTES = 700 * 1024
+MAX_DIAGNOSTIC_FRAME_LOOKBACK_SECONDS = 15 * 60
+DIAGNOSTIC_FRAME_CLOCK_SKEW_SECONDS = 5
 
 
 class ReportBundleBuilder:
@@ -110,7 +112,14 @@ class ReportBundleBuilder:
             else:
                 omissions.append("screenshot_declined")
 
-            diagnostic_frames, diagnostic_omissions = self._diagnostic_frames(stage)
+            if include_screenshot:
+                diagnostic_frames, diagnostic_omissions = self._diagnostic_frames(
+                    stage,
+                    snapshot,
+                )
+            else:
+                diagnostic_frames = {"files": [], "metadata": []}
+                diagnostic_omissions = ["diagnostic_frames_declined"]
             files.extend(diagnostic_frames["files"])
             omissions.extend(diagnostic_omissions)
 
@@ -192,25 +201,53 @@ class ReportBundleBuilder:
             manifest=manifest,
         )
 
-    def _diagnostic_frames(self, stage: Path) -> tuple[dict[str, Any], list[str]]:
-        """Package recent task failure frames without collecting arbitrary probes."""
+    def _diagnostic_frames(
+        self,
+        stage: Path,
+        snapshot: DiagnosticSnapshot,
+    ) -> tuple[dict[str, Any], list[str]]:
+        """Package failure frames from the current diagnostic window only."""
 
         source_dir = self.project_root / "probe_outputs"
-        candidates = sorted(
-            (
-                path
-                for path in source_dir.glob("*.png")
-                if path.is_file() and path.stem.endswith(("_failed", "_error"))
-            ),
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        )[:MAX_DIAGNOSTIC_FRAME_COUNT]
+        try:
+            captured_at = datetime.fromisoformat(snapshot.captured_at).timestamp()
+        except (TypeError, ValueError, OverflowError):
+            return {"files": [], "metadata": []}, ["diagnostic_frames_unavailable"]
+
+        lower_bound = captured_at - MAX_DIAGNOSTIC_FRAME_LOOKBACK_SECONDS
+        if snapshot.task_started_at is not None:
+            try:
+                task_started_at = float(snapshot.task_started_at)
+            except (TypeError, ValueError):
+                task_started_at = None
+            if task_started_at is not None and task_started_at > 0:
+                lower_bound = max(lower_bound, task_started_at)
+        upper_bound = captured_at + DIAGNOSTIC_FRAME_CLOCK_SKEW_SECONDS
+
+        matching_files: list[Path] = []
+        candidates: list[tuple[Path, float]] = []
+        try:
+            for path in source_dir.glob("*.png"):
+                if not path.is_file() or not path.stem.endswith(("_failed", "_error")):
+                    continue
+                try:
+                    modified_at = path.stat().st_mtime
+                except OSError:
+                    continue
+                matching_files.append(path)
+                if lower_bound <= modified_at <= upper_bound:
+                    candidates.append((path, modified_at))
+        except OSError:
+            return {"files": [], "metadata": []}, ["diagnostic_frames_unavailable"]
+
+        candidates.sort(key=lambda item: item[1], reverse=True)
+        candidates = candidates[:MAX_DIAGNOSTIC_FRAME_COUNT]
         metadata: list[dict[str, Any]] = []
         files: list[dict[str, Any]] = []
         omissions: list[str] = []
         total_bytes = 0
 
-        for source in candidates:
+        for source, modified_at in candidates:
             try:
                 # cv2.imread does not reliably handle non-ASCII Windows paths.
                 frame = cv2.imdecode(
@@ -240,7 +277,7 @@ class ReportBundleBuilder:
                         "path": relative_path,
                         "source": source.name,
                         "captured_at": datetime.fromtimestamp(
-                            source.stat().st_mtime
+                            modified_at
                         ).astimezone().isoformat(timespec="seconds"),
                         "original_resolution": image_meta.get("original_resolution"),
                         "exported_resolution": image_meta.get("exported_resolution"),
@@ -253,7 +290,11 @@ class ReportBundleBuilder:
                 continue
 
         if not candidates:
-            omissions.append("diagnostic_frames_unavailable")
+            omissions.append(
+                "diagnostic_frames_outside_window"
+                if matching_files
+                else "diagnostic_frames_unavailable"
+            )
         return {"files": files, "metadata": metadata}, omissions
 
     def _normalize_description(self, description: str) -> str:
