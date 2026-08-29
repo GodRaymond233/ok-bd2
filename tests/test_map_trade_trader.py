@@ -2337,7 +2337,6 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
         phases = (
             ("买", "买", lambda: actions.append("buy") or False),
             ("卖", "卖", lambda: actions.append("sell") or True),
-            ("制作料理", "制作料理", lambda: actions.append("cooking") or True),
         )
 
         self.assertFalse(task._run_phases(navigator, phases))

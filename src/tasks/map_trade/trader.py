@@ -127,11 +127,7 @@ class Trader(
         )
 
     def run_trade(self) -> bool:
-        phases = (
-            ("制作料理", self.run_cooking),
-            ("买", self.run_buy),
-            ("卖", self.run_sell),
-        )
+        phases = (("买", self.run_buy), ("卖", self.run_sell))
         for key, action in phases:
             if bool(self.task.config.get(key, True)) and not action():
                 return False

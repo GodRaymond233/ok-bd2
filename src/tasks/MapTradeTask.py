@@ -9,7 +9,7 @@ from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task
 from src.tasks.map_trade.calendar import parse_manual_calendar
-from src.tasks.map_trade.models import DEFAULT_RECIPES, DEFAULT_SALE_WHITELIST
+from src.tasks.map_trade.models import DEFAULT_SALE_WHITELIST
 from src.tasks.map_trade.navigator import Navigator
 from src.tasks.map_trade.progress import ProgressStore
 from src.tasks.map_trade.trader import Trader
@@ -21,11 +21,6 @@ TRADE_VISION_THRESHOLD_KEY = "跑商识图阈值"
 TRADE_OCR_THRESHOLD_KEY = "跑商 OCR 阈值"
 MAP_VISION_THRESHOLD_KEY = "跑图识图阈值"
 MAP_OCR_THRESHOLD_KEY = "跑图 OCR 阈值"
-
-COOKING_CONFIG_KEYS = frozenset(
-    ("制作料理", "料理制作周期", "料理保险", "5星料理")
-)
-
 
 def _empty_manual_calendar() -> str:
     return "\n".join(f"{day}=" for day in range(1, 32))
@@ -52,8 +47,6 @@ def _trade_section_migration_values(legacy: dict) -> dict[str, bool]:
         migrated["买"] = trade_enabled and bool(legacy.get("低价进货", True))
     if "卖" not in legacy and ({"执行跑商", "最高价出售"} & legacy.keys()):
         migrated["卖"] = trade_enabled and bool(legacy.get("最高价出售", True))
-    if "制作料理" not in legacy and "制作利润料理" in legacy:
-        migrated["制作料理"] = bool(legacy["制作利润料理"])
     return migrated
 
 
@@ -212,7 +205,7 @@ class MapTradeTask(MapAutomationTaskBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.name = "每日跑商"
-        self.description = "每日按配置依次执行料理制作、购买和出售。"
+        self.description = "每日按配置依次执行购买和出售。"
         self.icon = FluentIcon.SHOPPING_CART
         self.group_name = "日常/周常"
         self.group_icon = FluentIcon.CALENDAR
@@ -232,10 +225,6 @@ class MapTradeTask(MapAutomationTaskBase):
                 "出售白名单": "，".join(DEFAULT_SALE_WHITELIST),
                 "使用出售黑名单": False,
                 "出售黑名单": "",
-                "制作料理": False,
-                "料理制作周期": "每周",
-                "料理保险": True,
-                "5星料理": list(DEFAULT_RECIPES),
                 TRADE_VISION_THRESHOLD_KEY: 0.72,
                 TRADE_OCR_THRESHOLD_KEY: 0.20,
                 "加载页面等待秒数": 45.0,
@@ -272,10 +261,6 @@ class MapTradeTask(MapAutomationTaskBase):
                     "开启后排除出售黑名单中的商品；黑名单优先于出售白名单。"
                 ),
                 "出售黑名单": "用逗号、分号或换行填写禁止出售的商品。",
-                "制作料理": "进入 Q_sp6 后先制作选中的 5 星利润料理，再开始买卖。",
-                "料理制作周期": "每周制作一次，或每次运行都尝试制作。",
-                "料理保险": "开启时每种料理只做 1 份；关闭时选择 MAX。",
-                "5星料理": "可同时选择多种利润料理。",
                 TRADE_VISION_THRESHOLD_KEY: "商店、导航与料理模板的最低匹配可信度。",
                 TRADE_OCR_THRESHOLD_KEY: "商店文字和按钮识别的最低可信度。",
                 "加载页面等待秒数": "进入卡带或传送后等待加载完成的最长秒数。",
@@ -306,11 +291,6 @@ class MapTradeTask(MapAutomationTaskBase):
                 },
                 "使用在线价表": {"sub_configs": {False: ["自定义最高价表"]}},
                 "自定义最高价表": {"type": "text_edit"},
-                "制作料理": {
-                    "sub_configs": {True: ["料理制作周期", "料理保险", "5星料理"]}
-                },
-                "料理制作周期": {"type": "drop_down", "options": ["每周", "每次"]},
-                "5星料理": {"type": "multi_selection", "options": list(DEFAULT_RECIPES)},
                 TRADE_VISION_THRESHOLD_KEY: {"min": 0.50, "max": 0.95, "step": 0.01},
                 TRADE_OCR_THRESHOLD_KEY: {"min": 0.05, "max": 0.95, "step": 0.01},
                 "加载页面等待秒数": {"min": 10.0, "max": 120.0, "step": 1.0},
@@ -364,9 +344,5 @@ class MapTradeTask(MapAutomationTaskBase):
         progress = ProgressStore()
         progress.load()
         trader = Trader(self, vision, navigator, progress)
-        phases = (
-            ("制作料理", "制作料理", trader.run_cooking),
-            ("买", "买", trader.run_buy),
-            ("卖", "卖", trader.run_sell),
-        )
+        phases = (("买", "买", trader.run_buy), ("卖", "卖", trader.run_sell))
         return self._run_phases(navigator, phases)
