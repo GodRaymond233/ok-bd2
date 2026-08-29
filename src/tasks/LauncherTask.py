@@ -1,5 +1,5 @@
 from src import GAME_EXE, GAME_NAME, HWND_CLASS, LAUNCHER_EXE
-from src.game_path import get_launch_game_id, resolve_launcher_exe_path
+from src.game_path import resolve_launcher_exe_path
 from src.tasks.BaseBD2Task import BaseBD2Task
 
 
@@ -15,7 +15,6 @@ class LauncherTask(BaseBD2Task):
         self.log_info(
             f"{GAME_NAME} 启动配置已加载。"
             f"游戏程序={GAME_EXE}，窗口类名={HWND_CLASS}，"
-            f"启动器={LAUNCHER_EXE}，启动器路径={launcher_path}，"
-            f"启动游戏ID={get_launch_game_id()}。"
+            f"启动器={LAUNCHER_EXE}，启动器路径={launcher_path}。"
         )
         return True
