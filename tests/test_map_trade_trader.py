@@ -11,6 +11,7 @@ import numpy as np
 
 from src.tasks.map_trade.data import SHOP_CARTRIDGE_PAGES
 from src.tasks.map_trade.models import (
+    MERCHANT_CARD_ID,
     RECIPE_TEMPLATES,
     STORY_CARDS,
     CalendarEntry,
@@ -1568,8 +1569,8 @@ class BuyEntryTest(unittest.TestCase):
             (
                 "仓库 严加管理 砍价成功率100% 取消",
                 "BROWN DUST II",
-                "仓库管理石怪 仓库 严加管理 天赋技能",
-                "仓库管理石怪 仓库 严加管理 天赋技能",
+                "购买 仓库管理石怪 出售 一键购买全部收藏",
+                "购买 仓库管理石怪 出售 一键购买全部收藏",
             )
         )
         sleeps = []
@@ -1585,6 +1586,8 @@ class BuyEntryTest(unittest.TestCase):
             capture=lambda: frame,
             ocr_text=lambda _frame, _name: next(texts),
             simplify=lambda value: value,
+            match=lambda *_args: MatchResult(-1.0, (0, 0), (0, 0)),
+            passes=lambda *_args: False,
         )
         navigator = Navigator(task, vision)
 
@@ -1605,6 +1608,69 @@ class BuyEntryTest(unittest.TestCase):
             capture=lambda: frame,
             ocr_text=lambda _frame, _name: next(texts),
             simplify=lambda value: value,
+            match=lambda *_args: MatchResult(-1.0, (0, 0), (0, 0)),
+            passes=lambda *_args: False,
+        )
+        navigator = Navigator(task, vision)
+
+        self.assertFalse(navigator._wait_for_bargain_shop_confirmation(timeout=0.0))
+        self.assertTrue(warnings)
+
+    def test_bargain_shop_confirmation_accepts_stable_sold_out_fallback(self):
+        texts = iter(("BROWN DUST II", "BROWN DUST II"))
+        task = SimpleNamespace(
+            config={},
+            sleep=lambda *_args: None,
+            log_warning=lambda *_args: None,
+            log_info=lambda *_args: None,
+        )
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        sold_out = MatchResult(
+            0.90,
+            (500, 250),
+            (100, 50),
+            pixel_score=0.95,
+            zncc_score=0.90,
+        )
+        vision = SimpleNamespace(
+            capture=lambda: frame,
+            ocr_text=lambda _frame, _name: next(texts),
+            simplify=lambda value: value,
+            match=lambda *_args: sold_out,
+            passes=lambda result, _spec: result is sold_out,
+        )
+        navigator = Navigator(task, vision)
+
+        self.assertTrue(navigator._wait_for_bargain_shop_confirmation(timeout=5.0))
+
+    def test_bargain_shop_confirmation_rejects_sold_out_while_bargain_popup_visible(self):
+        texts = iter(
+            (
+                "购买全部收藏 砍价成功率100% 取消",
+                "购买全部收藏 砍价成功率100% 取消",
+            )
+        )
+        warnings = []
+        task = SimpleNamespace(
+            config={},
+            sleep=lambda *_args: None,
+            log_warning=warnings.append,
+            log_info=lambda *_args: None,
+        )
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        sold_out = MatchResult(
+            0.90,
+            (500, 250),
+            (100, 50),
+            pixel_score=0.95,
+            zncc_score=0.90,
+        )
+        vision = SimpleNamespace(
+            capture=lambda: frame,
+            ocr_text=lambda _frame, _name: next(texts),
+            simplify=lambda value: value,
+            match=lambda *_args: sold_out,
+            passes=lambda result, _spec: result is sold_out,
         )
         navigator = Navigator(task, vision)
 
@@ -1835,6 +1901,37 @@ class BuyEntryTest(unittest.TestCase):
                     )
                 self.assertFalse(vision.passes(match, MERCHANT_CLICK_LOCATION_TEMPLATE))
                 self.assertEqual([], clicks)
+
+    def test_reach_merchant_shop_enters_merchant_card_via_trade_confirmation(self):
+        task = SimpleNamespace(
+            config={},
+            sleep=lambda *_args: None,
+            log_warning=lambda *_args: None,
+            info_set=lambda *_args: None,
+        )
+        vision = SimpleNamespace(
+            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
+            match=lambda *_args: MatchResult(-1.0, (0, 0), (0, 0)),
+            passes=lambda *_args: False,
+        )
+        navigator = Navigator(task, vision)
+        navigator.classify_trade = lambda: ScreenState.UNKNOWN
+        entered_cards = []
+
+        def select_trade_card(card_id):
+            entered_cards.append(card_id)
+            return NavigationResult(False, ScreenState.UNKNOWN, "跑商箱庭确认超时")
+
+        navigator.select_trade_card = select_trade_card
+        navigator.select_card = lambda *_args: self.fail(
+            "跑商入口必须使用跑商专用箱庭确认，不得走剧情箱庭确认"
+        )
+
+        result = navigator.reach_merchant_shop()
+
+        self.assertEqual([MERCHANT_CARD_ID], entered_cards)
+        self.assertFalse(result.success)
+        self.assertEqual("跑商箱庭确认超时", result.message)
 
     def test_merchant_interaction_miss_fails_without_navigation_fallback(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)

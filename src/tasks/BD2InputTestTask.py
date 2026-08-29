@@ -6,6 +6,10 @@ from ok.device.intercation import PostMessageInteraction
 from ok.util.process import is_admin
 from qfluentwidgets import FluentIcon
 
+from src.interaction.BD2Interaction import (
+    CLICK_MODE_OPTIONS,
+    CLICK_MODE_STANDARD,
+)
 from src.tasks.BaseBD2Task import BaseBD2Task
 from src.utils.calibration import FHD_1080
 
@@ -22,6 +26,7 @@ REFERENCE_POINT_MODE_KEY = "点击单个点位置坐标"
 REFERENCE_POINT_X_KEY = "单点横坐标像素"
 REFERENCE_POINT_Y_KEY = "单点纵坐标像素"
 BACKGROUND_MOUSE_MOVE_KEY = "先发送后台移动消息"
+CLICK_MODE_KEY = "点击方式"
 
 
 class _BD2InputProbeTask(BaseBD2Task):
@@ -300,6 +305,59 @@ class BD2BackgroundMouseClickInputTestTask(BD2MouseClickInputTestTask):
             move=send_move,
             key="left",
         )
+
+
+class BD2ClickModeSelectorTask(BaseBD2Task):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.name = "点击方式切换"
+        self.description = (
+            "开发版全局点击方式。后台点击为测试功能，只切换点击，不改变拖拽和滚轮。"
+        )
+        self.icon = FluentIcon.GAME
+        self.visible = True
+        self.default_config.update(
+            {
+                "_enabled": True,
+                CLICK_MODE_KEY: CLICK_MODE_STANDARD,
+            }
+        )
+        self.config_description[CLICK_MODE_KEY] = (
+            "正式版方案会按现有流程占用鼠标；测试版方案只向游戏窗口发送后台鼠标消息。"
+        )
+        self.config_type[CLICK_MODE_KEY] = {
+            "type": "drop_down",
+            "options": list(CLICK_MODE_OPTIONS),
+        }
+
+    def on_create(self):
+        self._enabled = bool(self.config.get("_enabled", True))
+        self._bound_interaction = None
+        self._bind_interaction()
+
+    def _bind_interaction(self) -> None:
+        interaction = getattr(self.executor, "interaction", None)
+        if interaction is None or interaction is self._bound_interaction:
+            return
+        if not hasattr(interaction, "set_click_mode_provider"):
+            raise RuntimeError("当前交互对象不支持点击方式切换")
+        interaction.set_click_mode_provider(self._selected_click_mode)
+        self._bound_interaction = interaction
+
+    def _selected_click_mode(self) -> str:
+        if not self.enabled:
+            return CLICK_MODE_STANDARD
+        return str(self.config.get(CLICK_MODE_KEY, CLICK_MODE_STANDARD))
+
+    def should_trigger(self):
+        self._bind_interaction()
+        return False
+
+    def on_destroy(self):
+        interaction = self._bound_interaction
+        if interaction is not None and hasattr(interaction, "set_click_mode_provider"):
+            interaction.set_click_mode_provider(None)
+        self._bound_interaction = None
 
 
 class BD2MouseWheelInputTestTask(_BD2InputProbeTask):

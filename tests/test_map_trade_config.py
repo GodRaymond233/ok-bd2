@@ -177,6 +177,7 @@ class MapTradeConfigTest(unittest.TestCase):
             trade.config_type["卖"]["sub_configs"][True],
         )
         self.assertTrue(trade.default_config["使用程序默认价表"])
+        self.assertFalse(trade.default_config["制作料理"])
         self.assertFalse(trade.default_config["出售保险"])
         self.assertTrue(trade.default_config["使用出售白名单"])
         self.assertEqual(

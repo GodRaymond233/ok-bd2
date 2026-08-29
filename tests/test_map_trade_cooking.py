@@ -165,7 +165,7 @@ class CookingFlowTest(unittest.TestCase):
         task = CookingTask()
         stable_calls = []
         navigator = SimpleNamespace(
-            select_card=lambda card_id: NavigationResult(
+            select_trade_card=lambda card_id: NavigationResult(
                 card_id == MERCHANT_CARD_ID,
                 ScreenState.SANDBOX,
             ),

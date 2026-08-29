@@ -653,7 +653,7 @@ class PVPTask(BaseBD2Task):
             [rf"^{multiplier}$", rf"^{multiplier}倍$"],
             timeout=timeout,
             name="PVP 倍率",
-            roi=self._mf_roi(844, 186, 96, 36),
+            roi=self._mf_roi(820, 210, 105, 50),
             normalize_multiplier=True,
         )
         self.info_set("PVP 倍率 OCR", text or "-")

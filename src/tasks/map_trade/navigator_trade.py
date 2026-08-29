@@ -168,6 +168,10 @@ from src.tasks.map_trade.navigator_constants import (  # noqa: F401
     StoryBadgeDetection,
     _sandbox_skill_template,
 )
+from src.tasks.map_trade.trader_constants import (
+    BUY_TO_SELL_SOLD_OUT_STABLE_HITS,
+    BUY_TO_SELL_SOLD_OUT_TEMPLATE,
+)
 from src.tasks.map_trade.vision import normalize_text
 
 
@@ -347,17 +351,46 @@ class TradeNavigationMixin:
         )
         return False
 
+    def select_trade_card(self, card_id: str) -> NavigationResult:
+        """Enter a trade card using trade-only sandbox evidence."""
+
+        located = self._locate_story_card(card_id)
+        if isinstance(located, NavigationResult):
+            return located
+        badge = located.badge
+        result = badge.best.result
+        self._status(
+            f"剧情游戏卡{located.card.number}角标点击中心",
+            (
+                f"center=({result.center[0]},{result.center[1]}), "
+                f"match={result.score:.3f}, pixel={result.pixel_score:.3f}, "
+                f"zncc={result.zncc_score:.3f}, margin={badge.margin:.3f}, "
+                f"ocr={badge.ocr_number if badge.ocr_number is not None else '-'}"
+            ),
+        )
+        self.vision.click_client(result.center, located.frame.shape, after_sleep=1.0)
+        if self.wait_for_q_sp6_sandbox(self._loading_timeout()):
+            return NavigationResult(True, ScreenState.SANDBOX, card_id)
+        return NavigationResult(
+            False,
+            self.classify_trade(),
+            f"剧情游戏卡{located.card.number}跑商箱庭确认超时",
+        )
+
     def _wait_for_bargain_shop_confirmation(self, timeout: float | None = None) -> bool:
         """Wait until the discounted shop page is confirmed by stable OCR.
 
         The bargain popup itself still exposes the shop keywords, so a frame only
         counts when the shop keywords are present and the popup-specific marker is
-        absent on consecutive captures.
+        absent on consecutive captures. When the daily stock is already sold out
+        the purchase-button keyword never appears; the stable sold-out template
+        then confirms the page under the same popup exclusion.
         """
 
         timeout = self._loading_timeout() if timeout is None else float(timeout)
         end_at = monotonic() + max(0.0, timeout)
         consecutive_hits = 0
+        sold_out_hits = 0
         last_text = ""
         popup_marker = normalize_text(self.vision.simplify(BARGAIN_SHOP_CONFIRM_POPUP_KEYWORD))
         while True:
@@ -369,15 +402,38 @@ class TradeNavigationMixin:
             )
             last_text = text or last_text
             normalized = normalize_text(self.vision.simplify(text))
-            if matched and popup_marker not in normalized:
+            popup_present = popup_marker in normalized
+            if matched and not popup_present:
                 consecutive_hits += 1
+                sold_out_hits = 0
             else:
                 consecutive_hits = 0
+                sold_out = self.vision.match(frame, BUY_TO_SELL_SOLD_OUT_TEMPLATE)
+                sold_out_passed = not popup_present and self.vision.passes(
+                    sold_out,
+                    BUY_TO_SELL_SOLD_OUT_TEMPLATE,
+                )
+                sold_out_hits = sold_out_hits + 1 if sold_out_passed else 0
+                self._status(
+                    "砍价后商店页面 售罄模板",
+                    (
+                        f"{'命中' if sold_out_passed else '未命中'} "
+                        f"{sold_out_hits}/{BUY_TO_SELL_SOLD_OUT_STABLE_HITS}; "
+                        f"popup={'yes' if popup_present else 'no'}; "
+                        f"m={sold_out.score:.3f}, p={sold_out.pixel_score:.3f}, "
+                        f"z={sold_out.zncc_score:.3f}"
+                    ),
+                )
             self._status(
                 "砍价后商店页面 OCR稳定",
                 f"{consecutive_hits}/{BARGAIN_SHOP_CONFIRM_STABLE_HITS}",
             )
             if consecutive_hits >= BARGAIN_SHOP_CONFIRM_STABLE_HITS:
+                return True
+            if sold_out_hits >= BUY_TO_SELL_SOLD_OUT_STABLE_HITS:
+                self.task.log_info(
+                    "跑商：未显示一键购买全部收藏，售罄模板已稳定命中，确认当天已购买完。"
+                )
                 return True
             if monotonic() >= end_at:
                 break
@@ -497,7 +553,7 @@ class TradeNavigationMixin:
         if state == ScreenState.SHOP:
             return NavigationResult(True, state)
         if state not in {ScreenState.SANDBOX, ScreenState.MERCHANT_DIALOG}:
-            entered = self.select_card(MERCHANT_CARD_ID)
+            entered = self.select_trade_card(MERCHANT_CARD_ID)
             if not entered.success:
                 return entered
 

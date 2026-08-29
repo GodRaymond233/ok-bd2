@@ -273,10 +273,19 @@ GitHub 的 `Source code` 压缩包只是源码快照，不包含安装器、更�
 ## 开发者说明
 
 ```powershell
-python -m unittest discover tests
-ruff check .
-ruff format .
+# 修改过程中只运行直接受影响的测试
+.\scripts\run_checks.ps1 -Mode Focused -Tests tests.test_pvp_task
+
+# 最终 diff 上一次性执行完整门禁
+.\scripts\run_checks.ps1 -Mode Final
+
+# 发布前增加依赖锁、导出和已安装依赖检查
+.\scripts\run_checks.ps1 -Mode Release
 ```
+
+`Focused` 只用于修改过程中的快速反馈；生产代码、测试、依赖、资源或工作流发生变化后，
+必须在最终 diff 上执行一次 `Final` 或 `Release`。链接 worktree 可通过 `-Python` 或
+`OK_BD2_PYTHON` 指定共享虚拟环境。
 
 更多发布和架构资料见：
 

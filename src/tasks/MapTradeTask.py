@@ -232,7 +232,7 @@ class MapTradeTask(MapAutomationTaskBase):
                 "出售白名单": "，".join(DEFAULT_SALE_WHITELIST),
                 "使用出售黑名单": False,
                 "出售黑名单": "",
-                "制作料理": True,
+                "制作料理": False,
                 "料理制作周期": "每周",
                 "料理保险": True,
                 "5星料理": list(DEFAULT_RECIPES),

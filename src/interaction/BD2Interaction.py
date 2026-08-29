@@ -12,6 +12,10 @@ from win32api import GetCursorPos, SetCursorPos
 
 logger = Logger.get_logger(__name__)
 
+CLICK_MODE_STANDARD = "正式版方案（点击时会占用鼠标）"
+CLICK_MODE_BACKGROUND = "测试版方案（后台点击）"
+CLICK_MODE_OPTIONS = (CLICK_MODE_STANDARD, CLICK_MODE_BACKGROUND)
+
 
 class BD2Interaction(PostMessageInteraction):
     def __init__(self, *args, **kwargs):
@@ -19,6 +23,7 @@ class BD2Interaction(PostMessageInteraction):
         self.cursor_position = None
         self._operating = False
         self._input_lock = threading.RLock()
+        self._click_mode_provider: Callable[[], str] | None = None
         self.user32 = ctypes.windll.user32
         self._activate_required = True
         self.hwnd_window.visible_monitors.append(self)
@@ -72,6 +77,20 @@ class BD2Interaction(PostMessageInteraction):
         key="left",
     ):
         with self._input_lock:
+            if self.background_click_enabled():
+                if x < 0:
+                    x, y = round(self.capture.width * 0.5), round(self.capture.height * 0.5)
+                return PostMessageInteraction.click(
+                    self,
+                    x,
+                    y,
+                    move_back=False,
+                    name=name,
+                    down_time=down_time,
+                    move=True,
+                    key=key,
+                )
+
             self.try_activate()
             if x < 0:
                 x, y = round(self.capture.width * 0.5), round(self.capture.height * 0.5)
@@ -103,6 +122,20 @@ class BD2Interaction(PostMessageInteraction):
 
             if should_restore:
                 self._restore_cursor()
+
+    def set_click_mode_provider(self, provider: Callable[[], str] | None) -> None:
+        with self._input_lock:
+            self._click_mode_provider = provider
+
+    def background_click_enabled(self) -> bool:
+        provider = getattr(self, "_click_mode_provider", None)
+        if provider is None:
+            return False
+        try:
+            return provider() == CLICK_MODE_BACKGROUND
+        except Exception as error:
+            logger.error("read click mode exception", error)
+            return False
 
     def operate(self, fun: Callable, block=False, restore_cursor=True):
         with self._input_lock:

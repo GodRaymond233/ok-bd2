@@ -3,7 +3,11 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from src.config import config
-from src.tasks.debug_registry import DEBUG_ONETIME_TASKS, install_debug_tasks
+from src.tasks.debug_registry import (
+    DEBUG_ONETIME_TASKS,
+    DEBUG_TRIGGER_TASKS,
+    install_debug_tasks,
+)
 
 
 class DebugRegistryTest(unittest.TestCase):
@@ -12,6 +16,10 @@ class DebugRegistryTest(unittest.TestCase):
         for registration in DEBUG_ONETIME_TASKS:
             with self.subTest(registration=registration):
                 self.assertNotIn(tuple(registration), registered)
+        registered_triggers = {tuple(item) for item in config["trigger_tasks"]}
+        for registration in DEBUG_TRIGGER_TASKS:
+            with self.subTest(registration=registration):
+                self.assertNotIn(tuple(registration), registered_triggers)
 
     def test_debug_registry_contains_only_probe_and_diagnosis_tasks(self):
         self.assertEqual(
@@ -29,13 +37,20 @@ class DebugRegistryTest(unittest.TestCase):
         )
 
     def test_install_debug_tasks_is_idempotent(self):
-        cfg = {"onetime_tasks": [["src.tasks.DailyBatchTask", "DailyBatchTask"]]}
+        formal_trigger = ["src.tasks.trigger.AutoLoginTask", "AutoLoginTask"]
+        cfg = {
+            "onetime_tasks": [["src.tasks.DailyBatchTask", "DailyBatchTask"]],
+            "trigger_tasks": [formal_trigger],
+        }
         install_debug_tasks(cfg)
         self.assertEqual(6, len(cfg["onetime_tasks"]))
+        self.assertEqual(2, len(cfg["trigger_tasks"]))
         install_debug_tasks(cfg)
         self.assertEqual(6, len(cfg["onetime_tasks"]))
+        self.assertEqual(2, len(cfg["trigger_tasks"]))
         for registration in DEBUG_ONETIME_TASKS:
             self.assertIn(registration, cfg["onetime_tasks"])
+        self.assertEqual(DEBUG_TRIGGER_TASKS + [formal_trigger], cfg["trigger_tasks"])
 
 
 class StatusTabBasicCheckTest(unittest.TestCase):

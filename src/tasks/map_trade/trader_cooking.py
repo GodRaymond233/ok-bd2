@@ -241,7 +241,7 @@ class CookingFlowMixin:
         return tuple(dict.fromkeys(values))
 
     def _enter_cooking_list(self) -> bool:
-        entered = self.navigator.select_card(MERCHANT_CARD_ID)
+        entered = self.navigator.select_trade_card(MERCHANT_CARD_ID)
         if not entered.success:
             self.task.log_warning(f"料理：{entered.message}")
             return False

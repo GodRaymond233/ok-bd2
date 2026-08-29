@@ -1,8 +1,15 @@
 import threading
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from src.interaction.BD2Interaction import BD2Interaction
+from ok.device.intercation import PostMessageInteraction
+
+from src.interaction.BD2Interaction import (
+    CLICK_MODE_BACKGROUND,
+    BD2Interaction,
+)
+from src.tasks.BaseBD2Task import BaseBD2Task
 
 
 def make_interaction():
@@ -10,6 +17,7 @@ def make_interaction():
     interaction = object.__new__(BD2Interaction)
     interaction._input_lock = threading.RLock()
     interaction._operating = False
+    interaction._click_mode_provider = None
     interaction.cursor_position = (1, 2)
     calls = []
     interaction._restore_cursor = lambda: calls.append("restore_cursor")
@@ -75,6 +83,50 @@ class BD2InteractionOperateTest(unittest.TestCase):
         self.assertFalse(interaction._operating)
         get_cursor_pos.assert_called_once_with()
         self.assertEqual(1, calls.count("restore_cursor"))
+
+
+class BD2InteractionClickModeTest(unittest.TestCase):
+    def test_background_mode_routes_click_through_post_message_without_cursor_move(self):
+        interaction, _calls = make_interaction()
+        interaction.set_click_mode_provider(lambda: CLICK_MODE_BACKGROUND)
+
+        with (
+            patch.object(PostMessageInteraction, "click", autospec=True) as post_click,
+            patch("src.interaction.BD2Interaction.SetCursorPos") as set_cursor_pos,
+        ):
+            interaction.click(320, 540, move_back=True, down_time=0.02)
+
+        post_click.assert_called_once_with(
+            interaction,
+            320,
+            540,
+            move_back=False,
+            name=None,
+            down_time=0.02,
+            move=True,
+            key="left",
+        )
+        set_cursor_pos.assert_not_called()
+
+    def test_operate_click_does_not_block_input_in_background_mode(self):
+        task = object.__new__(BaseBD2Task)
+        task._executor = SimpleNamespace(
+            interaction=SimpleNamespace(background_click_enabled=lambda: True),
+        )
+        task._check_action_interval = lambda *_args: True
+        task.click = lambda *_args, **_kwargs: True
+        task.info_set = lambda *_args: None
+        task.sleep = lambda *_args: None
+        operate_options = []
+
+        def operate(action, block=True, restore_cursor=True):
+            operate_options.append((block, restore_cursor))
+            return action()
+
+        task.operate = operate
+        task.operate_click(0.25, 0.75)
+
+        self.assertEqual([(False, False)], operate_options)
 
 
 if __name__ == "__main__":

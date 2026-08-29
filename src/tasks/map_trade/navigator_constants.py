@@ -51,7 +51,10 @@ Q_SP6_SHOP_PRIORITY_TIMEOUT = 3.0
 # 折扣商店页专有页签 OCR 信号：在商店页整帧 OCR 中已验证稳定命中
 # （“仓库”单独可能出现在 NPC 名“仓库管理石怪”里，必须与“严加管理”成对出现）。
 SHOP_PAGE_OCR_KEYWORDS = ("仓库", "严加管理")
-Q_SP6_SHOP_PAGE_KEYWORDS = SHOP_PAGE_OCR_KEYWORDS
+# 砍价确认后的购买页使用按钮文本确认。标题牌中的“严加管理”在不同
+# 分辨率/窗口状态下容易漏读，而“一键购买全部收藏”是进入购买页后仍存在
+# 的专用控件；弹窗专有词仍由 _wait_for_bargain_shop_confirmation 排除。
+Q_SP6_SHOP_PAGE_KEYWORDS = ("购买全部收藏",)
 Q_SP6_SHOP_PAGE_OCR_INTERVAL = 0.25
 Q_SP6_BARGAIN_RECHECK_DELAY = 0.5
 Q_SP6_BARGAIN_CLICK_DELAY = 1.5

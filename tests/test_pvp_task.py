@@ -272,6 +272,23 @@ class PVPTaskHelperTest(unittest.TestCase):
         task.config = {"竞技场战斗倍数": "3倍"}
         self.assertEqual(1, PVPTask._target_multiplier(task))
 
+    def test_multiplier_roi_covers_current_auto_battle_value(self):
+        task = object.__new__(PVPTask)
+        task.config = {}
+        task.info_set = lambda *_args, **_kwargs: None
+        task.sleep = lambda *_args, **_kwargs: None
+
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        frame[338:366, 1248:1328] = 255
+        task.capture_frame = lambda: frame
+        task.ocr = lambda frame, **_kwargs: (
+            [SimpleNamespace(name="1倍", confidence=1.0)]
+            if np.any(frame == 255)
+            else []
+        )
+
+        self.assertTrue(PVPTask._multiplier_matches(task, 1, timeout=0.1))
+
     def test_common_cartridge_entry_uses_relative_recent_entry_point(self):
         task = object.__new__(PVPTask)
         calls = []

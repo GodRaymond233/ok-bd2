@@ -5,13 +5,20 @@ from unittest.mock import patch
 import numpy as np
 from ok.device.intercation import PostMessageInteraction
 
+from src.interaction.BD2Interaction import (
+    CLICK_MODE_BACKGROUND,
+    CLICK_MODE_OPTIONS,
+    CLICK_MODE_STANDARD,
+)
 from src.tasks.BD2InputTestTask import (
     BACKGROUND_MOUSE_MOVE_KEY,
+    CLICK_MODE_KEY,
     DEFAULT_WHEEL_REGION,
     REFERENCE_POINT_MODE_KEY,
     REFERENCE_POINT_X_KEY,
     REFERENCE_POINT_Y_KEY,
     BD2BackgroundMouseClickInputTestTask,
+    BD2ClickModeSelectorTask,
     BD2MouseClickInputTestTask,
     BD2MouseWheelInputTestTask,
 )
@@ -197,6 +204,45 @@ class BD2BackgroundMouseClickInputTestTaskTest(unittest.TestCase):
             move=True,
             key="left",
         )
+
+
+class BD2ClickModeSelectorTaskTest(unittest.TestCase):
+    def test_selector_binds_after_interaction_initializes_and_updates_provider_live(self):
+        providers = []
+        executor = SimpleNamespace(scene=None, interaction=None)
+        task = BD2ClickModeSelectorTask(
+            executor,
+            SimpleNamespace(),
+        )
+
+        self.assertEqual(CLICK_MODE_STANDARD, task.default_config[CLICK_MODE_KEY])
+        self.assertEqual(
+            list(CLICK_MODE_OPTIONS),
+            task.config_type[CLICK_MODE_KEY]["options"],
+        )
+
+        task.config = {
+            "_enabled": True,
+            CLICK_MODE_KEY: CLICK_MODE_STANDARD,
+        }
+        task.on_create()
+        self.assertEqual([], providers)
+
+        executor.interaction = SimpleNamespace(
+            set_click_mode_provider=providers.append,
+        )
+        self.assertFalse(task.should_trigger())
+        provider = providers[-1]
+        self.assertEqual(CLICK_MODE_STANDARD, provider())
+
+        self.assertFalse(task.should_trigger())
+        self.assertEqual(1, len(providers))
+
+        task.config[CLICK_MODE_KEY] = CLICK_MODE_BACKGROUND
+        self.assertEqual(CLICK_MODE_BACKGROUND, provider())
+
+        task._enabled = False
+        self.assertEqual(CLICK_MODE_STANDARD, provider())
 
 
 if __name__ == "__main__":

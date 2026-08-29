@@ -5,6 +5,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BUILD_WORKFLOW = ROOT / ".github" / "workflows" / "build.yml"
 TEST_WORKFLOW = ROOT / ".github" / "workflows" / "test.yml"
 PYAPPIFY_CONFIG = ROOT / "pyappify.yml"
+RUN_CHECKS_SCRIPT = ROOT / "scripts" / "run_checks.ps1"
 
 
 class BuildWorkflowTest(unittest.TestCase):
@@ -13,6 +14,7 @@ class BuildWorkflowTest(unittest.TestCase):
         cls.workflow = BUILD_WORKFLOW.read_text(encoding="utf-8")
         cls.test_workflow = TEST_WORKFLOW.read_text(encoding="utf-8")
         cls.pyappify_config = PYAPPIFY_CONFIG.read_text(encoding="utf-8")
+        cls.run_checks_script = RUN_CHECKS_SCRIPT.read_text(encoding="utf-8")
 
     def test_hot_switch_defaults_to_fast_and_accepts_compact(self):
         self.assertIn("REQUESTED_MODE: ${{ vars.PACKAGE_BUILD_MODE }}", self.workflow)
@@ -47,11 +49,32 @@ class BuildWorkflowTest(unittest.TestCase):
             "prepare_release_notes.ps1",
             "refresh_dependencies.ps1",
             "restore_pyappify_launcher.ps1",
+            "run_checks.ps1",
             "select_pyappify_profile.ps1",
         )
         for script in scripts:
             with self.subTest(script=script):
                 self.assertTrue((ROOT / "scripts" / script).is_file())
+
+    def test_run_checks_separates_focused_final_and_release_gates(self):
+        self.assertIn(
+            '[ValidateSet("Focused", "Final", "Release")]',
+            self.run_checks_script,
+        )
+        self.assertIn('if ($Mode -eq "Focused")', self.run_checks_script)
+        self.assertIn(
+            '@("-m", "unittest", "discover", "-s", "tests", "-q")',
+            self.run_checks_script,
+        )
+        self.assertIn('if ($Mode -eq "Release")', self.run_checks_script)
+        self.assertIn('"check_dependency_exports.ps1"', self.run_checks_script)
+        self.assertIn(
+            '@("pip", "check", "--python", $pythonExecutable)',
+            self.run_checks_script,
+        )
+        self.assertIn('"ok-bd2-ruff-cache"', self.run_checks_script)
+        self.assertIn('"ok-bd2-pycache"', self.run_checks_script)
+        self.assertNotIn("exit 0", self.run_checks_script)
 
     def test_test_workflow_checks_complete_commit_attribution(self):
         self.assertIn("          fetch-depth: 0", self.test_workflow)

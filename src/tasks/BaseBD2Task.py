@@ -319,6 +319,12 @@ class BaseBD2Task(BaseTask):
             )
         except Exception:
             click_log = f"{name or action_name}: target={x!r},{y!r}"
+        interaction = getattr(self.executor, "interaction", None)
+        background_click = bool(
+            interaction is not None
+            and hasattr(interaction, "background_click_enabled")
+            and interaction.background_click_enabled()
+        )
         result = self.operate(
             lambda: self.click(
                 x,
@@ -332,8 +338,8 @@ class BaseBD2Task(BaseTask):
                 hcenter=hcenter,
                 vcenter=vcenter,
             ),
-            block=True,
-            restore_cursor=restore_cursor,
+            block=not background_click,
+            restore_cursor=restore_cursor and not background_click,
         )
         self.info_set("鼠标点击", click_log)
         self.sleep(after_sleep)
