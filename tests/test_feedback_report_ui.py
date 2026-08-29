@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import numpy as np
 from ok import og
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QWidget
-from qfluentwidgets import PushButton
+from qfluentwidgets import PushButton, Theme, qconfig
 
 from src.diagnostics.models import DiagnosticSnapshot
 from src.ui.feedback_report import (
@@ -46,10 +46,12 @@ class FeedbackReportUiTest(unittest.TestCase):
 
     def setUp(self):
         self.original_config = getattr(og, "config", None)
+        self.original_theme = qconfig.theme
         og.config = {"version": "0.1.test"}
 
     def tearDown(self):
         og.config = self.original_config
+        qconfig.set(qconfig.themeMode, self.original_theme, save=False)
 
     def test_install_adds_one_primary_entry_and_keeps_raw_export(self):
         tab = _StartTabStub()
@@ -70,6 +72,20 @@ class FeedbackReportUiTest(unittest.TestCase):
 
         self.assertFalse(dialog.include_screenshot.isChecked())
         self.assertFalse(dialog.include_screenshot.isEnabled())
+        dialog.close()
+
+    def test_report_dialog_follows_dark_theme_palette(self):
+        qconfig.set(qconfig.themeMode, Theme.DARK, save=False)
+        dialog = FeedbackReportDialog(
+            DiagnosticSnapshot(captured_at="2026-08-14T13:00:00+08:00")
+        )
+
+        self.assertIn("background-color: #272727", dialog.styleSheet())
+        self.assertIn("background-color: #2B2B2B", dialog.styleSheet())
+        self.assertIn("color: #F0F0F0", dialog.styleSheet())
+
+        qconfig.set(qconfig.themeMode, Theme.LIGHT, save=False)
+        self.assertIn("background-color: #FAFAFA", dialog.styleSheet())
         dialog.close()
 
     def test_live_preview_exposes_a_bgr_copy_without_recapturing(self):
