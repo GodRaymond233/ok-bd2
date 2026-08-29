@@ -1,3 +1,5 @@
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -151,6 +153,42 @@ class BuildWorkflowTest(unittest.TestCase):
             "requirements.txt still contains ok-script after inlining.",
             self.workflow,
         )
+
+    def test_release_notes_fall_back_to_previous_tag_when_sync_start_is_empty(self):
+        script = ROOT / "scripts" / "prepare_release_notes.ps1"
+        with tempfile.TemporaryDirectory(dir=ROOT) as temporary_directory:
+            output_name = f"{Path(temporary_directory).name}-release-notes.md"
+            output_path = ROOT / output_name
+            result = subprocess.run(
+                [
+                    "pwsh",
+                    "-NoProfile",
+                    "-File",
+                    str(script),
+                    "-StartTag",
+                    "",
+                    "-EndTag",
+                    "v1.1.2",
+                    "-Changelog",
+                    "* release: v1.1.2",
+                    "-ReleaseTag",
+                    "v1.1.2",
+                    "-OutputPath",
+                    output_name,
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(
+                "### 更新日志 v1.1.1 -> v1.1.2",
+                output_path.read_text(encoding="utf-8-sig"),
+            )
 
 
 if __name__ == "__main__":

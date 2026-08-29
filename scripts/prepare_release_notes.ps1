@@ -1,6 +1,5 @@
 param(
-    [Parameter(Mandatory = $true)]
-    [string]$StartTag,
+    [string]$StartTag = "",
     [Parameter(Mandatory = $true)]
     [string]$EndTag,
     [Parameter(Mandatory = $true)]
@@ -23,6 +22,14 @@ if ($releaseSubject -ne $expectedSubject) {
 }
 
 $releaseAuthor = git log -1 --format=%an $releaseCommit
+$normalizedStartTag = $StartTag.Trim()
+if ([string]::IsNullOrWhiteSpace($normalizedStartTag)) {
+    $normalizedStartTag = (git describe --tags --abbrev=0 "$releaseCommit^" 2>$null).Trim()
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($normalizedStartTag)) {
+        throw "Could not resolve a starting tag for release $ReleaseTag."
+    }
+}
+
 $mainEntries = [System.Collections.Generic.List[string]]::new()
 $releaseDetails = @(git log -1 --format=%b $releaseCommit)
 $nonEmptyDetails = @(
@@ -68,7 +75,7 @@ if ([string]::IsNullOrWhiteSpace($normalizedChangelog)) {
 }
 
 $releaseNotes = @(
-    "### 更新日志 $StartTag -> $EndTag"
+    "### 更新日志 $normalizedStartTag -> $EndTag"
     ""
     $normalizedChangelog
     ""
