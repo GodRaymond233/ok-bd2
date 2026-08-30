@@ -167,7 +167,7 @@ class FreeGachaTaskHelperTest(unittest.TestCase):
         gacha_text = {"value": "抽抽乐"}
 
         class FakeVision:
-            def ocr_text(self, _frame, name, relative_roi=None):
+            def ocr_text(self, _frame, name, relative_roi=None, **_kwargs):
                 self.last_relative_roi = relative_roi
                 return left_text["value"] if "左列" in name else gacha_text["value"]
 

@@ -13,6 +13,7 @@ from src.utils.calibration import FHD_1080
 from src.utils.home_confirmation import (
     HOME_GACHA_OCR_RELATIVE_ROI,
     home_confirmation_passes,
+    home_gacha_ocr_with_fallback,
 )
 from src.utils.image_utils import (
     crop_relative,
@@ -624,18 +625,33 @@ class AutoLoginTask(BaseBD2Task):
         crop = self._crop_relative(frame, HOME_GACHA_OCR_RELATIVE_ROI)
         if crop.size == 0:
             return ""
-        try:
-            boxes = self.ocr(
-                frame=crop,
-                threshold=float(self.config.get("主页 OCR 阈值", 0.2)),
-                target_height=720,
-                log=False,
-                name="主页抽抽乐",
-            )
-        except Exception as exc:
-            self.info_set("主页抽抽乐 OCR 错误", str(exc))
-            return ""
-        return " ".join(box.name for box in boxes if getattr(box, "name", ""))
+
+        def read_text(scale: float) -> str:
+            target = crop
+            if scale != 1.0:
+                target = cv2.resize(
+                    crop,
+                    None,
+                    fx=scale,
+                    fy=scale,
+                    interpolation=cv2.INTER_CUBIC,
+                )
+            try:
+                boxes = self.ocr(
+                    frame=target,
+                    threshold=float(self.config.get("主页 OCR 阈值", 0.2)),
+                    target_height=720,
+                    log=False,
+                    name=f"主页抽抽乐 x{scale:g}",
+                )
+            except Exception as exc:
+                self.info_set(f"主页抽抽乐 x{scale:g} OCR 错误", str(exc))
+                return ""
+            return " ".join(box.name for box in boxes if getattr(box, "name", ""))
+
+        result = home_gacha_ocr_with_fallback(read_text)
+        self.info_set("主页抽抽乐 OCR 尝试", result.trace)
+        return result.text
 
     def _clear_home_popup(self, ratio: float) -> None:
         self._home_bright_since = None

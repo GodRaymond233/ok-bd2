@@ -189,6 +189,7 @@ from src.utils.home_confirmation import (
     HOME_LEFT_COLUMN_OCR_RELATIVE_ROI,
     HOME_LEFT_COLUMN_REQUIRED_HITS,
     home_confirmation_passes,
+    home_gacha_ocr_with_fallback,
     home_left_column_hits,
     home_left_column_p95_brightness,
 )
@@ -622,11 +623,15 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
         )
         left_hits = home_left_column_hits(left_text)
         p95_brightness = home_left_column_p95_brightness(frame)
-        gacha_text = self.vision.ocr_text(
-            frame,
-            "主页抽抽乐",
-            relative_roi=HOME_GACHA_OCR_RELATIVE_ROI,
+        gacha_result = home_gacha_ocr_with_fallback(
+            lambda scale: self.vision.ocr_text(
+                frame,
+                f"主页抽抽乐 x{scale:g}",
+                relative_roi=HOME_GACHA_OCR_RELATIVE_ROI,
+                ocr_scale=scale,
+            )
         )
+        gacha_text = gacha_result.text
         self._status(
             "主页左列关键词",
             f"{left_hits}/{HOME_LEFT_COLUMN_REQUIRED_HITS}",

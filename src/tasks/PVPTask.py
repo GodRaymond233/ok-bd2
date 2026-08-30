@@ -30,6 +30,7 @@ from src.utils.home_confirmation import (
     HOME_LEFT_COLUMN_OCR_REFERENCE_ROI,
     HOME_LEFT_COLUMN_REQUIRED_HITS,
     home_confirmation_passes,
+    home_gacha_ocr_with_fallback,
     home_left_column_hits,
     home_left_column_p95_brightness,
 )
@@ -58,6 +59,8 @@ PVP_BACK_HOME_REFERENCE_POINT = (1797, 63)
 PVP_HUB_NOTICE_SCREEN_ROI = (1381, 865, 62, 45)
 PVP_CARTRIDGE_SLOT_POINT = (152 / REFERENCE_WIDTH, 970 / REFERENCE_HEIGHT)
 PVP_AUTO_BATTLE_SCREEN_ROI = (1470, 910, 170, 150)
+# Reference ROI for the multiplier value in the main auto-battle popup.
+PVP_MULTIPLIER_OCR_REFERENCE_ROI = (820, 210, 105, 50)
 PVP_AUTO_BATTLE_CLICK_REFERENCE = (2026, 1291)
 PVP_STAGE_CLICK_REFERENCE_OFFSET = (0, -75)
 PVP_RESULT_BASE_MINUTES = 20.0
@@ -666,7 +669,7 @@ class PVPTask(BaseBD2Task):
             [rf"^{multiplier}$", rf"^{multiplier}倍$"],
             timeout=timeout,
             name="PVP 倍率",
-            roi=self._mf_roi(820, 210, 105, 50),
+            roi=self._mf_roi(*PVP_MULTIPLIER_OCR_REFERENCE_ROI),
             normalize_multiplier=True,
         )
         self.info_set("PVP 倍率 OCR", text or "-")
@@ -1027,11 +1030,16 @@ class PVPTask(BaseBD2Task):
         )
         left_hits = home_left_column_hits(left_text)
         p95_brightness = home_left_column_p95_brightness(frame)
-        gacha_text = self._ocr_text(
-            frame,
-            name="主页抽抽乐",
-            roi=HOME_GACHA_OCR_REFERENCE_ROI,
+        gacha_result = home_gacha_ocr_with_fallback(
+            lambda scale: self._ocr_text(
+                frame,
+                name=f"主页抽抽乐 x{scale:g}",
+                roi=HOME_GACHA_OCR_REFERENCE_ROI,
+                ocr_scale=scale,
+            )
         )
+        gacha_text = gacha_result.text
+        self.info_set("主页抽抽乐 OCR 尝试", gacha_result.trace)
         confirmed = home_confirmation_passes(
             left_hits=left_hits,
             required_left_hits=HOME_LEFT_COLUMN_REQUIRED_HITS,
@@ -1405,16 +1413,31 @@ class PVPTask(BaseBD2Task):
         frame,
         name: str,
         roi: tuple[int, int, int, int] | None = None,
+        ocr_scale: float = 1.0,
     ) -> str:
-        return " ".join(label for label, _confidence in self._ocr_entries(frame, name, roi))
+        return " ".join(
+            label
+            for label, _confidence in self._ocr_entries(
+                frame,
+                name,
+                roi,
+                ocr_scale=ocr_scale,
+            )
+        )
 
     def _ocr_entries(
         self,
         frame,
         name: str,
         roi: tuple[int, int, int, int] | None = None,
+        ocr_scale: float = 1.0,
     ) -> list[tuple[str, float]]:
-        boxes = self._ocr_boxes(frame, name=name, roi=roi)
+        boxes = self._ocr_boxes(
+            frame,
+            name=name,
+            roi=roi,
+            ocr_scale=ocr_scale,
+        )
         entries = []
         for box in boxes:
             label = getattr(box, "name", "")
@@ -1431,9 +1454,20 @@ class PVPTask(BaseBD2Task):
         frame,
         name: str,
         roi: tuple[int, int, int, int] | None = None,
+        ocr_scale: float = 1.0,
     ):
         ocr_frame = self._crop_reference(frame, roi) if roi is not None else frame
         try:
+            if ocr_scale <= 0:
+                raise ValueError("ocr_scale must be positive")
+            if ocr_scale != 1.0:
+                ocr_frame = cv2.resize(
+                    ocr_frame,
+                    None,
+                    fx=ocr_scale,
+                    fy=ocr_scale,
+                    interpolation=cv2.INTER_CUBIC,
+                )
             return self.ocr(
                 frame=ocr_frame,
                 threshold=float(self.config.get("PVP OCR 阈值", 0.2)),

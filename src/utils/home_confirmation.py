@@ -1,3 +1,6 @@
+from dataclasses import dataclass
+from typing import Callable
+
 import numpy as np
 
 from src.utils.image_utils import relative_roi_frame, to_gray
@@ -11,6 +14,7 @@ HOME_GACHA_OCR_RELATIVE_ROI = (
     1047 / 1080,
 )
 HOME_GACHA_OCR_KEYWORD = "抽抽乐"
+HOME_GACHA_OCR_SCALES = (1.0, 2.0, 3.0)
 HOME_GACHA_OCR_ALIASES = (HOME_GACHA_OCR_KEYWORD,)
 HOME_ANNOUNCEMENT_CLEAR_REFERENCE_POINT = (169, 615)
 HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT = (
@@ -39,6 +43,46 @@ HOME_LEFT_COLUMN_REQUIRED_HITS = 2
 # 左列灰度 p95：未压暗实测定标 253、0.5x 公告压暗 126，阈值 185 干净分离，
 # 且不随主页背景场景变化（旧模板相对亮度比值依赖采集场景，已废弃）。
 HOME_DIMMED_P95_THRESHOLD_DEFAULT = 185.0
+
+
+@dataclass(frozen=True)
+class HomeGachaOcrResult:
+    text: str
+    selected_scale: float | None
+    attempts: tuple[tuple[float, str], ...]
+
+    @property
+    def matched(self) -> bool:
+        return self.selected_scale is not None
+
+    @property
+    def trace(self) -> str:
+        attempts = ", ".join(
+            f"x{scale:g}={text or '-'}" for scale, text in self.attempts
+        )
+        selected = (
+            f"采用x{self.selected_scale:g}"
+            if self.selected_scale is not None
+            else "未命中"
+        )
+        return f"{selected}; {attempts}"
+
+
+def home_gacha_ocr_with_fallback(
+    read_text: Callable[[float], object],
+    scales: tuple[float, ...] = HOME_GACHA_OCR_SCALES,
+) -> HomeGachaOcrResult:
+    """Read the fixed gacha ROI with bounded same-frame upscale fallbacks."""
+    attempts: list[tuple[float, str]] = []
+    first_nonempty = ""
+    for scale in scales:
+        text = str(read_text(float(scale)) or "").strip()
+        attempts.append((float(scale), text))
+        if text and not first_nonempty:
+            first_nonempty = text
+        if home_gacha_ocr_matches(text):
+            return HomeGachaOcrResult(text, float(scale), tuple(attempts))
+    return HomeGachaOcrResult(first_nonempty, None, tuple(attempts))
 
 
 def home_gacha_ocr_matches(text: object) -> bool:

@@ -275,7 +275,7 @@ class DailyTaskHelperTest(unittest.TestCase):
         ocr_calls = []
 
         class FakeVision:
-            def ocr_text(self, _frame, name, relative_roi=None):
+            def ocr_text(self, _frame, name, relative_roi=None, **_kwargs):
                 ocr_calls.append((name, relative_roi))
                 return name
 
@@ -718,7 +718,7 @@ class DailyTaskHelperTest(unittest.TestCase):
         text = ["0 / 90"]
 
         class FakeVision:
-            def ocr_text(self, _frame, name, relative_roi=None):
+            def ocr_text(self, _frame, name, relative_roi=None, **_kwargs):
                 calls.append((name, relative_roi))
                 return text[0]
 
@@ -815,7 +815,7 @@ class DailyTaskHelperTest(unittest.TestCase):
         gacha_text = ["抽抽乐"]
 
         class FakeVision:
-            def ocr_text(self, _frame, name, relative_roi=None):
+            def ocr_text(self, _frame, name, relative_roi=None, **_kwargs):
                 self.relative_roi = relative_roi
                 return left_text[0] if "左列" in name else gacha_text[0]
 

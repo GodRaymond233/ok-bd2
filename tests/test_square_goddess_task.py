@@ -48,7 +48,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
         left_text = {"value": "我的小屋 格鲁TALK 街机游戏"}
         gacha_text = {"value": ""}
 
-        def fake_ocr(_frame, name, roi=None):
+        def fake_ocr(_frame, name, roi=None, **_kwargs):
             if name == "主页左列":
                 return left_text["value"]
             return gacha_text["value"]
@@ -422,9 +422,11 @@ class SquareGoddessEntryTest(unittest.TestCase):
         task.log_info = logs.append
         task.sleep = lambda *_args, **_kwargs: None
         task.capture_frame = lambda: np.full((1080, 1920, 3), 255, dtype=np.uint8)
-        ocr_texts = iter(("输入", "抽抽乐"))
+        # The gacha reader tries x1/x2/x3 on the same frame.  Keep the chat
+        # signal visible for all three attempts before the next frame clears it.
+        ocr_texts = iter(("输入", "输入", "输入", "抽抽乐"))
 
-        def fake_ocr(_frame, name, roi=None):
+        def fake_ocr(_frame, name, roi=None, **_kwargs):
             if name == "主页左列":
                 return "我的小屋 格鲁TALK 街机游戏"
             return next(ocr_texts)
@@ -465,7 +467,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
         task.sleep = lambda *_args, **_kwargs: None
         task.capture_frame = lambda: np.full((1080, 1920, 3), 255, dtype=np.uint8)
 
-        def fake_ocr(_frame, name, roi=None):
+        def fake_ocr(_frame, name, roi=None, **_kwargs):
             if name == "主页左列":
                 return "我的小屋 格鲁TALK 街机游戏"
             return ""
@@ -507,7 +509,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
         task.sleep = lambda *_args, **_kwargs: None
         task.capture_frame = lambda: np.full((1080, 1920, 3), 255, dtype=np.uint8)
 
-        def fake_ocr(_frame, name, roi=None):
+        def fake_ocr(_frame, name, roi=None, **_kwargs):
             if name == "主页左列":
                 return "我的小屋 格鲁TALK 街机游戏"
             return "输入"

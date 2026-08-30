@@ -7,9 +7,17 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from ok import og
 from PySide6.QtWidgets import QApplication
+from qfluentwidgets import BodyLabel, fontFamilies, setFontFamilies
 
 from src.tasks.run_history import RunHistoryStore, set_default_store
-from src.ui.quest_theme import chip_qss, palette
+from src.ui.quest_theme import (
+    APP_FONT_FAMILIES,
+    BODY_FONT,
+    MONO_FONT,
+    apply_app_font,
+    chip_qss,
+    palette,
+)
 
 
 class _AppStub:
@@ -153,6 +161,25 @@ class QuestUiTestBase(unittest.TestCase):
 
 
 class ThemeTokenTest(QuestUiTestBase):
+    def test_ui_font_stack_is_applied_to_qfluent_and_qt(self):
+        previous_families = fontFamilies()
+        previous_app_font = QApplication.instance().font()
+        self.addCleanup(setFontFamilies, previous_families, False)
+        self.addCleanup(QApplication.instance().setFont, previous_app_font)
+
+        apply_app_font()
+        self.assertEqual(
+            ("MiSans", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI"),
+            APP_FONT_FAMILIES,
+        )
+        self.assertIn("MiSans", BODY_FONT)
+        self.assertIn("JetBrains Mono", MONO_FONT)
+        self.assertEqual(fontFamilies(), list(APP_FONT_FAMILIES))
+        self.assertEqual(QApplication.instance().font().families(), list(APP_FONT_FAMILIES))
+        label = BodyLabel("中文 English")
+        self.assertEqual(label.font().families(), list(APP_FONT_FAMILIES))
+        label.close()
+
     def test_palettes_share_the_same_keys(self):
         light = palette(dark=False)
         dark = palette(dark=True)

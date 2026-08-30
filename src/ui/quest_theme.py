@@ -17,22 +17,24 @@ MONO_FONT = (
     ' "Microsoft YaHei UI", monospace'
 )
 
-# Preferred global UI font stack, best first; absent families are skipped so
-# machines without MiSans degrade to the stock Windows UI fonts.
+# Preferred global UI font stack, best first. Qt and qfluentwidgets resolve
+# unavailable families through the platform fallback chain.
 APP_FONT_FAMILIES = ("MiSans", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI")
 
 
 def apply_app_font() -> None:
-    """Set the app-wide font to the preferred stack (keeps the default size)."""
-    from PySide6.QtGui import QFontDatabase
+    """Apply the project font stack before qfluentwidgets builds controls."""
+    # Importing the app config first ensures its ui_config.json load cannot
+    # overwrite the project stack after this call.
+    from ok.gui.common.config import cfg as _cfg  # noqa: F401
     from PySide6.QtWidgets import QApplication
+    from qfluentwidgets import setFontFamilies
+
+    families = list(APP_FONT_FAMILIES)
+    setFontFamilies(families, save=False)
 
     app = QApplication.instance()
     if app is None:
-        return
-    available = set(QFontDatabase.families())
-    families = [name for name in APP_FONT_FAMILIES if name in available]
-    if not families:
         return
     font = app.font()
     font.setFamilies(families)

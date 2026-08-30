@@ -18,6 +18,7 @@ from src.utils.home_confirmation import (
     HOME_LEFT_COLUMN_OCR_RELATIVE_ROI,
     HOME_LEFT_COLUMN_REQUIRED_HITS,
     home_confirmation_passes,
+    home_gacha_ocr_with_fallback,
     home_left_column_hits,
     home_left_column_p95_brightness,
 )
@@ -78,11 +79,16 @@ class TaskVisionMixin:
         )
         left_hits = home_left_column_hits(left_text)
         p95_brightness = home_left_column_p95_brightness(frame)
-        gacha_text = vision.ocr_text(
-            frame,
-            ocr_name,
-            relative_roi=HOME_GACHA_OCR_RELATIVE_ROI,
+        gacha_result = home_gacha_ocr_with_fallback(
+            lambda scale: vision.ocr_text(
+                frame,
+                f"{ocr_name} x{scale:g}",
+                relative_roi=HOME_GACHA_OCR_RELATIVE_ROI,
+                ocr_scale=scale,
+            )
         )
+        gacha_text = gacha_result.text
+        self._status_set(f"{ocr_name} OCR 尝试", gacha_result.trace)
         confirmed = home_confirmation_passes(
             left_hits=left_hits,
             required_left_hits=HOME_LEFT_COLUMN_REQUIRED_HITS,

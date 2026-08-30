@@ -8,12 +8,14 @@ from src.utils.home_confirmation import (
     HOME_DIMMED_P95_THRESHOLD_DEFAULT,
     HOME_GACHA_OCR_REFERENCE_ROI,
     HOME_GACHA_OCR_RELATIVE_ROI,
+    HOME_GACHA_OCR_SCALES,
     HOME_LEFT_COLUMN_KEYWORD_GROUPS,
     HOME_LEFT_COLUMN_OCR_REFERENCE_ROI,
     HOME_LEFT_COLUMN_OCR_RELATIVE_ROI,
     HOME_LEFT_COLUMN_REQUIRED_HITS,
     home_confirmation_passes,
     home_gacha_ocr_matches,
+    home_gacha_ocr_with_fallback,
     home_left_column_hits,
     home_left_column_p95_brightness,
     home_temporary_announcement_detected,
@@ -56,6 +58,35 @@ class HomeConfirmationTest(unittest.TestCase):
         # 2026-08-29 取消繁体识别：繁体读数不再命中。
         self.assertFalse(home_gacha_ocr_matches("抽抽樂"))
         self.assertFalse(home_gacha_ocr_matches("启动游戏"))
+
+    def test_gacha_ocr_uses_bounded_upscale_fallback(self):
+        calls = []
+
+        def read_text(scale):
+            calls.append(scale)
+            return {1.0: "", 2.0: "抽 抽 乐", 3.0: "不应调用"}[scale]
+
+        result = home_gacha_ocr_with_fallback(read_text)
+
+        self.assertEqual((1.0, 2.0, 3.0), HOME_GACHA_OCR_SCALES)
+        self.assertTrue(result.matched)
+        self.assertEqual(2.0, result.selected_scale)
+        self.assertEqual("抽 抽 乐", result.text)
+        self.assertEqual([1.0, 2.0], calls)
+        self.assertEqual("采用x2; x1=-, x2=抽 抽 乐", result.trace)
+
+    def test_gacha_ocr_failure_reports_all_attempts(self):
+        result = home_gacha_ocr_with_fallback(
+            lambda scale: "其他文字" if scale == 1.0 else ""
+        )
+
+        self.assertFalse(result.matched)
+        self.assertIsNone(result.selected_scale)
+        self.assertEqual("其他文字", result.text)
+        self.assertEqual(
+            ((1.0, "其他文字"), (2.0, ""), (3.0, "")),
+            result.attempts,
+        )
 
     def test_left_column_hits_counts_keyword_groups(self):
         self.assertEqual(

@@ -35,6 +35,7 @@ from src.tasks.PVPTask import (
     PVP_HUB_SPECIAL_PAGE_GRACE_SECONDS,
     PVP_LOC_RESET_TEMPLATE,
     PVP_MEDALS_TEMPLATE,
+    PVP_MULTIPLIER_OCR_REFERENCE_ROI,
     PVP_NO_FIND_TEMPLATES,
     PVP_RANK_CONFIRM_SETTLE_SECONDS,
     PVP_RANK_PAGE_AFTER_CLICK_SECONDS,
@@ -271,6 +272,12 @@ class PVPTaskHelperTest(unittest.TestCase):
         self.assertEqual(1, PVPTask._target_multiplier(task))
 
     def test_multiplier_roi_covers_current_auto_battle_value(self):
+        self.assertEqual((820, 210, 105, 50), PVP_MULTIPLIER_OCR_REFERENCE_ROI)
+        self.assertEqual(
+            (1230, 315, 158, 75),
+            PVPTask._mf_roi(*PVP_MULTIPLIER_OCR_REFERENCE_ROI),
+        )
+
         task = object.__new__(PVPTask)
         task.config = {}
         task.info_set = lambda *_args, **_kwargs: None
@@ -991,7 +998,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         task.capture_frame = lambda: frame["value"]
         ocr_calls = []
 
-        def fake_ocr(_frame, name, roi=None):
+        def fake_ocr(_frame, name, roi=None, **_kwargs):
             ocr_calls.append((name, roi))
             if name == "主页左列":
                 return "我的小屋 经营管理格鲁TALK 街机游戏"
@@ -1015,7 +1022,7 @@ class PVPTaskHelperTest(unittest.TestCase):
 
         gacha_text["value"] = "抽抽乐"
         self.assertTrue(PVPTask._wait_for_cartridge_home(task))
-        self.assertIn(("主页抽抽乐", HOME_GACHA_OCR_ROI), ocr_calls)
+        self.assertIn(("主页抽抽乐 x1", HOME_GACHA_OCR_ROI), ocr_calls)
 
     def test_return_home_uses_same_three_signal_confirmation(self):
         task = object.__new__(PVPTask)
@@ -1025,7 +1032,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         task._is_beijing_monday = lambda: True
         task.sleep = lambda *_args, **_kwargs: None
 
-        def fake_ocr(_frame, name, roi=None):
+        def fake_ocr(_frame, name, roi=None, **_kwargs):
             if name == "主页左列":
                 return "我的小屋 格鲁TALK 街机游戏"
             return gacha_text["value"]
@@ -1746,7 +1753,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         ocr_calls = []
         clicks = []
 
-        def fake_ocr(_frame, name, roi=None):
+        def fake_ocr(_frame, name, roi=None, **_kwargs):
             ocr_calls.append((name, roi))
             if name == "pvp_leave_failure":
                 return [SimpleNamespace(name="离开", x=300, y=20, width=80, height=40)]
@@ -1978,7 +1985,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         task._passes = lambda _result, _spec: False
         ocr_calls = []
 
-        def fake_ocr(_frame, name, roi=None):
+        def fake_ocr(_frame, name, roi=None, **_kwargs):
             ocr_calls.append((name, roi))
             return [SimpleNamespace(name="确认", x=900, y=1000, width=120, height=40)]
 
@@ -2033,7 +2040,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         task._match = lambda _frame, _spec: SimpleNamespace(score=0.1)
         task._passes = lambda _result, _spec: False
 
-        def fake_ocr(_frame, name, roi=None):
+        def fake_ocr(_frame, name, roi=None, **_kwargs):
             if name == "pvp_leave_success":
                 return [SimpleNamespace(name="离开", x=70, y=15, width=100, height=30)]
             return []

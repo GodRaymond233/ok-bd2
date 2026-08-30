@@ -28,6 +28,7 @@ from src.utils.home_confirmation import (
     HOME_LEFT_COLUMN_OCR_REFERENCE_ROI,
     HOME_LEFT_COLUMN_REQUIRED_HITS,
     home_confirmation_passes,
+    home_gacha_ocr_with_fallback,
     home_left_column_hits,
     home_left_column_p95_brightness,
 )
@@ -285,11 +286,16 @@ class SquareGoddessTask(BaseBD2Task):
             )
             last_left_hits = home_left_column_hits(left_text)
             last_p95 = home_left_column_p95_brightness(frame)
-            last_gacha_text = self._ocr_text(
-                frame,
-                name="主页抽抽乐",
-                roi=HOME_GACHA_OCR_REFERENCE_ROI,
+            gacha_result = home_gacha_ocr_with_fallback(
+                lambda scale: self._ocr_text(
+                    frame,
+                    name=f"主页抽抽乐 x{scale:g}",
+                    roi=HOME_GACHA_OCR_REFERENCE_ROI,
+                    ocr_scale=scale,
+                )
             )
+            last_gacha_text = gacha_result.text
+            self.info_set("主页抽抽乐 OCR 尝试", gacha_result.trace)
             self.info_set(
                 "主页左列关键词",
                 f"{last_left_hits}/{HOME_LEFT_COLUMN_REQUIRED_HITS}",
@@ -966,16 +972,31 @@ class SquareGoddessTask(BaseBD2Task):
         frame,
         name: str,
         roi: tuple[int, int, int, int] | None = None,
+        ocr_scale: float = 1.0,
     ) -> str:
-        return " ".join(label for label, _confidence in self._ocr_entries(frame, name, roi))
+        return " ".join(
+            label
+            for label, _confidence in self._ocr_entries(
+                frame,
+                name,
+                roi,
+                ocr_scale=ocr_scale,
+            )
+        )
 
     def _ocr_entries(
         self,
         frame,
         name: str,
         roi: tuple[int, int, int, int] | None = None,
+        ocr_scale: float = 1.0,
     ) -> list[tuple[str, float]]:
-        boxes = self._ocr_boxes(frame, name=name, roi=roi)
+        boxes = self._ocr_boxes(
+            frame,
+            name=name,
+            roi=roi,
+            ocr_scale=ocr_scale,
+        )
         entries = []
         for box in boxes:
             label = getattr(box, "name", "")
@@ -992,9 +1013,20 @@ class SquareGoddessTask(BaseBD2Task):
         frame,
         name: str,
         roi: tuple[int, int, int, int] | None = None,
+        ocr_scale: float = 1.0,
     ):
         ocr_frame = self._crop_reference(frame, roi) if roi is not None else frame
         try:
+            if ocr_scale <= 0:
+                raise ValueError("ocr_scale must be positive")
+            if ocr_scale != 1.0:
+                ocr_frame = cv2.resize(
+                    ocr_frame,
+                    None,
+                    fx=ocr_scale,
+                    fy=ocr_scale,
+                    interpolation=cv2.INTER_CUBIC,
+                )
             return self.ocr(
                 frame=ocr_frame,
                 threshold=float(self.config.get("广场 OCR 阈值", 0.2)),
