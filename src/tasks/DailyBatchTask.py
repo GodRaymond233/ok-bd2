@@ -72,12 +72,23 @@ class DailyBatchTask(BaseTask):
         self.default_config.update(
             {
                 "启用": True,
+                "启动自动执行日常": False,
+                "启动自动执行每周跑图": False,
                 **{key: True for key in child_keys},
             }
         )
         self.config_description.update(
             {
                 "启用": "是否允许一键完成日常按顺序执行已开启的子任务。",
+                "启动自动执行日常": (
+                    "应用启动后，当存在今日未完成且调度到期的日常子任务时，"
+                    "自动以「仅执行今日未完成」模式运行一键完成日常；"
+                    "已完成的子任务仍会被跳过。"
+                ),
+                "启动自动执行每周跑图": (
+                    "应用启动后，当本周（周一 04:00 起）尚未完成每周跑图"
+                    "且其调度到期时，自动执行每周跑图。"
+                ),
                 **{
                     key: f"是否在一键完成日常中执行{key}。"
                     for key in child_keys
@@ -109,6 +120,18 @@ class DailyBatchTask(BaseTask):
         self._requested_run_mode = RUN_MODE_ALL
         return self._validate_run_mode(explicit_run_mode or requested)
 
+    def _delay_child_schedule(self, schedule_store, child_name: str, ok: bool) -> None:
+        """ALAS 式 task_delay：子任务结束后按策略推迟 next_run 并落盘。
+
+        两种运行模式都记录；无调度策略的子任务由账本自行忽略。
+        """
+        if schedule_store is None:
+            return
+        try:
+            schedule_store.delay_after_run(child_name, ok=ok)
+        except Exception as exc:  # 调度账本失败不影响子任务结果
+            self.log_error(f"一键完成日常：记录 {child_name} 的调度时间失败。", exc)
+
     def run(self, run_mode: str | None = None):
         run_mode = self._take_run_mode(run_mode)
         if not bool(self.config.get("启用", True)):
@@ -116,11 +139,11 @@ class DailyBatchTask(BaseTask):
             return True
 
         only_incomplete = run_mode == RUN_MODE_INCOMPLETE
-        history = None
-        if only_incomplete:
-            from src.tasks.run_history import default_store
+        from src.tasks import scheduler as task_scheduler
+        from src.tasks.run_history import default_store
 
-            history = default_store()
+        history = default_store() if only_incomplete else None
+        schedule_store = task_scheduler.default_store()
 
         completed: list[str] = []
         failed: list[str] = []
@@ -161,6 +184,16 @@ class DailyBatchTask(BaseTask):
                 self.log_info(f"一键完成日常：{child.config_key} 今日已完成，跳过。")
                 continue
 
+            if only_incomplete and not schedule_store.is_due(str(task.name)):
+                remaining = schedule_store.backoff_remaining_minutes(str(task.name))
+                skipped.append(child.config_key)
+                publish_outcome()
+                self.log_info(
+                    f"一键完成日常：{child.config_key} 调度未到期"
+                    f"（约 {remaining:.0f} 分钟后可执行），跳过。"
+                )
+                continue
+
             self.info_set("当前子任务", child.config_key)
             self.log_info(f"一键完成日常：开始 {child.config_key}。")
             original_config = task.config
@@ -175,10 +208,12 @@ class DailyBatchTask(BaseTask):
                         completed.append(child.config_key)
                         publish_outcome()
                         self.log_info(f"一键完成日常：{child.config_key} 完成。")
+                        self._delay_child_schedule(schedule_store, str(task.name), True)
                     else:
                         failed.append(child.config_key)
                         publish_outcome()
                         stop_remaining = True
+                        self._delay_child_schedule(schedule_store, str(task.name), False)
                         self.log_warning(
                             f"一键完成日常：{child.config_key} 失败，停止后续子任务。"
                         )
@@ -186,6 +221,7 @@ class DailyBatchTask(BaseTask):
                 failed.append(child.config_key)
                 publish_outcome()
                 stop_remaining = True
+                self._delay_child_schedule(schedule_store, str(task.name), False)
                 self.log_error(
                     f"一键完成日常：{child.config_key} 异常，停止后续子任务。",
                     exc,

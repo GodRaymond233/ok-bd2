@@ -64,6 +64,11 @@ def _is_successful_run(info: dict) -> bool:
     return not any(marker in status for marker in _FAILURE_MARKERS)
 
 
+def is_successful_run(info: dict) -> bool:
+    """Public wrapper so the scheduler can reuse the same success rule."""
+    return _is_successful_run(info)
+
+
 def contains_joined_name(joined: Any, name: str) -> bool:
     """Boundary-aware membership test for '、'-joined info lists.
 
@@ -216,10 +221,24 @@ def install_run_history_recorder() -> bool:
 
     class _Recorder(QObject):
         def on_task_done(self, task):
+            name = str(getattr(task, "name", ""))
             try:
                 default_store().record_task_done(task)
+                record = default_store().last_run(name)
             except Exception as exc:
                 logger.error(f"record run history failed: {exc}")
+                record = None
+            try:
+                # ALAS 式调度账本：任务结束后按策略推迟 next_run 并落盘。
+                from src.tasks import scheduler as task_scheduler
+
+                if record is not None:
+                    ok = bool(record.get("ok"))
+                else:
+                    ok = is_successful_run(task_info_snapshot(task))
+                task_scheduler.default_store().delay_after_run(name, ok=ok)
+            except Exception as exc:
+                logger.error(f"record schedule failed: {exc}")
 
     recorder = _Recorder()
     communicate.task_done.connect(recorder.on_task_done)

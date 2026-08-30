@@ -9,6 +9,7 @@ from __future__ import annotations
 
 
 def install_quest_ui() -> None:
+    from src.tasks.auto_scheduler import install_auto_scheduler
     from src.tasks.run_history import install_run_history_recorder
     from src.ui.expand_timing import install_expand_timing
     from src.ui.fluent_motion import install_fluent_tab_entrance
@@ -18,6 +19,7 @@ def install_quest_ui() -> None:
     from src.ui.run_panel import install_run_panel
 
     install_run_history_recorder()
+    install_auto_scheduler()
     install_quest_cards()
     install_run_panel()
     install_quest_tab_chrome()

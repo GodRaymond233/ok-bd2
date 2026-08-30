@@ -1,8 +1,10 @@
 import tempfile
+import time
 import unittest
 from types import SimpleNamespace
 
 from src.config import config
+from src.tasks import scheduler
 from src.tasks.DailyBatchTask import (
     RUN_MODE_INCOMPLETE,
     DailyBatchChild,
@@ -292,6 +294,93 @@ class DailyBatchTaskTest(unittest.TestCase):
             [("second", True), ("first", True), ("second", True)],
             calls,
         )
+
+    def test_incomplete_mode_skips_child_in_failure_backoff(self):
+        class First:
+            pass
+
+        calls = []
+        first = _ChildTask("快速狩猎", calls)
+        specs = (DailyBatchChild("第一项", First),)
+        task, _resets = self.make_task(
+            {First: first},
+            specs,
+            {"启用": True, "第一项": True},
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            schedule_store = scheduler.TaskScheduleStore(f"{temp_dir}/schedule.json")
+            scheduler.set_default_store(schedule_store)
+            try:
+                # 刚失败过：next_run 在未来，处于退避期。
+                schedule_store.delay_after_run("快速狩猎", ok=False)
+                self.assertTrue(DailyBatchTask.run(task, RUN_MODE_INCOMPLETE))
+            finally:
+                scheduler.set_default_store(None)
+
+        self.assertEqual([], calls)
+        self.assertEqual("第一项", task.info.get("跳过"))
+
+    def test_incomplete_mode_runs_child_once_backoff_expired(self):
+        class First:
+            pass
+
+        calls = []
+        first = _ChildTask("快速狩猎", calls)
+        specs = (DailyBatchChild("第一项", First),)
+        task, _resets = self.make_task(
+            {First: first},
+            specs,
+            {"启用": True, "第一项": True},
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            schedule_store = scheduler.TaskScheduleStore(f"{temp_dir}/schedule.json")
+            scheduler.set_default_store(schedule_store)
+            try:
+                # 退避点已过期（next_run 在过去）→ 视为到期，应执行。
+                schedule_store.mark_due_now("快速狩猎", now=time.time() - 3600)
+                self.assertTrue(DailyBatchTask.run(task, RUN_MODE_INCOMPLETE))
+            finally:
+                scheduler.set_default_store(None)
+
+        self.assertEqual([("快速狩猎", True)], calls)
+
+    def test_all_mode_records_child_schedule_after_success_and_failure(self):
+        class First:
+            pass
+
+        class Second:
+            pass
+
+        calls = []
+        first = _ChildTask("快速狩猎", calls)
+        second = _ChildTask("镜中之战", calls, result=False)
+        specs = (
+            DailyBatchChild("第一项", First),
+            DailyBatchChild("第二项", Second),
+        )
+        task, _resets = self.make_task(
+            {First: first, Second: second},
+            specs,
+            {"启用": True, "第一项": True, "第二项": True},
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            schedule_store = scheduler.TaskScheduleStore(f"{temp_dir}/schedule.json")
+            scheduler.set_default_store(schedule_store)
+            try:
+                self.assertFalse(DailyBatchTask.run(task))
+            finally:
+                scheduler.set_default_store(None)
+
+        # 成功子任务推迟到下一次日常锚点（北京 04:00）。
+        first_next = schedule_store.next_run("快速狩猎")
+        self.assertIsNotNone(first_next)
+        self.assertGreaterEqual(first_next, scheduler.next_daily_anchor_ts() - 1)
+        self.assertTrue(schedule_store.last_run_ok("快速狩猎"))
+        # 失败子任务按失败间隔退避，不推进锚点。
+        second_next = schedule_store.next_run("镜中之战")
+        self.assertIsNotNone(second_next)
+        self.assertGreater(second_next, time.time() + 29 * 60)
+        self.assertFalse(schedule_store.last_run_ok("镜中之战"))
 
 
 if __name__ == "__main__":
