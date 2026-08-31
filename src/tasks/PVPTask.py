@@ -59,8 +59,11 @@ PVP_BACK_HOME_REFERENCE_POINT = (1797, 63)
 PVP_HUB_NOTICE_SCREEN_ROI = (1381, 865, 62, 45)
 PVP_CARTRIDGE_SLOT_POINT = (152 / REFERENCE_WIDTH, 970 / REFERENCE_HEIGHT)
 PVP_AUTO_BATTLE_SCREEN_ROI = (1470, 910, 170, 150)
-# Reference ROI for the multiplier value in the main auto-battle popup.
-PVP_MULTIPLIER_OCR_REFERENCE_ROI = (820, 210, 105, 50)
+# Reference ROI for the multiplier value in the main auto-battle popup. The value
+# sits directly left of the settings gear (reference x ≈ 868 at 1280x720); the ROI
+# must exclude the gear, otherwise the OCR det box merges it into the value and the
+# anchored ^N$ match fails on artifacts such as "1倍a".
+PVP_MULTIPLIER_OCR_REFERENCE_ROI = (800, 213, 65, 33)
 PVP_AUTO_BATTLE_CLICK_REFERENCE = (2026, 1291)
 PVP_STAGE_CLICK_REFERENCE_OFFSET = (0, -75)
 PVP_RESULT_BASE_MINUTES = 20.0

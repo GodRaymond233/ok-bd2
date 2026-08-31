@@ -272,11 +272,18 @@ class PVPTaskHelperTest(unittest.TestCase):
         self.assertEqual(1, PVPTask._target_multiplier(task))
 
     def test_multiplier_roi_covers_current_auto_battle_value(self):
-        self.assertEqual((820, 210, 105, 50), PVP_MULTIPLIER_OCR_REFERENCE_ROI)
+        self.assertEqual((800, 213, 65, 33), PVP_MULTIPLIER_OCR_REFERENCE_ROI)
         self.assertEqual(
-            (1230, 315, 158, 75),
+            (1200, 320, 98, 49),
             PVPTask._mf_roi(*PVP_MULTIPLIER_OCR_REFERENCE_ROI),
         )
+
+        frame_720 = np.arange(720 * 1280, dtype=np.int32).reshape((720, 1280))
+        crop_720 = PVPTask._crop_reference(
+            frame_720, PVPTask._mf_roi(*PVP_MULTIPLIER_OCR_REFERENCE_ROI)
+        )
+        self.assertEqual((33, 65), crop_720.shape)
+        np.testing.assert_array_equal(crop_720, frame_720[213:246, 800:865])
 
         task = object.__new__(PVPTask)
         task.config = {}
@@ -284,7 +291,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         task.sleep = lambda *_args, **_kwargs: None
 
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        frame[338:366, 1248:1328] = 255
+        frame[332:362, 1260:1294] = 255
         task.capture_frame = lambda: frame
         task.ocr = lambda frame, **_kwargs: (
             [SimpleNamespace(name="1倍", confidence=1.0)]
@@ -293,6 +300,16 @@ class PVPTaskHelperTest(unittest.TestCase):
         )
 
         self.assertTrue(PVPTask._multiplier_matches(task, 1, timeout=0.1))
+
+    def test_multiplier_roi_excludes_settings_gear(self):
+        gear_only = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        gear_only[338:358, 1303:1330] = 255
+
+        crop = PVPTask._crop_reference(
+            gear_only, PVPTask._mf_roi(*PVP_MULTIPLIER_OCR_REFERENCE_ROI)
+        )
+
+        self.assertFalse(np.any(crop == 255))
 
     def test_common_cartridge_entry_uses_relative_recent_entry_point(self):
         task = object.__new__(PVPTask)
