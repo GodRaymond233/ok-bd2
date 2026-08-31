@@ -91,6 +91,7 @@ from src.tasks.map_trade.trader import (
     SALE_CONFIRM_POINT,
     SALE_DIALOG_REGION,
     SALE_DIALOG_TITLE_REGION,
+    SALE_EMPTY_NAME_STABLE_HITS,
     SALE_FULL_PAGE_OCR_TARGET_HEIGHTS,
     SALE_MAX_POINT,
     SALE_OCR_INTERVAL,
@@ -311,6 +312,9 @@ class SellFlowTest(unittest.TestCase):
         trader = object.__new__(Trader)
         trader._buy_completed_in_current_shop = True
         trader.task = SimpleNamespace(log_info=lambda *_args: None)
+        trader._resolve_sale_entries = lambda: [
+            CalendarEntry("水果罐头", "S2:苍蓝魔女")
+        ]
         trader.navigator = SimpleNamespace(
             reach_merchant_shop=lambda: self.fail("买卖连续执行时不应重新从主页进商店")
         )
@@ -327,6 +331,9 @@ class SellFlowTest(unittest.TestCase):
         trader.task = SimpleNamespace(
             log_warning=lambda *_args: self.fail("成功入店时不应记录警告"),
         )
+        trader._resolve_sale_entries = lambda: [
+            CalendarEntry("水果罐头", "S2:苍蓝魔女")
+        ]
         trader.navigator = SimpleNamespace(
             enter_q_sp6_buy_flow=lambda: (
                 actions.append("enter") or NavigationResult(True, ScreenState.SHOP)
@@ -342,6 +349,9 @@ class SellFlowTest(unittest.TestCase):
         warnings = []
         trader = object.__new__(Trader)
         trader.task = SimpleNamespace(log_warning=warnings.append)
+        trader._resolve_sale_entries = lambda: [
+            CalendarEntry("水果罐头", "S2:苍蓝魔女")
+        ]
         trader.navigator = SimpleNamespace(
             enter_q_sp6_buy_flow=lambda: NavigationResult(
                 False,
@@ -359,6 +369,9 @@ class SellFlowTest(unittest.TestCase):
         warnings = []
         trader = object.__new__(Trader)
         trader.task = SimpleNamespace(log_warning=warnings.append)
+        trader._resolve_sale_entries = lambda: [
+            CalendarEntry("水果罐头", "S2:苍蓝魔女")
+        ]
         trader.navigator = SimpleNamespace(
             enter_q_sp6_buy_flow=lambda: NavigationResult(
                 True,
@@ -373,6 +386,36 @@ class SellFlowTest(unittest.TestCase):
         self.assertEqual(
             ["卖：进入商店后状态为merchant_dialog，未确认商店页，停止出售。"],
             warnings,
+        )
+
+    def test_run_sell_skips_navigation_when_sale_plan_is_empty(self):
+        actions = []
+        statuses = []
+        trader = object.__new__(Trader)
+        trader._buy_completed_in_current_shop = True
+        trader._resolve_sale_entries = lambda: []
+        trader.task = SimpleNamespace(
+            log_info=actions.append,
+            log_warning=lambda message: self.fail(message),
+            info_set=lambda key, value: statuses.append((key, value)),
+        )
+        trader.navigator = SimpleNamespace(
+            enter_q_sp6_buy_flow=lambda: self.fail("空价表不得重新进入商店"),
+        )
+        trader._switch_from_completed_buy_to_sell = lambda: self.fail(
+            "空价表不得切换到出售页"
+        )
+        trader.sell_max_price_items = lambda: self.fail("空价表不得执行出售")
+
+        self.assertTrue(trader.run_sell())
+        self.assertFalse(trader._buy_completed_in_current_shop)
+        self.assertEqual(
+            [("未出售商品", "无（当前价表没有可出售商品）")],
+            statuses,
+        )
+        self.assertEqual(
+            ["卖：当前价表没有可出售商品，跳过进入出售页面。"],
+            actions,
         )
 
     def test_sell_page_does_not_click_when_already_on_sell(self):
@@ -420,6 +463,9 @@ class SellFlowTest(unittest.TestCase):
     def test_run_sell_stops_before_calendar_when_sell_page_is_not_confirmed(self):
         trader = object.__new__(Trader)
         trader.task = SimpleNamespace(log_warning=lambda *_args: None)
+        trader._resolve_sale_entries = lambda: [
+            CalendarEntry("水果罐头", "S2:苍蓝魔女")
+        ]
         trader.navigator = SimpleNamespace(
             enter_q_sp6_buy_flow=lambda: NavigationResult(True, ScreenState.SHOP)
         )
@@ -738,7 +784,7 @@ class SellFlowTest(unittest.TestCase):
             trader._last_sale_reason,
         )
 
-    def test_marker_failure_after_sale_is_not_reported_as_sold_out(self):
+    def test_marker_failure_after_sale_with_name_still_visible_remains_failure(self):
         warnings = []
         clicked = []
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -756,6 +802,7 @@ class SellFlowTest(unittest.TestCase):
             if located is None:
                 trader._last_sale_unavailable = False
                 trader._last_sale_reason = "↑120%模板未命中"
+                trader._last_sale_page_empty = False
             return located
 
         trader._wait_sale_item_candidates = wait_scan
@@ -774,6 +821,113 @@ class SellFlowTest(unittest.TestCase):
         self.assertEqual(1, len(clicked))
         self.assertFalse(trader._last_sale_unavailable)
         self.assertIn("不能判定当前页已售完", warnings[0])
+
+    def test_sale_after_successful_sale_finishes_without_warning_when_name_disappears(self):
+        warnings = []
+        logs = []
+        statuses = []
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        candidate = SimpleNamespace(center=(620, 572))
+        scans = [([candidate], frame), None]
+        trader = object.__new__(Trader)
+        trader.task = SimpleNamespace(
+            log_info=logs.append,
+            log_warning=warnings.append,
+            info_set=lambda key, value: statuses.append((key, value)),
+        )
+
+        def wait_scan(_entry):
+            located = scans.pop(0)
+            if located is None:
+                trader._last_sale_unavailable = True
+                trader._last_sale_reason = "全画面OCR未识别到商品名"
+                trader._last_sale_page_empty = True
+            return located
+
+        trader._wait_sale_item_candidates = wait_scan
+        trader._sell_one_candidate = lambda *_args, **_kwargs: (352_927, True)
+
+        self.assertTrue(
+            trader._sell_selected_entry(CalendarEntry("白糖", "S2:苍蓝魔女"))
+        )
+        self.assertEqual([], warnings)
+        self.assertFalse(trader._last_sale_unavailable)
+        self.assertEqual("", trader._last_sale_reason)
+        self.assertTrue(
+            any("商品名连续消失" in value for key, value in statuses if key == "出售完成确认")
+        )
+        self.assertTrue(any("当前商店页已无剩余可出售组" in message for message in logs))
+
+    def test_sale_after_successful_sale_requires_two_name_absence_scans(self):
+        warnings = []
+        logs = []
+        statuses = []
+        sleeps = []
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        candidate = SimpleNamespace(center=(620, 572))
+        locate_calls = []
+        trader = object.__new__(Trader)
+        trader.task = SimpleNamespace(
+            sleep=sleeps.append,
+            log_info=logs.append,
+            log_warning=warnings.append,
+            info_set=lambda key, value: statuses.append((key, value)),
+        )
+        trader.vision = SimpleNamespace(capture=lambda: frame)
+
+        def locate(_entry, _frame):
+            locate_calls.append(True)
+            if len(locate_calls) == 1:
+                trader._last_sale_name_seen = True
+                trader._last_sale_ocr_output = True
+                return [candidate]
+            trader._last_sale_name_seen = False
+            trader._last_sale_ocr_output = True
+            trader._last_sale_reason = "全画面OCR未识别到商品名"
+            return []
+
+        trader._locate_sale_items = locate
+        trader._sell_one_candidate = lambda *_args, **_kwargs: (352_927, True)
+
+        with patch(
+            "src.tasks.map_trade.trader_sell.monotonic",
+            side_effect=(0.0, 0.0, 0.0),
+        ):
+            self.assertTrue(
+                trader._sell_selected_entry(
+                    CalendarEntry("白糖", "S2:苍蓝魔女"),
+                )
+            )
+
+        self.assertEqual(1 + SALE_EMPTY_NAME_STABLE_HITS, len(locate_calls))
+        self.assertEqual(SALE_EMPTY_NAME_STABLE_HITS - 1, len(sleeps))
+        self.assertEqual([], warnings)
+        self.assertFalse(trader._last_sale_unavailable)
+        self.assertEqual("", trader._last_sale_reason)
+        self.assertTrue(any("商品名连续消失" in value for key, value in statuses))
+        self.assertTrue(any("当前商店页已无剩余可出售组" in message for message in logs))
+
+    def test_sale_candidate_wait_timeout_does_not_emit_warning_by_itself(self):
+        warnings = []
+        trader = object.__new__(Trader)
+        trader.task = SimpleNamespace(
+            log_warning=warnings.append,
+            sleep=lambda *_args: None,
+        )
+        trader.vision = SimpleNamespace(capture=lambda: np.zeros((720, 1280, 3), dtype=np.uint8))
+        trader._locate_sale_items = lambda *_args: (
+            setattr(trader, "_last_sale_name_seen", False)
+            or setattr(trader, "_last_sale_ocr_output", False)
+            or []
+        )
+
+        self.assertIsNone(
+            trader._wait_sale_item_candidates(
+                CalendarEntry("白糖", "S2:苍蓝魔女"),
+                timeout=0.0,
+            )
+        )
+        self.assertEqual([], warnings)
 
     def test_normal_sale_clicks_located_item_name_then_uses_max_and_sell(self):
         clicks = []
@@ -799,6 +953,7 @@ class SellFlowTest(unittest.TestCase):
             if located is None:
                 trader._last_sale_unavailable = True
                 trader._last_sale_reason = "全画面OCR未识别到商品名"
+                trader._last_sale_page_empty = True
             return located
 
         trader._wait_sale_item_candidates = pop_scan
@@ -832,6 +987,7 @@ class SellFlowTest(unittest.TestCase):
             if located is None:
                 trader._last_sale_unavailable = True
                 trader._last_sale_reason = "全画面OCR未识别到商品名"
+                trader._last_sale_page_empty = True
             return located
 
         trader._wait_sale_item_candidates = pop_scan

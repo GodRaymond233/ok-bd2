@@ -23,7 +23,7 @@ from src.tasks.map_trade.calendar import (
     purchase_stock_date,
     sale_price_calendar_date,
 )
-from src.tasks.map_trade.models import DEFAULT_SALE_WHITELIST
+from src.tasks.map_trade.models import DEFAULT_SALE_WHITELIST, ScreenState
 from src.tasks.map_trade.progress import UTC_PLUS_8
 from src.tasks.map_trade.trader import Trader
 
@@ -49,6 +49,14 @@ class CalendarTest(unittest.TestCase):
         self.assertEqual(
             date(2026, 8, 1),
             sale_price_calendar_date(datetime(2026, 7, 31, 23, 30, tzinfo=UTC_PLUS_8)),
+        )
+        self.assertEqual(
+            date(2026, 8, 31),
+            sale_price_calendar_date(datetime(2026, 8, 31, 22, 59, 59, tzinfo=UTC_PLUS_8)),
+        )
+        self.assertEqual(
+            date(2026, 9, 1),
+            sale_price_calendar_date(datetime(2026, 8, 31, 23, 0, tzinfo=UTC_PLUS_8)),
         )
 
         self.assertEqual(
@@ -94,11 +102,121 @@ class CalendarTest(unittest.TestCase):
             logs,
         )
 
+    def test_run_sell_skips_empty_bundled_sale_days_before_navigation(self):
+        for day in (29, 30, 31):
+            with self.subTest(day=day):
+                actions = []
+                warnings = []
+                statuses = []
+                now = datetime(2026, 8, day, 12, tzinfo=UTC_PLUS_8)
+                trader = object.__new__(Trader)
+                trader.now_provider = lambda now=now: now
+                trader.started_at = now
+                trader.calendar_client = PriceCalendarClient(BUNDLED_CALENDAR)
+                trader.vision = SimpleNamespace(simplify=lambda value: value)
+                trader.task = SimpleNamespace(
+                    config={
+                        "使用程序默认价表": True,
+                        "使用在线价表": True,
+                        "自定义最高价表": "",
+                        "使用出售白名单": True,
+                        "出售白名单": "",
+                        "使用出售黑名单": False,
+                    },
+                    log_info=actions.append,
+                    log_warning=warnings.append,
+                    info_set=lambda key, value: statuses.append((key, value)),
+                )
+                trader.navigator = SimpleNamespace(
+                    enter_q_sp6_buy_flow=lambda: self.fail(
+                        "默认空价表不得进入商店"
+                    )
+                )
+                trader._switch_from_completed_buy_to_sell = lambda: self.fail(
+                    "默认空价表不得切换出售页"
+                )
+
+                self.assertTrue(trader.run_sell())
+                self.assertEqual([], warnings)
+                self.assertIn(
+                    ("未出售商品", "无（当前价表没有可出售商品）"),
+                    statuses,
+                )
+                self.assertIn(
+                    "卖：当前价表没有可出售商品，跳过进入出售页面。",
+                    actions,
+                )
+
+    def test_run_sell_stops_before_navigation_when_calendar_load_fails(self):
+        warnings = []
+        now = datetime(2026, 8, 31, 12, tzinfo=UTC_PLUS_8)
+        trader = object.__new__(Trader)
+        trader.now_provider = lambda: now
+        trader.started_at = now
+
+        def fail_load(**_kwargs):
+            raise RuntimeError("calendar unavailable")
+
+        trader.calendar_client = SimpleNamespace(load=fail_load)
+        trader.vision = SimpleNamespace(simplify=lambda value: value)
+        trader.task = SimpleNamespace(
+            config={
+                "使用程序默认价表": True,
+                "使用在线价表": True,
+                "自定义最高价表": "",
+            },
+            log_info=lambda *_args: None,
+            log_warning=warnings.append,
+            info_set=lambda *_args: None,
+        )
+        trader.navigator = SimpleNamespace(
+            enter_q_sp6_buy_flow=lambda: self.fail("价表失败后不得进入商店"),
+        )
+
+        self.assertFalse(trader.run_sell())
+        self.assertEqual(
+            ["价表加载失败，为避免误卖已停止出售：calendar unavailable"],
+            warnings,
+        )
+
+    def test_run_sell_enters_sale_flow_for_custom_entry_on_empty_bundled_day(self):
+        actions = []
+        trader = object.__new__(Trader)
+        trader.now_provider = lambda: datetime(2026, 8, 29, 12, tzinfo=UTC_PLUS_8)
+        trader.started_at = trader.now_provider()
+        trader.calendar_client = PriceCalendarClient(BUNDLED_CALENDAR)
+        trader.vision = SimpleNamespace(simplify=lambda value: value)
+        trader.task = SimpleNamespace(
+            config={
+                "使用程序默认价表": False,
+                "使用在线价表": False,
+                "自定义最高价表": self._manual("29=番茄@S1"),
+                "使用出售白名单": False,
+                "使用出售黑名单": False,
+            },
+            log_info=actions.append,
+            log_warning=lambda message: self.fail(message),
+            info_set=lambda *_args: None,
+        )
+        trader.navigator = SimpleNamespace(
+            enter_q_sp6_buy_flow=lambda: (
+                actions.append("enter")
+                or SimpleNamespace(success=True, state=ScreenState.SHOP)
+            )
+        )
+        trader._ensure_sell_page = lambda: actions.append("sell-page") or True
+        trader.sell_max_price_items = lambda: actions.append("sell") or True
+
+        self.assertTrue(trader.run_sell())
+        self.assertEqual(["enter", "sell-page", "sell"], actions[-3:])
+
     def test_bundled_calendar_has_version_timezone_and_all_days(self):
         loaded = parse_calendar_payload(BUNDLED_CALENDAR.read_text(encoding="utf-8"), "test")
 
         self.assertEqual(set(range(1, 32)), set(loaded.days))
         self.assertEqual((), loaded.entries_for(29))
+        self.assertEqual((), loaded.entries_for(30))
+        self.assertEqual((), loaded.entries_for(31))
         self.assertGreaterEqual(sum(len(entries) for entries in loaded.days.values()), 60)
         self.assertGreater(len(loaded.entries_for(28)), 0)
         self.assertEqual(

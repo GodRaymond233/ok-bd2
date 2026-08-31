@@ -143,6 +143,9 @@ SALE_OCR_INTERVAL = 0.25
 SALE_COMPLETION_TIMEOUT = 8.0
 SALE_COMPLETION_INTERVAL = 0.25
 SALE_COMPLETION_STABLE_HITS = 2
+# Require two consecutive scans without the target name before treating a
+# post-sale page as empty; a single OCR miss can occur during card reflow.
+SALE_EMPTY_NAME_STABLE_HITS = 2
 SALE_TOAST_ID_PATTERN = re.compile(r"交易差价\s*([0-9]+)\s*完成")
 SALE_OWNED_PATTERN = re.compile(r"拥有[^0-9]{0,8}([0-9][0-9,，.]*)")
 SALE_AVAILABLE_PATTERN = re.compile(r"可购买[^0-9]{0,8}([0-9][0-9,，.]*)")

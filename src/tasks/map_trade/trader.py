@@ -3,6 +3,7 @@ from __future__ import annotations
 from src.tasks.map_trade.calendar import (
     PriceCalendarClient,
 )
+from src.tasks.map_trade.models import CalendarEntry
 from src.tasks.map_trade.navigator import Navigator
 from src.tasks.map_trade.progress import ProgressStore
 from src.tasks.map_trade.trader_buy import BuyFlowMixin
@@ -41,6 +42,7 @@ from src.tasks.map_trade.trader_constants import (  # noqa: F401
     SALE_DIALOG_REGION,
     SALE_DIALOG_TIMEOUT,
     SALE_DIALOG_TITLE_REGION,
+    SALE_EMPTY_NAME_STABLE_HITS,
     SALE_FULL_PAGE_OCR_TARGET_HEIGHT,
     SALE_FULL_PAGE_OCR_TARGET_HEIGHTS,
     SALE_MARKER_MIN_MARGIN,
@@ -120,6 +122,10 @@ class Trader(
         self._buy_completed_in_current_shop = False
         self._last_sale_unavailable = False
         self._last_sale_reason = ""
+        self._last_sale_name_seen = False
+        self._last_sale_ocr_output = False
+        self._last_sale_page_empty = False
+        self._sale_entries_override: list[CalendarEntry] | None = None
         self._last_sale_toast_id: int | None = None
         self.calendar_client = PriceCalendarClient(
             bundled_path=CALENDAR_DIR / "price_calendar.v1.json",

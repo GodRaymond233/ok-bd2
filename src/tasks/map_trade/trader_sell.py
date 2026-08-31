@@ -44,6 +44,7 @@ from src.tasks.map_trade.trader_constants import (  # noqa: F401
     SALE_DIALOG_REGION,
     SALE_DIALOG_TIMEOUT,
     SALE_DIALOG_TITLE_REGION,
+    SALE_EMPTY_NAME_STABLE_HITS,
     SALE_FULL_PAGE_OCR_TARGET_HEIGHT,
     SALE_FULL_PAGE_OCR_TARGET_HEIGHTS,
     SALE_MARKER_MIN_MARGIN,
@@ -100,6 +101,16 @@ from src.utils.image_utils import to_gray
 
 class SellFlowMixin:
     def run_sell(self) -> bool:
+        entries = self._resolve_sale_entries()
+        if entries is None:
+            self._buy_completed_in_current_shop = False
+            return False
+        if not entries:
+            self._buy_completed_in_current_shop = False
+            self._status("未出售商品", "无（当前价表没有可出售商品）")
+            self.task.log_info("卖：当前价表没有可出售商品，跳过进入出售页面。")
+            return True
+
         if getattr(self, "_buy_completed_in_current_shop", False):
             self.task.log_info("卖：买卖同时执行，继续使用当前商店并等待购买结果。")
             if not self._switch_from_completed_buy_to_sell():
@@ -117,7 +128,11 @@ class SellFlowMixin:
             if not self._ensure_sell_page():
                 return False
         self._buy_completed_in_current_shop = False
-        return self.sell_max_price_items()
+        self._sale_entries_override = entries
+        try:
+            return self.sell_max_price_items()
+        finally:
+            self._sale_entries_override = None
 
     def _ensure_sell_page(
         self,
@@ -160,7 +175,23 @@ class SellFlowMixin:
         )
         return False
 
-    def sell_max_price_items(self) -> bool:
+    def sell_max_price_items(
+        self,
+        entries: list[CalendarEntry] | None = None,
+    ) -> bool:
+        if entries is None:
+            entries = getattr(self, "_sale_entries_override", None)
+            if entries is None:
+                entries = self._resolve_sale_entries()
+        if entries is None:
+            return False
+        if not entries:
+            self._status("未出售商品", "无（当前价表没有可出售商品）")
+            self.task.log_info("卖：当前价表没有可出售商品，跳过出售。")
+            return True
+        return self._sell_resolved_entries(entries)
+
+    def _resolve_sale_entries(self) -> list[CalendarEntry] | None:
         try:
             market_now = self._current_market_time()
             calendar_date = sale_price_calendar_date(market_now)
@@ -181,7 +212,7 @@ class SellFlowMixin:
             entries = list(calendar.entries_for(calendar_date.day))
         except Exception as exc:
             self.task.log_warning(f"价表加载失败，为避免误卖已停止出售：{exc}")
-            return False
+            return None
 
         sellable = []
         for entry in entries:
@@ -217,7 +248,11 @@ class SellFlowMixin:
                 self.task.log_info("跑商：今天没有白名单内的最高价物品。")
             else:
                 self.task.log_info("跑商：今天没有允许出售的最高价物品。")
-            return True
+            return []
+
+        return entries
+
+    def _sell_resolved_entries(self, entries: list[CalendarEntry]) -> bool:
 
         failed = []
         unavailable: list[str] = []
@@ -262,16 +297,22 @@ class SellFlowMixin:
     def _sell_selected_entry(self, entry: CalendarEntry) -> bool:
         self._last_sale_unavailable = False
         self._last_sale_reason = ""
+        self._last_sale_page_empty = False
         sold_count = 0
         previous_owned: int | None = None
         while True:
             located = self._wait_sale_item_candidates(entry)
             if located is None:
-                if sold_count and getattr(self, "_last_sale_unavailable", False):
+                if sold_count and getattr(self, "_last_sale_page_empty", False):
                     self._last_sale_unavailable = False
                     self._last_sale_reason = ""
+                    self._status(
+                        "出售完成确认",
+                        f"{entry.item}:已出售{sold_count}组，商品名连续消失",
+                    )
                     self.task.log_info(
-                        f"卖：{entry.item}当前商店页已无剩余可出售组，共出售{sold_count}组。"
+                        f"卖：{entry.item}商品名连续{SALE_EMPTY_NAME_STABLE_HITS}次未识别到，"
+                        f"当前商店页已无剩余可出售组，共出售{sold_count}组。"
                     )
                     return True
                 if sold_count:
@@ -279,6 +320,11 @@ class SellFlowMixin:
                         f"卖：{entry.item}出售后仍可见商品名但120%标志未确认"
                         f"（{getattr(self, '_last_sale_reason', '') or '未知原因'}），"
                         "不能判定当前页已售完。"
+                    )
+                elif not getattr(self, "_last_sale_unavailable", False):
+                    self.task.log_warning(
+                        f"卖：{entry.item}商品名与左侧120%局部定位失败："
+                        f"{getattr(self, '_last_sale_reason', '') or '未知原因'}"
                     )
                 return False
 
@@ -380,16 +426,29 @@ class SellFlowMixin:
 
         end_at = monotonic() + max(0.0, timeout)
         last_reason = ""
+        empty_name_hits = 0
         while True:
             frame = self.vision.capture()
             candidates = self._locate_sale_items(entry, frame)
             if candidates:
+                self._last_sale_page_empty = False
                 return candidates, frame
             last_reason = str(getattr(self, "_last_sale_reason", "") or "")
+            if getattr(self, "_last_sale_name_seen", False):
+                empty_name_hits = 0
+            elif getattr(self, "_last_sale_ocr_output", False):
+                empty_name_hits += 1
+            else:
+                empty_name_hits = 0
+            if empty_name_hits >= SALE_EMPTY_NAME_STABLE_HITS:
+                self._last_sale_page_empty = True
+                self._last_sale_reason = last_reason
+                return None
             if monotonic() >= end_at:
                 break
             self.task.sleep(interval)
-        self.task.log_warning(f"卖：{entry.item}商品名与左侧120%局部定位失败：{last_reason}")
+        self._last_sale_page_empty = empty_name_hits >= SALE_EMPTY_NAME_STABLE_HITS
+        self._last_sale_reason = last_reason
         return None
 
     @staticmethod
@@ -509,6 +568,8 @@ class SellFlowMixin:
         roi_searches = 0
         reused_rois = 0
         marker_hits = 0
+        self._last_sale_name_seen = False
+        self._last_sale_ocr_output = False
 
         for target_height in SALE_FULL_PAGE_OCR_TARGET_HEIGHTS:
             name_boxes: list[object] = []
@@ -622,6 +683,9 @@ class SellFlowMixin:
                 )
 
             if candidates:
+                self._last_sale_name_seen = True
+                self._last_sale_ocr_output = saw_ocr_output
+                self._last_sale_page_empty = False
                 self._last_sale_unavailable = False
                 self._last_sale_reason = ""
                 candidates.sort(
@@ -644,6 +708,9 @@ class SellFlowMixin:
             f"{entry.item}搜索{roi_searches}个ROI，复用{reused_rois}个，"
             f"命中{marker_hits}个模板。",
         )
+        self._last_sale_name_seen = saw_item_name
+        self._last_sale_ocr_output = saw_ocr_output
+        self._last_sale_page_empty = False
         if not saw_ocr_output:
             self._last_sale_unavailable = False
             self._last_sale_reason = "全画面OCR未返回任何文本"
