@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from collections import ChainMap
 from dataclasses import dataclass
 
@@ -20,6 +21,9 @@ from src.tasks.task_notifications import (
 RUN_MODE_ALL = "all"
 RUN_MODE_INCOMPLETE = "incomplete"
 _VALID_RUN_MODES = frozenset({RUN_MODE_ALL, RUN_MODE_INCOMPLETE})
+# 启动自动执行注入的 run_mode 有效期：覆盖冷启动拉起游戏到设备就绪的
+# 常规耗时；超时未消费即作废，防止启动失败后的残留模式被手动点击继承。
+REQUESTED_RUN_MODE_VALIDITY_SECONDS = 600.0
 
 
 @dataclass(frozen=True)
@@ -110,8 +114,17 @@ class DailyBatchTask(BaseTask):
         self.config_type.update(config_type_updates)
 
     def request_run_mode(self, run_mode: str) -> None:
-        """Select the next executor-driven run without persisting UI config."""
+        """Select the next executor-driven run without persisting UI config.
+
+        请求带有效期（覆盖启动器拉起游戏到设备就绪的常规耗时）：启动失败
+        （do_start 异步失败、设备无法就绪）时 run() 不会执行、请求无法被
+        消费，过期后自动作废，避免残留的「仅执行今日未完成」被之后的
+        手动点击静默继承。
+        """
         self._requested_run_mode = self._validate_run_mode(run_mode)
+        self._requested_run_mode_deadline = (
+            time.monotonic() + REQUESTED_RUN_MODE_VALIDITY_SECONDS
+        )
 
     @staticmethod
     def _validate_run_mode(run_mode: str) -> str:
@@ -122,6 +135,12 @@ class DailyBatchTask(BaseTask):
     def _take_run_mode(self, explicit_run_mode: str | None) -> str:
         requested = getattr(self, "_requested_run_mode", RUN_MODE_ALL)
         self._requested_run_mode = RUN_MODE_ALL
+        if (
+            requested != RUN_MODE_ALL
+            and time.monotonic()
+            > getattr(self, "_requested_run_mode_deadline", 0.0)
+        ):
+            requested = RUN_MODE_ALL
         return self._validate_run_mode(explicit_run_mode or requested)
 
     def _delay_child_schedule(self, schedule_store, child_name: str, ok: bool) -> None:

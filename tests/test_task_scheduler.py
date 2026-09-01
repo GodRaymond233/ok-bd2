@@ -230,6 +230,44 @@ class RunDueTasksOnceTest(unittest.TestCase):
         self.assertEqual(og.app.start_controller.started, [batch])
         self.assertEqual(batch.requested_modes, ["incomplete"])
 
+    def _build_with_login(self, login_enabled, login_finished):
+        from src.tasks.trigger.AutoLoginTask import AutoLoginTask
+
+        batch, executor = self._build({})
+        login = SimpleNamespace(_enabled=login_enabled, _finished=login_finished)
+        executor._tasks_by_class[AutoLoginTask] = login
+        return batch, executor
+
+    def test_auto_start_waits_for_login_to_finish(self):
+        # HIGH 回归：登录 trigger 是逐帧推进的状态机，周期间有执行器空闲
+        # 窗口；登录未完成时绝不启动任务，否则批处理顶掉登录并把子任务
+        # 烧进 30 分钟退避，且触发任务不发 task_done、再无复查来源。
+        batch, executor = self._build_with_login(True, False)
+        og = _FakeOg(executor)
+        self.assertIsNone(auto_scheduler.run_due_tasks_once(og))
+        self.assertEqual([], og.app.start_controller.started)
+        self.assertEqual([], batch.requested_modes)
+
+    def test_auto_start_proceeds_after_login_finished(self):
+        batch, executor = self._build_with_login(True, True)
+        og = _FakeOg(executor)
+        self.assertEqual(
+            "一键完成日常（仅执行今日未完成）",
+            auto_scheduler.run_due_tasks_once(og),
+        )
+        self.assertEqual(og.app.start_controller.started, [batch])
+
+    def test_auto_start_proceeds_when_login_task_disabled(self):
+        # 停用自动登录的用户不能被登录等待卡死；未就绪场景由主页确认与
+        # 退避兜底。
+        batch, executor = self._build_with_login(False, False)
+        og = _FakeOg(executor)
+        self.assertEqual(
+            "一键完成日常（仅执行今日未完成）",
+            auto_scheduler.run_due_tasks_once(og),
+        )
+        self.assertEqual(og.app.start_controller.started, [batch])
+
     def test_child_completed_today_is_not_due(self):
         batch, executor = self._build({})
         self.history.record_task_done(

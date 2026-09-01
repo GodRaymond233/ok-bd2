@@ -69,6 +69,15 @@ def run_due_tasks_once(og=None) -> str | None:
         # start -> run() 立即返回 -> task_done -> 再 start 的空转循环。
         return None
 
+    if not _login_settled(executor):
+        # 自动登录未完成时绝不启动任务：登录 trigger 是逐帧推进的状态机，
+        # 周期间有约 1 秒的执行器空闲窗口，仅靠 current_task 忙检测必然
+        # 漏判；批处理一旦抢先启动会顶掉登录 trigger（onetime 先于
+        # trigger 出队），首个子任务在登录页上主页确认失败并进入 30 分钟
+        # 退避，而触发任务不发 task_done，登录完成后没有任何复查来源。
+        # 交给启动重试预算继续等待。
+        return None
+
     if bool(config.get("启动自动执行日常", False)) and _any_batch_child_due(
         batch, executor, history, schedule_store
     ):
@@ -94,6 +103,25 @@ def run_due_tasks_once(og=None) -> str | None:
             return str(getattr(map_task, "name", "每周跑图"))
 
     return None
+
+
+def _login_settled(executor) -> bool:
+    """Whether it is safe to auto-start a task right now.
+
+    自动登录 trigger（AutoLoginTask）启用且尚未完成（``_finished``）时返回
+    False，让调用方继续等待；其余情况（无登录任务、已停用、已完成）一律
+    放行，避免停用自动登录的用户永远等不到自动执行。
+    """
+    try:
+        from src.tasks.trigger.AutoLoginTask import AutoLoginTask
+    except ImportError:  # pragma: no cover - 任务注册表缺失时的极端场景
+        return True
+    login_task = executor.get_task_by_class(AutoLoginTask)
+    if login_task is None:
+        return True
+    if not bool(getattr(login_task, "_enabled", True)):
+        return True
+    return bool(getattr(login_task, "_finished", False))
 
 
 def _any_batch_child_due(batch, executor, history, schedule_store, now=None) -> bool:

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from src.config import config
 from src.tasks import scheduler
 from src.tasks.DailyBatchTask import (
+    RUN_MODE_ALL,
     RUN_MODE_INCOMPLETE,
     DailyBatchChild,
     DailyBatchTask,
@@ -350,6 +351,28 @@ class DailyBatchTaskTest(unittest.TestCase):
                 set_default_store(None)
 
         self.assertEqual([("快速狩猎", True)], calls)
+
+    def test_requested_run_mode_expires_and_defaults_to_all(self):
+        # MEDIUM 回归：启动自动执行注入的 run_mode 带有效期。启动失败时
+        # run() 不执行、请求无法消费，过期作废，避免残留的 INCOMPLETE 被
+        # 之后的用户手动点击静默继承。
+        class First:
+            pass
+
+        first = _ChildTask("快速狩猎", [])
+        task, _resets = self.make_task(
+            {First: first},
+            (DailyBatchChild("第一项", First),),
+            {"启用": True, "第一项": True},
+        )
+        task.request_run_mode(RUN_MODE_INCOMPLETE)
+        self.assertEqual(RUN_MODE_INCOMPLETE, task._take_run_mode(None))
+
+        task.request_run_mode(RUN_MODE_INCOMPLETE)
+        task._requested_run_mode_deadline = time.monotonic() - 1.0
+        self.assertEqual(RUN_MODE_ALL, task._take_run_mode(None))
+        # 作废后不留残留。
+        self.assertEqual(RUN_MODE_ALL, task._take_run_mode(None))
 
     def test_all_mode_records_child_schedule_after_success_and_failure(self):
         class First:
