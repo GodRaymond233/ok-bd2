@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from copy import deepcopy
 
 from src.tasks.map_trade.action_icons import ActionIconDetector
 from src.tasks.map_trade.card_status import CollectionCardSelectionOutcome
@@ -80,6 +81,7 @@ class Collector(SkillExecutionMixin):
             maxlen=SKILL_FAILURE_EVIDENCE_LIMIT
         )
         self._last_skill_observations: dict[str, dict[str, object]] = {}
+        self._last_skill_geometry: dict[str, object] = {}
         self._group_one_recovery_attempted = False
         self._last_count_window_stable = False
 
@@ -443,10 +445,8 @@ class Collector(SkillExecutionMixin):
             "completed": bool(result.completed),
             "depleted": bool(result.depleted),
             "message": message,
-            "observations": {
-                name: dict(values)
-                for name, values in self._last_skill_observations.items()
-            },
+            "geometry": deepcopy(self._last_skill_geometry),
+            "observations": deepcopy(self._last_skill_observations),
         }
         self._skill_failure_evidence.append(evidence)
         try:
@@ -461,7 +461,7 @@ class Collector(SkillExecutionMixin):
     def skill_failure_evidence(self) -> tuple[dict[str, object], ...]:
         """Return a copy of the bounded failure replay tail for diagnostics."""
 
-        return tuple(dict(item) for item in self._skill_failure_evidence)
+        return tuple(deepcopy(item) for item in self._skill_failure_evidence)
 
     def _status(self, key: str, value) -> None:
         try:

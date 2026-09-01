@@ -497,6 +497,8 @@ class CollectorSkillTest(unittest.TestCase):
                     zncc_score=0.90,
                 ),
                 0.65 if state is ActionIconState.USED else 1.0,
+                stable=True,
+                sample_count=2,
             )
 
         collector.action_icons = SimpleNamespace(detect=detect)
@@ -793,7 +795,7 @@ class CollectorSkillTest(unittest.TestCase):
             ActionIconState.ABSENT,
             MatchResult(-1.0, (0, 0), (0, 0)),
         )
-        detections = iter((available, absent))
+        detections = iter((available, available, absent))
         task = SimpleNamespace(
             config={},
             operate_click=lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep)),
@@ -817,7 +819,10 @@ class CollectorSkillTest(unittest.TestCase):
         result = collector._start_search(map_role=CollectionMapRole.MAIN_AREA)
 
         self.assertIsInstance(result, SearchCountdownSession)
-        self.assertEqual([ACTION_FEEDBACK_SUCCESS_DELAY_SECONDS], sleeps)
+        self.assertEqual(
+            [ACTION_ICON_DETECTION_INTERVAL, ACTION_FEEDBACK_SUCCESS_DELAY_SECONDS],
+            sleeps,
+        )
 
     def test_search_countdown_uses_manual_region_after_icon_match(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -832,7 +837,7 @@ class CollectorSkillTest(unittest.TestCase):
             ActionIconState.ABSENT,
             MatchResult(-1.0, (0, 0), (0, 0)),
         )
-        detections = iter((available, absent))
+        detections = iter((available, available, absent))
         collector = Collector(
             SimpleNamespace(
                 config={},
@@ -1048,8 +1053,8 @@ class CollectorSkillTest(unittest.TestCase):
             MatchResult(0.98, (960, 420), (52, 48), 0.95, 0.92),
             0.65,
         )
-        frames = iter((before_frame, after_frame, after_frame))
-        detections = iter((before, after, after))
+        frames = iter((before_frame, before_frame, after_frame, after_frame))
+        detections = iter((before, before, after, after))
         count_detections = []
         clicks = []
         progress = ProgressStore(
@@ -1088,7 +1093,15 @@ class CollectorSkillTest(unittest.TestCase):
         )
 
         self.assertTrue(result.completed)
-        self.assertEqual([before, after], count_detections)
+        self.assertEqual(
+            [before.state, after.state],
+            [value.state for value in count_detections],
+        )
+        self.assertTrue(all(value.stable for value in count_detections))
+        self.assertEqual(
+            [before.match.center, after.match.center],
+            [value.match.center for value in count_detections],
+        )
         self.assertEqual(
             (before.match.center, before_frame.shape, 0.0),
             (clicks[0][0][0], clicks[0][0][1], clicks[0][1]["after_sleep"]),
@@ -1185,7 +1198,9 @@ class CollectorSkillTest(unittest.TestCase):
             MatchResult(0.98, (1550, 969), (52, 44), 0.95, 0.92),
             1.0,
         )
-        detections = iter([missing] * 6 + [available, available, available, missing])
+        detections = iter(
+            [missing] * 6 + [available, available, available, available, missing]
+        )
         task = SimpleNamespace(
             config={},
             operate_click=lambda x, y, after_sleep=0: group_clicks.append((x, y, after_sleep)),
@@ -1406,6 +1421,16 @@ class CollectorSkillTest(unittest.TestCase):
                         0.95,
                     ),
                     ActionIconDetection(
+                        ActionIconState.AVAILABLE,
+                        MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
+                        0.95,
+                    ),
+                    ActionIconDetection(
+                        ActionIconState.USED,
+                        MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
+                        0.65,
+                    ),
+                    ActionIconDetection(
                         ActionIconState.USED,
                         MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
                         0.65,
@@ -1462,6 +1487,16 @@ class CollectorSkillTest(unittest.TestCase):
                         ActionIconState.AVAILABLE,
                         MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
                         0.95,
+                    ),
+                    ActionIconDetection(
+                        ActionIconState.AVAILABLE,
+                        MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
+                        0.95,
+                    ),
+                    ActionIconDetection(
+                        ActionIconState.USED,
+                        MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
+                        0.65,
                     ),
                     ActionIconDetection(
                         ActionIconState.USED,
@@ -1601,7 +1636,7 @@ class CollectorSkillTest(unittest.TestCase):
                 MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
                 0.95,
             )
-            detections = iter((available, used, used))
+            detections = iter((available, available, used, used))
             clicks = []
             second = Collector(
                 SimpleNamespace(
@@ -1792,7 +1827,7 @@ class CollectorSkillTest(unittest.TestCase):
                 MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
                 0.65,
             )
-            detections = iter((available, used, used))
+            detections = iter((available, available, used, used))
             clicks = []
             collector = Collector(
                 SimpleNamespace(
@@ -1877,7 +1912,7 @@ class CollectorSkillTest(unittest.TestCase):
                 MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
                 0.65,
             )
-            detections = iter((available, used, used))
+            detections = iter((available, available, used, used))
             clicks = []
             collector = Collector(
                 SimpleNamespace(

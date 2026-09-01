@@ -38,6 +38,18 @@ class PixelValidMatch:
 
 
 @dataclass(frozen=True)
+class TemplateCandidate:
+    """A response peak with all structural evidence retained."""
+
+    score: float
+    pixel_score: float
+    zncc_score: float
+    gradient_zncc_score: float
+    edge_score: float
+    location: tuple[int, int]
+
+
+@dataclass(frozen=True)
 class StableMatchObservation:
     """One valid template hit within a temporal stabilization window."""
 
@@ -256,9 +268,19 @@ def candidate_scales(
 
 def resize_template(template: np.ndarray, scale: float) -> np.ndarray:
     """Resize a template with interpolation suited to shrinking or enlarging."""
+    return resize_template_with_interpolation(template, scale)
+
+
+def resize_template_with_interpolation(
+    template: np.ndarray,
+    scale: float,
+    interpolation: int | None = None,
+) -> np.ndarray:
+    """Resize a template, optionally forcing one interpolation kernel."""
     if abs(float(scale) - 1.0) < 0.001:
         return template
-    interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC
+    if interpolation is None:
+        interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC
     return cv2.resize(template, None, fx=scale, fy=scale, interpolation=interpolation)
 
 
@@ -334,6 +356,163 @@ def masked_zncc(
     if not np.isfinite(score):
         return -1.0
     return float(np.clip(score, -1.0, 1.0))
+
+
+def _gradient_magnitude(image: np.ndarray) -> np.ndarray:
+    gray = to_gray(image).astype(np.float32, copy=False)
+    gradient_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+    gradient_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+    return cv2.magnitude(gradient_x, gradient_y)
+
+
+def gradient_zncc(
+    region: np.ndarray,
+    template: np.ndarray,
+    mask: np.ndarray | None = None,
+) -> float:
+    """Compare local edge strength while ignoring absolute brightness."""
+
+    if region.shape != template.shape:
+        return -1.0
+    region_gradient = _gradient_magnitude(region)
+    template_gradient = _gradient_magnitude(template)
+    return masked_zncc(region_gradient, template_gradient, mask)
+
+
+def edge_consistency(
+    region: np.ndarray,
+    template: np.ndarray,
+    mask: np.ndarray | None = None,
+) -> float:
+    """Return a tolerant F1 score for the two binary edge maps."""
+
+    if region.shape != template.shape:
+        return -1.0
+    region_gray = to_gray(region)
+    template_gray = to_gray(template)
+    region_edges = cv2.Canny(region_gray, 40, 120) > 0
+    template_edges = cv2.Canny(template_gray, 40, 120) > 0
+    if mask is not None:
+        if mask.shape != region_edges.shape:
+            return -1.0
+        active = mask > 0
+        region_edges &= active
+        template_edges &= active
+    template_count = int(np.count_nonzero(template_edges))
+    region_count = int(np.count_nonzero(region_edges))
+    if template_count == 0 or region_count == 0:
+        return 0.0
+
+    # A one-pixel displacement is normal after a resize.  Dilating only for
+    # the overlap test keeps the score sensitive to a wrong icon shape while
+    # avoiding a hard veto from anti-aliasing.
+    kernel = np.ones((3, 3), dtype=np.uint8)
+    region_dilated = cv2.dilate(region_edges.astype(np.uint8), kernel) > 0
+    template_dilated = cv2.dilate(template_edges.astype(np.uint8), kernel) > 0
+    true_positive = min(
+        int(np.count_nonzero(template_edges & region_dilated)),
+        int(np.count_nonzero(region_edges & template_dilated)),
+    )
+    precision = true_positive / max(1, region_count)
+    recall = true_positive / max(1, template_count)
+    if precision + recall <= 0:
+        return 0.0
+    return float(2.0 * precision * recall / (precision + recall))
+
+
+def template_candidate_evidence(
+    region: np.ndarray,
+    template: np.ndarray,
+    mask: np.ndarray | None = None,
+) -> tuple[float, float, float, float]:
+    """Return pixel, raw ZNCC, gradient ZNCC and edge evidence."""
+
+    return (
+        pixel_similarity(region, template, mask),
+        masked_zncc(region, template, mask),
+        gradient_zncc(region, template, mask),
+        edge_consistency(region, template, mask),
+    )
+
+
+def independent_match_candidates(
+    response: np.ndarray,
+    search: np.ndarray,
+    template: np.ndarray,
+    mask: np.ndarray | None,
+    *,
+    template_threshold: float = -1.0,
+    center_bounds: tuple[int, int, int, int] | None = None,
+    suppression_radius: int | tuple[int, int] | None = None,
+    max_matches: int = 60,
+    max_independent_candidates: int = 4096,
+) -> tuple[TemplateCandidate, ...]:
+    """Enumerate response peaks without applying pixel/ZNCC vetoes.
+
+    Specialized recognizers use this function to retain weak-but-plausible
+    low-resolution candidates.  The existing ``independent_pixel_valid_matches``
+    remains the strict compatibility path for generic callers.
+    """
+
+    if response.ndim != 2 or response.size == 0:
+        return ()
+
+    sanitize_template_response(response)
+    working = response.copy()
+    height, width = template.shape[:2]
+    if center_bounds is not None:
+        center_left, center_top, center_right, center_bottom = center_bounds
+        x_start = max(0, int(np.ceil(center_left - width / 2)))
+        y_start = max(0, int(np.ceil(center_top - height / 2)))
+        x_stop = min(working.shape[1], int(np.ceil(center_right - width / 2)))
+        y_stop = min(working.shape[0], int(np.ceil(center_bottom - height / 2)))
+        if x_start >= x_stop or y_start >= y_stop:
+            return ()
+        allowed = np.full(working.shape, -1.0, dtype=working.dtype)
+        allowed[y_start:y_stop, x_start:x_stop] = working[y_start:y_stop, x_start:x_stop]
+        working = allowed
+
+    if suppression_radius is None:
+        suppression_x = max(2, width // 2)
+        suppression_y = max(2, height // 2)
+    elif isinstance(suppression_radius, tuple):
+        suppression_x = max(1, int(suppression_radius[0]))
+        suppression_y = max(1, int(suppression_radius[1]))
+    else:
+        suppression_x = suppression_y = max(1, int(suppression_radius))
+
+    matches: list[TemplateCandidate] = []
+    for _ in range(max(1, int(max_independent_candidates))):
+        _minimum, score, _minimum_location, location = cv2.minMaxLoc(working)
+        if not np.isfinite(score) or score < template_threshold or score > 1.000001:
+            break
+        x, y = int(location[0]), int(location[1])
+        region = search[y : y + height, x : x + width]
+        if region.shape != template.shape:
+            break
+        pixel_score, zncc_score, gradient_score, edge_score = template_candidate_evidence(
+            region,
+            template,
+            mask,
+        )
+        matches.append(
+            TemplateCandidate(
+                score=float(score),
+                pixel_score=float(pixel_score),
+                zncc_score=float(zncc_score),
+                gradient_zncc_score=float(gradient_score),
+                edge_score=float(edge_score),
+                location=(x, y),
+            )
+        )
+        if len(matches) >= max(1, int(max_matches)):
+            break
+        left = max(0, x - suppression_x)
+        top = max(0, y - suppression_y)
+        right = min(working.shape[1], x + suppression_x + 1)
+        bottom = min(working.shape[0], y + suppression_y + 1)
+        working[top:bottom, left:right] = -1.0
+    return tuple(matches)
 
 
 def best_pixel_valid_match(
