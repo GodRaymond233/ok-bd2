@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -80,6 +81,8 @@ class SchedulePolicy:
 
 # 受调度任务注册表，键为任务显示名（run_history 同名）。
 # 日常类锚定北京 04:00；每周跑图锚定周一 04:00。
+# 不注册“一键完成日常”自身：自动调度只消费子任务账本，批处理整体只在
+# “仅执行今日未完成”模式下作为载体启动，其自身 next_run 无消费者。
 TASK_POLICIES: dict[str, SchedulePolicy] = {
     "公会、小屋、酒馆": SchedulePolicy("daily"),
     "快速狩猎": SchedulePolicy("daily"),
@@ -87,7 +90,6 @@ TASK_POLICIES: dict[str, SchedulePolicy] = {
     "广场女神像": SchedulePolicy("daily"),
     "镜中之战": SchedulePolicy("daily"),
     "每日跑商": SchedulePolicy("daily"),
-    "一键完成日常": SchedulePolicy("daily"),
     "每周跑图": SchedulePolicy("weekly"),
 }
 
@@ -101,6 +103,9 @@ class TaskScheduleStore:
 
     def __init__(self, path: str | None = None):
         self.path = path or get_relative_path(*DEFAULT_FILE)
+        # 执行器线程（批处理子任务结算）与主线程（复查/记录器）可能并发
+        # 读写账本；写侧互斥，避免交错时丢更新或写出交错内容。
+        self._lock = threading.Lock()
         self._records: dict[str, dict] = {}
         self._load()
 
@@ -191,21 +196,23 @@ class TaskScheduleStore:
         if not candidates:
             return None
         next_run = min(candidates)
-        self._records[str(task_name)] = {
-            "next_run": next_run,
-            "ok": bool(ok),
-            "updated": moment,
-        }
-        self._save()
+        with self._lock:
+            self._records[str(task_name)] = {
+                "next_run": next_run,
+                "ok": bool(ok),
+                "updated": moment,
+            }
+            self._save()
         return next_run
 
     def mark_due_now(self, task_name: str, now: float | None = None) -> float:
         """Force the task due at ``now`` (ALAS ``task_call`` equivalent)."""
         moment = time.time() if now is None else now
-        record = self._records.setdefault(str(task_name), {})
-        record["next_run"] = moment
-        record["updated"] = moment
-        self._save()
+        with self._lock:
+            record = self._records.setdefault(str(task_name), {})
+            record["next_run"] = moment
+            record["updated"] = moment
+            self._save()
         return moment
 
 

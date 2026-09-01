@@ -141,10 +141,12 @@ class TaskScheduleStoreTest(unittest.TestCase):
             "广场女神像",
             "镜中之战",
             "每日跑商",
-            "一键完成日常",
         ):
             self.assertEqual(scheduler.TASK_POLICIES[name].anchor, "daily")
         self.assertEqual(scheduler.TASK_POLICIES["每周跑图"].anchor, "weekly")
+        # 批处理自身没有调度策略：自动调度只消费子任务账本，批处理整体
+        # 的 next_run 无消费者（避免只写不读的误导条目）。
+        self.assertNotIn("一键完成日常", scheduler.TASK_POLICIES)
 
 
 class _FakeStartController:
@@ -156,9 +158,11 @@ class _FakeStartController:
 
 
 class _FakeOg:
-    def __init__(self, executor):
+    def __init__(self, executor, debug=True):
         self.executor = executor
-        self.app = SimpleNamespace(start_controller=_FakeStartController())
+        # 自动执行每周跑图只允许调试模式；默认按调试模式构造，正式模式
+        # 由显式传 debug=False 的用例覆盖。
+        self.app = SimpleNamespace(start_controller=_FakeStartController(), debug=debug)
 
 
 class _ExecutorStub:
@@ -293,6 +297,97 @@ class RunDueTasksOnceTest(unittest.TestCase):
         og = _FakeOg(executor)
         self.assertIsNone(auto_scheduler.run_due_tasks_once(og))
         self.assertEqual([], og.app.start_controller.started)
+
+    def test_disabled_batch_starts_nothing_even_when_switch_on(self):
+        # HIGH 回归：批处理“启用”关闭但“启动自动执行日常”残留开启时，
+        # 不得出现 start -> run() 立即返回 -> task_done -> 再 start 的空转。
+        batch, executor = self._build({"启用": False})
+        og = _FakeOg(executor)
+        self.assertIsNone(auto_scheduler.run_due_tasks_once(og))
+        self.assertEqual([], og.app.start_controller.started)
+
+    def test_weekly_map_auto_start_requires_debug_mode(self):
+        # 每周跑图在正式前端保持隐藏，自动执行开关只在调试模式生效。
+        map_task = _TaskStub("每周跑图")
+        batch = _BatchStub(
+            {"启用": True, "启动自动执行每周跑图": True},
+            (),
+        )
+        executor = _ExecutorStub(
+            {MapCollectionTask: map_task, DailyBatchTask: batch}
+        )
+        og = _FakeOg(executor, debug=False)
+        self.assertIsNone(auto_scheduler.run_due_tasks_once(og))
+        self.assertEqual([], og.app.start_controller.started)
+
+
+class InstallAutoSchedulerTest(unittest.TestCase):
+    """生产入口在 QApplication 创建前安装，信号必须仍然接上（HIGH 回归）."""
+
+    def tearDown(self):
+        from ok.gui.Communicate import communicate
+
+        runner = getattr(auto_scheduler.install_auto_scheduler, "_runner", None)
+        if runner is not None:
+            for signal, slot in (
+                (communicate.task_done, runner.on_task_done),
+                (communicate.task_list_updated, runner.on_first_app_signal),
+                (communicate.starting_emulator, runner.on_first_app_signal),
+            ):
+                try:
+                    signal.disconnect(slot)
+                except (RuntimeError, TypeError):
+                    pass
+        auto_scheduler.install_auto_scheduler._installed = False
+        if runner is not None:
+            auto_scheduler.install_auto_scheduler._runner = None
+
+    def test_installs_without_qapplication_and_schedules_on_first_signal(self):
+        from unittest.mock import patch
+
+        from ok.gui.Communicate import communicate
+
+        with patch(
+            "PySide6.QtCore.QCoreApplication.instance", return_value=None
+        ), patch(
+            "PySide6.QtCore.QTimer.singleShot"
+        ) as single_shot_mock:
+            self.assertTrue(auto_scheduler.install_auto_scheduler())
+            # 幂等：重复安装直接拒绝。
+            self.assertFalse(auto_scheduler.install_auto_scheduler())
+            # 导入期（无应用实例）不得排布任何定时器。
+            self.assertEqual(single_shot_mock.call_args_list, [])
+            # 任务列表刷新是应用就绪后的必发信号，应触发首次检查排布。
+            communicate.task_list_updated.emit()
+            self.assertEqual(single_shot_mock.call_count, 1)
+            delay = single_shot_mock.call_args[0][0]
+            self.assertEqual(
+                delay, int(auto_scheduler.INSTALL_DELAY_SECONDS * 1000)
+            )
+            # 重复信号不重复排布。
+            communicate.starting_emulator.emit(False, None, 0)
+            self.assertEqual(single_shot_mock.call_count, 1)
+
+    def test_task_done_before_other_signals_schedules_startup_check(self):
+        from unittest.mock import patch
+
+        from ok.gui.Communicate import communicate
+
+        with patch(
+            "PySide6.QtCore.QCoreApplication.instance", return_value=None
+        ), patch(
+            "PySide6.QtCore.QTimer.singleShot"
+        ) as single_shot_mock:
+            self.assertTrue(auto_scheduler.install_auto_scheduler())
+            communicate.task_done.emit(None)
+            # task_done 既兜底首次检查，也排布 8 秒后的例行复查。
+            delays = [call[0][0] for call in single_shot_mock.call_args_list]
+            self.assertIn(
+                int(auto_scheduler.INSTALL_DELAY_SECONDS * 1000), delays
+            )
+            self.assertIn(
+                int(auto_scheduler.RECHECK_DELAY_SECONDS * 1000), delays
+            )
 
 
 if __name__ == "__main__":

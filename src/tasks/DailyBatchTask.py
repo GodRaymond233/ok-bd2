@@ -87,7 +87,8 @@ class DailyBatchTask(BaseTask):
                 ),
                 "启动自动执行每周跑图": (
                     "应用启动后，当本周（周一 04:00 起）尚未完成每周跑图"
-                    "且其调度到期时，自动执行每周跑图。"
+                    "且其调度到期时，自动执行每周跑图；仅在调试模式生效，"
+                    "自动执行时会按需拉起游戏客户端。"
                 ),
                 **{
                     key: f"是否在一键完成日常中执行{key}。"
@@ -95,15 +96,18 @@ class DailyBatchTask(BaseTask):
                 },
             }
         )
-        self.config_type.update(
-            {
-                "启用": {
-                    "sub_configs": {
-                        True: child_keys,
-                    }
+        config_type_updates = {
+            "启用": {
+                "sub_configs": {
+                    True: child_keys,
                 }
             }
-        )
+        }
+        if not bool(getattr(self._app, "debug", False)):
+            # 每周跑图在正式前端保持隐藏（v0.1.21 产品决策）；其自动执行
+            # 开关同样只在调试模式展示，防止正式用户重新启用隐藏任务。
+            config_type_updates["启动自动执行每周跑图"] = {"hidden": True}
+        self.config_type.update(config_type_updates)
 
     def request_run_mode(self, run_mode: str) -> None:
         """Select the next executor-driven run without persisting UI config."""
