@@ -310,12 +310,17 @@ class DailyBatchTaskTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             schedule_store = scheduler.TaskScheduleStore(f"{temp_dir}/schedule.json")
             scheduler.set_default_store(schedule_store)
+            # INCOMPLETE 模式会读 run_history 判断“今日已完成”；必须钉住
+            # 独立空账本，否则开发机上 configs/task_run_history.json 的真实
+            # 记录会把用例变成空跑。
+            set_default_store(RunHistoryStore(f"{temp_dir}/history.json"))
             try:
                 # 刚失败过：next_run 在未来，处于退避期。
                 schedule_store.delay_after_run("快速狩猎", ok=False)
                 self.assertTrue(DailyBatchTask.run(task, RUN_MODE_INCOMPLETE))
             finally:
                 scheduler.set_default_store(None)
+                set_default_store(None)
 
         self.assertEqual([], calls)
         self.assertEqual("第一项", task.info.get("跳过"))
@@ -335,12 +340,14 @@ class DailyBatchTaskTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             schedule_store = scheduler.TaskScheduleStore(f"{temp_dir}/schedule.json")
             scheduler.set_default_store(schedule_store)
+            set_default_store(RunHistoryStore(f"{temp_dir}/history.json"))
             try:
                 # 退避点已过期（next_run 在过去）→ 视为到期，应执行。
                 schedule_store.mark_due_now("快速狩猎", now=time.time() - 3600)
                 self.assertTrue(DailyBatchTask.run(task, RUN_MODE_INCOMPLETE))
             finally:
                 scheduler.set_default_store(None)
+                set_default_store(None)
 
         self.assertEqual([("快速狩猎", True)], calls)
 
