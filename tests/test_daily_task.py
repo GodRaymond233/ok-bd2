@@ -1,3 +1,4 @@
+import re
 import unittest
 from dataclasses import replace
 from types import SimpleNamespace
@@ -1008,11 +1009,11 @@ class DailyTaskHelperTest(unittest.TestCase):
         task._quick_hunt_wait_ocr = wait_ocr
 
         self.assertEqual("opened", task._quick_hunt_open_menu())
-        self.assertEqual([([r"^快速狩猎$"], None, 8.0, "主页快速狩猎入口")], click_ocr_calls)
+        self.assertEqual([([r"^快速狩猎$"], None, 2.0, "主页快速狩猎入口")], click_ocr_calls)
         self.assertEqual([], clicks)
         self.assertEqual([r"狩猎场"], ocr_calls[0][0])
         self.assertIsNone(ocr_calls[0][1])
-        self.assertEqual(8.0, ocr_calls[0][2])
+        self.assertEqual(4.0, ocr_calls[0][2])
         self.assertEqual("快速狩猎菜单确认", ocr_calls[0][3])
         self.assertEqual("已进入", statuses["快速狩猎入口"])
         self.assertEqual("狩猎场", statuses["快速狩猎菜单"])
@@ -1354,6 +1355,8 @@ class DailyTaskHelperTest(unittest.TestCase):
         task.config = {"快速狩猎界面等待秒数": 8.0}
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
+        task.capture_frame = lambda: object()
+        task._quick_hunt_ocr_text = lambda _frame, _roi, name: "圣石洞空"
         clicks = []
         task._click_reference = lambda x, y, **kwargs: clicks.append((x, y, kwargs))
         task._quick_hunt_click_ocr = lambda *_args, **_kwargs: False
@@ -1400,6 +1403,8 @@ class DailyTaskHelperTest(unittest.TestCase):
         task.config = {"快速狩猎界面等待秒数": 8.0}
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
+        task.capture_frame = lambda: object()
+        task._quick_hunt_ocr_text = lambda _frame, _roi, name: ""
         task._quick_hunt_click_ocr = lambda *_args, **_kwargs: False
         task._click_reference = lambda *args, **kwargs: None
         task._quick_hunt_wait_ocr = lambda *_args, **_kwargs: ("", None)
@@ -1408,6 +1413,61 @@ class DailyTaskHelperTest(unittest.TestCase):
 
         self.assertFalse(task._quick_hunt_run_crystal_cave())
         self.assertEqual([], resource_checks)
+
+    def test_quick_hunt_crystal_entry_pattern_matches_garbled_ocr_last_char(self):
+        # BUG-20260901-03：实机与 20260724 录屏帧按任务管线复现，CLICK_ROI
+        # 裁剪 OCR 稳定把"圣石洞穴"末字读成"空/究"，四字全匹配从未命中，
+        # 识别点击路径实机从未生效；正则须放行前三字。
+        for seen in ("圣石洞空", "圣石洞究", "圣石洞 究", "圣石洞穴"):
+            value = QuickHuntTask._normalize_text(seen)
+            self.assertTrue(
+                re.search(QUICK_HUNT_CRYSTAL_ENTRY_PATTERN, value),
+                f"entry pattern should match OCR text {seen!r}",
+            )
+
+    def test_quick_hunt_open_menu_retries_swallowed_entrance_click(self):
+        # RPT-20260901-233554 23:32 一轮：入口点击被主页动画吞掉后单击定
+        # 胜负直接失败；仍在主页时应补点入口，最多 3 次。
+        task = object.__new__(QuickHuntTask)
+        task.config = {"快速狩猎界面等待秒数": 8.0}
+        task._wait_for_quick_hunt_home = lambda: True
+        task.capture_frame = lambda: object()
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task.operate_click = lambda *_args, **_kwargs: self.fail(
+            "OCR hit must not use the fixed-coordinate fallback"
+        )
+        entrance_clicks = []
+        task._quick_hunt_click_ocr = (
+            lambda patterns, roi, timeout, name: entrance_clicks.append(name) or True
+        )
+        task._quick_hunt_home_signals = lambda _frame: (True, 3, 255.0, "抽抽乐")
+        confirm_results = iter([("", None), ("", None), ("狩猎场 野猪洞穴", None)])
+        task._quick_hunt_wait_ocr = lambda *_args, **_kwargs: next(confirm_results)
+
+        self.assertEqual("opened", task._quick_hunt_open_menu())
+        self.assertEqual(3, len(entrance_clicks))
+
+    def test_quick_hunt_open_menu_stops_retrying_when_left_home(self):
+        # 点击后若已离开主页（导航到未知页面），不得盲点固定入口坐标。
+        task = object.__new__(QuickHuntTask)
+        task.config = {"快速狩猎界面等待秒数": 8.0}
+        task._wait_for_quick_hunt_home = lambda: True
+        task.capture_frame = lambda: object()
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task.operate_click = lambda *_args, **_kwargs: self.fail(
+            "must not blind-click the fixed entry when not on home"
+        )
+        entrance_clicks = []
+        task._quick_hunt_click_ocr = (
+            lambda patterns, roi, timeout, name: entrance_clicks.append(name) or True
+        )
+        task._quick_hunt_home_signals = lambda _frame: (False, 0, 120.0, "-")
+        task._quick_hunt_wait_ocr = lambda *_args, **_kwargs: ("", None)
+
+        self.assertEqual("failed", task._quick_hunt_open_menu())
+        self.assertEqual(1, len(entrance_clicks))
 
     def test_quick_hunt_adventure_map_is_verified_before_consuming_rice(self):
         task = object.__new__(QuickHuntTask)
