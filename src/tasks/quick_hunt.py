@@ -78,7 +78,10 @@ QUICK_HUNT_STONE_LIST_ROI = QUICK_HUNT_CRYSTAL_TITLE_ROI
 # 狩猎菜单左列"圣石洞穴"入口（图标+文字）区域；识别点击优先于固定参考点。
 QUICK_HUNT_CRYSTAL_CLICK_ROI = _quick_hunt_relative_roi(260, 520, 100, 400)
 
-QUICK_HUNT_CRYSTAL_ENTRY_PATTERN = r"圣石洞穴"
+# 实机 OCR（RPT-20260901-233554 与 20260724 录屏帧复现）稳定把末字"穴"
+# 读成"空/究"（圣石洞空/圣石洞究），四字全匹配从未命中；左列该三字前缀
+# 唯一，放宽到"圣石洞"。
+QUICK_HUNT_CRYSTAL_ENTRY_PATTERN = r"圣石洞"
 
 QUICK_HUNT_STONE_COUNT_ROI = _quick_hunt_relative_roi(1794, 288, 1689, 80)
 
@@ -524,30 +527,40 @@ class QuickHuntFeatureMixin:
             return "failed"
 
         self._status_set("快速狩猎入口", "首页已确认")
-        clicked_by_ocr = self._quick_hunt_click_ocr(
-            [r"^快速狩猎$"],
-            None,
-            self._quick_hunt_ui_timeout(),
-            name="主页快速狩猎入口",
-        )
-        if clicked_by_ocr:
-            self._status_set("快速狩猎入口", "已点击 OCR 文字框中心")
-        else:
-            self.operate_click(*QUICK_HUNT_ENTRY_POINT, after_sleep=1.0)
-            self._status_set("快速狩猎入口", "OCR 未命中，已点击固定入口中心")
+        confirm_timeout = max(3.0, self._quick_hunt_ui_timeout() / 2.0)
+        for attempt in range(1, 4):
+            clicked_by_ocr = self._quick_hunt_click_ocr(
+                [r"^快速狩猎$"],
+                None,
+                2.0,
+                name="主页快速狩猎入口",
+            )
+            if clicked_by_ocr:
+                self._status_set("快速狩猎入口", "已点击 OCR 文字框中心")
+            else:
+                self.operate_click(*QUICK_HUNT_ENTRY_POINT, after_sleep=1.0)
+                self._status_set("快速狩猎入口", "OCR 未命中，已点击固定入口中心")
 
-        # User requirement:  coordinates must not be inferred or converted.
-        # The menu is confirmed by full-frame OCR unless an ok-bd2 ROI is supplied.
-        text, _box = self._quick_hunt_wait_ocr(
-            [r"狩猎场"],
-            None,
-            self._quick_hunt_ui_timeout(),
-            name="快速狩猎菜单确认",
-        )
-        if text:
-            self._status_set("快速狩猎入口", "已进入")
-            self._status_set("快速狩猎菜单", "狩猎场")
-            return "opened"
+            # User requirement:  coordinates must not be inferred or converted.
+            # The menu is confirmed by full-frame OCR unless an ok-bd2 ROI is supplied.
+            text, _box = self._quick_hunt_wait_ocr(
+                [r"狩猎场"],
+                None,
+                confirm_timeout,
+                name="快速狩猎菜单确认",
+            )
+            if text:
+                self._status_set("快速狩猎入口", "已进入")
+                self._status_set("快速狩猎菜单", "狩猎场")
+                return "opened"
+            if attempt >= 3:
+                break
+            # 入口点击可能被主页动画吞掉（RPT-20260901-233554 23:32 一轮
+            # 单击定胜负直接失败）；仍在主页才补点，避免在未知页面盲点。
+            home_ok, *_rest = self._quick_hunt_home_signals(self.capture_frame())
+            if not home_ok:
+                break
+            self.log_info(f"快速狩猎：第{attempt}次点击入口后未确认狩猎菜单，重试。")
 
         self._status_set("快速狩猎入口", "点击后未确认菜单")
         return "failed"
@@ -658,6 +671,12 @@ class QuickHuntFeatureMixin:
                 name="圣石洞穴入口",
             )
             if not clicked:
+                seen = self._quick_hunt_ocr_text(
+                    self.capture_frame(),
+                    QUICK_HUNT_CRYSTAL_CLICK_ROI,
+                    name="圣石洞穴入口区域",
+                )
+                self._status_set("圣石洞穴入口区域 OCR", seen or "-")
                 self._click_reference(*QUICK_HUNT_CRYSTAL_POINT, after_sleep=0.8)
             text, _box = self._quick_hunt_wait_ocr(
                 confirm_patterns,
