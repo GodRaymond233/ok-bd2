@@ -321,14 +321,20 @@ class SquareGoddessTask(BaseBD2Task):
                 gacha_ocr_text=last_gacha_text,
                 context="广场女神像返回主页",
             )
-            normalized_gacha_text = self._normalize_text(last_gacha_text)
-            square_chat_visible = (
-                normalized_gacha_text.startswith("输入")
-                and "抽抽乐" not in normalized_gacha_text
-            )
+            still_in_square = False
+            if remaining_home_clicks > 0:
+                quick_switch_result = self._match(frame, QUICK_SWITCH_TEMPLATE)
+                self.info_set(
+                    "快速切换按钮",
+                    f"{quick_switch_result.score:.3f}/{quick_switch_result.pixel_score:.3f}",
+                )
+                still_in_square = self._passes(
+                    quick_switch_result,
+                    QUICK_SWITCH_TEMPLATE,
+                )
             if (
                 remaining_home_clicks > 0
-                and square_chat_visible
+                and still_in_square
                 and monotonic() >= next_home_retry_at
             ):
                 completed_home_clicks += 1
@@ -339,7 +345,7 @@ class SquareGoddessTask(BaseBD2Task):
                 )
                 self.log_info(
                     "广场女神像：返回主页点击未生效，"
-                    f"仍识别到广场聊天输入，执行第{completed_home_clicks}次点击。"
+                    f"仍识别到快速切换卡带按钮，执行第{completed_home_clicks}次点击。"
                 )
                 self.operate_click(*SQUARE_HOME_POINT, after_sleep=1.0)
                 next_home_retry_at = monotonic() + retry_interval

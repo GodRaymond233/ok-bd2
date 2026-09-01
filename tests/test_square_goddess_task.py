@@ -413,7 +413,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
         self.assertEqual("1/3", statuses["广场主页点击次数"])
         self.assertEqual(10.0, task.config["主页确认等待秒数"])
 
-    def test_square_return_home_retries_when_chat_input_confirms_click_was_ignored(self):
+    def test_square_return_home_retries_when_quick_switch_confirms_still_in_square(self):
         task = object.__new__(SquareGoddessTask)
         task.config = {"主页压暗阈值": 185.0}
         statuses = {}
@@ -422,9 +422,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
         task.log_info = logs.append
         task.sleep = lambda *_args, **_kwargs: None
         task.capture_frame = lambda: np.full((1080, 1920, 3), 255, dtype=np.uint8)
-        # The gacha reader tries x1/x2/x3 on the same frame.  Keep the chat
-        # signal visible for all three attempts before the next frame clears it.
-        ocr_texts = iter(("输入", "输入", "输入", "抽抽乐"))
+        ocr_texts = iter(("", "", "", "抽抽乐"))
 
         def fake_ocr(_frame, name, roi=None, **_kwargs):
             if name == "主页左列":
@@ -435,6 +433,14 @@ class SquareGoddessEntryTest(unittest.TestCase):
         task.clear_temporary_home_announcement_if_needed = (
             lambda **_kwargs: False
         )
+        task._match = lambda _frame, _spec: MatchResult(
+            score=0.95,
+            pixel_score=0.90,
+            position=(760, 960),
+            size=(64, 60),
+            zncc_score=0.90,
+        )
+        task._passes = lambda *_args, **_kwargs: True
         clicks = []
         task.operate_click = lambda *args, **kwargs: clicks.append((args, kwargs))
 
@@ -459,7 +465,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
         self.assertEqual("2/3", statuses["广场主页点击次数"])
         self.assertTrue(any("执行第2次点击" in message for message in logs))
 
-    def test_square_return_home_does_not_retry_without_square_chat_signal(self):
+    def test_square_return_home_does_not_retry_without_quick_switch_signal(self):
         task = object.__new__(SquareGoddessTask)
         task.config = {"主页压暗阈值": 185.0}
         task.info_set = lambda *_args, **_kwargs: None
@@ -476,6 +482,14 @@ class SquareGoddessEntryTest(unittest.TestCase):
         task.clear_temporary_home_announcement_if_needed = (
             lambda **_kwargs: False
         )
+        task._match = lambda _frame, _spec: MatchResult(
+            score=0.50,
+            pixel_score=0.40,
+            position=(760, 960),
+            size=(64, 60),
+            zncc_score=0.30,
+        )
+        task._passes = lambda *_args, **_kwargs: False
         clicks = []
         task.operate_click = lambda *args, **kwargs: clicks.append((args, kwargs))
         clock = {"value": 0.0}
@@ -518,6 +532,14 @@ class SquareGoddessEntryTest(unittest.TestCase):
         task.clear_temporary_home_announcement_if_needed = (
             lambda **_kwargs: False
         )
+        task._match = lambda _frame, _spec: MatchResult(
+            score=0.95,
+            pixel_score=0.90,
+            position=(760, 960),
+            size=(64, 60),
+            zncc_score=0.90,
+        )
+        task._passes = lambda *_args, **_kwargs: True
         clicks = []
         task.operate_click = lambda *args, **kwargs: clicks.append((args, kwargs))
         clock = {"value": 0.0}
