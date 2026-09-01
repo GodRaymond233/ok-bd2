@@ -9,6 +9,7 @@ from src.tasks.map_trade.action_icons import (
     ACTION_SLOT_CENTER_RELATIVE_ROIS,
     ACTION_SLOT_CENTERS_REFERENCE,
     ACTION_SLOT_RELATIVE_ROIS,
+    SANDBOX_ACTION_ICONS,
     SEARCH_ICON,
     SKILL_GROUP_CENTERS_REFERENCE,
     SUBDUE_ICON,
@@ -18,6 +19,7 @@ from src.tasks.map_trade.card_status import StoryCardCompletion
 from src.tasks.map_trade.models import CardSpec, MapPageMode, MatchResult, TemplateSpec
 from src.utils.calibration import FHD_1080, reference_rect_to_relative_roi
 from src.utils.cartridge_quick_switch import QUICK_SWITCH_PAGE_LABELS
+from src.utils.vision_models import FrameGeometry
 
 QUICK_SWITCH_TEMPLATE = TemplateSpec(
     "快速切换按钮",
@@ -137,17 +139,33 @@ STORY_BADGE_CLUSTER_RADIUS = 12
 # tighter inner-badge scale; identity remains protected by independent score,
 # pixel, ZNCC, and runner-up-margin gates below.
 STORY_BADGE_GRID_SPACING_RATIO = 3 / 32
-STORY_BADGE_GRID_MAX_CLIENT_SCALE = 0.85
 STORY_BADGE_GRID_MIN_ANCHORS = 5
 STORY_BADGE_GRID_MIN_VISIBLE_FRACTION = 0.60
 STORY_BADGE_GRID_ALIGNMENT_TOLERANCE_RATIO = 0.02
 STORY_BADGE_GRID_LOCAL_TOLERANCE_RATIO = 0.03
 STORY_BADGE_GRID_VERTICAL_TOLERANCE_RATIO = 0.006
+STORY_BADGE_GRID_MIN_SPACING_RATIO = 0.04
+STORY_BADGE_GRID_MAX_SPACING_RATIO = 0.25
+STORY_BADGE_GRID_MAX_PAIR_GAP = 8
+# A valid cartridge slot is several badge diameters wide.  This rejects the
+# half-spacing harmonic produced by the upper/lower anti-aliased edge peaks.
+STORY_BADGE_GRID_MIN_SPACING_BADGE_RATIO = 4.5
+STORY_BADGE_GRID_ROW_TOLERANCE_RATIO = 0.28
+STORY_BADGE_GRID_STRONG_COMBINED_SCORE = 0.72
 STORY_BADGE_GRID_REFERENCE_SCALE = 27 / 29
 STORY_BADGE_GRID_TEMPLATE_SCORE = 0.95
 STORY_BADGE_GRID_PIXEL_SCORE = 0.90
 STORY_BADGE_GRID_ZNCC_SCORE = 0.70
-STORY_BADGE_GRID_MIN_MARGIN = 0.05
+# The grid path has a fixed physical slot and four additional structural
+# signals.  Calibration against the retained later-card hard negative leaves
+# 0.035 as the lowest raw-ZNCC separation that remains safe for this family.
+STORY_BADGE_GRID_MIN_MARGIN = 0.035
+# Below the raw-margin floor the digit OCR becomes the discriminator: real
+# 1280x720 captures leave badge 8 separated by only ~0.013 ZNCC while the
+# prepared digit still reads cleanly.  The combined-margin floor keeps pure
+# noise ties out of the OCR path.
+STORY_BADGE_GRID_MIN_COMBINED_MARGIN = 0.004
+STORY_BADGE_GRID_OCR_MARGIN = 0.005
 Q_SP6_STORY_NUMBER = 6
 STORY_BADGE_SPECS = tuple(
     (
@@ -273,6 +291,15 @@ SANDBOX_SKILL_SELECTED_YELLOW_MIN_RATIO = 0.20
 SANDBOX_SKILL_UNSELECTED_YELLOW_MAX_RATIO = 0.10
 SANDBOX_SKILL_GROUP_SCALE_RATIOS = (0.90, 0.95, 1.0, 1.05, 1.10, 1.15, 1.20, 1.25, 1.30, 1.35)
 SANDBOX_SKILL_GROUP_SEARCH_ROI = (0.80, 0.85, 0.96, 1.0)
+# The map confirmation path is restricted to these two map-only templates.
+# It is intentionally separate from action-slot identity gates: WGC at a
+# small viewport can lower raw template correlation while preserving edges.
+SANDBOX_MAP_EVIDENCE_MIN_SCORE = 0.80
+SANDBOX_MAP_EVIDENCE_MIN_PIXEL = 0.84
+SANDBOX_MAP_EVIDENCE_MIN_ZNCC = 0.78
+SANDBOX_MAP_EVIDENCE_MIN_GRADIENT = 0.50
+SANDBOX_MAP_EVIDENCE_MIN_EDGE = 0.85
+SANDBOX_MAP_EVIDENCE_MIN_COMPOSITE = 0.80
 SANDBOX_SKILL_SLOT_1_REFERENCE_CENTER = SKILL_GROUP_CENTERS_REFERENCE[1]
 SANDBOX_SKILL_SLOT_2_REFERENCE_CENTER = SKILL_GROUP_CENTERS_REFERENCE[2]
 SANDBOX_SKILL_SLOT_1_RELATIVE_POINT = (
@@ -402,6 +429,22 @@ class StoryBadgeCandidate:
             return self.result.zncc_score
         return self.result.score
 
+    @property
+    def combined_score(self) -> float:
+        """Rank identity with all finite structural evidence when available."""
+        values = (
+            (self.result.score, 0.25),
+            (self.result.pixel_score, 0.20),
+            (self.result.zncc_score, 0.30),
+            (self.result.gradient_zncc_score, 0.15),
+            (self.result.edge_score, 0.10),
+        )
+        available = tuple((value, weight) for value, weight in values if value > -1.0)
+        if not available:
+            return -1.0
+        weight_sum = sum(weight for _value, weight in available)
+        return sum(value * weight for value, weight in available) / weight_sum
+
 
 @dataclass(frozen=True)
 class StoryBadgeDetection:
@@ -416,6 +459,12 @@ class StoryBadgeDetection:
         if self.runner_up is None:
             return -1.0
         return self.best.discrimination_score - self.runner_up.discrimination_score
+
+    @property
+    def combined_margin(self) -> float:
+        if self.runner_up is None:
+            return -1.0
+        return self.best.combined_score - self.runner_up.combined_score
 
 
 @dataclass(frozen=True)
@@ -475,13 +524,17 @@ class SandboxConfirmation:
     skill_state_hits: int
     action_hits: int
     skill_group: int | None
+    geometry: FrameGeometry | None = None
+    action_states: tuple[tuple[str, str], ...] = ()
+    reason: str = ""
 
     @property
     def passed(self) -> bool:
         return (
-            self.map_signal_hits >= 1
+            (self.geometry is None or self.geometry.accepted)
+            and self.map_signal_hits >= 1
             and self.skill_state_hits >= 2
-            and self.skill_group in {1, 2}
+            and self.skill_group == 1
             and self.action_hits >= 3
         )
 
@@ -505,6 +558,30 @@ SANDBOX_TELEPORT_SKILL_TEMPLATE = TemplateSpec(
     min_pixel_score=0.85,
     minimum_safe_threshold=0.95,
     min_zncc_score=0.85,
+)
+# Keep the historical strict TemplateSpec above for compatibility.  The
+# low-resolution sandbox path uses the independent ActionIconSpec set so its
+# local evidence gates can evolve without changing generic callers.
+SANDBOX_SKILL_ACTION_ICONS = SANDBOX_ACTION_ICONS
+SANDBOX_CONFIRM_ACTION_ICONS = SANDBOX_ACTION_ICONS
+
+
+def _sandbox_empty_slot_template(slot_name: str) -> TemplateSpec:
+    return TemplateSpec(
+        f"{slot_name}空技能槽加号",
+        "image/Skill-Nothing.png",
+        0.78,
+        relative_roi=ACTION_SLOT_RELATIVE_ROIS[slot_name],
+        candidate_center_roi=ACTION_SLOT_CENTER_RELATIVE_ROIS[slot_name],
+        scale_ratios=(0.55, 0.65, 0.75, 0.85, 0.95, 1.05, 1.15, 1.25),
+        min_pixel_score=0.70,
+        minimum_safe_threshold=0.78,
+    )
+
+
+SANDBOX_EMPTY_SLOT_TEMPLATES = tuple(
+    (slot_name, _sandbox_empty_slot_template(slot_name))
+    for slot_name in ACTION_SLOT_CENTERS_REFERENCE
 )
 SANDBOX_TELEPORT_SKILL_REFERENCE_CENTER = ACTION_SLOT_CENTERS_REFERENCE["teleport"]
 SANDBOX_TELEPORT_SKILL_RELATIVE_POINT = (

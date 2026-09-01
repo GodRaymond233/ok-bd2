@@ -91,6 +91,7 @@ class CollectionCardTest(unittest.TestCase):
             log_warning=lambda *_args, **_kwargs: None,
         )
         vision = SimpleNamespace(
+            capture=lambda: frame,
             click_stable_template=lambda spec, timeout, after_sleep: (
                 template_clicks.append((spec, timeout, after_sleep)) or True
             ),
@@ -107,6 +108,7 @@ class CollectionCardTest(unittest.TestCase):
         navigator._wait_for_story_badge_with_scroll = lambda number: (
             badge_targets.append(number) or (frame, badge)
         )
+        navigator._find_story_badge = lambda _frame, _number: (badge, "")
         navigator._wait_for_story_sandbox = lambda number: NavigationResult(
             True,
             ScreenState.SANDBOX,

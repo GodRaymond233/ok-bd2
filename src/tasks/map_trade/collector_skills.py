@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from dataclasses import replace
 from time import monotonic
 
 from src.tasks.map_trade.action_icons import (
@@ -52,13 +53,81 @@ from src.tasks.map_trade.collector_constants import (  # noqa: F401
     _relative_reference_point,
     _relative_reference_roi,
 )
-from src.tasks.map_trade.models import (
-    CollectionMapRole,
-)
+from src.tasks.map_trade.models import CollectionMapRole, MatchResult
 from src.tasks.map_trade.vision import parse_used_limit
 
 
 class SkillExecutionMixin:
+    @staticmethod
+    def _action_detection_is_stable(
+        previous: ActionIconDetection,
+        current: ActionIconDetection,
+    ) -> bool:
+        """Require one state and physical slot identity across two frames."""
+
+        if previous.state is not current.state:
+            return False
+        if previous.state not in {
+            ActionIconState.AVAILABLE,
+            ActionIconState.USED,
+        }:
+            return False
+        if previous.semantic_state and current.semantic_state:
+            if previous.semantic_state != current.semantic_state:
+                return False
+        first = previous.match
+        second = current.match
+        if min(*first.size, *second.size) <= 0:
+            return False
+        scale = max(
+            0.2,
+            min(
+                abs(float(first.scale or 1.0)),
+                abs(float(second.scale or 1.0)),
+            ),
+        )
+        tolerance = max(2, round(6.0 * scale))
+        return (
+            abs(first.center[0] - second.center[0]) <= tolerance
+            and abs(first.center[1] - second.center[1]) <= tolerance
+            and abs(first.size[0] - second.size[0]) <= tolerance
+            and abs(first.size[1] - second.size[1]) <= tolerance
+        )
+
+    @staticmethod
+    def _stable_detection(
+        detection: ActionIconDetection,
+        sample_count: int,
+    ) -> ActionIconDetection:
+        reason = str(detection.reason or "")
+        if "跨帧稳定" not in reason:
+            reason = f"{reason}；跨帧稳定确认" if reason else "跨帧稳定确认"
+        return replace(
+            detection,
+            reason=reason,
+            stable=True,
+            sample_count=max(2, int(sample_count)),
+        )
+
+    @staticmethod
+    def _unstable_detection(
+        detection: ActionIconDetection,
+        sample_count: int,
+    ) -> ActionIconDetection:
+        reason = str(detection.reason or "")
+        if "跨帧稳定" not in reason:
+            reason = (
+                f"{reason}；未达到跨帧稳定确认"
+                if reason
+                else "未达到跨帧稳定确认"
+            )
+        return replace(
+            detection,
+            reason=reason,
+            stable=False,
+            sample_count=max(1, int(sample_count)),
+        )
+
     @staticmethod
     def _action_detection_rank(detection: ActionIconDetection) -> tuple:
         state_rank = {
@@ -80,14 +149,19 @@ class SkillExecutionMixin:
         icon: ActionIconSpec,
         *,
         require_used_stable: bool = False,
+        require_stable: bool = False,
     ) -> tuple[object, ActionIconDetection]:
         """Capture a short window so a transient HUD frame cannot cause a miss."""
 
+        stable_required = require_stable or require_used_stable
         best_frame = None
         best_detection = None
+        previous_detection = None
+        observed_samples = 0
         for attempt in range(ACTION_ICON_DETECTION_SAMPLES):
             frame = self.vision.capture()
             detection = self.action_icons.detect(frame, icon)
+            observed_samples += 1
             if (
                 best_detection is None
                 or self._action_detection_rank(detection)
@@ -95,23 +169,61 @@ class SkillExecutionMixin:
             ):
                 best_frame = frame
                 best_detection = detection
-            if require_used_stable and detection.state is ActionIconState.USED:
-                # A single dim frame can be a transition animation.  Require
-                # one immediate confirming USED frame for formal action
-                # evidence; any other state is returned and therefore cannot
-                # authorize a click or local success.
-                confirm_frame = self.vision.capture()
-                confirm = self.action_icons.detect(confirm_frame, icon)
-                if confirm.state is ActionIconState.USED:
-                    return confirm_frame, confirm
-                return confirm_frame, confirm
+            if stable_required:
+                if (
+                    detection.stable
+                    and detection.sample_count >= 2
+                    and detection.state
+                    in {ActionIconState.AVAILABLE, ActionIconState.USED}
+                ):
+                    return frame, detection
+                if (
+                    previous_detection is not None
+                    and self._action_detection_is_stable(previous_detection, detection)
+                ):
+                    return frame, self._stable_detection(
+                        detection,
+                        max(
+                            2,
+                            previous_detection.sample_count,
+                            detection.sample_count,
+                        ),
+                    )
+                if detection.state in {
+                    ActionIconState.AVAILABLE,
+                    ActionIconState.USED,
+                }:
+                    previous_detection = detection
+                else:
+                    previous_detection = None
+                if attempt + 1 < ACTION_ICON_DETECTION_SAMPLES:
+                    sleeper = getattr(self.task, "sleep", None)
+                    if callable(sleeper):
+                        sleeper(ACTION_ICON_DETECTION_INTERVAL)
+                continue
             if detection.state not in {
                 ActionIconState.ABSENT,
                 ActionIconState.UNKNOWN,
             }:
                 return frame, detection
             if attempt + 1 < ACTION_ICON_DETECTION_SAMPLES:
-                self.task.sleep(ACTION_ICON_DETECTION_INTERVAL)
+                sleeper = getattr(self.task, "sleep", None)
+                if callable(sleeper):
+                    sleeper(ACTION_ICON_DETECTION_INTERVAL)
+        if best_detection is None:
+            best_detection = ActionIconDetection(
+                ActionIconState.ABSENT,
+                MatchResult(-1.0, (0, 0), (0, 0)),
+                reason="未取得图标识别帧",
+            )
+        if stable_required and best_detection.state in {
+            ActionIconState.AVAILABLE,
+            ActionIconState.USED,
+        }:
+            best_detection = self._unstable_detection(
+                best_detection,
+                observed_samples,
+            )
         return best_frame, best_detection
 
     def _open_skill_menu(
@@ -378,11 +490,16 @@ class SkillExecutionMixin:
         if not menu_confirmed:
             return SkillExecutionResult(False, message="未确认安全区技能栏")
         search_action = SEARCH_ACTION
-        frame, detection = self._detect_action_icon(search_action.icon)
+        frame, detection = self._detect_action_icon(
+            search_action.icon,
+            require_stable=True,
+        )
         self._report_icon_detection(search_action, detection)
-        if detection.state is not ActionIconState.AVAILABLE:
+        if detection.state is not ActionIconState.AVAILABLE or not detection.stable:
             if detection.state is ActionIconState.ABSENT:
                 message = "未识别到探查图标"
+            elif not detection.stable:
+                message = "探查图标未达到跨帧稳定确认"
             else:
                 message = f"探查图标状态不可点击：{detection.state.value}"
             return SkillExecutionResult(False, message=message)
@@ -501,9 +618,17 @@ class SkillExecutionMixin:
             return early
         frame, detection = self._detect_action_icon(
             action.icon,
-            require_used_stable=True,
+            require_stable=True,
         )
         self._report_icon_detection(action, detection)
+        if (
+            detection.state in {ActionIconState.AVAILABLE, ActionIconState.USED}
+            and not detection.stable
+        ):
+            return SkillExecutionResult(
+                False,
+                message=f"{action.name}图标未达到跨帧稳定确认",
+            )
         resumed = self._resume_pending_intent(
             action,
             existing,
@@ -549,7 +674,7 @@ class SkillExecutionMixin:
         self._wait_after_feedback_match(action, feedback)
         post_frame, post_detection = self._detect_action_icon(
             action.icon,
-            require_used_stable=True,
+            require_stable=True,
         )
         self._report_icon_detection(action, post_detection)
         return self._finish_after_click(
@@ -914,25 +1039,117 @@ class SkillExecutionMixin:
         brightness = (
             "-" if detection.bright_core_ratio is None else f"{detection.bright_core_ratio:.3f}"
         )
+        geometry = getattr(self.vision, "last_frame_geometry", None)
+        frame_shape = getattr(self, "_last_skill_frame_shape", None)
+        geometry_data = self._serialize_frame_geometry(geometry, frame_shape)
+        candidates = detection.evidence_candidates
+        if not candidates:
+            evidence_by_name = getattr(self.vision, "last_candidate_evidence", {})
+            try:
+                candidates = tuple(evidence_by_name.get(action.template.name, ()))
+            except AttributeError:
+                candidates = ()
+        candidate_data = tuple(
+            self._serialize_candidate(candidate)
+            for candidate in candidates[:8]
+        )
+        self._last_skill_geometry = geometry_data
         self._status(
             f"{action.name}图标",
             (
                 f"{detection.state.value}; match={match.score:.3f}; "
                 f"pixel={match.pixel_score:.3f}; zncc={match.zncc_score:.3f}; "
+                f"gradient={match.gradient_zncc_score:.3f}; "
+                f"edge={match.edge_score:.3f}; scale={match.scale:.3f}; "
+                f"margin={detection.candidate_margin:.3f}; "
+                f"stable={detection.stable}/{detection.sample_count}; "
                 f"bright={brightness}; reason={detection.reason or '-'}"
             ),
         )
         self._last_skill_observations[action.name] = {
             "state": detection.state.value,
+            "semantic_state": str(detection.semantic_state or ""),
+            "stable": bool(detection.stable),
+            "sample_count": int(max(1, detection.sample_count)),
             "match": round(float(match.score), 4),
             "pixel": round(float(match.pixel_score), 4),
             "zncc": round(float(match.zncc_score), 4),
+            "gradient": round(float(match.gradient_zncc_score), 4),
+            "edge": round(float(match.edge_score), 4),
+            "scale": round(float(match.scale), 4),
+            "position": [int(value) for value in match.position],
+            "size": [int(value) for value in match.size],
+            "center": [int(value) for value in match.center],
+            "candidate_margin": round(float(detection.candidate_margin), 4),
+            "geometry": geometry_data,
+            "candidates": list(candidate_data),
             "bright": (
                 None
                 if detection.bright_core_ratio is None
                 else round(float(detection.bright_core_ratio), 4)
             ),
             "reason": str(detection.reason or "")[:SKILL_FAILURE_TEXT_LIMIT],
+        }
+
+    @staticmethod
+    def _finite_number(value, default: float = -1.0) -> float:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return default
+        return number if number == number and abs(number) != float("inf") else default
+
+    @classmethod
+    def _serialize_frame_geometry(cls, geometry, frame_shape) -> dict[str, object]:
+        if geometry is None:
+            if frame_shape is None:
+                return {}
+            return {
+                "frame_width": int(frame_shape[1]),
+                "frame_height": int(frame_shape[0]),
+            }
+        return {
+            "frame_width": int(geometry.frame_width),
+            "frame_height": int(geometry.frame_height),
+            "content": [
+                int(geometry.content_left),
+                int(geometry.content_top),
+                int(geometry.content_width),
+                int(geometry.content_height),
+            ],
+            "scale_x": round(cls._finite_number(geometry.scale_x), 4),
+            "scale_y": round(cls._finite_number(geometry.scale_y), 4),
+            "client_scale": round(cls._finite_number(geometry.client_scale), 4),
+            "aspect_ratio": round(cls._finite_number(geometry.aspect_ratio), 4),
+            "effective_aspect_ratio": round(
+                cls._finite_number(geometry.effective_aspect_ratio),
+                4,
+            ),
+            "accepted": bool(geometry.accepted),
+            "rejection_reasons": [
+                str(value)[:SKILL_FAILURE_TEXT_LIMIT]
+                for value in tuple(geometry.rejection_reasons)[:8]
+            ],
+        }
+
+    @classmethod
+    def _serialize_candidate(cls, candidate) -> dict[str, object]:
+        result = getattr(candidate, "result", candidate)
+        return {
+            "position": [int(value) for value in result.position],
+            "size": [int(value) for value in result.size],
+            "center": [int(value) for value in result.center],
+            "scale": round(cls._finite_number(getattr(result, "scale", 1.0)), 4),
+            "interpolation": str(getattr(candidate, "interpolation", ""))[:32],
+            "m": round(cls._finite_number(result.score), 4),
+            "p": round(cls._finite_number(result.pixel_score), 4),
+            "z": round(cls._finite_number(result.zncc_score), 4),
+            "gradient": round(cls._finite_number(result.gradient_zncc_score), 4),
+            "edge": round(cls._finite_number(result.edge_score), 4),
+            "rejection_reasons": [
+                str(value)[:SKILL_FAILURE_TEXT_LIMIT]
+                for value in tuple(getattr(candidate, "rejection_reasons", ()))[:8]
+            ],
         }
 
     def _read_count(
@@ -984,4 +1201,3 @@ class SkillExecutionMixin:
                 # same-frame/next-frame best-effort read.
                 continue
         return None
-

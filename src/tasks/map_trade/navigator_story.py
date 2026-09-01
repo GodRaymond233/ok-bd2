@@ -133,13 +133,20 @@ from src.tasks.map_trade.navigator_constants import (  # noqa: F401
     STORY_BADGE_ENCODED_ZNCC_SCORE,
     STORY_BADGE_GRID_ALIGNMENT_TOLERANCE_RATIO,
     STORY_BADGE_GRID_LOCAL_TOLERANCE_RATIO,
-    STORY_BADGE_GRID_MAX_CLIENT_SCALE,
+    STORY_BADGE_GRID_MAX_PAIR_GAP,
+    STORY_BADGE_GRID_MAX_SPACING_RATIO,
     STORY_BADGE_GRID_MIN_ANCHORS,
+    STORY_BADGE_GRID_MIN_COMBINED_MARGIN,
     STORY_BADGE_GRID_MIN_MARGIN,
+    STORY_BADGE_GRID_MIN_SPACING_BADGE_RATIO,
+    STORY_BADGE_GRID_MIN_SPACING_RATIO,
     STORY_BADGE_GRID_MIN_VISIBLE_FRACTION,
+    STORY_BADGE_GRID_OCR_MARGIN,
     STORY_BADGE_GRID_PIXEL_SCORE,
     STORY_BADGE_GRID_REFERENCE_SCALE,
+    STORY_BADGE_GRID_ROW_TOLERANCE_RATIO,
     STORY_BADGE_GRID_SPACING_RATIO,
+    STORY_BADGE_GRID_STRONG_COMBINED_SCORE,
     STORY_BADGE_GRID_TEMPLATE_SCORE,
     STORY_BADGE_GRID_VERTICAL_TOLERANCE_RATIO,
     STORY_BADGE_GRID_ZNCC_SCORE,
@@ -265,23 +272,121 @@ class StoryCardNavigationMixin:
         )
         self.task.operate_click(*QUICK_SWITCH_SCROLL_FOCUS_POINT, after_sleep=0.0)
 
+    def _story_badge_geometry(self, frame: np.ndarray):
+        """Assess the quick-switch frame before using any badge as a target."""
+
+        assess = getattr(self.vision, "assess_frame", None)
+        self._last_story_badge_geometry = None
+        self._last_story_badge_geometry_reason = ""
+        if not callable(assess):
+            return None
+        try:
+            geometry = assess(
+                frame,
+                required_relative_rois=(QUICK_SWITCH_CARTRIDGE_REGION,),
+                purpose="剧情角标",
+            )
+        except (AttributeError, TypeError, ValueError) as exc:
+            self._last_story_badge_geometry_reason = f"画面几何检查异常：{exc}"
+            self._status("剧情角标几何", self._last_story_badge_geometry_reason)
+            return False
+        self._last_story_badge_geometry = geometry
+        self._last_story_badge_geometry_reason = ""
+        if not geometry.accepted:
+            self._last_story_badge_geometry_reason = (
+                "画面几何拒绝：" + "|".join(geometry.rejection_reasons)
+            )
+            self._status("剧情角标几何", self._last_story_badge_geometry_reason)
+        return geometry
+
+    def _story_badge_template_candidates(
+        self,
+        frame: np.ndarray,
+        spec,
+        *,
+        peak_radius: int,
+        geometry=None,
+    ) -> tuple[MatchResult, ...]:
+        """Collect weak response peaks while retaining the legacy adapter path."""
+
+        evidence_matcher = getattr(self.vision, "match_evidence_all", None)
+        if callable(evidence_matcher):
+            try:
+                candidates = tuple(
+                    evidence_matcher(
+                        frame,
+                        spec,
+                        minimum_score=0.25,
+                        peak_radius=peak_radius,
+                        max_results=12,
+                        geometry=geometry,
+                        purpose="剧情角标候选",
+                    )
+                )
+            except (AttributeError, TypeError, ValueError):
+                candidates = ()
+            if candidates:
+                return tuple(
+                    getattr(candidate, "result", candidate)
+                    for candidate in candidates
+                )
+
+        matcher = getattr(self.vision, "match_all", None)
+        if not callable(matcher):
+            return ()
+        try:
+            return tuple(
+                matcher(
+                    frame,
+                    spec,
+                    minimum_score=STORY_BADGE_CANDIDATE_SCORE,
+                    peak_radius=peak_radius,
+                    max_results=12,
+                )
+            )
+        except (AttributeError, TypeError, ValueError):
+            return ()
+
     def _story_badge_detections(
         self,
         frame: np.ndarray,
     ) -> tuple[StoryBadgeDetection, ...]:
+        geometry = self._story_badge_geometry(frame)
+        if geometry is False or (geometry is not None and not geometry.accepted):
+            return ()
         height, width = frame.shape[:2]
-        client_scale = min(width / 1920, height / 1080)
+        client_scale = (
+            geometry.client_scale
+            if geometry is not None
+            else min(width / 1920, height / 1080)
+        )
         peak_radius = max(2, round(5 * client_scale))
         cluster_radius = max(4, round(STORY_BADGE_CLUSTER_RADIUS * client_scale))
         candidates: list[StoryBadgeCandidate] = []
         for number, spec in STORY_BADGE_SPECS:
-            matches = self.vision.match_all(
+            matches = self._story_badge_template_candidates(
                 frame,
                 spec,
-                minimum_score=STORY_BADGE_CANDIDATE_SCORE,
                 peak_radius=peak_radius,
+                geometry=geometry,
             )
-            candidates.extend(StoryBadgeCandidate(number, result) for result in matches)
+            candidates.extend(
+                StoryBadgeCandidate(number, result)
+                for result in matches
+                if result.size[0] > 0
+                and result.size[1] > 0
+                and 0 <= result.center[0] <= width
+                and 0 <= result.center[1] <= height
+            )
+
+        if candidates:
+            median_width = median(
+                max(1, candidate.result.size[0]) for candidate in candidates
+            )
+            cluster_radius = max(
+                cluster_radius,
+                round(max(4.0, median_width * 0.70)),
+            )
 
         clusters: list[list[StoryBadgeCandidate]] = []
         for candidate in sorted(
@@ -303,11 +408,20 @@ class StoryCardNavigationMixin:
             best_by_number: dict[int, StoryBadgeCandidate] = {}
             for candidate in cluster:
                 current = best_by_number.get(candidate.number)
-                if current is None or candidate.discrimination_score > current.discrimination_score:
+                if current is None or (
+                    candidate.combined_score,
+                    candidate.discrimination_score,
+                ) > (
+                    current.combined_score,
+                    current.discrimination_score,
+                ):
                     best_by_number[candidate.number] = candidate
             ranked = sorted(
                 best_by_number.values(),
-                key=lambda value: value.discrimination_score,
+                key=lambda value: (
+                    value.combined_score,
+                    value.discrimination_score,
+                ),
                 reverse=True,
             )
             if not ranked:
@@ -328,98 +442,211 @@ class StoryCardNavigationMixin:
         """Fit the low-resolution quick-bar lattice from independent badge peaks."""
 
         height, width = frame.shape[:2]
-        client_scale = min(width / 1920, height / 1080)
-        if client_scale > STORY_BADGE_GRID_MAX_CLIENT_SCALE:
+        if len(detections) < STORY_BADGE_GRID_MIN_ANCHORS:
             return None
 
-        spacing = width * STORY_BADGE_GRID_SPACING_RATIO
-        if spacing <= 0:
-            return None
-        expected_visible_slots = max(1, ceil(width / spacing))
-        required_anchors = max(
-            STORY_BADGE_GRID_MIN_ANCHORS,
-            ceil(expected_visible_slots * STORY_BADGE_GRID_MIN_VISIBLE_FRACTION),
+        badge_width = median(
+            max(1, value.best.result.size[0]) for value in detections
         )
-        if len(detections) < required_anchors:
-            return None
-
-        alignment_tolerance = max(
-            2.0,
-            spacing * STORY_BADGE_GRID_ALIGNMENT_TOLERANCE_RATIO,
+        row_tolerance = max(
+            3.0,
+            min(8.0, badge_width * STORY_BADGE_GRID_ROW_TOLERANCE_RATIO),
         )
 
-        def aligned_for_phase(
-            phase: float,
-        ) -> dict[int, StoryBadgeDetection]:
-            aligned: dict[int, StoryBadgeDetection] = {}
-            for detection in detections:
-                center_x = detection.best.result.center[0]
-                slot_index = round((center_x - phase) / spacing)
-                predicted_x = phase + slot_index * spacing
-                if abs(center_x - predicted_x) > alignment_tolerance:
-                    continue
-                current = aligned.get(slot_index)
-                if (
-                    current is None
-                    or detection.best.discrimination_score > current.best.discrimination_score
-                ):
-                    aligned[slot_index] = detection
-            return aligned
-
-        trials: list[tuple[int, float, float, dict[int, StoryBadgeDetection]]] = []
-        for detection in detections:
-            phase = detection.best.result.center[0] % spacing
-            aligned = aligned_for_phase(phase)
-            trials.append(
-                (
-                    len(aligned),
-                    sum(value.best.discrimination_score for value in aligned.values()),
-                    phase,
-                    aligned,
+        # Matching every number deliberately retains weak peaks for diagnosis,
+        # but those peaks often form parallel anti-aliasing rows.  Fit the
+        # lattice only from the horizontal band with the strongest structural
+        # evidence; a weak row cannot outvote a real row by sheer peak count.
+        rows: list[list[StoryBadgeDetection]] = []
+        for detection in sorted(
+            detections,
+            key=lambda value: value.best.result.center[1],
+        ):
+            center_y = float(detection.best.result.center[1])
+            for row in rows:
+                row_center = median(
+                    float(value.best.result.center[1]) for value in row
                 )
+                if abs(center_y - row_center) <= row_tolerance:
+                    row.append(detection)
+                    break
+            else:
+                rows.append([detection])
+        if not rows:
+            return None
+
+        def row_rank(row: list[StoryBadgeDetection]) -> tuple[float, ...]:
+            strong = [
+                value
+                for value in row
+                if value.best.combined_score >= STORY_BADGE_GRID_STRONG_COMBINED_SCORE
+            ]
+            quality = sum(max(0.0, value.best.combined_score) for value in row)
+            strong_quality = sum(
+                max(0.0, value.best.combined_score) for value in strong
             )
+            return (
+                float(len(strong)),
+                strong_quality,
+                float(len(row)),
+                quality,
+            )
+
+        row = max(rows, key=row_rank)
+        if len(row) < STORY_BADGE_GRID_MIN_ANCHORS:
+            return None
+        x_values = sorted(
+            float(value.best.result.center[0]) for value in row
+        )
+        y_values = [float(value.best.result.center[1]) for value in row]
+        minimum_spacing = max(
+            8.0,
+            badge_width * STORY_BADGE_GRID_MIN_SPACING_BADGE_RATIO,
+            width * STORY_BADGE_GRID_MIN_SPACING_RATIO,
+        )
+        maximum_spacing = max(
+            minimum_spacing + 1.0,
+            width * STORY_BADGE_GRID_MAX_SPACING_RATIO,
+        )
+        differences = {
+            round(x_values[right] - x_values[left], 3)
+            for left in range(len(x_values))
+            for right in range(left + 1, len(x_values))
+            if x_values[right] > x_values[left]
+        }
+        spacing_candidates: set[float] = set()
+        for difference in differences:
+            for divisor in range(1, STORY_BADGE_GRID_MAX_PAIR_GAP + 1):
+                spacing = difference / divisor
+                if minimum_spacing <= spacing <= maximum_spacing:
+                    spacing_candidates.add(round(spacing, 3))
+        # The historical ratio is only a seed for sparse/noisy differences;
+        # acceptance still requires the observed lattice to fit dynamically.
+        prior = width * STORY_BADGE_GRID_SPACING_RATIO
+        if minimum_spacing <= prior <= maximum_spacing:
+            spacing_candidates.add(round(prior, 3))
+        if not spacing_candidates:
+            return None
+
+        def circular_error(value: float, phase: float, spacing: float) -> float:
+            remainder = (value - phase) % spacing
+            return min(remainder, spacing - remainder)
+
+        def fit_phase(spacing: float, seed: float):
+            tolerance = max(
+                2.0,
+                min(
+                    spacing * max(0.02, STORY_BADGE_GRID_ALIGNMENT_TOLERANCE_RATIO),
+                    max(3.0, badge_width * 0.85),
+                ),
+            )
+            phase = seed % spacing
+            aligned: dict[int, StoryBadgeDetection] = {}
+            for _ in range(3):
+                aligned = {}
+                for detection in row:
+                    center_x = float(detection.best.result.center[0])
+                    slot_index = round((center_x - phase) / spacing)
+                    if circular_error(center_x, phase, spacing) > tolerance:
+                        continue
+                    current = aligned.get(slot_index)
+                    if current is None or (
+                        detection.best.combined_score,
+                        detection.best.discrimination_score,
+                    ) > (
+                        current.best.combined_score,
+                        current.best.discrimination_score,
+                    ):
+                        aligned[slot_index] = detection
+                if not aligned:
+                    break
+                signed_errors = tuple(
+                    ((
+                        float(value.best.result.center[0])
+                        - (phase + slot_index * spacing)
+                        + spacing / 2
+                    ) % spacing)
+                    - spacing / 2
+                    for slot_index, value in aligned.items()
+                )
+                phase = (phase + median(signed_errors)) % spacing
+            return phase, aligned, tolerance
+
+        trials = []
+        for spacing in spacing_candidates:
+            seeds = tuple(value % spacing for value in x_values)
+            for seed in seeds:
+                phase, aligned, tolerance = fit_phase(spacing, seed)
+                if not aligned:
+                    continue
+                expected_visible_slots = max(1, ceil(width / spacing))
+                required_anchors = max(
+                    STORY_BADGE_GRID_MIN_ANCHORS,
+                    ceil(expected_visible_slots * STORY_BADGE_GRID_MIN_VISIBLE_FRACTION),
+                )
+                residual = sum(
+                    circular_error(
+                        float(value.best.result.center[0]),
+                        phase,
+                        spacing,
+                    )
+                    for value in aligned.values()
+                )
+                quality = sum(
+                    max(0.0, value.best.combined_score)
+                    for value in aligned.values()
+                )
+                trials.append(
+                    (
+                        len(aligned),
+                        len(aligned) / expected_visible_slots,
+                        quality,
+                        -residual,
+                        -abs(spacing - prior),
+                        spacing,
+                        phase,
+                        aligned,
+                        tolerance,
+                        required_anchors,
+                    )
+                )
         if not trials:
             return None
-        _count, _score, phase, aligned = max(
+        (
+            _count,
+            _fraction,
+            _quality,
+            _residual,
+            _prior_distance,
+            spacing,
+            phase,
+            aligned,
+            _tolerance,
+            required,
+        ) = max(
             trials,
-            key=lambda value: (value[0], value[1]),
+            key=lambda value: value[:5],
         )
+        if len(aligned) < required:
+            return None
 
-        center_y = float(median(value.best.result.center[1] for value in aligned.values()))
+        center_y = float(median(y_values))
         vertical_tolerance = max(
             3.0,
             height * STORY_BADGE_GRID_VERTICAL_TOLERANCE_RATIO,
+            badge_width * 0.85,
         )
         aligned = {
             slot_index: value
             for slot_index, value in aligned.items()
             if abs(value.best.result.center[1] - center_y) <= vertical_tolerance
         }
-        if len(aligned) < required_anchors:
-            return None
-
-        phase += float(
-            median(
-                value.best.result.center[0] - (phase + slot_index * spacing)
-                for slot_index, value in aligned.items()
-            )
-        )
-        phase %= spacing
-        aligned = aligned_for_phase(phase)
-        if len(aligned) < required_anchors:
+        if len(aligned) < required:
             return None
         center_y = float(median(value.best.result.center[1] for value in aligned.values()))
-        aligned = {
-            slot_index: value
-            for slot_index, value in aligned.items()
-            if abs(value.best.result.center[1] - center_y) <= vertical_tolerance
-        }
-        if len(aligned) < required_anchors:
-            return None
-
         return StoryBadgeGrid(
-            spacing=spacing,
-            phase=phase,
+            spacing=float(spacing),
+            phase=float(phase),
             center_y=center_y,
             anchors=len(aligned),
         )
@@ -430,14 +657,19 @@ class StoryCardNavigationMixin:
         anchor_detections: tuple[StoryBadgeDetection, ...],
         target_numbers: Iterable[int],
     ) -> tuple[StoryBadgeDetection, ...]:
-        """Reclassify only fitted low-resolution slots at the inner-badge scale."""
+        """Compare every number template only inside fitted visible slots."""
 
         grid = self._story_badge_grid(frame, anchor_detections)
         if grid is None:
             return ()
 
         height, width = frame.shape[:2]
-        client_scale = min(width / 1920, height / 1080)
+        geometry = getattr(self, "_last_story_badge_geometry", None)
+        client_scale = (
+            geometry.client_scale
+            if geometry is not None
+            else min(width / 1920, height / 1080)
+        )
         peak_radius = max(2, round(5 * client_scale))
         local_tolerance = max(
             4.0,
@@ -458,69 +690,126 @@ class StoryCardNavigationMixin:
                 return None
             return slot_index
 
-        specs_by_number = dict(STORY_BADGE_SPECS)
-        precomputed: dict[int, tuple[MatchResult, ...]] = {}
-        target_slots: set[int] = set()
-        for number in dict.fromkeys(int(value) for value in target_numbers):
-            spec = specs_by_number.get(number)
-            if spec is None:
-                continue
-            grid_spec = replace(
-                spec,
-                reference_scale=STORY_BADGE_GRID_REFERENCE_SCALE,
-            )
-            matches = self.vision.match_all(
-                frame,
-                grid_spec,
-                minimum_score=STORY_BADGE_CANDIDATE_SCORE,
-                peak_radius=peak_radius,
-            )
-            precomputed[number] = matches
-            for result in matches:
-                slot_index = aligned_slot(result)
-                if slot_index is None:
-                    continue
-                if (
-                    result.score >= STORY_BADGE_GRID_TEMPLATE_SCORE
-                    and result.pixel_score >= STORY_BADGE_GRID_PIXEL_SCORE
-                    and result.zncc_score >= STORY_BADGE_GRID_ZNCC_SCORE
-                ):
-                    target_slots.add(slot_index)
-        if not target_slots:
+        anchor_slots = {
+            slot_index
+            for detection in anchor_detections
+            if (slot_index := aligned_slot(detection.best.result)) is not None
+        }
+        if not anchor_slots:
             return ()
 
-        candidates_by_slot: dict[int, list[StoryBadgeCandidate]] = {}
-        for number, spec in STORY_BADGE_SPECS:
+        specs_by_number = dict(STORY_BADGE_SPECS)
+        radius_x = max(8, round(min(grid.spacing * 0.38, width * 0.08)))
+        radius_y = max(
+            8,
+            round(
+                min(
+                    max(grid.spacing * 0.30, height * 0.025),
+                    height * 0.08,
+                )
+            ),
+        )
+
+        def local_candidates(
+            number: int,
+            slot_index: int,
+        ) -> tuple[MatchResult, ...]:
+            spec = specs_by_number[number]
             grid_spec = replace(
                 spec,
                 reference_scale=STORY_BADGE_GRID_REFERENCE_SCALE,
+                candidate_center_roi=None,
             )
-            matches = precomputed.get(number)
-            if matches is None:
-                matches = self.vision.match_all(
-                    frame,
-                    grid_spec,
-                    minimum_score=STORY_BADGE_CANDIDATE_SCORE,
-                    peak_radius=peak_radius,
+            center = (
+                round(grid.phase + slot_index * grid.spacing),
+                round(grid.center_y),
+            )
+            slot_matcher = getattr(self.vision, "match_slot_evidence", None)
+            if callable(slot_matcher):
+                try:
+                    candidates = tuple(
+                        slot_matcher(
+                            frame,
+                            grid_spec,
+                            center,
+                            radius=(radius_x, radius_y),
+                            geometry=geometry,
+                            minimum_score=0.20,
+                            max_results=4,
+                            purpose="剧情角标槽位编号",
+                        )
+                    )
+                except (AttributeError, TypeError, ValueError):
+                    candidates = ()
+                if candidates:
+                    return tuple(
+                        getattr(candidate, "result", candidate)
+                        for candidate in candidates
+                    )
+
+            matcher = getattr(self.vision, "match_all", None)
+            if not callable(matcher):
+                return ()
+            try:
+                candidates = tuple(
+                    matcher(
+                        frame,
+                        grid_spec,
+                        minimum_score=0.20,
+                        peak_radius=peak_radius,
+                        max_results=4,
+                        search_roi=(
+                            center[0] - radius_x,
+                            center[1] - radius_y,
+                            radius_x * 2 + 1,
+                            radius_y * 2 + 1,
+                        ),
+                    )
                 )
-            for result in matches:
-                slot_index = aligned_slot(result)
-                if slot_index is None or slot_index not in target_slots:
-                    continue
-                candidates_by_slot.setdefault(slot_index, []).append(
-                    StoryBadgeCandidate(number, result)
-                )
+            except (AttributeError, TypeError, ValueError):
+                return ()
+            return tuple(
+                result
+                for result in candidates
+                if abs(result.center[0] - center[0]) <= local_tolerance
+                and abs(result.center[1] - center[1]) <= vertical_tolerance
+            )
+
+        candidates_by_slot: dict[int, list[StoryBadgeCandidate]] = {}
+        requested_numbers = tuple(
+            dict.fromkeys(int(value) for value in target_numbers if int(value) in specs_by_number)
+        )
+        # The target number is always included, while all numbers are examined
+        # for the runner-up margin at that same physical slot.
+        numbers_to_compare = tuple(specs_by_number)
+        for slot_index in sorted(anchor_slots):
+            for number in numbers_to_compare:
+                for result in local_candidates(number, slot_index):
+                    if aligned_slot(result) != slot_index:
+                        continue
+                    candidates_by_slot.setdefault(slot_index, []).append(
+                        StoryBadgeCandidate(number, result)
+                    )
 
         detections: list[tuple[float, StoryBadgeDetection]] = []
         for slot_index, candidates in candidates_by_slot.items():
             best_by_number: dict[int, StoryBadgeCandidate] = {}
             for candidate in candidates:
                 current = best_by_number.get(candidate.number)
-                if current is None or candidate.discrimination_score > current.discrimination_score:
+                if current is None or (
+                    candidate.combined_score,
+                    candidate.discrimination_score,
+                ) > (
+                    current.combined_score,
+                    current.discrimination_score,
+                ):
                     best_by_number[candidate.number] = candidate
             ranked = sorted(
                 best_by_number.values(),
-                key=lambda value: value.discrimination_score,
+                key=lambda value: (
+                    value.combined_score,
+                    value.discrimination_score,
+                ),
                 reverse=True,
             )
             if not ranked:
@@ -540,7 +829,8 @@ class StoryCardNavigationMixin:
             "剧情角标栅格",
             (
                 f"anchors={grid.anchors}, spacing={grid.spacing:.1f}, "
-                f"target_slots={len(target_slots)}, detections={len(detections)}"
+                f"slots={len(anchor_slots)}, requested={requested_numbers}, "
+                f"detections={len(detections)}"
             ),
         )
         return tuple(value for _center, value in sorted(detections))
@@ -549,6 +839,8 @@ class StoryCardNavigationMixin:
     def _story_badge_ocr_frame(
         frame: np.ndarray,
         result: MatchResult,
+        *,
+        binary: bool = True,
     ) -> np.ndarray:
         """Prepare one tiny badge as a padded text line for the shared OCR engine."""
 
@@ -568,6 +860,17 @@ class StoryCardNavigationMixin:
             gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
 
         crop_height, crop_width = gray.shape[:2]
+        # An even-sized crop puts the inner-circle mask on a half-pixel center,
+        # which measurably breaks digit readability at tiny badge sizes (the
+        # mask then clips asymmetrically before the upscale).  Trim to odd so
+        # the mask stays centered on a real pixel; the trimmed edge is ring
+        # pixels that the mask would suppress anyway.
+        if crop_width > 1 and crop_width % 2 == 0:
+            gray = gray[:, : crop_width - 1]
+            crop_width -= 1
+        if crop_height > 1 and crop_height % 2 == 0:
+            gray = gray[: crop_height - 1, :]
+            crop_height -= 1
         center_x = (crop_width - 1) / 2
         center_y = (crop_height - 1) / 2
         inner_radius = max(
@@ -576,20 +879,21 @@ class StoryCardNavigationMixin:
         )
         y, x = np.mgrid[:crop_height, :crop_width]
         gray[(x - center_x) ** 2 + (y - center_y) ** 2 > inner_radius**2] = 0
-        _threshold, crop = cv2.threshold(
-            gray,
-            STORY_BADGE_OCR_BINARY_THRESHOLD,
-            255,
-            cv2.THRESH_BINARY,
-        )
+        if binary:
+            _threshold, gray = cv2.threshold(
+                gray,
+                STORY_BADGE_OCR_BINARY_THRESHOLD,
+                255,
+                cv2.THRESH_BINARY,
+            )
 
         target_height = STORY_BADGE_OCR_INNER_HEIGHT
         target_width = max(
             1,
-            round(crop.shape[1] * target_height / max(1, crop.shape[0])),
+            round(gray.shape[1] * target_height / max(1, gray.shape[0])),
         )
         enlarged = cv2.resize(
-            crop,
+            gray,
             (target_width, target_height),
             interpolation=cv2.INTER_CUBIC,
         )
@@ -610,25 +914,42 @@ class StoryCardNavigationMixin:
         result: MatchResult,
     ) -> tuple[int | None, str]:
         prepared = self._story_badge_ocr_frame(frame, result)
-        if prepared.size == 0:
-            return None, ""
-        text = self.vision.ocr_text(
-            prepared,
-            "剧情角标数字辅助",
-            target_height=0,
-            minimum_threshold=STORY_BADGE_OCR_MIN_CONFIDENCE,
-        )
-        numbers = {
-            int(value)
-            for value in re.findall(r"(?<!\d)\d{1,2}(?!\d)", str(text))
-            if 1 <= int(value) <= 20
-        }
-        number = next(iter(numbers)) if len(numbers) == 1 else None
+        text = ""
+        if prepared.size:
+            text = self.vision.ocr_text(
+                prepared,
+                "剧情角标数字辅助",
+                target_height=0,
+                minimum_threshold=STORY_BADGE_OCR_MIN_CONFIDENCE,
+            )
+        number = self._story_badge_ocr_text_number(text)
+        if number is None:
+            # Hard binarization can disconnect anti-aliased digits on small
+            # clients (measured: 1280x720 badge 8).  One raw-grayscale retry
+            # keeps the single-digit rec model in its trained contrast range.
+            prepared = self._story_badge_ocr_frame(frame, result, binary=False)
+            if prepared.size:
+                text = self.vision.ocr_text(
+                    prepared,
+                    "剧情角标数字辅助",
+                    target_height=0,
+                    minimum_threshold=STORY_BADGE_OCR_MIN_CONFIDENCE,
+                )
+                number = self._story_badge_ocr_text_number(text)
         self._status(
             "剧情角标 OCR",
             f"number={number if number is not None else '-'}, text={text or '-'}",
         )
         return number, text
+
+    @staticmethod
+    def _story_badge_ocr_text_number(text: str) -> int | None:
+        numbers = {
+            int(value)
+            for value in re.findall(r"(?<!\d)\d{1,2}(?!\d)", str(text))
+            if 1 <= int(value) <= 20
+        }
+        return next(iter(numbers)) if len(numbers) == 1 else None
 
     def _find_story_badge(
         self,
@@ -641,20 +962,93 @@ class StoryCardNavigationMixin:
             target_number,
             detections,
         )
-        if detection is not None or self._story_badge_reason_is_ambiguous(reason):
+        strict_reason = reason
+        if detection is not None:
             return detection, reason
         grid_detections = self._story_badge_grid_detections(
             frame,
             detections,
             (target_number,),
         )
-        if not grid_detections:
+        if grid_detections:
+            grid_detection, grid_reason = self._find_story_badge_from_detections(
+                frame,
+                target_number,
+                grid_detections,
+            )
+            if grid_detection is not None:
+                return grid_detection, grid_reason
+            if self._story_badge_reason_is_ambiguous(grid_reason):
+                return None, grid_reason
+            if any(
+                value.best.number == target_number for value in grid_detections
+            ):
+                return None, grid_reason
+            reason = strict_reason
+            runner_detections = self._story_badge_grid_runner_detections(
+                target_number,
+                grid_detections,
+            )
+            if runner_detections:
+                runner_detection, runner_reason = (
+                    self._find_story_badge_from_detections(
+                        frame,
+                        target_number,
+                        runner_detections,
+                    )
+                )
+                if runner_detection is not None:
+                    return runner_detection, runner_reason
+                return None, runner_reason
+        if not grid_detections and getattr(
+            self,
+            "_last_story_badge_geometry_reason",
+            "",
+        ):
+            return None, self._last_story_badge_geometry_reason
+        if grid_detections and not any(
+            value.best.number == target_number for value in grid_detections
+        ):
+            # A fitted row is useful evidence that the selector is present, but
+            # it does not prove that the requested number is visible.
+            return None, strict_reason
+        if self._story_badge_reason_is_ambiguous(reason):
             return None, reason
-        return self._find_story_badge_from_detections(
-            frame,
-            target_number,
-            grid_detections,
-        )
+        return None, reason
+
+    @staticmethod
+    def _story_badge_grid_runner_detections(
+        target_number: int,
+        grid_detections: tuple[StoryBadgeDetection, ...],
+    ) -> tuple[StoryBadgeDetection, ...]:
+        """Promote grid runner-up slots whose full structural evidence holds.
+
+        On heavily degraded small clients the target's template can lose its
+        own slot by a hair to a visually adjacent digit.  The slot evidence of
+        that runner-up is still complete; the digit OCR becomes the deciding
+        independent vote inside the regular selector.
+        """
+
+        promoted: list[StoryBadgeDetection] = []
+        for value in grid_detections:
+            runner = value.runner_up
+            if runner is None or runner.number != target_number:
+                continue
+            result = runner.result
+            if (
+                result.score < STORY_BADGE_GRID_TEMPLATE_SCORE
+                or result.pixel_score < STORY_BADGE_GRID_PIXEL_SCORE
+                or result.zncc_score < STORY_BADGE_GRID_ZNCC_SCORE
+            ):
+                continue
+            promoted.append(
+                StoryBadgeDetection(
+                    best=StoryBadgeCandidate(number=target_number, result=result),
+                    runner_up=value.best,
+                    recovery_mode="slot_grid_runner",
+                )
+            )
+        return tuple(promoted)
 
     def inspect_story_badges(
         self,
@@ -675,7 +1069,8 @@ class StoryCardNavigationMixin:
         recoverable = {
             number
             for number, (detection, reason) in inspected.items()
-            if detection is None and not self._story_badge_reason_is_ambiguous(reason)
+            if detection is None
+            and not reason.startswith(("同一编号出现", "角标OCR数字冲突"))
         }
         if not recoverable:
             return inspected
@@ -723,11 +1118,21 @@ class StoryCardNavigationMixin:
                 and value.best.result.zncc_score >= STORY_BADGE_GRID_ZNCC_SCORE
             )
 
+        def runner_identity(value: StoryBadgeDetection) -> bool:
+            # Structural floors were already enforced when the runner-up was
+            # promoted; the digit OCR is the deciding vote for this tier.
+            return value.recovery_mode == "slot_grid_runner"
+
         target_detections = [
             value
             for value in detections
             if value.best.number == target_number
-            and (strict_identity(value) or encoded_identity(value) or grid_identity(value))
+            and (
+                strict_identity(value)
+                or encoded_identity(value)
+                or grid_identity(value)
+                or runner_identity(value)
+            )
         ]
         if not target_detections:
             if any(value.recovery_mode == "slot_grid" for value in detections):
@@ -757,10 +1162,62 @@ class StoryCardNavigationMixin:
                 ),
             )
         if len(target_detections) > 1:
-            return None, f"同一编号出现{len(target_detections)}个有效位置"
-        detection = target_detections[0]
+            # Several positions claim the target number (small clients can let
+            # one number's template win on a neighbour's slot).  The digit OCR
+            # is the independent discriminator: keep the selection only when
+            # exactly one position reads back the target number.
+            confirmed: list[StoryBadgeDetection] = []
+            for value in target_detections:
+                ocr_number, ocr_text = self._story_badge_ocr_number(
+                    frame,
+                    value.best.result,
+                )
+                if ocr_number == target_number:
+                    confirmed.append(
+                        replace(value, ocr_number=ocr_number, ocr_text=ocr_text)
+                    )
+            if len(confirmed) != 1:
+                return None, f"同一编号出现{len(target_detections)}个有效位置"
+            detection = confirmed[0]
+        else:
+            detection = target_detections[0]
         if detection.runner_up is None:
             return None, "缺少同位置次优编号，无法检查歧义"
+        if runner_identity(detection):
+            # The promoted runner-up lost its slot's template vote, so the
+            # digit OCR is the deciding independent vote and is mandatory
+            # regardless of how the symmetric ZNCC difference came out.
+            if detection.ocr_number is not None:
+                # Already digit-confirmed while resolving duplicate positions.
+                ocr_number, ocr_text = detection.ocr_number, detection.ocr_text
+            else:
+                ocr_number, ocr_text = self._story_badge_ocr_number(
+                    frame,
+                    detection.best.result,
+                )
+                detection = replace(
+                    detection,
+                    ocr_text=ocr_text,
+                    ocr_number=ocr_number,
+                )
+            if ocr_number == target_number:
+                self._status(
+                    "剧情角标",
+                    (
+                        f"栅格次优候选由OCR辅助确认：zncc={detection.margin:.3f}, "
+                        f"number={ocr_number}"
+                    ),
+                )
+                return detection, ""
+            return (
+                None,
+                (
+                    "角标次优候选OCR未确认："
+                    f"模板={target_number}, OCR="
+                    f"{ocr_number if ocr_number is not None else '-'}, "
+                    f"text={ocr_text or '-'}"
+                ),
+            )
         required_margin = min(
             threshold
             for passed, threshold in (
@@ -771,19 +1228,68 @@ class StoryCardNavigationMixin:
             if passed
         )
         if detection.margin < required_margin:
+            if grid_identity(detection):
+                # OCR is an auxiliary discriminator only after the grid's
+                # structural gates and a non-trivial score margin pass.
+                if (
+                    detection.margin >= STORY_BADGE_GRID_OCR_MARGIN
+                    and detection.combined_margin >= STORY_BADGE_GRID_MIN_COMBINED_MARGIN
+                ):
+                    if detection.ocr_number is not None:
+                        # Already digit-confirmed during duplicate selection.
+                        ocr_number, ocr_text = (
+                            detection.ocr_number,
+                            detection.ocr_text,
+                        )
+                    else:
+                        ocr_number, ocr_text = self._story_badge_ocr_number(
+                            frame,
+                            detection.best.result,
+                        )
+                        detection = replace(
+                            detection,
+                            ocr_text=ocr_text,
+                            ocr_number=ocr_number,
+                        )
+                    if ocr_number == target_number:
+                        self._status(
+                            "剧情角标",
+                            (
+                                f"栅格候选分差由OCR辅助确认：zncc={detection.margin:.3f}, "
+                                f"combined={detection.combined_margin:.3f}, number={ocr_number}"
+                            ),
+                        )
+                        return detection, ""
+                    if ocr_number is not None:
+                        return (
+                            None,
+                            (
+                                "角标OCR数字冲突："
+                                f"模板={target_number}, OCR={ocr_number}, "
+                                f"text={ocr_text or '-'}"
+                            ),
+                        )
             return (
                 None,
-                (f"候选分差不足（ZNCC）：{detection.margin:.3f}<{required_margin:.3f}"),
+                (
+                    f"候选分差不足（ZNCC）：{detection.margin:.3f}"
+                    f"<{required_margin:.3f}；"
+                    f"combined={detection.combined_margin:.3f}"
+                ),
             )
-        ocr_number, ocr_text = self._story_badge_ocr_number(
-            frame,
-            detection.best.result,
-        )
-        detection = replace(
-            detection,
-            ocr_text=ocr_text,
-            ocr_number=ocr_number,
-        )
+        if detection.ocr_number is not None:
+            # Digit already confirmed while resolving duplicate positions.
+            ocr_number, ocr_text = detection.ocr_number, detection.ocr_text
+        else:
+            ocr_number, ocr_text = self._story_badge_ocr_number(
+                frame,
+                detection.best.result,
+            )
+            detection = replace(
+                detection,
+                ocr_text=ocr_text,
+                ocr_number=ocr_number,
+            )
         if ocr_number is not None and ocr_number != target_number:
             return (
                 None,
@@ -1154,8 +1660,17 @@ class StoryCardNavigationMixin:
         located: LocatedStoryCard,
     ) -> NavigationResult:
         card = located.card
-        badge_frame = located.frame
-        badge = located.badge
+        confirmed = self._confirm_story_badge_before_click(
+            located.frame,
+            located.badge,
+        )
+        if confirmed is None:
+            return NavigationResult(
+                False,
+                ScreenState.CARD_MENU,
+                f"剧情游戏卡{card.number}点击前角标复核失败，已停止点击",
+            )
+        badge_frame, badge = confirmed
         self._status(
             f"剧情游戏卡{card.number}角标点击中心",
             (
@@ -1177,6 +1692,99 @@ class StoryCardNavigationMixin:
         if arrival.success:
             return NavigationResult(True, arrival.state, card.card_id)
         return arrival
+
+    @staticmethod
+    def _story_badge_identity_is_stable(
+        previous: StoryBadgeDetection,
+        current: StoryBadgeDetection,
+    ) -> bool:
+        """Require the same numbered slot before a card-selection click."""
+
+        if previous.best.number != current.best.number:
+            return False
+        first = previous.best.result
+        second = current.best.result
+        if (
+            first.size[0] <= 0
+            or first.size[1] <= 0
+            or second.size[0] <= 0
+            or second.size[1] <= 0
+        ):
+            return False
+        scale = max(0.2, min(float(first.scale), float(second.scale)))
+        center_tolerance = max(
+            3,
+            round(8.0 * scale),
+            round(max(first.size[0], second.size[0]) * 0.55),
+        )
+        size_tolerance = max(2, round(4.0 * scale))
+        return (
+            abs(first.center[0] - second.center[0]) <= center_tolerance
+            and abs(first.center[1] - second.center[1]) <= center_tolerance
+            and abs(first.size[0] - second.size[0]) <= size_tolerance
+            and abs(first.size[1] - second.size[1]) <= size_tolerance
+        )
+
+    def _confirm_story_badge_before_click(
+        self,
+        frame: np.ndarray,
+        detection: StoryBadgeDetection,
+    ) -> tuple[np.ndarray, StoryBadgeDetection] | None:
+        """Re-read the numbered slot immediately before sending a mouse click."""
+
+        sleeper = getattr(self.task, "sleep", None)
+        if callable(sleeper):
+            sleeper(PROBE_STORY_BADGE_CONFIRM_SECONDS)
+        capture = getattr(self.vision, "capture", None)
+        if not callable(capture):
+            reason = "视觉适配器不支持点击前复核捕获"
+            self._status("剧情角标点击复核", reason)
+            return None
+        try:
+            confirmed_frame = capture()
+            confirmed, reason = self._find_story_badge(
+                confirmed_frame,
+                detection.best.number,
+            )
+        except (AttributeError, TypeError, ValueError, cv2.error) as exc:
+            reason = f"复核异常：{exc}"
+            confirmed = None
+            confirmed_frame = None
+        if confirmed is None:
+            self._status("剧情角标点击复核", reason or "未重新确认目标编号")
+            warning = getattr(self.task, "log_warning", None)
+            if callable(warning):
+                warning(
+                    f"跑图跑商：剧情游戏卡{detection.best.number}点击前角标复核失败："
+                    f"{reason or '未命中'}。"
+                )
+            return None
+        if not self._story_badge_identity_is_stable(detection, confirmed):
+            first = detection.best.result
+            second = confirmed.best.result
+            reason = (
+                "复核编号或槽位不稳定："
+                f"first={detection.best.number}@{first.center}/{first.size}; "
+                f"second={confirmed.best.number}@{second.center}/{second.size}"
+            )
+            self._status("剧情角标点击复核", reason)
+            warning = getattr(self.task, "log_warning", None)
+            if callable(warning):
+                warning(f"跑图跑商：剧情游戏卡点击前{reason}，已停止点击。")
+            return None
+        self._status(
+            "剧情角标点击复核",
+            (
+                f"稳定确认{confirmed.best.number}；"
+                f"center={confirmed.best.result.center}; "
+                f"size={confirmed.best.result.size}; "
+                f"m={confirmed.best.result.score:.3f},"
+                f"p={confirmed.best.result.pixel_score:.3f},"
+                f"z={confirmed.best.result.zncc_score:.3f}"
+            ),
+        )
+        assert confirmed_frame is not None
+        return confirmed_frame, confirmed
 
     def select_card(self, card_id: str) -> NavigationResult:
         located = self._locate_story_card(card_id)

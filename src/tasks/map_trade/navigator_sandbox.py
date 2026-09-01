@@ -1,9 +1,23 @@
 from __future__ import annotations
 
+import re
+from dataclasses import replace
 from time import monotonic
 
 import numpy as np
 
+from src.tasks.map_trade.action_icons import (
+    ACTION_SLOT_CENTERS_REFERENCE,
+    ACTION_SLOT_RELATIVE_ROIS,
+    ACTION_SLOT_SEARCH_RADII_REFERENCE,
+    SANDBOX_TELEPORT_ICON,
+    SKILL_REFERENCE_HEIGHT,
+    SKILL_REFERENCE_WIDTH,
+    ActionIconDetection,
+    ActionIconDetector,
+    ActionIconState,
+)
+from src.tasks.map_trade.collector_constants import SEARCH_COUNTDOWN_RELATIVE_ROI
 from src.tasks.map_trade.models import (
     CARD_BY_ID,
     CardSpec,
@@ -75,10 +89,17 @@ from src.tasks.map_trade.navigator_constants import (  # noqa: F401
     QUICK_SWITCH_TEMPLATE,
     RETURN_HOME_TIMEOUT,
     SANDBOX_CONFIRM_ACTION_TEMPLATES,
+    SANDBOX_EMPTY_SLOT_TEMPLATES,
     SANDBOX_INTERACTION_PROBE_INTERVAL,
     SANDBOX_INTERACTION_PROBE_TIMEOUT,
     SANDBOX_LARGE_MAP_RETURN_REFERENCE_POINT,
     SANDBOX_LARGE_MAP_RETURN_RELATIVE_POINT,
+    SANDBOX_MAP_EVIDENCE_MIN_COMPOSITE,
+    SANDBOX_MAP_EVIDENCE_MIN_EDGE,
+    SANDBOX_MAP_EVIDENCE_MIN_GRADIENT,
+    SANDBOX_MAP_EVIDENCE_MIN_PIXEL,
+    SANDBOX_MAP_EVIDENCE_MIN_SCORE,
+    SANDBOX_MAP_EVIDENCE_MIN_ZNCC,
     SANDBOX_MAP_SETTLE_SECONDS,
     SANDBOX_MAP_TELEPORT_TEMPLATE,
     SANDBOX_MAP_TELEPORT_TIMEOUT,
@@ -92,6 +113,7 @@ from src.tasks.map_trade.navigator_constants import (  # noqa: F401
     SANDBOX_NAVIGATION_RUN_TEMPLATE,
     SANDBOX_NAVIGATION_TELEPORT_SETTLE_SECONDS,
     SANDBOX_NAVIGATION_WALK_TIMEOUT,
+    SANDBOX_SKILL_ACTION_ICONS,
     SANDBOX_SKILL_GROUP_PIXEL_SCORE,
     SANDBOX_SKILL_GROUP_SCALE_RATIOS,
     SANDBOX_SKILL_GROUP_SEARCH_ROI,
@@ -183,7 +205,367 @@ class SandboxNavigationMixin:
             for name, result, passed in matches
         )
 
+    @staticmethod
+    def _sandbox_evidence_rank(candidate) -> tuple[float, ...]:
+        result = getattr(candidate, "result", candidate)
+        values = (
+            float(getattr(result, "score", -1.0)),
+            float(getattr(result, "pixel_score", -1.0)),
+            float(getattr(result, "zncc_score", -1.0)),
+            float(getattr(result, "gradient_zncc_score", -1.0)),
+            float(getattr(result, "edge_score", -1.0)),
+        )
+        finite = tuple(value for value in values if np.isfinite(value) and value > -1.0)
+        composite = sum(finite) / len(finite) if finite else -1.0
+        return (composite, *values)
+
+    def _sandbox_has_evidence_matcher(self) -> bool:
+        return callable(getattr(self.vision, "match_evidence_all", None)) and callable(
+            getattr(self.vision, "match_slot_evidence", None)
+        )
+
+    def _sandbox_frame_geometry(self, frame: np.ndarray):
+        assess = getattr(self.vision, "assess_frame", None)
+        if not callable(assess):
+            return None
+        try:
+            return assess(
+                frame,
+                required_relative_rois=tuple(ACTION_SLOT_RELATIVE_ROIS.values()),
+                purpose="箱庭技能栏",
+            )
+        except (AttributeError, TypeError, ValueError) as exc:
+            self._status("箱庭画面几何", f"检查异常：{exc}")
+            return False
+
+    def _sandbox_evidence_spec_match(
+        self,
+        frame: np.ndarray,
+        spec: TemplateSpec,
+        *,
+        purpose: str,
+        geometry=None,
+        allow_map_composite: bool = False,
+    ) -> tuple[MatchResult, bool]:
+        """Return the strongest retained candidate and apply the old spec gate."""
+
+        matcher = getattr(self.vision, "match_evidence_all", None)
+        candidates = ()
+        if callable(matcher):
+            try:
+                candidates = tuple(
+                    matcher(
+                        frame,
+                        spec,
+                        minimum_score=0.30,
+                        peak_radius=4,
+                        max_results=6,
+                        geometry=geometry,
+                        purpose=purpose,
+                    )
+                )
+            except (AttributeError, TypeError, ValueError):
+                candidates = ()
+        if candidates:
+            selected = max(candidates, key=self._sandbox_evidence_rank)
+            result = getattr(selected, "result", selected)
+        else:
+            try:
+                result = self.vision.match(frame, spec)
+            except (AttributeError, TypeError, ValueError):
+                result = MatchResult(-1.0, (0, 0), (0, 0))
+        try:
+            passed = bool(self.vision.passes(result, spec))
+        except (AttributeError, TypeError, ValueError):
+            passed = False
+        if not passed and allow_map_composite:
+            values = (
+                result.score,
+                result.pixel_score,
+                result.zncc_score,
+                result.gradient_zncc_score,
+                result.edge_score,
+            )
+            finite = all(np.isfinite(value) for value in values)
+            composite = sum(values) / len(values) if finite else -1.0
+            passed = bool(
+                finite
+                and result.score >= SANDBOX_MAP_EVIDENCE_MIN_SCORE
+                and result.pixel_score >= SANDBOX_MAP_EVIDENCE_MIN_PIXEL
+                and result.zncc_score >= SANDBOX_MAP_EVIDENCE_MIN_ZNCC
+                and result.gradient_zncc_score >= SANDBOX_MAP_EVIDENCE_MIN_GRADIENT
+                and result.edge_score >= SANDBOX_MAP_EVIDENCE_MIN_EDGE
+                and composite >= SANDBOX_MAP_EVIDENCE_MIN_COMPOSITE
+            )
+        return result, passed
+
+    def _sandbox_skill_group_evidence(self, frame: np.ndarray, geometry):
+        skill_matches = tuple(
+            (
+                spec.name,
+                *self._sandbox_evidence_spec_match(
+                    frame,
+                    spec,
+                    purpose="箱庭技能组确认",
+                    geometry=geometry,
+                ),
+            )
+            for spec in SANDBOX_SKILL_STATE_TEMPLATES
+        )
+        skill_state_hits = sum(1 for _name, _result, passed in skill_matches if passed)
+        slot_states = (
+            self._sandbox_skill_slot_state(
+                frame,
+                SANDBOX_SKILL_SLOT_1_SELECTED_TEMPLATE,
+                skill_matches[0][1],
+                skill_matches[0][2],
+                SANDBOX_SKILL_SLOT_1_UNSELECTED_TEMPLATE,
+                skill_matches[3][1],
+                skill_matches[3][2],
+            ),
+            self._sandbox_skill_slot_state(
+                frame,
+                SANDBOX_SKILL_SLOT_2_SELECTED_TEMPLATE,
+                skill_matches[2][1],
+                skill_matches[2][2],
+                SANDBOX_SKILL_SLOT_2_UNSELECTED_TEMPLATE,
+                skill_matches[1][1],
+                skill_matches[1][2],
+            ),
+        )
+        skill_group = None
+        if slot_states == ("selected", "unselected"):
+            skill_group = 1
+        elif slot_states == ("unselected", "selected"):
+            skill_group = 2
+        self._status(
+            "箱庭技能组状态",
+            (
+                f"命中={skill_state_hits}/4；颜色状态={slot_states}；"
+                f"状态={'技能组' + str(skill_group) if skill_group else '未知/冲突'}；"
+                f"{self._format_sandbox_matches(skill_matches)}"
+            ),
+        )
+        return skill_matches, skill_state_hits, skill_group
+
+    @staticmethod
+    def _sandbox_action_state_is_hit(detection: ActionIconDetection) -> bool:
+        return detection.state in {
+            ActionIconState.AVAILABLE,
+            ActionIconState.USED,
+        } and detection.semantic_state not in {
+            "countdown",
+            "empty",
+            "wrong_group",
+        }
+
+    def _sandbox_empty_slot_detected(
+        self,
+        frame: np.ndarray,
+        icon,
+        geometry,
+    ) -> bool:
+        if icon.slot_name is None:
+            return False
+        empty_spec = dict(SANDBOX_EMPTY_SLOT_TEMPLATES).get(icon.slot_name)
+        if empty_spec is None:
+            return False
+        center_reference = ACTION_SLOT_CENTERS_REFERENCE[icon.slot_name]
+        if geometry is None:
+            height, width = frame.shape[:2]
+            center = (
+                round(width * center_reference[0] / SKILL_REFERENCE_WIDTH),
+                round(height * center_reference[1] / SKILL_REFERENCE_HEIGHT),
+            )
+            scale = min(width / SKILL_REFERENCE_WIDTH, height / SKILL_REFERENCE_HEIGHT)
+        else:
+            center = (
+                geometry.content_left
+                + round(geometry.content_width * center_reference[0] / SKILL_REFERENCE_WIDTH),
+                geometry.content_top
+                + round(geometry.content_height * center_reference[1] / SKILL_REFERENCE_HEIGHT),
+            )
+            scale = geometry.client_scale
+        radius = tuple(
+            max(5, round(value * scale))
+            for value in ACTION_SLOT_SEARCH_RADII_REFERENCE[icon.slot_name]
+        )
+        matcher = getattr(self.vision, "match_slot_evidence", None)
+        if callable(matcher):
+            try:
+                candidates = tuple(
+                    matcher(
+                        frame,
+                        empty_spec,
+                        center,
+                        radius=radius,
+                        geometry=geometry,
+                        minimum_score=0.35,
+                        max_results=3,
+                        purpose=f"{icon.name}空槽",
+                    )
+                )
+            except (AttributeError, TypeError, ValueError):
+                candidates = ()
+            for candidate in candidates:
+                result = getattr(candidate, "result", candidate)
+                try:
+                    if self.vision.passes(result, empty_spec):
+                        return True
+                except (AttributeError, TypeError, ValueError):
+                    continue
+        return False
+
+    def _sandbox_action_semantic_state(
+        self,
+        frame: np.ndarray,
+        icon,
+        detection: ActionIconDetection,
+        geometry,
+    ) -> str:
+        if icon.slot_name == "search":
+            try:
+                text = self.vision.simplify(
+                    self.vision.ocr_text(
+                        frame,
+                        "箱庭探查倒计时",
+                        relative_roi=SEARCH_COUNTDOWN_RELATIVE_ROI,
+                    )
+                )
+            except (AttributeError, TypeError, ValueError):
+                text = ""
+            if re.fullmatch(r"\s*\d{1,3}\s*", str(text)):
+                return "countdown"
+        if self._sandbox_empty_slot_detected(frame, icon, geometry):
+            return "empty"
+        if detection.state is not ActionIconState.ABSENT:
+            return detection.semantic_state or detection.state.value
+        return "unknown"
+
+    def _match_story_sandbox_signals_with_evidence(
+        self,
+        frame: np.ndarray,
+        geometry,
+    ) -> SandboxConfirmation:
+        map_matches = tuple(
+            (
+                spec.name,
+                *self._sandbox_evidence_spec_match(
+                    frame,
+                    spec,
+                    purpose="箱庭地图确认",
+                    geometry=geometry,
+                    allow_map_composite=True,
+                ),
+            )
+            for spec in SANDBOX_TEMPLATES
+        )
+        map_signal_hits = sum(1 for _name, _result, passed in map_matches if passed)
+        self._status(
+            "箱庭确认信号",
+            f"命中={map_signal_hits}/2；{self._format_sandbox_matches(map_matches)}",
+        )
+
+        skill_matches, skill_state_hits, skill_group = self._sandbox_skill_group_evidence(
+            frame,
+            geometry,
+        )
+
+        action_states: list[tuple[str, str]] = []
+        action_detections: list[ActionIconDetection] = []
+        if skill_group != 1:
+            action_hits = 0
+            action_states = [
+                (icon.name, "wrong_group") for icon in SANDBOX_SKILL_ACTION_ICONS
+            ]
+        else:
+            detector = ActionIconDetector(self.vision)
+            for icon in SANDBOX_SKILL_ACTION_ICONS:
+                detection = detector.detect(frame, icon, geometry=geometry)
+                semantic = self._sandbox_action_semantic_state(
+                    frame,
+                    icon,
+                    detection,
+                    geometry,
+                )
+                if semantic != detection.semantic_state:
+                    detection = replace(
+                        detection,
+                        semantic_state=semantic,
+                        reason=(
+                            f"{detection.reason}；语义={semantic}"
+                            if detection.reason
+                            else f"语义={semantic}"
+                        ),
+                    )
+                action_detections.append(detection)
+                action_states.append((icon.name, semantic))
+            action_hits = sum(
+                self._sandbox_action_state_is_hit(detection)
+                for detection in action_detections
+            )
+
+        self._status(
+            "箱庭进一步确认",
+            "动作图标命中="
+            f"{action_hits}/{len(SANDBOX_SKILL_ACTION_ICONS)}；"
+            + "; ".join(
+                f"{name}={state}" for name, state in action_states
+            ),
+        )
+        confirmation = SandboxConfirmation(
+            map_signal_hits=map_signal_hits,
+            skill_state_hits=skill_state_hits,
+            action_hits=action_hits,
+            skill_group=skill_group,
+            geometry=geometry,
+            action_states=tuple(action_states),
+            reason=(
+                "错误技能组：" + str(skill_group)
+                if skill_group not in {None, 1}
+                else ("技能组无法唯一确认" if skill_group is None else "")
+            ),
+        )
+        self._status(
+            "箱庭复合确认",
+            (
+                f"{'pass' if confirmation.passed else 'miss'}；"
+                f"地图={map_signal_hits}/2(至少1)，"
+                f"技能组={skill_state_hits}/4(至少2)，"
+                f"动作={action_hits}/{len(SANDBOX_SKILL_ACTION_ICONS)}(至少3)"
+            ),
+        )
+        return confirmation
+
     def _match_story_sandbox_signals(
+        self,
+        frame: np.ndarray,
+    ) -> SandboxConfirmation:
+        if not self._sandbox_has_evidence_matcher():
+            return self._match_story_sandbox_signals_legacy(frame)
+        geometry = self._sandbox_frame_geometry(frame)
+        if geometry is False:
+            return SandboxConfirmation(
+                0,
+                0,
+                0,
+                None,
+                reason="画面几何检查异常",
+            )
+        if geometry is not None and not geometry.accepted:
+            reason = "画面几何拒绝：" + "|".join(geometry.rejection_reasons)
+            self._status("箱庭复合确认", reason)
+            return SandboxConfirmation(
+                0,
+                0,
+                0,
+                None,
+                geometry=geometry,
+                reason=reason,
+            )
+        return self._match_story_sandbox_signals_with_evidence(frame, geometry)
+
+    def _match_story_sandbox_signals_legacy(
         self,
         frame: np.ndarray,
     ) -> SandboxConfirmation:
@@ -250,14 +632,24 @@ class SandboxNavigationMixin:
             ),
         )
 
-        action_matches = tuple(
-            (
-                name,
-                result := self.vision.match(frame, spec),
-                self.vision.passes(result, spec),
+        if skill_group == 1:
+            action_matches = tuple(
+                (
+                    name,
+                    result := self.vision.match(frame, spec),
+                    self.vision.passes(result, spec),
+                )
+                for name, spec in SANDBOX_CONFIRM_ACTION_TEMPLATES
             )
-            for name, spec in SANDBOX_CONFIRM_ACTION_TEMPLATES
-        )
+        else:
+            action_matches = tuple(
+                (
+                    name,
+                    MatchResult(-1.0, (0, 0), (0, 0)),
+                    False,
+                )
+                for name, _spec in SANDBOX_CONFIRM_ACTION_TEMPLATES
+            )
         action_hits = sum(1 for _name, _result, passed in action_matches if passed)
         self._status(
             "箱庭进一步确认",
@@ -271,6 +663,15 @@ class SandboxNavigationMixin:
             skill_state_hits=skill_state_hits,
             action_hits=action_hits,
             skill_group=skill_group,
+            action_states=tuple(
+                (name, "available" if passed else "wrong_group")
+                for name, _result, passed in action_matches
+            ),
+            reason=(
+                "错误技能组：" + str(skill_group)
+                if skill_group not in {None, 1}
+                else ("技能组无法唯一确认" if skill_group is None else "")
+            ),
         )
         self._status(
             "箱庭复合确认",
@@ -837,7 +1238,129 @@ class SandboxNavigationMixin:
             detect_skill_failure=False,
         )
 
+    @staticmethod
+    def _sandbox_same_action_identity(
+        previous: ActionIconDetection,
+        current: ActionIconDetection,
+    ) -> bool:
+        if previous.state is not current.state:
+            return False
+        first = previous.match
+        second = current.match
+        if first.size[0] <= 0 or second.size[0] <= 0:
+            return False
+        scale = max(0.2, min(float(first.scale), float(second.scale)))
+        tolerance = max(3, round(6.0 * scale))
+        return (
+            abs(first.center[0] - second.center[0]) <= tolerance
+            and abs(first.center[1] - second.center[1]) <= tolerance
+            and abs(first.size[0] - second.size[0]) <= max(3, tolerance)
+            and abs(first.size[1] - second.size[1]) <= max(3, tolerance)
+        )
+
+    def _click_sandbox_teleport_skill_with_evidence(
+        self,
+        timeout: float = SANDBOX_TELEPORT_SKILL_TIMEOUT,
+    ) -> bool:
+        """Require two consistent local evidence observations before clicking."""
+
+        end_at = monotonic() + max(0.0, timeout)
+        detector = ActionIconDetector(self.vision)
+        previous = None
+        stable_hits = 0
+        last = ActionIconDetection(
+            ActionIconState.ABSENT,
+            MatchResult(-1.0, (0, 0), (0, 0)),
+            reason="未执行识别",
+            semantic_state="absent",
+        )
+        while monotonic() <= end_at:
+            frame = self.vision.capture()
+            geometry = self._sandbox_frame_geometry(frame)
+            if geometry is False or (geometry is not None and not geometry.accepted):
+                reason = (
+                    "画面几何检查异常"
+                    if geometry is False
+                    else "画面几何拒绝：" + "|".join(geometry.rejection_reasons)
+                )
+                self._status("箱庭5号传送阵技能", reason)
+                return False
+            _skill_matches, _skill_hits, skill_group = self._sandbox_skill_group_evidence(
+                frame,
+                geometry,
+            )
+            if skill_group != 1:
+                current = ActionIconDetection(
+                    ActionIconState.ABSENT,
+                    MatchResult(-1.0, (0, 0), (0, 0)),
+                    reason=(
+                        "错误技能组：" + str(skill_group)
+                        if skill_group is not None
+                        else "技能组无法唯一确认"
+                    ),
+                    semantic_state="wrong_group",
+                )
+            else:
+                current = detector.detect(
+                    frame,
+                    SANDBOX_TELEPORT_ICON,
+                    geometry=geometry,
+                )
+            last = current
+            if current.clickable and (
+                previous is not None
+                and self._sandbox_same_action_identity(previous, current)
+            ):
+                stable_hits += 1
+            elif current.clickable:
+                stable_hits = 1
+            else:
+                stable_hits = 0
+            self._status(
+                "箱庭5号传送阵技能",
+                (
+                    f"{current.state.value}/{current.semantic_state or '-'}; "
+                    f"center={current.match.center}; "
+                    f"m={current.match.score:.3f},p={current.match.pixel_score:.3f},"
+                    f"z={current.match.zncc_score:.3f},"
+                    f"g={current.match.gradient_zncc_score:.3f},"
+                    f"e={current.match.edge_score:.3f}; "
+                    f"scale={current.match.scale:.3f}; "
+                    f"margin={current.candidate_margin:.3f}; "
+                    f"stable={stable_hits}/2; reason={current.reason or '-'}"
+                ),
+            )
+            if current.clickable and stable_hits >= 2:
+                self.vision.click_client(
+                    current.match.center,
+                    frame.shape,
+                    after_sleep=SANDBOX_MAP_SETTLE_SECONDS,
+                )
+                return True
+            previous = current if current.clickable else None
+            self.task.sleep(SANDBOX_TELEPORT_SKILL_POLL_INTERVAL)
+        self._status(
+            "箱庭5号传送阵技能",
+            (
+                "局部多证据/稳定确认超时；"
+                f"last={last.state.value}/{last.semantic_state or '-'}; "
+                f"m={last.match.score:.3f},p={last.match.pixel_score:.3f},"
+                f"z={last.match.zncc_score:.3f},"
+                f"g={last.match.gradient_zncc_score:.3f},"
+                f"e={last.match.edge_score:.3f}; reason={last.reason or '-'}"
+            ),
+        )
+        return False
+
     def _click_sandbox_teleport_skill(
+        self,
+        timeout: float = SANDBOX_TELEPORT_SKILL_TIMEOUT,
+    ) -> bool:
+        if self._sandbox_has_evidence_matcher():
+            return self._click_sandbox_teleport_skill_with_evidence(timeout)
+        return self._click_sandbox_teleport_skill_legacy(timeout)
+
+    def _click_sandbox_teleport_skill_legacy(
         self,
         timeout: float = SANDBOX_TELEPORT_SKILL_TIMEOUT,
     ) -> bool:
@@ -1820,4 +2343,3 @@ class SandboxNavigationMixin:
             target,
             located,
         )
-
