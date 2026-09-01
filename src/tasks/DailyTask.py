@@ -61,6 +61,10 @@ MY_HOME_TEMPLATE = TemplateSpec(
 # 简体客户端实际文案书写。公会签到第二词国服实测为「奖励已发放至邮箱」。
 GUILD_SUCCESS_KEYWORDS = ["签到成功", "奖励已发放至邮箱"]
 
+# 公会页面固定文案（左侧公告/按钮与右上商店，RPT-20260901-233554 实测整页
+# OCR 均可读到），用于返回主页失败时判断是否仍滞留公会页。
+GUILD_PAGE_KEYWORDS = ["公告事项", "进入公会联合战", "公会商店"]
+
 # 经营管理弹窗实际文案（国服简体，BUG-20260829-011 实测转录）：
 # 餐馆营业额现状/渔笼收获情况/助手工作情况/取消/一键获得。
 BUSINESS_COLLECT_KEYWORDS = [
@@ -260,6 +264,7 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
             GUILD_SIGNUP_SUCCESS_TEMPLATE,
             GUILD_SUCCESS_KEYWORDS,
             name="guild_sign_in_early",
+            reject_template_on_home=True,
         )
         self._status_set("公会签到 loading 状态", loading_state)
         if loading_state == "stuck":
@@ -274,6 +279,7 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
                 GUILD_SUCCESS_KEYWORDS,
                 timeout=float(self.config.get("公会签到成功等待秒数", 8.0)),
                 name="guild_sign_in",
+                reject_template_on_home=True,
             )
         self.info_set("公会签到 OCR", text or "-")
         self._status_set("公会签到成功", "是" if success_found else "否")
@@ -284,8 +290,30 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
         else:
             self.log_info("公会签到：未检测到签到成功提示，按流程返回主页。")
 
-        self._click_reference(100, 50, after_sleep=1.0)
-        home_ok = self._wait_for_home_confirmation("公会签到返回主页")
+        return self._return_home_from_guild()
+
+    def _return_home_from_guild(self) -> bool:
+        """Leave the guild page with bounded back-click retries.
+
+        返回键点击可能被切页动画吞掉（BUG-20260901-02：单击定胜负让游戏
+        滞留公会页面，本批与后续批次的公会任务全部失败）；主页确认失败且
+        全帧 OCR 仍能读到公会页面关键字时才补点返回键，最多 3 次。
+        """
+        home_ok = False
+        for attempt in range(1, 4):
+            self._click_reference(100, 50, after_sleep=1.0)
+            if self._wait_for_home_confirmation("公会签到返回主页", timeout=4.0):
+                home_ok = True
+                break
+            if attempt >= 3:
+                break
+            text = self._ocr_text(self.capture_frame(), name="公会签到返回页面")
+            if self._keyword_match_count(text, GUILD_PAGE_KEYWORDS) < 1:
+                self.log_info("公会签到：返回后未见公会页面关键字，不再补点返回键。")
+                break
+            self.log_info(
+                f"公会签到：第{attempt}次返回未生效（仍在公会页面），补点返回键。"
+            )
         self._status_set("公会签到返回主页结果", "通过" if home_ok else "失败")
         return home_ok
 

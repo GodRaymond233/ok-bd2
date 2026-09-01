@@ -157,6 +157,13 @@ class TaskVisionMixin:
         self.log_info(f"{task_name}：UI_loading_black.png 未在限定时间内消失。")
         return "stuck", False
 
+    def _frame_confirms_home(self, frame, name: str) -> bool:
+        confirmed, _left_hits, _p95, _gacha = self._home_confirmation_signals(
+            frame,
+            f"{name} 主页误检",
+        )
+        return confirmed
+
     def _wait_loading_or_template_or_ocr(
         self,
         task_name: str,
@@ -164,6 +171,7 @@ class TaskVisionMixin:
         keywords: list[str],
         name: str,
         interval: float = 0.5,
+        reject_template_on_home: bool = False,
     ) -> tuple[str, bool, str]:
         end_at = monotonic() + float(self.config.get("loading 出现等待秒数", 6.0))
         last_text = ""
@@ -173,7 +181,20 @@ class TaskVisionMixin:
             text = self._ocr_text(frame, name=name)
             last_text = text
             self.info_set(f"{name} 模板", f"{result.score:.3f}")
-            if self._passes(result, spec) or self._keyword_match_count(text, keywords) >= 1:
+            if (
+                reject_template_on_home
+                and self._passes(result, spec)
+                and self._frame_confirms_home(frame, name)
+            ):
+                # BUG-20260901-02：金色签到弹窗模板在主页/切页帧打出 0.771
+                # 误越过 0.76 阈值，导致脚本在进入公会页前就判定签到成功；
+                # 确认主页三信号的帧不算命中。
+                self.info_set(f"{name} 模板", f"{result.score:.3f} 主页帧误命中，忽略")
+                self.log_info(
+                    f"{task_name}：{spec.name} 模板在主页帧误命中"
+                    f"（{result.score:.3f}），忽略并继续等待。"
+                )
+            elif self._passes(result, spec) or self._keyword_match_count(text, keywords) >= 1:
                 return "target", True, text
 
             loading = self._match(frame, LOADING_TEMPLATE)
@@ -247,6 +268,7 @@ class TaskVisionMixin:
         timeout: float,
         name: str,
         interval: float = 0.5,
+        reject_template_on_home: bool = False,
     ) -> tuple[bool, str]:
         end_at = monotonic() + max(0.0, timeout)
         last_text = ""
@@ -256,7 +278,17 @@ class TaskVisionMixin:
             text = self._ocr_text(frame, name=name)
             last_text = text
             self.info_set(f"{name} 模板", f"{result.score:.3f}")
-            if self._passes(result, spec) or self._keyword_match_count(text, keywords) >= 1:
+            if (
+                reject_template_on_home
+                and self._passes(result, spec)
+                and self._frame_confirms_home(frame, name)
+            ):
+                self.info_set(f"{name} 模板", f"{result.score:.3f} 主页帧误命中，忽略")
+                self.log_info(
+                    f"{spec.name} 模板在主页帧误命中（{result.score:.3f}），"
+                    "忽略并继续等待。"
+                )
+            elif self._passes(result, spec) or self._keyword_match_count(text, keywords) >= 1:
                 return True, text
             self.sleep(interval)
         return False, last_text
@@ -286,8 +318,11 @@ class TaskVisionMixin:
         self,
         name: str,
         interval: float = 0.35,
+        timeout: float | None = None,
     ) -> bool:
-        end_at = monotonic() + float(self.config.get("主页确认等待秒数", 10.0))
+        if timeout is None:
+            timeout = float(self.config.get("主页确认等待秒数", 10.0))
+        end_at = monotonic() + timeout
         last_left_hits = 0
         last_p95 = 0.0
         last_gacha_text = ""

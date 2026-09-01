@@ -11,6 +11,7 @@ from src.tasks.DailyTask import (
     GUILD_FINISHED_TEMPLATE,
     GUILD_MAIN_ACTIVE_TEMPLATE,
     GUILD_MAIN_FINISHED_TEMPLATE,
+    GUILD_PAGE_KEYWORDS,
     GUILD_SIGNUP_SUCCESS_TEMPLATE,
     GUILD_SUCCESS_KEYWORDS,
     GUILD_TEMPLATE,
@@ -588,6 +589,158 @@ class DailyTaskHelperTest(unittest.TestCase):
 
         self.assertTrue(DailyTask.run_guild_sign_in(task))
         self.assertEqual([(370, 155), (100, 50)], clicks)
+
+    def test_guild_success_template_on_home_frame_is_rejected(self):
+        # BUG-20260901-02：RPT-20260901-233554 中 0.771 的签到成功模板在
+        # 主页帧越过 0.76 阈值，脚本未进公会就判定签到成功；主页三信号
+        # 通过的帧不得算模板命中。
+        task = object.__new__(DailyTask)
+        task.config = {"loading 出现等待秒数": 0.5}
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task.capture_frame = lambda: object()
+        task._ocr_text = lambda _frame, name: ""
+        task._home_confirmation_signals = lambda _frame, _name: (True, 3, 255.0, "抽抽乐")
+        task.sleep = lambda *_args, **_kwargs: None
+
+        def fake_match(_frame, spec):
+            if spec is GUILD_SIGNUP_SUCCESS_TEMPLATE:
+                return MatchResult(0.771, (0, 0), (1, 1), pixel_score=0.771)
+            return MatchResult(-1.0, (0, 0), (0, 0))
+
+        task._match = fake_match
+
+        with patch(
+            "src.tasks.task_vision_mixin.monotonic",
+            side_effect=[0.0, 0.1, 10.0],
+        ):
+            state, found, _text = DailyTask._wait_loading_or_template_or_ocr(
+                task,
+                "公会签到",
+                GUILD_SIGNUP_SUCCESS_TEMPLATE,
+                GUILD_SUCCESS_KEYWORDS,
+                name="guild_sign_in_early",
+                reject_template_on_home=True,
+            )
+
+        self.assertEqual("none", state)
+        self.assertFalse(found)
+
+    def test_guild_success_template_on_guild_popup_frame_is_accepted(self):
+        # 同一模板在非主页帧（真实弹窗）必须照常命中。
+        task = object.__new__(DailyTask)
+        task.config = {"loading 出现等待秒数": 0.5}
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task.capture_frame = lambda: object()
+        task._ocr_text = lambda _frame, name: ""
+        task._home_confirmation_signals = lambda _frame, _name: (False, 0, 120.0, "-")
+        task.sleep = lambda *_args, **_kwargs: None
+
+        def fake_match(_frame, spec):
+            if spec is GUILD_SIGNUP_SUCCESS_TEMPLATE:
+                return MatchResult(0.771, (0, 0), (1, 1), pixel_score=0.771)
+            return MatchResult(-1.0, (0, 0), (0, 0))
+
+        task._match = fake_match
+
+        with patch(
+            "src.tasks.task_vision_mixin.monotonic",
+            side_effect=[0.0, 0.1],
+        ):
+            state, found, _text = DailyTask._wait_loading_or_template_or_ocr(
+                task,
+                "公会签到",
+                GUILD_SIGNUP_SUCCESS_TEMPLATE,
+                GUILD_SUCCESS_KEYWORDS,
+                name="guild_sign_in_early",
+                reject_template_on_home=True,
+            )
+
+        self.assertEqual("target", state)
+        self.assertTrue(found)
+
+    def test_guild_return_home_retries_back_click_while_guild_page_detected(self):
+        # BUG-20260901-02：返回键被切页动画吞掉时，只要全帧 OCR 仍读到公会
+        # 页面关键字就补点返回键，最多 3 次。
+        task = object.__new__(DailyTask)
+        task.config = {"公会入口阈值": 0.78}
+        task.capture_frame = lambda: object()
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task.sleep = lambda *_args, **_kwargs: None
+        clicks = []
+
+        def fake_match(_frame, spec):
+            if spec is GUILD_TEMPLATE:
+                return MatchResult(0.9, (0, 0), (1, 1), pixel_score=0.9)
+            return MatchResult(-1.0, (0, 0), (0, 0))
+
+        task._match = fake_match
+        task._click_reference = lambda x, y, **_kwargs: clicks.append((x, y))
+        task._wait_loading_or_template_or_ocr = lambda *_args, **_kwargs: ("none", False, "")
+        task._wait_for_template_or_ocr = lambda *_args, **_kwargs: (False, "")
+        task._ocr_text = lambda _frame, name: "公告事项 进入公会联合战 公会商店"
+        task._keyword_match_count = lambda text, keywords: 3
+        # 依次为：入口前主页确认、返回主页第 1/2/3 次确认。
+        wait_results = iter([True, False, False, True])
+        waited_names = []
+        task._wait_for_home_confirmation = (
+            lambda name, **_kwargs: waited_names.append(name) or next(wait_results)
+        )
+
+        self.assertTrue(DailyTask.run_guild_sign_in(task))
+        self.assertEqual(
+            [(370, 155), (100, 50), (100, 50), (100, 50)],
+            clicks,
+        )
+        # 入口前 1 次 + 返回主页 3 次。
+        self.assertEqual(4, len(waited_names))
+
+    def test_guild_return_home_stops_retrying_without_guild_keywords(self):
+        # 返回后既不是主页也没有公会页面关键字（未知页面）时不得盲点返回键，
+        # 避免在别的页面上误点。
+        task = object.__new__(DailyTask)
+        task.config = {"公会入口阈值": 0.78}
+        task.capture_frame = lambda: object()
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task.sleep = lambda *_args, **_kwargs: None
+        clicks = []
+
+        def fake_match(_frame, spec):
+            if spec is GUILD_TEMPLATE:
+                return MatchResult(0.9, (0, 0), (1, 1), pixel_score=0.9)
+            return MatchResult(-1.0, (0, 0), (0, 0))
+
+        task._match = fake_match
+        task._click_reference = lambda x, y, **_kwargs: clicks.append((x, y))
+        task._wait_loading_or_template_or_ocr = lambda *_args, **_kwargs: ("none", False, "")
+        task._wait_for_template_or_ocr = lambda *_args, **_kwargs: (False, "")
+        task._ocr_text = lambda _frame, name: ""
+        task._keyword_match_count = lambda text, keywords: 0
+        # 依次为：入口前主页确认（通过）、返回主页第 1 次确认（失败）。
+        confirm_results = iter([True, False])
+        task._wait_for_home_confirmation = lambda name, **_kwargs: next(confirm_results)
+
+        self.assertFalse(DailyTask.run_guild_sign_in(task))
+        self.assertEqual([(370, 155), (100, 50)], clicks)
+
+    def test_guild_page_keywords_match_report_page_ocr(self):
+        # RPT-20260901-233554 AutoLoginTask 实测公会整页 OCR。
+        guild_page = (
+            "公会？ 57,652 公会商店 灵魂挽歌 聊天 √ 自动翻译 8 公会成员 "
+            "230/30 立即加入 咱虽然养老， 但是还活着，定期 公告事项 "
+            "首领防御战进行中。 进入公会联合战 请输入消息。"
+        )
+        self.assertEqual(3, DailyTask._keyword_match_count(guild_page, GUILD_PAGE_KEYWORDS))
+        home_frame = (
+            "D-4 我的小屋 好友 公会联合战 0 0 24:00:00 经营管理 格鲁TALK 亲密度 街机 儿游戏"
+        )
+        self.assertEqual(
+            0,
+            DailyTask._keyword_match_count(home_frame, GUILD_PAGE_KEYWORDS),
+        )
 
     def test_new_main_templates_use_720p_assets_and_green_mask(self):
         task = object.__new__(DailyTask)
