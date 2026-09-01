@@ -49,6 +49,8 @@ from src.tasks.map_trade.navigator import (
     STORY_SANDBOX_SWITCH_WINDOW,
     Navigator,
     SandboxConfirmation,
+    StoryBadgeCandidate,
+    StoryBadgeDetection,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -667,7 +669,8 @@ class StoryBadgeTest(unittest.TestCase):
             match_all=lambda _frame, spec, **_kwargs: matches.get(
                 Path(spec.file_name).name,
                 (),
-            )
+            ),
+            ocr_text=lambda *_args, **_kwargs: "",
         )
         navigator = Navigator(SimpleNamespace(), vision)
 
@@ -675,3 +678,183 @@ class StoryBadgeTest(unittest.TestCase):
 
         self.assertIsNone(detection)
         self.assertIn("同一编号出现2个有效位置", reason)
+
+    def test_story_badge_duplicate_resolved_by_single_ocr_confirmation(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        matches = {
+            "story_cartridge_badge_06.png": (
+                MatchResult(0.99, (80, 930), (30, 28), pixel_score=0.98, zncc_score=0.90),
+                MatchResult(0.98, (480, 930), (30, 28), pixel_score=0.97, zncc_score=0.80),
+            ),
+            "story_cartridge_badge_08.png": (
+                MatchResult(0.80, (81, 930), (31, 31), pixel_score=0.82, zncc_score=0.70),
+                MatchResult(0.79, (481, 930), (31, 31), pixel_score=0.81, zncc_score=0.60),
+            ),
+        }
+
+        # Only the first duplicate position carries a readable digit.
+        frame[942:947, 93:98] = 255
+
+        def fake_ocr_text(prepared, *_args, **_kwargs):
+            if float(np.max(prepared)) > 200:
+                return "6"
+            return ""
+
+        vision = SimpleNamespace(
+            match_all=lambda _frame, spec, **_kwargs: matches.get(
+                Path(spec.file_name).name,
+                (),
+            ),
+            ocr_text=fake_ocr_text,
+        )
+        navigator = Navigator(SimpleNamespace(), vision)
+
+        detection, reason = navigator._find_story_badge(frame, 6)
+
+        self.assertEqual(reason, "")
+        self.assertIsNotNone(detection)
+        self.assertEqual(detection.best.number, 6)
+        self.assertEqual(detection.best.result.position[0], 80)
+        self.assertEqual(detection.ocr_number, 6)
+
+
+class StoryBadgeOcrFallbackTest(unittest.TestCase):
+    @staticmethod
+    def _navigator(ocr_results):
+        vision = SimpleNamespace(
+            ocr_text=lambda *_args, **_kwargs: ocr_results.pop(0)
+            if ocr_results
+            else "",
+        )
+        return Navigator(SimpleNamespace(), vision)
+
+    def test_ocr_number_retries_with_raw_grayscale_when_binary_read_is_empty(self):
+        frame = np.zeros((200, 200, 3), dtype=np.uint8)
+        frame[80:100, 90:110] = 255
+        navigator = self._navigator(["", "8"])
+
+        number, text = navigator._story_badge_ocr_number(
+            frame,
+            MatchResult(1.0, (80, 80), (30, 30)),
+        )
+
+        self.assertEqual(8, number)
+        self.assertEqual("8", text)
+
+    def test_ocr_number_returns_none_without_any_readable_digit(self):
+        frame = np.zeros((200, 200, 3), dtype=np.uint8)
+        navigator = self._navigator(["", ""])
+
+        number, text = navigator._story_badge_ocr_number(
+            frame,
+            MatchResult(1.0, (80, 80), (30, 30)),
+        )
+
+        self.assertIsNone(number)
+        self.assertEqual("", text)
+
+    def test_ocr_frame_trims_even_crops_to_keep_mask_centered(self):
+        prepared = Navigator._story_badge_ocr_frame(
+            np.zeros((60, 60, 3), dtype=np.uint8),
+            MatchResult(1.0, (10, 10), (14, 14)),
+        )
+
+        self.assertEqual(
+            2 * 32 + 208,
+            prepared.shape[0],
+        )
+        # The digit area derives from an odd (13px) crop, so the horizontal
+        # upscale keeps an odd source ratio instead of a half-pixel center.
+        self.assertEqual(2 * 40 + 208, prepared.shape[1])
+
+
+class StoryBadgeRunnerTierTest(unittest.TestCase):
+    @staticmethod
+    def _grid_detection() -> StoryBadgeDetection:
+        best = StoryBadgeCandidate(
+            8,
+            MatchResult(
+                0.9755,
+                (407, 462),
+                (14, 14),
+                pixel_score=0.9206,
+                zncc_score=0.8060,
+            ),
+        )
+        runner = StoryBadgeCandidate(
+            5,
+            MatchResult(
+                0.9767,
+                (400, 462),
+                (14, 14),
+                pixel_score=0.9204,
+                zncc_score=0.8136,
+            ),
+        )
+        return StoryBadgeDetection(best=best, runner_up=runner)
+
+    def test_runner_up_with_full_floors_is_promoted(self):
+        promoted = Navigator._story_badge_grid_runner_detections(
+            5,
+            (self._grid_detection(),),
+        )
+
+        self.assertEqual(1, len(promoted))
+        self.assertEqual("slot_grid_runner", promoted[0].recovery_mode)
+        self.assertEqual(5, promoted[0].best.number)
+
+    def test_runner_below_structural_floors_is_not_promoted(self):
+        detection = self._grid_detection()
+        weak_runner = StoryBadgeCandidate(
+            5,
+            MatchResult(
+                0.90,
+                (400, 462),
+                (14, 14),
+                pixel_score=0.80,
+                zncc_score=0.60,
+            ),
+        )
+        weak = StoryBadgeDetection(best=detection.best, runner_up=weak_runner)
+
+        self.assertEqual(
+            (),
+            Navigator._story_badge_grid_runner_detections(5, (weak,)),
+        )
+
+    def test_promoted_runner_requires_digit_ocr_confirmation(self):
+        frame = np.zeros((540, 960, 3), dtype=np.uint8)
+        frame[468:474, 403:409] = 255
+        promoted = Navigator._story_badge_grid_runner_detections(
+            5,
+            (self._grid_detection(),),
+        )
+
+        def ocr_text(prepared, *_args, **_kwargs):
+            return "5" if float(np.max(prepared)) > 200 else ""
+
+        confirming = Navigator(
+            SimpleNamespace(),
+            SimpleNamespace(ocr_text=ocr_text),
+        )
+        detection, reason = confirming._find_story_badge_from_detections(
+            frame,
+            5,
+            promoted,
+        )
+        self.assertEqual("", reason)
+        self.assertIsNotNone(detection)
+        self.assertEqual("slot_grid_runner", detection.recovery_mode)
+        self.assertEqual(5, detection.ocr_number)
+
+        empty = Navigator(
+            SimpleNamespace(),
+            SimpleNamespace(ocr_text=lambda *_args, **_kwargs: ""),
+        )
+        detection, reason = empty._find_story_badge_from_detections(
+            frame,
+            5,
+            promoted,
+        )
+        self.assertIsNone(detection)
+        self.assertIn("角标次优候选OCR未确认", reason)

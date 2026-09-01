@@ -839,6 +839,8 @@ class StoryCardNavigationMixin:
     def _story_badge_ocr_frame(
         frame: np.ndarray,
         result: MatchResult,
+        *,
+        binary: bool = True,
     ) -> np.ndarray:
         """Prepare one tiny badge as a padded text line for the shared OCR engine."""
 
@@ -858,6 +860,17 @@ class StoryCardNavigationMixin:
             gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
 
         crop_height, crop_width = gray.shape[:2]
+        # An even-sized crop puts the inner-circle mask on a half-pixel center,
+        # which measurably breaks digit readability at tiny badge sizes (the
+        # mask then clips asymmetrically before the upscale).  Trim to odd so
+        # the mask stays centered on a real pixel; the trimmed edge is ring
+        # pixels that the mask would suppress anyway.
+        if crop_width > 1 and crop_width % 2 == 0:
+            gray = gray[:, : crop_width - 1]
+            crop_width -= 1
+        if crop_height > 1 and crop_height % 2 == 0:
+            gray = gray[: crop_height - 1, :]
+            crop_height -= 1
         center_x = (crop_width - 1) / 2
         center_y = (crop_height - 1) / 2
         inner_radius = max(
@@ -866,20 +879,21 @@ class StoryCardNavigationMixin:
         )
         y, x = np.mgrid[:crop_height, :crop_width]
         gray[(x - center_x) ** 2 + (y - center_y) ** 2 > inner_radius**2] = 0
-        _threshold, crop = cv2.threshold(
-            gray,
-            STORY_BADGE_OCR_BINARY_THRESHOLD,
-            255,
-            cv2.THRESH_BINARY,
-        )
+        if binary:
+            _threshold, gray = cv2.threshold(
+                gray,
+                STORY_BADGE_OCR_BINARY_THRESHOLD,
+                255,
+                cv2.THRESH_BINARY,
+            )
 
         target_height = STORY_BADGE_OCR_INNER_HEIGHT
         target_width = max(
             1,
-            round(crop.shape[1] * target_height / max(1, crop.shape[0])),
+            round(gray.shape[1] * target_height / max(1, gray.shape[0])),
         )
         enlarged = cv2.resize(
-            crop,
+            gray,
             (target_width, target_height),
             interpolation=cv2.INTER_CUBIC,
         )
@@ -900,25 +914,42 @@ class StoryCardNavigationMixin:
         result: MatchResult,
     ) -> tuple[int | None, str]:
         prepared = self._story_badge_ocr_frame(frame, result)
-        if prepared.size == 0:
-            return None, ""
-        text = self.vision.ocr_text(
-            prepared,
-            "剧情角标数字辅助",
-            target_height=0,
-            minimum_threshold=STORY_BADGE_OCR_MIN_CONFIDENCE,
-        )
-        numbers = {
-            int(value)
-            for value in re.findall(r"(?<!\d)\d{1,2}(?!\d)", str(text))
-            if 1 <= int(value) <= 20
-        }
-        number = next(iter(numbers)) if len(numbers) == 1 else None
+        text = ""
+        if prepared.size:
+            text = self.vision.ocr_text(
+                prepared,
+                "剧情角标数字辅助",
+                target_height=0,
+                minimum_threshold=STORY_BADGE_OCR_MIN_CONFIDENCE,
+            )
+        number = self._story_badge_ocr_text_number(text)
+        if number is None:
+            # Hard binarization can disconnect anti-aliased digits on small
+            # clients (measured: 1280x720 badge 8).  One raw-grayscale retry
+            # keeps the single-digit rec model in its trained contrast range.
+            prepared = self._story_badge_ocr_frame(frame, result, binary=False)
+            if prepared.size:
+                text = self.vision.ocr_text(
+                    prepared,
+                    "剧情角标数字辅助",
+                    target_height=0,
+                    minimum_threshold=STORY_BADGE_OCR_MIN_CONFIDENCE,
+                )
+                number = self._story_badge_ocr_text_number(text)
         self._status(
             "剧情角标 OCR",
             f"number={number if number is not None else '-'}, text={text or '-'}",
         )
         return number, text
+
+    @staticmethod
+    def _story_badge_ocr_text_number(text: str) -> int | None:
+        numbers = {
+            int(value)
+            for value in re.findall(r"(?<!\d)\d{1,2}(?!\d)", str(text))
+            if 1 <= int(value) <= 20
+        }
+        return next(iter(numbers)) if len(numbers) == 1 else None
 
     def _find_story_badge(
         self,
@@ -954,6 +985,21 @@ class StoryCardNavigationMixin:
             ):
                 return None, grid_reason
             reason = strict_reason
+            runner_detections = self._story_badge_grid_runner_detections(
+                target_number,
+                grid_detections,
+            )
+            if runner_detections:
+                runner_detection, runner_reason = (
+                    self._find_story_badge_from_detections(
+                        frame,
+                        target_number,
+                        runner_detections,
+                    )
+                )
+                if runner_detection is not None:
+                    return runner_detection, runner_reason
+                return None, runner_reason
         if not grid_detections and getattr(
             self,
             "_last_story_badge_geometry_reason",
@@ -969,6 +1015,40 @@ class StoryCardNavigationMixin:
         if self._story_badge_reason_is_ambiguous(reason):
             return None, reason
         return None, reason
+
+    @staticmethod
+    def _story_badge_grid_runner_detections(
+        target_number: int,
+        grid_detections: tuple[StoryBadgeDetection, ...],
+    ) -> tuple[StoryBadgeDetection, ...]:
+        """Promote grid runner-up slots whose full structural evidence holds.
+
+        On heavily degraded small clients the target's template can lose its
+        own slot by a hair to a visually adjacent digit.  The slot evidence of
+        that runner-up is still complete; the digit OCR becomes the deciding
+        independent vote inside the regular selector.
+        """
+
+        promoted: list[StoryBadgeDetection] = []
+        for value in grid_detections:
+            runner = value.runner_up
+            if runner is None or runner.number != target_number:
+                continue
+            result = runner.result
+            if (
+                result.score < STORY_BADGE_GRID_TEMPLATE_SCORE
+                or result.pixel_score < STORY_BADGE_GRID_PIXEL_SCORE
+                or result.zncc_score < STORY_BADGE_GRID_ZNCC_SCORE
+            ):
+                continue
+            promoted.append(
+                StoryBadgeDetection(
+                    best=StoryBadgeCandidate(number=target_number, result=result),
+                    runner_up=value.best,
+                    recovery_mode="slot_grid_runner",
+                )
+            )
+        return tuple(promoted)
 
     def inspect_story_badges(
         self,
@@ -1038,11 +1118,21 @@ class StoryCardNavigationMixin:
                 and value.best.result.zncc_score >= STORY_BADGE_GRID_ZNCC_SCORE
             )
 
+        def runner_identity(value: StoryBadgeDetection) -> bool:
+            # Structural floors were already enforced when the runner-up was
+            # promoted; the digit OCR is the deciding vote for this tier.
+            return value.recovery_mode == "slot_grid_runner"
+
         target_detections = [
             value
             for value in detections
             if value.best.number == target_number
-            and (strict_identity(value) or encoded_identity(value) or grid_identity(value))
+            and (
+                strict_identity(value)
+                or encoded_identity(value)
+                or grid_identity(value)
+                or runner_identity(value)
+            )
         ]
         if not target_detections:
             if any(value.recovery_mode == "slot_grid" for value in detections):
@@ -1072,10 +1162,62 @@ class StoryCardNavigationMixin:
                 ),
             )
         if len(target_detections) > 1:
-            return None, f"同一编号出现{len(target_detections)}个有效位置"
-        detection = target_detections[0]
+            # Several positions claim the target number (small clients can let
+            # one number's template win on a neighbour's slot).  The digit OCR
+            # is the independent discriminator: keep the selection only when
+            # exactly one position reads back the target number.
+            confirmed: list[StoryBadgeDetection] = []
+            for value in target_detections:
+                ocr_number, ocr_text = self._story_badge_ocr_number(
+                    frame,
+                    value.best.result,
+                )
+                if ocr_number == target_number:
+                    confirmed.append(
+                        replace(value, ocr_number=ocr_number, ocr_text=ocr_text)
+                    )
+            if len(confirmed) != 1:
+                return None, f"同一编号出现{len(target_detections)}个有效位置"
+            detection = confirmed[0]
+        else:
+            detection = target_detections[0]
         if detection.runner_up is None:
             return None, "缺少同位置次优编号，无法检查歧义"
+        if runner_identity(detection):
+            # The promoted runner-up lost its slot's template vote, so the
+            # digit OCR is the deciding independent vote and is mandatory
+            # regardless of how the symmetric ZNCC difference came out.
+            if detection.ocr_number is not None:
+                # Already digit-confirmed while resolving duplicate positions.
+                ocr_number, ocr_text = detection.ocr_number, detection.ocr_text
+            else:
+                ocr_number, ocr_text = self._story_badge_ocr_number(
+                    frame,
+                    detection.best.result,
+                )
+                detection = replace(
+                    detection,
+                    ocr_text=ocr_text,
+                    ocr_number=ocr_number,
+                )
+            if ocr_number == target_number:
+                self._status(
+                    "剧情角标",
+                    (
+                        f"栅格次优候选由OCR辅助确认：zncc={detection.margin:.3f}, "
+                        f"number={ocr_number}"
+                    ),
+                )
+                return detection, ""
+            return (
+                None,
+                (
+                    "角标次优候选OCR未确认："
+                    f"模板={target_number}, OCR="
+                    f"{ocr_number if ocr_number is not None else '-'}, "
+                    f"text={ocr_text or '-'}"
+                ),
+            )
         required_margin = min(
             threshold
             for passed, threshold in (
@@ -1093,15 +1235,22 @@ class StoryCardNavigationMixin:
                     detection.margin >= STORY_BADGE_GRID_OCR_MARGIN
                     and detection.combined_margin >= STORY_BADGE_GRID_MIN_COMBINED_MARGIN
                 ):
-                    ocr_number, ocr_text = self._story_badge_ocr_number(
-                        frame,
-                        detection.best.result,
-                    )
-                    detection = replace(
-                        detection,
-                        ocr_text=ocr_text,
-                        ocr_number=ocr_number,
-                    )
+                    if detection.ocr_number is not None:
+                        # Already digit-confirmed during duplicate selection.
+                        ocr_number, ocr_text = (
+                            detection.ocr_number,
+                            detection.ocr_text,
+                        )
+                    else:
+                        ocr_number, ocr_text = self._story_badge_ocr_number(
+                            frame,
+                            detection.best.result,
+                        )
+                        detection = replace(
+                            detection,
+                            ocr_text=ocr_text,
+                            ocr_number=ocr_number,
+                        )
                     if ocr_number == target_number:
                         self._status(
                             "剧情角标",
@@ -1128,15 +1277,19 @@ class StoryCardNavigationMixin:
                     f"combined={detection.combined_margin:.3f}"
                 ),
             )
-        ocr_number, ocr_text = self._story_badge_ocr_number(
-            frame,
-            detection.best.result,
-        )
-        detection = replace(
-            detection,
-            ocr_text=ocr_text,
-            ocr_number=ocr_number,
-        )
+        if detection.ocr_number is not None:
+            # Digit already confirmed while resolving duplicate positions.
+            ocr_number, ocr_text = detection.ocr_number, detection.ocr_text
+        else:
+            ocr_number, ocr_text = self._story_badge_ocr_number(
+                frame,
+                detection.best.result,
+            )
+            detection = replace(
+                detection,
+                ocr_text=ocr_text,
+                ocr_number=ocr_number,
+            )
         if ocr_number is not None and ocr_number != target_number:
             return (
                 None,

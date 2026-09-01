@@ -160,8 +160,12 @@ STORY_BADGE_GRID_ZNCC_SCORE = 0.70
 # signals.  Calibration against the retained later-card hard negative leaves
 # 0.035 as the lowest raw-ZNCC separation that remains safe for this family.
 STORY_BADGE_GRID_MIN_MARGIN = 0.035
-STORY_BADGE_GRID_MIN_COMBINED_MARGIN = 0.012
-STORY_BADGE_GRID_OCR_MARGIN = 0.015
+# Below the raw-margin floor the digit OCR becomes the discriminator: real
+# 1280x720 captures leave badge 8 separated by only ~0.013 ZNCC while the
+# prepared digit still reads cleanly.  The combined-margin floor keeps pure
+# noise ties out of the OCR path.
+STORY_BADGE_GRID_MIN_COMBINED_MARGIN = 0.004
+STORY_BADGE_GRID_OCR_MARGIN = 0.005
 Q_SP6_STORY_NUMBER = 6
 STORY_BADGE_SPECS = tuple(
     (

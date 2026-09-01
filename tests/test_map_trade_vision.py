@@ -463,3 +463,70 @@ class VisionTest(unittest.TestCase):
         self.assertEqual((10, 10), parse_used_limit("次数 10:10"))
         self.assertIsNone(parse_used_limit("11/10"))
         self.assertIsNone(parse_used_limit("次数未知"))
+
+
+class FrameGeometryTest(unittest.TestCase):
+    @staticmethod
+    def _scene(width: int, height: int) -> np.ndarray:
+        rng = np.random.default_rng(7)
+        return rng.integers(40, 220, size=(height, width, 3), dtype=np.uint8)
+
+    def test_regular_16_9_frame_is_accepted(self):
+        geometry = Vision.evaluate_frame_geometry(self._scene(1280, 720))
+
+        self.assertTrue(geometry.accepted)
+        self.assertEqual((0, 0, 1280, 720), geometry.content_rect)
+
+    def test_true_letterbox_bars_are_rejected(self):
+        frame = self._scene(1200, 675)
+        letterboxed = np.zeros((800, 1200, 3), dtype=np.uint8)
+        letterboxed[62:737, :] = frame
+
+        geometry = Vision.evaluate_frame_geometry(letterboxed)
+
+        self.assertFalse(geometry.accepted)
+        self.assertTrue(geometry.has_black_bars)
+        self.assertEqual((0, 62, 1200, 675), geometry.content_rect)
+
+    def test_dark_scene_edge_is_not_letterbox(self):
+        # User captures at irregular window sizes keep a pure-black scenery
+        # strip on the right.  Cutting it would break the 16:9 content ratio,
+        # so the frame must stay accepted with the full-frame content rect.
+        frame = self._scene(1886, 1100)
+        dark_scened = np.zeros((1100, 1956, 3), dtype=np.uint8)
+        dark_scened[:, :1886] = frame
+
+        geometry = Vision.evaluate_frame_geometry(dark_scened)
+
+        self.assertTrue(geometry.accepted, tuple(geometry.rejection_reasons))
+        self.assertEqual((0, 0, 1956, 1100), geometry.content_rect)
+
+    def test_bars_that_do_not_restore_16_9_are_scene(self):
+        # A right-side black run whose cut moves the content ratio away from
+        # 16:9 is scenery: no black-bar rejection may be emitted.
+        frame = self._scene(1500, 900)
+        framed = np.zeros((900, 1600, 3), dtype=np.uint8)
+        framed[:, :1500] = frame
+
+        geometry = Vision.evaluate_frame_geometry(framed)
+
+        self.assertTrue(geometry.accepted, tuple(geometry.rejection_reasons))
+        self.assertEqual(1600, geometry.content_width)
+
+    def test_irregular_high_resolution_window_is_accepted(self):
+        geometry = Vision.evaluate_frame_geometry(self._scene(3206, 1802))
+
+        self.assertTrue(geometry.accepted)
+        self.assertAlmostEqual(3206 / 1802, geometry.aspect_ratio, places=4)
+
+    def test_non_16_9_frame_is_rejected(self):
+        geometry = Vision.evaluate_frame_geometry(self._scene(1000, 600))
+
+        self.assertFalse(geometry.accepted)
+        self.assertIn("画面比例不是16:9", geometry.rejection_reasons[0])
+
+    def test_below_minimum_frame_is_rejected(self):
+        geometry = Vision.evaluate_frame_geometry(self._scene(800, 450))
+
+        self.assertFalse(geometry.accepted)
+        self.assertIn("画面物理尺寸过小", geometry.rejection_reasons[0])

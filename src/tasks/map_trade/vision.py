@@ -134,29 +134,63 @@ class Vision:
             np.mean(gray > FRAME_DARK_BORDER_MAX_GRAY)
         )
         detect_borders = scene_fraction >= FRAME_DARK_BORDER_MIN_SCENE_FRACTION
+        measured = {"top": 0, "bottom": 0, "left": 0, "right": 0}
         if detect_borders:
-            top = cls._meaningful_border_run(
+            measured["top"] = cls._meaningful_border_run(
                 cls._dark_border_run(gray, from_start=True),
                 frame_height,
             )
-            bottom = cls._meaningful_border_run(
+            measured["bottom"] = cls._meaningful_border_run(
                 cls._dark_border_run(gray, from_start=False),
                 frame_height,
             )
-            left = cls._meaningful_border_run(
+            measured["left"] = cls._meaningful_border_run(
                 cls._dark_border_run(gray.T, from_start=True),
                 frame_width,
             )
-            right = cls._meaningful_border_run(
+            measured["right"] = cls._meaningful_border_run(
                 cls._dark_border_run(gray.T, from_start=False),
                 frame_width,
             )
-        else:
-            top = bottom = left = right = 0
-        content_left = min(frame_width, left)
-        content_top = min(frame_height, top)
-        content_right = max(content_left, frame_width - min(frame_width, right))
-        content_bottom = max(content_top, frame_height - min(frame_height, bottom))
+        # Genuine letterboxing pulls the content region back toward 16:9.
+        # A dark scene vignette (pure-black scenery touching the frame edge)
+        # does not, so cutting it would corrupt every content-relative ROI.
+        # Each measured run is therefore only accepted as a black bar when
+        # cutting it moves the content aspect ratio closer to the target.
+        content_left, content_top = 0, 0
+        content_right, content_bottom = frame_width, frame_height
+        top = bottom = left = right = 0
+        for side in ("top", "bottom", "left", "right"):
+            run = measured[side]
+            if run <= 0:
+                continue
+            if side == "top":
+                trial = (content_left, content_top + run, content_right, content_bottom)
+            elif side == "bottom":
+                trial = (content_left, content_top, content_right, content_bottom - run)
+            elif side == "left":
+                trial = (content_left + run, content_top, content_right, content_bottom)
+            else:
+                trial = (content_left, content_top, content_right - run, content_bottom)
+            trial_width = max(1, trial[2] - trial[0])
+            trial_height = max(1, trial[3] - trial[1])
+            current_delta = abs(
+                (content_right - content_left) / max(1, content_bottom - content_top)
+                - FRAME_EXPECTED_ASPECT
+            )
+            trial_delta = abs(
+                trial_width / trial_height - FRAME_EXPECTED_ASPECT
+            )
+            if trial_delta <= current_delta:
+                content_left, content_top, content_right, content_bottom = trial
+                if side == "top":
+                    top = run
+                elif side == "bottom":
+                    bottom = run
+                elif side == "left":
+                    left = run
+                else:
+                    right = run
         content_width = max(1, content_right - content_left)
         content_height = max(1, content_bottom - content_top)
 
