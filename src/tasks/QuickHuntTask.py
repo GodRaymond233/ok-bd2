@@ -31,7 +31,7 @@ class QuickHuntTask(
     TaskVisionMixin,
     BaseBD2Task,
 ):
-    """Standalone quick-hunt task backed by the migrated  flow."""
+    """Standalone quick-hunt task backed by the migrated quick-hunt flow."""
 
     include_quick_hunt_config = True
     ocr_threshold_key = "快速狩猎 OCR 阈值"

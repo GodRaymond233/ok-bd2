@@ -64,7 +64,6 @@ licenses and attribution requirements are also preserved.
 | ok-oldking/ok-script-app | Reference starter template for ok-script applications, example tasks, custom tabs, i18n, tests, and packaging files | https://github.com/ok-oldking/ok-script-app |
 | ok-oldking/ok-wuthering-waves | Reference for mature ok-script game automation structure, trigger task registration, custom tabs, logging, and update packaging | https://github.com/ok-oldking/ok-wuthering-waves |
 | JZPPP/MaaBD2 | Reference for BrownDust II map-collection navigation ideas. | https://github.com/JZPPP/MaaBD2 |
-
 | BD2DB | Public market data used once to seed the bundled 1-28 day price snapshot. The runtime does not query this site. | https://browndust2-db.souseha.com/en/market-data |
 
 ## Game And Platform Materials

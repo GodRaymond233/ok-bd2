@@ -156,7 +156,7 @@ class QuickHuntConfigMixin:
     }
 
     quick_hunt_config_description = {
-        '执行快速狩猎': "按  路径消耗免费米饭和火把。",
+        '执行快速狩猎': "消耗免费米饭和火把。",
         '快速狩猎冒险航线': "消耗米饭扫荡金币或经验冒险航线。",
         '快速狩猎狩猎场': "不切换关卡，直接消耗米饭扫荡游戏当前默认狩猎场。",
         '快速狩猎圣石洞穴': "读取五种圣石数量并扫荡当前最少的属性洞穴。",
@@ -430,7 +430,7 @@ class QuickHuntFeatureMixin:
         return True
 
     def run_quick_hunt(self) -> bool:
-        """Run the  quick-hunt scheduler using PC-safe mouse input."""
+        """Run the quick-hunt scheduler using PC-safe mouse input."""
 
         opened = self._quick_hunt_open_menu()
         if opened != "opened":
@@ -541,7 +541,7 @@ class QuickHuntFeatureMixin:
                 self.operate_click(*QUICK_HUNT_ENTRY_POINT, after_sleep=1.0)
                 self._status_set("快速狩猎入口", "OCR 未命中，已点击固定入口中心")
 
-            # User requirement:  coordinates must not be inferred or converted.
+            # User requirement: external coordinates must not be inferred or converted.
             # The menu is confirmed by full-frame OCR unless an ok-bd2 ROI is supplied.
             text, _box = self._quick_hunt_wait_ocr(
                 [r"狩猎场"],

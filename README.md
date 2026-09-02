@@ -312,7 +312,6 @@ GitHub 的 `Source code` 压缩包只是源码快照，不包含安装器、更�
 - [ok-oldking/ok-wuthering-waves](https://github.com/ok-oldking/ok-wuthering-waves)：成熟项目中的任务注册、自定义页面、日志和更新流程。
 - [JZPPP/MaaBD2](https://github.com/JZPPP/MaaBD2)：BrownDust II 地图采集链路参考。
 
-
 第三方开源依赖、参考项目与打包组件见
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
