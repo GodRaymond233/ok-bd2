@@ -365,7 +365,9 @@ def _registry_install_values() -> Iterable[str]:
                                     root_key,
                                     app_key_name,
                                 )
-                            except OSError:
+                            except (OSError, ValueError):
+                                # 注册表键名是计长字符串，可能内嵌 \x00，
+                                # OpenKey 对此类名称抛 ValueError。
                                 continue
 
                             searchable = " ".join(app_values.values()).lower()

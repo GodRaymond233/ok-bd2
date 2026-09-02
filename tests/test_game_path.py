@@ -1,10 +1,13 @@
 import os
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from src.game_path import (
+    _registry_install_values,
     calculate_pc_exe_path,
     get_launch_game_id,
     get_launcher_exe_names,
@@ -170,6 +173,54 @@ class GamePathTest(unittest.TestCase):
         game_path = Path("D:/Games/BrownDust II.exe")
         with patch("src.game_path.resolve_launcher_exe_path", return_value=""):
             self.assertEqual(calculate_pc_exe_path(game_path), "")
+
+    def test_registry_install_values_skips_keys_with_embedded_null(self):
+        # 注册表键名是计长字符串，可能内嵌 \x00；winreg.OpenKey 对此类名称
+        # 抛 ValueError，枚举必须跳过坏键继续读取其余卸载项。
+        subkey_names = ["bad\x00key", "BrownDust2"]
+        install_dir = r"D:\Games\Browndust2"
+
+        class FakeKey:
+            def __init__(self, values=None):
+                self._values = values or {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def open_key(root, name, *args):
+            if "\x00" in name:
+                raise ValueError("embedded null character")
+            if name.endswith("Uninstall"):
+                return FakeKey()
+            return FakeKey(
+                {"DisplayName": "Brown Dust II", "InstallLocation": install_dir}
+            )
+
+        def query_value_ex(key, name):
+            try:
+                return key._values[name], 1
+            except KeyError:
+                raise OSError(name) from None
+
+        fake_winreg = types.SimpleNamespace(
+            HKEY_CURRENT_USER=object(),
+            HKEY_LOCAL_MACHINE=object(),
+            KEY_READ=0,
+            KEY_WOW64_64KEY=0x100,
+            KEY_WOW64_32KEY=0x200,
+            OpenKey=open_key,
+            QueryInfoKey=lambda key: (len(subkey_names),),
+            EnumKey=lambda key, index: subkey_names[index],
+            QueryValueEx=query_value_ex,
+        )
+
+        with patch.dict(sys.modules, {"winreg": fake_winreg}):
+            values = _registry_install_values()
+
+        self.assertIn(install_dir, values)
 
     def test_seed_device_manager_launch_path_sets_pc_full_path(self):
         with tempfile.TemporaryDirectory() as temp_dir:
