@@ -143,6 +143,16 @@ class AutoLoginTask(BaseBD2Task):
     def disable(self):
         super().disable()
         self.config["_enabled"] = False
+        # 用户停用自动登录后不再有人放行挂起的批次，立即放行让其自行确认主页。
+        self._release_login_gated_batch()
+
+    def _release_login_gated_batch(self) -> None:
+        """放行因等待自动登录而挂起的一键完成日常。"""
+        try:
+            from src.tasks.DailyBatchTask import DailyBatchTask
+        except ImportError:  # pragma: no cover - 任务注册表缺失时的极端场景
+            return
+        DailyBatchTask.release_after_login(self.executor)
 
     def should_trigger(self):
         if self._finished:
@@ -172,6 +182,7 @@ class AutoLoginTask(BaseBD2Task):
                 self.mark_logged_in()
                 self._finished = True
                 self._state = "done"
+                self._release_login_gated_batch()
                 self._set_stage("已完成")
                 self._set_action("主页三项信号已确认，跳过自动登录。")
                 self.log_info(
@@ -588,6 +599,7 @@ class AutoLoginTask(BaseBD2Task):
                 self.mark_logged_in()
                 self._finished = True
                 self._state = "done"
+                self._release_login_gated_batch()
                 self._login_retry_not_before = 0.0
                 self._set_stage("已完成")
                 self._set_action("主页三项信号已连续确认，自动登录流程结束。")

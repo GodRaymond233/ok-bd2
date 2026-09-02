@@ -71,6 +71,7 @@ class DailyBatchTask(BaseTask):
         self.group_icon = FluentIcon.CALENDAR
         self.visible = True
         self._requested_run_mode = RUN_MODE_ALL
+        self._start_after_login = False
 
         child_keys = [child.config_key for child in self.child_tasks]
         self.default_config.update(
@@ -155,7 +156,44 @@ class DailyBatchTask(BaseTask):
         except Exception as exc:  # 调度账本失败不影响子任务结果
             self.log_error(f"一键完成日常：记录 {child_name} 的调度时间失败。", exc)
 
+    def _auto_login_pending(self) -> bool:
+        """自动登录启用且未完成时为 True（与 auto_scheduler 的启动门控同语义）。
+
+        执行器中 onetime 出队优先于登录 trigger，且 onetime 运行期间 trigger
+        不执行：手动点开始且游戏冷启动时立即跑子任务，只会在登录页/公告页上
+        把主页确认烧超时并中止整批，登录完成后也没有任何机制重新拉起批次。
+        """
+        try:
+            from src.tasks.trigger.AutoLoginTask import AutoLoginTask
+        except ImportError:  # pragma: no cover - 任务注册表缺失时的极端场景
+            return False
+        login_task = self.executor.get_task_by_class(AutoLoginTask)
+        if login_task is None:
+            return False
+        if not bool(getattr(login_task, "_enabled", True)):
+            return False
+        return not bool(getattr(login_task, "_finished", False))
+
+    @classmethod
+    def release_after_login(cls, executor) -> bool:
+        """自动登录落定后放行被门控挂起的批次；返回是否有批次被放行。"""
+        batch = executor.get_task_by_class(cls)
+        if batch is None or not getattr(batch, "_start_after_login", False):
+            return False
+        batch._start_after_login = False
+        batch._enabled = True
+        if not executor.enqueue_onetime_task(batch):
+            return False
+        batch.log_info("一键完成日常：自动登录已完成，开始执行。")
+        return True
+
     def run(self, run_mode: str | None = None):
+        if self._auto_login_pending():
+            # 门控期间不消费注入的 run_mode，放行后的正式运行再取。
+            self._start_after_login = True
+            self.info_set("状态", "等待自动登录完成，完成后自动开始。")
+            self.log_info("一键完成日常：自动登录未完成，待登录完成后自动开始。")
+            return True
         run_mode = self._take_run_mode(run_mode)
         if not bool(self.config.get("启用", True)):
             self.info_set("状态", "一键完成日常已禁用。")

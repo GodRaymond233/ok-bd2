@@ -374,6 +374,89 @@ class DailyBatchTaskTest(unittest.TestCase):
         # 作废后不留残留。
         self.assertEqual(RUN_MODE_ALL, task._take_run_mode(None))
 
+    def test_run_defers_while_auto_login_pending(self):
+        # 回归：手动点开始且游戏冷启动时，onetime 出队优先于登录 trigger
+        # 且运行期间 trigger 不执行；立即跑子任务只会在登录页把主页确认
+        # 烧超时并中止整批，登录完成后也没有任何东西重新拉起批次。
+        from src.tasks.trigger.AutoLoginTask import AutoLoginTask
+
+        class First:
+            pass
+
+        calls = []
+        first = _ChildTask("first", calls)
+        login = SimpleNamespace(_enabled=True, _finished=False)
+        task, _resets = self.make_task(
+            {First: first, AutoLoginTask: login},
+            (DailyBatchChild("第一项", First),),
+            {"启用": True, "第一项": True},
+        )
+
+        self.assertTrue(DailyBatchTask.run(task))
+        self.assertEqual([], calls)
+        self.assertTrue(task._start_after_login)
+        self.assertIn("等待自动登录", task.info.get("状态"))
+
+    def test_run_proceeds_when_auto_login_settled(self):
+        from src.tasks.trigger.AutoLoginTask import AutoLoginTask
+
+        class First:
+            pass
+
+        for login in (
+            SimpleNamespace(_enabled=True, _finished=True),
+            SimpleNamespace(_enabled=False, _finished=False),
+            None,
+        ):
+            with self.subTest(login=login):
+                calls = []
+                first = _ChildTask("first", calls)
+                children = {First: first}
+                if login is not None:
+                    children[AutoLoginTask] = login
+                task, _resets = self.make_task(
+                    children,
+                    (DailyBatchChild("第一项", First),),
+                    {"启用": True, "第一项": True},
+                )
+
+                self.assertTrue(DailyBatchTask.run(task))
+                self.assertEqual([("first", True)], calls)
+                self.assertFalse(getattr(task, "_start_after_login", False))
+
+    def test_deferral_preserves_requested_run_mode(self):
+        from src.tasks.trigger.AutoLoginTask import AutoLoginTask
+
+        login = SimpleNamespace(_enabled=True, _finished=False)
+        task, _resets = self.make_task(
+            {AutoLoginTask: login},
+            (),
+            {"启用": True},
+        )
+        task.request_run_mode(RUN_MODE_INCOMPLETE)
+
+        self.assertTrue(DailyBatchTask.run(task))
+        self.assertEqual(RUN_MODE_INCOMPLETE, task._take_run_mode(None))
+
+    def test_release_after_login_reenqueues_gated_batch_once(self):
+        task, _resets = self.make_task({}, (), {"启用": True})
+        task._start_after_login = True
+        task._enabled = False
+        enqueued = []
+        task._executor = SimpleNamespace(
+            get_task_by_class=lambda cls: task if cls is DailyBatchTask else None,
+            enqueue_onetime_task=lambda t: enqueued.append(t) or True,
+        )
+
+        self.assertTrue(DailyBatchTask.release_after_login(task._executor))
+        self.assertEqual([task], enqueued)
+        self.assertTrue(task._enabled)
+        self.assertFalse(task._start_after_login)
+
+        task._enabled = False
+        self.assertFalse(DailyBatchTask.release_after_login(task._executor))
+        self.assertEqual(1, len(enqueued))
+
     def test_all_mode_records_child_schedule_after_success_and_failure(self):
         class First:
             pass

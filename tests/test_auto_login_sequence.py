@@ -54,6 +54,7 @@ class AutoLoginSequenceTest(unittest.TestCase):
         task._last_confirm_click_at = 0.0
         task._last_download_click_at = 0.0
         task._finished = False
+        task._executor = SimpleNamespace(get_task_by_class=lambda _cls: None)
         task._home_brightness_ratio = lambda _frame: 0.0
         task._home_gacha_ocr_text = lambda _frame: ""
         return task
@@ -506,6 +507,66 @@ class AutoLoginSequenceTest(unittest.TestCase):
 
         self.assertIn(("内部状态", "waiting"), info_calls)
         self.assertFalse(task._finished)
+
+    def test_finishing_releases_login_gated_batch(self):
+        from src.tasks.DailyBatchTask import DailyBatchTask
+
+        task = self._task()
+        task._state = "waiting"
+        task.trigger_interval = 0
+        task.capture_frame = lambda: np.zeros((10, 10, 3), dtype=np.uint8)
+        task._home_brightness_ratio = lambda _frame: 1.0
+        task._home_gacha_ocr_text = lambda _frame: "抽抽乐"
+        task.mark_logged_in = lambda: None
+
+        def fake_match(_frame, spec):
+            if spec is HOME_BUTTON_TEMPLATE:
+                return MatchResult(0.9, (0, 0), (1, 1), pixel_score=0.9)
+            return MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
+
+        task._match = fake_match
+        batch = SimpleNamespace(
+            _start_after_login=True,
+            _enabled=False,
+            log_info=lambda *_args, **_kwargs: None,
+        )
+        enqueued = []
+        task._executor = SimpleNamespace(
+            get_task_by_class=lambda cls: batch if cls is DailyBatchTask else None,
+            enqueue_onetime_task=lambda t: enqueued.append(t) or True,
+        )
+
+        AutoLoginTask.run(task)
+
+        self.assertTrue(task._finished)
+        self.assertEqual([batch], enqueued)
+        self.assertTrue(batch._enabled)
+        self.assertFalse(batch._start_after_login)
+
+    def test_disable_releases_login_gated_batch(self):
+        from src.tasks.DailyBatchTask import DailyBatchTask
+
+        task = self._task()
+        task._enabled = True
+        batch = SimpleNamespace(
+            _start_after_login=True,
+            _enabled=False,
+            log_info=lambda *_args, **_kwargs: None,
+        )
+        enqueued = []
+        task._executor = SimpleNamespace(
+            get_task_by_class=lambda cls: batch if cls is DailyBatchTask else None,
+            enqueue_onetime_task=lambda t: enqueued.append(t) or True,
+            remove_onetime_task=lambda _t: None,
+            _wake_executor=lambda: None,
+        )
+
+        AutoLoginTask.disable(task)
+
+        self.assertFalse(task._enabled)
+        self.assertFalse(task.config["_enabled"])
+        self.assertEqual([batch], enqueued)
+        self.assertFalse(batch._start_after_login)
 
     def test_successful_home_confirmation_clears_login_retry_backoff(self):
         task = self._task()
