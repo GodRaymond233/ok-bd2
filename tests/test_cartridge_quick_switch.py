@@ -3,6 +3,17 @@ from pathlib import Path
 
 import cv2
 
+from src.tasks.map_trade.navigator_constants import (
+    QUICK_SWITCH_TEMPLATE as NAVIGATOR_QUICK_SWITCH_TEMPLATE,
+)
+from src.tasks.PVPTask import QUICK_PACK_TEMPLATE as PVP_QUICK_PACK_TEMPLATE
+from src.tasks.SquareGoddessTask import (
+    QUICK_SWITCH_TEMPLATE as SQUARE_QUICK_SWITCH_TEMPLATE,
+)
+from src.tasks.SquareGoddessTask import (
+    TEMPLATE_DIR,
+)
+from src.utils import task_vision
 from src.utils.cartridge_quick_switch import (
     BATTLE_GAMEPLAY_CATEGORY_HIGHLIGHT_REGION,
     BATTLE_GAMEPLAY_CATEGORY_LABEL,
@@ -82,6 +93,53 @@ class CartridgeQuickSwitchLayoutTest(unittest.TestCase):
         self.assertLess(battle_when_life_selected, GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO)
         self.assertGreaterEqual(life_selected, GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO)
         self.assertLess(life_when_battle_selected, GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO)
+
+
+class QuickSwitchDarkButtonFixtureTest(unittest.TestCase):
+    """BUG-20260902-06（RPT-20260902-225925）：梦幻广场内快速切换按钮为白图标
+    +深色圆底样式，1600x901 实机帧 zncc 最高 0.838，三处 TemplateSpec 的
+    min_zncc_score=0.85 曾确定性误拒。夹具为 1600x901 黑底画布，仅按原始
+    坐标保留模板搜索条带（广场内其他玩家昵称在条带外），匹配路径与线上
+    完全一致（含 ROI 与候选中心约束）。"""
+
+    def _match(self, frame, spec):
+        return task_vision.match_template(
+            frame, spec, {}, TEMPLATE_DIR, cache={}, min_size=5
+        )
+
+    def test_in_square_dark_button_passes_all_quick_switch_specs(self):
+        frame = cv2.imread(
+            str(FIXTURE_ROOT / "in_square_dark_button_1600x901.png"),
+            cv2.IMREAD_COLOR,
+        )
+        self.assertIsNotNone(frame)
+        for spec in (
+            SQUARE_QUICK_SWITCH_TEMPLATE,
+            PVP_QUICK_PACK_TEMPLATE,
+            NAVIGATOR_QUICK_SWITCH_TEMPLATE,
+        ):
+            result = self._match(frame, spec)
+            self.assertTrue(
+                task_vision.passes_match(result, spec, {}),
+                f"{spec.file_name} 应识别广场内暗色按钮，得到 {result}",
+            )
+
+    def test_home_bottom_strip_without_button_is_rejected(self):
+        frame = cv2.imread(
+            str(FIXTURE_ROOT / "home_bottom_strip_1600x901.png"),
+            cv2.IMREAD_COLOR,
+        )
+        self.assertIsNotNone(frame)
+        for spec in (
+            SQUARE_QUICK_SWITCH_TEMPLATE,
+            PVP_QUICK_PACK_TEMPLATE,
+            NAVIGATOR_QUICK_SWITCH_TEMPLATE,
+        ):
+            result = self._match(frame, spec)
+            self.assertFalse(
+                task_vision.passes_match(result, spec, {}),
+                f"{spec.file_name} 不应在主页底部条带误检，得到 {result}",
+            )
 
 
 if __name__ == "__main__":

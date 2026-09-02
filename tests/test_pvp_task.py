@@ -152,7 +152,9 @@ class PVPTaskHelperTest(unittest.TestCase):
         self.assertNotIn(0.80, QUICK_PACK_TEMPLATE.scale_ratios)
         self.assertEqual(0.85, QUICK_PACK_TEMPLATE.min_pixel_score)
         self.assertEqual(0.88, QUICK_PACK_TEMPLATE.minimum_safe_threshold)
-        self.assertEqual(0.85, QUICK_PACK_TEMPLATE.min_zncc_score)
+        # BUG-20260902-06：广场内暗色圆底按钮 1600x901 实测 zncc 最高 0.838，
+        # 误检位置最高 0.43；0.78 在两者之间有足够余量。
+        self.assertEqual(0.78, QUICK_PACK_TEMPLATE.min_zncc_score)
         self.assertIsNotNone(QUICK_PACK_TEMPLATE.candidate_center_roi)
 
         task = object.__new__(PVPTask)

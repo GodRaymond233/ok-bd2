@@ -30,7 +30,10 @@ QUICK_SWITCH_TEMPLATE = TemplateSpec(
     min_pixel_score=0.85,
     candidate_center_roi=(650 / 1920, 950 / 1080, 1050 / 1920, 1045 / 1080),
     minimum_safe_threshold=0.88,
-    min_zncc_score=0.85,
+    # 与 SquareGoddessTask.QUICK_SWITCH_TEMPLATE 同一按钮：梦幻广场内暗色
+    # 圆底样式在 1600x901 实机帧 zncc 最高 0.838（RPT-20260902-225925），
+    # 0.85 门禁确定性误拒；同帧误检 zncc 最高 0.43，0.78 仍有足够余量。
+    min_zncc_score=0.78,
 )
 Q_SP6_SHOP_PRIORITY_TIMEOUT = 3.0
 # 折扣商店页专有页签 OCR 信号：在商店页整帧 OCR 中已验证稳定命中
