@@ -8,6 +8,7 @@ import numpy as np
 from src.tasks.map_trade.data import (
     SHOP_CARTRIDGE_BRIGHTNESS,
     SHOP_CARTRIDGE_PAGES,
+    SHOP_FAVORITE_POINTS,
     SHOP_PURCHASE_REFERENCES,
     shop_purchase_reference,
 )
@@ -512,19 +513,71 @@ class ShopCartridgeNavigationMixin:
 
     def _align_unfavorited_points(self, shop_id: str) -> bool:
         reference = SHOP_PURCHASE_REFERENCES[shop_id]
-        for slot, point in reference.unfavorited_points:
+        desired_unfavorited = reference.unfavorited_slots
+        for slot, point in SHOP_FAVORITE_POINTS.items():
             frame = self.vision.capture()
-            if self._gray_star_present(frame, slot, point):
-                self._status(f"{shop_id} 空收藏#{slot}", "已是灰星")
+            state = self._star_state(frame, slot, point)
+            if state is None:
+                self._status(f"{shop_id} 收藏#{slot}", "无商品，跳过")
                 continue
-            self._status(f"{shop_id} 空收藏#{slot}", "点击取消收藏")
+            if slot in desired_unfavorited:
+                if state == "gray":
+                    self._status(f"{shop_id} 空收藏#{slot}", "已是灰星")
+                    continue
+                self._status(f"{shop_id} 空收藏#{slot}", "点击取消收藏")
+                self.task.operate_click(*point, after_sleep=STAR_POST_CLICK_DELAY)
+                if not self._wait_for_gray_star(slot, point):
+                    self.task.log_warning(
+                        f"买：{reference.label} #{slot} 点击后未确认灰星或移除提示。"
+                    )
+                    return False
+                continue
+
+            if state == "yellow":
+                self._status(f"{shop_id} 收藏#{slot}", "已是黄星")
+                continue
+            self._status(f"{shop_id} 收藏#{slot}", "点击加入收藏")
             self.task.operate_click(*point, after_sleep=STAR_POST_CLICK_DELAY)
-            if not self._wait_for_gray_star(slot, point):
+            if not self._wait_for_yellow_star(slot, point):
                 self.task.log_warning(
-                    f"买：{reference.label} #{slot} 点击后未确认灰星或移除提示。"
+                    f"买：{reference.label} #{slot} 点击后未确认黄星或加入提示。"
                 )
                 return False
         return True
+
+    def _star_spec(self, slot: int, point: tuple[float, float]) -> TemplateSpec:
+        half_x = STAR_ROI_HALF_SIZE_X / 1920
+        half_y = STAR_ROI_HALF_SIZE_Y / 1080
+        return TemplateSpec(
+            name=f"星标#{slot}",
+            file_name=STAR_TEMPLATE_FILE,
+            threshold=STAR_TEMPLATE_THRESHOLD,
+            green_mask=True,
+            relative_roi=(
+                max(0.0, point[0] - half_x),
+                max(0.0, point[1] - half_y),
+                min(1.0, point[0] + half_x),
+                min(1.0, point[1] + half_y),
+            ),
+            scale_ratios=SHOP_CARTRIDGE_SCALE_RATIOS,
+            min_pixel_score=STAR_PIXEL_THRESHOLD,
+        )
+
+    def _star_state(
+        self,
+        frame: np.ndarray,
+        slot: int,
+        point: tuple[float, float],
+    ) -> str | None:
+        spec = self._star_spec(slot, point)
+        result = self.vision.match(frame, spec)
+        self._status(
+            f"星标#{slot}",
+            f"match={result.score:.3f}, pixel={result.pixel_score:.3f}",
+        )
+        if not self.vision.passes(result, spec):
+            return None
+        return "yellow" if self.vision.star_is_yellow(frame, result) else "gray"
 
     def _wait_for_gray_star(
         self,
@@ -557,30 +610,34 @@ class ShopCartridgeNavigationMixin:
         slot: int,
         point: tuple[float, float],
     ) -> bool:
-        half_x = STAR_ROI_HALF_SIZE_X / 1920
-        half_y = STAR_ROI_HALF_SIZE_Y / 1080
-        spec = TemplateSpec(
-            name=f"灰星#{slot}",
-            file_name=STAR_TEMPLATE_FILE,
-            threshold=STAR_TEMPLATE_THRESHOLD,
-            green_mask=True,
-            relative_roi=(
-                max(0.0, point[0] - half_x),
-                max(0.0, point[1] - half_y),
-                min(1.0, point[0] + half_x),
-                min(1.0, point[1] + half_y),
-            ),
-            scale_ratios=SHOP_CARTRIDGE_SCALE_RATIOS,
-            min_pixel_score=STAR_PIXEL_THRESHOLD,
-        )
-        result = self.vision.match(frame, spec)
-        self._status(
-            f"灰星#{slot}",
-            f"match={result.score:.3f}, pixel={result.pixel_score:.3f}",
-        )
-        return self.vision.passes(result, spec) and not self.vision.star_is_yellow(
-            frame, result
-        )
+        state = self._star_state(frame, slot, point)
+        return state == "gray"
+
+    def _wait_for_yellow_star(
+        self,
+        slot: int,
+        point: tuple[float, float],
+    ) -> bool:
+        toast_seen = False
+        for attempt in range(STAR_VERIFY_ATTEMPTS):
+            frame = self.vision.capture()
+            state = self._star_state(frame, slot, point)
+            if state == "yellow":
+                return True
+            if not toast_seen:
+                text = self.vision.ocr_text(frame, "加入收藏成功提示")
+                normalized = normalize_text(self.vision.simplify(text))
+                self._status(f"{slot} 加入收藏提示", normalized or "-")
+                if STAR_REMOVE_TOAST_KEYWORD in normalized:
+                    self.task.log_warning(
+                        f"买：收藏位#{slot} 点击后出现移除收藏提示，加入收藏未生效。"
+                    )
+                    return False
+                if STAR_ADD_TOAST_KEYWORD in normalized:
+                    toast_seen = True
+            if attempt + 1 < STAR_VERIFY_ATTEMPTS:
+                self.task.sleep(STAR_VERIFY_INTERVAL)
+        return toast_seen
 
     def select_shop_tab(self, shop: str) -> bool:
         try:

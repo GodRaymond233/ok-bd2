@@ -248,15 +248,40 @@ class ShopAndCatalogTest(unittest.TestCase):
         trader.task = task
         trader.vision = SimpleNamespace(
             capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
-            ocr_text=lambda *_args, **_kwargs: "",
-            simplify=lambda value: value,
         )
-        states = iter((False, True))
-        trader._gray_star_present = lambda _frame, _slot, _point: next(states)
+        calls = {6: 0}
+
+        def star_state(_frame, slot, _point):
+            if slot != 6:
+                return None
+            calls[6] += 1
+            return "yellow" if calls[6] == 1 else "gray"
+
+        trader._star_state = star_state
 
         self.assertTrue(trader._align_unfavorited_points("S1"))
         self.assertEqual([(*SHOP_FAVORITE_POINTS[6], STAR_POST_CLICK_DELAY)], clicks)
         self.assertEqual(1.0, STAR_POST_CLICK_DELAY)
+
+    def test_favorite_rebuild_adds_missing_favorite_and_skips_empty_slots(self):
+        clicks = []
+        task = SimpleNamespace(
+            operate_click=lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep)),
+            log_warning=lambda *_args, **_kwargs: None,
+            info_set=lambda *_args, **_kwargs: None,
+        )
+        trader = object.__new__(Trader)
+        trader.task = task
+        trader.vision = SimpleNamespace(capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8))
+        states = {1: "gray", 2: "yellow", 6: "gray"}
+        trader._star_state = lambda _frame, slot, _point: states.get(slot)
+        trader._wait_for_yellow_star = lambda _slot, _point: True
+
+        self.assertTrue(trader._align_unfavorited_points("S1"))
+        self.assertEqual(
+            [(*SHOP_FAVORITE_POINTS[1], STAR_POST_CLICK_DELAY)],
+            clicks,
+        )
 
     def test_gray_star_detection_anchors_enlarged_region_at_supplied_point(self):
         captured = []
