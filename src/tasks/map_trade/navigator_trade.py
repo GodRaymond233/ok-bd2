@@ -40,9 +40,20 @@ from src.tasks.map_trade.navigator_constants import (  # noqa: F401
     FIRST_CARD_SKIP_TEMPLATE,
     HAND_TEMPLATE,
     LOADING_TEMPLATE,
+    MERCHANT_AUTO_NAV_POLL_INTERVAL,
+    MERCHANT_AUTO_NAV_START_TIMEOUT,
+    MERCHANT_AUTO_NAV_TEMPLATE,
+    MERCHANT_AUTO_NAV_TIMEOUT,
     MERCHANT_CLICK_LOCATION_FAILURE_MESSAGE,
     MERCHANT_CLICK_LOCATION_TEMPLATE,
     MERCHANT_DIALOG_CONFIRM_TIMEOUT,
+    MERCHANT_NAV_CONFIRM_OCR_ROI,
+    MERCHANT_NAV_GUIDE_TEMPLATE,
+    MERCHANT_NAV_GUIDE_TIMEOUT,
+    MERCHANT_NAV_LANDMARK_TIMEOUT,
+    MERCHANT_NAV_MENU_OCR_INTERVAL,
+    MERCHANT_NAV_MENU_OCR_ROI,
+    MERCHANT_NAV_MENU_OCR_TIMEOUT,
     OVERLAP_ARROW_TEMPLATE,
     PROBE_QUICK_SWITCH_SCROLL_AMOUNT,
     PROBE_QUICK_SWITCH_SCROLL_COUNT,
@@ -216,6 +227,8 @@ class TradeNavigationMixin:
                 log_timeout=True,
             )
             if not shop_opened:
+                shop_opened = self._auto_navigate_to_merchant_shop()
+            if not shop_opened:
                 return NavigationResult(
                     False,
                     self.classify(),
@@ -303,6 +316,87 @@ class TradeNavigationMixin:
             f"跑商：{MERCHANT_CLICK_LOCATION_FAILURE_MESSAGE}，"
             f"最后匹配={last.score:.3f}/{last.pixel_score:.3f}/{last.zncc_score:.3f}。"
         )
+        return False
+
+    def _auto_navigate_to_merchant_shop(self) -> bool:
+        """地标不在视野时，经小地图导航菜单自动移动到商店，再重新识别地标。"""
+
+        self._status("导航状态", "商人地标不可见，尝试小地图导航到商店")
+        if not self.vision.click_template(
+            MERCHANT_NAV_GUIDE_TEMPLATE,
+            timeout=MERCHANT_NAV_GUIDE_TIMEOUT,
+            after_sleep=0.8,
+        ):
+            self.task.log_warning("跑商：未识别到小地图导航按钮，无法自动寻路到商店。")
+            return False
+        if not self._click_merchant_nav_destination():
+            return False
+        if not self._wait_merchant_auto_navigation():
+            return False
+        return self._click_merchant_interaction(
+            MERCHANT_NAV_LANDMARK_TIMEOUT,
+            after_sleep=1.2,
+        )
+
+    def _click_merchant_nav_destination(self) -> bool:
+        """在导航菜单中依次 OCR 点击"商店"目的地与"确认"按钮。"""
+
+        end_at = monotonic() + MERCHANT_NAV_MENU_OCR_TIMEOUT
+        while monotonic() <= end_at:
+            if self.vision.click_ocr(
+                [r"商店"],
+                roi=MERCHANT_NAV_MENU_OCR_ROI,
+                after_sleep=0.8,
+                name="商店导航",
+            ):
+                break
+            self.task.sleep(MERCHANT_NAV_MENU_OCR_INTERVAL)
+        else:
+            self.task.log_warning("跑商：小地图导航菜单未识别到商店目的地。")
+            return False
+
+        end_at = monotonic() + MERCHANT_NAV_MENU_OCR_TIMEOUT
+        while monotonic() <= end_at:
+            if self.vision.click_ocr(
+                [r"确认"],
+                roi=MERCHANT_NAV_CONFIRM_OCR_ROI,
+                after_sleep=0.8,
+                name="商店导航确认",
+            ):
+                return True
+            self.task.sleep(MERCHANT_NAV_MENU_OCR_INTERVAL)
+        self.task.log_warning("跑商：小地图导航确认按钮未出现。")
+        return False
+
+    def _wait_merchant_auto_navigation(self) -> bool:
+        """等待自动移动开始并结束；地标提前进入视野时立即放行。"""
+
+        started_at = monotonic()
+        end_at = started_at + MERCHANT_AUTO_NAV_TIMEOUT
+        seen = False
+        while monotonic() <= end_at:
+            frame = self.vision.capture()
+            landmark = self.vision.match(frame, MERCHANT_CLICK_LOCATION_TEMPLATE)
+            if self.vision.passes(landmark, MERCHANT_CLICK_LOCATION_TEMPLATE):
+                self._status(
+                    "自动移动到商店",
+                    f"地标已进入视野 center={landmark.center}",
+                )
+                return True
+            active = self.vision.passes(
+                self.vision.match(frame, MERCHANT_AUTO_NAV_TEMPLATE),
+                MERCHANT_AUTO_NAV_TEMPLATE,
+            )
+            if active:
+                seen = True
+            elif seen:
+                self._status("自动移动到商店", "自动移动已结束")
+                return True
+            if not seen and monotonic() - started_at >= MERCHANT_AUTO_NAV_START_TIMEOUT:
+                self.task.log_warning("跑商：确认导航后未观察到自动移动。")
+                return False
+            self.task.sleep(MERCHANT_AUTO_NAV_POLL_INTERVAL)
+        self.task.log_warning("跑商：自动移动到商店超时。")
         return False
 
     def wait_for_q_sp6_sandbox(

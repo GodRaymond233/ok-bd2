@@ -70,6 +70,9 @@ from src.tasks.map_trade.navigator_constants import (
     CLASSIFY_SHOP_TABS_RELATIVE_ROI,
     CLASSIFY_SHOP_TITLE_REFERENCE_ROI,
     CLASSIFY_SHOP_TITLE_RELATIVE_ROI,
+    MERCHANT_AUTO_NAV_TEMPLATE,
+    MERCHANT_NAV_GUIDE_TIMEOUT,
+    MERCHANT_NAV_LANDMARK_TIMEOUT,
 )
 from src.tasks.map_trade.progress import UTC_PLUS_8
 from src.tasks.map_trade.trader import (
@@ -2321,6 +2324,7 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
         clicks = []
         client_clicks = []
         shop_entry_attempts = []
+        navigation_attempts = []
         task = SimpleNamespace(
             config={"加载页面等待秒数": 45.0},
             operate_click=lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep)),
@@ -2353,6 +2357,9 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
         navigator._enter_q_sp6_shop = lambda timeout, *, log_timeout: (
             shop_entry_attempts.append((timeout, log_timeout)) or next(shop_entry_results)
         )
+        navigator._auto_navigate_to_merchant_shop = lambda: (
+            navigation_attempts.append(True) or False
+        )
         navigator.classify = lambda: ScreenState.UNKNOWN
 
         def open_quick_switcher(**callbacks):
@@ -2381,6 +2388,210 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
             ],
             shop_entry_attempts,
         )
+        self.assertEqual([True], navigation_attempts)
+
+    def test_buy_entry_auto_navigates_to_merchant_when_landmark_stays_invisible(self):
+        client_clicks = []
+        shop_entry_attempts = []
+        navigation_attempts = []
+        keyword_checks = []
+        task = SimpleNamespace(
+            config={"加载页面等待秒数": 45.0},
+            operate_click=lambda *args, **kwargs: None,
+            sleep=lambda *_args: None,
+            log_warning=lambda *_args, **_kwargs: None,
+        )
+        badge_frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        badge_detection = StoryBadgeDetection(
+            best=StoryBadgeCandidate(
+                6,
+                MatchResult(0.99, (80, 930), (30, 28), pixel_score=0.98),
+            ),
+            runner_up=StoryBadgeCandidate(
+                8,
+                MatchResult(0.80, (81, 930), (31, 31), pixel_score=0.82),
+            ),
+        )
+        vision = SimpleNamespace(
+            click_stable_template=lambda *_args, **_kwargs: True,
+            click_client=lambda point, frame_shape, after_sleep=0: client_clicks.append(
+                (point, frame_shape, after_sleep)
+            ),
+        )
+        navigator = Navigator(task, vision)
+        navigator._wait_for_cartridge_home = lambda: True
+        navigator._wait_for_quick_switch_page = lambda: True
+        navigator._wait_for_story_category = lambda: True
+        navigator._wait_for_story_badge = lambda _number: (badge_frame, badge_detection)
+        shop_entry_results = iter((False, False))
+        navigator._enter_q_sp6_shop = lambda timeout, *, log_timeout: (
+            shop_entry_attempts.append((timeout, log_timeout)) or next(shop_entry_results)
+        )
+        navigator._auto_navigate_to_merchant_shop = lambda: (
+            navigation_attempts.append(True) or True
+        )
+        navigator._wait_for_ocr_keywords = lambda keywords, timeout, name: (
+            keyword_checks.append((keywords, timeout, name)) or True
+        )
+        navigator._wait_for_bargain_shop_confirmation = lambda: True
+
+        def open_quick_switcher(**callbacks):
+            return (
+                callbacks["ensure_home"]()
+                and callbacks["click_quick_switch"]()
+                and callbacks["confirm_quick_switch_page"]()
+            )
+
+        task.open_cartridge_quick_switcher = open_quick_switcher
+
+        result = navigator.enter_q_sp6_buy_flow()
+
+        self.assertTrue(result.success)
+        self.assertEqual(ScreenState.SHOP, result.state)
+        self.assertEqual([True], navigation_attempts)
+        self.assertEqual(
+            [
+                (Q_SP6_SHOP_PRIORITY_TIMEOUT, False),
+                (45.0, True),
+            ],
+            shop_entry_attempts,
+        )
+
+    def test_auto_navigate_fails_without_ocr_when_guide_button_missing(self):
+        ocr_calls = []
+        task = SimpleNamespace(
+            config={},
+            sleep=lambda *_args: None,
+            log_warning=lambda *_args, **_kwargs: None,
+        )
+        vision = SimpleNamespace(
+            click_template=lambda *_args, **_kwargs: False,
+            click_ocr=lambda *args, **kwargs: ocr_calls.append(args) or False,
+        )
+        navigator = Navigator(task, vision)
+
+        self.assertFalse(navigator._auto_navigate_to_merchant_shop())
+        self.assertEqual([], ocr_calls)
+
+    def test_auto_navigate_clicks_guide_shop_confirm_then_retries_landmark(self):
+        template_clicks = []
+        ocr_clicks = []
+        interactions = []
+        task = SimpleNamespace(
+            config={},
+            sleep=lambda *_args: None,
+            log_warning=lambda *_args, **_kwargs: None,
+        )
+        vision = SimpleNamespace(
+            click_template=lambda spec, timeout, after_sleep: (
+                template_clicks.append((spec.name, timeout)) or True
+            ),
+            click_ocr=lambda patterns, roi, after_sleep, name: (
+                ocr_clicks.append((tuple(patterns), name)) or True
+            ),
+        )
+        navigator = Navigator(task, vision)
+        navigator._wait_merchant_auto_navigation = lambda: True
+        navigator._click_merchant_interaction = lambda timeout, *, after_sleep: (
+            interactions.append((timeout, after_sleep)) or True
+        )
+
+        self.assertTrue(navigator._auto_navigate_to_merchant_shop())
+        self.assertEqual([("小地图导航", MERCHANT_NAV_GUIDE_TIMEOUT)], template_clicks)
+        self.assertEqual(
+            [(("商店",), "商店导航"), (("确认",), "商店导航确认")],
+            ocr_clicks,
+        )
+        self.assertEqual([(MERCHANT_NAV_LANDMARK_TIMEOUT, 1.2)], interactions)
+
+    def test_auto_navigate_stops_when_shop_destination_missing(self):
+        ocr_calls = []
+        task = SimpleNamespace(
+            config={},
+            sleep=lambda *_args: None,
+            log_warning=lambda *_args, **_kwargs: None,
+        )
+        vision = SimpleNamespace(
+            click_template=lambda *_args, **_kwargs: True,
+            click_ocr=lambda *args, **kwargs: ocr_calls.append(kwargs["name"]) or False,
+        )
+        navigator = Navigator(task, vision)
+        navigator._wait_merchant_auto_navigation = lambda: self.fail(
+            "未确认商店目的地不得等待自动移动"
+        )
+
+        self.assertFalse(navigator._auto_navigate_to_merchant_shop())
+        self.assertTrue(ocr_calls)
+        self.assertTrue(all(name == "商店导航" for name in ocr_calls))
+
+    def test_wait_auto_navigation_returns_when_landmark_enters_view(self):
+        landmark = MatchResult(0.95, (100, 100), (40, 30), pixel_score=0.95)
+        missed = MatchResult(-1.0, (0, 0), (0, 0))
+        task = SimpleNamespace(
+            config={},
+            sleep=lambda *_args: None,
+            log_warning=lambda *_args, **_kwargs: None,
+        )
+        vision = SimpleNamespace(
+            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
+            match=lambda _frame, spec: (
+                landmark if spec is MERCHANT_CLICK_LOCATION_TEMPLATE else missed
+            ),
+            passes=lambda result, spec: result.score >= 0.9,
+        )
+        navigator = Navigator(task, vision)
+
+        with patch(
+            "src.tasks.map_trade.navigator_trade.monotonic",
+            side_effect=(0.0, 1.0),
+        ):
+            self.assertTrue(navigator._wait_merchant_auto_navigation())
+
+    def test_wait_auto_navigation_returns_after_movement_ends(self):
+        landmark_missed = MatchResult(-1.0, (0, 0), (0, 0))
+        auto_nav_active = MatchResult(0.95, (700, 620), (40, 30))
+        auto_nav_results = iter((auto_nav_active, landmark_missed))
+        task = SimpleNamespace(
+            config={},
+            sleep=lambda *_args: None,
+            log_warning=lambda *_args, **_kwargs: None,
+        )
+        vision = SimpleNamespace(
+            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
+            match=lambda _frame, spec: (
+                next(auto_nav_results)
+                if spec is MERCHANT_AUTO_NAV_TEMPLATE
+                else landmark_missed
+            ),
+            passes=lambda result, spec: result.score >= 0.9,
+        )
+        navigator = Navigator(task, vision)
+
+        with patch(
+            "src.tasks.map_trade.navigator_trade.monotonic",
+            side_effect=(0.0, 1.0, 2.0),
+        ):
+            self.assertTrue(navigator._wait_merchant_auto_navigation())
+
+    def test_wait_auto_navigation_fails_when_movement_never_starts(self):
+        missed = MatchResult(-1.0, (0, 0), (0, 0))
+        task = SimpleNamespace(
+            config={},
+            sleep=lambda *_args: None,
+            log_warning=lambda *_args, **_kwargs: None,
+        )
+        vision = SimpleNamespace(
+            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
+            match=lambda *_args: missed,
+            passes=lambda *_args: False,
+        )
+        navigator = Navigator(task, vision)
+
+        with patch(
+            "src.tasks.map_trade.navigator_trade.monotonic",
+            side_effect=(0.0, 5.0, 13.0),
+        ):
+            self.assertFalse(navigator._wait_merchant_auto_navigation())
 
     def test_buy_phase_enters_shop_then_runs_or_skips_local_favorite_rebuild(self):
         actions = []
