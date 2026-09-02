@@ -21,7 +21,9 @@ dependencies = [
     "pyappify==1.0.6",
     "pyside6==6.9.1",
     "pyside6-fluent-widgets",
-    "pywin32>=306; platform_system == 'Windows'",
+    # 312 打包回归不再捆绑 mfc140u.dll（上游 mhammond/pywin32#2776），
+    # 干净系统 import win32ui 必崩；钉 311 直到含修复的新版本发布。
+    "pywin32==311; platform_system == 'Windows'",
 ]
 
 [dependency-groups]
