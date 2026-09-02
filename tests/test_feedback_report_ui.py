@@ -74,6 +74,18 @@ class FeedbackReportUiTest(unittest.TestCase):
         self.assertFalse(dialog.include_screenshot.isEnabled())
         dialog.close()
 
+    def test_create_button_stays_disabled_until_description_entered(self):
+        dialog = FeedbackReportDialog(
+            DiagnosticSnapshot(captured_at="2026-08-14T13:00:00+08:00")
+        )
+
+        self.assertFalse(dialog.create_button.isEnabled())
+        dialog.description_edit.setPlainText("跑商砍价后一直停在商店门口")
+        self.assertTrue(dialog.create_button.isEnabled())
+        dialog.description_edit.clear()
+        self.assertFalse(dialog.create_button.isEnabled())
+        dialog.close()
+
     def test_report_dialog_follows_dark_theme_palette(self):
         qconfig.set(qconfig.themeMode, Theme.DARK, save=False)
         dialog = FeedbackReportDialog(
