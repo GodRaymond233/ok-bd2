@@ -671,6 +671,16 @@ class QuickHuntFeatureMixin:
                 name="圣石洞穴入口",
             )
             if not clicked:
+                # RPT-20260902-225925：实机条带 OCR 连续 20 秒全空，但 6 秒前
+                # 整屏 OCR 能读到"圣石洞穴"，该客户端入口可能偏移到条带外；
+                # 条带未命中先整屏 OCR 兜底（"圣石洞"三字前缀在狩猎菜单内唯一）。
+                clicked = self._quick_hunt_click_ocr(
+                    [QUICK_HUNT_CRYSTAL_ENTRY_PATTERN],
+                    None,
+                    2.0,
+                    name="圣石洞穴入口整屏",
+                )
+            if not clicked:
                 seen = self._quick_hunt_ocr_text(
                     self.capture_frame(),
                     QUICK_HUNT_CRYSTAL_CLICK_ROI,
@@ -692,6 +702,7 @@ class QuickHuntFeatureMixin:
                 + ("，重试。" if attempt < max(1, attempts) else "。")
             )
         self.log_info("快速狩猎：点击圣石洞穴后未确认属性洞穴列表。")
+        self._save_flow_diagnostic("quick_hunt_crystal_entry_failed")
         return False
 
     def _quick_hunt_select_adventure_route(self) -> str | None:

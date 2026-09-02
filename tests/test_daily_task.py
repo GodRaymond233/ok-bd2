@@ -1408,11 +1408,40 @@ class DailyTaskHelperTest(unittest.TestCase):
         task._quick_hunt_click_ocr = lambda *_args, **_kwargs: False
         task._click_reference = lambda *args, **kwargs: None
         task._quick_hunt_wait_ocr = lambda *_args, **_kwargs: ("", None)
+        task._save_flow_diagnostic = lambda *_args, **_kwargs: None
         resource_checks = []
         task._quick_hunt_resource_empty = lambda resource: resource_checks.append(resource) or True
 
         self.assertFalse(task._quick_hunt_run_crystal_cave())
         self.assertEqual([], resource_checks)
+
+    def test_quick_hunt_crystal_entry_falls_back_to_full_frame_ocr(self):
+        # RPT-20260902-225925：实机 CLICK_ROI 条带 OCR 连续全空但整屏菜单
+        # 可读到"圣石洞穴"，入口可能偏移到条带外；条带未命中应整屏兜底，
+        # 命中后不得再回退固定参考点。
+        task = object.__new__(QuickHuntTask)
+        task.config = {"快速狩猎界面等待秒数": 8.0}
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        entry_attempts = []
+
+        def click_ocr(_patterns, roi, _timeout, **_kwargs):
+            entry_attempts.append(roi)
+            return roi is None
+
+        task._quick_hunt_click_ocr = click_ocr
+        task._click_reference = lambda *_args, **_kwargs: self.fail(
+            "full-frame OCR hit must not use the fixed-coordinate fallback"
+        )
+        task._quick_hunt_wait_ocr = (
+            lambda *_args, **_kwargs: ("火之洞穴 水之洞穴 光之洞穴", None)
+        )
+        task._quick_hunt_resource_empty = lambda _resource: True
+
+        self.assertTrue(task._quick_hunt_run_crystal_cave())
+        self.assertEqual(
+            [QUICK_HUNT_CRYSTAL_CLICK_ROI, None], entry_attempts,
+        )
 
     def test_quick_hunt_crystal_entry_pattern_matches_garbled_ocr_last_char(self):
         # BUG-20260901-03：实机与 20260724 录屏帧按任务管线复现，CLICK_ROI
