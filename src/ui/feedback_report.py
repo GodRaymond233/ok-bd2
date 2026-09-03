@@ -3,11 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal, Slot
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -20,11 +21,22 @@ from qfluentwidgets import FluentIcon, PrimaryPushButton, PushButton
 from src.diagnostics.models import DiagnosticSnapshot, ReportResult
 from src.diagnostics.service import DiagnosticsManager
 from src.ui.live_screenshot import LiveScreenshotWidget
-from src.ui.quest_theme import on_theme_changed, palette
+from src.ui.quest_theme import (
+    BODY_FONT,
+    MONO_FONT,
+    chip_qss,
+    on_theme_changed,
+    palette,
+    rgba,
+)
 
 
-def _apply_report_dialog_theme(dialog: QDialog) -> None:
-    """Keep report dialogs readable when qfluentwidgets switches theme."""
+def _apply_report_dialog_theme(dialog: QDialog, restyle_chrome=None) -> None:
+    """Keep report dialogs readable when qfluentwidgets switches theme.
+
+    ``restyle_chrome`` re-renders theme-tinted pixmaps (inline icons), which
+    QSS cannot reach.
+    """
 
     def update() -> None:
         colors = palette()
@@ -33,31 +45,112 @@ def _apply_report_dialog_theme(dialog: QDialog) -> None:
             QDialog {{
                 background-color: {colors['bg_panel']};
                 color: {colors['ink']};
+                font-family: {BODY_FONT};
             }}
             QLabel {{ color: {colors['ink']}; background: transparent; }}
-            QLabel#bd2ReportTitle {{ color: {colors['ink']}; font-size: 20px; font-weight: 900; }}
+            QLabel#bd2ReportTitle {{
+                color: {colors['ink']}; font-size: 20px; font-weight: 900;
+            }}
             QLabel#bd2ReportHint {{ color: {colors['ink_dim']}; font-size: 12px; }}
+            QLabel#bd2ReportSection {{
+                color: {colors['ink_faint']}; font-size: 11px; font-weight: 700;
+            }}
             QLabel#bd2ReportStatus {{ color: {colors['ink_dim']}; font-size: 12px; }}
             QLabel#bd2ReportPrivacy {{ color: {colors['ink_faint']}; font-size: 11px; }}
-            QLabel#bd2ReportPauseNotice {{
-                color: {colors['warn_ink']}; font-size: 11px; font-weight: 600;
-                padding: 6px 10px; border-radius: 6px;
+            QLabel#bd2ReportId {{
+                {chip_qss(colors['accent'], colors['accent_soft'])}
+                font-family: {MONO_FONT}; font-size: 12px; padding: 3px 10px;
+            }}
+            QLabel#bd2ReportPreviewText {{
+                color: rgba(255, 255, 255, 0.62); font-size: 12px;
+            }}
+            QLabel#bd2ReportPauseText {{
+                color: {colors['warn_ink']}; font-size: 12px; font-weight: 600;
+            }}
+            QFrame#bd2ReportAccentBar {{
+                background-color: {colors['accent']};
+                border: none; border-radius: 2px;
+            }}
+            QFrame#bd2ReportPreview {{
+                background-color: #151515;
+                border: 1px solid rgba(127, 127, 127, 0.35);
+                border-radius: 10px;
+            }}
+            QFrame#bd2ReportPauseNotice {{
                 background-color: {colors['warn_soft']};
+                border: 1px solid {rgba(colors['warn_ink'], 0.35)};
+                border-radius: 7px;
             }}
             QTextEdit {{
                 background-color: {colors['card']};
                 color: {colors['ink']};
                 border: 1px solid {colors['line_strong']};
                 border-radius: 9px;
-                padding: 8px;
+                padding: 8px 10px;
                 selection-background-color: {colors['accent_deep']};
+                font-family: {BODY_FONT};
+                font-size: 13px;
             }}
-            QCheckBox {{ color: {colors['ink']}; spacing: 7px; }}
+            QTextEdit:focus {{ border: 1px solid {colors['accent']}; }}
+            QTextEdit#bd2ReportMessage {{
+                background-color: {colors['inset']};
+                font-family: {MONO_FONT};
+                font-size: 12px;
+            }}
+            QCheckBox {{ color: {colors['ink']}; spacing: 7px; font-size: 12px; }}
+            QProgressBar {{
+                background-color: {colors['card']};
+                border: 1px solid {colors['line']};
+                border-radius: 5px;
+                min-height: 10px;
+                max-height: 10px;
+                color: {colors['ink_dim']};
+                font-size: 11px;
+            }}
+            QProgressBar::chunk {{
+                background-color: {colors['accent']};
+                border-radius: 4px;
+            }}
             """
         )
+        if restyle_chrome is not None:
+            restyle_chrome(colors)
 
     update()
     on_theme_changed(update, dialog)
+
+
+def _dialog_header(title_text: str, hint_text: str) -> QHBoxLayout:
+    """Accent bar + title + hint, matching the quest page section headers."""
+
+    bar = QFrame()
+    bar.setObjectName("bd2ReportAccentBar")
+    bar.setFixedSize(4, 36)
+
+    title = QLabel(title_text)
+    title.setObjectName("bd2ReportTitle")
+    hint = QLabel(hint_text)
+    hint.setObjectName("bd2ReportHint")
+    hint.setWordWrap(True)
+
+    text_column = QVBoxLayout()
+    text_column.setContentsMargins(0, 0, 0, 0)
+    text_column.setSpacing(4)
+    text_column.addWidget(title)
+    text_column.addWidget(hint)
+
+    header = QHBoxLayout()
+    header.setContentsMargins(0, 0, 0, 0)
+    header.setSpacing(10)
+    header.addWidget(bar, 0, Qt.AlignmentFlag.AlignVCenter)
+    header.addLayout(text_column, 1)
+    return header
+
+
+def _section_caption(text: str) -> QLabel:
+    caption = QLabel(text)
+    caption.setObjectName("bd2ReportSection")
+    return caption
 
 
 class FeedbackReportDialog(QDialog):
@@ -66,31 +159,24 @@ class FeedbackReportDialog(QDialog):
         self.setWindowTitle("生成问题报告")
         self.setModal(True)
         self.setMinimumWidth(640)
-        _apply_report_dialog_theme(self)
-
-        title = QLabel("请描述刚才遇到的问题")
-        title.setObjectName("bd2ReportTitle")
-
-        hint = QLabel("一句话说明“做了什么、看到了什么”即可，例如：跑商砍价后一直停在商店门口。")
-        hint.setObjectName("bd2ReportHint")
-        hint.setWordWrap(True)
 
         self.description_edit = QTextEdit()
         self.description_edit.setPlaceholderText("请输入问题现象（必填）")
         self.description_edit.setAcceptRichText(False)
         self.description_edit.setMaximumHeight(110)
 
-        self.preview = QLabel()
+        self.preview = QFrame()
         self.preview.setObjectName("bd2ReportPreview")
-        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview.setMinimumHeight(220)
-        self.preview.setStyleSheet(
-            "background: #111; border: 1px solid rgba(255,255,255,0.10);"
-            " border-radius: 10px; color: rgba(255,255,255,0.68);"
-        )
+        preview_layout = QVBoxLayout(self.preview)
+        preview_layout.setContentsMargins(12, 12, 12, 12)
+        preview_layout.setSpacing(8)
         if snapshot.frame is not None:
+            image_label = QLabel()
+            image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            image_label.setStyleSheet("background: transparent; border: none;")
             image = LiveScreenshotWidget._frame_to_image(snapshot.frame)
-            self.preview.setPixmap(
+            image_label.setPixmap(
                 QPixmap.fromImage(image).scaled(
                     520,
                     292,
@@ -98,40 +184,81 @@ class FeedbackReportDialog(QDialog):
                     Qt.TransformationMode.SmoothTransformation,
                 )
             )
+            preview_layout.addWidget(image_label)
         else:
-            self.preview.setText("当前没有可用的游戏窗口截图，仍可生成日志报告")
+            placeholder_icon = QLabel()
+            placeholder_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            placeholder_icon.setStyleSheet("background: transparent; border: none;")
+            placeholder_icon.setPixmap(
+                FluentIcon.PHOTO.icon(color=QColor(255, 255, 255, 110)).pixmap(30, 30)
+            )
+            placeholder_text = QLabel("当前没有可用的游戏窗口截图，仍可生成日志报告")
+            placeholder_text.setObjectName("bd2ReportPreviewText")
+            placeholder_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            preview_layout.addStretch(1)
+            preview_layout.addWidget(placeholder_icon)
+            preview_layout.addWidget(placeholder_text)
+            preview_layout.addStretch(1)
 
         self.include_screenshot = QCheckBox("附带上方游戏窗口截图（建议）")
         self.include_screenshot.setChecked(snapshot.frame is not None)
         self.include_screenshot.setEnabled(snapshot.frame is not None)
 
+        self.privacy_icon = QLabel()
+        self.privacy_icon.setFixedSize(12, 12)
         privacy = QLabel(
             "隐私范围：只导出受限运行信息、脱敏后的最近日志和你确认的游戏截图；"
             "不导出原始配置、环境变量、进程列表、用户名或机器名。"
         )
         privacy.setObjectName("bd2ReportPrivacy")
         privacy.setWordWrap(True)
+        privacy_row = QHBoxLayout()
+        privacy_row.setContentsMargins(0, 0, 0, 0)
+        privacy_row.setSpacing(6)
+        privacy_row.addWidget(self.privacy_icon, 0, Qt.AlignmentFlag.AlignTop)
+        privacy_row.addWidget(privacy, 1)
 
         cancel_button = PushButton("取消")
         cancel_button.clicked.connect(self.reject)
-        create_button = PrimaryPushButton("生成报告")
-        create_button.clicked.connect(self._accept_if_valid)
+        self.create_button = PrimaryPushButton(FluentIcon.SEND, "生成报告")
+        self.create_button.setEnabled(False)
+        self.create_button.clicked.connect(self._accept_if_valid)
+        self.description_edit.textChanged.connect(
+            lambda: self.create_button.setEnabled(bool(self.description))
+        )
 
         button_row = QHBoxLayout()
         button_row.addStretch(1)
         button_row.addWidget(cancel_button)
-        button_row.addWidget(create_button)
+        button_row.addWidget(self.create_button)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(28, 26, 28, 22)
-        layout.setSpacing(14)
-        layout.addWidget(title)
-        layout.addWidget(hint)
+        layout.setContentsMargins(28, 24, 28, 22)
+        layout.setSpacing(10)
+        layout.addLayout(
+            _dialog_header(
+                "请描述刚才遇到的问题",
+                "一句话说明“做了什么、看到了什么”即可，例如：跑商砍价后一直停在商店门口。",
+            )
+        )
+        layout.addSpacing(8)
+        layout.addWidget(_section_caption("问题描述"))
         layout.addWidget(self.description_edit)
+        layout.addSpacing(4)
+        layout.addWidget(_section_caption("现场截图"))
         layout.addWidget(self.preview)
         layout.addWidget(self.include_screenshot)
-        layout.addWidget(privacy)
+        layout.addSpacing(2)
+        layout.addLayout(privacy_row)
+        layout.addSpacing(6)
         layout.addLayout(button_row)
+
+        _apply_report_dialog_theme(self, self._restyle_chrome)
+
+    def _restyle_chrome(self, colors) -> None:
+        self.privacy_icon.setPixmap(
+            FluentIcon.INFO.icon(color=QColor(colors["ink_faint"])).pixmap(12, 12)
+        )
 
     @property
     def description(self) -> str:
@@ -154,33 +281,42 @@ class ReportReadyDialog(QDialog):
         self.setWindowTitle("问题报告已生成")
         self.setModal(True)
         self.setMinimumWidth(640)
-        _apply_report_dialog_theme(self)
 
-        title = QLabel(f"报告 {result.report_id} 已生成")
-        title.setObjectName("bd2ReportTitle")
-
-        status = QLabel(
-            "反馈文字已复制到剪贴板，ZIP 文件也已在资源管理器中选中。"
-            "把两者一起发到群里即可。"
-        )
-        status.setObjectName("bd2ReportStatus")
-        status.setWordWrap(True)
+        report_id = QLabel(result.report_id)
+        report_id.setObjectName("bd2ReportId")
+        id_row = QHBoxLayout()
+        id_row.setContentsMargins(0, 0, 0, 0)
+        id_row.setSpacing(8)
+        id_row.addWidget(_section_caption("报告编号"))
+        id_row.addWidget(report_id)
+        id_row.addStretch(1)
 
         message = QTextEdit()
+        message.setObjectName("bd2ReportMessage")
         message.setReadOnly(True)
+        message.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         message.setPlainText(result.group_message)
         message.setMaximumHeight(135)
 
-        pause_notice = QLabel("为避免现场被后续操作覆盖，任务当前保持暂停。")
+        self.pause_icon = QLabel()
+        self.pause_icon.setFixedSize(13, 13)
+        pause_text = QLabel("为避免现场被后续操作覆盖，任务当前保持暂停。")
+        pause_text.setObjectName("bd2ReportPauseText")
+        pause_notice = QFrame()
         pause_notice.setObjectName("bd2ReportPauseNotice")
+        pause_row = QHBoxLayout(pause_notice)
+        pause_row.setContentsMargins(12, 7, 12, 7)
+        pause_row.setSpacing(8)
+        pause_row.addWidget(self.pause_icon, 0, Qt.AlignmentFlag.AlignVCenter)
+        pause_row.addWidget(pause_text, 1)
 
-        copy_button = PushButton("再次复制反馈文字")
+        copy_button = PushButton(FluentIcon.COPY, "再次复制反馈文字")
         copy_button.clicked.connect(self._copy_message)
-        open_button = PushButton("打开 ZIP 位置")
+        open_button = PushButton(FluentIcon.FOLDER, "打开 ZIP 位置")
         open_button.clicked.connect(self._reveal_archive)
         keep_paused_button = PushButton("保持暂停并关闭")
         keep_paused_button.clicked.connect(self.accept)
-        resume_button = PrimaryPushButton("继续运行")
+        resume_button = PrimaryPushButton(FluentIcon.PLAY, "继续运行")
         resume_button.clicked.connect(self._resume)
 
         button_row = QHBoxLayout()
@@ -191,13 +327,31 @@ class ReportReadyDialog(QDialog):
         button_row.addWidget(resume_button)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(28, 26, 28, 22)
-        layout.setSpacing(14)
-        layout.addWidget(title)
-        layout.addWidget(status)
+        layout.setContentsMargins(28, 24, 28, 22)
+        layout.setSpacing(10)
+        layout.addLayout(
+            _dialog_header(
+                "问题报告已生成",
+                "反馈文字已复制到剪贴板，ZIP 文件也已在资源管理器中选中。"
+                "把两者一起发到群里即可。",
+            )
+        )
+        layout.addSpacing(8)
+        layout.addLayout(id_row)
+        layout.addSpacing(4)
+        layout.addWidget(_section_caption("反馈文字"))
         layout.addWidget(message)
+        layout.addSpacing(4)
         layout.addWidget(pause_notice)
+        layout.addSpacing(6)
         layout.addLayout(button_row)
+
+        _apply_report_dialog_theme(self, self._restyle_chrome)
+
+    def _restyle_chrome(self, colors) -> None:
+        self.pause_icon.setPixmap(
+            FluentIcon.PAUSE.icon(color=QColor(colors["warn_ink"])).pixmap(13, 13)
+        )
 
     @Slot()
     def _copy_message(self) -> None:
