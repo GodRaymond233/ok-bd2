@@ -217,6 +217,20 @@ SHOP_CARTRIDGE_PAGES: tuple[ShopCartridgePage, ...] = (
     ),
 )
 
+# 商店卡带列表从上到下为剧情→角色→活动递增，与分页表顺序一致；出售会话按
+# 此行号（从 0 起）估算滚动距离，一格滚轮约移动一行。
+SHOP_CARTRIDGE_ORDER: tuple[str, ...] = tuple(
+    shop_id for page in SHOP_CARTRIDGE_PAGES for shop_id in page.shop_ids
+)
+SHOP_CARTRIDGE_ROW_INDEX: dict[str, int] = {
+    shop_id: index for index, shop_id in enumerate(SHOP_CARTRIDGE_ORDER)
+}
+SHOP_CARTRIDGE_PAGE_INDEX: dict[str, int] = {
+    shop_id: page_index
+    for page_index, page in enumerate(SHOP_CARTRIDGE_PAGES)
+    for shop_id in page.shop_ids
+}
+
 
 def shop_purchase_reference(shop: str) -> ShopPurchaseReference:
     """Return a local reference for either ``S1`` or a label such as ``S1:血骑士``."""

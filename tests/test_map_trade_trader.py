@@ -9,7 +9,6 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-from src.tasks.map_trade.data import SHOP_CARTRIDGE_PAGES
 from src.tasks.map_trade.models import (
     MERCHANT_CARD_ID,
     RECIPE_TEMPLATES,
@@ -437,15 +436,19 @@ class SellFlowTest(unittest.TestCase):
 
         self.assertTrue(trader._ensure_sell_page(timeout=0.0))
 
-    def test_sell_shop_selection_reuses_buy_multitemplate_page_flow(self):
+    def test_sell_shop_selection_scrolls_down_to_target_page_in_one_burst(self):
         confirmed = []
         scrolls = []
         selected = []
         trader = object.__new__(Trader)
         trader.task = SimpleNamespace(
             log_warning=lambda *_args: None,
+            info_set=lambda *_args: None,
         )
-        trader._reset_shop_to_first_page = lambda: True
+        trader._sell_cartridge_page = None
+        trader._ensure_sell_list_at_top = lambda: setattr(
+            trader, "_sell_cartridge_page", 0
+        ) or True
         trader._wait_for_shop_page = lambda shop_ids: confirmed.append(shop_ids) or True
         trader._scroll_shop_cartridges = lambda scroll_amount, count, interval, after_sleep: (
             scrolls.append((scroll_amount, count, interval, after_sleep))
@@ -453,15 +456,78 @@ class SellFlowTest(unittest.TestCase):
         trader._select_purchase_cartridge = lambda shop_id: selected.append(shop_id) or True
 
         self.assertTrue(trader.select_shop_tab("R2:火晶片"))
-        self.assertEqual(
-            [page.confirmation_shop_ids for page in SHOP_CARTRIDGE_PAGES[:3]],
-            confirmed,
-        )
-        self.assertEqual(
-            [(-1, 9, 0.1, 0.5), (-1, 10, 0.1, 0.5)],
-            scrolls,
-        )
+        # 第 1 页 → 第 3 页（R2）一口气滚 9+10=19 格，只确认目标页边界。
+        self.assertEqual([("E5", "R2")], confirmed)
+        self.assertEqual([(-1, 19, 0.0, 0.5)], scrolls)
         self.assertEqual(["R2"], selected)
+        self.assertEqual(2, trader._sell_cartridge_page)
+
+    def test_sell_shop_selection_continues_downward_without_reset(self):
+        scrolls = []
+        trader = object.__new__(Trader)
+        trader.task = SimpleNamespace(
+            log_warning=lambda *_args: None,
+            info_set=lambda *_args: None,
+        )
+        trader._sell_cartridge_page = 1
+        trader._wait_for_shop_page = lambda _shop_ids: True
+        trader._scroll_shop_cartridges = lambda scroll_amount, count, interval, after_sleep: (
+            scrolls.append((scroll_amount, count, interval, after_sleep))
+        )
+        trader._select_purchase_cartridge = lambda _shop_id: True
+        trader._ensure_sell_list_at_top = lambda: False
+
+        # 已停在第 2 页（S19），下一张选第 4 页 E7：只补滚 10+1=11 格，不向上复位。
+        self.assertTrue(trader.select_shop_tab("E7:戏水女王"))
+        self.assertEqual([(-1, 11, 0.0, 0.5)], scrolls)
+        self.assertEqual(3, trader._sell_cartridge_page)
+
+    def test_sell_list_at_top_scrolls_up_by_ocr_estimate(self):
+        scrolls = []
+        trader = object.__new__(Trader)
+        trader.task = SimpleNamespace(
+            log_warning=lambda *_args: None,
+            info_set=lambda *_args: None,
+        )
+        visible = iter((False, True))
+        trader._cartridge_visible = lambda _shop_id, _frame: next(visible)
+        trader._shop_cartridge_ocr_rows = lambda _frame: (
+            SimpleNamespace(shop_id="S8"),
+        )
+        trader._scroll_shop_cartridges = lambda scroll_amount, count, interval, after_sleep: (
+            scrolls.append((scroll_amount, count, interval, after_sleep))
+        )
+        trader.vision = SimpleNamespace(
+            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        )
+
+        # 顶部 OCR 到 S8（行号 7）：向上快滚 7+3=10 格后认到 S1。
+        self.assertTrue(trader._ensure_sell_list_at_top())
+        self.assertEqual([(1, 10, 0.0, 0.5)], scrolls)
+        self.assertEqual(0, trader._sell_cartridge_page)
+
+    def test_sell_resolved_entries_follow_cartridge_order(self):
+        sold = []
+        selected = []
+        entries = [
+            CalendarEntry("b_item", "E7:戏水女王"),
+            CalendarEntry("a_item", "S3:迷雾神射手"),
+            CalendarEntry("c_item", "R2:火晶片"),
+        ]
+        trader = object.__new__(Trader)
+        trader.task = SimpleNamespace(
+            log_warning=lambda *_args: None,
+            info_set=lambda *_args: None,
+        )
+        trader.select_shop_tab = lambda shop: selected.append(shop) or True
+        trader._sell_selected_entry = lambda entry: sold.append(entry.item) or True
+
+        self.assertTrue(trader._sell_resolved_entries(entries))
+        self.assertEqual(
+            ["S3:迷雾神射手", "R2:火晶片", "E7:戏水女王"],
+            selected,
+        )
+        self.assertEqual(["a_item", "c_item", "b_item"], sold)
 
     def test_run_sell_stops_before_calendar_when_sell_page_is_not_confirmed(self):
         trader = object.__new__(Trader)

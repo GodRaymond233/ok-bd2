@@ -35,6 +35,9 @@ SHOP_CARTRIDGE_OCR_ROW_LINK_RADIUS = 42
 SHOP_CARTRIDGE_CATEGORY_PATTERN = re.compile(r"(剧情|角色|活动)游戏卡\s*(\d+)")
 SHOP_CARTRIDGE_CATEGORY_PREFIX = {"剧情": "S", "角色": "R", "活动": "E"}
 SHOP_FIRST_PAGE_MAX_UP_SCROLLS = 40
+# 出售会话起点定位：OCR 估算顶部行号后向上快滚，多滚 3 格保险（滚过头的列表
+# 会停在顶部，不会影响后续识别）。
+SHOP_LIST_TOP_EXTRA_UP_SCROLLS = 3
 SHOP_UP_SCROLL_RECOGNITION_INTERVAL = 0.5
 SHOP_DOWN_SCROLL_INTERVAL = 0.1
 STAR_TEMPLATE_FILE = "shop/cartridges/star_gray.png"

@@ -12,6 +12,8 @@ from src.tasks.map_trade.calendar import (
 )
 from src.tasks.map_trade.data import (
     ITEM_ALIASES,
+    SHOP_CARTRIDGE_ROW_INDEX,
+    shop_purchase_reference,
 )
 from src.tasks.map_trade.models import (
     CalendarEntry,
@@ -252,12 +254,24 @@ class SellFlowMixin:
 
         return entries
 
+    @staticmethod
+    def _sell_entry_cartridge_order(entry: CalendarEntry) -> int:
+        try:
+            return SHOP_CARTRIDGE_ROW_INDEX[
+                shop_purchase_reference(entry.shop).shop_id
+            ]
+        except KeyError:
+            return len(SHOP_CARTRIDGE_ROW_INDEX)
+
     def _sell_resolved_entries(self, entries: list[CalendarEntry]) -> bool:
 
         failed = []
         unavailable: list[str] = []
         not_sold_details: list[str] = []
         selected_shop = ""
+        # 出售会话内卡带列表只向下滚：按卡带全局顺序排序，不依赖价表书写顺序。
+        entries = sorted(entries, key=self._sell_entry_cartridge_order)
+        self._sell_cartridge_page = None
         for entry in entries:
             if entry.shop != selected_shop:
                 if not self.select_shop_tab(entry.shop):
@@ -290,6 +304,7 @@ class SellFlowMixin:
         return not failed
 
     def sell_entry(self, entry: CalendarEntry) -> bool:
+        self._sell_cartridge_page = None
         if not self.select_shop_tab(entry.shop):
             return False
         return self._sell_selected_entry(entry)
