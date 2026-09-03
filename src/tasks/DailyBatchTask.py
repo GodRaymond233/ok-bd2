@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import time
 from collections import ChainMap
 from dataclasses import dataclass
@@ -24,6 +25,13 @@ _VALID_RUN_MODES = frozenset({RUN_MODE_ALL, RUN_MODE_INCOMPLETE})
 # 启动自动执行注入的 run_mode 有效期：覆盖冷启动拉起游戏到设备就绪的
 # 常规耗时；超时未消费即作废，防止启动失败后的残留模式被手动点击继承。
 REQUESTED_RUN_MODE_VALIDITY_SECONDS = 600.0
+# 「完成日常后自动关机」的关机倒计时秒数：留出执行 shutdown /a 取消的窗口。
+SHUTDOWN_COUNTDOWN_SECONDS = 60
+
+
+def _schedule_system_shutdown(seconds: int) -> None:
+    """Schedule a Windows shutdown via shutdown.exe (no new dependency)."""
+    subprocess.Popen(["shutdown", "/s", "/t", str(int(seconds))])
 
 
 @dataclass(frozen=True)
@@ -78,7 +86,7 @@ class DailyBatchTask(BaseTask):
             {
                 "启用": True,
                 "启动自动执行日常": False,
-                "启动自动执行每周跑图": False,
+                "完成日常后自动关机": False,
                 **{key: True for key in child_keys},
             }
         )
@@ -90,10 +98,10 @@ class DailyBatchTask(BaseTask):
                     "自动以「仅执行今日未完成」模式运行一键完成日常；"
                     "已完成的子任务仍会被跳过。"
                 ),
-                "启动自动执行每周跑图": (
-                    "应用启动后，当本周（周一 04:00 起）尚未完成每周跑图"
-                    "且其调度到期时，自动执行每周跑图；仅在调试模式生效，"
-                    "自动执行时会按需拉起游戏客户端。"
+                "完成日常后自动关机": (
+                    "一键完成日常运行成功且全部已启用子任务今日均已完成"
+                    "（含运行前就已完成的项目）后，60 秒倒计时自动关机；"
+                    "期间在系统命令行执行 shutdown /a 可取消。"
                 ),
                 **{
                     key: f"是否在一键完成日常中执行{key}。"
@@ -101,18 +109,15 @@ class DailyBatchTask(BaseTask):
                 },
             }
         )
-        config_type_updates = {
-            "启用": {
-                "sub_configs": {
-                    True: child_keys,
+        self.config_type.update(
+            {
+                "启用": {
+                    "sub_configs": {
+                        True: child_keys,
+                    }
                 }
             }
-        }
-        if not bool(getattr(self._app, "debug", False)):
-            # 每周跑图在正式前端保持隐藏（v0.1.21 产品决策）；其自动执行
-            # 开关同样只在调试模式展示，防止正式用户重新启用隐藏任务。
-            config_type_updates["启动自动执行每周跑图"] = {"hidden": True}
-        self.config_type.update(config_type_updates)
+        )
 
     def request_run_mode(self, run_mode: str) -> None:
         """Select the next executor-driven run without persisting UI config.
@@ -304,4 +309,43 @@ class DailyBatchTask(BaseTask):
             self,
             f"一键完成日常完成：已执行 {len(completed)} 项，跳过 {len(skipped)} 项。",
         )
+        self._maybe_shutdown_after_daily(completed)
         return True
+
+    def _maybe_shutdown_after_daily(self, completed: list[str]) -> None:
+        """全部已启用子任务今日均已完成时按配置执行倒计时关机。
+
+        「今日已完成」= 本轮运行完成（账本记录在 task_done 时才落盘，此刻
+        还查不到，故并上 ``completed``）或运行前已有今日完成记录；任一已
+        启用子任务两者皆不满足（含调度未到期跳过）时不关机。
+        """
+        if not bool(self.config.get("完成日常后自动关机", False)):
+            return
+        from src.tasks.run_history import default_store
+
+        history = default_store()
+        for child in self.child_tasks:
+            if not bool(self.config.get(child.config_key, True)):
+                continue
+            if child.config_key in completed:
+                continue
+            task = self.executor.get_task_by_class(child.task_class)
+            name = str(getattr(task, "name", None) or child.config_key)
+            if not history.is_completed_today(name):
+                self.log_info(
+                    f"一键完成日常：{child.config_key} 今日未完成，不执行自动关机。"
+                )
+                return
+        try:
+            _schedule_system_shutdown(SHUTDOWN_COUNTDOWN_SECONDS)
+        except OSError as exc:
+            self.log_error("一键完成日常：自动关机调用失败。", exc)
+            return
+        self.info_set(
+            "状态", f"今日日常已全部完成，{SHUTDOWN_COUNTDOWN_SECONDS} 秒后自动关机。"
+        )
+        self.log_info(
+            f"一键完成日常：今日日常已全部完成，{SHUTDOWN_COUNTDOWN_SECONDS} 秒后"
+            "自动关机；取消请在命令行执行 shutdown /a。",
+            notify=True,
+        )

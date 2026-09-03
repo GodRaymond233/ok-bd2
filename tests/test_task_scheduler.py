@@ -8,7 +8,6 @@ from types import SimpleNamespace
 
 from src.tasks import auto_scheduler, scheduler
 from src.tasks.DailyBatchTask import DailyBatchChild, DailyBatchTask
-from src.tasks.MapCollectionTask import MapCollectionTask
 from src.tasks.run_history import (
     BEIJING_TZ,
     RunHistoryStore,
@@ -305,56 +304,11 @@ class RunDueTasksOnceTest(unittest.TestCase):
         og = _FakeOg(_ExecutorStub({}))
         self.assertIsNone(auto_scheduler.run_due_tasks_once(og))
 
-    def test_weekly_map_auto_start_when_due(self):
-        map_task = _TaskStub("每周跑图")
-        batch = _BatchStub(
-            {"启用": True, "启动自动执行每周跑图": True},
-            (),
-        )
-        executor = _ExecutorStub(
-            {MapCollectionTask: map_task, DailyBatchTask: batch}
-        )
-        og = _FakeOg(executor)
-        self.assertEqual("每周跑图", auto_scheduler.run_due_tasks_once(og))
-        self.assertEqual([map_task], og.app.start_controller.started)
-
-    def test_weekly_map_completed_this_week_is_not_due(self):
-        map_task = _TaskStub("每周跑图")
-        batch = _BatchStub(
-            {"启用": True, "启动自动执行每周跑图": True},
-            (),
-        )
-        executor = _ExecutorStub(
-            {MapCollectionTask: map_task, DailyBatchTask: batch}
-        )
-        self.history.record_task_done(
-            SimpleNamespace(
-                name="每周跑图", start_time=0, info={"状态": "每周跑图完成。"}
-            )
-        )
-        og = _FakeOg(executor)
-        self.assertIsNone(auto_scheduler.run_due_tasks_once(og))
-        self.assertEqual([], og.app.start_controller.started)
-
     def test_disabled_batch_starts_nothing_even_when_switch_on(self):
         # HIGH 回归：批处理“启用”关闭但“启动自动执行日常”残留开启时，
         # 不得出现 start -> run() 立即返回 -> task_done -> 再 start 的空转。
         batch, executor = self._build({"启用": False})
         og = _FakeOg(executor)
-        self.assertIsNone(auto_scheduler.run_due_tasks_once(og))
-        self.assertEqual([], og.app.start_controller.started)
-
-    def test_weekly_map_auto_start_requires_debug_mode(self):
-        # 每周跑图在正式前端保持隐藏，自动执行开关只在调试模式生效。
-        map_task = _TaskStub("每周跑图")
-        batch = _BatchStub(
-            {"启用": True, "启动自动执行每周跑图": True},
-            (),
-        )
-        executor = _ExecutorStub(
-            {MapCollectionTask: map_task, DailyBatchTask: batch}
-        )
-        og = _FakeOg(executor, debug=False)
         self.assertIsNone(auto_scheduler.run_due_tasks_once(og))
         self.assertEqual([], og.app.start_controller.started)
 

@@ -466,7 +466,12 @@ class BannerTest(QuestUiTestBase):
         batch = _make_batch_stub()
         daily = _TaskStub(name="公会、小屋、酒馆")
         pvp = _TaskStub(name="镜中之战")
-        og.executor = _ExecutorStub([batch, daily, pvp], by_class={DailyTask: daily, PVPTask: pvp})
+        # 今日日常只统计一键完成日常的已启用子任务；每周跑图即使在调试
+        # 模式可见也不计入。
+        weekly = _TaskStub(name="每周跑图")
+        og.executor = _ExecutorStub(
+            [batch, daily, pvp, weekly], by_class={DailyTask: daily, PVPTask: pvp}
+        )
         try:
             items = commission_items(store)
             self.assertEqual([name for name, _ in items], ["公会、小屋、酒馆", "镜中之战"])
@@ -481,6 +486,7 @@ class BannerTest(QuestUiTestBase):
             banner.refresh()
             self.assertEqual(banner.ring._done, 1)
             self.assertEqual(banner.ring._total, 2)
+            self.assertIn("今日日常", banner.title_label.text())
             self.assertIn("还剩 1 项", banner.title_label.text())
             self.assertIn("公会、小屋、酒馆", banner.sub_label.text())
             banner.close()
@@ -502,7 +508,7 @@ class BannerTest(QuestUiTestBase):
                 store.record_task_done(_TaskStub(name=name, info={"状态": "ok"}))
             banner = DailyBoardBanner()
             banner.refresh()
-            self.assertIn("全部完成", banner.title_label.text())
+            self.assertIn("今日日常已全部完成", banner.title_label.text())
             banner.close()
         finally:
             og.executor = _ExecutorStub()
@@ -891,6 +897,18 @@ class HiddenConfigRowsTest(QuestUiTestBase):
 
         self.assertEqual(mark_hidden_config_keys(task), 0)
         self.assertIsNone(task.config_type)
+
+    def test_auto_login_click_percentage_rows_are_hidden(self):
+        # 自动登录的点击位置是标定值，不属于日常可调项：行隐藏、值保留。
+        from src.tasks.trigger.AutoLoginTask import AutoLoginTask
+
+        task = AutoLoginTask(SimpleNamespace(scene=None), SimpleNamespace())
+        percentage_keys = [
+            key for key in task.default_config if str(key).endswith("百分比")
+        ]
+        self.assertEqual(len(percentage_keys), 8)
+        for key in percentage_keys:
+            self.assertTrue(task.config_type[key]["hidden"])
 
 
 class ExpandDurationTest(QuestUiTestBase):

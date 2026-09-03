@@ -113,6 +113,10 @@ class AutoLoginTask(BaseBD2Task):
                 "公告清理点击 Y 百分比": 56.9444444444,
             }
         )
+        # 点击位置是脚本作者标定的固定值，不属于日常可调项；值保留、行隐藏。
+        for key in self.default_config:
+            if key.endswith("百分比"):
+                self.config_type[key] = {"hidden": True}
         self._templates: dict[str, np.ndarray] = {}
         self._template_masks: dict[str, np.ndarray | None] = {}
         self._state = "waiting"

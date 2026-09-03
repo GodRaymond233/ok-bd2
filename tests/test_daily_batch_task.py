@@ -2,12 +2,14 @@ import tempfile
 import time
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 from src.config import config
 from src.tasks import scheduler
 from src.tasks.DailyBatchTask import (
     RUN_MODE_ALL,
     RUN_MODE_INCOMPLETE,
+    SHUTDOWN_COUNTDOWN_SECONDS,
     DailyBatchChild,
     DailyBatchTask,
 )
@@ -494,6 +496,148 @@ class DailyBatchTaskTest(unittest.TestCase):
         self.assertIsNotNone(second_next)
         self.assertGreater(second_next, time.time() + 29 * 60)
         self.assertFalse(schedule_store.last_run_ok("镜中之战"))
+
+    def test_shutdown_scheduled_when_all_enabled_children_completed(self):
+        class First:
+            pass
+
+        class Second:
+            pass
+
+        class Disabled:
+            pass
+
+        first = _ChildTask("first", [])
+        second = _ChildTask("second", [])
+        specs = (
+            DailyBatchChild("第一项", First),
+            DailyBatchChild("第二项", Second),
+            DailyBatchChild("关闭项", Disabled),
+        )
+        task, _resets = self.make_task(
+            {First: first, Second: second},
+            specs,
+            {
+                "启用": True,
+                "完成日常后自动关机": True,
+                "第一项": True,
+                "第二项": True,
+                # 关闭的子任务不属于今日日常，不影响关机判定。
+                "关闭项": False,
+            },
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            set_default_store(RunHistoryStore(f"{temp_dir}/history.json"))
+            try:
+                with mock.patch(
+                    "src.tasks.DailyBatchTask._schedule_system_shutdown"
+                ) as shutdown:
+                    self.assertTrue(DailyBatchTask.run(task))
+            finally:
+                set_default_store(None)
+
+        shutdown.assert_called_once_with(SHUTDOWN_COUNTDOWN_SECONDS)
+        self.assertIn("自动关机", task.info.get("状态"))
+
+    def test_shutdown_counts_child_completed_before_the_run(self):
+        class First:
+            pass
+
+        class Second:
+            pass
+
+        first = _ChildTask("first", [])
+        second = _ChildTask("second", [])
+        specs = (
+            DailyBatchChild("第一项", First),
+            DailyBatchChild("第二项", Second),
+        )
+        task, _resets = self.make_task(
+            {First: first, Second: second},
+            specs,
+            {"启用": True, "完成日常后自动关机": True, "第一项": True, "第二项": True},
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = RunHistoryStore(f"{temp_dir}/history.json")
+            set_default_store(store)
+            store.record_task_done(
+                SimpleNamespace(name="first", start_time=0, info={"状态": "first 完成。"})
+            )
+            try:
+                with mock.patch(
+                    "src.tasks.DailyBatchTask._schedule_system_shutdown"
+                ) as shutdown:
+                    self.assertTrue(DailyBatchTask.run(task, RUN_MODE_INCOMPLETE))
+            finally:
+                set_default_store(None)
+
+        shutdown.assert_called_once_with(SHUTDOWN_COUNTDOWN_SECONDS)
+
+    def test_shutdown_not_scheduled_when_child_not_completed(self):
+        class First:
+            pass
+
+        class Second:
+            pass
+
+        first = _ChildTask("快速狩猎", [])
+        second = _ChildTask("镜中之战", [])
+        specs = (
+            DailyBatchChild("第一项", First),
+            DailyBatchChild("第二项", Second),
+        )
+        task, _resets = self.make_task(
+            {First: first, Second: second},
+            specs,
+            {"启用": True, "完成日常后自动关机": True, "第一项": True, "第二项": True},
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            schedule_store = scheduler.TaskScheduleStore(f"{temp_dir}/schedule.json")
+            scheduler.set_default_store(schedule_store)
+            set_default_store(RunHistoryStore(f"{temp_dir}/history.json"))
+            try:
+                # 退避中的子任务被跳过且今日未完成：批运行成功也不关机。
+                schedule_store.delay_after_run("镜中之战", ok=False)
+                with mock.patch(
+                    "src.tasks.DailyBatchTask._schedule_system_shutdown"
+                ) as shutdown:
+                    self.assertTrue(DailyBatchTask.run(task, RUN_MODE_INCOMPLETE))
+            finally:
+                scheduler.set_default_store(None)
+                set_default_store(None)
+
+        shutdown.assert_not_called()
+
+    def test_shutdown_not_scheduled_after_failure_or_when_switch_off(self):
+        class First:
+            pass
+
+        class Second:
+            pass
+
+        for switch_on, second_result in ((False, True), (True, False)):
+            with self.subTest(switch_on=switch_on, second_result=second_result):
+                first = _ChildTask("first", [])
+                second = _ChildTask("second", [], result=second_result)
+                specs = (
+                    DailyBatchChild("第一项", First),
+                    DailyBatchChild("第二项", Second),
+                )
+                task, _resets = self.make_task(
+                    {First: first, Second: second},
+                    specs,
+                    {
+                        "启用": True,
+                        "完成日常后自动关机": switch_on,
+                        "第一项": True,
+                        "第二项": True,
+                    },
+                )
+                with mock.patch(
+                    "src.tasks.DailyBatchTask._schedule_system_shutdown"
+                ) as shutdown:
+                    DailyBatchTask.run(task)
+                shutdown.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -2,13 +2,10 @@
 
 对应 ALAS 主循环"启动即检查到期任务并执行最早到期者"的行为，但不引入
 常驻等待循环：安装后延迟检查一次，此后每当有任务结束（task_done）且执行
-器空闲时复查一次。所有自动启动都由一键完成日常卡片上的两个显式开关控制
-（默认关闭）：
+器空闲时复查一次。自动启动由一键完成日常卡片上的显式开关控制（默认关闭）：
 
 - ``启动自动执行日常``：存在今日未完成且调度到期的日常子任务时，以
   "仅执行今日未完成"模式启动一键完成日常，由批处理自身跳过已完成项。
-- ``启动自动执行每周跑图``：本周尚未完成每周跑图且调度到期时启动它
-  （每周跑图在正式前端保持隐藏，该开关只在调试模式生效）。
 
 用户手动点击任务不受影响（视为强制执行），与 ALAS 中"手动把 NextRun 改
 到过去即强制立即运行"的语义一致。
@@ -87,21 +84,6 @@ def run_due_tasks_once(og=None) -> str | None:
         app.start_controller.start(batch)
         return "一键完成日常（仅执行今日未完成）"
 
-    if bool(config.get("启动自动执行每周跑图", False)):
-        # 每周跑图在正式前端保持隐藏（v0.1.21 产品决策）。该开关虽然挂在
-        # 批处理卡上，但只允许调试模式自动执行隐藏任务；正式模式即使残留
-        # 开启的配置值也不生效。
-        if not bool(getattr(app, "debug", False)):
-            return None
-        from src.tasks.MapCollectionTask import MapCollectionTask
-
-        map_task = executor.get_task_by_class(MapCollectionTask)
-        if map_task is not None and _weekly_map_due(
-            map_task, history, schedule_store
-        ):
-            app.start_controller.start(map_task)
-            return str(getattr(map_task, "name", "每周跑图"))
-
     return None
 
 
@@ -139,13 +121,6 @@ def _any_batch_child_due(batch, executor, history, schedule_store, now=None) -> 
             continue
         return True
     return False
-
-
-def _weekly_map_due(map_task, history, schedule_store, now=None) -> bool:
-    name = str(getattr(map_task, "name", ""))
-    if history.is_completed_this_week(name, now=now):
-        return False
-    return schedule_store.is_due(name, now=now)
 
 
 def install_auto_scheduler() -> bool:

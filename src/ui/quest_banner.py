@@ -1,10 +1,9 @@
 """Daily-board banner and page status bar for the 日常/周常 tab (mockup V2).
 
-The banner summarizes "今日委托": one ring with done/total, the names still
-missing, the Beijing 04:00 refresh hint and actions for running all selected
-children or only today's incomplete children. Daily commissions count a
-successful run from the run history; the weekly map card uses ProgressStore's
-verified collection ledger.
+The banner summarizes "今日日常": one ring with done/total over the enabled
+一键完成日常 children, the names still missing, the Beijing 04:00 refresh
+hint and actions for running all selected children or only today's incomplete
+children. Daily commissions count a successful run from the run history.
 
 The status bar is the page footer: executor state, capture method and the next
 refresh anchor.
@@ -14,7 +13,6 @@ from __future__ import annotations
 
 import time
 
-from ok import Logger
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QBrush, QColor, QConicalGradient, QFont, QPainter, QPen
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
@@ -22,10 +20,7 @@ from qfluentwidgets import FluentIcon, PrimaryPushButton, PushButton
 
 from src.tasks.DailyBatchTask import RUN_MODE_ALL, RUN_MODE_INCOMPLETE
 from src.tasks.run_history import default_store
-from src.ui.quest_cards import WEEKLY_TASK_NAMES
 from src.ui.quest_theme import MONO_FONT, mix, on_theme_changed, palette
-
-logger = Logger.get_logger(__name__)
 
 DAILY_BOARD_GROUP = "日常/周常"
 BATCH_TASK_NAME = "一键完成日常"
@@ -85,7 +80,7 @@ class ProgressRing(QWidget):
 
 
 class DailyBoardBanner(QFrame):
-    """The '今日委托' banner card on top of the 日常/周常 page."""
+    """The '今日日常' banner card on top of the 日常/周常 page."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -171,13 +166,13 @@ class DailyBoardBanner(QFrame):
 
         self.ring.set_progress(done, total)
         if remaining:
-            title = f"今日委托 · 还剩 {len(remaining)} 项"
+            title = f"今日日常 · 还剩 {len(remaining)} 项"
             names = "、".join(remaining[:4])
             if len(remaining) > 4:
                 names += f" 等 {len(remaining)} 项"
             sub = f"{names} 未完成 · 服务器 04:00 刷新(北京时间)"
         else:
-            title = "今日委托已全部完成"
+            title = "今日日常已全部完成"
             sub = "服务器 04:00 刷新(北京时间),跑商库存 08:00 刷新"
         _set_label_text(self.title_label, title)
         _set_label_text(self.sub_label, sub)
@@ -274,7 +269,7 @@ def _next_refresh_text(now: float | None = None) -> str:
 
 
 def commission_items(store=None) -> list[tuple[str, bool]]:
-    """[(display name, done)] for the daily board, batch children first."""
+    """[(display name, done)] for the daily board: enabled batch children."""
     from ok import og
 
     store = store or default_store()
@@ -294,24 +289,7 @@ def commission_items(store=None) -> list[tuple[str, bool]]:
                     child_task = None
             name = str(getattr(child_task, "name", None) or child.config_key)
             items.append((name, store.is_completed_today(name)))
-
-    for task in getattr(getattr(og, "executor", None), "onetime_tasks", []) or []:
-        name = str(getattr(task, "name", ""))
-        if name in WEEKLY_TASK_NAMES and getattr(task, "visible", True):
-            items.append((name, _weekly_task_completed(name, store)))
     return items
-
-
-def _weekly_task_completed(task_name: str, history_store) -> bool:
-    if task_name != "每周跑图":
-        return history_store.is_completed_this_week(task_name)
-    try:
-        from src.tasks.map_trade.progress import ProgressStore
-
-        return ProgressStore().load().weekly_collection_complete
-    except Exception as exc:
-        logger.error(f"read weekly collection progress failed: {exc}")
-        return False
 
 
 def _find_batch_task():
