@@ -506,6 +506,70 @@ class SellFlowTest(unittest.TestCase):
         self.assertEqual([(1, 10, 0.0, 0.5)], scrolls)
         self.assertEqual(0, trader._sell_cartridge_page)
 
+    def test_sell_shop_selection_resets_page_when_landing_never_confirmed(self):
+        scrolls = []
+        trader = object.__new__(Trader)
+        trader.task = SimpleNamespace(
+            log_warning=lambda *_args: None,
+            info_set=lambda *_args: None,
+        )
+        trader._sell_cartridge_page = 0
+        trader._wait_for_shop_page = lambda _shop_ids: False
+        trader._scroll_shop_cartridges = lambda scroll_amount, count, interval, after_sleep: (
+            scrolls.append((scroll_amount, count, interval, after_sleep))
+        )
+        trader.vision = SimpleNamespace(
+            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        )
+        trader._shop_list_top_row_index = lambda _frame: 5
+
+        # 两次落点确认都失败：会话页号必须作废，否则后续条目从失真基准少滚。
+        self.assertFalse(trader.select_shop_tab("E7:戏水女王"))
+        self.assertEqual(
+            [(-1, 20, 0.0, 0.5), (-1, 25, 0.0, 0.5)],
+            scrolls,
+        )
+        self.assertIsNone(trader._sell_cartridge_page)
+
+    def test_sell_shop_selection_resets_page_when_landing_ocr_is_unreadable(self):
+        scrolls = []
+        trader = object.__new__(Trader)
+        trader.task = SimpleNamespace(
+            log_warning=lambda *_args: None,
+            info_set=lambda *_args: None,
+        )
+        trader._sell_cartridge_page = 1
+        trader._wait_for_shop_page = lambda _shop_ids: False
+        trader._scroll_shop_cartridges = lambda scroll_amount, count, interval, after_sleep: (
+            scrolls.append((scroll_amount, count, interval, after_sleep))
+        )
+        trader.vision = SimpleNamespace(
+            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        )
+        trader._shop_list_top_row_index = lambda _frame: None
+
+        self.assertFalse(trader.select_shop_tab("E7:戏水女王"))
+        self.assertEqual([(-1, 11, 0.0, 0.5)], scrolls)
+        self.assertIsNone(trader._sell_cartridge_page)
+
+    def test_sell_shop_selection_resets_page_when_reanchor_fails(self):
+        scrolls = []
+        trader = object.__new__(Trader)
+        trader.task = SimpleNamespace(
+            log_warning=lambda *_args: None,
+            info_set=lambda *_args: None,
+        )
+        trader._sell_cartridge_page = 2
+        trader._ensure_sell_list_at_top = lambda: False
+        trader._scroll_shop_cartridges = lambda scroll_amount, count, interval, after_sleep: (
+            scrolls.append((scroll_amount, count, interval, after_sleep))
+        )
+
+        # 目标在当前位置上方且重新定位失败：作废页号，不滚动。
+        self.assertFalse(trader.select_shop_tab("S3:迷雾神射手"))
+        self.assertEqual([], scrolls)
+        self.assertIsNone(trader._sell_cartridge_page)
+
     def test_sell_resolved_entries_follow_cartridge_order(self):
         sold = []
         selected = []

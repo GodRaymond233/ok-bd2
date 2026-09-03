@@ -165,7 +165,12 @@ class DailyBoardBanner(QFrame):
         remaining = [name for name, is_done in items if not is_done]
 
         self.ring.set_progress(done, total)
-        if remaining:
+        if not items:
+            # 与「全部完成」区分开：没有可统计的子任务不代表无事可做的
+            # 完成态，给出可操作的指引文案。
+            title = "今日日常 · 暂无已启用子任务"
+            sub = "在一键完成日常卡片上勾选要执行的子任务 · 服务器 04:00 刷新(北京时间)"
+        elif remaining:
             title = f"今日日常 · 还剩 {len(remaining)} 项"
             names = "、".join(remaining[:4])
             if len(remaining) > 4:

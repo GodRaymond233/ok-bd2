@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 from collections import ChainMap
@@ -29,9 +30,31 @@ REQUESTED_RUN_MODE_VALIDITY_SECONDS = 600.0
 SHUTDOWN_COUNTDOWN_SECONDS = 60
 
 
-def _schedule_system_shutdown(seconds: int) -> None:
-    """Schedule a Windows shutdown via shutdown.exe (no new dependency)."""
-    subprocess.Popen(["shutdown", "/s", "/t", str(int(seconds))])
+def _schedule_system_shutdown(seconds: int) -> bool:
+    """Schedule a Windows shutdown via System32 shutdown.exe.
+
+    shutdown.exe 注册计划后立即退出，返回值即计划是否被系统接受；不等待
+    倒计时。使用绝对路径防止安装目录内同名可执行文件顶替，并以
+    CREATE_NO_WINDOW 避免在 GUI 进程里闪出控制台窗口。
+    """
+    command = [
+        os.path.join(
+            os.environ.get("SystemRoot", r"C:\Windows"),
+            "System32",
+            "shutdown.exe",
+        ),
+        "/s",
+        "/t",
+        str(int(seconds)),
+    ]
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        timeout=10,
+        check=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    return result.returncode == 0
 
 
 @dataclass(frozen=True)
@@ -212,6 +235,10 @@ class DailyBatchTask(BaseTask):
         schedule_store = task_scheduler.default_store()
 
         completed: list[str] = []
+        # 运行前就已完成而跳过的子任务：关机判定不能依赖运行结束后的
+        # is_completed_today 重算，否则运行跨过北京时间 04:00 日界后
+        # 这些记录不再算「今日」，会漏关机。
+        pre_completed: list[str] = []
         failed: list[str] = []
         skipped: list[str] = []
         stop_remaining = False
@@ -246,6 +273,7 @@ class DailyBatchTask(BaseTask):
 
             if history is not None and history.is_completed_today(str(task.name)):
                 skipped.append(child.config_key)
+                pre_completed.append(child.config_key)
                 publish_outcome()
                 self.log_info(f"一键完成日常：{child.config_key} 今日已完成，跳过。")
                 continue
@@ -309,25 +337,38 @@ class DailyBatchTask(BaseTask):
             self,
             f"一键完成日常完成：已执行 {len(completed)} 项，跳过 {len(skipped)} 项。",
         )
-        self._maybe_shutdown_after_daily(completed)
+        self._maybe_shutdown_after_daily(completed, pre_completed)
         return True
 
-    def _maybe_shutdown_after_daily(self, completed: list[str]) -> None:
+    def _maybe_shutdown_after_daily(
+        self,
+        completed: list[str],
+        pre_completed: list[str] | tuple[str, ...] = (),
+    ) -> None:
         """全部已启用子任务今日均已完成时按配置执行倒计时关机。
 
         「今日已完成」= 本轮运行完成（账本记录在 task_done 时才落盘，此刻
-        还查不到，故并上 ``completed``）或运行前已有今日完成记录；任一已
-        启用子任务两者皆不满足（含调度未到期跳过）时不关机。
+        还查不到，故并上 ``completed``）、运行前已有今日完成记录
+        （``pre_completed``，由 run() 循环即时采集）或判定时刻的历史记录；
+        任一已启用子任务两者皆不满足（含调度未到期跳过）时不关机。
+        没有任何已启用子任务时不关机：全称判定对空集合为真，但一次没有
+        执行任何日常的成功运行不应触发关机。
         """
         if not bool(self.config.get("完成日常后自动关机", False)):
+            return
+        enabled_children = [
+            child
+            for child in self.child_tasks
+            if bool(self.config.get(child.config_key, True))
+        ]
+        if not enabled_children:
+            self.log_info("一键完成日常：没有已启用子任务，不执行自动关机。")
             return
         from src.tasks.run_history import default_store
 
         history = default_store()
-        for child in self.child_tasks:
-            if not bool(self.config.get(child.config_key, True)):
-                continue
-            if child.config_key in completed:
+        for child in enabled_children:
+            if child.config_key in completed or child.config_key in pre_completed:
                 continue
             task = self.executor.get_task_by_class(child.task_class)
             name = str(getattr(task, "name", None) or child.config_key)
@@ -337,9 +378,12 @@ class DailyBatchTask(BaseTask):
                 )
                 return
         try:
-            _schedule_system_shutdown(SHUTDOWN_COUNTDOWN_SECONDS)
-        except OSError as exc:
+            scheduled = _schedule_system_shutdown(SHUTDOWN_COUNTDOWN_SECONDS)
+        except (OSError, subprocess.SubprocessError) as exc:
             self.log_error("一键完成日常：自动关机调用失败。", exc)
+            return
+        if not scheduled:
+            self.log_error("一键完成日常：系统拒绝了自动关机计划，本次关机未执行。")
             return
         self.info_set(
             "状态", f"今日日常已全部完成，{SHUTDOWN_COUNTDOWN_SECONDS} 秒后自动关机。"

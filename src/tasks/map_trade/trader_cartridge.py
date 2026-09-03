@@ -193,6 +193,9 @@ class ShopCartridgeNavigationMixin:
         if target < self._sell_cartridge_page:
             # 目标在当前位置上方（如价表顺序异常）：重新定位到顶部再向下。
             if not self._ensure_sell_list_at_top():
+                # 定位失败时列表位置不可信，作废会话页号避免后续条目
+                # 从错误基准起算滚动距离。
+                self._sell_cartridge_page = None
                 return False
         current = self._sell_cartridge_page
         if target > current:
@@ -212,6 +215,7 @@ class ShopCartridgeNavigationMixin:
             frame = self.vision.capture()
             top_row_index = self._shop_list_top_row_index(frame)
             if top_row_index is None:
+                self._sell_cartridge_page = None
                 labels = "、".join(
                     SHOP_PURCHASE_REFERENCES[value].label
                     for value in page.confirmation_shop_ids
@@ -229,6 +233,8 @@ class ShopCartridgeNavigationMixin:
                     after_sleep=SHOP_UP_SCROLL_RECOGNITION_INTERVAL,
                 )
             if not self._wait_for_shop_page(page.confirmation_shop_ids):
+                # 修正滚动后落点仍未确认，页号已失真，作废以强制下次重新定位。
+                self._sell_cartridge_page = None
                 labels = "、".join(
                     SHOP_PURCHASE_REFERENCES[value].label
                     for value in page.confirmation_shop_ids

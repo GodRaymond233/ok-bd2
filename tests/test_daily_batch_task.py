@@ -639,6 +639,103 @@ class DailyBatchTaskTest(unittest.TestCase):
                     DailyBatchTask.run(task)
                 shutdown.assert_not_called()
 
+    def test_shutdown_not_scheduled_when_no_enabled_children(self):
+        class First:
+            pass
+
+        first = _ChildTask("first", [])
+        specs = (DailyBatchChild("第一项", First),)
+        task, _resets = self.make_task(
+            {First: first},
+            specs,
+            # 全部子开关关闭时一次成功运行没有执行任何日常；
+            # 「全部已启用子任务已完成」对空集合为真，但不得触发关机。
+            {"启用": True, "完成日常后自动关机": True, "第一项": False},
+        )
+        with mock.patch(
+            "src.tasks.DailyBatchTask._schedule_system_shutdown"
+        ) as shutdown:
+            self.assertTrue(DailyBatchTask.run(task))
+        shutdown.assert_not_called()
+        self.assertNotIn("自动关机", task.info.get("状态", ""))
+
+    def test_shutdown_survives_day_boundary_for_pre_completed_children(self):
+        class First:
+            pass
+
+        first = _ChildTask("first", [])
+        specs = (DailyBatchChild("第一项", First),)
+        task, _resets = self.make_task(
+            {First: first},
+            specs,
+            {"启用": True, "完成日常后自动关机": True, "第一项": True},
+        )
+
+        class BoundaryStore:
+            """运行循环内记「今日已完成」，之后重算视为已跨过 04:00 日界。"""
+
+            def __init__(self):
+                self.calls = 0
+
+            def is_completed_today(self, _name, now=None):
+                self.calls += 1
+                return self.calls == 1
+
+        set_default_store(BoundaryStore())
+        try:
+            with mock.patch(
+                "src.tasks.DailyBatchTask._schedule_system_shutdown"
+            ) as shutdown:
+                self.assertTrue(DailyBatchTask.run(task, RUN_MODE_INCOMPLETE))
+        finally:
+            set_default_store(None)
+
+        # 运行前已完成跳过的子任务不能因关机判定时刻重算翻转为「非今日」而漏关机。
+        shutdown.assert_called_once_with(SHUTDOWN_COUNTDOWN_SECONDS)
+
+    def test_shutdown_not_claimed_when_system_rejects_schedule(self):
+        class First:
+            pass
+
+        first = _ChildTask("first", [])
+        specs = (DailyBatchChild("第一项", First),)
+        task, _resets = self.make_task(
+            {First: first},
+            specs,
+            {"启用": True, "完成日常后自动关机": True, "第一项": True},
+        )
+        errors = []
+        task.log_error = lambda *args, **kwargs: errors.append(args)
+        with mock.patch(
+            "src.tasks.DailyBatchTask._schedule_system_shutdown",
+            return_value=False,
+        ) as shutdown:
+            self.assertTrue(DailyBatchTask.run(task))
+        shutdown.assert_called_once_with(SHUTDOWN_COUNTDOWN_SECONDS)
+        # shutdown.exe 非零退出（如权限拒绝）时不得虚假宣称已安排关机。
+        self.assertNotIn("自动关机", task.info.get("状态", ""))
+        self.assertTrue(errors)
+
+    def test_schedule_system_shutdown_uses_system32_and_reports_exit_code(self):
+        from src.tasks.DailyBatchTask import _schedule_system_shutdown
+
+        for returncode, expected in ((0, True), (5, False)):
+            with self.subTest(returncode=returncode):
+                completed = SimpleNamespace(returncode=returncode)
+                with mock.patch(
+                    "src.tasks.DailyBatchTask.subprocess.run",
+                    return_value=completed,
+                ) as run:
+                    self.assertEqual(
+                        expected,
+                        _schedule_system_shutdown(SHUTDOWN_COUNTDOWN_SECONDS),
+                    )
+                command = run.call_args.args[0]
+                # 绝对路径调用 System32 的 shutdown.exe，防止安装目录同名顶替。
+                self.assertTrue(command[0].endswith("shutdown.exe"))
+                self.assertEqual(["/s", "/t", "60"], command[1:])
+                self.assertTrue(run.call_args.kwargs["capture_output"])
+
 
 if __name__ == "__main__":
     unittest.main()

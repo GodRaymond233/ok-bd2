@@ -55,7 +55,6 @@ def _apply_report_dialog_theme(dialog: QDialog, restyle_chrome=None) -> None:
             QLabel#bd2ReportSection {{
                 color: {colors['ink_faint']}; font-size: 11px; font-weight: 700;
             }}
-            QLabel#bd2ReportStatus {{ color: {colors['ink_dim']}; font-size: 12px; }}
             QLabel#bd2ReportPrivacy {{ color: {colors['ink_faint']}; font-size: 11px; }}
             QLabel#bd2ReportId {{
                 {chip_qss(colors['accent'], colors['accent_soft'])}
@@ -438,15 +437,20 @@ class FeedbackReportController(QObject):
                 QApplication.restoreOverrideCursor()
 
             dialog = FeedbackReportDialog(self._snapshot, self.start_tab.window())
-            if dialog.exec() != QDialog.DialogCode.Accepted:
-                self.manager.resume(self._snapshot, self._executor)
-                self._reset_state()
-                return
+            try:
+                if dialog.exec() != QDialog.DialogCode.Accepted:
+                    self.manager.resume(self._snapshot, self._executor)
+                    self._reset_state()
+                    return
 
-            self._start_build(
-                dialog.description,
-                include_screenshot=dialog.include_screenshot.isChecked(),
-            )
+                self._start_build(
+                    dialog.description,
+                    include_screenshot=dialog.include_screenshot.isChecked(),
+                )
+            finally:
+                # 对话框归父窗口所有，exec 结束后不释放会连同其主题回调
+                # 一直存活；deleteLater 触发 destroyed 让回调断连。
+                dialog.deleteLater()
         except Exception as exc:
             self._close_progress()
             self._resume_after_failure()
@@ -503,6 +507,7 @@ class FeedbackReportController(QObject):
 
             ready_dialog = ReportReadyDialog(result, self.start_tab.window())
             ready_dialog.exec()
+            ready_dialog.deleteLater()
             if ready_dialog.resume_requested and self._snapshot is not None:
                 self.manager.resume(self._snapshot, self._executor)
         except Exception as exc:

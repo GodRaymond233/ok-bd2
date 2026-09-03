@@ -513,6 +513,23 @@ class BannerTest(QuestUiTestBase):
         finally:
             og.executor = _ExecutorStub()
 
+    def test_banner_without_enabled_children_shows_empty_state(self):
+        from src.ui.quest_banner import DailyBoardBanner
+
+        self.fresh_store()
+        # 没有一键完成日常（或全部子开关关闭）时 items 为空：不得把
+        # 「无事可做」显示成「已全部完成」。
+        og.executor = _ExecutorStub()
+        try:
+            banner = DailyBoardBanner()
+            banner.refresh()
+            self.assertEqual(0, banner.ring._total)
+            self.assertIn("暂无已启用子任务", banner.title_label.text())
+            self.assertNotIn("已全部完成", banner.title_label.text())
+            banner.close()
+        finally:
+            og.executor = _ExecutorStub()
+
     def test_banner_excludes_disabled_children(self):
         from src.tasks.DailyTask import DailyTask
         from src.tasks.PVPTask import PVPTask
