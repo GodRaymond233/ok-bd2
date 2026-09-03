@@ -456,29 +456,31 @@ class ShopCartridgeNavigationMixin:
         return None
 
     def _select_purchase_cartridge(self, shop_id: str) -> bool:
-        found = self._wait_for_cartridge_match(shop_id)
-        if found is None:
-            return False
-        frame, spec, result = found
-        self.vision.click_client(result.center, frame.shape, after_sleep=0.5)
+        # 点击可能被游戏吞掉（已实测点击后亮度仍停留在未选中基准），确认窗耗尽后重试一次。
+        for _attempt in range(2):
+            found = self._wait_for_cartridge_match(shop_id)
+            if found is None:
+                return False
+            frame, spec, result = found
+            self.vision.click_client(result.center, frame.shape, after_sleep=0.5)
 
-        end_at = monotonic() + 4.0
-        while monotonic() <= end_at:
-            selected_frame = self.vision.capture()
-            selected = self._confirmed_shop_cartridge_detections(selected_frame).get(
-                shop_id
-            )
-            if selected is not None:
-                brightness = self.vision.template_brightness_ratio(
-                    selected_frame,
-                    spec,
-                    selected.best.result,
-                    minimum_template_gray=SHOP_CARTRIDGE_BRIGHTNESS.foreground_min_gray,
-                )
-                self._status(f"卡带亮度 {shop_id}", f"{brightness:.3f}")
-                if SHOP_CARTRIDGE_BRIGHTNESS.is_selected(brightness):
-                    return True
-            self.task.sleep(0.25)
+            end_at = monotonic() + 4.0
+            while monotonic() <= end_at:
+                selected_frame = self.vision.capture()
+                selected = self._confirmed_shop_cartridge_detections(
+                    selected_frame
+                ).get(shop_id)
+                if selected is not None:
+                    brightness = self.vision.template_brightness_ratio(
+                        selected_frame,
+                        spec,
+                        selected.best.result,
+                        minimum_template_gray=SHOP_CARTRIDGE_BRIGHTNESS.foreground_min_gray,
+                    )
+                    self._status(f"卡带亮度 {shop_id}", f"{brightness:.3f}")
+                    if SHOP_CARTRIDGE_BRIGHTNESS.is_selected(brightness):
+                        return True
+                self.task.sleep(0.25)
         return False
 
     def _select_shop_cartridge_from_first_page(self, shop_id: str) -> bool:

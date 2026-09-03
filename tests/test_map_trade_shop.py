@@ -472,6 +472,111 @@ class ShopAndCatalogTest(unittest.TestCase):
             )
         )
 
+    def test_select_purchase_cartridge_reclicks_when_first_click_is_swallowed(self):
+        from src.tasks.map_trade import trader_cartridge as cartridge_module
+
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        result = MatchResult(0.9, (220, 230), (78, 57), pixel_score=0.95)
+        detection = SimpleNamespace(best=SimpleNamespace(result=result))
+        clock = {"now": 0.0}
+        clicks = []
+
+        task = SimpleNamespace(
+            info_set=lambda *_args, **_kwargs: None,
+            log_warning=lambda *_args, **_kwargs: None,
+            sleep=lambda seconds: clock.__setitem__("now", clock["now"] + seconds),
+        )
+        trader = object.__new__(Trader)
+        trader.task = task
+        trader._wait_for_cartridge_match = lambda _shop_id: (
+            frame,
+            SimpleNamespace(),
+            result,
+        )
+        trader._confirmed_shop_cartridge_detections = lambda _frame: {"S3": detection}
+        trader.vision = SimpleNamespace(
+            capture=lambda: frame,
+            click_client=lambda center, _shape, after_sleep=0.0: clicks.append(center),
+            template_brightness_ratio=lambda *_args, **_kwargs: (
+                1.013 if len(clicks) >= 2 else 0.516
+            ),
+        )
+
+        original_monotonic = cartridge_module.monotonic
+        cartridge_module.monotonic = lambda: clock["now"]
+        try:
+            self.assertTrue(trader._select_purchase_cartridge("S3"))
+        finally:
+            cartridge_module.monotonic = original_monotonic
+
+        self.assertEqual(2, len(clicks))
+
+    def _competition_trader(self, scores):
+        def match_all(_frame, spec, **_kwargs):
+            score = scores.get(spec.file_name)
+            if score is None:
+                return ()
+            return (MatchResult(score, (150, 200), (78, 57), pixel_score=0.9),)
+
+        ocr_boxes = [
+            SimpleNamespace(
+                name="剧情游戏卡 3",
+                confidence=0.95,
+                x=160,
+                y=205,
+                width=140,
+                height=23,
+            ),
+            SimpleNamespace(
+                name="迷雾神射手",
+                confidence=0.99,
+                x=160,
+                y=225,
+                width=90,
+                height=24,
+            ),
+        ]
+        task = SimpleNamespace(
+            info_set=lambda *_args, **_kwargs: None,
+            log_warning=lambda *_args, **_kwargs: None,
+        )
+        trader = object.__new__(Trader)
+        trader.task = task
+        trader.vision = SimpleNamespace(
+            match_all=match_all,
+            ocr_boxes=lambda *_args, **_kwargs: ocr_boxes,
+            threshold_for=lambda _spec: 0.72,
+        )
+        return trader
+
+    def test_shop_cartridge_competition_accepts_desaturated_720p_margin(self):
+        # 720p 未选中行去色渲染后，真实匹配可低至 ~0.90 而 runner 贴近 0.83。
+        trader = self._competition_trader(
+            {
+                "shop/cartridges/story_cartridge_03.png": 0.906,
+                "shop/cartridges/story_cartridge_11.png": 0.828,
+            }
+        )
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+
+        confirmed = trader._confirmed_shop_cartridge_detections(frame)
+
+        self.assertIn("S3", confirmed)
+        self.assertAlmostEqual(0.078, confirmed["S3"].margin, places=3)
+
+    def test_shop_cartridge_competition_rejects_near_tie_margin(self):
+        trader = self._competition_trader(
+            {
+                "shop/cartridges/story_cartridge_03.png": 0.906,
+                "shop/cartridges/story_cartridge_11.png": 0.870,
+            }
+        )
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+
+        confirmed = trader._confirmed_shop_cartridge_detections(frame)
+
+        self.assertNotIn("S3", confirmed)
+
     def test_shop_cartridge_competition_and_ocr_reject_old_single_template_false_hit(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         scores = {
