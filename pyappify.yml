@@ -16,3 +16,4 @@ profiles:
     git_url: "https://github.com/GodRaymond233/ok-bd2-update.git"
     main_script: "main.py"
     requirements: "requirements.txt"
+    pip_args: "--no-deps"
