@@ -98,11 +98,11 @@ class BuildWorkflowTest(unittest.TestCase):
             encoding="utf-8"
         )
 
-        for old_version in ("v1.1.6", "v1.1.7"):
+        for old_version in ("v1.1.6", "v1.1.7", "v1.1.9"):
             self.assertNotIn(old_version, self.workflow)
             self.assertNotIn(old_version, script)
-        self.assertEqual(6, self.workflow.count("v1.1.9"))
-        self.assertIn('[string]$Version = "v1.1.9"', script)
+        self.assertEqual(6, self.workflow.count("v1.2.3"))
+        self.assertIn('[string]$Version = "v1.2.3"', script)
 
     def test_launcher_uses_project_icon(self):
         self.assertIn('icon: "icons/icon.png"', self.pyappify_config)
