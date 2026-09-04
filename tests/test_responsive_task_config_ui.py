@@ -124,6 +124,23 @@ class ResponsiveTaskConfigUiTest(unittest.TestCase):
         self.assertEqual(buttons[0].geometry().y(), buttons[1].geometry().y())
         self.assertGreater(buttons[2].geometry().y(), buttons[0].geometry().y())
         self.assertGreater(buttons[4].geometry().y(), buttons[2].geometry().y())
+        widget.close()
+
+    def test_multi_selection_respects_max_columns_cap(self):
+        widget = ResponsiveFlowWidget(alignment=Qt.AlignRight, max_columns=2)
+        buttons = []
+        for index in range(5):
+            button = QPushButton(f"选项 {index}")
+            button.setFixedWidth(100)
+            buttons.append(button)
+            widget.add_widget(button)
+
+        widget.flow_layout.setGeometry(QRect(0, 0, 600, 200))
+
+        self.assertEqual(buttons[0].geometry().y(), buttons[1].geometry().y())
+        self.assertGreater(buttons[2].geometry().y(), buttons[0].geometry().y())
+        self.assertGreater(buttons[4].geometry().y(), buttons[2].geometry().y())
+        widget.close()
 
     def test_multi_selection_flow_accepts_upstream_alignment_argument(self):
         widget = ResponsiveFlowWidget(alignment=Qt.AlignRight)
