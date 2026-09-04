@@ -533,7 +533,7 @@ class FeedbackReportController(QObject):
 
     @staticmethod
     def _show_error(error: str) -> None:
-        from ok.gui.util.Alert import alert_error
+        from ok.ui.qt.util.Alert import alert_error
 
         alert_error(f"生成问题报告失败：{error}", tray=True)
 

@@ -82,7 +82,7 @@ def mark_hidden_config_keys(task) -> int:
 
 def install_hide_config_rows() -> bool:
     """Mark token-matching configs hidden before any TaskCard is built."""
-    from ok.gui.tasks.TaskCard import TaskCard
+    from ok.ui.qt.tasks.TaskCard import TaskCard
 
     if getattr(TaskCard, "_bd2_hidden_config_rows_installed", False):
         return False

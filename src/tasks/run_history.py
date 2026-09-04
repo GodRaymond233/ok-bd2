@@ -213,7 +213,7 @@ def set_default_store(store: RunHistoryStore | None) -> None:
 def install_run_history_recorder() -> bool:
     """Record every finished one-time task into the default store."""
 
-    from ok.gui.Communicate import communicate
+    from ok.core.events import communicate
     from PySide6.QtCore import QObject
 
     if getattr(install_run_history_recorder, "_installed", False):

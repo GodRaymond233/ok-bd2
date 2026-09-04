@@ -317,7 +317,7 @@ class InstallAutoSchedulerTest(unittest.TestCase):
     """生产入口在 QApplication 创建前安装，信号必须仍然接上（HIGH 回归）."""
 
     def _reset_install_state(self):
-        from ok.gui.Communicate import communicate
+        from ok.core.events import communicate
 
         runner = getattr(auto_scheduler.install_auto_scheduler, "_runner", None)
         if runner is not None:
@@ -337,15 +337,26 @@ class InstallAutoSchedulerTest(unittest.TestCase):
     def setUp(self):
         # 导入 src.config 会触发一次真实安装（install_quest_ui →
         # install_auto_scheduler）；每个用例前清掉该状态，保证可重装。
+        from ok import og
+
+        # ok-script 2.x 的 EventBus 未装 Qt 派发器时同步直调订阅者且异常穿透
+        # emit，早前用例残留的框架 tab 订阅者会读 og.executor，给空桩兜底。
+        self._prior_executor = getattr(og, "executor", None)
+        og.executor = SimpleNamespace(
+            onetime_tasks=[], trigger_tasks=[], current_task=None
+        )
         self._reset_install_state()
 
     def tearDown(self):
+        from ok import og
+
+        og.executor = self._prior_executor
         self._reset_install_state()
 
     def test_installs_without_qapplication_and_schedules_on_first_signal(self):
         from unittest.mock import patch
 
-        from ok.gui.Communicate import communicate
+        from ok.core.events import communicate
 
         with patch(
             "PySide6.QtCore.QCoreApplication.instance", return_value=None
@@ -371,7 +382,7 @@ class InstallAutoSchedulerTest(unittest.TestCase):
     def test_task_done_before_other_signals_schedules_startup_check(self):
         from unittest.mock import patch
 
-        from ok.gui.Communicate import communicate
+        from ok.core.events import communicate
 
         with patch(
             "PySide6.QtCore.QCoreApplication.instance", return_value=None

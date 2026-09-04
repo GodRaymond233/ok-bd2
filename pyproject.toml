@@ -8,7 +8,7 @@ dependencies = [
     "adbutils>=2.8.0",
     "comtypes>=1.4.16",
     "msvc-runtime>=14.44.35112",
-    "ok-script==1.0.190",
+    "ok-script[ocr,qt]==2.0.6",
     "numpy>=2.4.0",
     "onnxocr-ppocrv5==0.0.22",
     "opencc>=1.2.0",
@@ -18,7 +18,7 @@ dependencies = [
     "psutil>=7.2.2",
     "pydirectinput>=1.0.4",
     "pynput>=1.8.1",
-    "pyappify==1.0.6",
+    "pyappify==1.0.13",
     "pyside6==6.9.1",
     "pyside6-fluent-widgets",
     # 312 打包回归不再捆绑 mfc140u.dll（上游 mhammond/pywin32#2776），

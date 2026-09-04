@@ -553,8 +553,8 @@ def _install_run_panel_for(tab_class) -> bool:
 
 def install_run_panel() -> bool:
     """Swap one-time and trigger task info tables for the shared run panel."""
-    from ok.gui.tasks.OneTimeTaskTab import OneTimeTaskTab
-    from ok.gui.tasks.TriggerTaskTab import TriggerTaskTab
+    from ok.ui.qt.tasks.OneTimeTaskTab import OneTimeTaskTab
+    from ok.ui.qt.tasks.TriggerTaskTab import TriggerTaskTab
 
     installed_onetime = _install_run_panel_for(OneTimeTaskTab)
     installed_trigger = _install_run_panel_for(TriggerTaskTab)

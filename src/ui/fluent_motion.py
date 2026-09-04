@@ -776,7 +776,7 @@ def _install_first_show_hook(tab) -> None:
 
 def install_fluent_tab_entrance() -> bool:
     """Stagger the 日常/周常 board's first show (banner → cards → footer)."""
-    from ok.gui.tasks.OneTimeTaskTab import OneTimeTaskTab
+    from ok.ui.qt.tasks.OneTimeTaskTab import OneTimeTaskTab
 
     if getattr(OneTimeTaskTab, "_fluent_entrance_installed", False):
         return False

@@ -26,7 +26,7 @@ def apply_app_font() -> None:
     """Apply the project font stack before qfluentwidgets builds controls."""
     # Importing the app config first ensures its ui_config.json load cannot
     # overwrite the project stack after this call.
-    from ok.gui.common.config import cfg as _cfg  # noqa: F401
+    from ok.ui.qt.common.config import cfg as _cfg  # noqa: F401
     from PySide6.QtWidgets import QApplication
     from qfluentwidgets import setFontFamilies
 

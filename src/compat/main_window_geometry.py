@@ -55,7 +55,7 @@ def patch_main_window_geometry_events(
 
 
 def install_main_window_geometry_debounce() -> None:
-    from ok.gui.MainWindow import MainWindow
+    from ok.ui.qt.MainWindow import MainWindow
     from PySide6.QtCore import QTimer
 
     patch_main_window_geometry_events(MainWindow, QTimer)

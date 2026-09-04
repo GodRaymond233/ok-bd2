@@ -309,7 +309,7 @@ def _find_batch_task():
 
 def install_quest_tab_chrome() -> bool:
     """Mount banner + status bar on the 日常/周常 OneTimeTaskTab."""
-    from ok.gui.tasks.OneTimeTaskTab import OneTimeTaskTab
+    from ok.ui.qt.tasks.OneTimeTaskTab import OneTimeTaskTab
 
     if getattr(OneTimeTaskTab, "_quest_chrome_installed", False):
         return False
@@ -324,7 +324,7 @@ def install_quest_tab_chrome() -> bool:
         self.vBoxLayout.insertWidget(1, self.quest_banner)
         self.quest_status_bar = QuestStatusBar(self.view)
         self.vBoxLayout.addWidget(self.quest_status_bar)
-        from ok.gui.Communicate import communicate
+        from ok.core.events import communicate
 
         # Receiver is the banner (a UI-thread QObject), so the executor-thread
         # signal is delivered queued.

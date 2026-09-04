@@ -143,7 +143,9 @@ class WrappingFlowLayout(QLayout):
 
 
 class ResponsiveFlowWidget(QWidget):
-    def __init__(self, alignment=Qt.AlignLeft):
+    def __init__(self, alignment=Qt.AlignLeft, max_columns=None):
+        # ok-script 2.x 的 LabelAndMultiSelection 构造时传 max_columns；
+        # 本布局换行由可用宽度驱动，列数上限不参与计算。
         super().__init__()
         self.alignment = alignment
         self.flow_layout = WrappingFlowLayout(self, alignment=alignment)
@@ -320,11 +322,11 @@ def apply_task_card_badge_and_style(card, task):
 def install_responsive_task_config_ui():
     """Make ok-script task settings shrink and reflow with the app window."""
 
-    from ok.gui.tasks import LabelAndMultiSelection as multi_selection_module
-    from ok.gui.tasks.ConfigCard import ConfigCard
-    from ok.gui.tasks.LabelAndTextEdit import LabelAndTextEdit
-    from ok.gui.tasks.LabelAndWidget import LabelAndWidget
-    from ok.gui.tasks.TaskCard import TaskCard
+    from ok.ui.qt.tasks import LabelAndMultiSelection as multi_selection_module
+    from ok.ui.qt.tasks.ConfigCard import ConfigCard
+    from ok.ui.qt.tasks.LabelAndTextEdit import LabelAndTextEdit
+    from ok.ui.qt.tasks.LabelAndWidget import LabelAndWidget
+    from ok.ui.qt.tasks.TaskCard import TaskCard
 
     if getattr(LabelAndWidget, "_bd2_responsive_ui_installed", False):
         return

@@ -1,5 +1,5 @@
 from ok import Config, og
-from ok.gui.widget.CustomTab import CustomTab
+from ok.ui.qt.widget.CustomTab import CustomTab
 from PySide6.QtCore import QEvent
 from qfluentwidgets import BodyLabel, FluentIcon, PrimaryPushButton, PushButton
 

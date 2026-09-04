@@ -26,8 +26,8 @@ def starter_launch_arguments(game_cmd: object, arguments: str | None = None) -> 
 
 
 def enable_starter_launch_uri() -> None:
-    """Teach ok-script 1.0.190 to pass the required URI to the Neowiz Starter."""
-    start_controller = importlib.import_module("ok.gui.StartController")
+    """Teach ok-script to pass the required URI to the Neowiz Starter."""
+    start_controller = importlib.import_module("ok.core.start_controller")
     current_execute = start_controller.execute
     if getattr(current_execute, _PATCH_MARKER, False):
         return

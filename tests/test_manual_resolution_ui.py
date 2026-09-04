@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import win32con
-from ok.gui.widget.Card import Card
+from ok.ui.qt.widget.Card import Card
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from src.ui.live_screenshot import install_live_screenshot

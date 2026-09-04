@@ -145,7 +145,7 @@ def _remember_supported_target(capture: object) -> None:
 
 
 def patch_windows_graphics_capture_class(capture_class: type) -> None:
-    """Patch ok-script 1.0.190 without editing the installed dependency."""
+    """Patch ok-script without editing the installed dependency."""
 
     if getattr(capture_class, _WGC_PATCH_MARKER, False):
         return

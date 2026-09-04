@@ -7,11 +7,11 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from ok import og
-from ok.gui.tasks.ConfigCard import ConfigCard
-from ok.gui.tasks.LabelAndSwitchButton import LabelAndSwitchButton
-from ok.gui.tasks.LabelAndTextEdit import LabelAndTextEdit
-from ok.gui.tasks.LabelAndWidget import LabelAndWidget
-from ok.gui.tasks.TaskCard import TaskCard
+from ok.ui.qt.tasks.ConfigCard import ConfigCard
+from ok.ui.qt.tasks.LabelAndSwitchButton import LabelAndSwitchButton
+from ok.ui.qt.tasks.LabelAndTextEdit import LabelAndTextEdit
+from ok.ui.qt.tasks.LabelAndWidget import LabelAndWidget
+from ok.ui.qt.tasks.TaskCard import TaskCard
 from PySide6.QtCore import SIGNAL, QCoreApplication, QEvent, QRect, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QPushButton
@@ -49,7 +49,7 @@ class _TaskStub:
 
 class _TaskCardStub:
     name = "响应式任务"
-    description = "用于验证 1.0.190 TaskCard 紧凑标题与展开动画。"
+    description = "用于验证 TaskCard 紧凑标题与展开动画。"
     icon = None
     config_description = {
         "启用测试项": "这是用于验证窄窗口换行的较长任务说明。" * 2,
@@ -157,7 +157,7 @@ class ResponsiveTaskConfigUiTest(unittest.TestCase):
         original_init = LabelAndWidget.__init__
         original_add_layout = LabelAndWidget.add_layout
         original_flow = __import__(
-            "ok.gui.tasks.LabelAndMultiSelection", fromlist=["FlowLayout"]
+            "ok.ui.qt.tasks.LabelAndMultiSelection", fromlist=["FlowLayout"]
         ).FlowLayout
 
         install_responsive_task_config_ui()

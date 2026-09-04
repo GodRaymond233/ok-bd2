@@ -15,10 +15,10 @@ class DependencyManagementTest(unittest.TestCase):
 
     def test_ok_script_is_consistently_pinned(self):
         dependencies = self.pyproject["project"]["dependencies"]
-        self.assertIn("ok-script==1.0.190", dependencies)
-        self.assertIn("ok-script==1.0.190", self.runtime_requirements)
-        self.assertIn("ok-script==1.0.190", self.dev_requirements)
-        self.assertNotIn("ok-script==1.0.180", self.runtime_requirements)
+        self.assertIn("ok-script[ocr,qt]==2.0.6", dependencies)
+        self.assertIn("ok-script==2.0.6", self.runtime_requirements)
+        self.assertIn("ok-script==2.0.6", self.dev_requirements)
+        self.assertNotIn("ok-script==1.0.190", self.runtime_requirements)
 
     def test_msvc_runtime_is_consistently_constrained(self):
         dependencies = self.pyproject["project"]["dependencies"]
@@ -46,13 +46,13 @@ class DependencyManagementTest(unittest.TestCase):
 
     def test_s1_dependency_pins_remain_unchanged(self):
         dependencies = self.pyproject["project"]["dependencies"]
-        self.assertIn("ok-script==1.0.190", dependencies)
-        self.assertIn("pyappify==1.0.6", dependencies)
+        self.assertIn("ok-script[ocr,qt]==2.0.6", dependencies)
+        self.assertIn("pyappify==1.0.13", dependencies)
         self.assertIn("msvc-runtime>=14.44.35112", dependencies)
 
         for name, version in (
-            ("ok-script", "1.0.190"),
-            ("pyappify", "1.0.6"),
+            ("ok-script", "2.0.6"),
+            ("pyappify", "1.0.13"),
             ("msvc-runtime", "14.44.35112"),
         ):
             with self.subTest(name=name):

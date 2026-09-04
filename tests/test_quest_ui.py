@@ -195,7 +195,7 @@ class ThemeTokenTest(QuestUiTestBase):
 
 class QuestCardTest(QuestUiTestBase):
     def test_card_gets_seal_and_hidden_meta_without_record(self):
-        from ok.gui.tasks.TaskCard import TaskCard
+        from ok.ui.qt.tasks.TaskCard import TaskCard
 
         self.fresh_store()
         card = TaskCard(_TaskStub(), onetime=True)
@@ -211,7 +211,7 @@ class QuestCardTest(QuestUiTestBase):
     def test_card_meta_and_header_grow_with_today_record(self):
         import time
 
-        from ok.gui.tasks.TaskCard import TaskCard
+        from ok.ui.qt.tasks.TaskCard import TaskCard
 
         store = self.fresh_store()
         record_task = _TaskStub(name="快速狩猎")
@@ -234,7 +234,7 @@ class QuestCardTest(QuestUiTestBase):
         card.close()
 
     def test_running_task_shows_live_meta_and_run_seal(self):
-        from ok.gui.tasks.TaskCard import TaskCard
+        from ok.ui.qt.tasks.TaskCard import TaskCard
 
         from src.ui.quest_cards import refresh_quest_card
 
@@ -252,7 +252,7 @@ class QuestCardTest(QuestUiTestBase):
         card.close()
 
     def test_trigger_card_seal_is_ok_when_enabled_not_run(self):
-        from ok.gui.tasks.TaskCard import TaskCard
+        from ok.ui.qt.tasks.TaskCard import TaskCard
 
         from src.ui.quest_cards import refresh_quest_card
 
@@ -267,7 +267,7 @@ class QuestCardTest(QuestUiTestBase):
         card.close()
 
     def test_batch_card_child_switches_live_in_expand_view(self):
-        from ok.gui.tasks.TaskCard import TaskCard
+        from ok.ui.qt.tasks.TaskCard import TaskCard
 
         self.fresh_store()
         card = TaskCard(_make_batch_stub(), onetime=True)
@@ -286,7 +286,7 @@ class QuestCardTest(QuestUiTestBase):
         card.close()
 
     def test_batch_card_expand_and_collapse_reveal_child_switches(self):
-        from ok.gui.tasks.TaskCard import TaskCard
+        from ok.ui.qt.tasks.TaskCard import TaskCard
         from PySide6.QtTest import QTest
 
         self.fresh_store()
@@ -324,7 +324,7 @@ class QuestCardTest(QuestUiTestBase):
         between the animation value and the header height).  The heights must
         now progress monotonically through real intermediate values.
         """
-        from ok.gui.tasks.TaskCard import TaskCard
+        from ok.ui.qt.tasks.TaskCard import TaskCard
         from PySide6.QtTest import QTest
 
         self.fresh_store()
@@ -360,7 +360,7 @@ class QuestCardTest(QuestUiTestBase):
         card.close()
 
     def test_batch_child_switches_follow_master_switch(self):
-        from ok.gui.tasks.TaskCard import TaskCard
+        from ok.ui.qt.tasks.TaskCard import TaskCard
 
         self.fresh_store()
         task = _make_batch_stub()
@@ -385,7 +385,7 @@ class QuestCardTest(QuestUiTestBase):
     def test_refresh_skips_widget_writes_when_nothing_changed(self):
         from unittest import mock
 
-        from ok.gui.tasks.TaskCard import TaskCard
+        from ok.ui.qt.tasks.TaskCard import TaskCard
 
         from src.ui import quest_cards
 
@@ -699,7 +699,7 @@ class RunPanelTest(QuestUiTestBase):
 
 class TaskTabIntegrationTest(QuestUiTestBase):
     def test_daily_group_tab_gets_run_panel_banner_and_status_bar(self):
-        from ok.gui.tasks.OneTimeTaskTab import OneTimeTaskTab
+        from ok.ui.qt.tasks.OneTimeTaskTab import OneTimeTaskTab
 
         self.fresh_store()
         tab = OneTimeTaskTab(is_standalone=False, group_name="日常/周常")
@@ -733,7 +733,7 @@ class TaskTabIntegrationTest(QuestUiTestBase):
             tab.close()
 
     def test_other_group_tab_has_run_panel_but_no_banner(self):
-        from ok.gui.tasks.OneTimeTaskTab import OneTimeTaskTab
+        from ok.ui.qt.tasks.OneTimeTaskTab import OneTimeTaskTab
 
         self.fresh_store()
         tab = OneTimeTaskTab(is_standalone=False, group_name="自动刷级")
@@ -742,7 +742,7 @@ class TaskTabIntegrationTest(QuestUiTestBase):
         tab.close()
 
     def test_trigger_tab_reuses_run_panel_for_current_trigger(self):
-        from ok.gui.tasks.TriggerTaskTab import TriggerTaskTab
+        from ok.ui.qt.tasks.TriggerTaskTab import TriggerTaskTab
 
         self.fresh_store()
         task = _TaskStub(name="自动登录")
@@ -845,7 +845,7 @@ class HiddenConfigRowsTest(QuestUiTestBase):
         install_hide_config_rows()
 
     def test_token_rows_are_not_created_and_values_survive(self):
-        from ok.gui.tasks.TaskCard import TaskCard
+        from ok.ui.qt.tasks.TaskCard import TaskCard
 
         values = {
             "启用": True,
@@ -873,7 +873,7 @@ class HiddenConfigRowsTest(QuestUiTestBase):
         self.assertEqual(task.config["单步重试次数"], 3)
 
     def test_sub_config_children_matching_tokens_stay_hidden(self):
-        from ok.gui.tasks.TaskCard import TaskCard
+        from ok.ui.qt.tasks.TaskCard import TaskCard
 
         values = {"执行": True, "每步等待秒数": 2, "保留子项": True}
         task = _TaskStub(name="测试合辑", config=_ConfigStub(values))
@@ -891,7 +891,7 @@ class HiddenConfigRowsTest(QuestUiTestBase):
 
 
     def test_string_sub_config_rule_is_also_stripped(self):
-        from ok.gui.tasks.TaskCard import TaskCard
+        from ok.ui.qt.tasks.TaskCard import TaskCard
 
         values = {"执行": True, "每步等待秒数": 2}
         task = _TaskStub(name="测试合辑", config=_ConfigStub(values))
@@ -930,7 +930,7 @@ class HiddenConfigRowsTest(QuestUiTestBase):
 
 class ExpandDurationTest(QuestUiTestBase):
     def test_duration_scales_with_content_and_collapses_faster(self):
-        from ok.gui.tasks.TaskCard import TaskCard
+        from ok.ui.qt.tasks.TaskCard import TaskCard
         from PySide6.QtCore import QEasingCurve
 
         values = {"启用": True, "运行模式": "标准", "说明文本": "一段说明"}
@@ -967,7 +967,7 @@ class ExpandTimingTest(QuestUiTestBase):
         expand_timing.set_expand_timing_enabled(True)
 
     def _make_card(self):
-        from ok.gui.tasks.TaskCard import TaskCard
+        from ok.ui.qt.tasks.TaskCard import TaskCard
 
         self.fresh_store()
         card = TaskCard(_make_batch_stub(), onetime=True)

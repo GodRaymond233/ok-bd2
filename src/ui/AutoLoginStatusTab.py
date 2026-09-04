@@ -1,4 +1,4 @@
-from ok.gui.widget.CustomTab import CustomTab
+from ok.ui.qt.widget.CustomTab import CustomTab
 from PySide6.QtCore import QEvent, QTimer
 from PySide6.QtWidgets import QGridLayout, QWidget
 from qfluentwidgets import BodyLabel, CaptionLabel, FluentIcon, StrongBodyLabel, SubtitleLabel

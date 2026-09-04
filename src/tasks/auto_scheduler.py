@@ -131,7 +131,7 @@ def install_auto_scheduler() -> bool:
     可以无条件执行；依赖事件循环的首次 QTimer 检查必须推迟到首个框架信号
     到达后再排布，否则定时器静默失效、启动自动执行在生产入口永不生效。
     """
-    from ok.gui.Communicate import communicate
+    from ok.core.events import communicate
     from PySide6.QtCore import QCoreApplication, QObject, QTimer
 
     if getattr(install_auto_scheduler, "_installed", False):

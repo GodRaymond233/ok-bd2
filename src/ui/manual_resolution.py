@@ -483,7 +483,7 @@ class ManualResolutionController(QObject):
         resolution = format_resolution((result.width, result.height))
         suffix = "（尺寸已是目标值）" if not result.changed else ""
         self.widget.set_status(f"当前游戏窗口：{resolution}{suffix}")
-        from ok.gui.util.Alert import alert_info
+        from ok.ui.qt.util.Alert import alert_info
 
         alert_info(f"游戏窗口已调整为 {resolution}。")
 
@@ -509,7 +509,7 @@ class ManualResolutionController(QObject):
 
     def _show_failure(self, error: str) -> None:
         self.widget.set_status(f"调整失败：{error}")
-        from ok.gui.util.Alert import alert_error
+        from ok.ui.qt.util.Alert import alert_error
 
         alert_error(f"手动调整分辨率失败：{error}")
 

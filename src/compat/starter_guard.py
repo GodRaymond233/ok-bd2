@@ -88,7 +88,7 @@ def starter_preflight_warning(env: dict[str, str] | None = None) -> str | None:
 
 def enable_starter_launch_guard() -> None:
     """Detect a lingering Starter install wizard while waiting for the game window."""
-    start_controller = import_module("ok.gui.StartController")
+    start_controller = import_module("ok.core.start_controller")
     _patch_stable_wait(start_controller)
     _patch_execute_preflight(start_controller)
 
@@ -110,7 +110,7 @@ def notify_starter_wizard(windows: Iterable[StarterWindow], elapsed_seconds: flo
 
 
 def _emit_notification(message: str, title: str) -> None:
-    communicate = import_module("ok.gui.Communicate").communicate
+    communicate = import_module("ok.core.events").communicate
     communicate.notification.emit(message, title, True, True, "start", None, None)
 
 

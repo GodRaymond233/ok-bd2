@@ -369,7 +369,7 @@ class _CardRefresher(QObject):
     def _connect_signals(self) -> None:
         if getattr(self, "_signals_connected", False):
             return
-        from ok.gui.Communicate import communicate
+        from ok.core.events import communicate
 
         communicate.task.connect(self._on_task_signal)
         communicate.task_done.connect(self._on_task_signal)
@@ -502,7 +502,7 @@ def _apply_quest_theme(card) -> None:
 
 
 def _chain_config_card_methods() -> None:
-    from ok.gui.tasks.ConfigCard import ConfigCard
+    from ok.ui.qt.tasks.ConfigCard import ConfigCard
 
     if getattr(ConfigCard, "_quest_chrome_chained", False):
         return
@@ -544,7 +544,7 @@ def _chain_config_card_methods() -> None:
 
 def install_quest_cards() -> bool:
     """Chain the quest chrome onto TaskCard after the responsive patch."""
-    from ok.gui.tasks.TaskCard import TaskCard
+    from ok.ui.qt.tasks.TaskCard import TaskCard
 
     if getattr(TaskCard, "_quest_cards_installed", False):
         return False

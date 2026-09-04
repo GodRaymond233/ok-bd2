@@ -360,7 +360,7 @@ def install_expand_timing() -> bool:
     animation stays exactly as it is.
     """
     global _enabled, _previous_set_expand
-    from ok.gui.tasks.ConfigCard import ConfigCard
+    from ok.ui.qt.tasks.ConfigCard import ConfigCard
 
     if getattr(ConfigCard, "_expand_timing_installed", False):
         return False
