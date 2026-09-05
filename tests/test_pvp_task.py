@@ -26,6 +26,7 @@ from src.tasks.PVPTask import (
     HOME_GACHA_OCR_ROI,
     LOADING_TEMPLATE,
     PVP_AUTO_BATTLE_CLICK_REFERENCE,
+    PVP_AUTO_BATTLE_MENU_VERIFY_SECONDS,
     PVP_AUTO_BATTLE_SCREEN_ROI,
     PVP_BACK_HOME_REFERENCE_POINT,
     PVP_CARTRIDGE_SLOT_POINT,
@@ -2187,22 +2188,14 @@ class PVPTaskHelperTest(unittest.TestCase):
             template_clicks[0][1]["target_reference_offset"],
         )
         self.assertEqual(
-            [
-                (
-                    ([r"自动战斗", r"自动"],),
-                    {
-                        "name": "PVP 自动战斗",
-                        "roi": PVP_AUTO_BATTLE_SCREEN_ROI,
-                        "after_sleep": 1.0,
-                    },
-                )
-            ],
+            [],
             auto_clicks,
+            "图标校准点首击打开菜单后不应再点 OCR 标签中心",
         )
-        self.assertNotIn((*PVP_AUTO_BATTLE_CLICK_REFERENCE, 1.0), clicks)
+        self.assertIn((*PVP_AUTO_BATTLE_CLICK_REFERENCE, 1.0), clicks)
         self.assertIn((1381, 1061, 2.0), clicks)
 
-    def test_start_auto_battle_falls_back_to_relative_point_when_ocr_box_is_unavailable(self):
+    def test_start_auto_battle_falls_back_to_ocr_center_when_reference_click_misses_menu(self):
         task = object.__new__(PVPTask)
         task.config = {}
         task.info_set = lambda *_args, **_kwargs: None
@@ -2212,7 +2205,10 @@ class PVPTaskHelperTest(unittest.TestCase):
         task._ensure_free_ap_enabled = lambda: True
         task._ensure_multiplier = lambda _multiplier: True
         task._select_max_battle_count = lambda: None
-        task._click_ocr_pattern_center = lambda *_args, **_kwargs: False
+        auto_clicks = []
+        task._click_ocr_pattern_center = lambda *args, **kwargs: (
+            auto_clicks.append((args, kwargs)) or True
+        )
         task.capture_frame = lambda: np.zeros((1440, 2560, 3), dtype=np.uint8)
         task.sleep = lambda *_args, **_kwargs: None
 
@@ -2226,18 +2222,37 @@ class PVPTaskHelperTest(unittest.TestCase):
         task._click_screen_reference = lambda x, y, after_sleep=0.0: clicks.append(
             (x, y, after_sleep)
         )
+        menu_calls = []
 
         def fake_wait_for_ocr_patterns(_patterns, timeout, name, **_kwargs):
             if name == "PVP 自动战斗":
                 return True, "自动战斗"
             if name == "PVP 自动战斗菜单":
-                return True, "鲜血鸡尾酒"
+                menu_calls.append(timeout)
+                return (len(menu_calls) > 1, "鲜血鸡尾酒")
             return False, ""
 
         task._wait_for_ocr_patterns = fake_wait_for_ocr_patterns
 
         self.assertEqual("started", PVPTask._start_auto_battle(task, 1))
         self.assertIn((*PVP_AUTO_BATTLE_CLICK_REFERENCE, 1.0), clicks)
+        self.assertEqual(
+            [
+                (
+                    ([r"自动战斗", r"自动"],),
+                    {
+                        "name": "PVP 自动战斗",
+                        "roi": PVP_AUTO_BATTLE_SCREEN_ROI,
+                        "after_sleep": 1.0,
+                    },
+                )
+            ],
+            auto_clicks,
+        )
+        self.assertEqual(
+            [PVP_AUTO_BATTLE_MENU_VERIFY_SECONDS, PVP_AUTO_BATTLE_MENU_VERIFY_SECONDS],
+            menu_calls,
+        )
         self.assertIn((1381, 1061, 2.0), clicks)
 
     def test_start_auto_battle_timeout_saves_failure_diagnostic(self):
@@ -2303,7 +2318,7 @@ class PVPTaskHelperTest(unittest.TestCase):
 
         self.assertEqual("failed", PVPTask._start_auto_battle(task, 10))
         self.assertEqual([10], multiplier_calls)
-        self.assertEqual([], clicks)
+        self.assertNotIn((1381, 1061, 2.0), clicks)
 
     def _make_free_ap_task(self, frame):
         harness = SimpleNamespace(infos={}, logs=[])

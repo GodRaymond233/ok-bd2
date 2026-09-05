@@ -72,6 +72,7 @@ PVP_BATTLE_ONGOING_PATTERN = r"正在进行"
 PVP_AP_SHORTAGE_PATTERN = r"不足"
 PVP_SEASON_REWARD_AFTER_CLICK_SECONDS = 3.0
 PVP_RANK_PAGE_AFTER_CLICK_SECONDS = 2.0
+PVP_AUTO_BATTLE_MENU_VERIFY_SECONDS = 3.5
 # A real promotion flow shows the confirm text while the page is still fading
 # in. Waiting for a fresh frame avoids clicking a stale/transient OCR result.
 PVP_RANK_CONFIRM_SETTLE_SECONDS = 1.5
@@ -535,25 +536,46 @@ class PVPTask(BaseBD2Task):
             self._save_flow_diagnostic("pvp_auto_battle_failed")
             return "failed"
 
-        if not self._click_ocr_pattern_center(
-            [r"自动战斗", r"自动"],
-            name="PVP 自动战斗",
-            roi=PVP_AUTO_BATTLE_SCREEN_ROI,
-            after_sleep=1.0,
+        menu_roi = self._mf_roi(327, 165, 417, 156)
+        # 2026-09 客户端改版把按钮热区收到图标/背板上（RPT-20260905-201103），
+        # OCR 标签中心点击不再打开弹窗；先点校准图标位，未验证到弹窗再兜底标签中心。
+        found_menu = False
+        menu_text = ""
+        for click_label, click in (
+            (
+                "图标校准点",
+                lambda: self._click_screen_reference(
+                    *PVP_AUTO_BATTLE_CLICK_REFERENCE,
+                    after_sleep=1.0,
+                ),
+            ),
+            (
+                "OCR标签中心",
+                lambda: self._click_ocr_pattern_center(
+                    [r"自动战斗", r"自动"],
+                    name="PVP 自动战斗",
+                    roi=PVP_AUTO_BATTLE_SCREEN_ROI,
+                    after_sleep=1.0,
+                ),
+            ),
         ):
-            self.info_set("PVP 自动战斗点击", "OCR框中心不可用，使用相对比例回退")
-            self._click_screen_reference(
-                *PVP_AUTO_BATTLE_CLICK_REFERENCE,
-                after_sleep=1.0,
+            clicked = click()
+            self.info_set(
+                "PVP 自动战斗点击",
+                click_label if clicked else f"{click_label}（不可用）",
             )
-        found_menu, menu_text = self._wait_for_ocr_patterns(
-            [r"鲜血鸡尾酒"],
-            timeout=8.0,
-            name="PVP 自动战斗菜单",
-            roi=self._mf_roi(327, 165, 417, 156),
-        )
+            found_menu, menu_text = self._wait_for_ocr_patterns(
+                [r"鲜血鸡尾酒"],
+                timeout=PVP_AUTO_BATTLE_MENU_VERIFY_SECONDS,
+                name="PVP 自动战斗菜单",
+                roi=menu_roi,
+            )
+            if found_menu:
+                break
         self.info_set("PVP 自动战斗 OCR", menu_text or "-")
         if not found_menu:
+            self.log_info("镜中之战：两级点击后自动战斗菜单仍未出现。")
+            self._save_flow_diagnostic("pvp_auto_battle_failed")
             return "failed"
 
         if not self._ensure_free_ap_enabled():
