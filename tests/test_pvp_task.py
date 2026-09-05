@@ -2373,7 +2373,8 @@ class PVPTaskHelperTest(unittest.TestCase):
 class PVPHubMedalsFixtureTest(unittest.TestCase):
     """BUG-20260905-08（RPT-20260905-195025）：实机箱庭顶栏整体上移约 4px，
     旧 ROI 上边界零余量致勋章模板峰值 0.726<0.78、箱庭确认 30 秒超时。
-    夹具为该上报诊断帧，匹配路径与线上完全一致（含 ROI 与像素门禁）。"""
+    夹具为该上报诊断帧的黑底画布，仅按原始坐标保留模板搜索条带，
+    匹配路径与线上完全一致（含 ROI 与像素门禁）。"""
 
     def test_shifted_top_bar_still_passes_medals_spec(self):
         frame = cv2.imread(
