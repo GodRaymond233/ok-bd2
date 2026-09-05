@@ -95,19 +95,31 @@ class LauncherUpdateConfigTest(unittest.TestCase):
         )
         self.assertEqual((True, ""), basic_options.validator("Launch with DX11", False))
 
-    def test_launcher_update_targets_verified_v0114_launcher(self):
+    def test_launcher_update_targets_verified_v123_launcher(self):
         self.assertEqual(
             {
-                "to_version": "1.1.9",
+                "to_version": "1.2.3",
                 "zip_url": (
                     "https://github.com/GodRaymond233/ok-bd2/releases/download/"
-                    "v0.1.14/ok-bd2-win32.zip"
+                    "v1.2.0/ok-bd2-win32.zip"
                 ),
                 "sha256": (
-                    "9f9537587e2cf2925bd182a245710da554a0571a3504c77ac4043fbd2247a6d0"
+                    "98d13a723d28e3c6f41c73869024d6bdbca91239719dad547d994dccf95aa862"
                 ),
             },
             config["update_pyappify"],
+        )
+
+    def test_launcher_zip_url_matches_to_version_release_payload(self):
+        zip_url = config["update_pyappify"]["zip_url"]
+        self.assertIn("/v1.2.0/", zip_url)
+        self.assertTrue(zip_url.endswith("ok-bd2-win32.zip"))
+
+    def test_config_exposes_download_link_for_update_errors(self):
+        links = config["links"]["default"]
+        self.assertEqual(
+            "https://github.com/GodRaymond233/ok-bd2/releases/latest",
+            links["download"],
         )
 
     def test_launcher_hash_is_lowercase_sha256(self):

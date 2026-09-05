@@ -11,6 +11,7 @@ from src import GAME_EXE, HWND_CLASS
 from src.compat.main_window_geometry import install_main_window_geometry_debounce
 from src.compat.starter_guard import enable_starter_launch_guard
 from src.compat.starter_launch import enable_starter_launch_uri
+from src.compat.update_card_ui import install_update_card_ui
 from src.compat.windows_graphics import WGC_MIN_CAPTURE_SIZE, enable_windows_10_wgc
 from src.game_path import calculate_pc_exe_path
 from src.interaction.BD2Interaction import BD2Interaction
@@ -41,6 +42,7 @@ enable_starter_launch_guard()
 install_main_window_geometry_debounce()
 install_responsive_task_config_ui()
 install_quest_ui()
+install_update_card_ui()
 
 DX11_OPTION = "Launch with DX11"
 
@@ -122,6 +124,7 @@ config = {
             "github": "https://github.com/GodRaymond233/ok-bd2",
             "share": "Download from https://github.com/GodRaymond233/ok-bd2",
             "faq": "https://github.com/GodRaymond233/ok-bd2",
+            "download": "https://github.com/GodRaymond233/ok-bd2/releases/latest",
         }
     },
     "about": """
@@ -178,11 +181,11 @@ config = {
     ],
     "scene": ["src.scene.BD2Scene", "BD2Scene"],
     "update_pyappify": {
-        "to_version": "1.1.9",
+        "to_version": "1.2.3",
         "zip_url": (
             "https://github.com/GodRaymond233/ok-bd2/releases/download/"
-            "v0.1.14/ok-bd2-win32.zip"
+            "v1.2.0/ok-bd2-win32.zip"
         ),
-        "sha256": "9f9537587e2cf2925bd182a245710da554a0571a3504c77ac4043fbd2247a6d0",
+        "sha256": "98d13a723d28e3c6f41c73869024d6bdbca91239719dad547d994dccf95aa862",
     },
 }
