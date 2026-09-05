@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Version = "v1.2.3",
     [string]$BuildDir = "pyappify_build",
     [ValidateSet("zlib", "lzma")]
@@ -60,6 +60,123 @@ function Ensure-Cargo {
         $env:PATH = "$cargoBin;$env:PATH"
     }
     Ensure-Command -Name "cargo" -InstallDescription "Rust was installed, but cargo is still not available on PATH."
+}
+
+function Update-InstallerNsiTemplate {
+    param(
+        [string]$BuildDirPath
+    )
+
+    # BUG-20260905-06: the upstream pyappify/Tauri NSIS template aborts with a bare
+    # "unable to uninstall" message when the previous install's registered
+    # uninstaller no longer exists (deleted install dir, moved app, ...), which
+    # hard-blocks upgrading users. Patch the template right after cloning so the
+    # generated installer tolerates stale uninstall entries. Every patch must hit
+    # exactly once or the build fails loudly - a silently skipped patch would ship
+    # an unfixed installer.
+
+    $nsiPath = Join-Path $BuildDirPath "src-tauri\nsis\installer.nsi"
+    if (-not (Test-Path -LiteralPath $nsiPath)) {
+        throw "installer.nsi template not found at $nsiPath"
+    }
+
+    # -Encoding UTF8 is required: the template is UTF-8 (it already contains
+    # Chinese messages) and Windows PowerShell would otherwise decode it as ANSI.
+    $content = (Get-Content -LiteralPath $nsiPath -Raw -Encoding UTF8) -replace "`r`n", "`n"
+
+    $uninstallBranchSearch = @'
+    ${Else}
+      ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
+      ReadRegStr $R1 SHCTX "${UNINSTKEY}" "UninstallString"
+      ${IfThen} $UpdateMode = 1 ${|} StrCpy $R1 "$R1 /UPDATE" ${|} ; append /UPDATE
+      ${IfThen} $PassiveMode = 1 ${|} StrCpy $R1 "$R1 /P" ${|} ; append /P
+      StrCpy $R1 "$R1 _?=$4" ; append uninstall directory
+      ExecWait '$R1' $0
+    ${EndIf}
+'@
+    $uninstallBranchReplacement = @'
+    ${Else}
+      ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
+      ReadRegStr $R1 SHCTX "${UNINSTKEY}" "UninstallString"
+
+      ; BUG-20260905-06: tolerate a stale/malformed previous-uninstall entry.
+      ; $R3 = UninstallString with surrounding quotes stripped ($R1 keeps the
+      ; registered form for the ExecWait command below).
+      StrCpy $R3 $R1
+      StrCpy $R2 $R3 1
+      ${If} $R2 == "$\""
+        StrCpy $R3 $R3 "" 1
+        StrCpy $R3 $R3 -1
+      ${EndIf}
+
+      ; When the previous install dir is unknown, derive it from the registered
+      ; uninstaller path instead of appending an empty _?= which makes the old
+      ; uninstaller delete nothing.
+      ${If} $4 == ""
+      ${AndIf} $R3 != ""
+        ${GetParent} "$R3" $4
+      ${EndIf}
+
+      ; If the registered uninstaller no longer exists, drop the stale keys and
+      ; continue installing without uninstalling; ExecWait would otherwise fail
+      ; with "unable to uninstall" and hard-block the upgrade.
+      ${IfNot} ${FileExists} "$R3"
+        DetailPrint "Previous uninstaller not found ($R3); cleaning stale uninstall entries and installing without uninstalling."
+        DeleteRegKey SHCTX "${UNINSTKEY}"
+        DeleteRegKey SHCTX "${MANUPRODUCTKEY}"
+        Goto reinst_uninstall_skipped
+      ${EndIf}
+
+      ${IfThen} $UpdateMode = 1 ${|} StrCpy $R1 "$R1 /UPDATE" ${|} ; append /UPDATE
+      ${IfThen} $PassiveMode = 1 ${|} StrCpy $R1 "$R1 /P" ${|} ; append /P
+      StrCpy $R1 "$R1 _?=$4" ; append uninstall directory
+      ExecWait '$R1' $0
+    ${EndIf}
+'@
+
+    $failureMessageSearch = @'
+      ; Other erros? show generic error message and return to select un/reinstall page
+      MessageBox MB_ICONEXCLAMATION "$(unableToUninstall)"
+      Abort
+    ${EndIf}
+  reinst_done:
+'@
+    $failureMessageReplacement = @'
+      ; Other erros? show generic error message and return to select un/reinstall page
+      ; BUG-20260905-06: actionable guidance instead of the bare unableToUninstall message
+      ${If} $LANGUAGE == 2052
+        MessageBox MB_ICONEXCLAMATION "无法自动卸载旧版本。$\r$\n$\r$\n请先关闭正在运行的 ${PRODUCTNAME}，点击「上一步」重试；或返回后改选「请勿卸载」直接覆盖安装；也可手动卸载旧版后重新运行本安装包。"
+      ${Else}
+        MessageBox MB_ICONEXCLAMATION "Unable to uninstall the previous version.$\r$\n$\r$\nClose any running ${PRODUCTNAME}, click Back and retry; or go back, choose not to uninstall and install over it; or uninstall the old version manually and run this installer again."
+      ${EndIf}
+      Abort
+    ${EndIf}
+
+  reinst_uninstall_skipped:
+  reinst_done:
+'@
+
+    $patches = @(
+        @{ Description = "dangling uninstaller guard"; Search = $uninstallBranchSearch; Replacement = $uninstallBranchReplacement },
+        @{ Description = "actionable failure message"; Search = $failureMessageSearch; Replacement = $failureMessageReplacement }
+    )
+
+    foreach ($patch in $patches) {
+        # Normalize line endings on both sides: the .ps1 file may be CRLF while the
+        # cloned template is LF, and here-string literals inherit the script's endings.
+        $search = $patch.Search -replace "`r`n", "`n"
+        $replacement = $patch.Replacement -replace "`r`n", "`n"
+        $matchCount = [regex]::Matches($content, [regex]::Escape($search)).Count
+        if ($matchCount -ne 1) {
+            $firstLine = ($search -split "`n")[0]
+            throw "installer.nsi patch '$($patch.Description)' expected exactly 1 match but found $matchCount (content=$($content.Length) chars, search=$($search.Length) chars, firstLineIndex=$($content.IndexOf($firstLine))). The pyappify template changed; update the embedded patch text."
+        }
+        $content = $content.Replace($search, $replacement)
+    }
+
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($nsiPath, ($content -replace "`n", "`r`n"), $utf8NoBom)
+    Write-Host "Patched installer.nsi template for stale uninstaller tolerance (BUG-20260905-06)."
 }
 
 function Assert-UnderWorkspace {
@@ -180,6 +297,8 @@ $appService = $appService.Replace(
     "    check_running_on_start(&app_handle, &app_name, &working_dir).await?;"
 )
 Set-Content -LiteralPath $appServicePath -Value $appService -Encoding UTF8
+
+Update-InstallerNsiTemplate -BuildDirPath $buildPath
 
 pnpm install --dir $buildPath
 if ($SkipBuild) {
