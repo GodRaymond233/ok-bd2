@@ -24,7 +24,7 @@ def parse_launcher_version(version) -> tuple[int, ...] | None:
     """解析启动器版本号为全数字元组；无法解析（如开发环境未注入）时返回 None。"""
     if not isinstance(version, str):
         return None
-    parts = version.lstrip("vV").split(".")
+    parts = version.lstrip("v").split(".")
     if not parts or not all(part.isdigit() for part in parts):
         return None
     return tuple(int(part) for part in parts)
