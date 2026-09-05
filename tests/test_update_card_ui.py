@@ -57,11 +57,20 @@ class UpdateCardUiCompatTest(unittest.TestCase):
         )
         self.assertTrue(launcher_supports_update_check("1.2.3"))
 
-    def test_install_sets_status_label_minimum_width_once(self):
+    def test_install_keeps_short_status_at_natural_width(self):
         card = self.make_card("1.2.3")
-        self.assertEqual(UPDATE_CARD_STATUS_MIN_WIDTH, card.status_label.minimumWidth())
+        self.assertEqual(0, card.status_label.minimumWidth())
         install_update_card_ui()
         self.assertTrue(getattr(UpdateCard, PATCH_MARKER, False))
+
+    def test_set_status_widens_long_text_and_releases_short_text(self):
+        card = self.make_card("1.2.3")
+        card.show()
+        card._set_status("没有可用更新。")
+        self.assertEqual(0, card.status_label.minimumWidth())
+        long_message = "检查更新失败: something went wrong with a very long english detail"
+        card._set_status(long_message, error=True)
+        self.assertEqual(UPDATE_CARD_STATUS_MIN_WIDTH, card.status_label.minimumWidth())
 
     def test_check_for_updates_intercepts_old_launcher_with_guidance(self):
         card = self.make_card("1.1.9")
@@ -69,6 +78,7 @@ class UpdateCardUiCompatTest(unittest.TestCase):
         card.check_for_updates()
         self.assertIn("启动器版本 1.1.9 过旧", card.status_label.text())
         self.assertIn("Launcher 1.1.9 is too old", card.status_label.text())
+        self.assertEqual(UPDATE_CARD_STATUS_MIN_WIDTH, card.status_label.minimumWidth())
         self.assertTrue(card.download_button.isVisible())
 
     def test_check_for_updates_without_launcher_version_uses_upstream_path(self):
