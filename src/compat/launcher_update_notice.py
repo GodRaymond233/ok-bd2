@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QUrl, QTimer
+from PySide6.QtCore import QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QMessageBox
 

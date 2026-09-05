@@ -3,12 +3,12 @@ import re
 import unittest
 from unittest.mock import Mock, patch
 
+from src.compat.launcher_update_notice import launcher_download_url, launcher_requires_reinstall
 from src.compat.starter_launch import (
     starter_launch_arguments,
     starter_launch_uri,
     wrap_starter_execute,
 )
-from src.compat.launcher_update_notice import launcher_download_url, launcher_requires_reinstall
 from src.config import config
 
 
