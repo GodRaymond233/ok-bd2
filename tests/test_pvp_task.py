@@ -50,9 +50,11 @@ from src.tasks.PVPTask import (
     QUICK_SWITCH_PAGE_PATTERNS,
     REFERENCE_HEIGHT,
     REFERENCE_WIDTH,
+    TEMPLATE_DIR,
     PVPTask,
 )
 from src.tasks.SquareGoddessTask import SquareGoddessTask
+from src.utils import task_vision
 from src.utils.cartridge_quick_switch import (
     BATTLE_GAMEPLAY_CATEGORY_HIGHLIGHT_REGION,
     BATTLE_GAMEPLAY_CATEGORY_LABEL,
@@ -1090,7 +1092,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         self.assertEqual(0.05, GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO)
 
     def test_pvp_hub_uses_1920_roi_and_calibrated_template_scale(self):
-        self.assertEqual((793, 39, 340, 35), PVP_MEDALS_TEMPLATE.roi)
+        self.assertEqual((793, 29, 340, 55), PVP_MEDALS_TEMPLATE.roi)
         self.assertIsNone(PVP_MEDALS_TEMPLATE.reference_scale)
         self.assertEqual(0.88, PVP_MEDALS_TEMPLATE.min_pixel_score)
         self.assertEqual(
@@ -1103,8 +1105,8 @@ class PVPTaskHelperTest(unittest.TestCase):
 
         frame = np.zeros((1078, 1918, 3), dtype=np.uint8)
         left, top, crop = PVPTask._roi_frame(frame, PVP_MEDALS_TEMPLATE.roi)
-        self.assertEqual((792, 39), (left, top))
-        self.assertEqual((35, 340, 3), crop.shape)
+        self.assertEqual((792, 29), (left, top))
+        self.assertEqual((55, 340, 3), crop.shape)
 
     def test_pvp_assets_use_image_folder(self):
         template_root = Path("recognition-assets/template-assets")
@@ -2365,6 +2367,27 @@ class PVPTaskHelperTest(unittest.TestCase):
         self.assertEqual(
             [((1495, 950, 1920, 1080), {"after_sleep": 1.0})],
             clicks,
+        )
+
+
+class PVPHubMedalsFixtureTest(unittest.TestCase):
+    """BUG-20260905-08（RPT-20260905-195025）：实机箱庭顶栏整体上移约 4px，
+    旧 ROI 上边界零余量致勋章模板峰值 0.726<0.78、箱庭确认 30 秒超时。
+    夹具为该上报诊断帧，匹配路径与线上完全一致（含 ROI 与像素门禁）。"""
+
+    def test_shifted_top_bar_still_passes_medals_spec(self):
+        frame = cv2.imread(
+            str(Path(__file__).parent / "fixtures" / "pvp" / "pvp_hub_top_bar_shifted_fhd.png"),
+            cv2.IMREAD_COLOR,
+        )
+        self.assertIsNotNone(frame)
+        self.assertEqual((REFERENCE_HEIGHT, REFERENCE_WIDTH), frame.shape[:2])
+
+        result = task_vision.match_template(frame, PVP_MEDALS_TEMPLATE, {}, TEMPLATE_DIR)
+        self.assertTrue(
+            task_vision.passes_match(result, PVP_MEDALS_TEMPLATE, {}),
+            f"顶栏上移后应仍识别箱庭勋章图标，得到 score={result.score:.3f} "
+            f"pixel={result.pixel_score:.3f}",
         )
 
 

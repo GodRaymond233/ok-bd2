@@ -1783,7 +1783,10 @@ PVP_MEDALS_TEMPLATE = TemplateSpec(
     file_name="image/pvp-medals.png",
     threshold_key="PVP 箱庭阈值",
     default_threshold=0.78,
-    roi=(793, 39, 340, 35),
+    # RPT-20260905-195025：实机箱庭顶栏比校准位置整体上移约 4px，旧 ROI
+    # 上边界正卡在图标顶缘（零余量）致峰值 0.726<0.78 确认超时；上下各放
+    # 10px 余量后同帧 0.962/pixel 0.936 通过。
+    roi=(793, 29, 340, 55),
     scale_ratios=(0.944, 0.96, 0.976, 1.0, 1.04),
     min_pixel_score=0.88,
 )
