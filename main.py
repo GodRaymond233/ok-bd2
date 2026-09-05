@@ -13,6 +13,12 @@ if __name__ == "__main__":
     ) as _crash_log:
         faulthandler.enable(file=_crash_log, all_threads=True)
 
+        # 「登记在文件缺」的损坏安装 pip 永远按 already satisfied 跳过
+        # （BUG-20260905-07），进框架 import 前先校验核心依赖，缺失时强制重装。
+        from src.compat.dependency_guard import ensure_core_dependencies
+
+        ensure_core_dependencies()
+
         import ok
 
         from src.config import config
