@@ -9,6 +9,7 @@ from ok.util.GlobalConfig import create_basic_options
 
 from src import GAME_EXE, HWND_CLASS
 from src.compat.main_window_geometry import install_main_window_geometry_debounce
+from src.compat.launcher_update_notice import install_launcher_update_notice
 from src.compat.starter_guard import enable_starter_launch_guard
 from src.compat.starter_launch import enable_starter_launch_uri
 from src.compat.update_card_ui import install_update_card_ui
@@ -40,6 +41,7 @@ enable_windows_10_wgc()
 enable_starter_launch_uri()
 enable_starter_launch_guard()
 install_main_window_geometry_debounce()
+install_launcher_update_notice()
 install_responsive_task_config_ui()
 install_quest_ui()
 install_update_card_ui()

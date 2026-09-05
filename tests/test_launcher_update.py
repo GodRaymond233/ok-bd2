@@ -8,6 +8,7 @@ from src.compat.starter_launch import (
     starter_launch_uri,
     wrap_starter_execute,
 )
+from src.compat.launcher_update_notice import launcher_download_url, launcher_requires_reinstall
 from src.config import config
 
 
@@ -126,6 +127,17 @@ class LauncherUpdateConfigTest(unittest.TestCase):
         self.assertRegex(
             config["update_pyappify"]["sha256"],
             re.compile(r"^[0-9a-f]{64}$"),
+        )
+
+    def test_old_launcher_requires_reinstall_notice(self):
+        self.assertTrue(launcher_requires_reinstall("1.1.9"))
+        self.assertFalse(launcher_requires_reinstall("1.2.3"))
+        self.assertFalse(launcher_requires_reinstall(None))
+
+    def test_launcher_notice_uses_default_download_link(self):
+        self.assertEqual(
+            "https://github.com/GodRaymond233/ok-bd2/releases/latest",
+            launcher_download_url(config),
         )
 
 
