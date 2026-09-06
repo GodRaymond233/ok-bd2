@@ -520,6 +520,61 @@ class ProgressTest(unittest.TestCase):
             self.assertEqual(0, store.pending_count("吸收"))
             self.assertEqual((2, 21), store.state.observed_counts["吸收"])
 
+    def test_reconcile_settles_record_covered_by_snapshot_taken_while_armed(self):
+        """BUG-20260906-02 回归：快照在记录尚无结算资格时先持久化（点击后被
+        判定失败、用户停止或崩溃打断），记录转挂账后等额读数必须按覆盖结算，
+        否则该技能被守卫拒绝点击直到次日重置。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = ProgressStore(
+                Path(temp_dir) / "progress.json",
+                lambda: datetime(2026, 8, 10, 12, tzinfo=UTC_PLUS_8),
+            )
+            store.load()
+            store.arm_action("Q_sp2", CollectionMapRole.MAIN_AREA, "吸收", baseline=(0, 21))
+            store.mark_action_clicked("Q_sp2", CollectionMapRole.MAIN_AREA, "吸收")
+            # 点击后、判定前的稳定读数：记录仍为 CLICKED，结不清但快照已持久化。
+            self.assertEqual(0, store.reconcile_pending("吸收", (1, 21)))
+            self.assertEqual((1, 21), store.state.observed_counts["吸收"])
+            store.mark_action_local_done("Q_sp2", CollectionMapRole.MAIN_AREA, "吸收", pending=True)
+            # 恢复后的等额稳定读数按覆盖结算，解除死锁。
+            self.assertEqual(1, store.reconcile_pending("吸收", (1, 21)))
+            self.assertEqual(0, store.pending_count("吸收"))
+            record = store.get_action_record("Q_sp2", CollectionMapRole.MAIN_AREA, "吸收")
+            self.assertEqual(CollectionActionState.SETTLED.value, record["state"])
+            self.assertFalse(record["pending"])
+            self.assertFalse(record["reservation"])
+            self.assertEqual([1, 21], record["observed"])
+            # 结算幂等。
+            self.assertEqual(0, store.reconcile_pending("吸收", (1, 21)))
+            self.assertEqual((1, 21), store.state.observed_counts["吸收"])
+
+    def test_reconcile_coverage_skips_record_already_offered_the_snapshot(self):
+        """覆盖结算只针对快照持久化时尚无结算资格的记录；已按增量获得过
+        机会的挂账不得被等额快照重复入账。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = ProgressStore(
+                Path(temp_dir) / "progress.json",
+                lambda: datetime(2026, 8, 10, 12, tzinfo=UTC_PLUS_8),
+            )
+            store.load()
+            for role in (
+                CollectionMapRole.MAIN_AREA,
+                CollectionMapRole.BATTLE_AREA_1,
+            ):
+                store.arm_action("Q_sp1", role, "吸收", baseline=(0, 21))
+                store.mark_action_local_done("Q_sp1", role, "吸收", pending=True)
+
+            self.assertEqual(1, store.reconcile_pending("吸收", (1, 21)))
+            self.assertEqual(1, store.pending_count("吸收"))
+            # 未发生新消耗：覆盖结算不得把第二条挂账一并结清。
+            self.assertEqual(0, store.reconcile_pending("吸收", (1, 21)))
+            self.assertEqual(1, store.pending_count("吸收"))
+            self.assertEqual(1, store.reconcile_pending("吸收", (2, 21)))
+            self.assertEqual(0, store.pending_count("吸收"))
+            self.assertEqual((2, 21), store.state.observed_counts["吸收"])
+
     def test_schema_four_sanitizes_action_keys_and_quarantines_stale_records(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "progress.json"

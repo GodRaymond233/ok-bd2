@@ -824,6 +824,15 @@ class ProgressStore:
         Invalid, bare, wrong-denominator, stale/lower snapshots are ignored.
         Equal snapshots are accepted only when they are at least the local
         lower bound, making repeated reconciliation idempotent.
+
+        A pending record whose baseline sits below the previously trusted
+        snapshot is settled from coverage when that snapshot never saw the
+        record eligible: the snapshot may have been persisted from a stable
+        read taken right after the click while the record was still
+        ARMED/CLICKED (verdict failure, user stop or crash), and from then
+        on no snapshot can ever produce a fresh positive delta for it.
+        Records the snapshot already offered a delta chance stay on the
+        delta path, keeping one consumed unit per settlement.
         """
 
         state = self._require_state()
@@ -919,6 +928,45 @@ class ProgressStore:
             record["observed"] = [used, observed_limit]
             settled += 1
             positive_delta -= 1
+        if update_observed and (previous is None or used > previous[0]):
+            # Records eligible here faced their delta chance against this
+            # snapshot base; remember the base so the coverage pass below
+            # never double-credits one consumed unit across two records.
+            for _key, record in pending_records:
+                if str(record.get("state", "")) in {
+                    CollectionActionState.PENDING.value,
+                    CollectionActionState.LOCAL_DONE.value,
+                    CollectionActionState.PREEXISTING_USED.value,
+                } and bool(record.get("local_done", False)):
+                    record["snapshot_seen"] = int(used)
+        if previous is not None:
+            for _key, record in pending_records:
+                if str(record.get("state", "")) not in {
+                    CollectionActionState.PENDING.value,
+                    CollectionActionState.LOCAL_DONE.value,
+                    CollectionActionState.PREEXISTING_USED.value,
+                } or not bool(record.get("local_done", False)):
+                    continue
+                seen = record.get("snapshot_seen")
+                try:
+                    if seen is not None and int(seen) >= previous[0]:
+                        continue
+                except (TypeError, ValueError):
+                    continue
+                baseline = record.get("baseline")
+                if not (isinstance(baseline, (list, tuple)) and baseline):
+                    continue
+                try:
+                    if int(baseline[0]) >= previous[0]:
+                        continue
+                except (TypeError, ValueError):
+                    continue
+                record["state"] = CollectionActionState.SETTLED.value
+                record["status"] = CollectionActionState.SETTLED.value
+                record["pending"] = False
+                record["reservation"] = False
+                record["observed"] = [used, observed_limit]
+                settled += 1
         self.save()
         return settled
 
