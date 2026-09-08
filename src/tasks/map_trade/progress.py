@@ -909,9 +909,73 @@ class ProgressStore:
             if used >= observed_limit:
                 state.depleted_today = True
         settled = 0
+        if previous is not None:
+            for _key, record in pending_records:
+                if str(record.get("state", "")) not in {
+                    CollectionActionState.PENDING.value,
+                    CollectionActionState.LOCAL_DONE.value,
+                    CollectionActionState.PREEXISTING_USED.value,
+                } or not bool(record.get("local_done", False)):
+                    continue
+                seen = record.get("snapshot_seen")
+                try:
+                    if seen is not None and int(seen) >= previous[0]:
+                        continue
+                except (TypeError, ValueError):
+                    continue
+                baseline = record.get("baseline")
+                if not (isinstance(baseline, (list, tuple)) and baseline):
+                    continue
+                try:
+                    baseline_used = int(baseline[0])
+                    if baseline_used >= previous[0]:
+                        continue
+                except (TypeError, ValueError):
+                    continue
+                # Fit each settlement to a distinct consumed unit between its
+                # baseline and observation. Earliest deadlines first preserve
+                # capacity for records with later baselines.
+                claims = [(previous[0], baseline_used)]
+                for other in state.action_records.values():
+                    if (
+                        other.get("action") != action_name
+                        or other.get("state") != CollectionActionState.SETTLED.value
+                    ):
+                        continue
+                    evidence = other.get("observed")
+                    origin = other.get("baseline")
+                    if isinstance(evidence, (list, tuple)) and len(evidence) == 2:
+                        try:
+                            start = (
+                                int(origin[0])
+                                if isinstance(origin, (list, tuple)) and origin else 0
+                            )
+                            claims.append((int(evidence[0]), start))
+                        except (TypeError, ValueError, IndexError):
+                            continue
+                occupied = set()
+                for end, start in sorted(claims):
+                    unit = next(
+                        (value for value in range(max(0, start) + 1, end + 1)
+                         if value not in occupied),
+                        None,
+                    )
+                    if unit is None:
+                        break
+                    occupied.add(unit)
+                if len(occupied) != len(claims):
+                    continue
+                record["state"] = CollectionActionState.SETTLED.value
+                record["status"] = CollectionActionState.SETTLED.value
+                record["pending"] = False
+                record["reservation"] = False
+                record["observed"] = list(previous)
+                settled += 1
         for _key, record in pending_records:
             if positive_delta <= 0:
                 break
+            if record.get("state") == CollectionActionState.SETTLED.value:
+                continue
             baseline = record.get("baseline")
             if isinstance(baseline, (list, tuple)) and baseline:
                 try:
@@ -939,34 +1003,6 @@ class ProgressStore:
                     CollectionActionState.PREEXISTING_USED.value,
                 } and bool(record.get("local_done", False)):
                     record["snapshot_seen"] = int(used)
-        if previous is not None:
-            for _key, record in pending_records:
-                if str(record.get("state", "")) not in {
-                    CollectionActionState.PENDING.value,
-                    CollectionActionState.LOCAL_DONE.value,
-                    CollectionActionState.PREEXISTING_USED.value,
-                } or not bool(record.get("local_done", False)):
-                    continue
-                seen = record.get("snapshot_seen")
-                try:
-                    if seen is not None and int(seen) >= previous[0]:
-                        continue
-                except (TypeError, ValueError):
-                    continue
-                baseline = record.get("baseline")
-                if not (isinstance(baseline, (list, tuple)) and baseline):
-                    continue
-                try:
-                    if int(baseline[0]) >= previous[0]:
-                        continue
-                except (TypeError, ValueError):
-                    continue
-                record["state"] = CollectionActionState.SETTLED.value
-                record["status"] = CollectionActionState.SETTLED.value
-                record["pending"] = False
-                record["reservation"] = False
-                record["observed"] = [used, observed_limit]
-                settled += 1
         self.save()
         return settled
 

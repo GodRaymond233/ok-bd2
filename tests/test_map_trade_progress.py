@@ -575,6 +575,43 @@ class ProgressTest(unittest.TestCase):
             self.assertEqual(0, store.pending_count("吸收"))
             self.assertEqual((2, 21), store.state.observed_counts["吸收"])
 
+    def test_delayed_pending_records_share_snapshot_budget_after_reload(self):
+        for already_pending in (False, True):
+            for next_used in (1, 2):
+                with self.subTest(already_pending=already_pending, next_used=next_used):
+                    with tempfile.TemporaryDirectory() as temp_dir:
+                        path = Path(temp_dir) / "progress.json"
+                        def now():
+                            return datetime(2026, 8, 10, 12, tzinfo=UTC_PLUS_8)
+                        store = ProgressStore(path, now)
+                        store.load()
+                        roles = (
+                            CollectionMapRole.MAIN_AREA,
+                            CollectionMapRole.BATTLE_AREA_1,
+                            CollectionMapRole.BATTLE_AREA_2,
+                        )
+                        for role in roles:
+                            store.arm_action("Q_sp1", role, "吸收", baseline=(0, 21))
+                            store.mark_action_clicked("Q_sp1", role, "吸收")
+                        if already_pending:
+                            store.mark_action_local_done("Q_sp1", roles[0], "吸收")
+                        self.assertEqual(
+                            int(already_pending), store.reconcile_pending("吸收", (1, 21))
+                        )
+                        for role in roles:
+                            store.mark_action_local_done("Q_sp1", role, "吸收")
+                        store = ProgressStore(path, now)
+                        store.load()
+                        self.assertEqual(
+                            next_used - int(already_pending),
+                            store.reconcile_pending("吸收", (next_used, 21)),
+                        )
+                        self.assertEqual(3 - next_used, store.pending_count("吸收"))
+                        store = ProgressStore(path, now)
+                        store.load()
+                        self.assertEqual(0, store.reconcile_pending("吸收", (next_used, 21)))
+                        self.assertEqual(3 - next_used, store.pending_count("吸收"))
+
     def test_schema_four_sanitizes_action_keys_and_quarantines_stale_records(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "progress.json"
