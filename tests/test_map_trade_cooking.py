@@ -182,7 +182,7 @@ class CookingFlowTest(unittest.TestCase):
         alerts = [
             message
             for kind, message in trader.task.logs
-            if kind == "warning" and "料理警报" in message
+            if kind == "warning" and "当前未识别到食谱" in message
         ]
         self.assertEqual(1, len(alerts))
         self.assertIn(first, alerts[0])

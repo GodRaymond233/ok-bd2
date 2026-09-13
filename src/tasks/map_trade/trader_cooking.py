@@ -259,9 +259,7 @@ class CookingFlowMixin:
                 )
             if absent:
                 self.task.log_warning(
-                    "料理警报：以下配方在料理列表中未识别到，已跳过："
-                    f"{'、'.join(absent)}。请确认账号是否拥有该食谱，"
-                    "或游戏外观是否变更。",
+                    f"当前未识别到食谱：{'、'.join(absent)}",
                     notify=True,
                 )
             if cooked:
