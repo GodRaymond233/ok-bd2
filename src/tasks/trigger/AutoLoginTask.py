@@ -111,6 +111,12 @@ class AutoLoginTask(BaseBD2Task):
                 "小屋按钮点击 Y 百分比": 14.3519,
                 "公告清理点击 X 百分比": 8.8020833333,
                 "公告清理点击 Y 百分比": 56.9444444444,
+                # 游戏已登录但不在主界面（如格鲁菲餐厅）时，自动返回主页。
+                # 纯后台 PostMessage 点击/按键对该 Unity 游戏无效（2026-09-05 实测），
+                # 必须走正式 operate_click（移动真实光标）或前台按键。
+                "游戏内返回主页尝试间隔秒数": 4.0,
+                "游戏内返回主页最大尝试次数": 3,
+                "返回主页后加载等待秒数": 6.0,
             }
         )
         # 点击位置是脚本作者标定的固定值，不属于日常可调项；值保留、行隐藏。
@@ -127,6 +133,11 @@ class AutoLoginTask(BaseBD2Task):
         self._last_clear_click_at = 0.0
         self._last_confirm_click_at = 0.0
         self._last_download_click_at = 0.0
+        self._esc_home_attempts = 0
+        self._last_esc_home_at = 0.0
+        self._esc_home_wait_since: float | None = None
+        self._esc_hold_until = 0.0
+        self._esc_home_user_notified_at = 0.0
         self._finished = False
         self._missing_template_names: set[str] = set()
         self._match_error_names: set[str] = set()
@@ -273,6 +284,8 @@ class AutoLoginTask(BaseBD2Task):
             self._set_stage("等待更新或登录页")
             self._set_action("Confirm 已处理，等待更新下载提示或 TOUCH TO START。")
         else:
+            if self._maybe_return_home(frame):
+                return False
             self._state = "waiting"
             self._set_stage("等待登录页")
             self._set_action("等待 BrownDustX、Confirm、更新下载提示或 TOUCH TO START。")
@@ -811,6 +824,74 @@ class AutoLoginTask(BaseBD2Task):
         self.info_set("BrownDustX Confirm 点击", f"{x},{y}")
         self.operate_click(x, y, after_sleep=after_sleep)
 
+    def _maybe_return_home(self, frame) -> bool:
+        """既非登录页也非主页（如格鲁菲餐厅）时自动返回主页。
+
+        走到这里时登录页信号已排除、主页未确认。只通过
+        BaseBD2Task.auto_return_main_home() 在正面识别到房子图像或左上角“返回”时才点击；
+        OCR 失败/无证据则安全停止。不使用抢前台/后台 ESC（评审意见1）。
+        """
+        now = monotonic()
+        attempts = int(getattr(self, "_esc_home_attempts", 0))
+        interval = float(self.config.get("游戏内返回主页尝试间隔秒数", 4.0))
+        max_attempts = int(self.config.get("游戏内返回主页最大尝试次数", 3))
+        load_wait = float(self.config.get("返回主页后加载等待秒数", 6.0))
+        grace_seconds = float(self.config.get("主页 UI 等待宽限秒数", 15.0))
+
+        if getattr(self, "_esc_home_wait_since", None) is None:
+            self._esc_home_wait_since = now
+        wait_since = self._esc_home_wait_since
+
+        # 宽限期内保持“等待登录页”，避免把加载/转场误判成非主页而误操作。
+        if attempts == 0 and now - wait_since < grace_seconds:
+            return False
+
+        self._state = "waiting"
+
+        if attempts >= max_attempts:
+            if now - getattr(self, "_esc_home_user_notified_at", 0.0) >= 60.0:
+                self._esc_home_user_notified_at = now
+                self._set_stage("等待手动返回主页")
+                self._set_action("多次自动返回主页失败，请在游戏内手动返回主界面。")
+                self.log_info(
+                    "自动登录：多次自动返回主页失败，请手动返回主界面。",
+                    notify=True,
+                )
+            return True
+
+        # 刚操作过：游戏可能正在转场加载，先等加载完成，别重复操作。
+        if now < getattr(self, "_esc_hold_until", 0.0):
+            self._set_stage("返回主页")
+            self._set_action("已操作返回主页，等待游戏加载完成后确认主页。")
+            return True
+
+        loading = self._match(frame, LOADING_TEMPLATE)
+        if self._passes(loading, LOADING_TEMPLATE):
+            self._esc_hold_until = max(
+                getattr(self, "_esc_hold_until", 0.0),
+                now + 1.0,
+            )
+            self._set_stage("返回主页")
+            self._set_action("检测到加载画面，等待加载完成。")
+            return True
+
+        if now - getattr(self, "_last_esc_home_at", 0.0) < interval:
+            return True
+
+        attempt_no = attempts + 1
+        self._esc_home_attempts = attempt_no
+        self._last_esc_home_at = now
+        self._esc_hold_until = now + load_wait
+        self._set_stage("返回主页")
+        self._set_action(f"自动返回主页（第 {attempt_no}/{max_attempts} 次）。")
+        self.log_info(
+            "自动登录：检测到游戏内非主页界面，尝试自动返回主页"
+            f"（第 {attempt_no}/{max_attempts} 次）。",
+            notify=attempt_no == 1,
+        )
+        self.auto_return_main_home(notify_failure=False)
+        return True
+
     def _reset_login_state(self, action: str = "重新进入自动登录识别。"):
         self._state = "waiting"
         self._home_bright_since = None
@@ -819,6 +900,11 @@ class AutoLoginTask(BaseBD2Task):
         self._last_clear_click_at = 0.0
         self._last_confirm_click_at = 0.0
         self._last_download_click_at = 0.0
+        self._esc_home_attempts = 0
+        self._last_esc_home_at = 0.0
+        self._esc_home_wait_since = None
+        self._esc_hold_until = 0.0
+        self._esc_home_user_notified_at = 0.0
         self._finished = False
         self._set_stage("等待登录页")
         self._set_action(action)
