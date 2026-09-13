@@ -828,7 +828,7 @@ class AutoLoginTask(BaseBD2Task):
         """既非登录页也非主页（如格鲁菲餐厅）时自动返回主页。
 
         走到这里时登录页信号已排除、主页未确认。只通过
-        BaseBD2Task.auto_return_main_home() 在正面识别到 H/房子或左上角“返回”时才点击；
+        BaseBD2Task.auto_return_main_home() 在正面识别到房子图像或左上角“返回”时才点击；
         OCR 失败/无证据则安全停止。不使用抢前台/后台 ESC（评审意见1）。
         """
         now = monotonic()
@@ -889,7 +889,7 @@ class AutoLoginTask(BaseBD2Task):
             f"（第 {attempt_no}/{max_attempts} 次）。",
             notify=attempt_no == 1,
         )
-        self.auto_return_main_home()
+        self.auto_return_main_home(notify_failure=False)
         return True
 
     def _reset_login_state(self, action: str = "重新进入自动登录识别。"):

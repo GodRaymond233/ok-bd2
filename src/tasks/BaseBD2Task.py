@@ -273,15 +273,31 @@ class BaseBD2Task(BaseTask):
             self.log_warning(f"{name}：点击返回主页按钮失败：{exc}")
             return False
 
-    def auto_return_main_home(self, max_steps: int | None = None) -> bool:
+    def auto_return_main_home(
+        self,
+        max_steps: int | None = None,
+        *,
+        notify_failure: bool = True,
+    ) -> bool:
         """自动返回主页面（仅主页明确 / 控件正面命中时才动作）。
 
         规则：
         - 主页判定用 OCR 三要素（抽抽乐 + 左列任一入口）；已确认主页直接成功。
-        - 非主页时：只在上、 右上角识别到 H/房子提示，或左上角 ROI 命中“返回”模板时才点击；
-          OCR 失败 / 页面无法确认 / 无正面控件 → 安全停止，绝不盲点（避免误点主页“返回战场”）。
-        - 只在发生实际点击动作后小等待转场，不做全局固定等待。
+        - 非主页时：优先用房子按钮图像识别，OCR ``H`` 仅作辅助；也可命中左上角
+          “返回”模板。证据不足时安全停止，绝不盲点。
+        - 重试过程只记普通日志；失败后进入冷却，避免连续弹系统提示。
         """
+        now = monotonic()
+        cooldown_until = float(
+            getattr(self, "_auto_return_home_cooldown_until", 0.0)
+        )
+        if now < cooldown_until:
+            remaining = max(0.0, cooldown_until - now)
+            message = f"自动返回主页：失败冷却中，{remaining:.1f} 秒后重试。"
+            self.info_set("自动返回主页", message)
+            self.log_info(message)
+            return False
+
         step_limit = (
             int(self.config.get("自动返回主页最大步数", 6))
             if max_steps is None
@@ -289,45 +305,77 @@ class BaseBD2Task(BaseTask):
         )
         settle = float(self.config.get("返回主页步间等待秒数", 2.5))
         acted = False
+        failure_reason = "未能确认主页或返回控件。"
+
         for step in range(1, step_limit + 1):
             try:
                 frame = self.capture_frame()
             except Exception as exc:
-                self.log_warning(f"自动返回主页：截图失败：{exc}")
-                return False
+                failure_reason = f"截图失败：{exc}"
+                break
 
             is_home, has_house_hint = self._home_scan(frame)
             if is_home:
+                self._auto_return_home_cooldown_until = 0.0
                 if acted:
                     self.log_info("自动返回主页：已回到主页。")
                 return True
 
             if has_house_hint:
-                # 抽抽乐偶发漏识别会把“主页”误判成非主页；先多帧复核主页，
-                # 任一帧确认主页即停止；复核全为“非主页且 H 仍在”才点房子。
+                # 抽抽乐偶发漏识别会把“主页”误判成非主页；先多帧复核主页。
                 stable = True
                 for _ in range(2):
                     self.sleep(0.4)
                     try:
                         probe_frame = self.capture_frame()
                     except Exception as exc:
-                        self.log_warning(f"自动返回主页：复核截图失败：{exc}")
-                        return False
+                        stable = False
+                        failure_reason = f"复核截图失败：{exc}"
+                        break
                     probe_home, probe_house = self._home_scan(probe_frame)
                     if probe_home:
+                        self._auto_return_home_cooldown_until = 0.0
                         return True
                     if not probe_house:
                         stable = False
+                        failure_reason = "房子按钮信号不稳定，安全停止，不点击。"
                         break
+
                 if not stable:
-                    self.log_warning("自动返回主页：H/房子信号不稳定，安全停止，不点击。")
-                    return False
+                    break
+
+                house_match = self._match_house_button(frame)
+                if house_match is not None:
+                    frame_h, frame_w = frame.shape[:2]
+                    x = (
+                        house_match.position[0] + house_match.size[0] // 2
+                    ) / max(1, frame_w)
+                    y = (
+                        house_match.position[1] + house_match.size[1] // 2
+                    ) / max(1, frame_h)
+                    detail = (
+                        f"房子图像 @({house_match.position[0]},"
+                        f"{house_match.position[1]})"
+                    )
+                else:
+                    x = float(self.config.get("返回主页按钮 X 百分比", 93.75)) / 100.0
+                    y = float(self.config.get("返回主页按钮 Y 百分比", 5.9)) / 100.0
+                    detail = "H OCR 兜底坐标"
+
                 self.log_info(
-                    f"自动返回主页：第 {step} 步多帧复核确认非主页且 H 存在，点房子回主页。"
+                    f"自动返回主页：第 {step} 步多帧复核确认非主页，"
+                    f"点击{detail}。"
                 )
-                x = float(self.config.get("返回主页按钮 X 百分比", 93.75)) / 100.0
-                y = float(self.config.get("返回主页按钮 Y 百分比", 5.9)) / 100.0
-                self.operate_click(x, y, name="自动返回主页-房子", after_sleep=settle)
+                try:
+                    self.operate_click(
+                        x,
+                        y,
+                        name="自动返回主页-房子",
+                        after_sleep=settle,
+                    )
+                except Exception as exc:
+                    failure_reason = f"点击房子按钮失败：{exc}"
+                    break
                 acted = True
                 continue
 
@@ -336,14 +384,87 @@ class BaseBD2Task(BaseTask):
                 acted = True
                 continue
 
-            self.log_warning(
-                "自动返回主页：未确认到主页，也未正面识别到 H/房子或左上角返回，"
-                "安全停止（不盲点）。"
+            failure_reason = (
+                "未确认到主页，也未正面识别到房子按钮或左上角返回控件。"
             )
-            return False
+            break
+        else:
+            failure_reason = f"{step_limit} 步内未回到主页。"
 
-        self.log_warning(f"自动返回主页：{step_limit} 步内未回到主页。")
+        return self._finish_auto_return_failure(
+            failure_reason,
+            notify=notify_failure,
+        )
+
+    def _finish_auto_return_failure(self, reason: str, *, notify: bool) -> bool:
+        cooldown = max(
+            0.0,
+            float(self.config.get("自动返回主页失败冷却秒数", 30.0)),
+        )
+        self._auto_return_home_cooldown_until = monotonic() + cooldown
+        message = f"自动返回主页：{reason}"
+        if cooldown > 0:
+            message += f"（{cooldown:.0f} 秒内不再自动重试）"
+        self.info_set("自动返回主页", message)
+        self.log_warning(message, notify=notify)
         return False
+
+    def _match_house_button(self, frame):
+        """用专门的 1080p 基准模板识别右上角小房子按钮。"""
+        try:
+            from src.utils import task_vision
+            from src.utils.vision_models import TemplateSpec
+        except Exception as exc:
+            self.log_warning(f"自动返回主页：加载房子模板匹配依赖失败：{exc}")
+            return None
+
+        try:
+            threshold = float(self.config.get("返回主页房子模板阈值", 0.85))
+            spec = TemplateSpec(
+                name="return_home_house_button",
+                file_name="return_home_house_button.png",
+                default_threshold=threshold,
+                candidate_threshold=threshold,
+                relative_roi=(0.90, 0.0, 1.0, 0.16),
+                candidate_center_roi=(0.91, 0.0, 1.0, 0.13),
+                scale_ratios=(0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15),
+                min_pixel_score=0.70,
+                min_zncc_score=0.70,
+            )
+            cache = self.__dict__.setdefault("_central_template_cache", {})
+            result = task_vision.match_template(
+                frame,
+                spec,
+                self.config,
+                TEMPLATE_DIR,
+                cache=cache,
+                min_size=4,
+            )
+            if result.score < threshold:
+                self.info_set(
+                    "返回主页房子模板",
+                    f"未命中 {result.score:.3f}/{threshold:.3f}",
+                )
+                return None
+            center_x = result.position[0] + result.size[0] // 2
+            center_y = result.position[1] + result.size[1] // 2
+            self.info_set(
+                "返回主页房子模板",
+                f"{result.score:.3f}/{threshold:.3f} @{center_x},{center_y}",
+            )
+            return result
+        except RuntimeError as exc:
+            missing = self.__dict__.setdefault(
+                "_missing_return_home_templates",
+                set(),
+            )
+            if "return_home_house_button" not in missing:
+                missing.add("return_home_house_button")
+                self.log_warning(f"自动返回主页：房子模板不可用：{exc}")
+            return None
+        except Exception as exc:
+            self.log_warning(f"自动返回主页：房子模板匹配失败：{exc}")
+            return None
 
     def _ocr_boxes(self, frame, name: str):
         try:
@@ -359,29 +480,48 @@ class BaseBD2Task(BaseTask):
             return []
 
     def _home_scan(self, frame) -> tuple[bool, bool]:
-        """OCR 判定主页（抽抽乐 + 左列任一入口）与右上角 H/房子提示。"""
+        """OCR 判定主页，并用房子按钮图像识别非主页返回入口。"""
         frame_h, frame_w = frame.shape[:2]
         tokens: list[str] = []
-        has_house_hint = False
-        for box in self._ocr_boxes(frame, "自动返回主页"):
+        boxes = self._ocr_boxes(frame, "自动返回主页")
+        for box in boxes:
             name = str(getattr(box, "name", "") or "")
-            if not name:
-                continue
-            tokens.append(name)
-            if name == "H":
-                try:
-                    x, y, w, h = int(box.x), int(box.y), int(box.width), int(box.height)
-                except Exception:
-                    continue
-                cx, cy = x + w // 2, y + h // 2
-                if cx / frame_w > 0.7 and cy / frame_h < 0.25:
-                    has_house_hint = True
+            if name:
+                tokens.append(name)
+
         joined = "".join(tokens)
         left_hits = sum(
-            1 for keyword in ("我的小屋", "格鲁TALK", "街机游戏") if keyword in joined
+            1
+            for keyword in ("我的小屋", "格鲁TALK", "街机游戏")
+            if keyword in joined
         )
         is_home = "抽抽乐" in joined and left_hits >= 1
-        return is_home, has_house_hint
+        if is_home:
+            return True, False
+
+        if self._match_house_button(frame) is not None:
+            return False, True
+
+        # 兼容旧 OCR；``H`` 不再是返回主页的硬条件。
+        for box in boxes:
+            name = str(getattr(box, "name", "") or "").strip().upper()
+            if name != "H":
+                continue
+            try:
+                x, y, width, height = (
+                    int(box.x),
+                    int(box.y),
+                    int(box.width),
+                    int(box.height),
+                )
+            except Exception:
+                continue
+            center_x = x + width // 2
+            center_y = y + height // 2
+            if center_x / frame_w > 0.7 and center_y / frame_h < 0.25:
+                return False, True
+
+        return False, False
 
     def _click_top_left_back(self, frame, step: int) -> bool:
         """左上角 ROI + 统一模板匹配“返回”条；命中才点击。"""

@@ -802,7 +802,7 @@ class AutoLoginEscRecoveryTest(unittest.TestCase):
         task = self._task()
         task._esc_home_wait_since = monotonic()  # 宽限期未过
         calls = []
-        task.auto_return_main_home = lambda: calls.append(True)
+        task.auto_return_main_home = lambda **_kwargs: calls.append(True)
 
         self.assertFalse(AutoLoginTask._maybe_return_home(task, self._frame()))
         self.assertEqual([], calls)
@@ -812,7 +812,7 @@ class AutoLoginEscRecoveryTest(unittest.TestCase):
         task = self._task()
         task._esc_home_wait_since = monotonic() - 30.0
         calls = []
-        task.auto_return_main_home = lambda: calls.append(True)
+        task.auto_return_main_home = lambda **_kwargs: calls.append(True)
 
         self.assertTrue(AutoLoginTask._maybe_return_home(task, self._frame()))
         self.assertEqual([True], calls)
@@ -831,7 +831,7 @@ class AutoLoginEscRecoveryTest(unittest.TestCase):
         task._match = lambda *_args, **_kwargs: MatchResult(0.9, (0, 0), (1, 1))
         task._passes = lambda *_args, **_kwargs: True
         calls = []
-        task.auto_return_main_home = lambda: calls.append(True)
+        task.auto_return_main_home = lambda **_kwargs: calls.append(True)
 
         self.assertTrue(AutoLoginTask._maybe_return_home(task, self._frame()))
         self.assertEqual([], calls)
@@ -844,7 +844,7 @@ class AutoLoginEscRecoveryTest(unittest.TestCase):
         task._esc_hold_until = 0.0
         task._last_esc_home_at = 0.0
         calls = []
-        task.auto_return_main_home = lambda: calls.append(True)
+        task.auto_return_main_home = lambda **_kwargs: calls.append(True)
 
         self.assertTrue(AutoLoginTask._maybe_return_home(task, self._frame()))
         self.assertEqual([], calls)
