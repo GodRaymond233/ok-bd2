@@ -81,13 +81,6 @@ COOKING_BACK_POINT = (175 / FHD_1080.width, 50 / FHD_1080.height)
 
 COOKING_RECIPE_TEMPLATE_SCORE = 0.90
 COOKING_RECIPE_PIXEL_SCORE = 0.65
-# 配方身份未命中时的低阈值复扫上限：整帧最佳响应低于该值视为配方确实
-# 不在列表中（账号未拥有），达到该值视为外观或模板异常，仍按失败处理
-# （BUG-20260913-04）。
-COOKING_RECIPE_EVIDENCE_SCAN_SCORE = 0.30
-COOKING_RECIPE_ABSENT_SCAN_MAX = 0.80
-# 快照确认列表时同帧命中的其他配方身份分数；缺省为空表示未经确认。
-COOKING_LIST_MIN_CONFIRMED_RECIPES = 1
 COOKING_START_ENABLED_PIXEL_SCORE = 0.90
 COOKING_START_ENABLED_BRIGHT_RATIO = 0.30
 COOKING_TEXT_CHARACTER_COVERAGE = 0.75
@@ -161,8 +154,8 @@ COOKING_BACK_TEMPLATE = TemplateSpec(
 class CookingRecipeOutcome(str, Enum):
     COOKED = "cooked"
     UNAVAILABLE = "unavailable"
-    # 配方未出现在料理列表（账号未拥有或未解锁）；与材料不足的
-    # UNAVAILABLE 分开记录，便于在汇总中区分说明。
+    # 列表中未识别到该配方：保持原门禁不放宽，直接跳过制作下一个，
+    # 结束时以警报汇总说明（BUG-20260913-04 维护者口径）。
     ABSENT = "absent"
     FAILED = "failed"
 
@@ -171,8 +164,6 @@ class CookingRecipeOutcome(str, Enum):
 class CookingListSnapshot:
     frame: object
     recipe_match: MatchResult
-    # 同帧通过身份门禁的其他配方名；用于配方未命中时确认列表真实。
-    confirmed_recipes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -267,9 +258,11 @@ class CookingFlowMixin:
                     f"{'、'.join(unavailable)}。"
                 )
             if absent:
-                self.task.log_info(
-                    "料理：以下配方未出现在料理列表（账号未拥有或未解锁），"
-                    f"保留为下次重试：{'、'.join(absent)}。"
+                self.task.log_warning(
+                    "料理警报：以下配方在料理列表中未识别到，已跳过："
+                    f"{'、'.join(absent)}。请确认账号是否拥有该食谱，"
+                    "或游戏外观是否变更。",
+                    notify=True,
                 )
             if cooked:
                 self.task.log_info(f"料理：本次已完成 {'、'.join(cooked)}。")
@@ -325,38 +318,15 @@ class CookingFlowMixin:
         spec = COOKING_IDENTITY_SPECS[recipe]
         recipe_match = self.vision.match(list_snapshot.frame, spec)
         if not self.vision.passes(recipe_match, spec):
-            # 失败原帧取证：必须在退出料理页等清理动作之前保存本次
-            # 实际参与识别的帧（BUG-20260913-04）。
-            self._record_recipe_list_evidence(
-                list_snapshot.frame,
-                recipe,
-                spec,
-                recipe_match,
+            # 维护者口径：保持原门禁不放宽，未识别到即跳过并制作下一个，
+            # 不降低阈值、不做复扫，结束时的警报统一说明（BUG-20260913-04）。
+            self.task.log_info(
+                f"料理：一页料理列表中未识别到 {recipe}，跳过并继续后续料理。"
             )
-            scan = self._scan_recipe_evidence(list_snapshot.frame, spec)
-            confirmed = len(list_snapshot.confirmed_recipes)
-            if (
-                confirmed >= COOKING_LIST_MIN_CONFIRMED_RECIPES
-                and scan.score < COOKING_RECIPE_ABSENT_SCAN_MAX
-            ):
-                self.task.log_warning(
-                    f"料理：料理列表未显示 {recipe}（账号未拥有或未解锁），"
-                    f"本轮跳过；同帧确认配方 {confirmed} 个。"
-                )
-                return CookingRecipeOutcome.ABSENT
-            if confirmed < COOKING_LIST_MIN_CONFIRMED_RECIPES:
-                self.task.log_warning(
-                    f"料理：一页料理列表中未识别到 {recipe}，"
-                    "且同帧无其他配方身份确认，按页面异常失败。"
-                )
-            else:
-                self.task.log_warning(
-                    f"料理：{recipe} 存在外观相近候选但身份门禁未通过，"
-                    "按模板或外观异常失败，需人工核对。"
-                )
-            return CookingRecipeOutcome.FAILED
+            return CookingRecipeOutcome.ABSENT
         enabled = self._cooking_card_enabled(list_snapshot.frame, recipe_match)
         if enabled is None:
+            # 亮度状态不明确仍是识别失败：退出前保存实际识别原帧供报告取证。
             self._record_recipe_list_evidence(
                 list_snapshot.frame,
                 recipe,
@@ -432,14 +402,12 @@ class CookingFlowMixin:
     def _cooking_list_snapshot(self, frame=None) -> CookingListSnapshot | None:
         frame = self.vision.capture() if frame is None else frame
         candidates: list[MatchResult] = []
-        confirmed: list[str] = []
-        for recipe_name, spec in COOKING_IDENTITY_SPECS.items():
+        for spec in COOKING_IDENTITY_SPECS.values():
             if not (COOKING_TEMPLATE_DIR / spec.file_name).is_file():
                 continue
             result = self.vision.match(frame, spec)
             if self.vision.passes(result, spec):
                 candidates.append(result)
-                confirmed.append(recipe_name)
         if not candidates:
             return None
         header = self.vision.ocr_text(
@@ -450,22 +418,7 @@ class CookingFlowMixin:
         )
         if "料理" not in normalize_text(self.vision.simplify(header)):
             return None
-        return CookingListSnapshot(
-            frame,
-            max(candidates, key=lambda result: result.score),
-            tuple(confirmed),
-        )
-
-    def _scan_recipe_evidence(self, frame, spec: TemplateSpec) -> MatchResult:
-        """低阈值复扫整帧，区分"配方未显示"与"外观或模板异常"。"""
-        relaxed = replace(
-            spec,
-            threshold=COOKING_RECIPE_EVIDENCE_SCAN_SCORE,
-            minimum_safe_threshold=COOKING_RECIPE_EVIDENCE_SCAN_SCORE,
-            min_pixel_score=None,
-            min_zncc_score=None,
-        )
-        return self.vision.match(frame, relaxed)
+        return CookingListSnapshot(frame, max(candidates, key=lambda result: result.score))
 
     def _record_recipe_list_evidence(
         self,

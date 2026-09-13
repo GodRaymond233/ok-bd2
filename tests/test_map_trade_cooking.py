@@ -29,7 +29,6 @@ from src.tasks.map_trade.trader_cooking import (
     COOKING_MAX_QUANTITY_TEMPLATE,
     COOKING_QUANTITY_ATTEMPTS,
     COOKING_QUANTITY_CHOICES_ROI,
-    COOKING_RECIPE_EVIDENCE_SCAN_SCORE,
     COOKING_RECIPE_SPECS,
     COOKING_SKILL_GROUP_POINT,
     CookingDetailSnapshot,
@@ -66,7 +65,7 @@ class CookingTask:
     def log_info(self, message):
         self.logs.append(("info", message))
 
-    def log_warning(self, message):
+    def log_warning(self, message, **_kwargs):
         self.logs.append(("warning", message))
 
     def info_set(self, key, value):
@@ -157,18 +156,7 @@ class CookingFlowTest(unittest.TestCase):
             calls,
         )
 
-    def test_exit_to_q_sp6_is_required_for_success(self):
-        trader, progress, calls = self._orchestrated_trader(
-            selected=(DEFAULT_RECIPES[0],),
-            outcomes=(CookingRecipeOutcome.COOKED,),
-            exit_ok=False,
-        )
-
-        self.assertFalse(trader.run_cooking())
-        self.assertEqual([], progress.marked)
-        self.assertEqual("exit", calls[-1])
-
-    def test_absent_recipe_is_recorded_and_does_not_stop_flow(self):
+    def test_absent_recipe_alerts_and_does_not_stop_flow(self):
         first, second, third = DEFAULT_RECIPES[:3]
         trader, progress, calls = self._orchestrated_trader(
             selected=(first, second, third),
@@ -190,13 +178,25 @@ class CookingFlowTest(unittest.TestCase):
             ],
             calls,
         )
-        absent_logs = [
+        self.assertEqual([], progress.marked)
+        alerts = [
             message
             for kind, message in trader.task.logs
-            if kind == "info" and "未出现在料理列表" in message
+            if kind == "warning" and "料理警报" in message
         ]
-        self.assertEqual(1, len(absent_logs))
-        self.assertIn(first, absent_logs[0])
+        self.assertEqual(1, len(alerts))
+        self.assertIn(first, alerts[0])
+
+    def test_exit_to_q_sp6_is_required_for_success(self):
+        trader, progress, calls = self._orchestrated_trader(
+            selected=(DEFAULT_RECIPES[0],),
+            outcomes=(CookingRecipeOutcome.COOKED,),
+            exit_ok=False,
+        )
+
+        self.assertFalse(trader.run_cooking())
+        self.assertEqual([], progress.marked)
+        self.assertEqual("exit", calls[-1])
 
     def test_default_order_optional_selection_and_chicken_last(self):
         trader = object.__new__(Trader)
@@ -593,84 +593,41 @@ class CookingRecognitionTest(unittest.TestCase):
 
 
 class CookingAbsentRecipeTest(unittest.TestCase):
-    """配方未命中分支：取证原帧 + 未显示跳过 / 异常失败的三路判定。"""
+    """配方未识别分支：保持原门禁，跳过制作下一个，结尾警报不报错。"""
 
-    def _trader_with_snapshot(self, *, confirmed, identity, scan):
+    def _trader_with_snapshot(self, *, identity):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         task = CookingTask()
         trader = object.__new__(Trader)
         trader.task = task
         trader.vision = SimpleNamespace(
-            match=lambda _frame, spec: (
-                scan
-                if spec.threshold == COOKING_RECIPE_EVIDENCE_SCAN_SCORE
-                else identity
-            ),
+            match=lambda _frame, _spec: identity,
             passes=lambda _result, _spec: False,
         )
         trader._wait_for_cooking_list = lambda _timeout: CookingListSnapshot(
             frame,
             identity,
-            confirmed,
         )
         return trader, task, frame
 
-    def _warnings(self, task):
-        return [message for kind, message in task.logs if kind == "warning"]
+    def _logs_of(self, task, kind):
+        return [message for log_kind, message in task.logs if log_kind == kind]
 
-    def test_absent_recipe_skips_with_evidence_when_list_confirmed(self):
-        miss = MatchResult(-1.0, (0, 0), (0, 0))
-        trader, task, frame = self._trader_with_snapshot(
-            confirmed=("巧克力鸡尾酒", "冰镇甜点"),
-            identity=miss,
-            scan=MatchResult(-1.0, (0, 0), (0, 0)),
+    def test_identity_miss_skips_to_next_recipe_without_error(self):
+        trader, task, _frame = self._trader_with_snapshot(
+            identity=MatchResult(-1.0, (0, 0), (0, 0)),
         )
 
         outcome = trader._cook_one_recipe("香草牛排")
 
         self.assertIs(CookingRecipeOutcome.ABSENT, outcome)
-        self.assertEqual(1, len(task.saved_frames))
-        name, saved = task.saved_frames[0]
-        self.assertEqual("cooking_香草牛排_failed", name)
-        self.assertIs(frame, saved)
+        self.assertEqual([], task.saved_frames)
+        self.assertEqual([], self._logs_of(task, "warning"))
         self.assertTrue(
-            any("未拥有或未解锁" in message for message in self._warnings(task))
-        )
-        self.assertTrue(
-            any("证据已保存" in message for message in self._warnings(task))
-        )
-        self.assertTrue(
-            any("match=-1.0000" in message for message in self._warnings(task))
-        )
-
-    def test_degraded_scan_candidate_fails_instead_of_skipping(self):
-        trader, task, _frame = self._trader_with_snapshot(
-            confirmed=("巧克力鸡尾酒", "冰镇甜点"),
-            identity=MatchResult(-1.0, (0, 0), (0, 0)),
-            scan=MatchResult(0.85, (100, 200), (77, 79)),
-        )
-
-        outcome = trader._cook_one_recipe("香草牛排")
-
-        self.assertIs(CookingRecipeOutcome.FAILED, outcome)
-        self.assertEqual(1, len(task.saved_frames))
-        self.assertTrue(
-            any("外观相近候选" in message for message in self._warnings(task))
-        )
-
-    def test_identity_miss_without_confirmed_list_fails(self):
-        trader, task, _frame = self._trader_with_snapshot(
-            confirmed=(),
-            identity=MatchResult(-1.0, (0, 0), (0, 0)),
-            scan=MatchResult(-1.0, (0, 0), (0, 0)),
-        )
-
-        outcome = trader._cook_one_recipe("香草牛排")
-
-        self.assertIs(CookingRecipeOutcome.FAILED, outcome)
-        self.assertEqual(1, len(task.saved_frames))
-        self.assertTrue(
-            any("页面异常" in message for message in self._warnings(task))
+            any(
+                "未识别到 香草牛排" in message and "跳过" in message
+                for message in self._logs_of(task, "info")
+            )
         )
 
     def test_unknown_brightness_saves_evidence_and_fails(self):
@@ -685,7 +642,6 @@ class CookingAbsentRecipeTest(unittest.TestCase):
         trader._wait_for_cooking_list = lambda _timeout: CookingListSnapshot(
             frame,
             MatchResult(0.97, (0, 0), (64, 64)),
-            ("巧克力鸡尾酒",),
         )
 
         outcome = trader._cook_one_recipe("香草牛排")
@@ -694,33 +650,6 @@ class CookingAbsentRecipeTest(unittest.TestCase):
         self.assertEqual(
             [("cooking_香草牛排_failed", frame)],
             task.saved_frames,
-        )
-
-    def test_list_snapshot_collects_confirmed_recipe_names(self):
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        confirmed_files = {
-            COOKING_RECIPE_SPECS["巧克力鸡尾酒"].file_name,
-            COOKING_RECIPE_SPECS["冰镇甜点"].file_name,
-        }
-        trader = object.__new__(Trader)
-        trader.task = CookingTask()
-        trader.vision = SimpleNamespace(
-            match=lambda _frame, spec: (
-                MatchResult(0.95, (0, 0), (10, 10), pixel_score=0.9)
-                if spec.file_name in confirmed_files
-                else MatchResult(-1.0, (0, 0), (0, 0))
-            ),
-            passes=lambda result, _spec: result.score >= 0.9,
-            ocr_text=lambda *_args, **_kwargs: "料理 传说",
-            simplify=lambda value: value,
-        )
-
-        snapshot = trader._cooking_list_snapshot(frame)
-
-        self.assertIsNotNone(snapshot)
-        self.assertEqual(
-            {"巧克力鸡尾酒", "冰镇甜点"},
-            set(snapshot.confirmed_recipes),
         )
 
 
