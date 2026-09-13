@@ -8,6 +8,12 @@ from src.utils.ocr_utils import keyword_match_count
 
 KEYWORD_MATCH_RATIO = 0.9
 
+# 免费入口重试前对同一新帧的状态判定结果（BUG-20260913-01）。
+FREE_ENTRY_RETRY_READY = "ready"
+FREE_ENTRY_RETRY_DIALOG = "dialog"
+FREE_ENTRY_RETRY_LOADING = "loading"
+FREE_ENTRY_RETRY_CHANGED = "changed"
+
 # 以下点击点均为 1920×1080 参考（_click_reference 按当前客户区归一）。
 GACHA_ENTRY_REFERENCE_POINT = (162, 986)
 EQUIPMENT_TAB_REFERENCE_POINT = (175, 432)
@@ -42,6 +48,7 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
                 "抽卡页面等待秒数": 12.0,
                 "免费抽按钮等待秒数": 3.0,
                 "确认弹窗等待秒数": 8.0,
+                "确认弹窗重试次数": 2,
                 "结果跳过连续点击秒数": 3.0,
                 "结果页 OCR 等待秒数": 5.0,
                 "结果页 OCR 间隔秒数": 0.1,
@@ -60,6 +67,7 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
                 "主页压暗阈值": "主页左列灰度 p95 低于该值视为被公告压暗（0-255）。",
                 "抽卡页面关键词最低命中数": "确认已进入抽卡页所需的 OCR 关键词数量。",
                 "确认弹窗关键词最低命中数": "确认抽抽乐弹窗所需的 OCR 关键词数量。",
+                "确认弹窗重试次数": "免费入口点击后确认弹窗未出现时的额外重试次数。",
                 "结果跳过连续点击秒数": "抽卡结果页连续点击跳过按钮的最长时间。",
                 "结果页 OCR 等待秒数": "连续点击结束后，持续识别抽抽乐券详情页的最长时间。",
                 "结果页 OCR 间隔秒数": "等待抽抽乐券详情页时的 OCR 识别间隔。",
@@ -95,12 +103,14 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
 
         self._sleep_after_recognition()
         self._click_reference(*EQUIPMENT_TAB_REFERENCE_POINT, after_sleep=0.8)
-        if not self._wait_for_gacha_page("切换装备抽卡"):
+        # 换池必须验证目标池标题：通用抽卡页关键词在服装页同样能命中，
+        # 无法证明实际换池（BUG-20260913-01）。
+        if not self._wait_for_equipment_pool_page("切换装备抽卡"):
             return self._fail_run("切换装备抽卡")
 
         if not self._run_free_section(
             "装备抽抽乐",
-            verify_finished=False,
+            verify_finished=True,
         ):
             return self._fail_run("装备抽抽乐")
 
@@ -124,15 +134,22 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
         section_name: str,
         verify_finished: bool,
     ) -> bool:
-        available, _ = self._wait_for_free_gacha(section_name)
-        self.info_set(f"{section_name} 免费抽", "可领取" if available else "无")
+        available, _text, judged = self._wait_for_free_gacha(section_name)
+        self.info_set(
+            f"{section_name} 免费抽",
+            "可领取" if available else ("无" if judged else "无法判断"),
+        )
         if not available:
-            self.log_info(f"{section_name}：未检测到所有免费抽抽乐，跳过。")
-            return True
+            if judged:
+                self.log_info(f"{section_name}：未检测到所有免费抽抽乐，跳过。")
+                return True
+            # OCR 全程无文本时不能当作"无免费"成功跳过（BUG-20260913-01）。
+            self.log_info(
+                f"{section_name}：免费入口等待期间 OCR 未产出任何文本，无法判断是否有免费抽。"
+            )
+            return self._fail_run(f"{section_name}免费入口判断")
 
-        self._sleep_after_recognition()
-        self._click_reference(*FREE_GACHA_BUTTON_REFERENCE_POINT, after_sleep=0.5)
-        if not self._wait_for_confirm_dialog(section_name):
+        if not self._open_confirm_dialog_with_retry(section_name):
             return self._fail_run(f"{section_name}确认弹窗")
 
         self._sleep_after_recognition()
@@ -141,7 +158,7 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
             return self._fail_run(f"{section_name}结果处理")
 
         if verify_finished:
-            still_available, _ = self._wait_for_free_gacha(
+            still_available, _recheck_text, _recheck_judged = self._wait_for_free_gacha(
                 section_name,
                 timeout=1.5,
             )
@@ -293,19 +310,36 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
         self,
         section_name: str,
         timeout: float | None = None,
-    ) -> tuple[bool, str]:
-        found, text = self._wait_for_ocr_keywords(
-            FREE_GACHA_KEYWORDS,
-            timeout=(
-                float(timeout)
-                if timeout is not None
-                else float(self.config.get("免费抽按钮等待秒数", 3.0))
-            ),
-            minimum_matches=1,
-            name=f"{section_name}_free_gacha",
+    ) -> tuple[bool, str, bool]:
+        """等待免费入口关键词。
+
+        返回是否命中、最后一次 OCR 文本，以及等待期间 OCR 是否产出过
+        任何文本；全程空文本不得读作"无免费"（BUG-20260913-01）。
+        """
+        name = f"{section_name}_free_gacha"
+        end_at = monotonic() + (
+            float(timeout)
+            if timeout is not None
+            else float(self.config.get("免费抽按钮等待秒数", 3.0))
         )
-        self.info_set(f"{section_name} 免费抽 OCR", text or "-")
-        return found, text
+        last_text = ""
+        saw_text = False
+        while monotonic() <= end_at:
+            frame = self.capture_frame()
+            found, text = self._ocr_keywords_in_frame(
+                frame,
+                FREE_GACHA_KEYWORDS,
+                1,
+                name,
+            )
+            last_text = text
+            saw_text = saw_text or bool(text.strip())
+            if found:
+                self.info_set(f"{section_name} 免费抽 OCR", text or "-")
+                return True, text, True
+            self.sleep(0.5)
+        self.info_set(f"{section_name} 免费抽 OCR", last_text or "-")
+        return False, last_text, saw_text
 
     def _wait_for_confirm_dialog(self, section_name: str) -> bool:
         found, text = self._wait_for_ocr_keywords(
@@ -319,6 +353,71 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
             self.log_info(f"{section_name}：检测到确认抽抽乐弹窗。")
             return True
         self.log_info(f"{section_name}：未检测到确认抽抽乐弹窗。")
+        return False
+
+    def _open_confirm_dialog_with_retry(self, section_name: str) -> bool:
+        """点击免费入口并等待确认弹窗；首击被吞时仅按同帧门禁有界重试。"""
+        retries = max(0, int(self.config.get("确认弹窗重试次数", 2)))
+        for attempt in range(1, retries + 2):
+            if attempt > 1:
+                state = self._free_entry_retry_state(section_name)
+                if state == FREE_ENTRY_RETRY_DIALOG:
+                    self.log_info(f"{section_name}：重试前已检测到确认抽抽乐弹窗，直接确认。")
+                    return True
+                if state != FREE_ENTRY_RETRY_READY:
+                    self.log_info(
+                        f"{section_name}：第 {attempt - 1} 次点击后未回到原池免费入口"
+                        f"（状态 {state}），停止重试。"
+                    )
+                    return False
+                self.log_info(
+                    f"{section_name}：确认弹窗未出现且免费入口仍可见，"
+                    f"重试免费入口点击（{attempt - 1}/{retries}）。"
+                )
+            self._sleep_after_recognition()
+            self._click_reference(*FREE_GACHA_BUTTON_REFERENCE_POINT, after_sleep=0.5)
+            if self._wait_for_confirm_dialog(section_name):
+                return True
+        return False
+
+    def _free_entry_retry_state(self, section_name: str) -> str:
+        """同一新帧判定能否重试免费入口，四路信号不得跨帧拼接。"""
+        frame = self.capture_frame()
+        loading = self._match(frame, LOADING_TEMPLATE)
+        self.info_set(f"{section_name}_retry_loading", f"{loading.score:.3f}")
+        if self._passes(loading, LOADING_TEMPLATE):
+            return FREE_ENTRY_RETRY_LOADING
+        text = self._ocr_text(frame, name=f"{section_name}_retry")
+        page_hits = self._keyword_match_count(text, GACHA_PAGE_KEYWORDS)
+        pool_hits = self._keyword_match_count(text, (section_name,))
+        free_hits = self._keyword_match_count(text, FREE_GACHA_KEYWORDS)
+        dialog_hits = self._keyword_match_count(text, CONFIRM_DIALOG_KEYWORDS)
+        self.info_set(
+            f"{section_name}_retry 关键字",
+            f"页面{page_hits} 池{pool_hits} 免费{free_hits} 弹窗{dialog_hits}",
+        )
+        if dialog_hits >= int(self.config.get("确认弹窗关键词最低命中数", 2)):
+            return FREE_ENTRY_RETRY_DIALOG
+        if (
+            page_hits >= int(self.config.get("抽卡页面关键词最低命中数", 3))
+            and pool_hits >= 1
+            and free_hits >= 1
+        ):
+            return FREE_ENTRY_RETRY_READY
+        return FREE_ENTRY_RETRY_CHANGED
+
+    def _wait_for_equipment_pool_page(self, name: str) -> bool:
+        found, text = self._wait_for_ocr_keywords(
+            EQUIPMENT_POOL_KEYWORDS,
+            timeout=float(self.config.get("抽卡页面等待秒数", 12.0)),
+            minimum_matches=1,
+            name=f"{name}_equipment_pool",
+        )
+        self.info_set(f"{name} OCR", text or "-")
+        if found:
+            self.log_info(f"{name}：已确认装备抽抽乐页面。")
+            return True
+        self.log_info(f"{name}：未确认装备抽抽乐页面，可能仍停留在服装池。")
         return False
 
     def _handle_result_until_back(self, section_name: str) -> bool:
@@ -434,5 +533,6 @@ GACHA_PAGE_KEYWORDS = [
 ]
 
 FREE_GACHA_KEYWORDS = ["所有免费抽抽乐"]
+EQUIPMENT_POOL_KEYWORDS = ["装备抽抽乐"]
 CONFIRM_DIALOG_KEYWORDS = ["确认抽抽乐", "是否全部进行"]
 BACK_PAGE_KEYWORDS = ["抽抽乐券", "可免费抽1次的抽抽乐券", "查看获取途径"]
