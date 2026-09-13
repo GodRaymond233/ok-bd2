@@ -40,6 +40,7 @@ from src.tasks.map_trade.trader_constants import (
     SALE_MARKER_VERTICAL_PADDING,
     SALE_MAX_POINT,
     SALE_MIN_POINT,
+    SALE_NAME_FRAGMENT_MIN_CHARS,
     SALE_OCR_INTERVAL,
     SALE_OWNED_PATTERN,
     SALE_SLIDER_REGION,
@@ -431,7 +432,14 @@ class SellFlowMixin:
         if not normalized:
             return False
         return any(
-            name and (name in normalized or normalized in name)
+            name
+            and (
+                name in normalized
+                or (
+                    len(normalized) >= SALE_NAME_FRAGMENT_MIN_CHARS
+                    and normalized in name
+                )
+            )
             for name in normalized_names
         )
 

@@ -98,6 +98,7 @@ from src.tasks.map_trade.trader_constants import (
     SALE_EMPTY_NAME_STABLE_HITS,
     SALE_FULL_PAGE_OCR_TARGET_HEIGHTS,
     SALE_MAX_POINT,
+    SALE_NAME_FRAGMENT_MIN_CHARS,
     SALE_OCR_INTERVAL,
     SALE_SLIDER_REGION,
     SELL_MODE_POINT,
@@ -891,6 +892,24 @@ class SellFlowTest(unittest.TestCase):
         candidates = trader._locate_sale_items(CalendarEntry("兽肉", "S3"), frame)
 
         self.assertEqual([(620, 572)], [candidate.center for candidate in candidates])
+
+    def test_sale_name_match_rejects_single_char_fragment_against_alias(self):
+        # 回归 BUG-20260913-06：卖出后页面上的杂散单字母框"C"曾反向命中
+        # 英文别名 Chocolat Cocktail，令已售完页面被误判为商品仍在售。
+        normalized_names = ("巧克力鸡尾酒", "chocolatcocktail")
+        self.assertFalse(Trader._sale_name_matches("c", normalized_names))
+        self.assertTrue(Trader._sale_name_matches("cocktail", normalized_names))
+        self.assertTrue(Trader._sale_name_matches("巧克力鸡尾酒", normalized_names))
+        self.assertTrue(Trader._sale_name_matches("鸡尾酒", normalized_names))
+
+    def test_sale_name_match_fragment_min_chars_boundary(self):
+        self.assertEqual(2, SALE_NAME_FRAGMENT_MIN_CHARS)
+        self.assertFalse(Trader._sale_name_matches("克", ("巧克力鸡尾酒",)))
+        self.assertTrue(Trader._sale_name_matches("克力", ("巧克力鸡尾酒",)))
+
+    def test_sale_name_match_single_char_item_keeps_forward_match(self):
+        self.assertTrue(Trader._sale_name_matches("虾", ("虾",)))
+        self.assertFalse(Trader._sale_name_matches("虫", ("虾",)))
 
     def test_missing_120_percent_is_recognition_failure_before_any_sale(self):
         trader = object.__new__(Trader)
