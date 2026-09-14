@@ -113,6 +113,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
                         QUICK_SWITCH_TEMPLATE,
                         roi=None,
                         candidate_center_roi=None,
+                        relative_rois=(),
                     ),
                 ),
                 "page",

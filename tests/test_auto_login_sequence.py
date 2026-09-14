@@ -823,6 +823,18 @@ class AutoLoginEscRecoveryTest(unittest.TestCase):
         self.assertEqual([True], calls)
         self.assertEqual(1, task._esc_home_attempts)
 
+    def test_cooldown_does_not_consume_retry_attempt(self):
+        task = self._task()
+        task._esc_home_wait_since = monotonic() - 30.0
+        task._auto_return_home_cooldown_until = monotonic() + 30.0
+        calls = []
+        task.auto_return_main_home = lambda **_kwargs: calls.append(True)
+
+        self.assertTrue(AutoLoginTask._maybe_return_home(task, self._frame()))
+        self.assertEqual([], calls)
+        self.assertEqual(0, task._esc_home_attempts)
+        self.assertGreater(task._esc_hold_until, monotonic())
+
     def test_loading_screen_extends_hold_without_action(self):
         task = self._task()
         task._esc_home_wait_since = monotonic() - 30.0

@@ -273,6 +273,14 @@ class BaseBD2Task(BaseTask):
             self.log_warning(f"{name}：点击返回主页按钮失败：{exc}")
             return False
 
+    def auto_return_home_cooldown_remaining(self) -> float:
+        """Return remaining seconds before the next real home-return attempt."""
+        return max(
+            0.0,
+            float(getattr(self, "_auto_return_home_cooldown_until", 0.0))
+            - monotonic(),
+        )
+
     def auto_return_main_home(
         self,
         max_steps: int | None = None,
@@ -287,12 +295,8 @@ class BaseBD2Task(BaseTask):
           “返回”模板。证据不足时安全停止，绝不盲点。
         - 重试过程只记普通日志；失败后进入冷却，避免连续弹系统提示。
         """
-        now = monotonic()
-        cooldown_until = float(
-            getattr(self, "_auto_return_home_cooldown_until", 0.0)
-        )
-        if now < cooldown_until:
-            remaining = max(0.0, cooldown_until - now)
+        remaining = self.auto_return_home_cooldown_remaining()
+        if remaining > 0:
             message = f"自动返回主页：失败冷却中，{remaining:.1f} 秒后重试。"
             self.info_set("自动返回主页", message)
             self.log_info(message)
@@ -391,10 +395,33 @@ class BaseBD2Task(BaseTask):
         else:
             failure_reason = f"{step_limit} 步内未回到主页。"
 
+        if acted and self._confirm_home_after_return_action():
+            return True
+
         return self._finish_auto_return_failure(
             failure_reason,
             notify=notify_failure,
         )
+
+    def _confirm_home_after_return_action(self) -> bool:
+        """Confirm the final return click instead of relying on another loop step."""
+        timeout = max(
+            0.0,
+            float(self.config.get("返回主页动作确认秒数", 5.0)),
+        )
+        deadline = monotonic() + timeout
+        while True:
+            try:
+                frame = self.capture_frame()
+            except Exception:
+                return False
+            if self._home_scan(frame)[0]:
+                self._auto_return_home_cooldown_until = 0.0
+                self.log_info("自动返回主页：已回到主页。")
+                return True
+            if monotonic() >= deadline:
+                return False
+            self.sleep(0.5)
 
     def _finish_auto_return_failure(self, reason: str, *, notify: bool) -> bool:
         cooldown = max(

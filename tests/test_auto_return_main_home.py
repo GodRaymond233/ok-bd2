@@ -16,6 +16,7 @@ class AutoReturnMainHomeTest(unittest.TestCase):
         task.config = {
             "自动返回主页最大步数": 1,
             "自动返回主页失败冷却秒数": 30.0,
+            "返回主页动作确认秒数": 0.0,
         }
         task.info_set = lambda *_args, **_kwargs: None
         task._test_logs = {"info": [], "warning": []}
@@ -52,14 +53,24 @@ class AutoReturnMainHomeTest(unittest.TestCase):
         self.assertTrue(BaseBD2Task.auto_return_main_home(task))
         self.assertEqual([], clicks)
 
-    def test_click_uses_house_match_center_after_stable_rechecks(self):
+    def test_final_step_click_is_confirmed_before_success(self):
         house = MatchResult(0.95, (40, 20), (20, 20))
         task, clicks = self._task(
-            [(False, True), (False, True), (False, True)],
+            [(False, True), (False, True), (False, True), (True, False)],
+            house_match=house,
+        )
+        self.assertTrue(BaseBD2Task.auto_return_main_home(task))
+        self.assertEqual([(0.5, 0.3)], clicks)
+
+    def test_final_step_click_without_home_confirmation_fails(self):
+        house = MatchResult(0.95, (40, 20), (20, 20))
+        task, clicks = self._task(
+            [(False, True), (False, True), (False, True), (False, False)],
             house_match=house,
         )
         self.assertFalse(BaseBD2Task.auto_return_main_home(task))
         self.assertEqual([(0.5, 0.3)], clicks)
+        self.assertGreater(task._auto_return_home_cooldown_until, 0.0)
 
     def test_unstable_house_hint_stops_without_click(self):
         house = MatchResult(0.95, (40, 20), (20, 20))

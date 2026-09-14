@@ -859,6 +859,18 @@ class AutoLoginTask(BaseBD2Task):
                 )
             return True
 
+        cooldown_remaining = self.auto_return_home_cooldown_remaining()
+        if cooldown_remaining > 0:
+            self._esc_hold_until = max(
+                getattr(self, "_esc_hold_until", 0.0),
+                now + cooldown_remaining,
+            )
+            self._set_stage("返回主页")
+            self._set_action(
+                f"自动返回主页失败冷却中，剩余 {cooldown_remaining:.0f} 秒。"
+            )
+            return True
+
         # 刚操作过：游戏可能正在转场加载，先等加载完成，别重复操作。
         if now < getattr(self, "_esc_hold_until", 0.0):
             self._set_stage("返回主页")

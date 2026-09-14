@@ -214,7 +214,12 @@ class SquareGoddessTask(BaseBD2Task):
             ensure_home=self._wait_for_cartridge_home,
             click_quick_switch=lambda: self._click_template_until(
                 # 返回战场后快速切换图标位置随场景变化：全帧匹配，不再限定底部 ROI。
-                replace(QUICK_SWITCH_TEMPLATE, roi=None, candidate_center_roi=None),
+                replace(
+                    QUICK_SWITCH_TEMPLATE,
+                    roi=None,
+                    candidate_center_roi=None,
+                    relative_rois=(),
+                ),
                 timeout=float(self.config.get("快速卡带等待秒数", 10.0)),
                 name="快速切换按钮",
                 after_sleep=0.0,
