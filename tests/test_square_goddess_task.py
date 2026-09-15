@@ -1,5 +1,4 @@
 import unittest
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -7,16 +6,11 @@ import numpy as np
 from src.tasks.map_trade.models import MatchResult, TemplateSpec
 from src.tasks.SquareGoddessTask import (
     FANTASIA_SQUARE_TEMPLATE,
-    GODDESS_DAILY_REGION,
-    GODDESS_NAVIGATION_MINIMUM_HITS,
-    GODDESS_NAVIGATION_TARGET,
-    GODDESS_PRAY_FALLBACK_POINT,
     QUICK_SWITCH_PAGE_PATTERNS,
     QUICK_SWITCH_TEMPLATE,
     REFERENCE_HEIGHT,
     REFERENCE_WIDTH,
     SQUARE_CARTRIDGE_SLOT_POINT,
-    SQUARE_DAILY_ICON_TEMPLATE,
     SQUARE_HOME_POINT,
     SQUARE_NOTICE_TEMPLATE,
     SquareGoddessTask,
@@ -341,7 +335,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
                 self.assertTrue(SquareGoddessTask._pray_at_goddess(task))
                 self.assertEqual([3.0, 5.0], notice_calls)
 
-    def test_missing_joint_daily_signal_is_treated_as_already_completed(self):
+    def test_missing_navigation_fails_even_after_dispatch_notice(self):
         task = object.__new__(SquareGoddessTask)
         task.config = {}
         task.info_set = lambda *_args, **_kwargs: None
@@ -357,9 +351,9 @@ class SquareGoddessEntryTest(unittest.TestCase):
             lambda **_kwargs: stages.append("pray") or True
         )
 
-        self.assertTrue(SquareGoddessTask._pray_at_goddess(task))
+        self.assertFalse(SquareGoddessTask._pray_at_goddess(task))
         self.assertEqual(
-            [("notice", 3.0), "navigation", ("notice", 5.0)],
+            [("notice", 3.0), "navigation"],
             stages,
         )
 
@@ -603,215 +597,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
             clicks,
         )
 
-    def test_daily_navigation_uses_requested_joint_region(self):
-        self.assertEqual("image/Square_DailyIco.png", SQUARE_DAILY_ICON_TEMPLATE.file_name)
-        self.assertEqual((1546, 199, 311, 63), GODDESS_DAILY_REGION)
-        self.assertEqual(GODDESS_DAILY_REGION, SQUARE_DAILY_ICON_TEMPLATE.roi)
-        self.assertEqual(0.72, SQUARE_DAILY_ICON_TEMPLATE.min_pixel_score)
-
-        task = object.__new__(SquareGoddessTask)
-        task.info_set = lambda *_args, **_kwargs: None
-        task.sleep = lambda *_args, **_kwargs: None
-        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        task._match = lambda _frame, _spec: MatchResult(
-            score=0.90,
-            pixel_score=0.90,
-            position=(1550, 203),
-            size=(24, 24),
-        )
-        task._passes = lambda *_args, **_kwargs: True
-        ocr_calls = []
-
-        def find_navigation(_frame, name):
-            ocr_calls.append((name, GODDESS_DAILY_REGION))
-            return (1700, 230), "移动至艾力克史温女"
-
-        task._goddess_navigation_click_point = find_navigation
-        clicks = []
-        task._click_client = lambda *args, **kwargs: clicks.append((args, kwargs))
-
-        self.assertTrue(
-            SquareGoddessTask._click_goddess_daily_navigation_until(
-                task,
-                timeout=0.1,
-            )
-        )
-        self.assertEqual([("广场导航文本", GODDESS_DAILY_REGION)], ocr_calls)
-        self.assertEqual(
-            [((1700, 230, 1920, 1080), {"after_sleep": 2.0})],
-            clicks,
-        )
-
-    def test_navigation_ocr_clicks_only_the_matching_text_union_center(self):
-        task = object.__new__(SquareGoddessTask)
-        task.config = {"广场 OCR 阈值": 0.2}
-        task.info_set = lambda *_args, **_kwargs: None
-        task._ocr_boxes = lambda *_args, **_kwargs: [
-            SimpleNamespace(name="每日奖励", x=0, y=0, width=60, height=18),
-            SimpleNamespace(name="移动至", x=40, y=20, width=50, height=20),
-            SimpleNamespace(name="艾力克史温女", x=90, y=20, width=100, height=20),
-        ]
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-
-        point, text = SquareGoddessTask._goddess_navigation_click_point(
-            task,
-            frame,
-            name="广场导航文本",
-        )
-
-        self.assertEqual((1661, 229), point)
-        self.assertIn("每日奖励", text)
-        self.assertIn("移动至", text)
-
-    def test_navigation_ocr_accepts_name_missing_li_and_trailing_characters(self):
-        task = object.__new__(SquareGoddessTask)
-        task.config = {"广场 OCR 阈值": 0.2}
-        task.info_set = lambda *_args, **_kwargs: None
-        task._ocr_boxes = lambda *_args, **_kwargs: [
-            SimpleNamespace(name="每日奖励", x=0, y=0, width=60, height=18),
-            SimpleNamespace(name="移动至艾克史温", x=40, y=20, width=150, height=20),
-        ]
-        frame = np.zeros((1079, 1918, 3), dtype=np.uint8)
-
-        point, text = SquareGoddessTask._goddess_navigation_click_point(
-            task,
-            frame,
-            name="广场导航文本",
-        )
-
-        self.assertEqual((1659, 229), point)
-        self.assertIn("移动至艾克史温", text)
-
-    def test_navigation_ocr_accepts_exactly_seven_target_characters(self):
-        task = object.__new__(SquareGoddessTask)
-        task.config = {"广场 OCR 阈值": 0.2}
-        task.info_set = lambda *_args, **_kwargs: None
-        task._ocr_boxes = lambda *_args, **_kwargs: [
-            SimpleNamespace(name="移动至艾力克史", x=40, y=20, width=140, height=20),
-        ]
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-
-        point, _text = SquareGoddessTask._goddess_navigation_click_point(
-            task,
-            frame,
-            name="广场导航文本",
-        )
-
-        self.assertEqual((1656, 229), point)
-
-    def test_navigation_ocr_accepts_six_of_nine_target_characters(self):
-        task = object.__new__(SquareGoddessTask)
-        task.config = {"广场 OCR 阈值": 0.2}
-        statuses = {}
-        task.info_set = lambda key, value: statuses.__setitem__(key, value)
-        task._ocr_boxes = lambda *_args, **_kwargs: [
-            SimpleNamespace(name="移动至艾力克", x=40, y=20, width=120, height=20),
-        ]
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-
-        point, _text = SquareGoddessTask._goddess_navigation_click_point(
-            task,
-            frame,
-            name="广场导航文本",
-        )
-
-        self.assertEqual("移动至艾力克史温女", GODDESS_NAVIGATION_TARGET)
-        self.assertEqual(6, GODDESS_NAVIGATION_MINIMUM_HITS)
-        self.assertEqual("6/9", statuses["广场导航文字命中"])
-        self.assertEqual((1646, 229), point)
-
-    def test_navigation_ocr_accepts_traditional_wen_from_live_log(self):
-        task = object.__new__(SquareGoddessTask)
-        task.config = {"广场 OCR 阈值": 0.2}
-        statuses = {}
-        task.info_set = lambda key, value: statuses.__setitem__(key, value)
-        task._ocr_boxes = lambda *_args, **_kwargs: [
-            SimpleNamespace(
-                name="每日奖励 E 移动至艾力克史溫女 +",
-                x=0,
-                y=0,
-                width=240,
-                height=20,
-            ),
-        ]
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-
-        point, text = SquareGoddessTask._goddess_navigation_click_point(
-            task,
-            frame,
-            name="广场导航文本",
-        )
-
-        self.assertEqual("8/9", statuses["广场导航文字命中"])
-        self.assertEqual((1666, 209), point)
-        self.assertIn("艾力克史溫女", text)
-
-    def test_navigation_ocr_rejects_only_five_target_characters(self):
-        task = object.__new__(SquareGoddessTask)
-        task.config = {"广场 OCR 阈值": 0.2}
-        statuses = {}
-        task.info_set = lambda key, value: statuses.__setitem__(key, value)
-        task._ocr_boxes = lambda *_args, **_kwargs: [
-            SimpleNamespace(name="移动至艾力", x=40, y=20, width=100, height=20),
-        ]
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-
-        point, _text = SquareGoddessTask._goddess_navigation_click_point(
-            task,
-            frame,
-            name="广场导航文本",
-        )
-
-        self.assertEqual("5/9", statuses["广场导航文字命中"])
-        self.assertIsNone(point)
-
-    def test_navigation_ocr_rejects_another_destination(self):
-        task = object.__new__(SquareGoddessTask)
-        task.config = {"广场 OCR 阈值": 0.2}
-        task.info_set = lambda *_args, **_kwargs: None
-        task._ocr_boxes = lambda *_args, **_kwargs: [
-            SimpleNamespace(name="移动至其他任务", x=40, y=20, width=150, height=20),
-        ]
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-
-        point, text = SquareGoddessTask._goddess_navigation_click_point(
-            task,
-            frame,
-            name="广场导航文本",
-        )
-
-        self.assertIsNone(point)
-        self.assertEqual("移动至其他任务", text)
-
-    def test_navigation_ocr_roi_scales_position_and_size_with_client(self):
-        task = object.__new__(SquareGoddessTask)
-        task.config = {"广场 OCR 阈值": 0.2}
-        task.info_set = lambda *_args, **_kwargs: None
-        observed_shapes = []
-        task.ocr = lambda **kwargs: observed_shapes.append(kwargs["frame"].shape) or []
-        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
-
-        left, top, crop = SquareGoddessTask._roi_frame(
-            frame,
-            GODDESS_DAILY_REGION,
-        )
-        SquareGoddessTask._ocr_boxes(
-            task,
-            frame,
-            name="广场导航文本",
-            roi=GODDESS_DAILY_REGION,
-        )
-
-        self.assertEqual((1031, 133), (left, top))
-        self.assertEqual((42, 207, 3), crop.shape)
-        self.assertEqual([(42, 207, 3)], observed_shapes)
-
     def test_prayer_prefers_ocr_center_and_confirms_navigation_disappeared(self):
-        self.assertEqual(
-            (1412 / REFERENCE_WIDTH, 884 / REFERENCE_HEIGHT),
-            GODDESS_PRAY_FALLBACK_POINT,
-        )
-
         task = object.__new__(SquareGoddessTask)
         task.config = {
             "女神像许愿等待秒数": 8.0,
@@ -844,39 +630,17 @@ class SquareGoddessEntryTest(unittest.TestCase):
             clicks,
         )
 
-    def test_prayer_uses_relative_fallback_when_ocr_is_not_found(self):
+    def test_prayer_without_prompt_never_clicks_or_completes(self):
         task = object.__new__(SquareGoddessTask)
-        task.config = {
-            "女神像许愿等待秒数": 0.5,
-            "女神像许愿最多点击次数": 1,
-            "女神像完成确认等待秒数": 8.0,
-        }
-        task.info_set = lambda *_args, **_kwargs: None
-        task.sleep = lambda *_args, **_kwargs: None
-        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        task._ocr_pattern_click_point = (
-            lambda _frame, _patterns, name, roi: (None, "")
-        )
-        task._click_client = lambda *_args, **_kwargs: self.fail("没有 OCR 中心可点击")
-        clicks = []
-        task.operate_click = lambda *args, **kwargs: clicks.append((args, kwargs))
-        task._wait_for_daily_navigation_to_disappear = lambda **_kwargs: True
-
-        with patch(
-            "src.tasks.SquareGoddessTask.monotonic",
-            side_effect=(0.0, 0.0, 0.5, 0.5),
-        ):
-            self.assertTrue(
-                SquareGoddessTask._wait_for_goddess_prayer_completion(
-                    task,
-                    timeout=10.0,
-                )
-            )
-
-        self.assertEqual(
-            [((*GODDESS_PRAY_FALLBACK_POINT,), {"after_sleep": 2.0})],
-            clicks,
-        )
+        task.config = {}
+        task.info_set = lambda *args: None
+        task.sleep = lambda *args: None
+        task.capture_frame = lambda: np.zeros((720, 1280, 3), dtype=np.uint8)
+        task._ocr_pattern_click_point = lambda *args, **kwargs: (None, "")
+        task._click_client = lambda *args, **kwargs: self.fail("No prayer prompt")
+        task.operate_click = lambda *args, **kwargs: self.fail("No fixed click")
+        with patch("src.tasks.SquareGoddessTask.monotonic", side_effect=[0, 0, 2]):
+            self.assertFalse(task._wait_for_goddess_prayer_completion(timeout=1))
 
 
 if __name__ == "__main__":
