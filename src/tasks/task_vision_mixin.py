@@ -319,6 +319,7 @@ class TaskVisionMixin:
         name: str,
         interval: float = 0.35,
         timeout: float | None = None,
+        auto_return: bool = True,
     ) -> bool:
         if timeout is None:
             timeout = float(self.config.get("主页确认等待秒数", 10.0))
@@ -355,12 +356,31 @@ class TaskVisionMixin:
             )
             self.sleep(interval)
 
+        if auto_return:
+            return self._auto_return_home_after_timeout(name, interval=interval)
+
         self.log_info(
             f"{name}：未同时确认左列关键词、亮度和抽抽乐文字，"
             f"left={last_left_hits}/{HOME_LEFT_COLUMN_REQUIRED_HITS}, "
             f"p95={last_p95:.0f}/{self._home_p95_threshold():.0f}, "
             f"ocr={last_gacha_text or '-'}。"
         )
+        return False
+
+    def _auto_return_home_after_timeout(
+        self,
+        name: str,
+        interval: float = 0.35,
+    ) -> bool:
+        """主页确认超时后，自动点击右上角主页按钮把角色带回主页面再确认。"""
+        self.log_info(f"{name}：未确认到主页，尝试自动返回主页。")
+        if self.auto_return_main_home():
+            return self._wait_for_home_confirmation(
+                name,
+                interval=interval,
+                timeout=float(self.config.get("主页确认等待秒数", 10.0)),
+                auto_return=False,
+            )
         return False
 
     @staticmethod

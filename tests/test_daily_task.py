@@ -761,7 +761,7 @@ class DailyTaskHelperTest(unittest.TestCase):
 
     def test_my_home_sign_in_continues_when_loading_is_missing(self):
         task = object.__new__(DailyTask)
-        task.config = {"小屋页面等待秒数": 12.0}
+        task.config = {"小屋页面等待秒数": 12.0, "小屋进入最大点击次数": 3}
         task.log_info = lambda *_args, **_kwargs: None
         task.sleep = lambda *_args, **_kwargs: None
         clicks = []
@@ -769,9 +769,50 @@ class DailyTaskHelperTest(unittest.TestCase):
         task._wait_loading_or_template = lambda *_args, **_kwargs: ("none", False)
         task._wait_for_template = lambda *_args, **_kwargs: True
         task._wait_for_home_confirmation = lambda *_args, **_kwargs: True
+        task.capture_frame = lambda: np.zeros((10, 10, 3), dtype=np.uint8)
+        task._frame_confirms_home = lambda *_args, **_kwargs: True
 
         self.assertTrue(DailyTask.run_my_home_sign_in(task))
-        self.assertEqual([(166, 158), (100, 50)], clicks)
+        # 转场可能吞点击：小屋入口会补点 3 次（默认上限），确认进入后再返回主页。
+        self.assertEqual([(166, 158)] * 3 + [(100, 50)], clicks)
+
+    def test_my_home_retry_stops_when_capture_fails(self):
+        task = object.__new__(DailyTask)
+        task.config = {"小屋页面等待秒数": 1.0, "小屋进入最大点击次数": 3}
+        task.log_info = lambda *_args, **_kwargs: None
+        task.sleep = lambda *_args, **_kwargs: None
+        clicks = []
+        task._click_reference = lambda x, y, **_kwargs: clicks.append((x, y))
+        task._wait_loading_or_template = lambda *_args, **_kwargs: ("none", False)
+        task._wait_for_template = lambda *_args, **_kwargs: False
+        task._wait_for_home_confirmation = lambda *_args, **_kwargs: True
+        task._frame_confirms_home = lambda *_args, **_kwargs: True
+
+        def boom_capture():
+            raise RuntimeError("capture failed")
+
+        task.capture_frame = boom_capture
+
+        self.assertFalse(DailyTask.run_my_home_sign_in(task))
+        # 截图失败 -> 不补点，只点了一次入口
+        self.assertEqual([(166, 158)], clicks)
+
+    def test_my_home_retry_stops_when_no_longer_on_home(self):
+        task = object.__new__(DailyTask)
+        task.config = {"小屋页面等待秒数": 1.0, "小屋进入最大点击次数": 3}
+        task.log_info = lambda *_args, **_kwargs: None
+        task.sleep = lambda *_args, **_kwargs: None
+        clicks = []
+        task._click_reference = lambda x, y, **_kwargs: clicks.append((x, y))
+        task._wait_loading_or_template = lambda *_args, **_kwargs: ("none", False)
+        task._wait_for_template = lambda *_args, **_kwargs: False
+        task._wait_for_home_confirmation = lambda *_args, **_kwargs: True
+        task._frame_confirms_home = lambda *_args, **_kwargs: False
+        task.capture_frame = lambda: np.zeros((10, 10, 3), dtype=np.uint8)
+
+        self.assertFalse(DailyTask.run_my_home_sign_in(task))
+        # 已离开主页 -> 不补点
+        self.assertEqual([(166, 158)], clicks)
 
     def test_loading_wait_prioritizes_next_template(self):
         task = object.__new__(DailyTask)

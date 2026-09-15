@@ -297,6 +297,20 @@ class DailyBatchTask(BaseTask):
                 # its own top-level 启用 gate transparent to the batch runner.
                 task.config = ChainMap({"启用": True}, original_config or {})
                 task.info_clear()
+                # 每个子任务开始前先尝试自动回主页（找不到入口也不硬失败，
+                # 子任务自身的入口主页确认/回主页逻辑仍会兜底）。
+                ensure_home = getattr(task, "auto_return_main_home", None)
+                if ensure_home is not None:
+                    try:
+                        if not ensure_home():
+                            self.log_warning(
+                                f"一键完成日常：{child.config_key} 自动回主页未成功，"
+                                "继续执行该子任务（由子任务自身兜底）。"
+                            )
+                    except Exception as ensure_exc:
+                        self.log_warning(
+                            f"一键完成日常：{child.config_key} 自动回主页异常：{ensure_exc}"
+                        )
                 with suppress_task_completion_notifications(task):
                     if bool(task.run()):
                         completed.append(child.config_key)

@@ -179,6 +179,7 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
                 '执行公会签到': True,
                 '执行小屋签到': True,
                 '执行一键收菜': True,
+                '小屋进入最大点击次数': 3,
                 '公会入口阈值': 0.78,
                 '公会签到成功阈值': 0.76,
                 '小屋页面阈值': 0.76,
@@ -197,6 +198,7 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
             {
                 '执行公会签到': "从主页进入公会，领取每日签到奖励。",
                 '执行小屋签到': "从主页进入小屋，确认到达后返回主页。",
+                '小屋进入最大点击次数': "小屋入口点击后未确认到达时的补点上限（转场可能吞点击）。",
                 '执行一键收菜': "打开经营管理弹窗并执行一键获得。",
             }
         )
@@ -332,12 +334,38 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
         if not self._wait_for_home_confirmation("小屋签到入口前主页确认"):
             return False
 
-        self._click_reference(*MY_HOME_ENTRY_REFERENCE_POINT, after_sleep=0.5)
-        loading_state, found = self._wait_loading_or_template(
-            "小屋签到",
-            MY_HOME_TEMPLATE,
-            name="my_home_early",
-        )
+        entry_clicks = int(self.config.get("小屋进入最大点击次数", 3))
+        found = False
+        loading_state = "none"
+        for attempt in range(1, entry_clicks + 1):
+            if attempt > 1:
+                self.log_info(
+                    f"小屋签到：第 {attempt} 次点击小屋入口（转场可能吞掉点击）。"
+                )
+            self._click_reference(*MY_HOME_ENTRY_REFERENCE_POINT, after_sleep=0.5)
+            loading_state, found = self._wait_loading_or_template(
+                "小屋签到",
+                MY_HOME_TEMPLATE,
+                name=f"my_home_early{attempt}",
+            )
+            if found:
+                break
+            if loading_state == "stuck":
+                break
+            if attempt < entry_clicks:
+                # 补点前重新确认仍在主页；已开始转场/加载则停止补点，交给后续模板等待。
+                try:
+                    retry_frame = self.capture_frame()
+                except Exception:
+                    retry_frame = None
+                if retry_frame is None or not self._frame_confirms_home(
+                    retry_frame, "小屋签到重试前主页"
+                ):
+                    self.log_info(
+                        "小屋签到：无法确认仍位于主页（截图失败或已离开主页），"
+                        "停止补点，等待小屋模板。"
+                    )
+                    break
         self._status_set("小屋签到 loading 状态", loading_state)
         if loading_state == "stuck":
             self._status_set("小屋页面检测", "否")
