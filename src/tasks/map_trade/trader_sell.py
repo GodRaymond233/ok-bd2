@@ -29,6 +29,7 @@ from src.tasks.map_trade.trader_constants import (
     SALE_COMPLETION_STABLE_HITS,
     SALE_COMPLETION_TIMEOUT,
     SALE_CONFIRM_POINT,
+    SALE_DIALOG_OPEN_MAX_CLICKS,
     SALE_DIALOG_REGION,
     SALE_DIALOG_TIMEOUT,
     SALE_DIALOG_TITLE_REGION,
@@ -332,8 +333,18 @@ class SellFlowMixin:
         known_toast_id = self._last_sale_toast_id
         if known_toast_id is not None:
             before_toast_id = max(before_toast_id or 0, known_toast_id)
-        self.vision.click_client(candidate.center, frame.shape, after_sleep=0.5)
-        if not self._wait_sale_dialog_item(entry):
+        dialog_opened = False
+        for click_number in range(1, SALE_DIALOG_OPEN_MAX_CLICKS + 1):
+            self.vision.click_client(candidate.center, frame.shape, after_sleep=0.5)
+            if self._wait_sale_dialog_item(entry):
+                dialog_opened = True
+                break
+            if click_number < SALE_DIALOG_OPEN_MAX_CLICKS:
+                self.task.log_info(
+                    f"卖：{entry.item}第{click_number}次点击后等待"
+                    f"{SALE_DIALOG_TIMEOUT:g}秒仍未确认出售弹窗，补点重试。"
+                )
+        if not dialog_opened:
             self.task.log_warning(f"卖：{entry.item}出售弹窗商品标题未确认。")
             return None
         owned = self._wait_owned_quantity()

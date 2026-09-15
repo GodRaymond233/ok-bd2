@@ -93,6 +93,7 @@ from src.tasks.map_trade.trader_constants import (
     SALE_120_PERCENT_MARKER_PEAK_RADIUS,
     SALE_120_PERCENT_MARKER_TEMPLATE,
     SALE_CONFIRM_POINT,
+    SALE_DIALOG_OPEN_MAX_CLICKS,
     SALE_DIALOG_REGION,
     SALE_DIALOG_TITLE_REGION,
     SALE_EMPTY_NAME_STABLE_HITS,
@@ -1124,6 +1125,73 @@ class SellFlowTest(unittest.TestCase):
             ],
             clicks,
         )
+
+    def test_sale_dialog_open_retries_until_third_click(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        client_clicks = []
+        messages = []
+        trader = object.__new__(Trader)
+        trader.task = SimpleNamespace(
+            config={"出售保险": False},
+            operate_click=lambda *_args, **_kwargs: None,
+            log_info=messages.append,
+            log_warning=lambda *_args: None,
+            info_set=lambda *_args: None,
+        )
+        trader.vision = SimpleNamespace(
+            click_client=lambda point, shape, after_sleep=0: client_clicks.append(
+                (point, shape, after_sleep)
+            )
+        )
+        dialog_checks = iter((False, False, True))
+        trader._sale_name_signature = lambda _entry, _frame: ()
+        trader._sale_toast_id = lambda _frame: None
+        trader._wait_sale_dialog_item = lambda _entry: next(dialog_checks)
+        trader._wait_owned_quantity = lambda: 400
+        trader._wait_available_quantity = lambda: 400
+        trader._choose_sale_quantity = lambda _entry, _owned: True
+        trader._wait_selected_sale_quantity = lambda _expected: True
+        trader._wait_sale_completion = lambda *_args, **_kwargs: True
+
+        result = trader._sell_one_candidate(
+            CalendarEntry("item", "S3"),
+            SimpleNamespace(center=(951, 682)),
+            frame,
+            previous_owned=None,
+        )
+
+        self.assertEqual((400, True), result)
+        self.assertEqual(SALE_DIALOG_OPEN_MAX_CLICKS, len(client_clicks))
+        self.assertEqual(2, len([message for message in messages if "补点重试" in message]))
+
+    def test_sale_dialog_open_stops_after_click_limit(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        client_clicks = []
+        warnings = []
+        trader = object.__new__(Trader)
+        trader.task = SimpleNamespace(
+            log_info=lambda *_args: None,
+            log_warning=warnings.append,
+        )
+        trader.vision = SimpleNamespace(
+            click_client=lambda point, shape, after_sleep=0: client_clicks.append(
+                (point, shape, after_sleep)
+            )
+        )
+        trader._sale_name_signature = lambda _entry, _frame: ()
+        trader._sale_toast_id = lambda _frame: None
+        trader._wait_sale_dialog_item = lambda _entry: False
+
+        result = trader._sell_one_candidate(
+            CalendarEntry("item", "S3"),
+            SimpleNamespace(center=(951, 682)),
+            frame,
+            previous_owned=None,
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(SALE_DIALOG_OPEN_MAX_CLICKS, len(client_clicks))
+        self.assertEqual(1, len(warnings))
 
     def test_sell_selected_entry_rescans_after_each_completed_sale(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
