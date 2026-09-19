@@ -104,6 +104,7 @@ class TradeNavigationMixin:
                 )
 
         self.task.sleep(Q_SP6_BARGAIN_RECHECK_DELAY)
+        self._status("导航状态", "确认砍价入口")
         if not self._wait_for_ocr_keywords(
             ("砍价",),
             Q_SP6_BARGAIN_OCR_TIMEOUT,
@@ -279,6 +280,7 @@ class TradeNavigationMixin:
         flow.  It is never added to the shared story or PVP classifiers.
         """
 
+        self._status("导航状态", "等待第六章箱庭确认")
         end_at = monotonic() + max(0.0, timeout)
         last_state = ScreenState.UNKNOWN
         last = MatchResult(-1.0, (0, 0), (0, 0))
@@ -545,4 +547,3 @@ class TradeNavigationMixin:
         ):
             return NavigationResult(True, ScreenState.HOME, "已关闭折扣商店并返回主页")
         return NavigationResult(False, self.classify(), "关闭折扣商店后未在10秒内返回主页")
-

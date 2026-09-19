@@ -46,7 +46,6 @@ from src.tasks.map_trade.navigator import (
     STORY_CATEGORY_HIGHLIGHT_MIN_RATIO,
     STORY_CATEGORY_HIGHLIGHT_REGION,
     STORY_CATEGORY_POINT,
-    TRADE_MERCHANT_CONTEXT_TEMPLATE,
     Navigator,
     StoryBadgeCandidate,
     StoryBadgeDetection,
@@ -3431,73 +3430,70 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
 
         self.assertEqual(ScreenState.SANDBOX, navigator.classify(frame))
 
-    def test_trade_classify_shop_page_wins_over_merchant_dialog_template(self):
-        task = SimpleNamespace(config={}, info_set=lambda *_args: None)
+    def test_trade_classify_requires_interaction_options_and_talent_cards(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        merchant = MatchResult(0.90, (1000, 40), (60, 40), pixel_score=0.85)
-        failed = MatchResult(-1.0, (0, 0), (0, 0))
-
-        def match(_frame, spec):
-            if spec == TRADE_MERCHANT_CONTEXT_TEMPLATE:
-                return merchant
-            return failed
-
-        vision = SimpleNamespace(
-            capture=lambda: frame,
-            match=match,
-            passes=lambda *_args: False,
-            threshold_for=lambda spec: spec.threshold,
-            template_brightness_ratio=lambda *_args: 0.0,
-            ocr_text=lambda _frame, name, **_kwargs: {
-                "跑商界面分类商店页": "购买 出售",
-                "跑商界面分类商店标题": "仓库管理石怪 仓库 严加管理 天赋技能 砍价",
-            }.get(name, ""),
-            simplify=lambda value: value,
+        cases = (
+            ("对话 商店", "天赋技能 砍价 选择", ScreenState.MERCHANT_DIALOG),
+            ("对话", "天赋技能 选择", ScreenState.SANDBOX),
+            ("对话 商店", "选择", ScreenState.SANDBOX),
+            ("", "", ScreenState.SANDBOX),
         )
+        for options, talents, expected in cases:
+            with self.subTest(options=options, talents=talents):
+                seen_frames = []
+
+                def ocr(frame_arg, name, **_kwargs):
+                    seen_frames.append(frame_arg)
+                    return {
+                        "跑商商人交互选项": options,
+                        "跑商商人天赋技能": talents,
+                    }.get(name, "")
+
+                task = SimpleNamespace(config={}, info_set=lambda *_args: None)
+                vision = SimpleNamespace(capture=self._fresh_frame, ocr_text=ocr,
+                                         simplify=lambda value: value)
+                navigator = Navigator(task, vision)
+                navigator._home_confirmation_signals = lambda _frame: (False,)
+                navigator.classify = lambda _frame: ScreenState.SANDBOX
+                self.assertEqual(expected, navigator.classify_trade(frame))
+                self.assertTrue(all(value is frame for value in seen_frames))
+
+    @staticmethod
+    def _fresh_frame():
+        return np.zeros((1080, 1920, 3), dtype=np.uint8)
+
+    def test_trade_classify_default_argument_captures_frame(self):
+        captured = self._fresh_frame()
+        seen_frames = []
+
+        def ocr(frame_arg, name, **_kwargs):
+            seen_frames.append(frame_arg)
+            return ""
+
+        task = SimpleNamespace(config={}, info_set=lambda *_args: None)
+        vision = SimpleNamespace(capture=lambda: captured, ocr_text=ocr,
+                                 simplify=lambda value: value)
         navigator = Navigator(task, vision)
+        navigator._home_confirmation_signals = lambda _frame: (False,)
+        navigator.classify = lambda _frame: ScreenState.SANDBOX
+        self.assertEqual(ScreenState.SANDBOX, navigator.classify_trade())
+        self.assertTrue(seen_frames)
+        self.assertTrue(all(value is captured for value in seen_frames))
 
-        self.assertEqual(ScreenState.SHOP, navigator.classify_trade())
-
-    def test_trade_classify_merchant_dialog_requires_shop_ocr_absent(self):
+    def test_shared_classify_never_uses_trade_merchant_signals(self):
         task = SimpleNamespace(config={}, info_set=lambda *_args: None)
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        merchant = MatchResult(0.90, (1000, 40), (60, 40), pixel_score=0.85)
         failed = MatchResult(-1.0, (0, 0), (0, 0))
-
-        def match(_frame, spec):
-            if spec == TRADE_MERCHANT_CONTEXT_TEMPLATE:
-                return merchant
-            return failed
-
-        vision = SimpleNamespace(
-            capture=lambda: frame,
-            match=match,
-            passes=lambda *_args: False,
-            threshold_for=lambda spec: spec.threshold,
-            template_brightness_ratio=lambda *_args: 0.0,
-            ocr_text=lambda *_args, **_kwargs: "",
-            simplify=lambda value: value,
-        )
-        navigator = Navigator(task, vision)
-
-        self.assertEqual(ScreenState.MERCHANT_DIALOG, navigator.classify_trade())
-
-    def test_shared_classify_never_uses_trade_merchant_template(self):
-        task = SimpleNamespace(config={}, info_set=lambda *_args: None)
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        merchant = MatchResult(
-            0.99,
-            (1000, 40),
-            (60, 40),
-            pixel_score=0.95,
-            zncc_score=0.94,
-        )
-        failed = MatchResult(-1.0, (0, 0), (0, 0))
+        ocr_names = []
         matched_specs = []
+
+        def ocr(_frame, name, **_kwargs):
+            ocr_names.append(name)
+            return ""
 
         def match(_frame, spec):
             matched_specs.append(spec)
-            return merchant if spec == TRADE_MERCHANT_CONTEXT_TEMPLATE else failed
+            return failed
 
         vision = SimpleNamespace(
             capture=lambda: frame,
@@ -3505,13 +3501,16 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
             passes=lambda *_args: False,
             threshold_for=lambda spec: spec.threshold,
             template_brightness_ratio=lambda *_args: 0.0,
-            ocr_text=lambda *_args, **_kwargs: "",
+            ocr_text=ocr,
             simplify=lambda value: value,
         )
         navigator = Navigator(task, vision)
 
-        self.assertEqual(ScreenState.UNKNOWN, navigator.classify())
-        self.assertNotIn(TRADE_MERCHANT_CONTEXT_TEMPLATE, matched_specs)
+        navigator.classify(frame)
+
+        self.assertNotIn("跑商商人交互选项", ocr_names)
+        self.assertNotIn("跑商商人天赋技能", ocr_names)
+        self.assertNotIn(MERCHANT_CLICK_LOCATION_TEMPLATE, matched_specs)
 
     def test_classify_shop_ocr_fallback_without_merchant_template(self):
         task = SimpleNamespace(config={}, info_set=lambda *_args: None)

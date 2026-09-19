@@ -99,7 +99,8 @@ from src.tasks.map_trade.navigator_constants import (
     TELEPORT_MAP_HEADER_OCR_RELATIVE_ROI,
     TELEPORT_MAP_RETURN_RELATIVE_POINT,
     TELEPORT_MAP_TITLE_OCR_RELATIVE_ROI,
-    TRADE_MERCHANT_CONTEXT_TEMPLATE,
+    TRADE_MERCHANT_OPTIONS_REGION,
+    TRADE_MERCHANT_TALENTS_REGION,
     LocatedStoryCard,
     MapPageDetection,
     ProbedStoryCard,
@@ -433,39 +434,23 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
         if self._home_confirmation_signals(frame)[0]:
             return ScreenState.HOME
 
-        merchant = self.vision.match(frame, TRADE_MERCHANT_CONTEXT_TEMPLATE)
-        merchant_passed = merchant.score >= self.vision.threshold_for(
-            TRADE_MERCHANT_CONTEXT_TEMPLATE
+        # 交互菜单也含仓库标题，直接落回共享分类会被商店分支命中；
+        # 须先用同帧交互选项与技能卡确认商人身份。
+        options_passed, _ = self._ocr_keywords_in_frame(
+            frame,
+            ("对话", "商店"),
+            "跑商商人交互选项",
+            relative_roi=TRADE_MERCHANT_OPTIONS_REGION,
         )
-        self._status(
-            "跑商商人模板",
-            (
-                f"{'pass' if merchant_passed else 'miss'}; "
-                f"match={merchant.score:.3f}; pixel={merchant.pixel_score:.3f}; "
-                f"zncc={merchant.zncc_score:.3f}"
-            ),
-        )
-        if merchant_passed:
-            # 折扣商店页的标题牌与商人对话共用 UI 框架，模板会同时命中。
-            # 该判断只属于跑商流程；剧情箱庭和 PVP 均不得调用本方法。
-            shop_text = normalize_text(
-                self.vision.simplify(
-                    self.vision.ocr_text(
-                        frame,
-                        "跑商界面分类商店页",
-                        relative_roi=CLASSIFY_SHOP_TABS_RELATIVE_ROI,
-                    )
-                    + " "
-                    + self.vision.ocr_text(
-                        frame,
-                        "跑商界面分类商店标题",
-                        relative_roi=CLASSIFY_SHOP_TITLE_RELATIVE_ROI,
-                    )
-                )
+        if options_passed:
+            talents_passed, _ = self._ocr_keywords_in_frame(
+                frame,
+                ("天赋技能", "选择"),
+                "跑商商人天赋技能",
+                relative_roi=TRADE_MERCHANT_TALENTS_REGION,
             )
-            if self._shop_page_text(shop_text):
-                return ScreenState.SHOP
-            return ScreenState.MERCHANT_DIALOG
+            if talents_passed:
+                return ScreenState.MERCHANT_DIALOG
         return self.classify(frame)
 
     @staticmethod

@@ -371,8 +371,17 @@ SANDBOX_SKILL_STATE_TEMPLATES = (
     SANDBOX_SKILL_SLOT_1_UNSELECTED_TEMPLATE,
 )
 LOADING_TEMPLATE = TemplateSpec("加载页面", "image/UI_loading_black.png", 0.70)
-TRADE_MERCHANT_CONTEXT_TEMPLATE = TemplateSpec(
-    "商人对话", "image/Mer_Dialog_TalMed.png", 0.72, roi=(930, 15, 280, 70)
+# 商人交互菜单：右侧对话/商店选项与左下天赋技能卡（1920×1080 参考像素，
+# 实机截图标定）。
+TRADE_MERCHANT_OPTIONS_REFERENCE_ROI = (860, 370, 210, 100)
+TRADE_MERCHANT_OPTIONS_REGION = reference_rect_to_relative_roi(
+    TRADE_MERCHANT_OPTIONS_REFERENCE_ROI,
+    FHD_1080,
+)
+TRADE_MERCHANT_TALENTS_REFERENCE_ROI = (100, 670, 550, 370)
+TRADE_MERCHANT_TALENTS_REGION = reference_rect_to_relative_roi(
+    TRADE_MERCHANT_TALENTS_REFERENCE_ROI,
+    FHD_1080,
 )
 MERCHANT_CLICK_LOCATION_TEMPLATE = TemplateSpec(
     "商人点击位置",
