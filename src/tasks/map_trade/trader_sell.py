@@ -4,10 +4,12 @@ import re
 from time import monotonic
 from types import SimpleNamespace
 
+import cv2
 import numpy as np
 
 from src.tasks.map_trade.calendar import (
     SALE_PRICE_REFRESH_HOUR,
+    parse_calendar_payload,
     sale_price_calendar_date,
 )
 from src.tasks.map_trade.data import (
@@ -20,6 +22,7 @@ from src.tasks.map_trade.models import (
     ScreenState,
 )
 from src.tasks.map_trade.trader_constants import (
+    CALENDAR_DIR,
     SALE_120_PERCENT_MARKER_MAX_RESULTS,
     SALE_120_PERCENT_MARKER_PEAK_RADIUS,
     SALE_120_PERCENT_MARKER_TEMPLATE,
@@ -33,6 +36,7 @@ from src.tasks.map_trade.trader_constants import (
     SALE_DIALOG_REGION,
     SALE_DIALOG_TIMEOUT,
     SALE_DIALOG_TITLE_REGION,
+    SALE_DIALOG_TITLE_STABLE_HITS,
     SALE_EMPTY_NAME_STABLE_HITS,
     SALE_FULL_PAGE_OCR_TARGET_HEIGHT,
     SALE_FULL_PAGE_OCR_TARGET_HEIGHTS,
@@ -55,7 +59,7 @@ from src.tasks.map_trade.trader_constants import (
 )
 from src.tasks.map_trade.vision import normalize_text
 from src.utils.calibration import FHD_1080
-from src.utils.image_utils import to_gray
+from src.utils.image_utils import relative_roi_frame, to_gray
 
 # 等待单个日历条目全部可售卡片 OCR 确认的总时长与轮询间隔。
 SALE_ITEM_CANDIDATES_WAIT_TIMEOUT = 8.0
@@ -73,6 +77,9 @@ class SellFlowMixin:
     _last_sale_page_empty = False
     _sale_entries_override: list[CalendarEntry] | None = None
     _last_sale_toast_id: int | None = None
+    _sale_title_entries: tuple[CalendarEntry, ...] = ()
+    _sale_dialog_rejected = False
+    _sale_title_catalog_cache: dict[str, set[str]] | None = None
 
     def run_sell(self) -> bool:
         entries = self._resolve_sale_entries()
@@ -177,6 +184,8 @@ class SellFlowMixin:
                 f"{SALE_PRICE_REFRESH_HOUR:02d}:00刷新）。"
             )
             entries = list(calendar.entries_for(calendar_date.day))
+            self._sale_title_entries = tuple(entries)
+            self._sale_title_catalog_cache = None
         except Exception as exc:
             self.task.log_warning(f"价表加载失败，为避免误卖已停止出售：{exc}")
             return None
@@ -334,11 +343,14 @@ class SellFlowMixin:
         if known_toast_id is not None:
             before_toast_id = max(before_toast_id or 0, known_toast_id)
         dialog_opened = False
+        self._sale_dialog_rejected = False
         for click_number in range(1, SALE_DIALOG_OPEN_MAX_CLICKS + 1):
             self.vision.click_client(candidate.center, frame.shape, after_sleep=0.5)
             if self._wait_sale_dialog_item(entry):
                 dialog_opened = True
                 break
+            if self._sale_dialog_rejected:
+                return None
             if click_number < SALE_DIALOG_OPEN_MAX_CLICKS:
                 self.task.log_info(
                     f"卖：{entry.item}第{click_number}次点击后等待"
@@ -884,22 +896,80 @@ class SellFlowMixin:
             unique.append(box)
         return unique
 
+    def _sale_title_catalog(self, entry: CalendarEntry) -> dict[str, set[str]]:
+        if self._sale_title_catalog_cache is not None:
+            return self._sale_title_catalog_cache
+        bundled = parse_calendar_payload(
+            (CALENDAR_DIR / "price_calendar.v1.json").read_text(encoding="utf-8")
+        )
+        entries = [item for items in bundled.days.values() for item in items]
+        entries.extend(CalendarEntry(item, "") for item in ITEM_ALIASES)
+        entries.extend(self._sale_title_entries)
+        entries.append(entry)
+        catalog: dict[str, set[str]] = {}
+        for item in entries:
+            identity = self._normal(item.item)
+            for name in (item.item, *item.aliases, *ITEM_ALIASES.get(item.item, ())):
+                normalized = self._normal(name)
+                if normalized:
+                    catalog.setdefault(normalized, set()).add(identity)
+        self._sale_title_catalog_cache = catalog
+        return catalog
+
+    def _sale_dialog_title_identity(
+        self, frame: np.ndarray, catalog: dict[str, set[str]], expected: str,
+    ) -> bool | None:
+        """Resolve one complete title; None is unknown, False is a conflicting item."""
+        _left, _top, original = relative_roi_frame(frame, SALE_DIALOG_TITLE_REGION)
+        if original.size == 0:
+            return None
+        for mode in ("原图", "灰度", "CLAHE"):
+            target = original
+            if mode != "原图":
+                gray = cv2.cvtColor(original, cv2.COLOR_BGR2GRAY)
+                if mode == "CLAHE":
+                    gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+                target = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+            boxes = self.vision.ocr_boxes(
+                target, f"出售弹窗商品标题/{mode}", target_height=0,
+            )
+            texts = [str(box.name) for box in boxes]
+            self._status(
+                f"出售弹窗商品标题/{mode}",
+                [(box.name, box.confidence) for box in boxes],
+            )
+            full_name = self._normal(" ".join(texts))
+            full_ids = catalog.get(full_name, set())
+            seen_ids = set(full_ids)
+            for text in texts:
+                seen_ids.update(catalog.get(self._normal(text), set()))
+            if seen_ids - {expected}:
+                self.task.log_warning(
+                    f"卖：弹窗标题识别到其他或歧义商品：{' '.join(texts)}，停止出售。"
+                )
+                return False
+            if full_ids == {expected}:
+                return True
+        return None
+
     def _wait_sale_dialog_item(
         self,
         entry: CalendarEntry,
         timeout: float = SALE_DIALOG_TIMEOUT,
     ) -> bool:
-        names = (entry.item, *entry.aliases, *ITEM_ALIASES.get(entry.item, ()))
-        normalized_names = tuple(self._normal(value) for value in names if value)
+        catalog = self._sale_title_catalog(entry)
+        expected = self._normal(entry.item)
+        stable_hits = 0
         end_at = monotonic() + max(0.0, timeout)
         while True:
-            text = self.vision.ocr_text(
-                self.vision.capture(),
-                "出售弹窗商品标题",
-                relative_roi=SALE_DIALOG_TITLE_REGION,
+            matched = self._sale_dialog_title_identity(
+                self.vision.capture(), catalog, expected,
             )
-            normalized = self._normal(text)
-            if self._sale_name_matches(normalized, normalized_names):
+            if matched is False:
+                self._sale_dialog_rejected = True
+                return False
+            stable_hits = stable_hits + 1 if matched else 0
+            if stable_hits >= SALE_DIALOG_TITLE_STABLE_HITS:
                 return True
             if monotonic() >= end_at:
                 return False

@@ -91,6 +91,7 @@ from src.tasks.map_trade.trader_constants import (
     SALE_120_PERCENT_MARKER_MAX_RESULTS,
     SALE_120_PERCENT_MARKER_PEAK_RADIUS,
     SALE_120_PERCENT_MARKER_TEMPLATE,
+    SALE_CLOSE_POINT,
     SALE_CONFIRM_POINT,
     SALE_DIALOG_OPEN_MAX_CLICKS,
     SALE_DIALOG_REGION,
@@ -1192,6 +1193,21 @@ class SellFlowTest(unittest.TestCase):
         self.assertEqual(SALE_DIALOG_OPEN_MAX_CLICKS, len(client_clicks))
         self.assertEqual(1, len(warnings))
 
+    def test_sale_dialog_wrong_item_stops_without_reclick_or_quantity_change(self):
+        trader, _ocr_calls, _warnings, clock = self._title_trader([("豆子", "豆子", "豆子")])
+        clicks = []
+        trader.vision.click_client = lambda *args, **kwargs: clicks.append(args)
+        trader._sale_name_signature = lambda *_args: ()
+        trader._sale_toast_id = lambda *_args: None
+        trader._wait_owned_quantity = lambda: self.fail("错误商品不得进入数量设置")
+        with patch("src.tasks.map_trade.trader_sell.monotonic", lambda: clock[0]):
+            result = trader._sell_one_candidate(
+                CalendarEntry("姜黄", "S12"), SimpleNamespace(center=(620, 579)),
+                np.zeros((1080, 1920, 3), dtype=np.uint8), previous_owned=None,
+            )
+        self.assertIsNone(result)
+        self.assertEqual(1, len(clicks))
+
     def test_sell_selected_entry_rescans_after_each_completed_sale(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         first = SimpleNamespace(center=(620, 572))
@@ -1289,31 +1305,113 @@ class SellFlowTest(unittest.TestCase):
 
         self.assertEqual((80, 300), region.shape[:2])
 
-    def test_sale_dialog_empty_title_ocr_does_not_match_any_item(self):
-        calls = []
-        texts = iter(("", "白糖"))
-        sleeps = []
+    def _title_trader(self, readings, shape=(1080, 1920, 3)):
+        calls, warnings = [], []
+        clock = [0.0]
+        position = [-1, 0]
+        frame = np.full(shape, (20, 70, 150), dtype=np.uint8)
+
+        def capture():
+            position[0] += 1
+            position[1] = 0
+            return frame.copy()
+
+        def ocr_boxes(target, name, **kwargs):
+            frame_readings = readings[min(position[0], len(readings) - 1)]
+            text = frame_readings[position[1]]
+            position[1] += 1
+            calls.append((position[0], name, target.copy(), kwargs))
+            texts = text if isinstance(text, tuple) else (text,)
+            return [SimpleNamespace(name=value, confidence=0.75) for value in texts if value]
+
         trader = object.__new__(Trader)
-        trader.task = SimpleNamespace(sleep=sleeps.append)
+        trader.task = SimpleNamespace(
+            sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+            info_set=lambda *_args: None,
+            log_warning=warnings.append,
+        )
         trader.vision = SimpleNamespace(
-            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
-            ocr_text=lambda _frame, name, relative_roi: (
-                calls.append((name, relative_roi)) or next(texts)
-            ),
+            capture=capture,
+            ocr_boxes=ocr_boxes,
             simplify=lambda value: value,
         )
+        return trader, calls, warnings, clock
 
-        self.assertTrue(
-            trader._wait_sale_dialog_item(
-                CalendarEntry("白糖", "S2:苍蓝魔女"),
-                timeout=1.0,
-            )
-        )
-        self.assertEqual(
-            [("出售弹窗商品标题", SALE_DIALOG_TITLE_REGION)] * 2,
-            calls,
-        )
-        self.assertEqual([SALE_OCR_INTERVAL], sleeps)
+    def test_sale_dialog_accepts_all_turmeric_spellings_in_two_captures(self):
+        for spelling in ("姜黄", "姜黃", "薑黄", "薑黃"):
+            with self.subTest(spelling=spelling):
+                trader, calls, warnings, clock = self._title_trader(
+                    [(spelling, spelling, spelling), (spelling, spelling, spelling)]
+                )
+                with patch("src.tasks.map_trade.trader_sell.monotonic", lambda: clock[0]):
+                    self.assertTrue(trader._wait_sale_dialog_item(CalendarEntry("姜黄", "S12")))
+                self.assertEqual([0, 1], [call[0] for call in calls])
+                self.assertTrue(all(call[1].endswith("/原图") for call in calls))
+                self.assertEqual([], warnings)
+
+    def test_turmeric_catalog_maps_all_simplified_and_traditional_combinations(self):
+        trader = object.__new__(Trader)
+        trader._sale_title_entries = ()
+        trader._sale_title_catalog_cache = None
+        trader.vision = SimpleNamespace(simplify=lambda value: value)
+        catalog = trader._sale_title_catalog(CalendarEntry("姜黄", "S12"))
+        for spelling in ("姜黄", "姜黃", "薑黄", "薑黃"):
+            self.assertEqual({"姜黄"}, catalog[spelling])
+
+    def test_sale_dialog_fallback_uses_scaled_roi_and_original_pixels(self):
+        for shape in ((1080, 1920, 3), (720, 1280, 3)):
+            for readings, modes in (
+                (("未知", "白糖"), ["原图", "灰度"]),
+                (("未知", "未识别", "白糖"), ["原图", "灰度", "CLAHE"]),
+            ):
+                with self.subTest(shape=shape, modes=modes):
+                    trader, calls, _warnings, clock = self._title_trader([readings], shape)
+                    with patch("src.tasks.map_trade.trader_sell.monotonic", lambda: clock[0]):
+                        self.assertTrue(trader._wait_sale_dialog_item(CalendarEntry("白糖", "S2")))
+                    self.assertEqual(modes * 2, [c[1].split("/")[-1] for c in calls])
+                    frame = np.full(shape, (20, 70, 150), dtype=np.uint8)
+                    _, _, crop = relative_roi_frame(frame, SALE_DIALOG_TITLE_REGION)
+                    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+                    expected = [crop, cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)]
+                    if len(modes) == 3:
+                        enhanced = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+                        expected.append(cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR))
+                    for call, image in zip(calls, expected * 2):
+                        np.testing.assert_array_equal(image, call[2])
+                        self.assertEqual({"target_height": 0}, call[3])
+
+    def test_sale_dialog_empty_title_resets_consecutive_confirmation(self):
+        trader, calls, _warnings, clock = self._title_trader([
+            ("白糖", "白糖", "白糖"),
+            ("", "", ""),
+            ("白糖", "白糖", "白糖"),
+            ("白糖", "白糖", "白糖"),
+        ])
+        with patch("src.tasks.map_trade.trader_sell.monotonic", lambda: clock[0]):
+            self.assertTrue(trader._wait_sale_dialog_item(CalendarEntry("白糖", "S2")))
+        self.assertEqual([0, 1, 1, 1, 2, 3], [c[0] for c in calls])
+
+    def test_sale_dialog_rejects_fragments_and_single_frame_confirmation(self):
+        for text in ("", "姜", "黄", "姜黄油", "白糖"):
+            with self.subTest(text=text):
+                trader, calls, _warnings, clock = self._title_trader([(text, text, text)])
+                with patch("src.tasks.map_trade.trader_sell.monotonic", lambda: clock[0]):
+                    self.assertFalse(trader._wait_sale_dialog_item(
+                        CalendarEntry("白糖" if text == "白糖" else "姜黄", "S12"), timeout=0,
+                    ))
+                self.assertLessEqual(len(calls), 3)
+
+    def test_sale_dialog_rejects_wrong_or_ambiguous_identity_before_fallback(self):
+        for texts, aliases in (("豆子", ()), (("姜黄", "豆子"), ())):
+            with self.subTest(texts=texts, aliases=aliases):
+                trader, calls, warnings, clock = self._title_trader([(texts, texts, texts)])
+                with patch("src.tasks.map_trade.trader_sell.monotonic", lambda: clock[0]):
+                    self.assertFalse(trader._wait_sale_dialog_item(
+                        CalendarEntry("姜黄", "S12", aliases=aliases),
+                    ))
+                self.assertEqual(1, len(calls))
+                self.assertTrue(trader._sale_dialog_rejected)
+                self.assertTrue(warnings)
 
     def test_sale_dialog_owned_quantity_uses_given_region(self):
         calls = []
@@ -3576,6 +3674,7 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
             log_warning=lambda *_args, **_kwargs: None,
         )
         vision = SimpleNamespace(
+            ocr_text=lambda *_args, **_kwargs: "商店商品列表",
             click_reference=lambda x, y, after_sleep=0: actions.append(
                 ("reference", x, y, after_sleep)
             ),
@@ -3633,6 +3732,7 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
             log_warning=lambda *_args, **_kwargs: None,
         )
         vision = SimpleNamespace(
+            ocr_text=lambda *_args, **_kwargs: "商店商品列表",
             click_reference=lambda x, y, after_sleep=0: actions.append((x, y, after_sleep)),
             capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
             match=lambda *_args: MatchResult(-1.0, (0, 0), (0, 0)),
@@ -3647,6 +3747,51 @@ class BuyPhaseAndClassifyTest(unittest.TestCase):
 
         self.assertFalse(result.success)
         self.assertEqual([(82, 36, 0.0)], actions)
+
+    def test_return_home_closes_sale_popup_before_discount_shop(self):
+        actions = []
+        clock = [0.0]
+        texts = iter(("姜黄 拥有54个 可购买54个 出售", "", "香草牛排 食物", "香草牛排 食物"))
+        task = SimpleNamespace(
+            operate_click=lambda *args, **kwargs: actions.append(("popup", args)),
+            sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+        )
+        vision = SimpleNamespace(
+            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
+            ocr_text=lambda *_args, **_kwargs: next(texts),
+        )
+        navigator = Navigator(task, vision)
+        navigator.classify = lambda: ScreenState.SHOP
+        navigator._click_shop_close_control = lambda **kwargs: actions.append(("shop",))
+        navigator._wait_for_ocr_keywords = lambda *_args, **_kwargs: False
+        with patch("src.tasks.map_trade.navigator_trade.monotonic", lambda: clock[0]):
+            navigator.return_home()
+        self.assertEqual([("popup", SALE_CLOSE_POINT), ("shop",)], actions)
+        self.assertEqual(2 * SALE_OCR_INTERVAL, clock[0])
+
+    def test_return_home_stops_if_sale_popup_close_is_unconfirmed(self):
+        for after_click in ("姜黄 拥有54个 可购买54个 出售", ""):
+            with self.subTest(after_click=after_click):
+                clock, clicks = [0.0], []
+                task = SimpleNamespace(
+                    operate_click=lambda *args, **kwargs: clicks.append(args),
+                    sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+                )
+                vision = SimpleNamespace(
+                    capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
+                    ocr_text=lambda *_args, **_kwargs: (
+                        after_click if clicks else "拥有54个 可购买54个 出售"
+                    ),
+                )
+                navigator = Navigator(task, vision)
+                navigator.classify = lambda: ScreenState.SHOP
+                navigator._click_shop_close_control = lambda **kwargs: self.fail(
+                    "弹窗未关不能关闭商店"
+                )
+                with patch("src.tasks.map_trade.navigator_trade.monotonic", lambda: clock[0]):
+                    result = navigator.return_home()
+                self.assertFalse(result.success)
+                self.assertEqual([SALE_CLOSE_POINT], clicks)
 
     def test_return_home_from_sandbox_clicks_home_once(self):
         actions = []

@@ -66,6 +66,7 @@ class Trader(
         self._last_sale_page_empty = False
         self._sale_entries_override: list[CalendarEntry] | None = None
         self._last_sale_toast_id: int | None = None
+        self._sale_title_catalog_cache = None
         self.calendar_client = PriceCalendarClient(
             bundled_path=CALENDAR_DIR / "price_calendar.v1.json",
             sources_path=CALENDAR_DIR / "calendar_sources.json",

@@ -242,6 +242,7 @@ def shop_purchase_reference(shop: str) -> ShopPurchaseReference:
         raise KeyError(f"未知商品卡带：{shop}") from exc
 
 ITEM_ALIASES: dict[str, tuple[str, ...]] = {
+    "姜黄": ("姜黃", "薑黄", "薑黃"),
     "蜂蜜黄油杏仁": ("蜂蜜奶油杏仁", "Honey Butter Almond"),
     "炸三文鱼便当": ("炸鲑鱼便当", "Salmon Cutlet Lunchbox"),
     "卢戈山参烤串": ("卢戈烤山参串", "Lugo Ginseng Grilled Skewer"),

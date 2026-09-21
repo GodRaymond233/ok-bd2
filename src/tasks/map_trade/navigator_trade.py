@@ -48,6 +48,12 @@ from src.tasks.map_trade.navigator_constants import (
 from src.tasks.map_trade.trader_constants import (
     BUY_TO_SELL_SOLD_OUT_STABLE_HITS,
     BUY_TO_SELL_SOLD_OUT_TEMPLATE,
+    SALE_AVAILABLE_PATTERN,
+    SALE_CLOSE_POINT,
+    SALE_DIALOG_REGION,
+    SALE_DIALOG_TIMEOUT,
+    SALE_OCR_INTERVAL,
+    SALE_OWNED_PATTERN,
 )
 from src.tasks.map_trade.vision import normalize_text
 
@@ -524,6 +530,8 @@ class TradeNavigationMixin:
         )
 
     def _return_home_from_discount_shop(self) -> NavigationResult:
+        if not self._close_sale_dialog_before_return():
+            return NavigationResult(False, ScreenState.SHOP, "返回前未确认出售弹窗已关闭")
         self._click_shop_close_control()
         if not self._wait_for_ocr_keywords(
             DISCOUNT_SHOP_CLOSE_KEYWORDS,
@@ -547,3 +555,31 @@ class TradeNavigationMixin:
         ):
             return NavigationResult(True, ScreenState.HOME, "已关闭折扣商店并返回主页")
         return NavigationResult(False, self.classify(), "关闭折扣商店后未在10秒内返回主页")
+
+    def _close_sale_dialog_before_return(self) -> bool:
+        def read_dialog() -> str:
+            return normalize_text(self.vision.ocr_text(
+                self.vision.capture(), "返回前出售弹窗", relative_roi=SALE_DIALOG_REGION,
+            ))
+
+        text = read_dialog()
+        if "拥有" not in text and "可购买" not in text:
+            return True
+        if not (
+            SALE_OWNED_PATTERN.search(text)
+            and SALE_AVAILABLE_PATTERN.search(text)
+            and "出售" in text
+        ):
+            return False
+        self.task.operate_click(*SALE_CLOSE_POINT, after_sleep=0.5)
+        end_at = monotonic() + SALE_DIALOG_TIMEOUT
+        stable_hits = 0
+        while True:
+            text = read_dialog()
+            closed = bool(text) and "拥有" not in text and "可购买" not in text
+            stable_hits = stable_hits + 1 if closed else 0
+            if stable_hits >= 2:
+                return True
+            if monotonic() >= end_at:
+                return False
+            self.task.sleep(SALE_OCR_INTERVAL)
