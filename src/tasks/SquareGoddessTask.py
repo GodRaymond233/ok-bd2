@@ -23,7 +23,12 @@ from src.utils.cartridge_quick_switch import (
     SHOPKEEPER_CATEGORY_LABEL,
     category_highlight_ratio,
 )
-from src.utils.goddess_navigation import NEW_DAILY_ICON, NavigationObservation, scan_navigation
+from src.utils.goddess_navigation import (
+    NEW_DAILY_ICON,
+    NavigationObservation,
+    is_goddess_completion,
+    scan_navigation,
+)
 from src.utils.home_confirmation import (
     HOME_DIMMED_P95_THRESHOLD_DEFAULT,
     HOME_GACHA_OCR_REFERENCE_ROI,
@@ -46,6 +51,8 @@ HD720_REFERENCE_WIDTH = HD_720.width
 HD720_REFERENCE_HEIGHT = HD_720.height
 SQUARE_CARTRIDGE_SLOT_POINT = (331 / REFERENCE_WIDTH, 970 / REFERENCE_HEIGHT)
 SQUARE_HOME_POINT = (1797 / REFERENCE_WIDTH, 63 / REFERENCE_HEIGHT)
+GODDESS_NAVIGATION_CLICKED = "navigation_clicked"
+GODDESS_ALREADY_COMPLETE = "already_complete"
 QUICK_SWITCH_PAGE_PATTERNS = (
     SHOPKEEPER_CATEGORY_LABEL,
     CHARACTER_CATEGORY_LABEL,
@@ -426,9 +433,14 @@ class SquareGoddessTask(BaseBD2Task):
         )
 
         self.info_set("当前阶段", "检查女神像每日导航")
-        if not self._click_goddess_daily_navigation_until(
+        navigation_result = self._click_goddess_daily_navigation_until(
             timeout=float(self.config.get("女神像导航入口等待秒数", 8.0))
-        ):
+        )
+        if navigation_result == GODDESS_ALREADY_COMPLETE:
+            self.info_set("女神像许愿 OCR", "已确认向女神像许愿 1/1 完成")
+            self.log_info("广场女神像：已确认女神像许愿任务完成。")
+            return True
+        if navigation_result != GODDESS_NAVIGATION_CLICKED:
             self.info_set("女神像许愿 OCR", "未确认女神像每日导航，停止本次任务")
             self.log_info("广场女神像：未确认每日导航；派遣感叹号处理不代表许愿完成。")
             return False
@@ -476,21 +488,30 @@ class SquareGoddessTask(BaseBD2Task):
         self,
         timeout: float,
         interval: float = 0.35,
-    ) -> bool:
+    ) -> str | None:
         end_at = monotonic() + max(0.0, timeout)
         previous = None
+        completion_hits = 0
         while monotonic() <= end_at:
             frame = self.capture_frame()
             observation = self._observe_goddess_navigation(frame)
+            if is_goddess_completion(observation.text):
+                completion_hits += 1
+                previous = None
+                if completion_hits >= 2:
+                    return GODDESS_ALREADY_COMPLETE
+                self.sleep(interval)
+                continue
+            completion_hits = 0
             nav = observation.navigation
             if nav is not None and previous is not None:
                 tolerance = max(nav.height, previous.height)
                 if all(abs(a - b) <= tolerance for a, b in zip(nav.center, previous.center)):
                     self._click_client(*nav.center, frame.shape[1], frame.shape[0], after_sleep=2.0)
-                    return True
+                    return GODDESS_NAVIGATION_CLICKED
             previous = nav
             self.sleep(interval)
-        return False
+        return None
 
     def _wait_for_goddess_prayer_completion(
         self,

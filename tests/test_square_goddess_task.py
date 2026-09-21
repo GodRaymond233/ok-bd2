@@ -6,6 +6,8 @@ import numpy as np
 from src.tasks.map_trade.models import MatchResult, TemplateSpec
 from src.tasks.SquareGoddessTask import (
     FANTASIA_SQUARE_TEMPLATE,
+    GODDESS_ALREADY_COMPLETE,
+    GODDESS_NAVIGATION_CLICKED,
     QUICK_SWITCH_PAGE_PATTERNS,
     QUICK_SWITCH_TEMPLATE,
     REFERENCE_HEIGHT,
@@ -303,7 +305,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
             ("notice", kwargs["timeout"])
         ) or False
         task._click_goddess_daily_navigation_until = (
-            lambda **_kwargs: stages.append("navigation") or True
+            lambda **_kwargs: stages.append("navigation") or GODDESS_NAVIGATION_CLICKED
         )
         task._wait_for_goddess_prayer_completion = (
             lambda **_kwargs: stages.append("pray") or True
@@ -329,7 +331,9 @@ class SquareGoddessEntryTest(unittest.TestCase):
                     return len(notice_calls) == 2 and post_notice_found
 
                 task._click_square_notice_if_present = click_notice
-                task._click_goddess_daily_navigation_until = lambda **_kwargs: True
+                task._click_goddess_daily_navigation_until = (
+                    lambda **_kwargs: GODDESS_NAVIGATION_CLICKED
+                )
                 task._wait_for_goddess_prayer_completion = lambda **_kwargs: True
 
                 self.assertTrue(SquareGoddessTask._pray_at_goddess(task))
@@ -356,6 +360,27 @@ class SquareGoddessEntryTest(unittest.TestCase):
             [("notice", 3.0), "navigation"],
             stages,
         )
+
+    def test_explicit_completed_task_skips_navigation_and_prayer(self):
+        task = object.__new__(SquareGoddessTask)
+        task.config = {}
+        task.info_set = lambda *_args, **_kwargs: None
+        messages = []
+        task.log_info = lambda message, **_kwargs: messages.append(message)
+        notice_calls = []
+        task._click_square_notice_if_present = (
+            lambda **kwargs: notice_calls.append(kwargs["timeout"]) or True
+        )
+        task._click_goddess_daily_navigation_until = (
+            lambda **_kwargs: GODDESS_ALREADY_COMPLETE
+        )
+        task._wait_for_goddess_prayer_completion = (
+            lambda **_kwargs: self.fail("No prayer wait for completed task")
+        )
+
+        self.assertTrue(SquareGoddessTask._pray_at_goddess(task))
+        self.assertEqual([3.0], notice_calls)
+        self.assertEqual(["广场女神像：已确认女神像许愿任务完成。"], messages)
 
     def test_successful_run_returns_home_after_prayer(self):
         task = object.__new__(SquareGoddessTask)

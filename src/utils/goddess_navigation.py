@@ -49,6 +49,14 @@ def is_goddess_destination(text):
     )
 
 
+def is_goddess_completion(text):
+    for segment in str(text).split("|"):
+        normalized = re.sub(r"[\s，,。.!！·…]", "", segment).replace("／", "/")
+        if re.search(r"(?:向)?女神像许愿1/1完成", normalized):
+            return True
+    return False
+
+
 def scan_navigation(frame, *, ocr, normalize, match, passes, icon_specs):
     height, width = frame.shape[:2]
     broad = (int(width * 0.50), 0, width, height)

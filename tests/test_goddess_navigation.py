@@ -4,11 +4,16 @@ from unittest.mock import patch
 
 import numpy as np
 
-from src.tasks.SquareGoddessTask import SquareGoddessTask
+from src.tasks.SquareGoddessTask import (
+    GODDESS_ALREADY_COMPLETE,
+    GODDESS_NAVIGATION_CLICKED,
+    SquareGoddessTask,
+)
 from src.utils.goddess_navigation import (
     NEW_DAILY_ICON,
     NavigationObservation,
     TextBox,
+    is_goddess_completion,
     is_goddess_destination,
     scan_navigation,
 )
@@ -20,6 +25,17 @@ class GoddessNavigationTest(unittest.TestCase):
             self.assertTrue(is_goddess_destination(text))
         for text in ("每日派遣", "移动至其他任务", "女温史克力艾至动移"):
             self.assertFalse(is_goddess_destination(text))
+
+    def test_completion_requires_exact_goddess_task_and_full_count(self):
+        for text in ("向女神像许愿1/1完成！", "女神像许愿 1／1 完成"):
+            self.assertTrue(is_goddess_completion(text))
+        for text in (
+            "向女神像许愿0/1",
+            "向女神像许愿完成",
+            "每日派遣1/1完成！",
+            "创建队伍",
+        ):
+            self.assertFalse(is_goddess_completion(text))
 
     def test_title_anchor_scales_and_requires_neighbor_icon(self):
         for width, height in ((1920, 1080), (1280, 720)):
@@ -69,8 +85,29 @@ class GoddessNavigationTest(unittest.TestCase):
         clicks = []
         task._click_client = lambda *args, **kwargs: clicks.append(args)
         with patch("src.tasks.SquareGoddessTask.monotonic", return_value=0):
-            self.assertTrue(task._click_goddess_daily_navigation_until(1))
+            self.assertEqual(
+                GODDESS_NAVIGATION_CLICKED,
+                task._click_goddess_daily_navigation_until(1),
+            )
         self.assertEqual([(990, 310, 1280, 720)], clicks)
+
+    def test_explicit_completion_requires_two_consecutive_observations(self):
+        task = object.__new__(SquareGoddessTask)
+        task.sleep = lambda *args: None
+        task.capture_frame = lambda: np.zeros((720, 1280, 3), dtype=np.uint8)
+        sequence = iter([
+            NavigationObservation("absent", "向女神像许愿1/1完成！"),
+            NavigationObservation("absent", "创建队伍"),
+            NavigationObservation("absent", "向女神像许愿1/1完成！"),
+            NavigationObservation("absent", "向女神像许愿1/1完成！"),
+        ])
+        task._observe_goddess_navigation = lambda frame: next(sequence)
+        task._click_client = lambda *args, **kwargs: self.fail("No navigation click")
+        with patch("src.tasks.SquareGoddessTask.monotonic", return_value=0):
+            self.assertEqual(
+                GODDESS_ALREADY_COMPLETE,
+                task._click_goddess_daily_navigation_until(1),
+            )
 
     def test_completion_rejects_unknown_blank_or_remaining_task(self):
         for state in ("unknown", "ready", "ambiguous"):
