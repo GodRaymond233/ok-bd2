@@ -10,6 +10,7 @@ import numpy as np
 
 from src.tasks.BaseBD2Task import (
     FIEND_HUNT_REWARD_TITLE,
+    GOLDEN_ARENA_REWARD_TITLE,
     RECENT_CARTRIDGE_SPECIAL_PAGE_SECONDS,
     RECENT_PVP_CARTRIDGE_PIXEL_THRESHOLD,
     RECENT_PVP_CARTRIDGE_TEMPLATE_FILE,
@@ -121,6 +122,52 @@ class FiendRewardEntryTest(unittest.TestCase):
     @staticmethod
     def normal_boxes():
         return [SimpleNamespace(name="酒馆", x=0, y=0, width=50, height=20)]
+
+    @staticmethod
+    def arena_reward_boxes(size=(1920, 1080)):
+        width, height = size
+        return [
+            SimpleNamespace(name="黄金竞技场体验赛季42奖励", x=width * 0.5,
+                            y=height * 0.23, width=width * 0.32, height=height * 0.05),
+            SimpleNamespace(name="奖励已通过邮件发放。", x=width * 0.6,
+                            y=height * 0.78, width=width * 0.15, height=height * 0.04),
+        ]
+
+    def test_arena_reward_closes_before_quick_switch_on_non_pvp_cartridge(self):
+        for size in ((1920, 1080), (1280, 720)):
+            with self.subTest(size=size):
+                reward = self.arena_reward_boxes(size)
+                task = self.make_task(
+                    [reward, reward, [], self.normal_boxes(), self.normal_boxes()],
+                    size=size,
+                )
+                quick = Mock(return_value=True)
+                self.assertTrue(
+                    task.open_cartridge_quick_switcher(lambda: True, quick, lambda: True)
+                )
+                self.assertEqual(2, len(self.clicks))
+                self.assertAlmostEqual(0.675, self.clicks[1][0])
+                self.assertAlmostEqual(0.8, self.clicks[1][1])
+                task.info_set.assert_any_call(GOLDEN_ARENA_REWARD_TITLE, "已确认关闭")
+                quick.assert_called_once()
+
+    def test_arena_reward_requires_same_frame_pair_and_confirmed_close(self):
+        title, action = self.arena_reward_boxes()
+        for screens, expected_clicks in (
+            ([[title]], 0),
+            ([[action]], 0),
+            ([[title], [action]], 0),
+            ([[title, action]], 1),
+            ([[title, action], self.normal_boxes(), [title, action]], 1),
+        ):
+            with self.subTest(screens=screens):
+                task = self.make_task(screens)
+                quick = Mock(return_value=True)
+                self.assertFalse(
+                    task.open_cartridge_quick_switcher(lambda: True, quick, lambda: True)
+                )
+                self.assertEqual(1 + expected_clicks, len(self.clicks))
+                quick.assert_not_called()
 
     def test_reward_closes_once_before_quick_switch_on_any_recent_cartridge(self):
         for size, recent_pvp in (((1920, 1080), False), ((1280, 720), True)):

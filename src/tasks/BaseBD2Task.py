@@ -40,6 +40,8 @@ RECENT_CARTRIDGE_SPECIAL_PAGE_SECONDS = 3.0
 RECENT_CARTRIDGE_SPECIAL_PAGE_MAX_ACTIONS = 3
 FIEND_HUNT_REWARD_TITLE = "魔兽追踪者赛季奖励"
 FIEND_HUNT_REWARD_DISMISS_TEXT = "奖励已发放至背包"
+GOLDEN_ARENA_REWARD_TITLE = "黄金竞技场体验赛季"
+GOLDEN_ARENA_REWARD_DISMISS_TEXT = "奖励已通过邮件发放"
 BEIJING_TIMEZONE = timezone(timedelta(hours=8))
 RECENT_PVP_CARTRIDGE_TEMPLATE_FILE = "cartridge-image2-left-lower-cutout.png"
 RECENT_PVP_CARTRIDGE_TEMPLATE_THRESHOLD = 0.95
@@ -645,14 +647,14 @@ class BaseBD2Task(BaseTask):
         *,
         allow_pvp_pages: bool = True,
     ) -> CartridgeSpecialPageResult:
-        """Dismiss fiend rewards on any cartridge and PVP pages when enabled."""
+        """Dismiss shared reward pages and PVP pages when enabled."""
         if allow_season_reward is None:
             allow_season_reward = self._is_beijing_monday()
         end_at = monotonic() + max(0.0, float(timeout))
         handled: set[str] = set()
         action_count = 0
-        fiend_reward_pending = False
-        fiend_reward_clear_frames = 0
+        reward_pending: str | None = None
+        reward_clear_frames = 0
 
         while True:
             boxes = self._recent_cartridge_ocr_boxes()
@@ -661,22 +663,25 @@ class BaseBD2Task(BaseTask):
             )
             normalized = normalize_ocr_text(text)
             action_name, target_box = "", None
-            if (
-                FIEND_HUNT_REWARD_TITLE in normalized
-                or FIEND_HUNT_REWARD_DISMISS_TEXT in normalized
+            for title, dismiss_text in (
+                (FIEND_HUNT_REWARD_TITLE, FIEND_HUNT_REWARD_DISMISS_TEXT),
+                (GOLDEN_ARENA_REWARD_TITLE, GOLDEN_ARENA_REWARD_DISMISS_TEXT),
             ):
-                fiend_reward_pending = True
-                fiend_reward_clear_frames = 0
-                if FIEND_HUNT_REWARD_TITLE in normalized:
-                    action_name = FIEND_HUNT_REWARD_TITLE
-                    target_box = self._find_ocr_box(boxes, FIEND_HUNT_REWARD_DISMISS_TEXT)
-            elif fiend_reward_pending:
-                # An empty OCR result cannot prove that the overlay closed.
-                fiend_reward_clear_frames = fiend_reward_clear_frames + 1 if normalized else 0
-                if fiend_reward_clear_frames >= 2:
-                    fiend_reward_pending = False
-                    self.info_set("魔兽追踪者赛季奖励", "已确认关闭")
-            if allow_pvp_pages and not fiend_reward_pending:
+                if title in normalized or dismiss_text in normalized:
+                    reward_pending = title
+                    reward_clear_frames = 0
+                    if title in normalized:
+                        action_name = title
+                        target_box = self._find_ocr_box(boxes, dismiss_text)
+                    break
+            else:
+                if reward_pending:
+                    # An empty OCR result cannot prove that the overlay closed.
+                    reward_clear_frames = reward_clear_frames + 1 if normalized else 0
+                    if reward_clear_frames >= 2:
+                        self.info_set(reward_pending, "已确认关闭")
+                        reward_pending = None
+            if allow_pvp_pages and not reward_pending:
                 text, action_name, target_box = self._pvp_special_page_action(
                     boxes,
                     allow_season_reward=allow_season_reward,
@@ -701,21 +706,21 @@ class BaseBD2Task(BaseTask):
                     )
                     handled.add(action_name)
                     action_count += 1
-                    if action_name == FIEND_HUNT_REWARD_TITLE:
+                    if action_name in (FIEND_HUNT_REWARD_TITLE, GOLDEN_ARENA_REWARD_TITLE):
                         end_at = max(end_at, monotonic() + max(0.0, float(timeout)))
 
             if (
                 monotonic() >= end_at
                 or (
                     action_count >= RECENT_CARTRIDGE_SPECIAL_PAGE_MAX_ACTIONS
-                    and not fiend_reward_pending
+                    and not reward_pending
                 )
             ):
                 break
             self.sleep(max(0.0, float(interval)))
 
-        if fiend_reward_pending:
-            self.info_set("魔兽追踪者赛季奖励", "关闭未确认，停止卡带切换")
+        if reward_pending:
+            self.info_set(reward_pending, "关闭未确认，停止卡带切换")
             return CartridgeSpecialPageResult.BLOCKED
         return (
             CartridgeSpecialPageResult.HANDLED
