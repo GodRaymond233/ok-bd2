@@ -1,8 +1,9 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 
+from src.tasks.BaseBD2Task import CartridgeSpecialPageResult
 from src.tasks.map_trade.models import MatchResult, TemplateSpec
 from src.tasks.SquareGoddessTask import (
     FANTASIA_SQUARE_TEMPLATE,
@@ -113,6 +114,25 @@ class SquareGoddessEntryTest(unittest.TestCase):
         )
         self.assertIn("highlight", stages)
         self.assertIn(("square", FANTASIA_SQUARE_TEMPLATE), stages)
+
+    def test_entry_retries_square_confirmation_after_late_fiend_reward(self):
+        task = object.__new__(SquareGoddessTask)
+        task.config = {"广场入场等待秒数": 1.0}
+        task.info_set = Mock()
+        task.open_cartridge_quick_switcher = Mock(return_value=True)
+        task._wait_for_life_gameplay_category = Mock(return_value=True)
+        task.sleep = Mock()
+        task.operate_click = Mock()
+        task._wait_for_template = Mock(side_effect=[False, True])
+        task._handle_recent_cartridge_special_pages = Mock(
+            return_value=CartridgeSpecialPageResult.HANDLED
+        )
+
+        self.assertTrue(SquareGoddessTask._enter_square_from_home(task))
+        self.assertEqual(2, task._wait_for_template.call_count)
+        task._handle_recent_cartridge_special_pages.assert_called_once_with(
+            allow_pvp_pages=False
+        )
 
     def test_fixed_points_are_relative_to_1920_by_1080(self):
         self.assertEqual(

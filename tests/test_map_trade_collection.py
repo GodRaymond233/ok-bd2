@@ -5,10 +5,11 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 
+from src.tasks.BaseBD2Task import CartridgeSpecialPageResult
 from src.tasks.map_trade.card_status import (
     CardActionDetection,
     CardActionState,
@@ -58,6 +59,28 @@ from src.tasks.map_trade.progress import (
 
 
 class CollectionCardTest(unittest.TestCase):
+    def test_story_entry_retries_after_late_fiend_reward(self):
+        failure = NavigationResult(False, ScreenState.UNKNOWN, "入场确认超时")
+        success = NavigationResult(True, ScreenState.SANDBOX, "Q_sp1")
+        for reward_result, expected, calls in (
+            (CartridgeSpecialPageResult.HANDLED, success, 2),
+            (CartridgeSpecialPageResult.ABSENT, failure, 1),
+        ):
+            with self.subTest(reward_result=reward_result):
+                task = SimpleNamespace(
+                    _handle_recent_cartridge_special_pages=Mock(return_value=reward_result)
+                )
+                navigator = Navigator(task, SimpleNamespace())
+                navigator._wait_for_confirmed_sandbox = Mock(
+                    side_effect=[failure, success]
+                )
+
+                self.assertIs(expected, navigator._wait_for_story_sandbox(1, timeout=1.0))
+                self.assertEqual(calls, navigator._wait_for_confirmed_sandbox.call_count)
+                task._handle_recent_cartridge_special_pages.assert_called_once_with(
+                    allow_pvp_pages=False
+                )
+
     def test_collection_card_selection_uses_common_quick_switch_and_badge_center(self):
         clicks = []
         client_clicks = []

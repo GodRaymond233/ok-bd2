@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 from qfluentwidgets import FluentIcon
 
-from src.tasks.BaseBD2Task import BaseBD2Task
+from src.tasks.BaseBD2Task import BaseBD2Task, CartridgeSpecialPageResult
 from src.tasks.map_trade.models import MatchResult, TemplateSpec
 from src.utils import task_vision
 from src.utils.calibration import FHD_1080, HD_720
@@ -245,6 +245,15 @@ class SquareGoddessTask(BaseBD2Task):
             name="梦幻广场",
         ):
             return True
+
+        if self._handle_recent_cartridge_special_pages(
+            allow_pvp_pages=False,
+        ) is CartridgeSpecialPageResult.HANDLED:
+            return self._wait_for_template(
+                FANTASIA_SQUARE_TEMPLATE,
+                timeout=float(self.config.get("广场入场等待秒数", 30.0)),
+                name="梦幻广场",
+            )
 
         return False
 

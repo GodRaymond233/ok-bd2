@@ -6,6 +6,7 @@ from time import monotonic
 
 import numpy as np
 
+from src.tasks.BaseBD2Task import CartridgeSpecialPageResult
 from src.tasks.map_trade.action_icons import (
     ACTION_SLOT_CENTERS_REFERENCE,
     ACTION_SLOT_RELATIVE_ROIS,
@@ -790,15 +791,21 @@ class SandboxNavigationMixin:
         timeout: float | None = None,
         interval: float = 0.5,
     ) -> NavigationResult:
-        return self._wait_for_confirmed_sandbox(
-            timeout=(
-                self._loading_timeout() if timeout is None else float(timeout)
-            ),
-            interval=interval,
-            success_message=f"Q_sp{target_number}",
-            failure_message=f"剧情游戏卡{target_number}入场确认超时",
-            handle_intermediate=True,
-        )
+        wait_seconds = self._loading_timeout() if timeout is None else float(timeout)
+        for attempt in range(2):
+            result = self._wait_for_confirmed_sandbox(
+                timeout=wait_seconds,
+                interval=interval,
+                success_message=f"Q_sp{target_number}",
+                failure_message=f"剧情游戏卡{target_number}入场确认超时",
+                handle_intermediate=True,
+            )
+            if result.success or attempt:
+                return result
+            if self.task._handle_recent_cartridge_special_pages(
+                allow_pvp_pages=False,
+            ) is not CartridgeSpecialPageResult.HANDLED:
+                return result
 
     def _wait_for_current_sandbox(
         self,
