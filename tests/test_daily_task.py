@@ -800,7 +800,7 @@ class DailyTaskHelperTest(unittest.TestCase):
                     [(166, 158), (100, 50)] if expected else [(166, 158)], clicks
                 )
                 self.assertEqual(1, len(ocr_calls))
-                self.assertEqual((0.11, 0.018, 0.23, 0.08), ocr_calls[0]["relative_roi"])
+                self.assertEqual((0.11, 0.01, 0.25, 0.10), ocr_calls[0]["relative_roi"])
 
     def test_loading_wait_prioritizes_next_template(self):
         task = object.__new__(DailyTask)
