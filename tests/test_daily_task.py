@@ -17,9 +17,11 @@ from src.tasks.DailyTask import (
     GUILD_SUCCESS_KEYWORDS,
     GUILD_TEMPLATE,
     MY_HOME_TEMPLATE,
+    MY_HOME_TITLE_RELATIVE_ROI,
     DailyTask,
 )
 from src.tasks.map_trade.models import MatchResult
+from src.tasks.map_trade.vision import Vision
 from src.tasks.quick_hunt import (
     QUICK_HUNT_ADVENTURE_LABEL_PATTERNS,
     QUICK_HUNT_ADVENTURE_LIST_ROI,
@@ -801,6 +803,33 @@ class DailyTaskHelperTest(unittest.TestCase):
                 )
                 self.assertEqual(1, len(ocr_calls))
                 self.assertEqual((0.11, 0.01, 0.25, 0.10), ocr_calls[0]["relative_roi"])
+
+    def test_my_home_title_ocr_region_scales_with_client(self):
+        for width, height, expected in (
+            (1920, 1080, (211, 11, 269, 97)),
+            (1280, 720, (141, 7, 179, 65)),
+        ):
+            with self.subTest(size=(width, height)):
+                crops = []
+
+                def ocr(*, frame, **_kwargs):
+                    crops.append(frame.shape[:2])
+                    return [SimpleNamespace(name="我的小屋", x=0, y=0, width=10, height=10)]
+
+                task = SimpleNamespace(
+                    config={"日常 OCR 阈值": 0.2},
+                    ocr_threshold_key="日常 OCR 阈值",
+                    ocr=ocr,
+                    info_set=lambda *_args, **_kwargs: None,
+                )
+                frame = np.zeros((height, width, 3), dtype=np.uint8)
+                boxes = Vision(task).ocr_boxes(
+                    frame, "小屋页面标题", relative_roi=MY_HOME_TITLE_RELATIVE_ROI,
+                    target_height=0,
+                )
+
+                self.assertEqual([(expected[3], expected[2])], crops)
+                self.assertEqual((expected[0], expected[1]), (boxes[0].x, boxes[0].y))
 
     def test_loading_wait_prioritizes_next_template(self):
         task = object.__new__(DailyTask)
