@@ -7,6 +7,7 @@ import numpy as np
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import (
+    FIEND_HUNT_REWARD_TITLE,
     RECENT_CARTRIDGE_SPECIAL_PAGE_MAX_ACTIONS,
     BaseBD2Task,
 )
@@ -430,7 +431,11 @@ class PVPTask(BaseBD2Task):
         allow_season_reward = self._is_beijing_monday()
         self.info_set(
             "PVP 入场特殊页面模式",
-            "周一：赛季奖励及升降级" if allow_season_reward else "非周一：仅升降级",
+            (
+                "周一：赛季奖励、魔兽奖励及升降级"
+                if allow_season_reward
+                else "非周一：魔兽奖励及升降级"
+            ),
         )
 
         while True:
@@ -461,7 +466,7 @@ class PVPTask(BaseBD2Task):
                         self.info_set("当前阶段", f"处理 PVP 入场{action_name}")
                         after_sleep = (
                             PVP_SEASON_REWARD_AFTER_CLICK_SECONDS
-                            if action_name == "赛季奖励"
+                            if action_name in ("赛季奖励", FIEND_HUNT_REWARD_TITLE)
                             else PVP_RANK_PAGE_AFTER_CLICK_SECONDS
                         )
                         self.operate_click(

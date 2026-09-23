@@ -742,6 +742,15 @@ class BaseBD2Task(BaseTask):
         )
         normalized = normalize_ocr_text(text)
         if (
+            FIEND_HUNT_REWARD_TITLE in normalized
+            and FIEND_HUNT_REWARD_DISMISS_TEXT in normalized
+        ):
+            return (
+                text,
+                FIEND_HUNT_REWARD_TITLE,
+                cls._find_ocr_box(boxes, FIEND_HUNT_REWARD_DISMISS_TEXT),
+            )
+        if (
             allow_season_reward
             and "赛季奖励" in normalized
             and "点击画面即可返回" in normalized

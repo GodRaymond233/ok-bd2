@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 
 from src.tasks.BaseBD2Task import (
+    FIEND_HUNT_REWARD_DISMISS_TEXT,
     FIEND_HUNT_REWARD_TITLE,
     GOLDEN_ARENA_REWARD_TITLE,
     RECENT_CARTRIDGE_SPECIAL_PAGE_SECONDS,
@@ -1163,6 +1164,8 @@ class PVPTaskHelperTest(unittest.TestCase):
             ("点击画面即可返回",),
             ("赛季奖励",),
             ("赛季奖励", "确认"),
+            (FIEND_HUNT_REWARD_TITLE,),
+            (FIEND_HUNT_REWARD_DISMISS_TEXT,),
         )
         for texts in incomplete_frames:
             with self.subTest(texts=texts):
@@ -1685,6 +1688,37 @@ class PVPTaskHelperTest(unittest.TestCase):
         self.assertEqual([PVP_MEDALS_TEMPLATE] * 4, matched)
         self.assertEqual([0.5, 0.5, 0.5], sleeps)
         self.assertEqual(2.0, PVP_HUB_SPECIAL_PAGE_GRACE_SECONDS)
+
+    def test_pvp_entry_wait_closes_fiend_reward_on_non_monday(self):
+        task = object.__new__(PVPTask)
+        task.info_set = Mock()
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task._is_beijing_monday = lambda: False
+        reward = [
+            SimpleNamespace(name=FIEND_HUNT_REWARD_TITLE, x=1100, y=280,
+                            width=340, height=50),
+            SimpleNamespace(name=FIEND_HUNT_REWARD_DISMISS_TEXT, x=1180, y=820,
+                            width=180, height=30),
+        ]
+        screens = iter((reward, [], [], []))
+        task._pvp_special_page_ocr_boxes = lambda *_args, **_kwargs: next(screens)
+        task.operate_click = Mock()
+        task._match = lambda *_args, **_kwargs: SimpleNamespace(score=0.9)
+        task._passes = lambda *_args, **_kwargs: True
+        task.sleep = lambda *_args, **_kwargs: None
+
+        with patch(
+            "src.tasks.PVPTask.monotonic",
+            side_effect=(0.0, 0.1, 0.5, 1.0, 3.1),
+        ):
+            self.assertTrue(PVPTask._wait_for_pvp_hub_after_cart(task, timeout=5.0))
+
+        task.operate_click.assert_called_once_with(
+            (1180 + 180 / 2) / 1920,
+            (820 + 30 / 2) / 1080,
+            after_sleep=PVP_SEASON_REWARD_AFTER_CLICK_SECONDS,
+        )
+        task.info_set.assert_any_call("PVP 入场特殊页面模式", "非周一：魔兽奖励及升降级")
 
     def test_pvp_entry_wait_does_not_repeat_rank_page_click_while_visible(self):
         task = object.__new__(PVPTask)
