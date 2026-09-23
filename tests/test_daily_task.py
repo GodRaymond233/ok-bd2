@@ -773,6 +773,35 @@ class DailyTaskHelperTest(unittest.TestCase):
         self.assertTrue(DailyTask.run_my_home_sign_in(task))
         self.assertEqual([(166, 158), (100, 50)], clicks)
 
+    def test_my_home_sign_in_recovers_from_template_miss_with_header_ocr(self):
+        for title, expected in (("我的小屋", True), ("其他页面", False)):
+            with self.subTest(title=title):
+                task = object.__new__(DailyTask)
+                task.config = {"小屋页面等待秒数": 12.0}
+                task.log_info = lambda *_args, **_kwargs: None
+                task._status_set = lambda *_args, **_kwargs: None
+                task._sleep_after_recognition = lambda: None
+                task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+                task._wait_loading_or_template = lambda *_args, **_kwargs: ("none", False)
+                task._wait_for_template = lambda *_args, **_kwargs: False
+                task._wait_for_home_confirmation = lambda *_args, **_kwargs: True
+                clicks = []
+                task._click_reference = lambda x, y, **_kwargs: clicks.append((x, y))
+                ocr_calls = []
+
+                def ocr_text(_frame, _name, **kwargs):
+                    ocr_calls.append(kwargs)
+                    return title
+
+                task._quick_vision = lambda: SimpleNamespace(ocr_text=ocr_text)
+
+                self.assertIs(expected, DailyTask.run_my_home_sign_in(task))
+                self.assertEqual(
+                    [(166, 158), (100, 50)] if expected else [(166, 158)], clicks
+                )
+                self.assertEqual(1, len(ocr_calls))
+                self.assertEqual((0.11, 0.018, 0.23, 0.08), ocr_calls[0]["relative_roi"])
+
     def test_loading_wait_prioritizes_next_template(self):
         task = object.__new__(DailyTask)
         task.config = {"loading 出现等待秒数": 1.0, "loading 消失等待秒数": 1.0}
