@@ -27,11 +27,16 @@ class GoddessNavigationTest(unittest.TestCase):
             self.assertFalse(is_goddess_destination(text))
 
     def test_completion_requires_exact_goddess_task_and_full_count(self):
-        for text in ("向女神像许愿1/1完成！", "女神像许愿 1／1 完成"):
+        for text in (
+            "向女神像许愿1/1完成！",
+            "女神像许愿 1／1 完成",
+            "向女神像许愿2/2完成！",
+            "向女神像许愿任务已完成！",
+        ):
             self.assertTrue(is_goddess_completion(text))
         for text in (
             "向女神像许愿0/1",
-            "向女神像许愿完成",
+            "向女神像许愿进行中",
             "每日派遣1/1完成！",
             "创建队伍",
         ):
@@ -99,7 +104,7 @@ class GoddessNavigationTest(unittest.TestCase):
             NavigationObservation("absent", "向女神像许愿1/1完成！"),
             NavigationObservation("absent", "创建队伍"),
             NavigationObservation("absent", "向女神像许愿1/1完成！"),
-            NavigationObservation("absent", "向女神像许愿1/1完成！"),
+            NavigationObservation("absent", "向女神像许愿2/2完成！"),
         ])
         task._observe_goddess_navigation = lambda frame: next(sequence)
         task._click_client = lambda *args, **kwargs: self.fail("No navigation click")

@@ -446,7 +446,7 @@ class SquareGoddessTask(BaseBD2Task):
             timeout=float(self.config.get("女神像导航入口等待秒数", 8.0))
         )
         if navigation_result == GODDESS_ALREADY_COMPLETE:
-            self.info_set("女神像许愿 OCR", "已确认向女神像许愿 1/1 完成")
+            self.info_set("女神像许愿 OCR", "已确认女神像许愿任务完成")
             self.log_info("广场女神像：已确认女神像许愿任务完成。")
             return True
         if navigation_result != GODDESS_NAVIGATION_CLICKED:
