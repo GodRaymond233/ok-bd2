@@ -77,9 +77,11 @@ class CollectionCardTest(unittest.TestCase):
 
                 self.assertIs(expected, navigator._wait_for_story_sandbox(1, timeout=1.0))
                 self.assertEqual(calls, navigator._wait_for_confirmed_sandbox.call_count)
-                task._handle_recent_cartridge_special_pages.assert_called_once_with(
-                    allow_pvp_pages=False
-                )
+                task._handle_recent_cartridge_special_pages.assert_called_once()
+                reward_call = task._handle_recent_cartridge_special_pages.call_args
+                self.assertFalse(reward_call.kwargs["allow_pvp_pages"])
+                self.assertGreaterEqual(reward_call.kwargs["timeout"], 0.0)
+                self.assertLessEqual(reward_call.kwargs["timeout"], 1.0)
 
     def test_collection_card_selection_uses_common_quick_switch_and_badge_center(self):
         clicks = []

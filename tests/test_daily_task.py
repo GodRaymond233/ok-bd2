@@ -783,6 +783,7 @@ class DailyTaskHelperTest(unittest.TestCase):
                 task.log_info = lambda *_args, **_kwargs: None
                 task._status_set = lambda *_args, **_kwargs: None
                 task._sleep_after_recognition = lambda: None
+                task.sleep = lambda *_args, **_kwargs: None
                 task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
                 task._wait_loading_or_template = lambda *_args, **_kwargs: ("none", False)
                 task._wait_for_template = lambda *_args, **_kwargs: False
@@ -801,7 +802,7 @@ class DailyTaskHelperTest(unittest.TestCase):
                 self.assertEqual(
                     [(166, 158), (100, 50)] if expected else [(166, 158)], clicks
                 )
-                self.assertEqual(1, len(ocr_calls))
+                self.assertEqual(1 if expected else 3, len(ocr_calls))
                 self.assertEqual((0.11, 0.01, 0.25, 0.10), ocr_calls[0]["relative_roi"])
 
     def test_my_home_title_ocr_region_scales_with_client(self):
