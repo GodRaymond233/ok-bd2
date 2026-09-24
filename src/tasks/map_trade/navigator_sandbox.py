@@ -792,9 +792,11 @@ class SandboxNavigationMixin:
         interval: float = 0.5,
     ) -> NavigationResult:
         wait_seconds = self._loading_timeout() if timeout is None else float(timeout)
+        deadline = monotonic() + max(0.0, wait_seconds)
         for attempt in range(2):
+            remaining = max(0.0, deadline - monotonic())
             result = self._wait_for_confirmed_sandbox(
-                timeout=wait_seconds,
+                timeout=remaining,
                 interval=interval,
                 success_message=f"Q_sp{target_number}",
                 failure_message=f"剧情游戏卡{target_number}入场确认超时",
@@ -802,7 +804,11 @@ class SandboxNavigationMixin:
             )
             if result.success or attempt:
                 return result
+            remaining = max(0.0, deadline - monotonic())
+            if remaining <= 0.0:
+                return result
             if self.task._handle_recent_cartridge_special_pages(
+                timeout=remaining,
                 allow_pvp_pages=False,
             ) is not CartridgeSpecialPageResult.HANDLED:
                 return result
