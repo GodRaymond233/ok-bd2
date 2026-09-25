@@ -207,6 +207,7 @@ class TaskVisionMixin:
                     name,
                     last_text=last_text,
                     interval=interval,
+                    reject_template_on_home=reject_template_on_home,
                 )
             self.sleep(interval)
 
@@ -220,6 +221,7 @@ class TaskVisionMixin:
         name: str,
         last_text: str = "",
         interval: float = 0.5,
+        reject_template_on_home: bool = False,
     ) -> tuple[str, bool, str]:
         end_at = monotonic() + float(self.config.get("loading 消失等待秒数", 35.0))
         while monotonic() <= end_at:
@@ -228,7 +230,17 @@ class TaskVisionMixin:
             text = self._ocr_text(frame, name=name)
             last_text = text
             self.info_set(f"{name} 模板", f"{result.score:.3f}")
-            if self._passes(result, spec) or self._keyword_match_count(text, keywords) >= 1:
+            if (
+                reject_template_on_home
+                and self._passes(result, spec)
+                and self._frame_confirms_home(frame, name)
+            ):
+                self.info_set(f"{name} 模板", f"{result.score:.3f} 主页帧误命中，忽略")
+                self.log_info(
+                    f"{task_name}：{spec.name} 模板在主页帧误命中"
+                    f"（{result.score:.3f}），忽略并继续等待。"
+                )
+            elif self._passes(result, spec) or self._keyword_match_count(text, keywords) >= 1:
                 return "target", True, text
 
             loading = self._match(frame, LOADING_TEMPLATE)

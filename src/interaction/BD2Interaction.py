@@ -221,6 +221,8 @@ class BD2Interaction(PostMessageInteraction):
 
     def try_activate(self):
         if self._activate_required:
-            if not self.hwnd_window.is_foreground():
-                super().try_activate()
-            self._activate_required = False
+            if self.hwnd_window.is_foreground():
+                self._activate_required = False
+                return
+            super().try_activate()
+            self._activate_required = not self.hwnd_window.is_foreground()

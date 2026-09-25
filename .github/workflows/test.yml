@@ -24,5 +24,6 @@ jobs:
         shell: pwsh
         run: .\scripts\check_dependency_exports.ps1
       - run: python -m pip install -r requirements-dev.txt
-      - run: ruff check .
-      - run: python -m unittest discover -s tests -v
+      - name: Run final quality checks
+        shell: pwsh
+        run: .\scripts\run_checks.ps1 -Mode Final

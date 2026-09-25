@@ -891,6 +891,51 @@ class DailyTaskHelperTest(unittest.TestCase):
             ),
         )
 
+    def test_loading_wait_keeps_home_template_rejection_after_loading(self):
+        task = object.__new__(DailyTask)
+        task.config = {"loading 出现等待秒数": 1.0, "loading 消失等待秒数": 1.0}
+        task.capture_frame = lambda: np.zeros((10, 10, 3), dtype=np.uint8)
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task.sleep = lambda *_args, **_kwargs: None
+        task._ocr_text = lambda *_args, **_kwargs: ""
+        task._frame_confirms_home = lambda *_args, **_kwargs: True
+        task._passes = lambda result, _spec: result.score >= 0.8
+        calls = []
+
+        def fake_match(_frame, spec):
+            calls.append(spec.name)
+            if spec is LOADING_TEMPLATE:
+                loading_seen = calls.count(LOADING_TEMPLATE.name)
+                return MatchResult(0.9 if loading_seen == 1 else -1.0, (0, 0), (1, 1))
+            target_seen = calls.count(GUILD_SIGNUP_SUCCESS_TEMPLATE.name)
+            return MatchResult(0.9 if target_seen == 2 else -1.0, (0, 0), (1, 1))
+
+        task._match = fake_match
+        with patch(
+            "src.tasks.task_vision_mixin.monotonic",
+            side_effect=[0.0, 0.1, 0.2, 0.3],
+        ):
+            state, found, _text = DailyTask._wait_loading_or_template_or_ocr(
+                task,
+                "公会签到",
+                GUILD_SIGNUP_SUCCESS_TEMPLATE,
+                GUILD_SUCCESS_KEYWORDS,
+                name="guild_sign_in_after_loading",
+                reject_template_on_home=True,
+            )
+
+        self.assertEqual(("loading", False), (state, found))
+        self.assertEqual(
+            [
+                GUILD_SIGNUP_SUCCESS_TEMPLATE.name,
+                LOADING_TEMPLATE.name,
+                GUILD_SIGNUP_SUCCESS_TEMPLATE.name,
+                LOADING_TEMPLATE.name,
+            ],
+            calls,
+        )
+
     def test_business_collect_uses_q_script_click_timing(self):
         task = object.__new__(DailyTask)
         task.config = {"一键收菜菜单等待秒数": 8.0}

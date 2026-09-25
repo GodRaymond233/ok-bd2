@@ -1,6 +1,7 @@
 import os
 import time
 import unittest
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -37,6 +38,32 @@ class _ReportManagerStub:
         if self.error is not None:
             raise self.error
         return self.result
+
+
+class _CaptureFuture:
+    def __init__(self, result):
+        self._result = result
+        self.callbacks = []
+
+    def result(self):
+        return self._result
+
+    def add_done_callback(self, callback):
+        self.callbacks.append(callback)
+
+
+class _CaptureExecutor:
+    def __init__(self):
+        self.submissions = []
+        self.shutdown_calls = []
+
+    def submit(self, function):
+        future = _CaptureFuture((None, "下一帧"))
+        self.submissions.append((function, future))
+        return future
+
+    def shutdown(self, **kwargs):
+        self.shutdown_calls.append(kwargs)
 
 
 class FeedbackReportUiTest(unittest.TestCase):
@@ -121,6 +148,38 @@ class FeedbackReportUiTest(unittest.TestCase):
         first.fill(0)
         second, _ = widget.latest_frame(max_age_seconds=2.0)
         self.assertTrue(np.array_equal(source, second))
+        widget._shutdown()
+        widget.close()
+
+    def test_live_preview_waits_for_timed_out_capture_before_retrying(self):
+        widget = LiveScreenshotWidget()
+        widget._active = True
+        executor = _CaptureExecutor()
+        first_future = _CaptureFuture((None, "当前请求完成"))
+        widget._capture_executor = executor
+        widget._capture_pending = True
+        widget._capture_pending_at = time.time() - 3.0
+        widget._capture_future = first_future
+        statuses = []
+        widget.status_ready.connect(statuses.append)
+
+        with patch.object(widget, "isVisible", return_value=True):
+            widget._request_frame()
+            widget._request_frame()
+
+        self.assertEqual([], executor.submissions)
+        self.assertEqual(["截图超时，等待当前请求完成"], statuses)
+        self.assertTrue(widget._capture_timeout_reported)
+
+        widget._capture_finished(first_future)
+        self.assertFalse(widget._capture_pending)
+        self.assertFalse(widget._capture_timeout_reported)
+
+        with patch.object(widget, "isVisible", return_value=True):
+            widget._request_frame()
+        self.assertEqual(1, len(executor.submissions))
+        self.assertIs(executor, widget._capture_executor)
+
         widget._shutdown()
         widget.close()
 

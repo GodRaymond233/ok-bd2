@@ -579,8 +579,13 @@ class SquareGoddessTask(BaseBD2Task):
                 self._match(frame, FANTASIA_SQUARE_TEMPLATE), FANTASIA_SQUARE_TEMPLATE
             )
             # Only after an OCR-confirmed prayer click: require a visible square,
-            # no task row and no prayer prompt across multiple fresh frames.
-            if observation.state == "absent" and prayer is None and square:
+            # no task row and no prayer prompt across multiple fresh frames. An
+            # OCR-empty unknown frame is a valid loading transition; unknown
+            # frames carrying task text remain rejected.
+            navigation_absent = observation.state == "absent" or (
+                observation.state == "unknown" and not observation.text.strip()
+            )
+            if navigation_absent and prayer is None and square:
                 now = monotonic()
                 if absent_since is not None and now - absent_since >= 2.0:
                     return True

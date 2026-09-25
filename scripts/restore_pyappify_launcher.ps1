@@ -6,6 +6,32 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Assert-UnderWorkspace {
+    param(
+        [string]$PathToCheck,
+        [string]$Workspace
+    )
+
+    $resolvedWorkspace = [System.IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Workspace).Path)
+    $resolvedWorkspace = $resolvedWorkspace.TrimEnd(
+        [System.IO.Path]::DirectorySeparatorChar,
+        [System.IO.Path]::AltDirectorySeparatorChar
+    )
+    $resolvedPath = if ([System.IO.Path]::IsPathRooted($PathToCheck)) {
+        [System.IO.Path]::GetFullPath($PathToCheck)
+    } else {
+        [System.IO.Path]::GetFullPath((Join-Path $resolvedWorkspace $PathToCheck))
+    }
+    $workspacePrefix = $resolvedWorkspace + [System.IO.Path]::DirectorySeparatorChar
+    if (
+        [string]::Equals($resolvedPath, $resolvedWorkspace, [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not $resolvedPath.StartsWith($workspacePrefix, [System.StringComparison]::OrdinalIgnoreCase)
+    ) {
+        throw "Refusing to write outside workspace: $PathToCheck"
+    }
+    return $resolvedPath
+}
+
 if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
     throw "GH_TOKEN is required to restore a launcher from a GitHub Release."
 }
@@ -17,6 +43,7 @@ if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
 }
 
 $workspace = (Resolve-Path -LiteralPath ".").Path
+$buildPath = Assert-UnderWorkspace -PathToCheck $BuildDir -Workspace $workspace
 $configPath = Join-Path $workspace "pyappify.yml"
 $configText = Get-Content -LiteralPath $configPath -Raw
 $appNameMatch = [regex]::Match($configText, '(?m)^\s*name:\s*["'']?([^"''\r\n]+)["'']?\s*$')
@@ -52,7 +79,7 @@ try {
         throw "Launcher was not found in $assetName at $launcherSource"
     }
 
-    $launcherTarget = Join-Path $workspace "$BuildDir\src-tauri\target\release\$appName.exe"
+    $launcherTarget = Join-Path $buildPath "src-tauri\target\release\$appName.exe"
     New-Item -ItemType Directory -Path (Split-Path -Parent $launcherTarget) -Force | Out-Null
     Copy-Item -LiteralPath $launcherSource -Destination $launcherTarget -Force
     Write-Host "Restored launcher from $ReleaseTag to $launcherTarget"

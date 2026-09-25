@@ -302,7 +302,7 @@ class CalendarTest(unittest.TestCase):
 
     def test_online_failure_uses_fresh_cache_without_reenabling_bundled(self):
         payload = json.loads(BUNDLED_CALENDAR.read_text(encoding="utf-8"))
-        now = datetime(2026, 7, 19, 23, 30, tzinfo=UTC_PLUS_8)
+        now = datetime(2026, 7, 19, 22, 30, tzinfo=UTC_PLUS_8)
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)
             sources = temp / "sources.json"
@@ -347,15 +347,13 @@ class CalendarTest(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "本地缓存已过期"):
                     client.load(use_bundled=False, use_online=True)
 
-    def test_online_failure_accepts_cache_exactly_at_max_age_boundary(self):
+    def test_online_failure_rejects_cache_at_max_age_boundary_after_sale_date_change(self):
         now = datetime(2026, 7, 19, 12, 0, tzinfo=UTC_PLUS_8)
         with tempfile.TemporaryDirectory() as temp_dir:
             client = self._offline_client(Path(temp_dir), "2026-07-18T12:00:00+08:00", now)
             with patch.object(client, "_fetch", side_effect=OSError("offline")):
-                self.assertEqual(
-                    "cache",
-                    client.load(use_bundled=False, use_online=True).source,
-                )
+                with self.assertRaisesRegex(RuntimeError, "本地缓存已过期"):
+                    client.load(use_bundled=False, use_online=True)
 
     def test_online_failure_rejects_cross_month_cache_even_when_recent(self):
         scenarios = (
@@ -363,6 +361,8 @@ class CalendarTest(unittest.TestCase):
             ("2026-07-31T22:00:00+08:00", datetime(2026, 8, 1, 0, 30, tzinfo=UTC_PLUS_8)),
             # 月末 23:00 后读取：出售价表日期已翻到次月，即使缓存仅 1 小时也拒绝。
             ("2026-07-31T22:30:00+08:00", datetime(2026, 7, 31, 23, 30, tzinfo=UTC_PLUS_8)),
+            # 同月 23:00 刷新：出售价表日期跨日，即使缓存仍很新也拒绝。
+            ("2026-07-19T22:30:00+08:00", datetime(2026, 7, 19, 23, 30, tzinfo=UTC_PLUS_8)),
         )
         for cached_at, now in scenarios:
             with self.subTest(cached_at=cached_at):
@@ -385,7 +385,7 @@ class CalendarTest(unittest.TestCase):
                     {
                         "source": url,
                         "etag": '"etag-v1"',
-                        "cached_at": "2026-07-19T22:00:00+08:00",
+                        "cached_at": "2026-07-19T23:00:00+08:00",
                         "payload": payload,
                     }
                 ),

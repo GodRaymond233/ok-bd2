@@ -129,5 +129,22 @@ class BD2InteractionClickModeTest(unittest.TestCase):
         self.assertEqual([(False, False)], operate_options)
 
 
+class BD2InteractionActivationTest(unittest.TestCase):
+    def test_try_activate_keeps_retry_flag_until_foreground_is_verified(self):
+        interaction, _calls = make_interaction()
+        interaction._activate_required = True
+        foreground = iter((False, False, True))
+        interaction.hwnd_window = SimpleNamespace(is_foreground=lambda: next(foreground))
+
+        with patch.object(PostMessageInteraction, "try_activate") as parent_activate:
+            interaction.try_activate()
+            self.assertTrue(interaction._activate_required)
+            parent_activate.assert_called_once_with()
+
+            interaction.try_activate()
+
+        self.assertFalse(interaction._activate_required)
+
+
 if __name__ == "__main__":
     unittest.main()

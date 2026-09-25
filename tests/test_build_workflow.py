@@ -68,6 +68,15 @@ class BuildWorkflowTest(unittest.TestCase):
             '@("-m", "unittest", "discover", "-s", "tests", "-q")',
             self.run_checks_script,
         )
+        self.assertIn(
+            '@("-m", "compileall", "-q", "src", "tests", "main.py", "main_debug.py")',
+            self.run_checks_script,
+        )
+        self.assertIn(
+            '@("diff", "--check")',
+            self.run_checks_script,
+        )
+        self.assertIn("Assert-NoKeyboardAutomation", self.run_checks_script)
         self.assertIn('if ($Mode -eq "Release")', self.run_checks_script)
         self.assertIn('"check_dependency_exports.ps1"', self.run_checks_script)
         self.assertIn(
@@ -104,6 +113,38 @@ class BuildWorkflowTest(unittest.TestCase):
         self.assertEqual(6, self.workflow.count("v1.2.3"))
         self.assertIn('[string]$Version = "v1.2.3"', script)
 
+    def test_launcher_checkout_uses_audited_pyappify_commit(self):
+        script = (ROOT / "scripts" / "prepare_pyappify_launcher.ps1").read_text(
+            encoding="utf-8"
+        )
+        commit = "f5506d1080fba4c8df8af9fedc195fc836e70d7d"
+        self.assertIn(f'$pyappifyCommit = "{commit}"', script)
+        self.assertIn("checkout --detach $pyappifyCommit", script)
+        self.assertNotIn('checkout "tags/$Version"', script)
+        self.assertIn(
+            '.\\scripts\\prepare_pyappify_launcher.ps1 -Version v1.2.3',
+            self.workflow,
+        )
+        self.assertEqual(6, self.workflow.count("v1.2.3"))
+
+    def test_launcher_build_paths_use_workspace_boundary_checks(self):
+        for relative_path in (
+            "scripts/prepare_pyappify_launcher.ps1",
+            "scripts/restore_pyappify_launcher.ps1",
+        ):
+            script = (ROOT / relative_path).read_text(encoding="utf-8")
+            with self.subTest(path=relative_path):
+                self.assertIn("GetFullPath", script)
+                self.assertIn("DirectorySeparatorChar", script)
+                self.assertIn(
+                    "[string]::Equals($resolvedPath, $resolvedWorkspace",
+                    script,
+                )
+                self.assertIn(
+                    "$resolvedPath.StartsWith($workspacePrefix",
+                    script,
+                )
+
     def test_launcher_uses_project_icon(self):
         self.assertIn('icon: "icons/icon.png"', self.pyappify_config)
         self.assertTrue((ROOT / "icons" / "icon.png").is_file())
@@ -116,9 +157,9 @@ class BuildWorkflowTest(unittest.TestCase):
                 self.assertIn('version: "0.11.21"', workflow)
                 self.assertIn(r".\scripts\check_dependency_exports.ps1", workflow)
 
-    def test_build_tests_do_not_receive_release_credentials(self):
-        run_tests = self.workflow.split("      - name: Run tests", 1)[1].split(
-            "      - name: Inline ok-script for update repository", 1
+    def test_build_quality_gate_does_not_receive_release_credentials(self):
+        quality_gate = self.workflow.split("  quality:", 1)[1].split(
+            "  prepare:", 1
         )[0]
         for variable in (
             "GITHUB_TOKEN",
@@ -131,11 +172,12 @@ class BuildWorkflowTest(unittest.TestCase):
             "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
         ):
             with self.subTest(variable=variable):
-                self.assertIn(f'{variable}: ""', run_tests)
-                self.assertIn(f'"{variable}"', run_tests)
+                self.assertIn(f'{variable}: ""', quality_gate)
+                self.assertIn(f'"{variable}"', quality_gate)
 
-    def test_build_tests_run_before_inlining_dependencies(self):
-        run_tests = self.workflow.index("      - name: Run tests")
+    def test_build_quality_gate_runs_before_packaging(self):
+        quality_gate = self.workflow.index("  quality:")
+        prepare = self.workflow.index("  prepare:")
         inline_dependencies = self.workflow.index(
             "      - name: Inline ok-script for update repository"
         )
@@ -143,7 +185,8 @@ class BuildWorkflowTest(unittest.TestCase):
             "      - name: Validate inlined update repository"
         )
 
-        self.assertLess(run_tests, inline_dependencies)
+        self.assertLess(quality_gate, prepare)
+        self.assertIn(".\\scripts\\run_checks.ps1 -Mode Final", self.workflow)
         self.assertLess(inline_dependencies, validate_inline)
         self.assertIn(
             'Test-Path -LiteralPath "ok" -PathType Container',
@@ -153,6 +196,44 @@ class BuildWorkflowTest(unittest.TestCase):
             "requirements.txt still contains ok-script after inlining.",
             self.workflow,
         )
+
+    def test_package_jobs_require_the_build_quality_gate(self):
+        self.assertIn(
+            "  package-fast:\n    needs:\n      - prepare\n      - quality",
+            self.workflow,
+        )
+        self.assertIn(
+            "  package-compact:\n    needs:\n      - prepare\n      - quality",
+            self.workflow,
+        )
+        self.assertIn(
+            "      - package-compact\n      - quality",
+            self.workflow,
+        )
+
+    def test_test_workflow_exposes_a_final_quality_gate(self):
+        self.assertIn(".\\scripts\\run_checks.ps1 -Mode Final", self.test_workflow)
+
+    def test_keyboard_scan_covers_project_keyboard_apis(self):
+        for pattern in (
+            '"pydirectinput"',
+            '"pynput.keyboard"',
+            '"from pynput import keyboard"',
+            '"from pynput.keyboard"',
+            '"keyboard.press"',
+            '"keyboard.send"',
+            '"keyboard.type"',
+            '"keyboard.hotkey"',
+            '"keyboard.Key"',
+            '"keyboard.Listener"',
+            '"keyDown"',
+            '"keyUp"',
+            '"keybd_event"',
+            '"KEYEVENTF"',
+        ):
+            with self.subTest(pattern=pattern):
+                self.assertIn(pattern, self.run_checks_script)
+        self.assertNotIn('"SendInput"', self.run_checks_script)
 
     def test_release_notes_fall_back_to_previous_tag_when_sync_start_is_empty(self):
         script = ROOT / "scripts" / "prepare_release_notes.ps1"

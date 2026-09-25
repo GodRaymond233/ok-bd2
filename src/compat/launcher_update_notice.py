@@ -56,10 +56,13 @@ def install_launcher_update_notice() -> None:
         setattr(self, NOTICE_SHOWN_MARKER, True)
         import pyappify
 
-        QTimer.singleShot(
-            750,
-            lambda: show_launcher_update_notice(self, pyappify, self.config),
+        notice_timer = QTimer(self)
+        notice_timer.setSingleShot(True)
+        notice_timer.timeout.connect(
+            lambda: show_launcher_update_notice(self, pyappify, self.config)
         )
+        notice_timer.start(750)
+        setattr(self, "_ok_bd2_launcher_update_notice_timer", notice_timer)
 
     MainWindow.showEvent = show_event_with_launcher_notice
     setattr(MainWindow, PATCH_MARKER, True)

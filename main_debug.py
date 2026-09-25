@@ -1,11 +1,16 @@
 if __name__ == "__main__":
-    import ok
+    from src.compat.startup import start_application
 
-    from src.config import config
-    from src.debug_profile import configure_debug_profile
-    from src.tasks.debug_registry import install_debug_tasks
+    def load_config():
+        from src.config import config
 
-    configure_debug_profile(config)
-    install_debug_tasks(config)
-    ok_instance = ok.OK(config)
-    ok_instance.start()
+        return config
+
+    def configure_debug(config):
+        from src.debug_profile import configure_debug_profile
+        from src.tasks.debug_registry import install_debug_tasks
+
+        configure_debug_profile(config)
+        install_debug_tasks(config)
+
+    start_application(load_config, configure_debug)

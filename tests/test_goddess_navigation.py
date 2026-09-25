@@ -114,17 +114,30 @@ class GoddessNavigationTest(unittest.TestCase):
                 task._click_goddess_daily_navigation_until(1),
             )
 
-    def test_completion_rejects_unknown_blank_or_remaining_task(self):
-        for state in ("unknown", "ready", "ambiguous"):
+    def test_completion_rejects_unknown_with_task_text_or_other_state(self):
+        for state, text in (("unknown", "每日奖励"), ("ready", ""), ("ambiguous", "")):
             task = object.__new__(SquareGoddessTask)
             task.sleep = lambda *args: None
             task.capture_frame = lambda: np.zeros((720, 1280, 3), dtype=np.uint8)
-            task._observe_goddess_navigation = lambda frame: NavigationObservation(state, "")
+            task._observe_goddess_navigation = (
+                lambda frame, state=state, text=text: NavigationObservation(state, text)
+            )
             task._ocr_pattern_click_point = lambda *args, **kwargs: (None, "")
             task._match = lambda *args: None
             task._passes = lambda *args: True
             with patch("src.tasks.SquareGoddessTask.monotonic", side_effect=[0, 0, 3]):
                 self.assertFalse(task._wait_for_daily_navigation_to_disappear(2))
+
+    def test_completion_accepts_stable_blank_unknown_transition(self):
+        task = object.__new__(SquareGoddessTask)
+        task.sleep = lambda *args: None
+        task.capture_frame = lambda: np.zeros((720, 1280, 3), dtype=np.uint8)
+        task._observe_goddess_navigation = lambda frame: NavigationObservation("unknown", "")
+        task._ocr_pattern_click_point = lambda *args, **kwargs: (None, "")
+        task._match = lambda *args: None
+        task._passes = lambda *args: True
+        with patch("src.tasks.SquareGoddessTask.monotonic", side_effect=[0, 0, 1, 2, 3]):
+            self.assertTrue(task._wait_for_daily_navigation_to_disappear(8))
 
     def test_completion_needs_stable_square_and_absent_prayer_prompt(self):
         for square, prayer, expected in ((True, None, True), (False, None, False),

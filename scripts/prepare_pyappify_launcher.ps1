@@ -185,20 +185,28 @@ function Assert-UnderWorkspace {
         [string]$Workspace
     )
 
-    $resolvedWorkspace = (Resolve-Path -LiteralPath $Workspace).Path
-    $parent = Split-Path -Parent $PathToCheck
-    if (-not (Test-Path -LiteralPath $parent)) {
-        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    $resolvedWorkspace = [System.IO.Path]::GetFullPath((Resolve-Path -LiteralPath $Workspace).Path)
+    $resolvedWorkspace = $resolvedWorkspace.TrimEnd(
+        [System.IO.Path]::DirectorySeparatorChar,
+        [System.IO.Path]::AltDirectorySeparatorChar
+    )
+    $resolvedPath = if ([System.IO.Path]::IsPathRooted($PathToCheck)) {
+        [System.IO.Path]::GetFullPath($PathToCheck)
+    } else {
+        [System.IO.Path]::GetFullPath((Join-Path $resolvedWorkspace $PathToCheck))
     }
-    $resolvedParent = (Resolve-Path -LiteralPath $parent).Path
-    if (-not $resolvedParent.StartsWith($resolvedWorkspace, [System.StringComparison]::OrdinalIgnoreCase)) {
+    $workspacePrefix = $resolvedWorkspace + [System.IO.Path]::DirectorySeparatorChar
+    if (
+        [string]::Equals($resolvedPath, $resolvedWorkspace, [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not $resolvedPath.StartsWith($workspacePrefix, [System.StringComparison]::OrdinalIgnoreCase)
+    ) {
         throw "Refusing to write outside workspace: $PathToCheck"
     }
+    return $resolvedPath
 }
 
 $workspace = (Resolve-Path -LiteralPath ".").Path
-$buildPath = Join-Path $workspace $BuildDir
-Assert-UnderWorkspace -PathToCheck $buildPath -Workspace $workspace
+$buildPath = Assert-UnderWorkspace -PathToCheck $BuildDir -Workspace $workspace
 
 $configPath = Join-Path $workspace "pyappify.yml"
 if (-not (Test-Path -LiteralPath $configPath)) {
@@ -220,8 +228,19 @@ if (Test-Path -LiteralPath $buildPath) {
     Remove-Item -LiteralPath $buildPath -Recurse -Force
 }
 
+$pyappifyCommit = "f5506d1080fba4c8df8af9fedc195fc836e70d7d"
 git clone https://github.com/ok-oldking/pyappify.git $buildPath
-git -C $buildPath checkout "tags/$Version"
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to clone pyappify."
+}
+git -C $buildPath checkout --detach $pyappifyCommit
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to check out audited pyappify commit $pyappifyCommit."
+}
+$checkedOutCommit = (git -C $buildPath rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or $checkedOutCommit -ne $pyappifyCommit) {
+    throw "Pyappify checkout did not resolve to audited commit $pyappifyCommit."
+}
 
 $assetConfigPath = Join-Path $buildPath "src-tauri\assets\pyappify.yml"
 Copy-Item -LiteralPath $configPath -Destination $assetConfigPath -Force

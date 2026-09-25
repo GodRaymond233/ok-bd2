@@ -63,7 +63,7 @@ def _cache_is_expired(envelope: dict | None, now: datetime) -> bool:
         return True
     sale_date = sale_price_calendar_date(now_beijing)
     cached_sale_date = sale_price_calendar_date(cached_at_beijing)
-    return (cached_sale_date.year, cached_sale_date.month) != (sale_date.year, sale_date.month)
+    return cached_sale_date != sale_date
 
 
 @dataclass(frozen=True)

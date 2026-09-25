@@ -92,6 +92,7 @@ class LiveScreenshotWidget(QWidget):
         self._capture_pending = False
         self._capture_pending_at = 0.0
         self._capture_future = None
+        self._capture_timeout_reported = False
         self._last_status = ""
         self._last_frame_at = 0.0
         self._active = False
@@ -140,8 +141,10 @@ class LiveScreenshotWidget(QWidget):
         if self._capture_pending:
             if time.time() - self._capture_pending_at <= CAPTURE_TIMEOUT_SECONDS:
                 return
-            self.status_ready.emit("截图超时，正在重试")
-            self._restart_capture_executor()
+            if not self._capture_timeout_reported:
+                self._capture_timeout_reported = True
+                self.status_ready.emit("截图超时，等待当前请求完成")
+            return
 
         try:
             from ok import og
@@ -176,6 +179,7 @@ class LiveScreenshotWidget(QWidget):
                 self._capture_pending = False
                 self._capture_pending_at = 0.0
                 self._capture_future = None
+                self._capture_timeout_reported = False
 
     def _capture_image(self) -> tuple[QImage | None, str]:
         from ok import og
@@ -300,14 +304,6 @@ class LiveScreenshotWidget(QWidget):
             max_workers=1,
             thread_name_prefix="LiveScreenshot",
         )
-
-    def _restart_capture_executor(self):
-        old_executor = self._capture_executor
-        self._capture_executor = self._new_capture_executor()
-        self._capture_pending = False
-        self._capture_pending_at = 0.0
-        self._capture_future = None
-        old_executor.shutdown(wait=False, cancel_futures=True)
 
 
 def install_start_tab_responsive(start_tab) -> None:

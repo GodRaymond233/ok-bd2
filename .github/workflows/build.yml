@@ -14,7 +14,50 @@ permissions:
   contents: write
 
 jobs:
+  quality:
+    name: Quality gate
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Run final quality checks
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ""
+          GH_TOKEN: ""
+          CNB_GH: ""
+          OK_GH: ""
+          SIGNPATH_API_TOKEN: ""
+          MirrorChyanUploadToken: ""
+          ACTIONS_RUNTIME_TOKEN: ""
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
+        run: |
+          @(
+            "GITHUB_TOKEN",
+            "GH_TOKEN",
+            "CNB_GH",
+            "OK_GH",
+            "SIGNPATH_API_TOKEN",
+            "MirrorChyanUploadToken",
+            "ACTIONS_RUNTIME_TOKEN",
+            "ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+          ) | ForEach-Object {
+            Remove-Item "Env:\$_" -ErrorAction SilentlyContinue
+          }
+          .\scripts\run_checks.ps1 -Mode Final
+
   prepare:
+    needs: quality
     runs-on: windows-latest
     outputs:
       package_mode: ${{ steps.package-mode.outputs.mode }}
@@ -78,33 +121,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
-      - name: Run tests
-        shell: pwsh
-        env:
-          GITHUB_TOKEN: ""
-          GH_TOKEN: ""
-          CNB_GH: ""
-          OK_GH: ""
-          SIGNPATH_API_TOKEN: ""
-          MirrorChyanUploadToken: ""
-          ACTIONS_RUNTIME_TOKEN: ""
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
-        run: |
-          @(
-            "GITHUB_TOKEN",
-            "GH_TOKEN",
-            "CNB_GH",
-            "OK_GH",
-            "SIGNPATH_API_TOKEN",
-            "MirrorChyanUploadToken",
-            "ACTIONS_RUNTIME_TOKEN",
-            "ACTIONS_ID_TOKEN_REQUEST_TOKEN"
-          ) | ForEach-Object {
-            Remove-Item "Env:\$_" -ErrorAction SilentlyContinue
-          }
-
-          python -m unittest discover -s tests -v
 
       - name: Inline ok-script for update repository
         run: |
@@ -190,7 +206,9 @@ jobs:
           Write-Host "Launcher will be reused from $previousTag."
 
   package-fast:
-    needs: prepare
+    needs:
+      - prepare
+      - quality
     if: needs.prepare.outputs.package_mode == 'fast'
     runs-on: windows-latest
     env:
@@ -262,7 +280,9 @@ jobs:
           files: pyappify_dist/*
 
   package-compact:
-    needs: prepare
+    needs:
+      - prepare
+      - quality
     if: needs.prepare.outputs.package_mode == 'compact'
     runs-on: windows-latest
     strategy:
@@ -322,6 +342,7 @@ jobs:
     needs:
       - prepare
       - package-compact
+      - quality
     if: needs.prepare.outputs.package_mode == 'compact' && needs.package-compact.result == 'success'
     runs-on: windows-latest
 

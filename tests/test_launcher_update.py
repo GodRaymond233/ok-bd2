@@ -1,8 +1,11 @@
 import os
 import re
+import sys
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import src.compat.launcher_update_notice as launcher_notice
 from src.compat.launcher_update_notice import launcher_download_url, launcher_requires_reinstall
 from src.compat.starter_launch import (
     starter_launch_arguments,
@@ -10,6 +13,31 @@ from src.compat.starter_launch import (
     wrap_starter_execute,
 )
 from src.config import config
+
+
+class _TimerSignal:
+    def __init__(self):
+        self.callback = None
+
+    def connect(self, callback):
+        self.callback = callback
+
+
+class _NoticeTimer:
+    instances = []
+
+    def __init__(self, parent):
+        self.parent = parent
+        self.single_shot = False
+        self.interval = None
+        self.timeout = _TimerSignal()
+        self.instances.append(self)
+
+    def setSingleShot(self, value):
+        self.single_shot = value
+
+    def start(self, interval):
+        self.interval = interval
 
 
 class LauncherUpdateConfigTest(unittest.TestCase):
@@ -139,6 +167,34 @@ class LauncherUpdateConfigTest(unittest.TestCase):
             "https://github.com/GodRaymond233/ok-bd2/releases/latest",
             launcher_download_url(config),
         )
+
+    def test_launcher_notice_timer_is_owned_by_main_window(self):
+        class FakeMainWindow:
+            def __init__(self):
+                self.config = config
+                self.show_events = 0
+
+            def showEvent(self, _event):
+                self.show_events += 1
+
+        _NoticeTimer.instances.clear()
+        fake_pyappify = SimpleNamespace(pyappify_version="1.1.9")
+        with (
+            patch("ok.ui.qt.MainWindow.MainWindow", FakeMainWindow),
+            patch.object(launcher_notice, "QTimer", _NoticeTimer),
+            patch.dict(sys.modules, {"pyappify": fake_pyappify}),
+        ):
+            launcher_notice.install_launcher_update_notice()
+            window = FakeMainWindow()
+            window.showEvent(object())
+
+        self.assertEqual(1, window.show_events)
+        self.assertEqual(1, len(_NoticeTimer.instances))
+        timer = _NoticeTimer.instances[0]
+        self.assertIs(window, timer.parent)
+        self.assertTrue(timer.single_shot)
+        self.assertEqual(750, timer.interval)
+        self.assertIsNotNone(timer.timeout.callback)
 
 
 if __name__ == "__main__":
