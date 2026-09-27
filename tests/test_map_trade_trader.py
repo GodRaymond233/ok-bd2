@@ -1295,7 +1295,7 @@ class SellFlowTest(unittest.TestCase):
 
     def test_sale_dialog_title_region_is_ltrb_and_non_empty(self):
         expected = reference_rect_to_relative_roi(
-            (495, 310, 300, 80),
+            (495, 325, 245, 40),
             FHD_1080,
         )
 
@@ -1303,7 +1303,7 @@ class SellFlowTest(unittest.TestCase):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         _left, _top, region = relative_roi_frame(frame, SALE_DIALOG_TITLE_REGION)
 
-        self.assertEqual((80, 300), region.shape[:2])
+        self.assertEqual((40, 245), region.shape[:2])
 
     def _title_trader(self, readings, shape=(1080, 1920, 3)):
         calls, warnings = [], []
@@ -1402,16 +1402,34 @@ class SellFlowTest(unittest.TestCase):
                 self.assertLessEqual(len(calls), 3)
 
     def test_sale_dialog_rejects_wrong_or_ambiguous_identity_before_fallback(self):
-        for texts, aliases in (("豆子", ()), (("姜黄", "豆子"), ())):
+        for texts, aliases in (
+            ("豆子", ()),
+        ):
             with self.subTest(texts=texts, aliases=aliases):
                 trader, calls, warnings, clock = self._title_trader([(texts, texts, texts)])
                 with patch("src.tasks.map_trade.trader_sell.monotonic", lambda: clock[0]):
                     self.assertFalse(trader._wait_sale_dialog_item(
                         CalendarEntry("姜黄", "S12", aliases=aliases),
                     ))
-                self.assertEqual(1, len(calls))
+                self.assertEqual(2, len(calls))
                 self.assertTrue(trader._sale_dialog_rejected)
                 self.assertTrue(warnings)
+
+    def test_sale_dialog_prefers_expected_title_over_background_item(self):
+        trader, _calls, warnings, clock = self._title_trader(
+            [(('苹果', '冰镇甜点'), ('苹果', '冰镇甜点'), ('苹果', '冰镇甜点'))]
+        )
+        with patch("src.tasks.map_trade.trader_sell.monotonic", lambda: clock[0]):
+            self.assertTrue(trader._wait_sale_dialog_item(CalendarEntry("苹果", "S6")))
+        self.assertEqual([], warnings)
+
+    def test_sale_dialog_requires_two_conflicting_frames_before_rejecting(self):
+        trader, calls, _warnings, clock = self._title_trader(
+            [("冰镇甜点", "冰镇甜点", "冰镇甜点"), ("苹果", "苹果", "苹果")]
+        )
+        with patch("src.tasks.map_trade.trader_sell.monotonic", lambda: clock[0]):
+            self.assertTrue(trader._wait_sale_dialog_item(CalendarEntry("苹果", "S6")))
+        self.assertEqual([0, 1, 2], [call[0] for call in calls])
 
     def test_sale_dialog_owned_quantity_uses_given_region(self):
         calls = []

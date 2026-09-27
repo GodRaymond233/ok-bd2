@@ -159,9 +159,9 @@ SALE_SLIDER_REGION = (
 )
 SALE_DIALOG_TITLE_REGION = (
     495 / FHD_1080.width,
-    310 / FHD_1080.height,
-    795 / FHD_1080.width,
-    390 / FHD_1080.height,
+    325 / FHD_1080.height,
+    740 / FHD_1080.width,
+    365 / FHD_1080.height,
 )
 SALE_DIALOG_TIMEOUT = 5.0
 SALE_DIALOG_TITLE_STABLE_HITS = 2

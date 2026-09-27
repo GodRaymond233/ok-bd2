@@ -951,13 +951,13 @@ class SellFlowMixin:
             seen_ids = set(full_ids)
             for text in texts:
                 seen_ids.update(catalog.get(self._normal(text), set()))
+            if expected in seen_ids:
+                return True
             if seen_ids - {expected}:
                 self.task.log_warning(
                     f"卖：弹窗标题识别到其他或歧义商品：{' '.join(texts)}，停止出售。"
                 )
                 return False
-            if full_ids == {expected}:
-                return True
         return None
 
     def _wait_sale_dialog_item(
@@ -968,15 +968,21 @@ class SellFlowMixin:
         catalog = self._sale_title_catalog(entry)
         expected = self._normal(entry.item)
         stable_hits = 0
+        conflict_hits = 0
         end_at = monotonic() + max(0.0, timeout)
         while True:
             matched = self._sale_dialog_title_identity(
                 self.vision.capture(), catalog, expected,
             )
             if matched is False:
-                self._sale_dialog_rejected = True
-                return False
-            stable_hits = stable_hits + 1 if matched else 0
+                conflict_hits += 1
+                stable_hits = 0
+                if conflict_hits >= SALE_DIALOG_TITLE_STABLE_HITS:
+                    self._sale_dialog_rejected = True
+                    return False
+            else:
+                conflict_hits = 0
+                stable_hits = stable_hits + 1 if matched else 0
             if stable_hits >= SALE_DIALOG_TITLE_STABLE_HITS:
                 return True
             if monotonic() >= end_at:
