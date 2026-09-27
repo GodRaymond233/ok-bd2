@@ -117,7 +117,7 @@ class BuildWorkflowTest(unittest.TestCase):
         script = (ROOT / "scripts" / "prepare_pyappify_launcher.ps1").read_text(
             encoding="utf-8"
         )
-        commit = "f5506d1080fba4c8df8af9fedc195fc836e70d7d"
+        commit = "52bc6d986aae93615673960256549f51f13c92b6"
         self.assertIn(f'$pyappifyCommit = "{commit}"', script)
         self.assertIn("checkout --detach $pyappifyCommit", script)
         self.assertNotIn('checkout "tags/$Version"', script)

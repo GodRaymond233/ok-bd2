@@ -228,7 +228,7 @@ if (Test-Path -LiteralPath $buildPath) {
     Remove-Item -LiteralPath $buildPath -Recurse -Force
 }
 
-$pyappifyCommit = "f5506d1080fba4c8df8af9fedc195fc836e70d7d"
+$pyappifyCommit = "52bc6d986aae93615673960256549f51f13c92b6"
 git clone https://github.com/ok-oldking/pyappify.git $buildPath
 if ($LASTEXITCODE -ne 0) {
     throw "Failed to clone pyappify."
