@@ -790,6 +790,7 @@ class SellFlowMixin:
         end_at = monotonic() + max(0.0, timeout)
         changed_signature: tuple[tuple[str, int, int, int, int], ...] | None = None
         stable_hits = 0
+        empty_signature_hits = 0
         last_text = ""
         while True:
             frame = self.vision.capture()
@@ -818,6 +819,13 @@ class SellFlowMixin:
                         return True
                 current_signature = self._sale_name_signature(entry, frame)
                 if current_signature != before_signature:
+                    if not current_signature:
+                        empty_signature_hits += 1
+                        if empty_signature_hits >= SALE_COMPLETION_STABLE_HITS:
+                            self._status("出售完成确认", f"{entry.item}:商品名消失")
+                            return True
+                    else:
+                        empty_signature_hits = 0
                     if current_signature == changed_signature:
                         stable_hits += 1
                     else:

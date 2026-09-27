@@ -1485,6 +1485,31 @@ class SellFlowTest(unittest.TestCase):
             )
         )
 
+    def test_sale_completion_accepts_target_name_disappearing_without_toast(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        trader = object.__new__(Trader)
+        trader.task = SimpleNamespace(
+            sleep=lambda *_args: None,
+            info_set=lambda *_args: None,
+            log_warning=lambda *_args: None,
+        )
+        trader.vision = SimpleNamespace(
+            capture=lambda: frame,
+            ocr_text=lambda _frame, name, **_kwargs: "" if name == "出售弹窗完成确认" else "",
+            simplify=lambda value: value,
+        )
+        signatures = iter([(), ()])
+        trader._sale_name_signature = lambda *_args: next(signatures)
+
+        self.assertTrue(
+            trader._wait_sale_completion(
+                CalendarEntry("苹果", "S2"),
+                frame,
+                (("苹果", 620, 560, 44, 23),),
+                timeout=1.0,
+            )
+        )
+
     def test_rare_items_are_skipped_and_same_shop_is_selected_only_once(self):
         selected = []
         sold = []
