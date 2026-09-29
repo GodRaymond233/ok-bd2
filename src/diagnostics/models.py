@@ -18,6 +18,9 @@ class DiagnosticSnapshot:
     safe_point_reached: bool = True
     warnings: tuple[str, ...] = ()
     task_started_at: float | None = None
+    logs: dict[str, Any] | None = field(default=None, repr=False, compare=False)
+    runtime_events: tuple[dict[str, Any], ...] = ()
+    failures: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)

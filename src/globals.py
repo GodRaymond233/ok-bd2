@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from ok import Logger
 from PySide6.QtCore import QObject
 
@@ -7,12 +9,14 @@ logger = Logger.get_logger(__name__)
 class Globals(QObject):
     def __init__(self, exit_event):
         super().__init__()
-        # 历史上的线程池/周期任务机制已随 BaseBD2Task 死成员一并移除；
-        # 保留停机钩子登记，供后续需要统一清理的全局资源使用。
+        # Flush the bounded diagnostic evidence queue during application shutdown.
         exit_event.bind_stop(self)
+        from src.diagnostics.runtime import install
+
+        self.diagnostic_evidence = install(Path(__file__).resolve().parents[1])
 
     def stop(self):
-        pass
+        self.diagnostic_evidence.stop()
 
     def on_show_main_window(self, main_window):
         from ok import og

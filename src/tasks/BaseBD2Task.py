@@ -12,6 +12,7 @@ import numpy as np
 from ok import BaseTask, Box, Logger
 from PIL import Image
 
+from src.diagnostics.runtime import observe_run, phase_changed, task_error
 from src.scene.BD2Scene import BD2Scene
 from src.scene.ScreenPosition import ScreenPosition
 from src.tasks.task_notifications import log_task_completion
@@ -80,6 +81,11 @@ class RecentPvpCartridgeMatch:
 class BaseBD2Task(BaseTask):
     DEFAULT_MOVE = False
 
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        if "run" in cls.__dict__:
+            cls.run = observe_run(cls.run)
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.visible = False
@@ -115,6 +121,10 @@ class BaseBD2Task(BaseTask):
 
         log_task_completion(self, message)
 
+    def log_error(self, *args, **kwargs):
+        task_error()
+        return super().log_error(*args, **kwargs)
+
     def _task_info_lock(self) -> threading.RLock:
         """The per-instance info lock, or a shared fallback for odd instances.
 
@@ -140,7 +150,14 @@ class BaseBD2Task(BaseTask):
 
     def info_set(self, key, value):
         with self._task_info_lock():
-            return super().info_set(key, value)
+            changed = (
+                key in ("状态", "阶段", "当前阶段", "当前子任务")
+                and self.info.get(key) != value
+            )
+            result = super().info_set(key, value)
+        if changed:
+            phase_changed(key, value)
+        return result
 
     def info_add(self, key, count=1):
         with self._task_info_lock():

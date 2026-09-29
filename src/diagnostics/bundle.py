@@ -15,8 +15,17 @@ from typing import Any
 import cv2
 import numpy as np
 
+from src.diagnostics.log_collection import (
+    MAX_DIGEST_BYTES,
+    collect,
+    encode_json,
+    redact_tree,
+    sources_for,
+    timestamp,
+)
 from src.diagnostics.models import DiagnosticSnapshot, ReportResult
 from src.diagnostics.redaction import DiagnosticRedactor
+from src.diagnostics.runtime import evidence_for
 
 SCHEMA_VERSION = 1
 MAX_DESCRIPTION_CHARS = 2000
@@ -67,7 +76,17 @@ class ReportBundleBuilder:
             files: list[dict[str, Any]] = []
             omissions: list[str] = []
 
+            logs = snapshot.logs
+            events, failures = snapshot.runtime_events, snapshot.failures
+            if logs is None:
+                logs, events, failures = self.capture_logs(snapshot.captured_at)
             summary = self._summary_text(report_id, snapshot, description)
+            if failures:
+                latest = failures[-1]
+                summary += (
+                    f"\n最近故障：{latest['task']}，发生时间：{latest['occurred_at']}\n"
+                    "阅读入口：logs/recent-digest.json；故障任务详情：state/failures.json\n"
+                )
             _write_text(stage / "summary.txt", summary)
             files.append(_file_record(stage, "summary.txt"))
 
@@ -78,6 +97,8 @@ class ReportBundleBuilder:
             }
             _write_json(stage / "state" / "task-summary.json", task_payload)
             files.append(_file_record(stage, "state/task-summary.json"))
+            _write_json(stage / "state" / "failures.json", list(failures))
+            files.append(_file_record(stage, "state/failures.json"))
 
             trace_payload = {
                 "timestamp": snapshot.captured_at,
@@ -87,17 +108,20 @@ class ReportBundleBuilder:
             }
             _write_text(
                 stage / "state" / "trace.jsonl",
-                json.dumps(trace_payload, ensure_ascii=False, separators=(",", ":")) + "\n",
+                "\n".join(
+                    json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+                    for event in [*events, trace_payload]
+                )
+                + "\n",
             )
             files.append(_file_record(stage, "state/trace.jsonl"))
 
-            if not flush_ok_logging():
-                omissions.append("log_flush_incomplete")
-            log_text, log_sources = self._recent_logs()
-            if log_text:
-                _write_text(stage / "logs" / "recent.log", log_text)
-                files.append(_file_record(stage, "logs/recent.log"))
-            else:
+            omissions.extend(logs["omissions"])
+            log_sources = logs["sources"]
+            for name, text in logs["files"].items():
+                _write_text(stage / "logs" / name, text)
+                files.append(_file_record(stage, "logs/" + name))
+            if not log_sources:
                 omissions.append("recent_log_unavailable")
 
             screenshot_meta: dict[str, Any] = {"included": False}
@@ -339,43 +363,104 @@ class ReportBundleBuilder:
             for key, value in values.items()
         }
 
-    def _recent_logs(self) -> tuple[str, list[str]]:
-        candidates = _active_log_candidates(self.project_root)
-        if not candidates:
-            return "", []
-
-        remaining = MAX_LOG_BYTES
-        chunks: list[str] = []
-        sources: list[str] = []
-        for path in candidates[:2]:
-            if remaining <= 0:
-                break
-            raw = _read_tail(path, remaining)
-            if not raw:
-                continue
-            redacted = self.redactor.redact(raw)
-            encoded = redacted.encode("utf-8")
-            if len(encoded) > remaining:
-                encoded = encoded[-remaining:]
-                redacted = encoded.decode("utf-8", errors="ignore")
-            header = f"===== {path.name} (recent tail) =====\n"
-            header_bytes = len(header.encode("utf-8"))
-            if header_bytes >= remaining:
-                break
-            if header_bytes + len(redacted.encode("utf-8")) > remaining:
-                allowed = max(0, remaining - header_bytes)
-                redacted_bytes = redacted.encode("utf-8")
-                redacted = (
-                    redacted_bytes[-allowed:].decode("utf-8", errors="ignore")
-                    if allowed
-                    else ""
-                )
-            chunk = header + redacted.rstrip() + "\n"
-            chunk_size = len(chunk.encode("utf-8"))
-            chunks.append(chunk)
-            sources.append(path.name)
-            remaining -= chunk_size
-        return "\n".join(chunks), sources
+    def capture_logs(self, captured_at):
+        cutoff = timestamp(captured_at)
+        evidence = evidence_for(self.project_root)
+        for failure in evidence["failures"]:
+            saved_files = failure["logs"]["files"]
+            if "recent-digest.json" in saved_files:
+                saved_files["recent-digest.json"] = json.loads(saved_files["recent-digest.json"])
+        evidence = redact_tree(evidence, self.redactor)
+        events = [event for event in evidence["events"] if event["time"] <= cutoff]
+        while len(encode_json(events)) > 128 * 1024:
+            events.pop(0)
+            if "report_trace_byte_limit" not in evidence["omissions"]:
+                evidence["omissions"].append("report_trace_byte_limit")
+        saved = [failure for failure in evidence["failures"] if failure["time"] <= cutoff]
+        failures, frozen_files, frozen_sources = [], {}, []
+        for index, failure in enumerate(saved[-5:]):
+            prefix = f"failure-{index + 1}"
+            stored = failure["logs"]
+            locations = {}
+            for name, text in stored["files"].items():
+                target = f"{prefix}-{name}"
+                if name == "recent-digest.json":
+                    saved_digest = text
+                    for incident in saved_digest.get("incidents", []):
+                        for field in ("first_event", "last_event", "context_first", "context_last"):
+                            if incident.get(field):
+                                reference = incident[field]
+                                reference["file"] = f"{prefix}-{reference['file']}"
+                    text = json.dumps(saved_digest, ensure_ascii=False, separators=(",", ":"))
+                frozen_files[target] = text
+                locations[name] = "logs/" + target
+            frozen_sources.extend(stored["sources"])
+            failures.append(
+                {
+                    **{key: value for key, value in failure.items() if key != "logs"},
+                    "files": locations,
+                    "omissions": stored["omissions"],
+                }
+            )
+        remaining = MAX_LOG_BYTES - sum(len(text.encode("utf-8")) for text in frozen_files.values())
+        flushed = flush_ok_logging()
+        try:
+            logs = collect(
+                sources_for(self.project_root),
+                cutoff,
+                self.redactor,
+                budget=remaining,
+                anchors=failures,
+            )
+        except Exception as exc:
+            # Export a bounded tail even if digest generation fails.
+            logs = {
+                "files": {},
+                "sources": [],
+                "omissions": [f"digest_failed:{type(exc).__name__}"],
+            }
+            for path in _active_log_candidates(self.project_root)[:1]:
+                text = self.redactor.redact(_read_tail(path, min(remaining, 256 * 1024)))
+                logs["files"]["recent.log"] = text
+                logs["sources"].append(path.name)
+                logs["omissions"].append("fallback_tail_time_unverified")
+        logs["files"].update(frozen_files)
+        logs["sources"] = list(dict.fromkeys(logs["sources"] + frozen_sources))
+        logs["omissions"].extend(evidence["omissions"])
+        if not flushed:
+            logs["omissions"].append("log_flush_incomplete")
+        if "recent-digest.json" in logs["files"]:
+            digest = json.loads(logs["files"]["recent-digest.json"])
+            digest["runtime_failures"] = [
+                {
+                    "time": f["time"],
+                    "occurred_at": f["occurred_at"],
+                    "task": f["task"],
+                    "run": f["run"],
+                    "parent_task": f.get("parent_task"),
+                    "event": f["event"],
+                    "stage_preview": str(f["info"].get("当前阶段", f["info"].get("阶段", "")))[
+                        :200
+                    ],
+                    "count": f["count"],
+                    "files": f["files"],
+                }
+                for f in failures
+            ]
+            digest["failure_details"] = "state/failures.json"
+            digest["frozen_overlap"] = (
+                "Frozen failure files may repeat current sources; correlate source byte ranges "
+                "within each source size/time coverage. "
+                "Frozen copies preserve pre-rotation evidence."
+            )
+            for field in ("minutes", "repeats"):
+                while len(encode_json(digest)) > MAX_DIGEST_BYTES and digest[field]:
+                    digest[field].pop(0)
+                    digest[field + "_truncated"] = True
+            logs["files"]["recent-digest.json"] = json.dumps(
+                digest, ensure_ascii=False, separators=(",", ":")
+            )
+        return logs, events, failures
 
 
 def flush_ok_logging(timeout: float = 1.0) -> bool:

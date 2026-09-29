@@ -64,16 +64,23 @@ class DiagnosticsManager:
             if not safe_point_reached:
                 warnings.append("未能在时限内确认鼠标操作已经结束")
 
+            task = _task_snapshot(executor, warnings)
+            captured_at = datetime.now().astimezone().isoformat(timespec="microseconds")
+            logs, events, failures = self.builder.capture_logs(captured_at)
+
             return DiagnosticSnapshot(
-                captured_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+                captured_at=captured_at,
                 frame=frame,
                 frame_age_seconds=frame_age,
                 capture_method=method_name,
-                task=_task_snapshot(executor, warnings),
+                task=task,
                 executor_was_running=executor_was_running,
                 safe_point_reached=safe_point_reached,
                 warnings=tuple(warnings),
                 task_started_at=task_started_at,
+                logs=logs,
+                runtime_events=tuple(events),
+                failures=tuple(failures),
             )
         except Exception as exc:
             # 快照尚未交给调用方时，由这里恢复本次准备操作造成的暂停。

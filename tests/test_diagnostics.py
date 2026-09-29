@@ -1,13 +1,16 @@
 import ast
 import hashlib
 import json
+import logging
 import os
 import tempfile
+import threading
 import time
 import unittest
 import zipfile
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import cv2
@@ -18,8 +21,10 @@ from src.diagnostics.bundle import (
     MAX_DIAGNOSTIC_FRAME_LOOKBACK_SECONDS,
     ReportBundleBuilder,
 )
+from src.diagnostics.log_collection import collect, sources_for, timestamp
 from src.diagnostics.models import DiagnosticSnapshot
 from src.diagnostics.redaction import DiagnosticRedactor
+from src.diagnostics.runtime import RuntimeEvidence
 from src.diagnostics.service import DiagnosticsManager
 
 
@@ -34,6 +39,9 @@ class _TaskStub:
             "鼠标点击": "购买按钮 x=0.5 y=0.6",
             "OCR 文本": "不应进入受限任务摘要",
         }
+
+    def info_snapshot(self):
+        return dict(self.info)
 
 
 class _RacyInfoDict(dict):
@@ -103,6 +111,320 @@ class _DeviceManagerStub:
     def __init__(self, interaction):
         self.capture_method = _CaptureMethodStub()
         self.interaction = interaction
+
+
+class DiagnosticLogEvidenceTest(unittest.TestCase):
+    def test_framework_exception_observer_survives_handler_reconfiguration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            task = _TaskStub()
+            recorder = RuntimeEvidence(
+                Path(directory), executor_getter=lambda: SimpleNamespace(current_task=task)
+            )
+            logger = logging.getLogger("diagnostic-observer-test")
+            logger.addFilter(recorder)
+            logger.propagate = False
+            threads = []
+            try:
+                with patch(
+                    "src.diagnostics.bundle.flush_ok_logging",
+                    side_effect=lambda: threads.append(threading.current_thread().name) or True,
+                ):
+                    logger.handlers = [logging.NullHandler()]
+                    logger.error("OCR:CLIENT_LOGIC_ERROR exception stopped")
+                    logger.error(
+                        "TaskExecutor:task exception stopped\nTraceback\nValueError: before run"
+                    )
+                    evidence = recorder.snapshot()
+                self.assertEqual(1, len(evidence["failures"]))
+                self.assertEqual("exception", evidence["failures"][0]["event"])
+                self.assertEqual(["BD2DiagnosticEvidence"], threads)
+            finally:
+                logger.removeFilter(recorder)
+                recorder.stop()
+
+    def test_failure_store_limits_and_unreadable_store_are_reported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            recorder = RuntimeEvidence(root)
+            task = _TaskStub()
+            fixed = time.time()
+            try:
+                with patch("src.diagnostics.runtime.time.time", return_value=fixed):
+                    for i in range(7):
+                        recorder.event(
+                            {"id": str(i), "task": "Task", "object": task, "started": fixed},
+                            "failed",
+                        )
+                    evidence = recorder.snapshot()
+                self.assertEqual(5, len(evidence["failures"]))
+                self.assertEqual("2", evidence["failures"][0]["run"])
+                self.assertIn("failure_count_limit", " ".join(evidence["omissions"]))
+                self.assertLessEqual(recorder.path.stat().st_size, 8 * 1024 * 1024)
+            finally:
+                recorder.stop()
+            recorder.path.write_bytes(b"not json")
+            reopened = RuntimeEvidence(root)
+            try:
+                evidence = reopened.snapshot()
+                self.assertEqual([], evidence["failures"])
+                self.assertIn("persisted_evidence_unreadable", evidence["omissions"])
+            finally:
+                reopened.stop()
+
+    def test_collection_failure_preserves_snapshot_and_restores_running_executor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "logs").mkdir()
+            (root / "logs" / "ok-script.log").write_text("bounded fallback", encoding="utf-8")
+            manager = DiagnosticsManager(
+                project_root=root, output_dir=root / "out", app_version="test"
+            )
+            with patch("src.diagnostics.bundle.collect", side_effect=ValueError("parse failed")):
+                snapshot = manager.prepare()
+            self.assertIn("digest_failed:ValueError", snapshot.logs["omissions"])
+            self.assertIn("bounded fallback", snapshot.logs["files"]["recent.log"])
+            executor = _ExecutorStub(np.zeros((2, 2, 3)), _InteractionStub())
+            with patch.object(manager.builder, "capture_logs", side_effect=OSError("read failed")):
+                with self.assertRaises(OSError):
+                    manager.prepare(executor=executor)
+            self.assertEqual(1, executor.start_calls)
+
+    def test_rotation_failure_survives_large_active_tail_and_references_are_exact(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "logs").mkdir()
+            before = "2026-09-11 23:59:40,000 INFO MainThread ocr_zone:阈值=0.85 坐标=(21,42)\n"
+            failure = (
+                "2026-09-11 23:59:59,000 WARNING MainThread DailyBatchTask:广场失败，批次中止\n"
+                "Traceback (most recent call last):\n  original stack\nValueError: exact reason\n"
+            )
+            rotation = root / "logs" / "ok-script.2026-09-11.log"
+            rotation.write_bytes((before + failure * 3).encode("utf-8"))
+            active = root / "logs" / "ok-script.log"
+            active.write_text(
+                "2026-09-12 00:01:00,000 INFO MainThread OCR:CLIENT_LOGIC_ERROR\n" * 1000,
+                encoding="utf-8",
+            )
+            paths = sources_for(root)
+            self.assertIn(rotation, paths)
+            result = collect(
+                paths,
+                timestamp("2026-09-12T00:02:00"),
+                DiagnosticRedactor(),
+                budget=24 * 1024,
+                scan_bytes=64 * 1024,
+            )
+            digest = json.loads(result["files"]["recent-digest.json"])
+            self.assertEqual(1, len(digest["incidents"]))
+            incident = digest["incidents"][0]
+            self.assertEqual(3, incident["event_count"])
+            self.assertEqual("candidate_only", incident["classification"])
+            self.assertIn(before.rstrip(), result["files"]["incidents.log"])
+            self.assertIn(failure.rstrip(), result["files"]["incidents.log"])
+            ref = incident["first_event"]
+            lines = result["files"][ref["file"]].splitlines()
+            self.assertIn("WARNING", lines[ref["line"]])
+            start, end = ref["source_bytes"]
+            self.assertEqual(failure.encode(), rotation.read_bytes()[start:end])
+            self.assertLessEqual(sum(len(t.encode()) for t in result["files"].values()), 24 * 1024)
+
+    def test_scan_limits_and_unparseable_or_oversized_records_are_visible(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = []
+            for i in range(10):
+                path = root / f"source-{i}.log"
+                path.write_text(
+                    "2026-09-12 00:00:00,000 ERROR MainThread failure\n" + "stack\n" * 300,
+                    encoding="utf-8",
+                )
+                paths.append(path)
+            result = collect(
+                paths,
+                timestamp("2026-09-12T00:01:00"),
+                DiagnosticRedactor(),
+                budget=16 * 1024,
+                scan_bytes=1000,
+            )
+            self.assertTrue(any("source_file_limit" in x for x in result["omissions"]))
+            self.assertTrue(any("scan_byte_limit" in x for x in result["omissions"]))
+            self.assertNotIn("stack", result["files"]["recent.log"])
+            unknown = root / "unknown.log"
+            unknown.write_text("api_key=hidden\nno timestamp\n", encoding="utf-8")
+            result = collect([unknown], time.time(), DiagnosticRedactor())
+            self.assertIn("unparsed_time", " ".join(result["omissions"]))
+            self.assertNotIn("hidden", str(result))
+            huge = root / "huge.log"
+            huge.write_text(
+                "2026-09-12 00:00:00,000 ERROR MainThread failure\n" + "stack\n" * 6000,
+                encoding="utf-8",
+            )
+            result = collect(
+                [huge], timestamp("2026-09-12T00:01:00"), DiagnosticRedactor(), budget=16 * 1024
+            )
+            self.assertIn("output_budget", " ".join(result["omissions"]))
+            self.assertNotIn("stack", result["files"]["recent.log"])
+
+    def test_dialog_snapshot_freezes_logs_before_more_records_and_rotation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "logs").mkdir()
+            path = root / "logs" / "ok-script.log"
+            path.write_text("before opening dialog\n", encoding="utf-8")
+            manager = DiagnosticsManager(
+                project_root=root, output_dir=root / "out", app_version="test"
+            )
+            snapshot = manager.prepare()
+            path.rename(root / "logs" / "ok-script.2026-09-11.log")
+            path.write_text("after opening dialog\n", encoding="utf-8")
+            result = manager.build_report(snapshot, "延迟反馈", include_screenshot=False)
+            with zipfile.ZipFile(result.archive_path) as archive:
+                text = archive.read("logs/recent.log").decode()
+                self.assertIn("before opening dialog", text)
+                self.assertNotIn("after opening dialog", text)
+                self.assertEqual(
+                    snapshot.captured_at,
+                    json.loads(archive.read("state/task-summary.json"))["captured_at"],
+                )
+
+    def test_failure_survives_restart_and_source_deletion_with_original_info(self):
+        from src.tasks.BaseBD2Task import BaseBD2Task
+
+        class FailedTask(BaseBD2Task):
+            def run(self):
+                self.info["状态"] = "业务失败"
+                return False
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "logs").mkdir()
+            path = root / "logs" / "ok-script.log"
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S,000")
+            path.write_text(f"{now} INFO MainThread OCR:0.85 x=0.6\n", encoding="utf-8")
+            recorder = RuntimeEvidence(root)
+            task = object.__new__(FailedTask)
+            task.info = {
+                "当前阶段": "购买",
+                "阈值": "0.850",
+                "卡带": "16",
+                "count": 17,
+                "api_key": "secret-example",
+            }
+            task._executor = SimpleNamespace(trigger_tasks=[])
+            try:
+                with patch("src.diagnostics.runtime._recorder", recorder):
+                    self.assertIs(task.run(), False)
+                evidence = recorder.snapshot()
+                self.assertEqual(1, len(evidence["failures"]))
+                self.assertNotIn("secret-example", str(evidence))
+                self.assertEqual("0.850", evidence["failures"][0]["info"]["阈值"])
+                self.assertEqual(17, evidence["failures"][0]["info"]["count"])
+            finally:
+                recorder.stop()
+            path.unlink()
+            manager = DiagnosticsManager(
+                project_root=root, output_dir=root / "out", app_version="test"
+            )
+            snapshot = manager.prepare()
+            self.assertEqual("FailedTask", snapshot.failures[0]["task"])
+            self.assertEqual("failed", snapshot.failures[0]["event"])
+            result = manager.build_report(snapshot, "重启后上报", include_screenshot=False)
+            with zipfile.ZipFile(result.archive_path) as archive:
+                manifest = json.loads(archive.read("manifest.json"))
+                self.assertIn("ok-script.log", manifest["log_sources"])
+                log_names = [n for n in archive.namelist() if n.startswith("logs/")]
+                self.assertLessEqual(sum(len(archive.read(n)) for n in log_names), 4 * 1024 * 1024)
+                self.assertIn("OCR:0.85", "".join(archive.read(n).decode() for n in log_names))
+                self.assertLessEqual(len(archive.read("logs/recent-digest.json")), 64 * 1024)
+                recorded = {item["path"] for item in manifest["files"]}
+                self.assertEqual(
+                    set(archive.namelist()) - {"manifest.json", "checksums.sha256"}, recorded
+                )
+
+    def test_batch_parent_stop_and_trigger_poll_have_distinct_outcomes(self):
+        from ok.task.exceptions import TaskDisabledException
+
+        from src.tasks.BaseBD2Task import BaseBD2Task
+
+        class Child(BaseBD2Task):
+            def run(self):
+                if self.stop_requested:
+                    raise TaskDisabledException()
+                return False
+
+        class Batch(BaseBD2Task):
+            def run(self):
+                try:
+                    return self.child.run()
+                except TaskDisabledException:
+                    return False
+
+        with tempfile.TemporaryDirectory() as directory:
+            recorder = RuntimeEvidence(Path(directory))
+            child, batch = object.__new__(Child), object.__new__(Batch)
+            for task in (child, batch):
+                task.info = {}
+                task._executor = SimpleNamespace(trigger_tasks=[])
+            batch.child = child
+            child.stop_requested = False
+            try:
+                with patch("src.diagnostics.runtime._recorder", recorder):
+                    batch.run()
+                    child.stop_requested = True
+                    batch.run()
+                    child.stop_requested = False
+                    child._executor.trigger_tasks = [child]
+                    child.run()
+                evidence = recorder.snapshot()
+                self.assertEqual(1, len(evidence["failures"]))
+                self.assertEqual("Batch", evidence["failures"][0]["parent_task"])
+                outcomes = [event["event"] for event in evidence["events"]]
+                self.assertEqual(2, outcomes.count("stopped"))
+                self.assertEqual(2, outcomes.count("failed"))
+            finally:
+                recorder.stop()
+
+    def test_multiline_exception_and_repeated_runtime_event_do_not_copy_again(self):
+        from src.tasks.BaseBD2Task import BaseBD2Task
+
+        class Crash(BaseBD2Task):
+            def run(self):
+                raise ValueError("failure reason\nsecond line")
+
+        with tempfile.TemporaryDirectory() as directory:
+            task = object.__new__(Crash)
+            task.info = {"当前阶段": "入场"}
+            task._executor = SimpleNamespace(trigger_tasks=[])
+            recorder = RuntimeEvidence(
+                Path(directory), executor_getter=lambda: SimpleNamespace(current_task=task)
+            )
+            try:
+                with patch("src.diagnostics.runtime._recorder", recorder):
+                    with self.assertRaises(ValueError):
+                        task.run()
+                record = logging.LogRecord(
+                    "ok", logging.ERROR, "", 0, "TaskExecutor:Crash exception stopped", (), None
+                )
+                recorder.emit(record)
+                evidence = recorder.snapshot()
+                self.assertEqual(1, len(evidence["failures"]))
+                self.assertIn("Traceback", evidence["failures"][0]["detail"])
+                self.assertIn("second line", evidence["failures"][0]["detail"])
+                run = {
+                    "id": evidence["failures"][0]["run"],
+                    "task": "Crash",
+                    "object": task,
+                    "started": time.time(),
+                }
+                with patch(
+                    "src.diagnostics.runtime.collect",
+                    side_effect=AssertionError("duplicate capture"),
+                ):
+                    recorder.event(run, "failed")
+                    evidence = recorder.snapshot()
+                self.assertEqual(2, evidence["failures"][0]["count"])
+            finally:
+                recorder.stop()
 
 
 class DiagnosticRedactorTest(unittest.TestCase):
@@ -346,19 +668,14 @@ class DiagnosticsManagerTest(unittest.TestCase):
         self.assertNotIn("状态", snapshot.task)
         self.assertNotIn("当前阶段", snapshot.task)
         self.assertTrue(
-            any(
-                "任务 _TaskStub 状态快照失败" in warning for warning in snapshot.warnings
-            )
+            any("任务 _TaskStub 状态快照失败" in warning for warning in snapshot.warnings)
         )
 
 
 class InteractionSafetyContractTest(unittest.TestCase):
     def test_all_mouse_entry_points_use_the_diagnostic_input_lock(self):
         interaction_path = (
-            Path(__file__).resolve().parents[1]
-            / "src"
-            / "interaction"
-            / "BD2Interaction.py"
+            Path(__file__).resolve().parents[1] / "src" / "interaction" / "BD2Interaction.py"
         )
         module = ast.parse(interaction_path.read_text(encoding="utf-8"))
         interaction_class = next(
@@ -446,9 +763,12 @@ class ReportBundleBuilderTest(unittest.TestCase):
                     {
                         "checksums.sha256",
                         "logs/recent.log",
+                        "logs/recent-digest.json",
+                        "logs/incidents.log",
                         "manifest.json",
                         "screenshots/current.webp",
                         "state/task-summary.json",
+                        "state/failures.json",
                         "state/trace.jsonl",
                         "summary.txt",
                     },
@@ -518,9 +838,7 @@ class ReportBundleBuilderTest(unittest.TestCase):
             success, encoded = cv2.imencode(".png", frame)
             self.assertTrue(success)
             (probe_outputs / failed_name).write_bytes(encoded.tobytes())
-            (probe_outputs / "map_trade_return_home_error.png").write_bytes(
-                encoded.tobytes()
-            )
+            (probe_outputs / "map_trade_return_home_error.png").write_bytes(encoded.tobytes())
             (probe_outputs / "ordinary_probe.png").write_bytes(encoded.tobytes())
 
             builder = ReportBundleBuilder(
@@ -580,8 +898,8 @@ class ReportBundleBuilderTest(unittest.TestCase):
                 output_dir=root / "output",
                 app_version="1.1.2",
             )
-            captured_at = datetime.fromtimestamp(captured_epoch).astimezone().isoformat(
-                timespec="seconds"
+            captured_at = (
+                datetime.fromtimestamp(captured_epoch).astimezone().isoformat(timespec="seconds")
             )
             result = builder.build(
                 DiagnosticSnapshot(captured_at=captured_at),
@@ -617,8 +935,8 @@ class ReportBundleBuilderTest(unittest.TestCase):
                 output_dir=root / "output",
                 app_version="1.1.2",
             )
-            captured_at = datetime.fromtimestamp(captured_epoch).astimezone().isoformat(
-                timespec="seconds"
+            captured_at = (
+                datetime.fromtimestamp(captured_epoch).astimezone().isoformat(timespec="seconds")
             )
             result = builder.build(
                 DiagnosticSnapshot(
