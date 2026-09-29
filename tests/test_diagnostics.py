@@ -206,7 +206,7 @@ class DiagnosticLogEvidenceTest(unittest.TestCase):
                 encoding="utf-8",
             )
             paths = sources_for(root)
-            self.assertIn(rotation, paths)
+            self.assertIn(rotation.resolve(), paths)
             result = collect(
                 paths,
                 timestamp("2026-09-12T00:02:00"),
