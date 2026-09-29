@@ -235,6 +235,60 @@ class BuildWorkflowTest(unittest.TestCase):
                 self.assertIn(pattern, self.run_checks_script)
         self.assertNotIn('"SendInput"', self.run_checks_script)
 
+    def test_prepare_job_validates_release_tag_early(self):
+        prepare = self.workflow.index("  prepare:")
+        sync = self.workflow.index("      - name: Sync update repositories")
+        validate = self.workflow.index("      - name: Validate release tag and commit")
+        self.assertLess(prepare, validate)
+        self.assertLess(validate, sync)
+        self.assertIn("-ValidateOnly", self.workflow)
+
+    def test_prepare_release_notes_validate_only_succeeds_for_valid_tag(self):
+        script = ROOT / "scripts" / "prepare_release_notes.ps1"
+        result = subprocess.run(
+            [
+                "pwsh",
+                "-NoProfile",
+                "-File",
+                str(script),
+                "-ReleaseTag",
+                "v1.1.2",
+                "-ValidateOnly",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Release tag v1.1.2 and commit details are valid", result.stdout)
+
+    def test_prepare_release_notes_validate_only_rejects_non_release_commit(self):
+        script = ROOT / "scripts" / "prepare_release_notes.ps1"
+        result = subprocess.run(
+            [
+                "pwsh",
+                "-NoProfile",
+                "-File",
+                str(script),
+                "-ReleaseTag",
+                "v1.1.2",
+                "-Commit",
+                "v1.1.1~1",
+                "-ValidateOnly",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must point to 'release: v1.1.2'", result.stderr)
+
     def test_release_notes_fall_back_to_previous_tag_when_sync_start_is_empty(self):
         script = ROOT / "scripts" / "prepare_release_notes.ps1"
         with tempfile.TemporaryDirectory(dir=ROOT) as temporary_directory:

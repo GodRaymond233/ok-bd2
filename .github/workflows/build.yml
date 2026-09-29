@@ -85,6 +85,13 @@ jobs:
           lfs: true
           fetch-depth: 0
 
+      - name: Validate release tag and commit
+        shell: pwsh
+        run: |
+          .\scripts\prepare_release_notes.ps1 `
+            -ReleaseTag ${{ github.ref_name }} `
+            -ValidateOnly
+
       - name: Resolve package mode
         id: package-mode
         shell: pwsh

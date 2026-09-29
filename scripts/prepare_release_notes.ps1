@@ -1,19 +1,29 @@
 param(
     [string]$StartTag = "",
-    [Parameter(Mandatory = $true)]
-    [string]$EndTag,
-    [Parameter(Mandatory = $true)]
-    [string]$Changelog,
+    [string]$EndTag = "",
+    [string]$Changelog = "",
     [Parameter(Mandatory = $true)]
     [string]$ReleaseTag,
-    [string]$OutputPath = "release-notes.md"
+    [string]$OutputPath = "release-notes.md",
+    [string]$Commit = "",
+    [switch]$ValidateOnly
 )
 
 $ErrorActionPreference = "Stop"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-$releaseCommit = git rev-list -n 1 $ReleaseTag
-if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($releaseCommit)) {
-    throw "Could not resolve release tag $ReleaseTag."
+if (-not [string]::IsNullOrWhiteSpace($Commit)) {
+    $releaseCommit = (git rev-parse $Commit 2>$null)
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($releaseCommit)) {
+        throw "Could not resolve commit target '$Commit'."
+    }
+    $releaseCommit = $releaseCommit.Trim()
+} else {
+    $releaseCommit = (git rev-list -n 1 $ReleaseTag 2>$null)
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($releaseCommit)) {
+        throw "Could not resolve release tag $ReleaseTag."
+    }
+    $releaseCommit = $releaseCommit.Trim()
 }
 $releaseSubject = git log -1 --format=%s $releaseCommit
 $expectedSubject = "release: $ReleaseTag"
@@ -23,7 +33,7 @@ if ($releaseSubject -ne $expectedSubject) {
 
 $releaseAuthor = git log -1 --format=%an $releaseCommit
 $normalizedStartTag = $StartTag.Trim()
-if ([string]::IsNullOrWhiteSpace($normalizedStartTag)) {
+if (-not $ValidateOnly -and [string]::IsNullOrWhiteSpace($normalizedStartTag)) {
     $normalizedStartTag = (git describe --tags --abbrev=0 "$releaseCommit^" 2>$null).Trim()
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($normalizedStartTag)) {
         throw "Could not resolve a starting tag for release $ReleaseTag."
@@ -67,6 +77,18 @@ if (-not $allConventional -and $nonEmptyDetails.Count -gt 0) {
 }
 if ($mainEntries.Count -eq 0) {
     throw "Release commit $releaseCommit has no version details."
+}
+
+if ($ValidateOnly) {
+    Write-Host "Release tag $ReleaseTag and commit details are valid ($($mainEntries.Count) entries)."
+    return
+}
+
+if ([string]::IsNullOrWhiteSpace($EndTag)) {
+    throw "EndTag parameter is required when not using -ValidateOnly."
+}
+if ([string]::IsNullOrWhiteSpace($Changelog)) {
+    throw "Changelog parameter is required when not using -ValidateOnly."
 }
 
 $normalizedChangelog = $Changelog.Trim()
