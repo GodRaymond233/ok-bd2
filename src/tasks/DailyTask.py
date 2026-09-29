@@ -1,3 +1,5 @@
+from time import monotonic
+
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task
@@ -182,6 +184,7 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
                 '执行公会签到': True,
                 '执行小屋签到': True,
                 '执行一键收菜': True,
+                '小屋进入最大点击次数': 3,
                 '公会入口阈值': 0.78,
                 '公会签到成功阈值': 0.76,
                 '小屋页面阈值': 0.76,
@@ -200,6 +203,7 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
             {
                 '执行公会签到': "从主页进入公会，领取每日签到奖励。",
                 '执行小屋签到': "从主页进入小屋，确认到达后返回主页。",
+                '小屋进入最大点击次数': "小屋入口点击后未确认到达时的补点上限（转场可能吞点击）。",
                 '执行一键收菜': "打开经营管理弹窗并执行一键获得。",
             }
         )
@@ -335,12 +339,38 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
         if not self._wait_for_home_confirmation("小屋签到入口前主页确认"):
             return False
 
-        self._click_reference(*MY_HOME_ENTRY_REFERENCE_POINT, after_sleep=0.5)
-        loading_state, found = self._wait_loading_or_template(
-            "小屋签到",
-            MY_HOME_TEMPLATE,
-            name="my_home_early",
-        )
+        entry_clicks = int(self.config.get("小屋进入最大点击次数", 3))
+        found = False
+        loading_state = "none"
+        for attempt in range(1, entry_clicks + 1):
+            if attempt > 1:
+                self.log_info(
+                    f"小屋签到：第 {attempt} 次点击小屋入口（转场可能吞掉点击）。"
+                )
+            self._click_reference(*MY_HOME_ENTRY_REFERENCE_POINT, after_sleep=0.5)
+            loading_state, found = self._wait_loading_or_template(
+                "小屋签到",
+                MY_HOME_TEMPLATE,
+                name=f"my_home_early{attempt}",
+            )
+            if found:
+                break
+            if loading_state == "stuck":
+                break
+            if attempt < entry_clicks:
+                # 补点前重新确认仍在主页；已开始转场/加载则停止补点，交给后续模板等待。
+                try:
+                    retry_frame = self.capture_frame()
+                except Exception:
+                    retry_frame = None
+                if retry_frame is None or not self._frame_confirms_home(
+                    retry_frame, "小屋签到重试前主页"
+                ):
+                    self.log_info(
+                        "小屋签到：无法确认仍位于主页（截图失败或已离开主页），"
+                        "停止补点，等待小屋模板。"
+                    )
+                    break
         self._status_set("小屋签到 loading 状态", loading_state)
         if loading_state == "stuck":
             self._status_set("小屋页面检测", "否")
@@ -351,26 +381,9 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
             self.log_info("小屋签到：未检测到 UI_loading_black.png，继续检测 my-home.png。")
 
         if not found:
-            found = self._wait_for_template(
-                MY_HOME_TEMPLATE,
+            found = self._wait_for_my_home_arrival(
                 timeout=float(self.config.get("小屋页面等待秒数", 12.0)),
-                name="my_home",
             )
-        if not found:
-            vision = self._quick_vision()
-            for attempt in range(MY_HOME_TITLE_OCR_RETRIES):
-                title = vision.ocr_text(
-                    self.capture_frame(),
-                    "小屋页面标题",
-                    relative_roi=MY_HOME_TITLE_RELATIVE_ROI,
-                    target_height=0,
-                    ocr_scale=2.0,
-                )
-                if self._keyword_match_count(title, ["我的小屋"]) >= 1:
-                    found = True
-                    break
-                if attempt + 1 < MY_HOME_TITLE_OCR_RETRIES:
-                    self.sleep(MY_HOME_TITLE_OCR_RETRY_INTERVAL)
         self._status_set("小屋页面检测", "是" if found else "否")
         if found:
             self.log_info("小屋签到：已进入小屋页面，返回主页。")
@@ -384,6 +397,44 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
         home_ok = self._wait_for_home_confirmation("小屋签到返回主页")
         self._status_set("小屋签到返回主页结果", "通过" if home_ok else "失败")
         return home_ok
+
+    def _wait_for_my_home_arrival(self, timeout: float) -> bool:
+        if "_wait_for_template" in self.__dict__:
+            if self._wait_for_template(MY_HOME_TEMPLATE, timeout=timeout, name="my_home"):
+                return True
+        end_at = monotonic() + max(0.0, timeout)
+        vision = self._quick_vision()
+        ocr_attempts = 0
+        while monotonic() <= end_at:
+            try:
+                frame = self.capture_frame()
+            except Exception:
+                frame = None
+            if frame is None:
+                self.sleep(0.35)
+                continue
+            if self._frame_confirms_home(frame, "小屋页面到达误检"):
+                self.sleep(0.35)
+                continue
+            result = self._match(frame, MY_HOME_TEMPLATE)
+            self._status_set("my_home", f"{result.score:.3f}")
+            if self._passes(result, MY_HOME_TEMPLATE):
+                return True
+            if ocr_attempts < MY_HOME_TITLE_OCR_RETRIES:
+                ocr_attempts += 1
+                title = vision.ocr_text(
+                    frame,
+                    "小屋页面标题",
+                    relative_roi=MY_HOME_TITLE_RELATIVE_ROI,
+                    target_height=0,
+                    ocr_scale=2.0,
+                )
+                if self._keyword_match_count(title, ["我的小屋"]) >= 1:
+                    return True
+                if ocr_attempts >= MY_HOME_TITLE_OCR_RETRIES:
+                    break
+            self.sleep(0.35)
+        return False
 
     def run_business_collect(self) -> bool:
         if not self._wait_for_home_confirmation("一键收菜入口前主页确认"):

@@ -331,6 +331,7 @@ class TaskVisionMixin:
         name: str,
         interval: float = 0.35,
         timeout: float | None = None,
+        auto_return: bool = True,
     ) -> bool:
         if timeout is None:
             timeout = float(self.config.get("主页确认等待秒数", 10.0))
@@ -367,12 +368,31 @@ class TaskVisionMixin:
             )
             self.sleep(interval)
 
+        if auto_return:
+            return self._auto_return_home_after_timeout(name, interval=interval)
+
         self.log_info(
             f"{name}：未同时确认左列关键词、亮度和抽抽乐文字，"
             f"left={last_left_hits}/{HOME_LEFT_COLUMN_REQUIRED_HITS}, "
             f"p95={last_p95:.0f}/{self._home_p95_threshold():.0f}, "
             f"ocr={last_gacha_text or '-'}。"
         )
+        return False
+
+    def _auto_return_home_after_timeout(
+        self,
+        name: str,
+        interval: float = 0.35,
+    ) -> bool:
+        """主页确认超时后，自动点击右上角主页按钮把角色带回主页面再确认。"""
+        self.log_info(f"{name}：未确认到主页，尝试自动返回主页。")
+        if self.auto_return_main_home():
+            return self._wait_for_home_confirmation(
+                name,
+                interval=interval,
+                timeout=float(self.config.get("主页确认等待秒数", 10.0)),
+                auto_return=False,
+            )
         return False
 
     @staticmethod
@@ -395,16 +415,16 @@ class TaskVisionMixin:
 
     def _match(self, frame, spec: TemplateSpec) -> MatchResult:
         empty = MatchResult(-1.0, (0, 0), (0, 0))
-        if monotonic() < self._match_pause_until:
+        if monotonic() < getattr(self, "_match_pause_until", 0.0):
             return empty
 
         try:
             return task_vision.match_template(
                 frame,
                 spec,
-                self.config,
+                getattr(self, "config", {}),
                 TEMPLATE_DIR,
-                cache=self._templates,
+                cache=getattr(self, "_templates", None),
                 min_size=8,
                 loader=lambda _template_dir, spec: (
                     self._load_template(spec),
@@ -412,27 +432,41 @@ class TaskVisionMixin:
                 ),
             )
         except RuntimeError as exc:
-            if spec.name not in self._missing_template_names:
-                self._missing_template_names.add(spec.name)
+            missing = getattr(self, "_missing_template_names", None)
+            if missing is None:
+                missing = set()
+                self._missing_template_names = missing
+            if spec.name not in missing:
+                missing.add(spec.name)
                 self.log_warning(str(exc), notify=True)
             return empty
         except (cv2.error, MemoryError) as exc:
             self._match_pause_until = monotonic() + 2.0
             message = f"图像匹配内存不足，暂停识别2秒：{spec.name}"
             self.info_set("匹配错误", message)
-            if spec.name not in self._match_error_names:
-                self._match_error_names.add(spec.name)
+            match_errors = getattr(self, "_match_error_names", None)
+            if match_errors is None:
+                match_errors = set()
+                self._match_error_names = match_errors
+            if spec.name not in match_errors:
+                match_errors.add(spec.name)
                 self.log_warning(f"{message}；{exc}", notify=True)
             return empty
 
     def _load_template(self, spec: TemplateSpec) -> np.ndarray:
-        return task_vision.load_template(TEMPLATE_DIR, spec, cache=self._templates)[0]
+        return task_vision.load_template(
+            TEMPLATE_DIR, spec, cache=getattr(self, "_templates", None)
+        )[0]
 
     def _load_template_mask(self, spec: TemplateSpec) -> np.ndarray | None:
-        return task_vision.load_template(TEMPLATE_DIR, spec, cache=self._templates)[1]
+        return task_vision.load_template(
+            TEMPLATE_DIR, spec, cache=getattr(self, "_templates", None)
+        )[1]
 
     def _passes(self, result: MatchResult, spec: TemplateSpec) -> bool:
-        return task_vision.passes_match(result, spec, self.config)
+        return task_vision.passes_match(
+            result, spec, getattr(self, "config", {})
+        )
 
     def _ocr_text(self, frame, name: str) -> str:
         try:
