@@ -17,6 +17,7 @@ from src.tasks.task_vision_mixin import (
 )
 from src.utils.calibration import HD_720
 from src.utils.home_confirmation import HOME_LEFT_COLUMN_REQUIRED_HITS
+from src.utils.image_utils import crop_relative
 
 QUICK_HUNT_CHILD_CONFIG_KEYS = (
     "快速狩猎冒险航线",
@@ -78,6 +79,13 @@ QUICK_HUNT_COUNT_ROI = _quick_hunt_relative_roi(1298, 826, 623, 257)
 QUICK_HUNT_START_ROI = _quick_hunt_relative_roi(1136, 805, 963, 764)
 
 QUICK_HUNT_REWARD_ROI = _quick_hunt_relative_roi(1055, 1019, 857, 965)
+
+QUICK_HUNT_REWARD_TITLE_ROI = _quick_hunt_relative_roi(825, 285, 1100, 400)
+
+QUICK_HUNT_MENU_FOREGROUND_ROI = _quick_hunt_relative_roi(100, 120, 260, 520)
+
+# Reward/count overlays dim the left tabs (p95 32-58); restored menu frames are 160-166.
+QUICK_HUNT_MENU_FOREGROUND_P95_MINIMUM = 120
 
 QUICK_HUNT_DIALOG_ROI = _quick_hunt_relative_roi(750, 630, 1200, 915)
 
@@ -836,6 +844,10 @@ class QuickHuntFeatureMixin:
 
     def _quick_hunt_wait_result(self, stage: str) -> str:
         end_at = monotonic() + float(self.config.get("快速狩猎结算等待秒数", 15.0))
+        pending_result = None
+        close_clicks = 0
+        menu_hits = 0
+        last_state = "等待结算"
         while monotonic() <= end_at:
             frame = self.capture_frame()
             reward_text = self._quick_hunt_ocr_text(
@@ -844,25 +856,60 @@ class QuickHuntFeatureMixin:
                 name=f"{stage}-奖励",
             )
             normalized = self._normalize_text(reward_text)
-            if ("点击" in normalized and "返回" in normalized) or (
+            reward_open = ("点击" in normalized and "返回" in normalized) or (
                 "画面" in normalized and "即可" in normalized
-            ):
-                self._click_mf_reference(1, 1, after_sleep=0.8)
-                return "done"
-
+            )
+            if not reward_open:
+                title_text = self._quick_hunt_ocr_text(
+                    frame, QUICK_HUNT_REWARD_TITLE_ROI, name=f"{stage}-奖励标题",
+                )
+                reward_open = "reward" in self._normalize_text(title_text)
             dialog_text = self._quick_hunt_ocr_text(
                 frame,
                 QUICK_HUNT_DIALOG_ROI,
                 name=f"{stage}-异常",
             )
-            if any(
+            depleted_open = any(
                 keyword in self._normalize_text(dialog_text)
                 for keyword in ("不足", "无法", "耗尽")
-            ):
-                self._click_mf_reference(1, 1, after_sleep=0.5)
-                return "depleted"
-            self.sleep(0.5)
-        self.log_info(f"快速狩猎：{stage}等待结算超时。")
+            )
+            if reward_open or depleted_open:
+                if pending_result is None:
+                    pending_result = "done" if reward_open else "depleted"
+                    # Start the close deadline once, even when settlement used its entire allowance.
+                    end_at = monotonic() + self._quick_hunt_ui_timeout()
+                menu_hits = 0
+                last_state = "奖励页未关闭" if reward_open else "资源不足弹窗未关闭"
+                if close_clicks < 3:
+                    close_clicks += 1
+                    if reward_open:
+                        self.operate_click(
+                            (QUICK_HUNT_REWARD_ROI[0] + QUICK_HUNT_REWARD_ROI[2]) / 2,
+                            (QUICK_HUNT_REWARD_ROI[1] + QUICK_HUNT_REWARD_ROI[3]) / 2,
+                            after_sleep=0.8,
+                        )
+                    else:
+                        self._click_mf_reference(1, 1, after_sleep=0.8)
+            elif pending_result is not None:
+                menu_text = self._quick_hunt_ocr_text(
+                    frame, QUICK_HUNT_MENU_FOREGROUND_ROI, name=f"{stage}-结算返回菜单",
+                )
+                menu_normalized = self._normalize_text(menu_text)
+                menu_crop = crop_relative(self._to_gray(frame), QUICK_HUNT_MENU_FOREGROUND_ROI)
+                p95 = float(np.percentile(menu_crop, 95)) if menu_crop.size else 0.0
+                menu_restored = (
+                    all(keyword in menu_normalized for keyword in ("狩猎场", "圣石洞"))
+                    and p95 >= QUICK_HUNT_MENU_FOREGROUND_P95_MINIMUM
+                )
+                menu_hits = menu_hits + 1 if menu_restored else 0
+                last_state = "菜单恢复确认中" if menu_restored else "转场或页面未确认"
+                self._status_set(f"{stage}-结算返回菜单亮度", f"p95={p95:.0f}")
+                if menu_hits >= 2:
+                    return pending_result
+            self._status_set(f"{stage}-结算退出状态", f"{last_state}；关闭点击={close_clicks}/3")
+            self.sleep(0.3)
+        self.log_info(f"快速狩猎：{stage}结算退出超时，{last_state}；关闭点击={close_clicks}/3。")
+        self._save_flow_diagnostic("quick_hunt_result_close_failed")
         return "failed"
 
     def _quick_hunt_stone_counts(self) -> dict[str, int] | None:

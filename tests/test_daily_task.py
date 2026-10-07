@@ -2,7 +2,7 @@ import re
 import unittest
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 from ok.util.config import Config
@@ -37,11 +37,13 @@ from src.tasks.quick_hunt import (
     QUICK_HUNT_DOUBLE_TEMPLATE,
     QUICK_HUNT_ENTRY_POINT,
     QUICK_HUNT_MAP_SCAN_ROI,
+    QUICK_HUNT_MENU_FOREGROUND_ROI,
     QUICK_HUNT_RED_POINT,
     QUICK_HUNT_RESOURCE_CAPACITIES,
     QUICK_HUNT_RESOURCE_ROI,
     QUICK_HUNT_RETURN_POINT,
     QUICK_HUNT_REWARD_ROI,
+    QUICK_HUNT_REWARD_TITLE_ROI,
     QUICK_HUNT_START_ROI,
     QUICK_HUNT_STONE_COUNT_ROI,
     QUICK_HUNT_STONE_LIST_ROI,
@@ -1643,6 +1645,83 @@ class DailyTaskHelperTest(unittest.TestCase):
 
         self.assertEqual("failed", task._quick_hunt_open_menu())
         self.assertEqual(1, len(entrance_clicks))
+
+    def test_quick_hunt_reward_must_close_and_return_to_menu_before_finishing(self):
+        for frames, expected, click_count in (
+            (("reward", "menu", "menu"), "done", 1),
+            (("reward", "reward", "transition", "menu", "menu"), "done", 2),
+            (("reward_title", "menu", "menu"), "done", 1),
+            (("reward", "dim_menu"), "failed", 1),
+            (("reward", "bright_noise"), "failed", 1),
+            (("reward", "menu", "transition"), "failed", 1),
+            (("reward", "menu", "transition", "menu", "menu"), "done", 1),
+            (("reward",), "failed", 3),
+            (("reward", "transition"), "failed", 1),
+            (("depleted", "menu", "menu"), "depleted", 1),
+            (("depleted",), "failed", 3),
+            (("depleted", "dim_menu"), "failed", 1),
+            (("menu",), "failed", 0),
+            ((*(["transition"] * 16), "reward", "menu", "menu"), "done", 1),
+        ):
+            with self.subTest(frames=frames):
+                task = object.__new__(QuickHuntTask)
+                task.config = {"快速狩猎结算等待秒数": 5.0, "快速狩猎界面等待秒数": 4.0}
+                clock = {"now": 0.0}
+                states = {}
+                images = []
+                for state in frames:
+                    image = np.zeros((108, 192, 3), dtype=np.uint8)
+                    if state in {"menu", "dim_menu", "bright_noise"}:
+                        crop_relative(image, QUICK_HUNT_MENU_FOREGROUND_ROI)[:] = (
+                            58 if state == "dim_menu" else 160
+                        )
+                    states[id(image)] = state
+                    images.append(image)
+                sequence = iter(images)
+                task.capture_frame = Mock(side_effect=lambda: next(sequence, images[-1]))
+                task.info_set = Mock()
+                task.log_info = Mock()
+                task._save_flow_diagnostic = Mock()
+
+                def sleep(seconds):
+                    clock["now"] += seconds
+
+                task.sleep = Mock(side_effect=sleep)
+                task.operate_click = Mock(
+                    side_effect=lambda *_, after_sleep=0.0: sleep(after_sleep),
+                )
+
+                def ocr_text(frame, relative_roi, name):
+                    state = states[id(frame)]
+                    if state == "reward" and relative_roi == QUICK_HUNT_REWARD_ROI:
+                        return "点击画面即可返回。"
+                    if state == "reward_title" and relative_roi == QUICK_HUNT_REWARD_TITLE_ROI:
+                        return "REWARD 获得1种"
+                    if state == "depleted" and relative_roi == QUICK_HUNT_DIALOG_ROI:
+                        return "米饭不足"
+                    if (
+                        state in {"menu", "dim_menu"}
+                        and relative_roi == QUICK_HUNT_MENU_FOREGROUND_ROI
+                    ):
+                        return "狩猎场 金币 史莱姆 圣石洞穴"
+                    return ""
+
+                task._quick_hunt_ocr_text = Mock(side_effect=ocr_text)
+                with patch("src.tasks.quick_hunt.monotonic", side_effect=lambda: clock["now"]):
+                    self.assertEqual(expected, task._quick_hunt_wait_result("金币 MAX"))
+                self.assertEqual(click_count, task.operate_click.call_count)
+                for click in task.operate_click.call_args_list:
+                    if "depleted" in frames:
+                        self.assertAlmostEqual(1 / 1280, click.args[0])
+                        self.assertAlmostEqual(1 / 720, click.args[1])
+                    else:
+                        self.assertAlmostEqual(956 / 1920, click.args[0])
+                        self.assertAlmostEqual(992 / 1080, click.args[1])
+                if expected == "failed":
+                    task._save_flow_diagnostic.assert_called_once()
+                    self.assertLessEqual(clock["now"], 5.3)
+                else:
+                    task._save_flow_diagnostic.assert_not_called()
 
     def test_quick_hunt_adventure_map_is_verified_before_consuming_rice(self):
         task = object.__new__(QuickHuntTask)
