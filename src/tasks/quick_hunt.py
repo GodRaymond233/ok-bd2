@@ -946,7 +946,17 @@ class QuickHuntFeatureMixin:
 
     def _quick_hunt_resource_empty(self, resource: str) -> bool:
         frame = self.capture_frame()
-        text = self._quick_hunt_ocr_text(frame, QUICK_HUNT_RESOURCE_ROI, name=f"{resource}数量")
+        roi = QUICK_HUNT_RESOURCE_ROI
+        if resource == "米饭":
+            frame = crop_relative(frame, roi)[:, :, :3]
+            # Free rice is white; the adjacent stored-rice counter is yellow.
+            white = cv2.inRange(
+                cv2.cvtColor(frame, cv2.COLOR_BGR2HSV),
+                (0, 0, 170), (179, 60, 255),
+            )
+            frame = cv2.bitwise_and(frame, frame, mask=white)
+            roi = (0, 0, 1, 1)
+        text = self._quick_hunt_ocr_text(frame, roi, name=f"{resource}数量")
         normalized = self._normalize_text(text).replace("：", ":")
         expected_capacity = QUICK_HUNT_RESOURCE_CAPACITIES.get(resource)
         if expected_capacity is None:

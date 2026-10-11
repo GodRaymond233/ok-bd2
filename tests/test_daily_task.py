@@ -1034,9 +1034,27 @@ class DailyTaskHelperTest(unittest.TestCase):
         text[0] = "18 / 90"
         self.assertFalse(task._quick_hunt_resource_empty("米饭"))
         self.assertEqual(
-            [("米饭数量", QUICK_HUNT_RESOURCE_ROI)] * 3,
+            [("米饭数量", (0, 0, 1, 1))] * 3,
             calls,
         )
+
+    def test_quick_hunt_rice_zero_filters_yellow_counter_before_ocr(self):
+        task = object.__new__(QuickHuntTask)
+        task.info_set = lambda *_args, **_kwargs: None
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        frame[43:70, 1621:1689] = (245, 245, 245)
+        frame[50:60, 1714:1723] = (0, 200, 255)
+        task.capture_frame = lambda: frame
+
+        def read_resource(image, _roi, name):
+            self.assertEqual("米饭数量", name)
+            self.assertFalse(image[12:22, 112:121].any())
+            return "0/90" if image[5:32, 19:87].any() else ""
+
+        task._quick_hunt_ocr_text = read_resource
+        self.assertTrue(task._quick_hunt_resource_empty("米饭"))
+        frame[43:70, 1621:1689] = (0, 200, 255)
+        self.assertFalse(task._quick_hunt_resource_empty("米饭"))
 
     def test_quick_hunt_regions_preserve_all_supplied_1920_calibrations(self):
         self.assertEqual(
