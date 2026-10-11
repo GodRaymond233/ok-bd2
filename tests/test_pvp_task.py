@@ -1032,9 +1032,14 @@ class PVPTaskHelperTest(unittest.TestCase):
                     (x, y, after_sleep)
                 )
 
+                expected = (
+                    CartridgeSpecialPageResult.HANDLED
+                    if state_text == "赛季奖励"
+                    else CartridgeSpecialPageResult.BLOCKED
+                )
                 self.assertIs(
-                    CartridgeSpecialPageResult.HANDLED,
-                    task._handle_recent_cartridge_special_pages(timeout=0.0)
+                    expected,
+                    task._handle_recent_cartridge_special_pages(timeout=0.0),
                 )
                 center_x = action_rect[0] + action_rect[2] / 2
                 center_y = action_rect[1] + action_rect[3] / 2
@@ -1076,48 +1081,51 @@ class PVPTaskHelperTest(unittest.TestCase):
                 self.assertEqual(720, ocr_calls[0]["target_height"])
 
     def test_recent_pvp_special_pages_can_handle_reward_then_rank_page(self):
-        task = object.__new__(PVPTask)
-        task._executor = SimpleNamespace(
-            method=SimpleNamespace(width=1920, height=1080)
-        )
-        task.info_set = lambda *_args, **_kwargs: None
-        task.sleep = lambda *_args, **_kwargs: None
-        task._is_beijing_monday = lambda: True
-        screens = iter(
-            (
-                [
-                    SimpleNamespace(name="赛季奖励", x=1150, y=220, width=200, height=60),
-                    SimpleNamespace(
-                        name="点击画面即可返回",
-                        x=1180,
-                        y=820,
-                        width=180,
-                        height=30,
-                    ),
-                ],
-                [
-                    SimpleNamespace(name="恭喜晋级。", x=850, y=740, width=150, height=40),
-                    SimpleNamespace(name="确认", x=930, y=990, width=60, height=30),
-                ],
-                [],
-            )
-        )
-        task._recent_cartridge_ocr_boxes = lambda: next(screens)
-        clicks = []
-        task.operate_click = lambda x, y, after_sleep=0.0: clicks.append(
-            (x, y, after_sleep)
-        )
-
-        with patch(
-            "src.tasks.BaseBD2Task.monotonic",
-            side_effect=(0.0, 0.5, 1.0, 3.1),
+        for tail, expected in (
+            (("",), CartridgeSpecialPageResult.BLOCKED),
+            (("恭喜晋级", "恭喜晋级"), CartridgeSpecialPageResult.BLOCKED),
+            (("梦幻广场", "", "梦幻广场"), CartridgeSpecialPageResult.BLOCKED),
+            (("梦幻广场", "梦幻广场"), CartridgeSpecialPageResult.HANDLED),
         ):
-            self.assertIs(
-                CartridgeSpecialPageResult.HANDLED,
-                task._handle_recent_cartridge_special_pages(timeout=3.0),
-            )
+            with self.subTest(tail=tail):
+                task = object.__new__(PVPTask)
+                task._executor = SimpleNamespace(
+                    method=SimpleNamespace(width=1920, height=1080)
+                )
+                task.info_set = lambda *_args, **_kwargs: None
+                task.sleep = lambda *_args, **_kwargs: None
+                task._is_beijing_monday = lambda: True
+                screens = [
+                    [
+                        SimpleNamespace(name="赛季奖励", x=1150, y=220, width=200, height=60),
+                        SimpleNamespace(
+                            name="点击画面即可返回", x=1180, y=820, width=180, height=30,
+                        ),
+                    ],
+                    [
+                        SimpleNamespace(name="恭喜晋级。", x=850, y=740, width=150, height=40),
+                        SimpleNamespace(name="确认", x=930, y=990, width=60, height=30),
+                    ],
+                ] + [[SimpleNamespace(name=text)] if text else [] for text in tail]
+                timeout = len(screens) * 0.5
+                frames = iter(screens)
+                clock = [0.0]
 
-        self.assertEqual(2, len(clicks))
+                def capture():
+                    clock[0] += 0.5
+                    return next(frames)
+
+                task._recent_cartridge_ocr_boxes = capture
+                clicks = []
+                task.operate_click = lambda x, y, after_sleep=0.0: clicks.append(
+                    (x, y, after_sleep)
+                )
+                with patch("src.tasks.BaseBD2Task.monotonic", lambda: clock[0]):
+                    self.assertIs(
+                        expected,
+                        task._handle_recent_cartridge_special_pages(timeout=timeout),
+                    )
+                self.assertEqual(2, len(clicks))
 
     def test_pvp_special_page_mode_uses_beijing_calendar_day(self):
         monday_in_beijing = datetime(2026, 8, 2, 16, 0, tzinfo=timezone.utc)

@@ -97,6 +97,17 @@ class QuickSuppressionTaskTest(unittest.TestCase):
         self.assertTrue(QuickSuppressionTask._contains_notice("立刻前往 探索\n告示板"))
         self.assertFalse(QuickSuppressionTask._contains_notice("探索告示板"))
 
+    def test_run_stops_when_task_is_disabled(self):
+        task = object.__new__(QuickSuppressionTask)
+        task.config = {"启用": True, "刷几号位": "4号位"}
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task.sleep = lambda *_args, **_kwargs: None
+        task._task_stop_requested = lambda: True
+        task._run_cycle = lambda *_args, **_kwargs: self.fail("must stop before cycle")
+
+        self.assertFalse(QuickSuppressionTask.run(task))
+
 
 if __name__ == "__main__":
     unittest.main()

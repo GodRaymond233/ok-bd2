@@ -1,8 +1,11 @@
 import tempfile
 import time
 import unittest
+from datetime import datetime
 from types import SimpleNamespace
 from unittest import mock
+
+from ok.task.exceptions import TaskDisabledException
 
 from src.config import config
 from src.tasks import scheduler
@@ -14,7 +17,7 @@ from src.tasks.DailyBatchTask import (
     DailyBatchTask,
 )
 from src.tasks.MapCollectionTask import MapCollectionTask
-from src.tasks.run_history import RunHistoryStore, set_default_store
+from src.tasks.run_history import BEIJING_TZ, RunHistoryStore, set_default_store
 from src.tasks.task_notifications import log_task_completion
 
 
@@ -34,6 +37,12 @@ class _ChildTask:
 
 
 class DailyBatchTaskTest(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        set_default_store(RunHistoryStore(f"{directory.name}/history.json"))
+        self.addCleanup(set_default_store, None)
+
     def make_task(self, children, child_specs, task_config):
         task = object.__new__(DailyBatchTask)
         task.child_tasks = child_specs
@@ -138,18 +147,60 @@ class DailyBatchTaskTest(unittest.TestCase):
         )
         observed = []
         original_run = second.run
+        boundary = datetime(2026, 10, 7, 4, tzinfo=BEIJING_TZ).timestamp()
 
         def second_run():
-            # By the time the second child runs, the first must already be
-            # published so the run panel can paint its live segments.
             observed.append(task.info.get("完成"))
+            self.assertEqual(boundary - 60, history.last_run("first")["finished"])
+            self.assertEqual(60, history.last_run("first")["duration"])
             return original_run()
 
         second.run = second_run
 
-        self.assertTrue(DailyBatchTask.run(task))
+        with tempfile.TemporaryDirectory() as directory:
+            history = RunHistoryStore(f"{directory}/history.json")
+            with mock.patch(
+                "src.tasks.run_history.default_store", return_value=history
+            ), mock.patch.object(scheduler, "default_store"), mock.patch(
+                "src.tasks.DailyBatchTask.time.time",
+                side_effect=[boundary - 120, boundary - 60, boundary - 30, boundary + 60],
+            ):
+                self.assertTrue(DailyBatchTask.run(task))
+            task.name = "一键完成日常"
+            history.record_task_done(task, finished=boundary + 90)
+            reloaded = RunHistoryStore(history.path)
+            self.assertFalse(reloaded.is_completed_today("first", now=boundary + 90))
+            self.assertTrue(reloaded.is_completed_today("second", now=boundary + 90))
         self.assertEqual(["第一项"], observed)
         self.assertEqual("第一项、第二项", task.info.get("完成"))
+
+    def test_cancellation_preserves_finished_children_and_stops_the_batch(self):
+        for boundary in ("auto_return_main_home", "run"):
+            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as directory:
+                classes = [type(name, (), {}) for name in ("First", "Cancelled", "Later")]
+                calls = []
+                children = [_ChildTask(name, calls) for name in ("first", "cancelled", "later")]
+                cancelled = children[1]
+                original_config = cancelled.config
+                setattr(cancelled, boundary, mock.Mock(side_effect=TaskDisabledException))
+                specs = tuple(
+                    DailyBatchChild(child.name, cls) for cls, child in zip(classes, children)
+                )
+                task, resets = self.make_task(dict(zip(classes, children)), specs, {"启用": True})
+                task._maybe_shutdown_after_daily = mock.Mock()
+                history = RunHistoryStore(f"{directory}/history.json")
+                with mock.patch(
+                    "src.tasks.run_history.default_store", return_value=history
+                ), mock.patch.object(scheduler, "default_store"):
+                    with self.assertRaises(TaskDisabledException):
+                        DailyBatchTask.run(task)
+                self.assertEqual([("first", True)], calls)
+                self.assertIs(original_config, cancelled.config)
+                self.assertEqual(2, len(resets))
+                self.assertTrue(RunHistoryStore(history.path).last_run("first")["ok"])
+                self.assertIsNone(history.last_run("cancelled"))
+                self.assertIsNone(history.last_run("later"))
+                task._maybe_shutdown_after_daily.assert_not_called()
 
     def test_failure_stops_later_children_and_disabled_switch_is_skipped(self):
         class Skipped:

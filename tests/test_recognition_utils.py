@@ -1,7 +1,8 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import cv2
 import numpy as np
@@ -243,6 +244,43 @@ class ImageRecognitionUtilsTest(unittest.TestCase):
 
 
 class OcrUtilsTest(unittest.TestCase):
+    def test_task_ocr_boundaries_propagate_cancellation(self):
+        from ok.task.exceptions import TaskDisabledException
+
+        from src.tasks.BargainLevelTask import BargainLevelTask
+        from src.tasks.FreeGachaTask import FreeGachaTask
+        from src.tasks.PVPTask import PVPTask
+        from src.tasks.QuickSuppressionTask import QuickSuppressionTask
+        from src.tasks.SquareGoddessTask import SquareGoddessTask
+        from src.tasks.task_vision_mixin import TaskVisionMixin
+        from src.tasks.trigger.AutoLoginTask import AutoLoginTask
+
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        boundaries = (
+            (BargainLevelTask._ocr_text, {"name": "取消"}),
+            (FreeGachaTask._ocr_text, {"name": "取消"}),
+            (PVPTask._ocr_boxes, {"name": "取消"}),
+            (QuickSuppressionTask._ocr_text, {"name": "取消"}),
+            (SquareGoddessTask._ocr_boxes, {"name": "取消"}),
+            (SquareGoddessTask._observe_goddess_navigation, {}),
+            (TaskVisionMixin._ocr_text, {"name": "取消"}),
+            (AutoLoginTask._login_page_ocr, {}),
+            (AutoLoginTask._home_gacha_ocr_text, {}),
+            (AutoLoginTask._ocr_match_region_text, {
+                "name": "取消", "result": MatchResult(1.0, (0, 0), (100, 100)),
+            }),
+        )
+        for method, kwargs in boundaries:
+            with self.subTest(boundary=method.__qualname__):
+                task = SimpleNamespace(
+                    config={}, ocr=Mock(side_effect=TaskDisabledException()),
+                    info_set=Mock(), _normalize_text=str, _match=Mock(), _passes=Mock(),
+                    _crop_relative=crop_relative,
+                )
+                with self.assertRaises(TaskDisabledException):
+                    method(task, frame, **kwargs)
+                task.info_set.assert_not_called()
+
     def test_normalize_can_keep_regex_or_strip_to_alphanumeric(self):
         self.assertEqual(normalize_ocr_text(" P V P .* 确认 "), "pvp.*确认")
         self.assertEqual(normalize_ocr_text("折扣-商店！", alnum_only=True), "折扣商店")
@@ -282,6 +320,69 @@ class OcrUtilsTest(unittest.TestCase):
     def test_fuzzy_match_rejects_empty_values(self):
         self.assertFalse(fuzzy_substring_match("", "确认", 0.9))
         self.assertFalse(fuzzy_substring_match("确认", "", 0.9))
+
+
+class TemplateLoadingTest(unittest.TestCase):
+    def _loaders(self, path):
+        from src.tasks.BaseBD2Task import BaseBD2Task
+        from src.tasks.QuickSuppressionTask import QuickSuppressionTask
+
+        self.enterContext(patch("src.tasks.BaseBD2Task.TEMPLATE_DIR", path.parent))
+        self.enterContext(patch(
+            "src.tasks.BaseBD2Task.RECENT_PVP_CARTRIDGE_TEMPLATE_FILE", path.name,
+        ))
+        self.enterContext(patch("src.tasks.QuickSuppressionTask.TEMPLATE_PATH", path))
+        recent_pvp = object.__new__(BaseBD2Task)
+        loading = object.__new__(QuickSuppressionTask)
+        loading._loading_template = None
+        cache = {}
+        spec = TemplateSpec("unicode", path.name)
+        return (
+            ("task_vision", lambda: task_vision.load_template(path.parent, spec, cache)),
+            ("recent_pvp", recent_pvp._load_recent_pvp_cartridge_template),
+            ("loading", loading._load_loading_template),
+        )
+
+    def test_unicode_template_paths_preserve_channels_and_cache(self):
+        gray = np.arange(12, dtype=np.uint8).reshape(3, 4)
+        alpha = np.full_like(gray, 255)
+        alpha[0, 0] = 0
+        bgra = np.dstack([gray, gray + 20, gray + 40, alpha])
+        with tempfile.TemporaryDirectory() as directory:
+            template_dir = Path(directory) / "模板目录"
+            template_dir.mkdir()
+            path = template_dir / "模板.png"
+            for raw in (gray, bgra):
+                encoded_ok, encoded = cv2.imencode(".png", raw)
+                self.assertTrue(encoded_ok)
+                payload = encoded.tobytes()
+                for name, load in self._loaders(path):
+                    with self.subTest(loader=name, channels=raw.shape):
+                        path.write_bytes(payload)
+                        if name == "recent_pvp" and raw.ndim == 2:
+                            with self.assertRaisesRegex(RuntimeError, "缺少 Alpha 通道"):
+                                load()
+                            continue
+                        loaded = load()
+                        template, mask = loaded if isinstance(loaded, tuple) else (loaded, None)
+                        np.testing.assert_array_equal(template, to_gray(raw))
+                        if raw.ndim == 3 and name != "loading":
+                            np.testing.assert_array_equal(mask, alpha)
+                        else:
+                            self.assertIsNone(mask)
+                        path.unlink()
+                        self.assertIs(load(), loaded)
+
+    def test_unreadable_template_files_keep_task_errors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "模板.png"
+            for payload in (None, b"", b"invalid image"):
+                for name, load in self._loaders(path):
+                    with self.subTest(loader=name, payload=payload):
+                        if payload is not None:
+                            path.write_bytes(payload)
+                        with self.assertRaisesRegex(RuntimeError, "模板不存在或无法读取"):
+                            load()
 
 
 class TaskVisionMatchTemplateTest(unittest.TestCase):

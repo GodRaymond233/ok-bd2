@@ -3,6 +3,7 @@ from __future__ import annotations
 from time import monotonic
 
 import numpy as np
+from ok.task.exceptions import TaskDisabledException
 
 from src.tasks.map_trade.card_status import CardStatusDetector
 from src.tasks.map_trade.models import COLLECTABLE_CARDS, MapPageMode, ScreenState
@@ -21,6 +22,7 @@ from src.tasks.map_trade.navigator_constants import (
     DISCOUNT_SHOP_CLOSE_KEYWORDS,
     DISCOUNT_SHOP_CLOSE_POINT,
     DISCOUNT_SHOP_CLOSE_TIMEOUT,
+    FIELD_KEYCAP_TEMPLATES,
     FIRST_CARD_CONFIRM_REGION,
     FIRST_CARD_INSERT_REGION,
     FIRST_CARD_SKIP_TEMPLATE,
@@ -240,6 +242,8 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
                     relative_roi=TELEPORT_MAP_HEADER_OCR_RELATIVE_ROI,
                 )
             )
+        except TaskDisabledException:
+            raise
         except Exception as exc:
             self._status("地图页面左上标题 OCR错误", str(exc))
             return MapPageDetection(MapPageMode.UNKNOWN)
@@ -283,6 +287,8 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
                         relative_roi=SANDBOX_LARGE_MAP_FOOTER_OCR_RELATIVE_ROI,
                     )
                 )
+            except TaskDisabledException:
+                raise
             except Exception as exc:
                 self._status("箱庭大地图底部控件 OCR错误", str(exc))
                 footer_text = ""
@@ -348,6 +354,12 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
                     f"z={result.zncc_score:.3f})"
                 )
             )
+        if not sandbox_confirmed:
+            sandbox_confirmed = all(
+                self.vision.passes(self.vision.match(frame, spec), spec)
+                for spec in FIELD_KEYCAP_TEMPLATES
+            )
+            sandbox_signals.append(f"按键CH={'pass' if sandbox_confirmed else 'miss'}")
         self._status("箱庭确认信号", "; ".join(sandbox_signals))
         if sandbox_confirmed:
             return ScreenState.SANDBOX

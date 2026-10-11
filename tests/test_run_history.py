@@ -1,8 +1,12 @@
+import json
 import os
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from src.tasks.run_history import (
     BEIJING_TZ,
@@ -96,6 +100,54 @@ class RunHistoryStoreTest(unittest.TestCase):
         reloaded = RunHistoryStore(self.path)
         self.assertEqual(reloaded.last_run("快速狩猎"), record)
 
+    def test_concurrent_records_keep_disk_and_memory_consistent(self):
+        first_saving = threading.Event()
+        second_at_write_boundary = threading.Event()
+        release_first = threading.Event()
+        writer_id = threading.local()
+        record_lock = threading.RLock()
+
+        class ObservedLock:
+            def __enter__(self):
+                if getattr(writer_id, "name", None) == "second":
+                    second_at_write_boundary.set()
+                record_lock.acquire()
+
+            def __exit__(self, *_args):
+                record_lock.release()
+
+        self.store._lock = ObservedLock()
+
+        def save(path, data):
+            snapshot = json.dumps(data)
+            if writer_id.name == "first":
+                first_saving.set()
+                if not release_first.wait(5):
+                    raise TimeoutError("first writer was not released")
+            with open(path, "w", encoding="utf-8") as stream:
+                stream.write(snapshot)
+            if writer_id.name == "second":
+                second_at_write_boundary.set()
+
+        def record(name):
+            writer_id.name = name
+            self.store.record_task_done(_TaskStub(name), finished=2000, ok=True)
+
+        with patch("src.tasks.run_history.write_json_file", side_effect=save):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                first = executor.submit(record, "first")
+                try:
+                    self.assertTrue(first_saving.wait(5))
+                    second = executor.submit(record, "second")
+                    self.assertTrue(second_at_write_boundary.wait(5))
+                finally:
+                    release_first.set()
+                first.result(timeout=5)
+                second.result(timeout=5)
+        reloaded = RunHistoryStore(self.path)
+        for name in ("first", "second"):
+            self.assertEqual(self.store.last_run(name), reloaded.last_run(name))
+
     def test_error_info_marks_run_failed(self):
         task = _TaskStub("每日跑商", info={"状态": "跑商完成。", "Error": "boom"})
         self.store.record_task_done(task, finished=2000.0)
@@ -132,6 +184,33 @@ class RunHistoryStoreTest(unittest.TestCase):
         )
         self.store.record_task_done(task, finished=2000.0)
         self.assertFalse(self.store.last_run("刷砍价等级")["ok"])
+
+    def test_empty_info_snapshot_is_not_success(self):
+        task = _TaskStub("空快照任务", info={})
+        self.store.record_task_done(task, finished=2000.0)
+        self.assertFalse(self.store.last_run("空快照任务")["ok"])
+
+    def test_safety_stop_statuses_remain_due_for_retry(self):
+        for name, status in (
+            ("刷压制等级", "刷压制等级已停止。"),
+            ("结束游戏", "未开启“确认关闭游戏”，安全停止。"),
+            ("自动钓鱼", "缺少抛竿位置参考点，安全停止。"),
+            ("地图探针", "未执行：测试卡带起止范围无效"),
+        ):
+            with self.subTest(name=name):
+                self.store.record_task_done(
+                    _TaskStub(name, info={"状态": status}),
+                    finished=2000.0,
+                )
+                self.assertFalse(self.store.last_run(name)["ok"])
+
+    def test_bounded_round_limit_status_is_not_a_failure_marker(self):
+        task = _TaskStub(
+            "镜中之战",
+            info={"状态": "达到最多战斗轮次。", "失败": "-"},
+        )
+        self.store.record_task_done(task, finished=2000.0)
+        self.assertTrue(self.store.last_run("镜中之战")["ok"])
 
     def test_placeholder_failure_values_still_count_as_success(self):
         task = _TaskStub(
@@ -206,7 +285,7 @@ class RunHistoryStoreTest(unittest.TestCase):
         )
 
     def test_is_completed_this_week(self):
-        task = _TaskStub("每周跑图", info={})
+        task = _TaskStub("每周跑图", info={"状态": "每周跑图完成。"})
         self.store.record_task_done(task, finished=_beijing_ts(2026, 8, 17, 8, 0))
         self.assertTrue(
             self.store.is_completed_this_week("每周跑图", now=_beijing_ts(2026, 8, 19, 12, 0))
@@ -215,7 +294,7 @@ class RunHistoryStoreTest(unittest.TestCase):
             self.store.is_completed_this_week("每周跑图", now=_beijing_ts(2026, 8, 24, 4, 1))
         )
 
-    def test_batch_run_fans_out_to_child_display_names(self):
+    def test_batch_completion_keeps_each_child_actual_finish_time(self):
         daily_cls = type("DailyTask", (), {})
         pvp_cls = type("PVPTask", (), {})
         trade_cls = type("MapTradeTask", (), {})
@@ -231,6 +310,19 @@ class RunHistoryStoreTest(unittest.TestCase):
                 trade_cls: _ChildTaskStub("每日跑商"),
             }
         )
+        child_finish = _beijing_ts(2026, 8, 18, 3, 59)
+        self.store.record_task_done(
+            executor.get_task_by_class(daily_cls),
+            finished=child_finish,
+            started=child_finish - 30,
+            ok=True,
+        )
+        self.store.record_task_done(
+            executor.get_task_by_class(pvp_cls),
+            finished=child_finish + 120,
+            started=child_finish + 30,
+            ok=False,
+        )
         info = {
             "状态": "一键完成日常中止。",
             "完成": "公会、小屋、酒馆",
@@ -242,8 +334,11 @@ class RunHistoryStoreTest(unittest.TestCase):
         self.store.record_task_done(batch, finished=_beijing_ts(2026, 8, 18, 9, 30))
 
         self.assertTrue(self.store.last_run("公会、小屋、酒馆")["ok"])
-        # Config keys are resolved to the child tasks' display names.
-        self.assertIsNotNone(self.store.last_run("镜中之战"))
+        self.assertEqual(child_finish, self.store.last_run("公会、小屋、酒馆")["finished"])
+        self.assertEqual(30, self.store.last_run("公会、小屋、酒馆")["duration"])
+        self.assertFalse(self.store.is_completed_today(
+            "公会、小屋、酒馆", now=_beijing_ts(2026, 8, 18, 9, 30)
+        ))
         self.assertFalse(self.store.last_run("镜中之战")["ok"])
         # Skipped children get no record, so they stay "not done".
         self.assertIsNone(self.store.last_run("每日跑商"))

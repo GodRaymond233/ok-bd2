@@ -6,15 +6,15 @@ recent finished run of every one-time task into a small JSON file and derives
 "completed today / this week" from the game's Beijing-time refresh anchors
 (daily 04:00, weekly Monday 04:00).
 
-Batch tasks (一键完成日常) run their children through ``task.run()`` directly,
-so the executor never emits ``task_done`` for them.  ``record_task_done``
-therefore fans a batch record out into per-child records using the batch's
-``info`` lists (完成/失败/跳过), making a child finished inside the batch count
-the same as running it standalone.
+Batch tasks (一键完成日常) record their children immediately after each run,
+using each child's actual timestamps.  Finishing the batch only records the
+batch itself, so a run crossing the daily refresh cannot move earlier child
+completions into the new game day.
 """
 
 from __future__ import annotations
 
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -34,7 +34,20 @@ STORE_VERSION = 1
 DEFAULT_FILE = ("configs", "task_run_history.json")
 
 # Status texts containing any of these markers never count as a completion.
-_FAILURE_MARKERS = ("中止", "失败")
+# Match explicit failure/safety wording instead of the bare ``停止`` token:
+# some successful bounded tasks mention that they stopped after reaching their
+# configured round limit.
+_FAILURE_MARKERS = (
+    "中止",
+    "失败",
+    "已停止",
+    "安全停止",
+    "停止点击",
+    "停止后续",
+    "未执行",
+    "未完成",
+    "无法判断",
+)
 
 # The 失败 field uses list strings, joined stage names, or empty placeholders.
 _NO_FAILURE_VALUES = frozenset({"", "-", "0", "无", "[]", "none", "false"})
@@ -61,6 +74,11 @@ def week_start_ts(now: float | None = None) -> float:
 
 
 def _is_successful_run(info: dict) -> bool:
+    # An empty snapshot is a concurrent-copy failure/unknown state, not proof
+    # that a task completed.  Treating it as success suppresses retries for the
+    # whole refresh window.
+    if not info:
+        return False
     if info.get("Error"):
         return False
     status = str(info.get("状态", ""))
@@ -73,7 +91,8 @@ def _is_successful_run(info: dict) -> bool:
     failure = str(info.get("失败", "")).strip()
     if failure and failure.casefold() not in _NO_FAILURE_VALUES:
         return False
-    return "失败" not in str(info.get("结果", ""))
+    result = str(info.get("结果", ""))
+    return not any(marker in result for marker in _FAILURE_MARKERS)
 
 
 def is_successful_run(info: dict) -> bool:
@@ -107,6 +126,7 @@ class RunHistoryStore:
 
     def __init__(self, path: str | None = None):
         self.path = path or get_relative_path(*DEFAULT_FILE)
+        self._lock = threading.RLock()
         self._records: dict[str, dict] = {}
         self._load()
 
@@ -137,89 +157,61 @@ class RunHistoryStore:
             logger.error(f"save run history failed: {exc}")
 
     def last_run(self, task_name: str) -> dict | None:
-        return self._records.get(task_name)
+        with self._lock:
+            return self._records.get(task_name)
 
     def is_completed_today(self, task_name: str, now: float | None = None) -> bool:
-        record = self._records.get(task_name)
+        record = self.last_run(task_name)
         return bool(record and record.get("ok") and record["finished"] >= day_start_ts(now))
 
     def is_completed_this_week(self, task_name: str, now: float | None = None) -> bool:
-        record = self._records.get(task_name)
+        record = self.last_run(task_name)
         return bool(record and record.get("ok") and record["finished"] >= week_start_ts(now))
 
-    def record_task_done(self, task, finished: float | None = None) -> None:
-        """Record a finished run, fanning batch results out to children."""
+    def record_task_done(
+        self,
+        task,
+        finished: float | None = None,
+        *,
+        started: float | None = None,
+        ok: bool | None = None,
+    ) -> None:
+        """Record a finished run, accepting explicit timing/results for batch children."""
+        if task is None or not getattr(task, "name", None):
+            return
         finished = time.time() if finished is None else finished
-        started = getattr(task, "start_time", 0) or 0
+        if started is None:
+            started = getattr(task, "start_time", 0) or 0
         duration = max(0.0, finished - started) if started else None
         info = task_info_snapshot(task)
 
-        self._records[str(task.name)] = {
-            "finished": finished,
-            "duration": duration,
-            "status": str(info.get("状态", "")),
-            "ok": _is_successful_run(info),
-        }
-
-        child_tasks = getattr(task, "child_tasks", None)
-        if child_tasks:
-            self._record_batch_children(task, child_tasks, info, finished, duration)
-
-        self._save()
-
-    def _record_batch_children(self, task, child_tasks, info, finished, duration) -> None:
-        done_text = info.get("完成")
-        fail_text = info.get("失败")
-        name_by_config_key = self._child_display_names(task, child_tasks)
-        recorded = False
-        for child in child_tasks:
-            config_key = child.config_key
-            completed = contains_joined_name(done_text, config_key)
-            failed = contains_joined_name(fail_text, config_key)
-            if completed == failed:
-                # Skipped (in neither list) or ambiguous; only the unambiguous
-                # states become records.
-                continue
-            recorded = True
-            self._records[name_by_config_key.get(config_key, config_key)] = {
+        with self._lock:
+            self._records[str(task.name)] = {
                 "finished": finished,
                 "duration": duration,
-                "status": "随一键完成日常完成" if completed else "随一键完成日常失败",
-                "ok": completed,
+                "status": str(info.get("状态", "")),
+                "ok": _is_successful_run(info) if ok is None else bool(ok),
             }
-        if not recorded:
-            return
-
-    @staticmethod
-    def _child_display_names(task, child_tasks) -> dict[str, str]:
-        """Map batch config keys to the child tasks' display names."""
-        names: dict[str, str] = {}
-        executor = getattr(task, "executor", None)
-        for child in child_tasks:
-            child_task = None
-            if executor is not None:
-                try:
-                    child_task = executor.get_task_by_class(child.task_class)
-                except Exception:
-                    child_task = None
-            names[child.config_key] = str(getattr(child_task, "name", None) or child.config_key)
-        return names
+            self._save()
 
 
 _default_store: RunHistoryStore | None = None
+_default_store_lock = threading.RLock()
 
 
 def default_store() -> RunHistoryStore:
     global _default_store
-    if _default_store is None:
-        _default_store = RunHistoryStore()
-    return _default_store
+    with _default_store_lock:
+        if _default_store is None:
+            _default_store = RunHistoryStore()
+        return _default_store
 
 
 def set_default_store(store: RunHistoryStore | None) -> None:
     """Override the process-wide store (tests); None restores lazy creation."""
     global _default_store
-    _default_store = store
+    with _default_store_lock:
+        _default_store = store
 
 
 def install_run_history_recorder() -> bool:
@@ -233,7 +225,9 @@ def install_run_history_recorder() -> bool:
 
     class _Recorder(QObject):
         def on_task_done(self, task):
-            name = str(getattr(task, "name", ""))
+            if task is None or not getattr(task, "name", None):
+                return
+            name = str(task.name)
             try:
                 default_store().record_task_done(task)
                 record = default_store().last_run(name)

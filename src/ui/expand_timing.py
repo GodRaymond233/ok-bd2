@@ -85,7 +85,7 @@ class _ExpandTimingDriver:
     """Drives one expand/collapse through the native value chain."""
 
     def __init__(self, card):
-        self._card = card
+        self._card_ref = weakref.ref(card)
         self._bar = card.verticalScrollBar()
         self._ani = card.expandAni
         self._start = int(self._ani.startValue())
@@ -98,6 +98,7 @@ class _ExpandTimingDriver:
         self._timer.setTimerType(Qt.PreciseTimer)
         self._timer.timeout.connect(self._tick)
         self._elapsed = QElapsedTimer()
+        card.destroyed.connect(self.cancel_without_snap)
 
     @property
     def running(self) -> bool:
@@ -109,31 +110,35 @@ class _ExpandTimingDriver:
         self._ani.state = lambda: QAbstractAnimation.Running
         self._geometry_key = self._capture_geometry_key()
         self._elapsed.start()
-        self._timer.start(_refresh_interval_ms(self._card))
+        self._timer.start(_refresh_interval_ms(self._card_ref()))
 
     def _capture_geometry_key(self):
         # Cheap O(1) probe for the two inputs that invalidate the cached bar
         # endpoints: the view width (resize/DPI) and the spacer height, which
         # only changes when _adjustViewSize re-measures after a content edit.
+        card = self._card_ref()
         try:
-            return (self._card.view.width(), self._card.spaceWidget.height())
+            return (card.view.width(), card.spaceWidget.height())
         except (RuntimeError, AttributeError):
             return None
 
     def _apply(self, progress: float) -> None:
+        card = self._card_ref()
+        if card is None:
+            raise RuntimeError("card destroyed")
         eased = self._easing.valueForProgress(progress)
         value = self._start + (self._end - self._start) * eased
         self._bar.setValue(int(round(value)))
-        handler = getattr(self._card, "_onExpandValueChanged", None)
+        handler = getattr(card, "_onExpandValueChanged", None)
         if callable(handler):
             if _TRACE_ENABLED:
                 try:
                     # Record the TaskCard's outer height, not the inner card
-                    height = self._card.height() if hasattr(self._card, "height") else 0
+                    height = card.height() if hasattr(card, "height") else 0
                     _TRACE_LOG.append({
                         "t_mono_ns": time.monotonic_ns(),
                         "event": "handler",
-                        "card_id": id(self._card),
+                        "card_id": id(card),
                         "progress": progress,
                         "height": height,
                         "bar_value": int(round(value)),
@@ -159,14 +164,15 @@ class _ExpandTimingDriver:
         progress = min(1.0, elapsed_ms / self._duration_ms) if self._duration_ms > 0 else 0
 
         if _TRACE_ENABLED:
+            card = self._card_ref()
             try:
                 # Record the TaskCard's outer height, not the inner card
-                height = self._card.height() if hasattr(self._card, "height") else 0
+                height = card.height() if hasattr(card, "height") else 0
                 bar_value = self._bar.value()
                 _TRACE_LOG.append({
                     "t_mono_ns": time.monotonic_ns(),
                     "event": "tick",
-                    "card_id": id(self._card),
+                    "card_id": id(card),
                     "progress": progress,
                     "height": height,
                     "bar_value": bar_value,
@@ -178,8 +184,7 @@ class _ExpandTimingDriver:
         try:
             self._apply(progress)
         except RuntimeError:
-            # The card was destroyed mid-drive; the timer dies with it.
-            self._done = True
+            self.cancel_without_snap()
             return
         if progress >= 1.0:
             self.finish()
@@ -189,19 +194,14 @@ class _ExpandTimingDriver:
         if self._done:
             return
         self._done = True
-        self._timer.stop()
         try:
             self._unshadow()
             self._apply(1.0)
-            _apply_terminal_chrome(self._card)
+            _apply_terminal_chrome(self._card_ref())
         except RuntimeError:
             pass
         finally:
-            self._unshadow()
-            try:
-                _DRIVERS.pop(self._card, None)
-            except TypeError:
-                pass
+            self._release()
 
     def _abort_on_geometry_change(self) -> None:
         """Width or content height changed mid-drive (resize, DPI move, a
@@ -209,42 +209,51 @@ class _ExpandTimingDriver:
         driving and land on the terminal state recomputed from the live
         geometry instead of animating toward the old target."""
         self._done = True
-        self._timer.stop()
         self._unshadow()
+        card = self._card_ref()
         try:
-            if getattr(self._card, "isExpand", False):
+            if getattr(card, "isExpand", False):
                 # Expand terminal (bar 0) is geometry-independent; the value
                 # handler re-measures the content height on the way in.
                 self._apply(1.0)
             else:
                 from src.ui.quest_cards import _content_height
 
-                self._bar.setValue(max(0, _content_height(self._card)))
-                handler = getattr(self._card, "_onExpandValueChanged", None)
+                self._bar.setValue(max(0, _content_height(card)))
+                handler = getattr(card, "_onExpandValueChanged", None)
                 if callable(handler):
                     handler()
-            _apply_terminal_chrome(self._card)
+            _apply_terminal_chrome(card)
         except RuntimeError:
             pass
         finally:
-            self._unshadow()
-            try:
-                _DRIVERS.pop(self._card, None)
-            except TypeError:
-                pass
+            self._release()
 
-    def cancel_without_snap(self) -> None:
+    def cancel_without_snap(self, destroyed=None) -> None:
         """Stop driving but leave the height where it is — a reversal takes
         over from the current visual value, like the native path."""
         if self._done:
             return
         self._done = True
-        self._timer.stop()
+        self._release(card_destroyed=destroyed is not None)
+
+    def _release(self, *, card_destroyed=False) -> None:
         self._unshadow()
         try:
-            _DRIVERS.pop(self._card, None)
-        except TypeError:
+            self._timer.stop()
+            self._timer.timeout.disconnect(self._tick)
+            self._timer.deleteLater()
+        except RuntimeError:
             pass
+        card = self._card_ref()
+        if card is not None:
+            if _DRIVERS.get(card) is self:
+                _DRIVERS.pop(card, None)
+            if not card_destroyed:
+                try:
+                    card.destroyed.disconnect(self.cancel_without_snap)
+                except RuntimeError:
+                    pass
 
     def _unshadow(self) -> None:
         try:

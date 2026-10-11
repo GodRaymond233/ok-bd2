@@ -5,6 +5,7 @@ from dataclasses import replace
 from time import monotonic
 
 import numpy as np
+from ok.task.exceptions import TaskDisabledException
 
 from src.tasks.BaseBD2Task import CartridgeSpecialPageResult
 from src.tasks.map_trade.action_icons import (
@@ -840,6 +841,8 @@ class SandboxNavigationMixin:
             text = self.vision.simplify(
                 self.vision.ocr_text(frame, "箱庭5号传送阵技能失败")
             )
+        except TaskDisabledException:
+            raise
         except Exception as exc:
             self._status("箱庭5号传送阵技能失败 OCR错误", str(exc))
             return ""
@@ -1016,6 +1019,8 @@ class SandboxNavigationMixin:
 
         try:
             boxes = self.vision.ocr_boxes(frame, "箱庭徒步导航传送阵菜单")
+        except TaskDisabledException:
+            raise
         except Exception as exc:
             self._status("箱庭徒步导航传送阵菜单 OCR错误", str(exc))
             return False
@@ -1045,6 +1050,8 @@ class SandboxNavigationMixin:
 
         try:
             boxes = self.vision.ocr_boxes(frame, "箱庭徒步导航传送阵确认")
+        except TaskDisabledException:
+            raise
         except Exception as exc:
             self._status("箱庭徒步导航传送阵确认 OCR错误", str(exc))
             return False
@@ -1418,6 +1425,8 @@ class SandboxNavigationMixin:
                 generate_center, matched_keywords, last_text = self._teleport_generation_boxes(
                     frame
                 )
+            except TaskDisabledException:
+                raise
             except Exception as exc:
                 self._status("传送阵生成弹窗 OCR错误", str(exc))
                 return False

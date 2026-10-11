@@ -205,14 +205,26 @@ class _RefreshDriver(QObject):
         except RuntimeError:
             return
         try:
-            self._on_tick(1.0)
-            self._on_finished()
+            on_tick, on_finished = self._on_tick, self._on_finished
+            on_tick(1.0)
+            on_finished()
         except RuntimeError:
             pass
 
     def stop(self) -> None:
         self._running = False
-        self._timer.stop()
+        try:
+            self._timer.stop()
+        except RuntimeError:
+            pass
+
+    def dispose(self) -> None:
+        self.stop()
+        self._on_tick = self._on_finished = None
+        try:
+            self.deleteLater()
+        except RuntimeError:
+            pass
 
     def _tick(self):
         if not self._running:
@@ -223,7 +235,7 @@ class _RefreshDriver(QObject):
         except RuntimeError:
             self.stop()
             return
-        if progress >= 1.0:
+        if progress >= 1.0 and self._running:
             self._running = False
             self._timer.stop()
             try:
@@ -255,6 +267,7 @@ class _PageTransition:
         self._effect = QGraphicsOpacityEffect(incoming)
         incoming.setGraphicsEffect(self._effect)
         self._driver = _RefreshDriver(incoming, PAGE_IN_MS, self._apply, self._land)
+        incoming.destroyed.connect(self._cleanup)
 
     def start(self) -> bool:
         incoming = self._incoming_ref()
@@ -280,16 +293,21 @@ class _PageTransition:
     def finish_now(self) -> None:
         """Land immediately — a newer switch, the kill switch or destruction
         interrupted the transition."""
-        if self._driver.running:
-            self._driver.finish()
+        try:
+            if self._driver.running:
+                self._driver.finish()
+        finally:
+            self._cleanup()
 
-    def _cleanup(self) -> None:
+    def _cleanup(self, destroyed=None) -> None:
         if self._cleaned:
             return
         self._cleaned = True
+        self._driver.dispose()
         incoming = self._incoming_ref()
-        if incoming is not None:
+        if incoming is not None and destroyed is None:
             try:
+                incoming.destroyed.disconnect(self._cleanup)
                 incoming.setGraphicsEffect(None)
                 if incoming.pos() != QPoint(0, 0):
                     incoming.move(0, 0)

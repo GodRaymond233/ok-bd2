@@ -901,3 +901,21 @@ class ShopAndCatalogTest(unittest.TestCase):
                     STORY_COLLECTION_MAPS[card.number],
                     tuple(target.title for target in card.targets),
                 )
+
+    def test_s1_normal_and_dimmed_templates_both_enter_competition(self):
+        seen = []
+        trader = object.__new__(Trader)
+        trader.vision = SimpleNamespace(
+            match_all=lambda _frame, spec, **_kwargs: seen.append(spec.file_name) or ()
+        )
+        trader._shop_cartridge_template_candidates(
+            np.zeros((1080, 1920, 3), dtype=np.uint8)
+        )
+        self.assertIn(
+            "shop/cartridges/story_cartridge_01.png",
+            seen,
+        )
+        self.assertIn(
+            "shop/cartridges/story_cartridge_01_dimmed.png",
+            seen,
+        )

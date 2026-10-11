@@ -1,5 +1,6 @@
 import time
 from concurrent.futures import ThreadPoolExecutor
+from weakref import ref
 
 import cv2
 import numpy as np
@@ -96,6 +97,7 @@ class LiveScreenshotWidget(QWidget):
         self._last_status = ""
         self._last_frame_at = 0.0
         self._active = False
+        self._shutting_down = False
 
         self.preview = LivePreviewLabel()
         self.status_label = CaptionLabel("等待选择窗口")
@@ -114,7 +116,14 @@ class LiveScreenshotWidget(QWidget):
         self.timer.setInterval(PREVIEW_INTERVAL_MS)
         self.timer.timeout.connect(self._request_frame)
 
-        self.destroyed.connect(self._shutdown)
+        widget_ref = ref(self)
+
+        def shutdown():
+            widget = widget_ref()
+            if widget is not None:
+                widget._shutdown()
+
+        self.destroyed.connect(shutdown)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -125,6 +134,8 @@ class LiveScreenshotWidget(QWidget):
         super().hideEvent(event)
 
     def start_preview(self):
+        if self._shutting_down:
+            return
         self._active = True
         if not self.timer.isActive():
             self.timer.start()
@@ -166,14 +177,18 @@ class LiveScreenshotWidget(QWidget):
             return
         try:
             image, status = future.result()
+        except Exception as exc:
+            image, status = None, f"截图失败：{exc}"
+        try:
             if not self._active:
                 return
             if image is not None:
                 self.frame_ready.emit(image, status)
             else:
                 self.status_ready.emit(status)
-        except Exception as exc:
-            self.status_ready.emit(f"截图失败：{exc}")
+        except RuntimeError:
+            # The widget can be deleted between the active check and emit.
+            pass
         finally:
             if future is self._capture_future:
                 self._capture_pending = False
@@ -295,7 +310,14 @@ class LiveScreenshotWidget(QWidget):
         self._display_status(status)
 
     def _shutdown(self):
+        if self._shutting_down:
+            return
+        self._shutting_down = True
         self.stop_preview()
+        self._capture_future = None
+        self._capture_pending = False
+        self._capture_pending_at = 0.0
+        self._capture_timeout_reported = False
         self._capture_executor.shutdown(wait=False, cancel_futures=True)
 
     @staticmethod

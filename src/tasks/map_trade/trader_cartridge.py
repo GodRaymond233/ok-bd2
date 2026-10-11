@@ -267,14 +267,7 @@ class ShopCartridgeNavigationMixin:
         return False
 
     def _cartridge_spec(self, shop_id: str) -> TemplateSpec:
-        reference = SHOP_PURCHASE_REFERENCES[shop_id]
-        return TemplateSpec(
-            name=reference.label,
-            file_name=reference.cartridge_templates[0],
-            threshold=SHOP_CARTRIDGE_CONFIRM_SCORE,
-            relative_roi=SHOP_CARTRIDGE_RECOGNITION_REGION,
-            scale_ratios=SHOP_CARTRIDGE_SCALE_RATIOS,
-        )
+        return self._cartridge_specs(shop_id)[0]
 
     @staticmethod
     def _shop_cartridge_chapter_name(shop_id: str) -> str:
@@ -387,17 +380,18 @@ class ShopCartridgeNavigationMixin:
         peak_radius = max(5, round(20 * min(width / FHD_1080.width, height / FHD_1080.height)))
         candidates: list[ShopCartridgeTemplateCandidate] = []
         for shop_id in SHOP_PURCHASE_REFERENCES:
-            matches = self.vision.match_all(
-                frame,
-                self._cartridge_spec(shop_id),
-                minimum_score=SHOP_CARTRIDGE_CANDIDATE_SCORE,
-                peak_radius=peak_radius,
-                max_results=30,
-            )
-            candidates.extend(
-                ShopCartridgeTemplateCandidate(shop_id, result)
-                for result in matches
-            )
+            for spec in self._cartridge_specs(shop_id):
+                matches = self.vision.match_all(
+                    frame,
+                    spec,
+                    minimum_score=SHOP_CARTRIDGE_CANDIDATE_SCORE,
+                    peak_radius=peak_radius,
+                    max_results=30,
+                )
+                candidates.extend(
+                    ShopCartridgeTemplateCandidate(shop_id, result)
+                    for result in matches
+                )
         return tuple(candidates)
 
     def _shop_cartridge_competition(
@@ -743,4 +737,23 @@ class ShopCartridgeNavigationMixin:
             return False
         self.task.sleep(0.5)
         return True
+
+    def _cartridge_specs(self, shop_id: str) -> tuple[TemplateSpec, ...]:
+        """Build every calibrated visual variant for a cartridge.
+
+        S1 has both selected/normal and dimmed/unselected crops.  Keeping the
+        first spec as the public/default spec preserves the selected-state
+        brightness check while allowing competition to match either state.
+        """
+        reference = SHOP_PURCHASE_REFERENCES[shop_id]
+        return tuple(
+            TemplateSpec(
+                name=reference.label,
+                file_name=file_name,
+                threshold=SHOP_CARTRIDGE_CONFIRM_SCORE,
+                relative_roi=SHOP_CARTRIDGE_RECOGNITION_REGION,
+                scale_ratios=SHOP_CARTRIDGE_SCALE_RATIOS,
+            )
+            for file_name in reference.cartridge_templates
+        )
 

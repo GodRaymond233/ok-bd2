@@ -1,5 +1,6 @@
 from time import monotonic
 
+from ok.task.exceptions import TaskDisabledException
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task
@@ -167,10 +168,13 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
             return self._fail_run(f"{section_name}结果处理")
 
         if verify_finished:
-            still_available, _recheck_text, _recheck_judged = self._wait_for_free_gacha(
+            still_available, _recheck_text, recheck_judged = self._wait_for_free_gacha(
                 section_name,
                 timeout=1.5,
             )
+            if not recheck_judged:
+                self.log_info(f"{section_name}：领取复核 OCR 无法判断是否仍有免费抽。")
+                return self._fail_run(f"{section_name}领取复核")
             if still_available:
                 self.log_info(f"{section_name}：返回后仍检测到所有免费抽抽乐。")
                 return self._fail_run(f"{section_name}领取复核")
@@ -563,6 +567,8 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
                 log=False,
                 name=name,
             )
+        except TaskDisabledException:
+            raise
         except Exception as exc:
             self.info_set(f"{name} OCR 错误", str(exc))
             return ""

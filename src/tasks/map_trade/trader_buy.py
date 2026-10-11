@@ -165,8 +165,68 @@ class BuyFlowMixin:
             *BUY_CONFIRM_POINT,
             after_sleep=BUY_CONFIRM_POST_CLICK_DELAY,
         )
+        if not self._wait_for_purchase_completion():
+            self.task.log_warning(
+                "买：确认点击后未观察到售罄模板或购买完成页面，未记为购买成功。"
+            )
+            return False
         self.task.log_info("买：已确认购买全部收藏商品。")
         return True
+
+    def _wait_for_purchase_completion(
+        self,
+        timeout: float = BUY_CONFIRM_TIMEOUT,
+    ) -> bool:
+        """Require bounded post-confirm evidence before closing the buy phase."""
+
+        end_at = monotonic() + max(0.0, timeout)
+        sold_out_hits = 0
+        success_text_hits = 0
+        last_text = ""
+        capture = getattr(self.vision, "capture", None)
+        match_fn = getattr(self.vision, "match", None)
+        passes_fn = getattr(self.vision, "passes", None)
+        simplify = getattr(self.vision, "simplify", lambda value: value)
+        if not callable(capture) or not callable(match_fn) or not callable(passes_fn):
+            return False
+        while True:
+            frame = capture()
+            text = ""
+            ocr_text = getattr(self.vision, "ocr_text", None)
+            if callable(ocr_text):
+                try:
+                    text = ocr_text(frame, "购买完成确认", relative_roi=SHOP_MODE_TITLE_REGION)
+                except (AttributeError, TypeError, ValueError):
+                    text = ""
+            normalized = normalize_text(simplify(text))
+            last_text = text or last_text
+            if any(keyword in normalized for keyword in ("购买成功", "购买完成", "已购买")):
+                success_text_hits += 1
+                self._status(
+                    "购买完成确认",
+                    f"{success_text_hits}/{BUY_TO_SELL_SOLD_OUT_STABLE_HITS}",
+                )
+                if success_text_hits >= BUY_TO_SELL_SOLD_OUT_STABLE_HITS:
+                    return True
+            else:
+                success_text_hits = 0
+            match = match_fn(frame, BUY_TO_SELL_SOLD_OUT_TEMPLATE)
+            passed = passes_fn(match, BUY_TO_SELL_SOLD_OUT_TEMPLATE)
+            sold_out_hits = sold_out_hits + 1 if passed else 0
+            self._status(
+                "购买完成售罄确认",
+                f"{'命中' if passed else '未命中'} "
+                f"{sold_out_hits}/{BUY_TO_SELL_SOLD_OUT_STABLE_HITS}",
+            )
+            if sold_out_hits >= BUY_TO_SELL_SOLD_OUT_STABLE_HITS:
+                return True
+            if monotonic() >= end_at:
+                break
+            self.task.sleep(BUY_CONFIRM_INTERVAL)
+        self.task.log_warning(
+            f"买：购买确认后完成证据超时，OCR={last_text or '-'}。"
+        )
+        return False
 
     def _wait_for_buy_all_favorites_state(
         self,

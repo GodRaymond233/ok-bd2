@@ -369,6 +369,11 @@ class SellFlowMixin:
             if not sold:
                 return True
             sold_count += 1
+            if entry.reserve <= 0 and bool(self.task.config.get("出售保险", False)):
+                self.task.log_info(
+                    f"卖：{entry.item}已按出售保险完成最小数量出售，停止继续出售该商品。"
+                )
+                return True
             previous_owned = owned
 
     def _sell_one_candidate(
@@ -870,6 +875,15 @@ class SellFlowMixin:
             if "拥有" not in normalized_dialog and "可购买" not in normalized_dialog:
                 full_text = self.vision.ocr_text(frame, "出售交易完成")
                 normalized_full = self._normal(full_text)
+                page_evidence = any(
+                    keyword in normalized_full
+                    for keyword in (
+                        "出售",
+                        SALE_GRID_FOOD_KEYWORD,
+                        SALE_GRID_INGREDIENT_KEYWORD,
+                        "背包",
+                    )
+                )
                 last_text = full_text or last_text
                 toast_match = SALE_TOAST_ID_PATTERN.search(normalized_full)
                 if toast_match is not None:
@@ -886,20 +900,28 @@ class SellFlowMixin:
                 current_signature = self._sale_name_signature(entry, frame)
                 if current_signature != before_signature:
                     if not current_signature:
-                        empty_signature_hits += 1
-                        if empty_signature_hits >= SALE_COMPLETION_STABLE_HITS:
-                            self._status("出售完成确认", f"{entry.item}:商品名消失")
-                            return True
+                        # An entirely blank full-page OCR frame is a
+                        # recognition failure, not evidence that inventory
+                        # disappeared.  Only count empty signatures after a
+                        # non-empty page read (or the explicit transaction
+                        # toast handled above).
+                        if page_evidence:
+                            empty_signature_hits += 1
+                            if empty_signature_hits >= SALE_COMPLETION_STABLE_HITS:
+                                self._status("出售完成确认", f"{entry.item}:商品名消失")
+                                return True
+                        else:
+                            empty_signature_hits = 0
                     else:
                         empty_signature_hits = 0
-                    if current_signature == changed_signature:
-                        stable_hits += 1
-                    else:
-                        changed_signature = current_signature
-                        stable_hits = 1
-                    if stable_hits >= SALE_COMPLETION_STABLE_HITS:
-                        self._status("出售完成确认", f"{entry.item}:页面重排")
-                        return True
+                        if current_signature == changed_signature:
+                            stable_hits += 1
+                        else:
+                            changed_signature = current_signature
+                            stable_hits = 1
+                        if stable_hits >= SALE_COMPLETION_STABLE_HITS:
+                            self._status("出售完成确认", f"{entry.item}:页面重排")
+                            return True
             if monotonic() >= end_at:
                 break
             self.task.sleep(SALE_COMPLETION_INTERVAL)
@@ -978,8 +1000,6 @@ class SellFlowMixin:
         )
         entries = [item for items in bundled.days.values() for item in items]
         entries.extend(CalendarEntry(item, "") for item in ITEM_ALIASES)
-        entries.extend(self._sale_title_entries)
-        entries.append(entry)
         catalog: dict[str, set[str]] = {}
         for item in entries:
             identity = self._normal(item.item)
@@ -987,6 +1007,14 @@ class SellFlowMixin:
                 normalized = self._normal(name)
                 if normalized:
                     catalog.setdefault(normalized, set()).add(identity)
+        known_identities = {name: set(identities) for name, identities in catalog.items()}
+        for item in (*self._sale_title_entries, entry):
+            identity = self._normal(item.item)
+            identities = known_identities.get(identity, {identity})
+            for name in (item.item, *item.aliases, *ITEM_ALIASES.get(item.item, ())):
+                normalized = self._normal(name)
+                if normalized:
+                    catalog.setdefault(normalized, set()).update(identities)
         self._sale_title_catalog_cache = catalog
         return catalog
 
@@ -1032,7 +1060,12 @@ class SellFlowMixin:
         timeout: float = SALE_DIALOG_TIMEOUT,
     ) -> bool:
         catalog = self._sale_title_catalog(entry)
-        expected = self._normal(entry.item)
+        identities = catalog.get(self._normal(entry.item), set())
+        if len(identities) != 1:
+            self._sale_dialog_rejected = True
+            self.task.log_warning(f"卖：{entry.item}商品名称存在歧义，停止出售。")
+            return False
+        expected = next(iter(identities))
         stable_hits = 0
         conflict_hits = 0
         end_at = monotonic() + max(0.0, timeout)

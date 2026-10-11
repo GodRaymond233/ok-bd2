@@ -7,6 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import win32con
 from ok.ui.qt.widget.Card import Card
+from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from src.ui.live_screenshot import install_live_screenshot
@@ -353,6 +354,32 @@ class ManualResolutionTest(unittest.TestCase):
 
         self.assertEqual([], succeeded)
         self.assertEqual(["拒绝 1600 × 900"], failed)
+
+    def test_parent_destruction_cancels_pending_resize(self):
+        parent = QWidget()
+        widget = ManualResolutionWidget(parent)
+        controller = widget.controller
+        job = _ResizeJob(
+            object(), None, (1600, 900),
+            lambda *_args, **_kwargs: WindowResizeResult(1600, 900, True),
+        )
+        signals = []
+        job.signals.succeeded.connect(signals.append)
+        job.signals.failed.connect(signals.append)
+        job.signals.succeeded.connect(controller._resize_succeeded)
+        job.signals.failed.connect(controller._resize_failed)
+        controller._job = job
+        controller._busy = True
+        controller._watchdog.start()
+
+        parent.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+        self.assertTrue(job.cancel_event.is_set())
+        self.assertTrue(controller._shutting_down)
+        self.assertIsNone(controller._job)
+        job.run()
+        self.assertEqual(["调整已取消。"], signals)
 
     def test_install_places_manual_resolution_card_in_lower_side_column_once(self):
         tab = _StartTabStub()

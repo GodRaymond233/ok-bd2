@@ -9,13 +9,14 @@ from src.tasks.map_trade.models import (
     ScreenState,
 )
 from src.tasks.map_trade.navigator_constants import (
+    AREA_MAP_BACK_TEMPLATE,
     BARGAIN_CONFIRM_POINT,
     BARGAIN_POINT,
     BARGAIN_SHOP_CONFIRM_POPUP_KEYWORD,
     BARGAIN_SHOP_CONFIRM_STABLE_HITS,
     CHAPTER_HOME_POINT,
     CHAPTER_HOME_TEMPLATES,
-    DISCOUNT_SHOP_CLOSE_CONTROL_REFERENCE_POINT,
+    DISCOUNT_SHOP_BACK_POINT,
     DISCOUNT_SHOP_CLOSE_CONTROL_TEMPLATES,
     DISCOUNT_SHOP_CLOSE_DIALOG_REGION,
     DISCOUNT_SHOP_CLOSE_KEYWORDS,
@@ -76,7 +77,21 @@ class TradeNavigationMixin:
             badge_match = self._wait_for_story_badge(Q_SP6_STORY_NUMBER)
             if badge_match is None:
                 return NavigationResult(False, self.classify(), "未唯一确认剧情游戏卡6角标")
-            badge_frame, badge = badge_match
+            confirmed = (
+                self._confirm_story_badge_before_click(
+                    badge_match[0],
+                    badge_match[1],
+                )
+                if callable(getattr(self.vision, "capture", None))
+                else badge_match
+            )
+            if confirmed is None:
+                return NavigationResult(
+                    False,
+                    self.classify(),
+                    "剧情游戏卡6点击前角标复核失败，已停止点击",
+                )
+            badge_frame, badge = confirmed
             self._status(
                 "剧情游戏卡6角标点击中心",
                 (
@@ -325,7 +340,21 @@ class TradeNavigationMixin:
         located = self._locate_story_card(card_id)
         if isinstance(located, NavigationResult):
             return located
-        badge = located.badge
+        confirmed = (
+            self._confirm_story_badge_before_click(
+                located.frame,
+                located.badge,
+            )
+            if callable(getattr(self.vision, "capture", None))
+            else (located.frame, located.badge)
+        )
+        if confirmed is None:
+            return NavigationResult(
+                False,
+                ScreenState.CARD_MENU,
+                f"剧情游戏卡{located.card.number}点击前角标复核失败，已停止点击",
+            )
+        badge_frame, badge = confirmed
         result = badge.best.result
         self._status(
             f"剧情游戏卡{located.card.number}角标点击中心",
@@ -336,7 +365,7 @@ class TradeNavigationMixin:
                 f"ocr={badge.ocr_number if badge.ocr_number is not None else '-'}"
             ),
         )
-        self.vision.click_client(result.center, located.frame.shape, after_sleep=1.0)
+        self.vision.click_client(result.center, badge_frame.shape, after_sleep=1.0)
         if self.wait_for_q_sp6_sandbox(self._loading_timeout()):
             return NavigationResult(True, ScreenState.SANDBOX, card_id)
         return NavigationResult(
@@ -438,11 +467,8 @@ class TradeNavigationMixin:
                     return
             if attempt < SHOP_CLOSE_CLICK_RETRIES:
                 self.task.sleep(SHOP_CLOSE_CLICK_INTERVAL)
-        self._status("折扣商店关闭按钮", "模板未命中，回退到标定相对点(82,36)")
-        self.vision.click_reference(
-            *DISCOUNT_SHOP_CLOSE_CONTROL_REFERENCE_POINT,
-            after_sleep=after_sleep,
-        )
+        self._status("折扣商店关闭按钮", "模板未命中，回退到FHD标定点(172,50)")
+        self.task.operate_click(*DISCOUNT_SHOP_BACK_POINT, after_sleep=after_sleep)
 
     def _click_chapter_home_button(self, after_sleep: float = 0.0) -> None:
         """Click the chapter home button, template-first with a calibrated fallback."""
@@ -480,6 +506,20 @@ class TradeNavigationMixin:
         state = self.classify()
         if state == ScreenState.HOME:
             return NavigationResult(True, state)
+        if state == ScreenState.CARD_MENU:
+            if not self._wait_for_quick_switch_page():
+                return NavigationResult(False, state, "返回前未确认快速切换卡带页面")
+            frame = self.vision.capture()
+            back = self.vision.match(frame, AREA_MAP_BACK_TEMPLATE)
+            if not self.vision.passes(back, AREA_MAP_BACK_TEMPLATE):
+                return NavigationResult(False, state, "快速切换卡带页返回按钮未识别")
+            self._status("快速切换页返回按钮", f"center={back.center}; match={back.score:.3f}")
+            self.vision.click_client(back.center, frame.shape, after_sleep=0.5)
+            state = self.wait_state({ScreenState.HOME, ScreenState.SANDBOX}, RETURN_HOME_TIMEOUT)
+            if state == ScreenState.HOME:
+                return NavigationResult(True, state)
+            if state != ScreenState.SANDBOX:
+                return NavigationResult(False, state, "退出快速切换卡带页后未确认箱庭或主页")
         if state == ScreenState.SHOP:
             return self._return_home_from_discount_shop()
         if state in {ScreenState.AREA_MAP, ScreenState.SANDBOX_MAP}:

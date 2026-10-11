@@ -1,5 +1,6 @@
 from time import monotonic
 
+from ok.task.exceptions import TaskDisabledException
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task
@@ -96,6 +97,10 @@ class BargainLevelTask(BaseBD2Task):
         self.log_info("刷砍价等级：从第六章商人处开始循环。")
 
         while True:
+            if self._task_stop_requested():
+                self.info_set("状态", "刷砍价等级已停止。")
+                self.info_set("结果", "中止")
+                return False
             if not self._run_cycle():
                 self.info_set("状态", "页面文字确认超时，任务结束。")
                 self.info_set("结果", "失败")
@@ -197,6 +202,8 @@ class BargainLevelTask(BaseBD2Task):
                 log=False,
                 name=name,
             )
+        except TaskDisabledException:
+            raise
         except Exception as exc:
             self.info_set(f"{name} OCR 错误", str(exc))
             return ""

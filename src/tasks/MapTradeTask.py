@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from ok import Config
+from ok.task.exceptions import TaskDisabledException
 from ok.util.file import get_relative_path
 from qfluentwidgets import FluentIcon
 
@@ -105,6 +106,7 @@ class MapAutomationTaskBase(BaseBD2Task):
         completed: list[str] = []
         failed: list[str] = []
         skipped: list[str] = []
+        cancelled = False
         self.info_set("状态", f"{self.task_log_name}启动。")
         try:
             for name, config_key, action in phases:
@@ -130,6 +132,8 @@ class MapAutomationTaskBase(BaseBD2Task):
                             f"{self.task_log_name}：{name}失败，停止后续阶段。"
                         )
                         break
+                except TaskDisabledException:
+                    raise
                 except Exception as exc:
                     failed.append(name)
                     self.log_error(f"{self.task_log_name}子流程失败：{name}。", exc)
@@ -138,19 +142,25 @@ class MapAutomationTaskBase(BaseBD2Task):
                         f"{self.task_log_name}：{name}异常，停止后续阶段。"
                     )
                     break
+        except TaskDisabledException:
+            cancelled = True
+            raise
         finally:
-            self.info_set("当前阶段", "返回章节主页")
-            try:
-                returned = navigator.return_home()
-            except Exception as exc:
-                failed.append("返回章节主页")
-                self.log_error(f"{self.task_log_name}：返回章节主页异常。", exc)
-                self._save_diagnostic(f"{self.diagnostic_prefix}_return_home_error")
-            else:
-                if not returned.success:
+            if not cancelled:
+                self.info_set("当前阶段", "返回章节主页")
+                try:
+                    returned = navigator.return_home()
+                except TaskDisabledException:
+                    raise
+                except Exception as exc:
                     failed.append("返回章节主页")
-                    self.log_warning(returned.message)
+                    self.log_error(f"{self.task_log_name}：返回章节主页异常。", exc)
                     self._save_diagnostic(f"{self.diagnostic_prefix}_return_home_error")
+                else:
+                    if not returned.success:
+                        failed.append("返回章节主页")
+                        self.log_warning(returned.message)
+                        self._save_diagnostic(f"{self.diagnostic_prefix}_return_home_error")
 
         self.info_set("完成", "、".join(completed) or "-")
         self.info_set("失败", "、".join(failed) or "-")
@@ -165,6 +175,8 @@ class MapAutomationTaskBase(BaseBD2Task):
     def _save_diagnostic(self, name: str) -> None:
         try:
             self.save_frame(name, self.capture_frame())
+        except TaskDisabledException:
+            raise
         except Exception as exc:
             self.log_warning(f"诊断截图保存失败：{exc}")
 
@@ -350,12 +362,12 @@ class MapTradeTask(MapAutomationTaskBase):
 
         vision = Vision(self)
         navigator = Navigator(self, vision)
-        progress = ProgressStore()
-        progress.load()
-        trader = Trader(self, vision, navigator, progress)
-        phases = (
-            ("制作料理", "制作料理", trader.run_cooking),
-            ("买", "买", trader.run_buy),
-            ("卖", "卖", trader.run_sell),
-        )
-        return self._run_phases(navigator, phases)
+        with ProgressStore() as progress:
+            progress.load()
+            trader = Trader(self, vision, navigator, progress)
+            phases = (
+                ("制作料理", "制作料理", trader.run_cooking),
+                ("买", "买", trader.run_buy),
+                ("卖", "卖", trader.run_sell),
+            )
+            return self._run_phases(navigator, phases)

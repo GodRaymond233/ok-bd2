@@ -1,5 +1,6 @@
 from time import monotonic
 
+from ok.task.exceptions import TaskDisabledException
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task
@@ -242,6 +243,8 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
                     failed.append(name)
                     stop_remaining = True
                     self.log_info(f"{name} 未满足后续触发条件，停止剩余子任务。")
+            except TaskDisabledException:
+                raise
             except Exception as exc:
                 failed.append(name)
                 stop_remaining = True
@@ -308,7 +311,10 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
         else:
             self.log_info("公会签到：未检测到签到成功提示，按流程返回主页。")
 
-        return self._return_home_from_guild()
+        # 返回主页是清理动作，不能掩盖签到提示缺失；否则失败会被批处理
+        # 与运行历史误记为成功，并在当日跳过补跑。
+        home_ok = self._return_home_from_guild()
+        return bool(success_found and home_ok)
 
     def _return_home_from_guild(self) -> bool:
         """Leave the guild page with bounded back-click retries.
@@ -361,6 +367,8 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
                 # 补点前重新确认仍在主页；已开始转场/加载则停止补点，交给后续模板等待。
                 try:
                     retry_frame = self.capture_frame()
+                except TaskDisabledException:
+                    raise
                 except Exception:
                     retry_frame = None
                 if retry_frame is None or not self._frame_confirms_home(
@@ -399,15 +407,38 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
         return home_ok
 
     def _wait_for_my_home_arrival(self, timeout: float) -> bool:
+        vision = self._quick_vision()
         if "_wait_for_template" in self.__dict__:
             if self._wait_for_template(MY_HOME_TEMPLATE, timeout=timeout, name="my_home"):
                 return True
+            for attempt in range(MY_HOME_TITLE_OCR_RETRIES):
+                try:
+                    frame = self.capture_frame()
+                except TaskDisabledException:
+                    raise
+                except Exception:
+                    frame = None
+                if frame is None:
+                    continue
+                title = vision.ocr_text(
+                    frame,
+                    "小屋页面标题",
+                    relative_roi=MY_HOME_TITLE_RELATIVE_ROI,
+                    target_height=0,
+                    ocr_scale=2.0,
+                )
+                if self._keyword_match_count(title, ["我的小屋"]) >= 1:
+                    return True
+                if attempt + 1 < MY_HOME_TITLE_OCR_RETRIES:
+                    self.sleep(MY_HOME_TITLE_OCR_RETRY_INTERVAL)
+            return False
+
         end_at = monotonic() + max(0.0, timeout)
-        vision = self._quick_vision()
-        ocr_attempts = 0
         while monotonic() <= end_at:
             try:
                 frame = self.capture_frame()
+            except TaskDisabledException:
+                raise
             except Exception:
                 frame = None
             if frame is None:
@@ -420,19 +451,15 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
             self._status_set("my_home", f"{result.score:.3f}")
             if self._passes(result, MY_HOME_TEMPLATE):
                 return True
-            if ocr_attempts < MY_HOME_TITLE_OCR_RETRIES:
-                ocr_attempts += 1
-                title = vision.ocr_text(
-                    frame,
-                    "小屋页面标题",
-                    relative_roi=MY_HOME_TITLE_RELATIVE_ROI,
-                    target_height=0,
-                    ocr_scale=2.0,
-                )
-                if self._keyword_match_count(title, ["我的小屋"]) >= 1:
-                    return True
-                if ocr_attempts >= MY_HOME_TITLE_OCR_RETRIES:
-                    break
+            title = vision.ocr_text(
+                frame,
+                "小屋页面标题",
+                relative_roi=MY_HOME_TITLE_RELATIVE_ROI,
+                target_height=0,
+                ocr_scale=2.0,
+            )
+            if self._keyword_match_count(title, ["我的小屋"]) >= 1:
+                return True
             self.sleep(0.35)
         return False
 

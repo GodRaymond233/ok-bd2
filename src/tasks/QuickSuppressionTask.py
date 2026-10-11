@@ -1,14 +1,15 @@
 from pathlib import Path
 from time import monotonic
 
-import cv2
 import numpy as np
+from ok.task.exceptions import TaskDisabledException
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task
 from src.utils.calibration import FHD_1080
 from src.utils.image_utils import (
     best_pixel_valid_match,
+    read_template_image,
     resize_template,
     template_match_response,
     to_gray,
@@ -113,6 +114,9 @@ class QuickSuppressionTask(BaseBD2Task):
 
         completed_cycles = 0
         while True:
+            if self._task_stop_requested():
+                self.info_set("状态", "刷压制等级已停止。")
+                return False
             if not self._run_cycle(slot):
                 self.info_set("状态", "刷压制等级确认失败，任务结束。")
                 return False
@@ -203,7 +207,7 @@ class QuickSuppressionTask(BaseBD2Task):
         if self._loading_template is not None:
             return self._loading_template
 
-        source = cv2.imread(str(TEMPLATE_PATH), cv2.IMREAD_UNCHANGED)
+        source = read_template_image(TEMPLATE_PATH)
         if source is None:
             raise RuntimeError(f"刷压制等级模板不存在或无法读取：{TEMPLATE_PATH}")
         self._loading_template = self._to_gray(source)
@@ -218,6 +222,8 @@ class QuickSuppressionTask(BaseBD2Task):
                 log=False,
                 name=name,
             )
+        except TaskDisabledException:
+            raise
         except Exception as exc:
             self.info_set("卡带确认 OCR 错误", str(exc))
             return ""

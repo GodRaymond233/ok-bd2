@@ -7,6 +7,7 @@ from collections import ChainMap
 from dataclasses import dataclass
 
 from ok import BaseTask
+from ok.task.exceptions import TaskDisabledException
 from qfluentwidgets import FluentIcon
 
 from src.tasks.DailyTask import DailyTask
@@ -231,7 +232,7 @@ class DailyBatchTask(BaseTask):
         from src.tasks import scheduler as task_scheduler
         from src.tasks.run_history import default_store
 
-        history = default_store() if only_incomplete else None
+        history = default_store()
         schedule_store = task_scheduler.default_store()
 
         completed: list[str] = []
@@ -271,7 +272,7 @@ class DailyBatchTask(BaseTask):
                 self.log_error(f"一键完成日常：未找到子任务 {child.config_key}。")
                 continue
 
-            if history is not None and history.is_completed_today(str(task.name)):
+            if only_incomplete and history.is_completed_today(str(task.name)):
                 skipped.append(child.config_key)
                 pre_completed.append(child.config_key)
                 publish_outcome()
@@ -291,6 +292,9 @@ class DailyBatchTask(BaseTask):
             self.info_set("当前子任务", child.config_key)
             self.log_info(f"一键完成日常：开始 {child.config_key}。")
             original_config = task.config
+            child_started = time.time()
+            child_result = None
+            child_finished = None
             try:
                 # The switches on this card are authoritative for this run. Keep
                 # the child task's persisted configuration unchanged while making
@@ -307,12 +311,16 @@ class DailyBatchTask(BaseTask):
                                 f"一键完成日常：{child.config_key} 自动回主页未成功，"
                                 "继续执行该子任务（由子任务自身兜底）。"
                             )
+                    except TaskDisabledException:
+                        raise
                     except Exception as ensure_exc:
                         self.log_warning(
                             f"一键完成日常：{child.config_key} 自动回主页异常：{ensure_exc}"
                         )
                 with suppress_task_completion_notifications(task):
-                    if bool(task.run()):
+                    child_result = bool(task.run())
+                    child_finished = time.time()
+                    if child_result:
                         completed.append(child.config_key)
                         publish_outcome()
                         self.log_info(f"一键完成日常：{child.config_key} 完成。")
@@ -325,7 +333,11 @@ class DailyBatchTask(BaseTask):
                         self.log_warning(
                             f"一键完成日常：{child.config_key} 失败，停止后续子任务。"
                         )
+            except TaskDisabledException:
+                raise
             except Exception as exc:
+                child_result = False
+                child_finished = time.time()
                 failed.append(child.config_key)
                 publish_outcome()
                 stop_remaining = True
@@ -336,6 +348,18 @@ class DailyBatchTask(BaseTask):
                 )
             finally:
                 task.config = original_config
+                if child_result is not None:
+                    try:
+                        history.record_task_done(
+                            task,
+                            finished=child_finished,
+                            started=child_started,
+                            ok=child_result,
+                        )
+                    except Exception as exc:
+                        self.log_error(
+                            f"一键完成日常：记录 {child.config_key} 的运行结果失败。", exc
+                        )
                 self.executor.reset_scene(check_enabled=False)
 
         self.info_set("当前子任务", "-")
@@ -359,8 +383,8 @@ class DailyBatchTask(BaseTask):
     ) -> None:
         """全部已启用子任务今日均已完成时按配置执行倒计时关机。
 
-        「今日已完成」= 本轮运行完成（账本记录在 task_done 时才落盘，此刻
-        还查不到，故并上 ``completed``）、运行前已有今日完成记录
+        「今日已完成」= 本轮运行完成（以 ``completed`` 保留跨日运行结果）、
+        运行前已有今日完成记录
         （``pre_completed``，由 run() 循环即时采集）或判定时刻的历史记录；
         任一已启用子任务两者皆不满足（含调度未到期跳过）时不关机。
         没有任何已启用子任务时不关机：全称判定对空集合为真，但一次没有

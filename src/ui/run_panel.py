@@ -24,7 +24,7 @@ from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QVBoxLay
 from qfluentwidgets import FluentIcon, PushButton, ToolButton
 
 from src.tasks.BaseBD2Task import task_info_snapshot
-from src.tasks.run_history import contains_joined_name, is_successful_run
+from src.tasks.run_history import contains_joined_name, default_store, is_successful_run
 from src.ui.quest_theme import MONO_FONT, mix, on_theme_changed, palette, rgba
 
 logger = Logger.get_logger(__name__)
@@ -46,11 +46,12 @@ _STANDARD_KEYS = {
 }
 
 
-def _elapsed_text(task, now: float | None = None) -> str:
+def _elapsed_text(task, now: float | None = None, finished: float | None = None) -> str:
     started = getattr(task, "start_time", 0) or 0
     if not started:
         return ""
-    seconds = max(0, int((time.time() if now is None else now) - started))
+    end = finished if finished is not None else (time.time() if now is None else now)
+    seconds = max(0, int(end - started))
     hours, remainder = divmod(seconds, 3600)
     minutes, secs = divmod(remainder, 60)
     duration = f"{hours}h {minutes}m {secs}s" if hours else f"{minutes}m {secs:02d}s"
@@ -62,9 +63,14 @@ def run_state(task) -> str:
     info = task_info_snapshot(task)
     if getattr(task, "enabled", False):
         return "pause" if getattr(task, "paused", False) else "run"
+    current_run = (id(task), getattr(task, "start_time", 0))
+    if getattr(task, "_bd2_stopped_run", None) == current_run:
+        return "abort"
     status = str(info.get(_STATUS_KEY, ""))
     if "中止" in status:
         return "abort"
+    if not info:
+        return "done"
     if not is_successful_run(info):
         return "fail"
     return "done"
@@ -145,6 +151,8 @@ class RunPanel(QFrame):
         self._grid_signature = None
         self._rows_signature = None
         self._pill_kind = None
+        self._elapsed_run = None
+        self._finished_at = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(20, 16, 20, 16)
@@ -258,10 +266,12 @@ class RunPanel(QFrame):
 
     def _stop_task(self):
         task = self._task
-        if task is None:
+        if task is None or not getattr(task, "enabled", False):
             return
+        task._bd2_stopped_run = (id(task), getattr(task, "start_time", 0))
         task.disable()
         task.unpause()
+        self.render(task)
 
     def _open_logs(self, *_args):
         try:
@@ -297,7 +307,17 @@ class RunPanel(QFrame):
         )
         if name != self.name_label.text():
             self.name_label.setText(name)
-        elapsed = _elapsed_text(task)
+        elapsed_run = (id(task), getattr(task, "start_time", 0))
+        if elapsed_run != self._elapsed_run or getattr(task, "enabled", False):
+            self._elapsed_run = elapsed_run
+            self._finished_at = None
+        if not getattr(task, "enabled", False):
+            record = default_store().last_run(str(getattr(task, "name", "")))
+            if record and record["finished"] >= (elapsed_run[1] or 0):
+                self._finished_at = record["finished"]
+            elif self._finished_at is None:
+                self._finished_at = time.time()
+        elapsed = _elapsed_text(task, finished=self._finished_at)
         if elapsed != self.time_label.text():
             self.time_label.setText(elapsed)
 

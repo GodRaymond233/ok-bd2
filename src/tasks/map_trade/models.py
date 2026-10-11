@@ -225,7 +225,11 @@ EVENT_SHOPS = {
 }
 
 KNOWN_SHOPS = {
-    **{f"S{card.number}": card.shop_label for card in STORY_CARDS},
+    **{
+        f"S{card.number}": card.shop_label
+        for card in STORY_CARDS
+        if card.number != 20
+    },
     **CHARACTER_SHOPS,
     **EVENT_SHOPS,
 }

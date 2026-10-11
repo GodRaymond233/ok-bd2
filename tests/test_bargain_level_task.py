@@ -144,6 +144,16 @@ class BargainLevelTaskTest(unittest.TestCase):
             BargainLevelTask._keyword_match_count("折扣商店结束", list(CLOSE_SHOP_PROMPTS)),
         )
 
+    def test_run_stops_when_task_is_disabled(self):
+        task = object.__new__(BargainLevelTask)
+        task.config = {"启用": True}
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task._task_stop_requested = lambda: True
+        task._run_cycle = lambda: self.fail("must stop before cycle")
+
+        self.assertFalse(BargainLevelTask.run(task))
+
 
 if __name__ == "__main__":
     unittest.main()

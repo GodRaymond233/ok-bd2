@@ -1,5 +1,6 @@
 import unittest
 from dataclasses import replace
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -10,6 +11,7 @@ from src.tasks.SquareGoddessTask import (
     FANTASIA_SQUARE_TEMPLATE,
     GODDESS_ALREADY_COMPLETE,
     GODDESS_NAVIGATION_CLICKED,
+    GODDESS_PRAYER_READY,
     QUICK_SWITCH_PAGE_PATTERNS,
     QUICK_SWITCH_TEMPLATE,
     REFERENCE_HEIGHT,
@@ -27,6 +29,7 @@ from src.utils.cartridge_quick_switch import (
     LIFE_GAMEPLAY_CATEGORY_OCR_ROI,
     LIFE_GAMEPLAY_CATEGORY_POINT,
 )
+from src.utils.goddess_navigation import NavigationObservation
 
 
 class SquareGoddessEntryTest(unittest.TestCase):
@@ -331,7 +334,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
         self.assertEqual((1025, 840, 204, 75), LIFE_GAMEPLAY_CATEGORY_OCR_ROI)
         self.assertEqual(0.05, GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO)
 
-    def test_goddess_flow_uses_notice_joint_daily_signal_then_prayer(self):
+    def test_goddess_flow_claims_dispatch_after_prayer(self):
         task = object.__new__(SquareGoddessTask)
         task.config = {}
         task.info_set = lambda *_args, **_kwargs: None
@@ -339,7 +342,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
         stages = []
         task._click_square_notice_if_present = lambda **kwargs: stages.append(
             ("notice", kwargs["timeout"])
-        ) or False
+        ) or True
         task._click_goddess_daily_navigation_until = (
             lambda **_kwargs: stages.append("navigation") or GODDESS_NAVIGATION_CLICKED
         )
@@ -349,11 +352,11 @@ class SquareGoddessEntryTest(unittest.TestCase):
 
         self.assertTrue(SquareGoddessTask._pray_at_goddess(task))
         self.assertEqual(
-            [("notice", 3.0), "navigation", "pray", ("notice", 5.0)],
+            ["navigation", "pray", ("notice", 5.0)],
             stages,
         )
 
-    def test_post_prayer_notice_hit_or_timeout_both_continue_to_home(self):
+    def test_post_prayer_dispatch_must_be_confirmed(self):
         for post_notice_found in (False, True):
             with self.subTest(post_notice_found=post_notice_found):
                 task = object.__new__(SquareGoddessTask)
@@ -364,7 +367,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
 
                 def click_notice(**kwargs):
                     notice_calls.append(kwargs["timeout"])
-                    return len(notice_calls) == 2 and post_notice_found
+                    return post_notice_found
 
                 task._click_square_notice_if_present = click_notice
                 task._click_goddess_daily_navigation_until = (
@@ -372,10 +375,10 @@ class SquareGoddessEntryTest(unittest.TestCase):
                 )
                 task._wait_for_goddess_prayer_completion = lambda **_kwargs: True
 
-                self.assertTrue(SquareGoddessTask._pray_at_goddess(task))
-                self.assertEqual([3.0, 5.0], notice_calls)
+                self.assertEqual(post_notice_found, SquareGoddessTask._pray_at_goddess(task))
+                self.assertEqual([5.0], notice_calls)
 
-    def test_missing_navigation_fails_even_after_dispatch_notice(self):
+    def test_missing_navigation_stops_before_dispatch(self):
         task = object.__new__(SquareGoddessTask)
         task.config = {}
         task.info_set = lambda *_args, **_kwargs: None
@@ -393,7 +396,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
 
         self.assertFalse(SquareGoddessTask._pray_at_goddess(task))
         self.assertEqual(
-            [("notice", 3.0), "navigation"],
+            ["navigation"],
             stages,
         )
 
@@ -415,7 +418,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
         )
 
         self.assertTrue(SquareGoddessTask._pray_at_goddess(task))
-        self.assertEqual([3.0], notice_calls)
+        self.assertEqual([5.0], notice_calls)
         self.assertEqual(["广场女神像：已确认女神像许愿任务完成。"], messages)
 
     def test_successful_run_returns_home_after_prayer(self):
@@ -638,19 +641,24 @@ class SquareGoddessEntryTest(unittest.TestCase):
         self.assertEqual((1376, 862, 66, 51), SQUARE_NOTICE_TEMPLATE.roi)
         self.assertTrue(SQUARE_NOTICE_TEMPLATE.green_mask)
         self.assertEqual(0.72, SQUARE_NOTICE_TEMPLATE.min_pixel_score)
+        self.assertEqual(
+            (0.68, 0.75, 0.80, 0.92),
+            SQUARE_NOTICE_TEMPLATE.candidate_center_roi,
+        )
 
         task = object.__new__(SquareGoddessTask)
         task.info_set = lambda *_args, **_kwargs: None
         task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        clicks = []
+        task._click_client = lambda *args, **kwargs: clicks.append((args, kwargs))
+        task.sleep = lambda *_args: None
         task._match = lambda _frame, spec: MatchResult(
-            score=0.90,
+            score=0.90 if spec is FANTASIA_SQUARE_TEMPLATE or not clicks else -1.0,
             pixel_score=0.90,
             position=(1376, 862),
             size=(66, 51),
         )
-        task._passes = lambda _result, spec: spec is SQUARE_NOTICE_TEMPLATE
-        clicks = []
-        task._click_client = lambda *args, **kwargs: clicks.append((args, kwargs))
+        task._passes = lambda result, spec: result.score > 0
 
         self.assertTrue(SquareGoddessTask._click_square_notice_if_present(task))
         self.assertEqual(
@@ -668,11 +676,7 @@ class SquareGoddessEntryTest(unittest.TestCase):
         task.info_set = lambda *_args, **_kwargs: None
         task.sleep = lambda *_args, **_kwargs: None
         task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        task._ocr_pattern_click_point = (
-            lambda _frame, _patterns, name, roi: (
-                ((1410, 880), "向女神像许愿") if name == "女神像许愿" else (None, "")
-            )
-        )
+        task._goddess_prayer_signals = lambda frame: ((1410, 880), True, "向女神像许愿")
         clicks = []
         task._click_client = lambda *args, **kwargs: clicks.append((args, kwargs))
         task.operate_click = lambda *_args, **_kwargs: self.fail("不应使用固定点")
@@ -697,11 +701,156 @@ class SquareGoddessEntryTest(unittest.TestCase):
         task.info_set = lambda *args: None
         task.sleep = lambda *args: None
         task.capture_frame = lambda: np.zeros((720, 1280, 3), dtype=np.uint8)
-        task._ocr_pattern_click_point = lambda *args, **kwargs: (None, "")
+        task._goddess_prayer_signals = lambda *args: (None, False, "")
         task._click_client = lambda *args, **kwargs: self.fail("No prayer prompt")
         task.operate_click = lambda *args, **kwargs: self.fail("No fixed click")
         with patch("src.tasks.SquareGoddessTask.monotonic", side_effect=[0, 0, 2]):
             self.assertFalse(task._wait_for_goddess_prayer_completion(timeout=1))
+
+    def test_prayer_click_requires_unique_reliable_interaction_prompt(self):
+        for width, height in ((1920, 1080), (1280, 720)):
+            task = object.__new__(SquareGoddessTask)
+            frame = np.zeros((height, width, 3), dtype=np.uint8)
+            task_label = SimpleNamespace(
+                name="向女神像许愿0/1", confidence=.99,
+                x=width * .75, y=height * .2, width=200, height=30,
+            )
+            prompt = SimpleNamespace(
+                name="向女神像许愿", confidence=.99,
+                x=width * (862 / 1920), y=height * (147 / 1080), width=120, height=30,
+            )
+            boxes = [task_label, prompt]
+            task._ocr_boxes = lambda *args, **kwargs: boxes
+            self.assertEqual(
+                (round(prompt.x + 60), round(prompt.y + 15)),
+                task._goddess_prayer_signals(frame)[0],
+            )
+            for x, y in ((.15, .25), (.65, .35), (.7, .8)):
+                prompt.x, prompt.y = width * x, height * y
+                self.assertEqual(
+                    (round(prompt.x + 60), round(prompt.y + 15)),
+                    task._goddess_prayer_signals(frame)[0],
+                )
+            boxes.append(SimpleNamespace(**vars(prompt)))
+            self.assertEqual((None, True), task._goddess_prayer_signals(frame)[:2])
+            boxes.pop()
+            boxes.append(SimpleNamespace(
+                name="1/1完成！", confidence=.99,
+                x=prompt.x + prompt.width + 5, y=prompt.y, width=100, height=30,
+            ))
+            self.assertEqual((None, False), task._goddess_prayer_signals(frame)[:2])
+            boxes.pop()
+            prompt.confidence = .6
+            self.assertEqual((None, True), task._goddess_prayer_signals(frame)[:2])
+            prompt.name = "向女神像许愿1/1完成！"
+            prompt.confidence = .99
+            self.assertEqual((None, False), task._goddess_prayer_signals(frame)[:2])
+
+    def test_visible_prayer_skips_navigation(self):
+        task = object.__new__(SquareGoddessTask)
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task.info_set = Mock()
+        task._goddess_prayer_signals = lambda frame: ((948, 160), True, "向女神像许愿")
+        task._observe_goddess_navigation = Mock(
+            side_effect=AssertionError("navigation unnecessary")
+        )
+        self.assertEqual(GODDESS_PRAYER_READY, task._click_goddess_daily_navigation_until(1))
+
+    def test_dispatch_clicks_once_without_rechecking_after_click(self):
+        task = object.__new__(SquareGoddessTask)
+        clock = [0.0]
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task.info_set = Mock()
+        task.log_info = Mock()
+        task.sleep = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+        task._match = lambda *args: MatchResult(.99, (1376, 862), (66, 51))
+        task._passes = lambda *args: True
+        task._click_client = Mock(
+            side_effect=lambda *args, **kwargs: task.sleep(kwargs["after_sleep"])
+        )
+        with patch("src.tasks.SquareGoddessTask.monotonic", lambda: clock[0]):
+            self.assertTrue(task._click_square_notice_if_present(timeout=5))
+        self.assertEqual(1, task._click_client.call_count)
+
+    def test_dispatch_without_notice_is_treated_as_already_done(self):
+        task = object.__new__(SquareGoddessTask)
+        clock = [0.0]
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task.info_set = Mock()
+        task.sleep = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+        task._match = lambda _frame, spec: (
+            MatchResult(-1.0, (0, 0), (0, 0))
+            if spec is SQUARE_NOTICE_TEMPLATE
+            else MatchResult(.9, (656, 622), (77, 66))
+        )
+        task._passes = lambda result, spec: spec is FANTASIA_SQUARE_TEMPLATE
+        task._click_client = Mock()
+        with patch("src.tasks.SquareGoddessTask.monotonic", lambda: clock[0]):
+            self.assertTrue(task._click_square_notice_if_present(timeout=2))
+        task._click_client.assert_not_called()
+
+    def test_initial_absence_requires_stable_square_and_nonempty_ocr(self):
+        for state, text, square, expected in (
+            ("absent", "创建队伍", True, GODDESS_ALREADY_COMPLETE),
+            ("absent", "", True, None),
+            ("unknown", "每日奖励", True, None),
+            ("absent", "创建队伍", False, None),
+        ):
+            with self.subTest(state=state, text=text, square=square):
+                task = object.__new__(SquareGoddessTask)
+                clock = [0.0]
+                task.info_set = Mock()
+                task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+                task.sleep = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+                task._goddess_prayer_signals = lambda frame: (None, False, text)
+                task._observe_goddess_navigation = lambda frame: NavigationObservation(state, text)
+                task._match = Mock()
+                task._passes = lambda *args: square
+                task._click_client = Mock(side_effect=AssertionError("No target to click"))
+                with patch("src.tasks.SquareGoddessTask.monotonic", lambda: clock[0]):
+                    self.assertEqual(expected, task._click_goddess_daily_navigation_until(3))
+                self.assertGreaterEqual(clock[0], 2.0)
+
+    def test_prayer_keeps_observing_after_confirmation_window_and_click_limit(self):
+        for outcome in ("late_absence", "completed", "blank", "prompt"):
+            with self.subTest(outcome=outcome):
+                clock, clicks = [0.0], []
+                task = object.__new__(SquareGoddessTask)
+                task.config = {"女神像许愿最多点击次数": 1, "女神像完成确认等待秒数": 8.0}
+                task.info_set = lambda *args: None
+                task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+                task.sleep = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+
+                def click(*args, **kwargs):
+                    clicks.append(args)
+                    task.sleep(kwargs.get("after_sleep", 0))
+
+                def signals(frame):
+                    if not clicks or outcome == "prompt":
+                        return (1410, 880), True, "向女神像许愿"
+                    return None, False, "" if outcome == "blank" else "创建队伍"
+
+                def observe(frame):
+                    if outcome == "blank":
+                        return NavigationObservation("unknown", "")
+                    if outcome == "completed":
+                        return NavigationObservation("absent", "向女神像许愿1/1完成！")
+                    if outcome == "prompt" or clock[0] < 11:
+                        return NavigationObservation("unknown", "每日奖励")
+                    return NavigationObservation("absent", "创建队伍")
+
+                task._click_client = click
+                task._goddess_prayer_signals = signals
+                task._observe_goddess_navigation = observe
+                task._match = lambda *args: None
+                task._passes = lambda *args: True
+                with patch("src.tasks.SquareGoddessTask.monotonic", lambda: clock[0]):
+                    self.assertEqual(
+                        outcome in {"late_absence", "completed"},
+                        task._wait_for_goddess_prayer_completion(20),
+                    )
+                self.assertEqual(1, len(clicks))
+                self.assertLessEqual(clock[0], 21)
 
 
 if __name__ == "__main__":

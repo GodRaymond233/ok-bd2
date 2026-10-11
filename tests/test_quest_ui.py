@@ -479,6 +479,22 @@ class SealDotTest(QuestUiTestBase):
 
 
 class BannerTest(QuestUiTestBase):
+    def test_next_refresh_uses_beijing_civil_date(self):
+        from datetime import datetime
+
+        from src.tasks.run_history import BEIJING_TZ
+        from src.ui.quest_banner import _next_refresh_text
+
+        for hour, minute, second, expected in (
+            (0, 0, 0, "今日 04:00"),
+            (3, 59, 59, "今日 04:00"),
+            (4, 0, 0, "明日 04:00"),
+            (23, 59, 59, "明日 04:00"),
+        ):
+            with self.subTest(hour=hour, minute=minute, second=second):
+                now = datetime(2026, 12, 31, hour, minute, second, tzinfo=BEIJING_TZ)
+                self.assertEqual(expected, _next_refresh_text(now.timestamp()))
+
     def test_commission_items_and_banner_counts(self):
         from src.tasks.DailyTask import DailyTask
         from src.tasks.PVPTask import PVPTask
@@ -607,8 +623,35 @@ class BannerTest(QuestUiTestBase):
 
 
 class RunPanelTest(QuestUiTestBase):
-    def test_running_batch_renders_segments_grid_and_rows(self):
+    def test_finished_duration_stays_fixed_and_resets_for_next_run(self):
+        from unittest.mock import patch
+
         from src.ui.run_panel import RunPanel
+
+        store = self.fresh_store()
+        task = _TaskStub(info={"状态": "完成"})
+        task.start_time = 1000.0
+        store.record_task_done(task, finished=1065.0)
+        panel = RunPanel()
+        self.addCleanup(panel.close)
+        for now in (1100.0, 1200.0):
+            with patch("src.ui.run_panel.time.time", return_value=now):
+                panel.render(task)
+            self.assertEqual(panel.time_label.text(), "用时 1m 05s")
+
+        task.start_time = 1300.0
+        task.enabled = True
+        with patch("src.ui.run_panel.time.time", return_value=1305.0):
+            panel.render(task)
+        self.assertEqual(panel.time_label.text(), "已运行 0m 05s")
+        task.enabled = False
+        for now in (1310.0, 1400.0):
+            with patch("src.ui.run_panel.time.time", return_value=now):
+                panel.render(task)
+            self.assertEqual(panel.time_label.text(), "用时 0m 10s")
+
+    def test_running_batch_renders_segments_grid_and_rows(self):
+        from src.ui.run_panel import RunPanel, run_state
 
         self.fresh_store()
         task = _make_batch_stub()
@@ -634,6 +677,25 @@ class RunPanelTest(QuestUiTestBase):
         first_cell = panel.grid.itemAt(0).widget()
         self.assertIn("公会、小屋、酒馆", first_cell.text())
         self.assertEqual(panel.rows.count(), 3)  # 状态 / 当前子任务 / 最近日志
+
+        task.paused = True
+        panel._stop_task()
+        panel.render(task)
+        self.assertFalse(task.enabled)
+        self.assertFalse(task.paused)
+        self.assertEqual("abort", run_state(task))
+        self.assertEqual("已中止", panel.pill.text())
+        self.assertEqual("一键完成日常启动。", task.info["状态"])
+
+        task.start_time += 1
+        task.enabled = True
+        panel.render(task)
+        self.assertEqual("运行中", panel.pill.text())
+        task.enabled = False
+        task.info = {"状态": "完成"}
+        panel.render(task)
+        self.assertEqual("done", run_state(task))
+        self.assertEqual("已完成", panel.pill.text())
         panel.close()
 
     def test_aborted_batch_shows_fail_state_and_close(self):
@@ -920,7 +982,6 @@ class HiddenConfigRowsTest(QuestUiTestBase):
         # through the sub-config recursion (which ignores 'hidden').
         self.assertEqual(task.config_type["执行"]["sub_configs"][True], ["保留子项"])
 
-
     def test_string_sub_config_rule_is_also_stripped(self):
         from ok.ui.qt.tasks.TaskCard import TaskCard
 
@@ -1037,23 +1098,43 @@ class ExpandTimingTest(QuestUiTestBase):
         card.close()
 
     def test_reversal_mid_drive_lands_opposite_terminal(self):
+        from PySide6.QtCore import QCoreApplication, QEvent, QTimer
         from PySide6.QtTest import QTest
 
         card = self._make_card()
         collapsed = card.height()
-        card.setExpand(True)
-        QTest.qWait(60)  # mid-drive
-        card.setExpand(False)
-        QTest.qWait(420)
+        timer_count = len(card.findChildren(QTimer))
+        for _ in range(3):
+            card.setExpand(True)
+            QTest.qWait(60)  # mid-drive
+            card.setExpand(False)
+            QTest.qWait(420)
 
-        self.assertEqual(card.height(), collapsed)
-        # The driver must land exactly on the configured end value, which for
-        # a collapse is the measured content height.
-        self.assertEqual(card.verticalScrollBar().value(), card.expandAni.endValue())
+            self.assertEqual(card.height(), collapsed)
+            # Collapse lands at the measured content height.
+            self.assertEqual(card.verticalScrollBar().value(), card.expandAni.endValue())
+            QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+            self.assertEqual(timer_count, len(card.findChildren(QTimer)))
         card.setExpand(True)
         QTest.qWait(420)
         self.assertEqual(card.verticalScrollBar().value(), 0)
         card.close()
+
+    def test_card_destruction_releases_active_driver(self):
+        from PySide6.QtCore import QCoreApplication, QEvent
+
+        from src.ui import expand_timing
+
+        card = self._make_card()
+        card.setExpand(True)
+        driver = expand_timing._DRIVERS.get(card)
+        self.assertIsNotNone(driver)
+        card.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+        self.assertIsNone(expand_timing._DRIVERS.get(card))
+        self.assertFalse(driver.running)
+        expand_timing.set_expand_timing_enabled(False)
 
     def test_kill_switch_runs_native_animation(self):
         from PySide6.QtCore import QAbstractAnimation

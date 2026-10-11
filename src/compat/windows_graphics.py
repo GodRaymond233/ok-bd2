@@ -153,6 +153,7 @@ def patch_windows_graphics_capture_class(capture_class: type) -> None:
     original_init = capture_class.__init__
     original_start_or_stop = capture_class.start_or_stop
     original_close = capture_class.close
+    original_do_get_frame = getattr(capture_class, "do_get_frame", None)
 
     def stable_init(self, *args, **kwargs):
         self._ok_bd2_resize_gate = ResizeStabilityGate()
@@ -182,7 +183,10 @@ def patch_windows_graphics_capture_class(capture_class: type) -> None:
                     self._ok_bd2_last_invalid_size_log = now
                 self.close()
                 return False
-        return original_start_or_stop(self, capture_cursor=capture_cursor)
+        # The upstream start path can close a session while holding self.lock.
+        # Take the reentrant request lock first, matching do_get_frame().
+        with self.get_frame_lock:
+            return original_start_or_stop(self, capture_cursor=capture_cursor)
 
     def stable_frame_arrived_callback(self, *args):
         next_frame = None
@@ -191,7 +195,11 @@ def patch_windows_graphics_capture_class(capture_class: type) -> None:
         close_for_invalid_size = False
         gate = _resize_gate(self)
 
-        with self.lock:
+        # FramePool.Close waits for callbacks while the caller owns this lock.
+        # A busy resource must drop this notification so shutdown can complete.
+        if not self.lock.acquire(blocking=False):
+            return
+        try:
             if self.exit_event.is_set():
                 logger.warning("frame_arrived_callback exit_event.is_set() return")
                 return
@@ -231,17 +239,8 @@ def patch_windows_graphics_capture_class(capture_class: type) -> None:
                 if next_frame is not None and hasattr(next_frame, "Close"):
                     next_frame.Close()
 
-            # Recreate or close only after the current frame is closed. Keeping
-            # this under the same lock prevents close() from releasing D3D
-            # resources in parallel with the resize operation.
-            if close_for_invalid_size:
-                logger.info(
-                    "WGC closing after the established capture shrank below the "
-                    f"supported size: {observed_size[0]}x{observed_size[1]}"
-                )
-                self.close()
-                return
-
+            # Recreate after closing the frame, under the resource lock so
+            # close() cannot release D3D resources during the resize.
             if reset_size is not None:
                 try:
                     from ok.rotypes.Windows.Graphics import SizeInt32
@@ -267,16 +266,50 @@ def patch_windows_graphics_capture_class(capture_class: type) -> None:
                 self.last_frame = frame
                 self.frame_requested.clear()
                 self.frame_event.set()
+        finally:
+            self.lock.release()
+
+        if close_for_invalid_size:
+            logger.info(
+                "WGC closing after the established capture shrank below the "
+                f"supported size: {observed_size[0]}x{observed_size[1]}"
+            )
+            self.close()
 
     def stable_close(self):
         with self.lock:
             _resize_gate(self).clear()
-            return original_close(self)
+        return original_close(self)
+
+    def recovering_get_frame(self):
+        with self.get_frame_lock:
+            generation = self._frame_cancel_generation
+            frame = original_do_get_frame(self)
+            if (
+                frame is not None
+                or self.exit_event.is_set()
+                or generation != self._frame_cancel_generation
+            ):
+                return frame
+            window = self.hwnd_window
+            if (
+                not window.exists
+                or not window.hwnd
+                or not _valid_capture_size((window.width, window.height))
+            ):
+                return frame
+            # TaskExecutor can time out before the upstream ten-second watchdog.
+            logger.warning("WGC frame request timed out; restarting capture once")
+            self.close()
+            self.last_frame_time = time.time()
+            return original_do_get_frame(self)
 
     capture_class.__init__ = stable_init
     capture_class.start_or_stop = stable_start_or_stop
     capture_class.frame_arrived_callback = stable_frame_arrived_callback
     capture_class.close = stable_close
+    if original_do_get_frame is not None:
+        capture_class.do_get_frame = recovering_get_frame
     setattr(capture_class, _WGC_PATCH_MARKER, True)
 
 

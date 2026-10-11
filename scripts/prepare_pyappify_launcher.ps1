@@ -42,10 +42,10 @@ function Ensure-Cargo {
         return
     }
 
-    $isWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
+    $launcherRunsOnWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
         [System.Runtime.InteropServices.OSPlatform]::Windows
     )
-    if (-not $isWindows) {
+    if (-not $launcherRunsOnWindows) {
         throw "cargo is required but was not found. Install Rust before running this script."
     }
 

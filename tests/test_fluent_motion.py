@@ -3,7 +3,7 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QCoreApplication, QEvent, QPoint, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QFrame, QVBoxLayout, QWidget
 
@@ -121,8 +121,9 @@ class PageTransitionTest(_MotionTestCase):
         self.host.show()
         QTest.qWait(20)
 
-        self.stack.setCurrentWidget(self.page_b, popOut=False)
-        self.stack.setCurrentWidget(self.page_a, popOut=False)
+        for _ in range(5):
+            self.stack.setCurrentWidget(self.page_b, popOut=False)
+            self.stack.setCurrentWidget(self.page_a, popOut=False)
 
         QTest.qWait(PAGE_IN_MS + 150)
 
@@ -130,6 +131,15 @@ class PageTransitionTest(_MotionTestCase):
         self.assertEqual(self.page_a.pos(), QPoint(0, 0))
         self.assertFalse(self.page_b.isVisible())
         self.assertIsNone(self.page_b.graphicsEffect())
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        self.assertEqual([], self.host.findChildren(fluent_motion._RefreshDriver))
+
+        self.stack.setCurrentWidget(self.page_b, popOut=False)
+        self.page_b.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        set_fluent_motion_enabled(False)
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        self.assertEqual([], self.host.findChildren(fluent_motion._RefreshDriver))
 
     def test_switch_while_window_hidden_stays_instant(self):
         self._build()

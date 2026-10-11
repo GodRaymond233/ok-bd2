@@ -14,6 +14,7 @@ from src.tasks.map_trade.card_status import (
     CardActionState,
     CollectionCardSelectionOutcome,
     CollectionCardSelectionResult,
+    card_icon_region,
 )
 from src.tasks.map_trade.models import (
     CARD_BY_ID,
@@ -89,6 +90,7 @@ from src.tasks.map_trade.navigator_constants import (
 )
 from src.tasks.map_trade.vision import normalize_text
 from src.utils.calibration import FHD_1080
+from src.utils.image_utils import stabilize_template_match
 
 # 从箱庭点击快速切换按钮的统一识别窗口与点击后停顿。
 QUICK_SWITCH_CLICK_TIMEOUT = 10.0
@@ -106,9 +108,8 @@ class StoryCardNavigationMixin:
     def _open_story_quick_switcher(self) -> NavigationResult:
         opened = self.task.open_cartridge_quick_switcher(
             ensure_home=self._wait_for_cartridge_home,
-            click_quick_switch=lambda: self.vision.click_stable_template(
-                QUICK_SWITCH_TEMPLATE,
-                timeout=QUICK_SWITCH_CLICK_TIMEOUT,
+            click_quick_switch=lambda: self._click_quick_switch(
+                timeout=self._loading_timeout(),
                 after_sleep=QUICK_SWITCH_CLICK_AFTER_SLEEP,
             ),
             confirm_quick_switch_page=self._wait_for_quick_switch_page,
@@ -1253,6 +1254,14 @@ class StoryCardNavigationMixin:
             if detection is None:
                 self._status("剧情角标", f"{target_number}: {last_reason}")
                 return None
+            _, complete_region = card_icon_region(
+                detection.best.result.center,
+                frame.shape,
+            )
+            if not complete_region:
+                last_reason = "角标已命中，但卡带框架被客户区边缘截断"
+                self._status("卡带完成度", last_reason)
+                return None
             self._status(
                 "剧情角标",
                 (
@@ -1274,18 +1283,19 @@ class StoryCardNavigationMixin:
             )
             return None
 
-        self._focus_quick_switch_for_scroll()
         # The quick selector runs horizontally. A downward wheel moves toward
         # larger card numbers, so first reset to that edge. Scanning then uses
         # the user-calibrated upward wheel: cards move right, large to small.
         self._status("卡带滚轮", "向下复位到大编号端")
-        self.task.scroll_client(
+        if not self._scroll_story_bar(
             QUICK_SWITCH_SCROLL_POINT,
             QUICK_SWITCH_SCROLL_RESET_AMOUNT,
             count=QUICK_SWITCH_SCROLL_RESET_COUNT,
             interval=QUICK_SWITCH_SCROLL_INTERVAL,
             after_sleep=QUICK_SWITCH_SCROLL_SETTLE_SECONDS,
-        )
+            require_movement=False,
+        ):
+            return None
 
         steps = max(0, int(scan_steps))
         for step in range(steps + 1):
@@ -1300,13 +1310,14 @@ class StoryCardNavigationMixin:
             if step >= steps:
                 break
             self._status("卡带滚轮", f"向上扫描 {step + 1}/{steps}")
-            self.task.scroll_client(
+            if not self._scroll_story_bar(
                 QUICK_SWITCH_SCROLL_POINT,
                 QUICK_SWITCH_SCROLL_UP_AMOUNT,
                 count=QUICK_SWITCH_SCROLL_UP_COUNT,
                 interval=QUICK_SWITCH_SCROLL_INTERVAL,
                 after_sleep=QUICK_SWITCH_SCROLL_SETTLE_SECONDS,
-            )
+            ):
+                return None
 
         self.task.log_warning(
             f"跑图跑商：滚动快速选择栏后仍未确认剧情游戏卡{target_number}角标：{last_reason}。"
@@ -1493,8 +1504,7 @@ class StoryCardNavigationMixin:
             return returned
         opened = self.task.open_cartridge_quick_switcher(
             ensure_home=self._wait_for_cartridge_home,
-            click_quick_switch=lambda: self.vision.click_stable_template(
-                QUICK_SWITCH_TEMPLATE,
+            click_quick_switch=lambda: self._click_quick_switch(
                 timeout=10.0,
                 after_sleep=1.0,
             ),
@@ -1541,6 +1551,14 @@ class StoryCardNavigationMixin:
                 f"未唯一确认剧情游戏卡{card.number}角标",
             )
         badge_frame, badge = badge_match
+        _, complete_region = card_icon_region(
+            badge.best.result.center,
+            badge_frame.shape,
+        )
+        if not complete_region:
+            reason = f"剧情游戏卡{card.number}卡带框架被客户区边缘截断"
+            self._status("卡带完成度", reason)
+            return NavigationResult(False, ScreenState.CARD_MENU, reason)
         self._status(
             "目标卡带",
             (
@@ -1665,6 +1683,17 @@ class StoryCardNavigationMixin:
                 f"first={detection.best.number}@{first.center}/{first.size}; "
                 f"second={confirmed.best.number}@{second.center}/{second.size}"
             )
+            self._status("剧情角标点击复核", reason)
+            warning = getattr(self.task, "log_warning", None)
+            if callable(warning):
+                warning(f"跑图跑商：剧情游戏卡点击前{reason}，已停止点击。")
+            return None
+        _, complete_region = card_icon_region(
+            confirmed.best.result.center,
+            confirmed_frame.shape,
+        )
+        if not complete_region:
+            reason = "点击前复核的卡带框架被客户区边缘截断"
             self._status("剧情角标点击复核", reason)
             warning = getattr(self.task, "log_warning", None)
             if callable(warning):
@@ -1837,8 +1866,7 @@ class StoryCardNavigationMixin:
                 return sandbox
 
         self._status("导航状态", "从卡带箱庭识别快速切换按钮")
-        if not self.vision.click_stable_template(
-            QUICK_SWITCH_TEMPLATE,
+        if not self._click_quick_switch(
             timeout=QUICK_SWITCH_CLICK_TIMEOUT,
             after_sleep=QUICK_SWITCH_CLICK_AFTER_SLEEP,
         ):
@@ -1861,3 +1889,118 @@ class StoryCardNavigationMixin:
                 "点击后未确认剧情游戏卡类别高亮",
             )
         return NavigationResult(True, ScreenState.CARD_MENU, "剧情游戏卡类别已确认")
+
+    def _find_quick_switch_button(self, frame: np.ndarray) -> MatchResult | None:
+        """Identify the translucent navigation icon independently of its brightness."""
+
+        candidates = []
+        for roi in QUICK_SWITCH_TEMPLATE.relative_rois:
+            candidates.extend(self.vision.match_evidence_all(
+                frame,
+                replace(QUICK_SWITCH_TEMPLATE, relative_rois=(), relative_roi=roi),
+                minimum_score=0.88,
+                peak_radius=max(8, round(22 * frame.shape[0] / FHD_1080.height)),
+                max_results=8,
+                purpose="快速切换按钮",
+            ))
+        if not candidates:
+            self._status("快速切换按钮", "搜索区域内无可信候选")
+            return None
+        candidates.sort(key=lambda candidate: candidate.result.zncc_score, reverse=True)
+        best = candidates[0].result
+        runner = candidates[1].result.zncc_score if len(candidates) > 1 else -1.0
+        # The button is translucent: its background and absolute gray values
+        # change between fields. Identity comes from shape, not pixel brightness.
+        accepted = (
+            best.score >= 0.92
+            and best.zncc_score >= 0.78
+            and best.gradient_zncc_score >= 0.50
+            and best.edge_score >= 0.60
+            and best.zncc_score - runner >= 0.10
+        )
+        self._status(
+            "快速切换按钮",
+            f"{'通过' if accepted else '拒绝'}; center={best.center}; "
+            f"m={best.score:.3f}, pixel={best.pixel_score:.3f}(仅诊断), "
+            f"z={best.zncc_score:.3f}, gradient={best.gradient_zncc_score:.3f}, "
+            f"edge={best.edge_score:.3f}, margin={best.zncc_score - runner:.3f}",
+        )
+        return best if accepted else None
+
+    def _click_quick_switch(self, timeout: float, after_sleep: float) -> bool:
+        end_at = monotonic() + max(0.0, timeout)
+        while monotonic() <= end_at:
+            frame = self.vision.capture()
+            result = self._find_quick_switch_button(frame)
+            if result is None:
+                self.task.sleep(0.35)
+                continue
+
+            def sample_match():
+                sampled = self.vision.capture()
+                match = (
+                    self._find_quick_switch_button(sampled)
+                    if sampled.shape == frame.shape else None
+                )
+                return match, sampled.shape
+
+            stable = stabilize_template_match(
+                result, frame.shape, sample_match=sample_match,
+                passes=lambda match: match is not None, sleep=self.task.sleep,
+            )
+            if stable is None:
+                self._status("快速切换按钮稳定识别", "候选位置或画面尺寸不稳定")
+                return False
+            consensus, shape = stable
+            self._status(
+                "快速切换按钮稳定识别",
+                f"center={consensus.center}; hits={consensus.hit_count}/"
+                f"{consensus.sample_count}; spread={consensus.center_spread:.1f}",
+            )
+            self.vision.click_client(consensus.center, shape, after_sleep=after_sleep)
+            return True
+        return False
+
+    def _scroll_story_bar(
+        self, point, amount, *, count, interval, after_sleep, require_movement=True,
+    ) -> bool:
+        """Scroll without selecting a card, then confirm a stable selector."""
+
+        def sample(frame):
+            height = frame.shape[0]
+            # Restrict comparison to the badges and card faces, away from the
+            # animated sandbox and completion icons below the cards.
+            band = frame[round(height * 0.855):round(height * 0.94), :, :3]
+            return cv2.resize(band, (480, 48)).astype(np.int16)
+
+        before = self.vision.capture()
+        baseline = sample(before)
+        # scroll_client activates the window and positions the cursor itself.
+        # Clicking this point can select the leftmost visible cartridge.
+        self.task.scroll_client(
+            point, amount, count=count, interval=interval, after_sleep=after_sleep,
+        )
+        previous = None
+        stable_hits = 0
+        for _ in range(12):
+            frame = self.vision.capture()
+            if frame.shape != before.shape:
+                self._status("卡带滚轮", "窗口尺寸变化，停止本次定位")
+                return False
+            current = sample(frame)
+            difference = (
+                float(np.mean(np.abs(current - previous)))
+                if previous is not None else float("inf")
+            )
+            stable_hits = stable_hits + 1 if difference < 1.5 else 0
+            if stable_hits >= 2:
+                if not self._wait_for_quick_switch_page(timeout=1.0):
+                    self._status("卡带滚轮", "滚动后卡带选择页已消失，停止本次定位")
+                    return False
+                moved = float(np.mean(np.abs(current - baseline))) >= 2.0
+                self._status("卡带滚轮", "列表已稳定且发生位移" if moved else "列表已稳定但未位移")
+                return moved or not require_movement
+            previous = current
+            self.task.sleep(0.15)
+        self._status("卡带滚轮", "列表稳定确认超时，停止本次定位")
+        return False

@@ -10,6 +10,7 @@ from typing import Iterable
 
 import cv2
 import numpy as np
+from ok.task.exceptions import TaskDisabledException
 
 from src.tasks.map_trade.models import (
     MAP_TRADE_REFERENCE,
@@ -1184,6 +1185,8 @@ class Vision:
                 log=False,
                 name=name,
             )
+        except TaskDisabledException:
+            raise
         except Exception as exc:
             self._status(f"{name} OCR错误", str(exc))
             return []

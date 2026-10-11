@@ -251,6 +251,10 @@ class CalendarTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "未知商店"):
             parse_manual_calendar(self._manual("8=透明沙拉@不存在"))
 
+    def test_calendar_rejects_non_tradeable_story_card_s20(self):
+        with self.assertRaisesRegex(ValueError, "未知商店"):
+            parse_manual_calendar(self._manual("8=透明沙拉@S20"))
+
     def test_calendar_accepts_actual_event_numbering_and_rejects_old_pairs(self):
         # 实机编号：记忆边缘为 E5、戏水女王为 E7；旧表的 E4/E5 编号必须拒绝。
         def payload_with(shop: str) -> str:

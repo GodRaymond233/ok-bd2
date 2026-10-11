@@ -4,6 +4,7 @@ from time import monotonic
 
 import cv2
 import numpy as np
+from ok.task.exceptions import TaskDisabledException
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import (
@@ -1514,6 +1515,8 @@ class PVPTask(BaseBD2Task):
                 log=False,
                 name=name,
             )
+        except TaskDisabledException:
+            raise
         except Exception as exc:
             self.info_set(f"{name} OCR 错误", str(exc))
             return []

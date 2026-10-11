@@ -586,7 +586,7 @@ class ManualResolutionWidget(QWidget):
 
         self.controller = ManualResolutionController(self)
         self.apply_button.clicked.connect(self.controller.apply_selected_resolution)
-        self.destroyed.connect(self._shutdown)
+        self.destroyed.connect(self.controller._shutdown)
 
     @Slot()
     def _shutdown(self) -> None:

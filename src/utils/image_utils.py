@@ -1,11 +1,23 @@
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from pathlib import Path
 from statistics import fmean, median
 
 import cv2
 import numpy as np
 
 from src.utils.calibration import FHD_1080
+
+
+def read_template_image(path: str | Path) -> np.ndarray | None:
+    """Read all template channels, including from Unicode paths on Windows."""
+    try:
+        encoded = np.fromfile(path, dtype=np.uint8)
+        if encoded.size == 0:
+            return None
+        return cv2.imdecode(encoded, cv2.IMREAD_UNCHANGED)
+    except (OSError, cv2.error):
+        return None
 
 
 def green_mask_from_template(

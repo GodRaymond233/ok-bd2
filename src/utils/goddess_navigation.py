@@ -1,6 +1,7 @@
 """Locate a goddess task row using text and its adjacent daily icon."""
 
 import re
+import unicodedata
 from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 
@@ -51,10 +52,37 @@ def is_goddess_destination(text):
 
 def is_goddess_completion(text):
     for segment in str(text).split("|"):
-        normalized = re.sub(r"[\s，,。.!！·…]", "", segment).replace("／", "/")
-        if re.search(r"(?:向)?女神像许愿.*完成", normalized):
+        normalized = re.sub(r"[\s，,。.!！·…]", "", unicodedata.normalize("NFKC", segment))
+        completed = re.fullmatch(
+            r"(?:每日任务)?(?:向)?女神像许愿(?:任务)?(?:(\d+)/(\d+))?(?:已)?完成",
+            normalized,
+        )
+        if completed and (
+            completed[1] is None or int(completed[1]) == int(completed[2]) > 0
+        ):
             return True
     return False
+
+
+def _merge_text_rows(boxes):
+    """Join only adjacent OCR fragments on the same physical line."""
+    rows = []
+    for box in sorted(boxes, key=lambda item: (item.x, item.y)):
+        for index, row in enumerate(rows):
+            height = max(row.height, box.height)
+            gap = box.x - row.x - row.width
+            if (abs(box.center[1] - row.center[1]) <= height * 0.5
+                    and -height * 0.2 <= gap <= height * 1.5):
+                top = min(row.y, box.y)
+                rows[index] = TextBox(
+                    row.text + box.text, min(row.confidence, box.confidence),
+                    row.x, top, max(row.x + row.width, box.x + box.width) - row.x,
+                    max(row.y + row.height, box.y + box.height) - top,
+                )
+                break
+        else:
+            rows.append(box)
+    return rows
 
 
 def scan_navigation(frame, *, ocr, normalize, match, passes, icon_specs):
@@ -77,6 +105,7 @@ def scan_navigation(frame, *, ocr, normalize, match, passes, icon_specs):
             )
             for box in boxes if box.width > 0 and box.height > 0
         ]
+        result = _merge_text_rows(result)
         texts.extend(box.text for box in result)
         return result
 
@@ -102,7 +131,9 @@ def scan_navigation(frame, *, ocr, normalize, match, passes, icon_specs):
         boxes = read(broad, scale)
         anchors = [b for b in boxes if is_daily_title(normalize(b.text))]
         anchors += [b for b in boxes if is_goddess_destination(normalize(b.text))]
-        saw_task = saw_task or bool(anchors)
+        saw_task = saw_task or bool(anchors) or any(
+            "女神像许愿" in normalize(box.text) for box in boxes
+        )
         candidates = []
         for anchor in anchors:
             h = anchor.height

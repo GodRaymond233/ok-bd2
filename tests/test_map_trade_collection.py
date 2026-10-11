@@ -125,6 +125,9 @@ class CollectionCardTest(unittest.TestCase):
             ),
         )
         navigator = Navigator(task, vision)
+        navigator._click_quick_switch = lambda timeout, after_sleep: (
+            template_clicks.append((QUICK_SWITCH_TEMPLATE, timeout, after_sleep)) or True
+        )
         navigator.classify = lambda: ScreenState.HOME
         navigator.return_home = lambda: NavigationResult(True, ScreenState.HOME)
         navigator._wait_for_cartridge_home = lambda: True
@@ -149,7 +152,7 @@ class CollectionCardTest(unittest.TestCase):
             [("ensure_home", "click_quick_switch", "confirm_quick_switch_page")],
             opened_callbacks,
         )
-        self.assertEqual([(QUICK_SWITCH_TEMPLATE, 10.0, 1.0)], template_clicks)
+        self.assertEqual([(QUICK_SWITCH_TEMPLATE, 45.0, 1.0)], template_clicks)
         self.assertEqual([(*STORY_CATEGORY_POINT, 0.5)], clicks)
         self.assertEqual([(badge.best.result.center, frame.shape, 1.0)], client_clicks)
 
@@ -371,6 +374,10 @@ class CollectionCardTest(unittest.TestCase):
         navigator = Navigator(task, SimpleNamespace(capture=lambda: frame))
         navigator._find_story_badge = lambda _frame, _number: next(results)
 
+        navigator._scroll_story_bar = lambda point, amount, require_movement=True, **kw: (
+            navigator.task.scroll_client(point, amount, **kw) or True
+        )
+
         found = navigator._wait_for_story_badge_with_scroll(12, scan_steps=1)
 
         self.assertIsNotNone(found)
@@ -398,10 +405,9 @@ class CollectionCardTest(unittest.TestCase):
         )
         self.assertEqual((43 / 1920, 974 / 1080), QUICK_SWITCH_SCROLL_POINT)
         self.assertEqual(
-            [((QUICK_SWITCH_SCROLL_FOCUS_POINT), {"after_sleep": 0.0})],
+            [],
             clicks,
         )
-        self.assertEqual((43 / 1920, 974 / 1080), QUICK_SWITCH_SCROLL_FOCUS_POINT)
         self.assertEqual(1, QUICK_SWITCH_SCROLL_UP_AMOUNT)
 
     def test_collection_card_scroll_stops_on_badge_ambiguity(self):
@@ -860,3 +866,114 @@ class CollectionCardTest(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual(STORY_SANDBOX_STABLE_HITS, 2)
         self.assertEqual(6, len(captures))
+
+    def test_scroll_requires_stable_page_and_movement_without_clicking(self):
+        before = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        moved = before.copy()
+        moved[924:1015, 200:500] = 100
+        changing = moved.copy()
+        changing[924:1015, 800:1400] = 255
+        for label, frames, page, require_movement, expected in (
+            ("moved", [before, moved, moved, moved], True, True, True),
+            ("unchanged", [before] * 4, True, True, False),
+            ("reset_at_edge", [before] * 4, True, False, True),
+            ("page_lost", [before, moved, moved, moved], False, True, False),
+            ("moving", [before] + [moved, changing] * 6, True, True, False),
+            ("resized", [before, moved[:720]], True, True, False),
+        ):
+            with self.subTest(case=label):
+                captures = iter(frames)
+                scrolls = []
+                task = SimpleNamespace(
+                    info_set=lambda *_args: None,
+                    sleep=lambda *_args: None,
+                    scroll_client=lambda *args, **kwargs: scrolls.append((args, kwargs)),
+                    operate_click=lambda *_args, **_kwargs: self.fail("scroll selected a card"),
+                )
+                navigator = Navigator(task, SimpleNamespace(capture=lambda: next(captures)))
+                navigator._wait_for_quick_switch_page = lambda **_kwargs: page
+                result = navigator._scroll_story_bar(
+                    QUICK_SWITCH_SCROLL_POINT, 1, count=2, interval=0.08,
+                    after_sleep=0.35, require_movement=require_movement,
+                )
+                self.assertEqual(expected, result)
+                self.assertEqual(1, len(scrolls))
+
+    def test_collection_card_scroll_rejects_clipped_badges_on_both_edges(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+
+        for edge_center, safe_center in (
+            ((1893, 936), (1700, 936)),
+            ((10, 936), (200, 936)),
+        ):
+            with self.subTest(edge_center=edge_center):
+                edge_frame = np.zeros_like(frame)
+                safe_frame = np.ones_like(frame)
+                frames = iter((edge_frame, safe_frame))
+                edge_badge = StoryBadgeDetection(
+                    best=StoryBadgeCandidate(
+                        11,
+                        MatchResult(
+                            0.99,
+                            (edge_center[0] - 15, edge_center[1] - 14),
+                            (30, 28),
+                            pixel_score=0.98,
+                        ),
+                    ),
+                    runner_up=StoryBadgeCandidate(
+                        10,
+                        MatchResult(
+                            0.80,
+                            (edge_center[0] - 14, edge_center[1] - 14),
+                            (31, 31),
+                            pixel_score=0.82,
+                        ),
+                    ),
+                )
+                safe_badge = StoryBadgeDetection(
+                    best=StoryBadgeCandidate(
+                        11,
+                        MatchResult(
+                            0.99,
+                            (safe_center[0] - 15, safe_center[1] - 14),
+                            (30, 28),
+                            pixel_score=0.98,
+                        ),
+                    ),
+                    runner_up=StoryBadgeCandidate(
+                        10,
+                        MatchResult(
+                            0.80,
+                            (safe_center[0] - 14, safe_center[1] - 14),
+                            (31, 31),
+                            pixel_score=0.82,
+                        ),
+                    ),
+                )
+                scrolls = []
+                clicks = []
+                navigator = Navigator(
+                    SimpleNamespace(
+                        scroll_client=lambda *args, **kwargs: scrolls.append((args, kwargs)),
+                        operate_click=lambda *args, **kwargs: clicks.append((args, kwargs)),
+                        log_warning=lambda *_args: None,
+                    ),
+                    SimpleNamespace(capture=lambda: next(frames)),
+                )
+                badges = iter(((edge_badge, ""), (safe_badge, "")))
+                navigator._find_story_badge = lambda *_args: next(badges)
+
+                navigator._scroll_story_bar = lambda point, amount, require_movement=True, **kw: (
+                    navigator.task.scroll_client(point, amount, **kw) or True
+                )
+
+                found = navigator._wait_for_story_badge_with_scroll(11, scan_steps=0)
+
+                self.assertIsNotNone(found)
+                self.assertIs(safe_frame, found[0])
+                self.assertIs(safe_badge, found[1])
+                self.assertEqual(1, len(scrolls))
+                self.assertEqual(
+                    [],
+                    clicks,
+                )

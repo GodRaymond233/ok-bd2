@@ -1153,6 +1153,9 @@ class NavigatorTest(unittest.TestCase):
             ),
         )
         navigator = Navigator(task, vision)
+        navigator._click_quick_switch = lambda timeout, after_sleep: (
+            template_clicks.append((QUICK_SWITCH_TEMPLATE, timeout, after_sleep)) or True
+        )
         navigator.return_home = lambda: self.fail(
             "sandbox route must not return to the global home"
         )
@@ -1204,6 +1207,9 @@ class NavigatorTest(unittest.TestCase):
             ),
         )
         navigator = Navigator(task, vision)
+        navigator._click_quick_switch = lambda timeout, after_sleep: (
+            template_clicks.append((QUICK_SWITCH_TEMPLATE, timeout, after_sleep)) or True
+        )
         navigator._wait_for_current_sandbox = lambda: self.fail(
             "the caller already confirmed the same sandbox"
         )
@@ -1422,3 +1428,104 @@ class NavigatorTest(unittest.TestCase):
             AREA_MAP_TELEPORT_BRIGHT_NEUTRAL_RATIO,
         )
         self.assertEqual((enabled,), navigator._teleport_map_teleports(frame))
+
+    def test_quick_switch_identity_survives_brightness_and_client_scaling(self):
+        matcher = Vision(SimpleNamespace(config={}, info_set=lambda *_args: None))
+        navigator = Navigator(matcher.task, matcher)
+        for name, expected in (
+            ("snow_town_button_fhd.png", (907, 999)),
+            ("in_square_dark_button_1600x901.png", (662, 833)),
+        ):
+            source = cv2.imread(str(ROOT / "tests/fixtures/quick_switch" / name))
+            for scale in (2 / 3, 1.0, 4 / 3):
+                for brightness in (-15, 0, 15):
+                    with self.subTest(scene=name, scale=scale, brightness=brightness):
+                        frame = cv2.resize(source, None, fx=scale, fy=scale)
+                        frame = np.clip(
+                            frame.astype(np.int16) + brightness, 0, 255,
+                        ).astype(np.uint8)
+                        found = navigator._find_quick_switch_button(frame)
+                        self.assertIsNotNone(found)
+                        self.assertAlmostEqual(expected[0] * scale, found.center[0], delta=4)
+                        self.assertAlmostEqual(expected[1] * scale, found.center[1], delta=4)
+
+    def test_quick_switch_rejects_absence_and_duplicate_icons(self):
+        matcher = Vision(SimpleNamespace(config={}, info_set=lambda *_args: None))
+        navigator = Navigator(matcher.task, matcher)
+        for name in (
+            "home_bottom_strip_1600x901.png", "battle_gameplay_selected_fhd.png",
+            "life_gameplay_selected_fhd.png",
+        ):
+            with self.subTest(scene=name):
+                frame = cv2.imread(str(ROOT / "tests/fixtures/quick_switch" / name))
+                self.assertIsNone(navigator._find_quick_switch_button(frame))
+        frame = cv2.imread(str(ROOT / "tests/fixtures/quick_switch/snow_town_button_fhd.png"))
+        frame[970:1030, 580:650] = frame[970:1030, 880:950]
+        self.assertIsNone(navigator._find_quick_switch_button(frame))
+
+    def test_quick_switch_click_requires_stability_and_selector_confirmation(self):
+        frame = cv2.imread(str(ROOT / "tests/fixtures/quick_switch/snow_town_button_fhd.png"))
+        for page_ready in (False, True):
+            with self.subTest(page_ready=page_ready):
+                clicks = []
+                task = SimpleNamespace(
+                    config={}, capture_frame=lambda: frame, sleep=lambda *_args: None,
+                    info_set=lambda *_args: None,
+                )
+                vision = Vision(task)
+                vision.click_client = lambda center, shape, **_kwargs: clicks.append(center)
+                navigator = Navigator(task, vision)
+                navigator._wait_for_quick_switch_page = lambda: page_ready
+                navigator._select_story_category = lambda *_args: page_ready
+                result = navigator.open_story_quick_switcher_from_sandbox(
+                    sandbox_already_confirmed=True,
+                )
+                self.assertEqual(page_ready, result.success)
+                self.assertEqual([(907, 999)], clicks)
+
+        samples = iter([MatchResult(0.98, (885, 981), (44, 36))] + [None] * 20)
+        navigator._find_quick_switch_button = lambda _frame: next(samples)
+        clicks.clear()
+        self.assertFalse(navigator._click_quick_switch(timeout=1, after_sleep=0))
+        self.assertEqual([], clicks)
+
+    def test_field_keycaps_require_both_correct_regions_at_multiple_resolutions(self):
+        from src.tasks.map_trade.navigator_constants import FIELD_KEYCAP_TEMPLATES
+
+        task = SimpleNamespace(config={}, info_set=lambda *_: None)
+        vision = Vision(task)
+        missing = MatchResult(-1.0, (0, 0), (0, 0))
+        real_match = vision.match
+        vision.match = lambda frame, spec: (
+            real_match(frame, spec) if spec in FIELD_KEYCAP_TEMPLATES else missing
+        )
+        vision.ocr_text = lambda *_a, **_k: ""
+        navigator = Navigator(task, vision)
+        navigator._home_confirmation_signals = lambda _frame: (False,)
+        navigator._detect_map_page_mode = lambda _frame: SimpleNamespace(mode=MapPageMode.UNKNOWN)
+        templates = [
+            cv2.imread(str(ROOT / "recognition-assets/template-assets" / spec.file_name))
+            for spec in FIELD_KEYCAP_TEMPLATES
+        ]
+        for size in ((1920, 1080), (1280, 720)):
+            for present in ((), (0,), (1,), (0, 1)):
+                with self.subTest(size=size, present=present):
+                    frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+                    for index in present:
+                        spec = FIELD_KEYCAP_TEMPLATES[index]
+                        template = templates[index]
+                        height, width = template.shape[:2]
+                        left, top, right, bottom = spec.relative_roi
+                        x = round((left + right) * 1920 / 2 - width / 2)
+                        y = round((top + bottom) * 1080 / 2 - height / 2)
+                        frame[y:y + height, x:x + width] = template
+                    frame = cv2.resize(frame, size)
+                    self.assertEqual(
+                        ScreenState.SANDBOX if len(present) == 2 else ScreenState.UNKNOWN,
+                        navigator.classify(frame),
+                    )
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        for i, template in enumerate(templates):
+            height, width = template.shape[:2]
+            frame[500:500 + height, 500 + 200*i:500 + 200*i + width] = template
+        self.assertEqual(ScreenState.UNKNOWN, navigator.classify(frame))

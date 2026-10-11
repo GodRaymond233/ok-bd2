@@ -135,10 +135,10 @@ class MapCollectionTask(MapAutomationTaskBase):
 
         vision = Vision(self)
         navigator = Navigator(self, vision)
-        progress = ProgressStore()
-        progress.load()
-        collector = Collector(self, vision, navigator, progress)
-        return self._run_phases(
-            navigator,
-            (("地图采集", "执行地图采集", collector.run),),
-        )
+        with ProgressStore() as progress:
+            progress.load()
+            collector = Collector(self, vision, navigator, progress)
+            return self._run_phases(
+                navigator,
+                (("地图采集", "执行地图采集", collector.run),),
+            )

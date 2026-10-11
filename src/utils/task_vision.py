@@ -45,7 +45,7 @@ def load_template(
         return cache[spec.name]
 
     path = template_dir / spec.file_name
-    raw = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    raw = image_utils.read_template_image(path)
     if raw is None:
         raise RuntimeError(f"任务模板不存在或无法读取：{path}")
     if spec.crop is not None:

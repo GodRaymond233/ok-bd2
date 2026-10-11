@@ -218,29 +218,14 @@ RETURN_HOME_ANNOUNCEMENT_KEYWORD_GROUPS = (
 )
 SHOP_CLOSE_CLICK_RETRIES = 2
 SHOP_CLOSE_CLICK_INTERVAL = 0.3
-# 关闭按钮与主页按钮是稳定 UI 控件：优先用模板命中后点击识别中心，
-# 模板未通过时才回退到已标定的相对坐标。
-# ⚠ 参考系待实机核对（代码质量阶段 B-1）：下方点值原注释写"1920×1080 参考点"，
-# 但唯一生产消费方 navigator_trade 经 vision.click_reference 按 MAP_TRADE_REFERENCE
-# =HD_720（1280×720）归一；历史跑商定价死代码用同值同归一、运行时自洽，
-# 更可能是注释把参考分辨率写错。若确为 1080p 标定，运行时落点将偏约 40%。
-# 实机核对折扣商店关闭按钮回退落点前，按 1280×720 参考理解本值。
-DISCOUNT_SHOP_CLOSE_CONTROL_REFERENCE_POINT = (82, 36)
+DISCOUNT_SHOP_BACK_POINT = (172 / FHD_1080.width, 50 / FHD_1080.height)
 DISCOUNT_SHOP_CLOSE_CONTROL_TEMPLATES = (
     TemplateSpec(
-        "折扣商店关闭按钮",
-        "image/EquipMenuQuit.png",
-        0.85,
-        min_pixel_score=0.85,
-        min_zncc_score=0.85,
-        relative_roi=(0.0, 0.0, 0.2, 0.18),
-    ),
-    TemplateSpec(
-        "折扣商店关闭小按钮",
-        "image/equipclose.png",
-        0.85,
-        min_pixel_score=0.85,
-        min_zncc_score=0.85,
+        "折扣商店返回按钮",
+        "image/green/BackButGe.png",
+        0.90,
+        minimum_safe_threshold=0.90,
+        min_zncc_score=0.80,
         relative_roi=(0.0, 0.0, 0.2, 0.18),
     ),
 )
@@ -800,3 +785,23 @@ FIRST_CARD_SKIP_TEMPLATE = TemplateSpec(
     roi=(915, 9, 265, 68),
 )
 FIRST_CARD_CONFIRM_REGION = (626, 368, 186, 293)
+
+
+FIELD_KEYCAP_TEMPLATES = (
+    TemplateSpec(
+        "箱庭按键C",
+        "field/field_keycap_C.png",
+        0.85,
+        relative_roi=(1545 / 1920, 70 / 1080, 1625 / 1920, 118 / 1080),
+        min_pixel_score=0.80,
+        minimum_safe_threshold=0.85,
+    ),
+    TemplateSpec(
+        "箱庭按键H",
+        "field/field_keycap_H.png",
+        0.78,
+        relative_roi=(1760 / 1920, 70 / 1080, 1840 / 1920, 118 / 1080),
+        min_pixel_score=0.75,
+        minimum_safe_threshold=0.78,
+    ),
+)

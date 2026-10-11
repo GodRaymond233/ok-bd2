@@ -47,6 +47,12 @@ class MapTradeLegacyConfigTest(unittest.TestCase):
             def __init__(self):
                 self.now_provider = lambda: datetime(2026, 7, 12, 12, tzinfo=UTC_PLUS_8)
 
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
             def load(self):
                 return None
 
@@ -105,6 +111,12 @@ class MapTradeConfigTest(unittest.TestCase):
         task._save_diagnostic = lambda *_args: None
 
         class FakeProgress:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
             def load(self):
                 return None
 

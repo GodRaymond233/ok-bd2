@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -25,6 +26,16 @@ UTC_PLUS_8 = timezone(timedelta(hours=8), name="UTC+8")
 # daily/card/role/action ledger.  Version 5 records cooking per recipe so a
 # partial cooking run remains safely resumable.
 STATE_SCHEMA_VERSION = 5
+
+
+def ledger_path(filename: str) -> Path:
+    """Resolve shared task state against the configured runtime directory."""
+    from ok import Config
+    from ok.util.file import get_relative_path
+
+    return Path(get_relative_path(Config.config_folder, filename))
+
+
 VALID_CARD_IDS = frozenset(card.card_id for card in COLLECTABLE_CARDS)
 VALID_TARGET_KEYS = {
     card.card_id: frozenset(target.key for target in card.targets) for card in COLLECTABLE_CARDS
@@ -114,18 +125,54 @@ class ProgressState:
 class ProgressStore:
     def __init__(
         self,
-        path: Path | str = Path("configs") / "map_trade_progress.json",
+        path: Path | str | None = None,
         now_provider: Callable[[], datetime] | None = None,
     ) -> None:
-        self.path = Path(path)
+        self.path = Path(path) if path is not None else ledger_path("map_trade_progress.json")
         self.now_provider = now_provider or (lambda: datetime.now(UTC_PLUS_8))
         self.state: ProgressState | None = None
+        self._lock_file = None
+
+    def __enter__(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        stream = self.path.with_suffix(self.path.suffix + ".lock").open("a+b", buffering=0)
+        try:
+            if stream.seek(0, 2) == 0:
+                stream.write(b"0")
+            stream.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            stream.close()
+            raise RuntimeError(f"账本正被另一实例使用：{self.path}") from exc
+        self._lock_file = stream
+        return self
+
+    def __exit__(self, *_args):
+        if self._lock_file is not None:
+            self._lock_file.close()
+            self._lock_file = None
 
     def load(self) -> ProgressState:
         now = self.now_provider()
         week = weekly_cycle_key(now)
         day = daily_cycle_key(now)
         raw = self._read_json()
+        schema_version = self._safe_nonnegative_int(raw.get("schema_version", 0))
+        if schema_version > STATE_SCHEMA_VERSION:
+            raise RuntimeError(
+                f"账本版本 {schema_version} 高于程序支持版本，请使用兼容的工作树"
+            )
+        if raw and schema_version < STATE_SCHEMA_VERSION:
+            backup = self.path.with_suffix(f".schema-{schema_version}.backup.json")
+            if not backup.exists():
+                shutil.copy2(self.path, backup)
 
         if raw.get("weekly_key") != week:
             # Weekly rollover must retain unresolved action evidence for
@@ -401,7 +448,9 @@ class ProgressStore:
             return {}
         try:
             value = json.loads(self.path.read_text(encoding="utf-8"))
-            return value if isinstance(value, dict) else {}
+            if not isinstance(value, dict):
+                raise ValueError("账本根节点必须是对象")
+            return value
         except (OSError, ValueError, TypeError):
             try:
                 stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -409,7 +458,7 @@ class ProgressStore:
                 shutil.copy2(self.path, backup)
             except OSError:
                 pass
-            return {}
+            raise RuntimeError(f"账本无法读取，已尝试备份；不会新建空进度覆盖：{self.path}")
 
     def save(self) -> None:
         if self.state is None:

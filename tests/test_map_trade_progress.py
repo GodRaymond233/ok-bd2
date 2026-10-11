@@ -297,14 +297,14 @@ class ProgressTest(unittest.TestCase):
             self.assertEqual([], state.verified_cards)
             self.assertEqual({"S1"}, state.completed_favorite_cards)
 
-    def test_corrupt_file_recovers_and_keeps_backup(self):
+    def test_corrupt_file_stops_and_keeps_backup(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "progress.json"
             path.write_text("{broken", encoding="utf-8")
 
-            state = ProgressStore(path, lambda: datetime(2026, 7, 12, 12, tzinfo=UTC_PLUS_8)).load()
-
-            self.assertEqual({}, state.cards)
+            with self.assertRaises(RuntimeError):
+                ProgressStore(path, lambda: datetime(2026, 7, 12, 12, tzinfo=UTC_PLUS_8)).load()
+            self.assertEqual("{broken", path.read_text(encoding="utf-8"))
             self.assertEqual(1, len(list(path.parent.glob("progress.corrupt-*.json"))))
 
     def test_schema_three_migrates_without_losing_collection_or_trade_state(self):
@@ -704,6 +704,63 @@ class ProgressTest(unittest.TestCase):
             archived = next(iter(state.archived_action_records.values()))
             self.assertEqual(CollectionActionState.ARCHIVED.value, archived["state"])
             self.assertFalse(archived["reservation"])
+
+    def test_trade_ledger_uses_runtime_config_directory(self):
+        from unittest.mock import patch
+
+        from ok import Config
+
+        from src.tasks.map_trade.progress import ledger_path
+
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(Config, "config_folder", directory):
+                expected = Path(directory) / "map_trade_progress.json"
+                self.assertEqual(expected, ledger_path("map_trade_progress.json"))
+                self.assertEqual(expected, ProgressStore().path)
+                self.assertEqual(Path("explicit.json"), ProgressStore("explicit.json").path)
+
+    def test_future_schema_is_rejected_before_rollover_or_overwrite(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "progress.json"
+            original = json.dumps({
+                "schema_version": STATE_SCHEMA_VERSION + 1,
+                "weekly_key": "2000-01-01",
+                "favorite_cards": ["S1"],
+            })
+            path.write_text(original, encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "高于程序支持版本"):
+                ProgressStore(path).load()
+            self.assertEqual(original, path.read_text(encoding="utf-8"))
+
+    def test_trade_ledger_lock_blocks_another_process_and_releases_on_error(self):
+        import subprocess
+        import sys
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "progress.json"
+            command = [
+                sys.executable, "-B", "-c",
+                "from pathlib import Path; import sys; "
+                "from src.tasks.map_trade.progress import ProgressStore; "
+                "\nwith ProgressStore(Path(sys.argv[1])) as store: store.load()",
+                str(path),
+            ]
+            with self.assertRaisesRegex(ValueError, "abort"):
+                with ProgressStore(path) as store:
+                    store.load()
+                    original = path.read_bytes()
+                    result = subprocess.run(
+                        command, cwd=Path(__file__).resolve().parents[1],
+                        capture_output=True, text=True, encoding="utf-8", timeout=30,
+                    )
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn("账本正被另一实例使用", result.stdout + result.stderr)
+                    self.assertEqual(original, path.read_bytes())
+                    raise ValueError("abort")
+            with ProgressStore(path) as store:
+                store.load()
+                self.assertEqual(original, path.read_bytes())
+
 
 
 if __name__ == "__main__":

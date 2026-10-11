@@ -2,9 +2,11 @@
 
 import unittest
 from pathlib import Path
+from unittest.mock import Mock
 
 import cv2
 import numpy as np
+from ok.task.exceptions import TaskDisabledException
 
 from src.tasks.BaseBD2Task import TEMPLATE_DIR, BaseBD2Task
 from src.utils.vision_models import MatchResult
@@ -52,6 +54,17 @@ class AutoReturnMainHomeTest(unittest.TestCase):
         )
         self.assertTrue(BaseBD2Task.auto_return_main_home(task))
         self.assertEqual([], clicks)
+
+    def test_cancellation_propagates_from_capture_and_return_click(self):
+        for boundary in ("capture_frame", "operate_click"):
+            with self.subTest(boundary=boundary):
+                task, clicks = self._task([(False, True)] * 3)
+                setattr(task, boundary, Mock(side_effect=TaskDisabledException))
+                with self.assertRaises(TaskDisabledException):
+                    task.auto_return_main_home()
+                self.assertEqual([], clicks)
+                self.assertEqual([], task._test_logs["warning"])
+                self.assertEqual(0.0, task._auto_return_home_cooldown_until)
 
     def test_final_step_click_is_confirmed_before_success(self):
         house = MatchResult(0.95, (40, 20), (20, 20))

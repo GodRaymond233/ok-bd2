@@ -7,6 +7,8 @@ from enum import Enum
 from pathlib import Path
 from time import monotonic
 
+from ok.task.exceptions import TaskDisabledException
+
 from src.tasks.map_trade.action_icons import COOKING_ICON, SKILL_GROUP_CENTERS_REFERENCE
 from src.tasks.map_trade.models import (
     COOKING_RECIPE_TEMPLATES,
@@ -230,6 +232,7 @@ class CookingFlowMixin:
         unavailable: list[str] = []
         absent: list[str] = []
         cooked: list[str] = []
+        cancelled = False
         try:
             if self._enter_cooking_list():
                 flow_success = True
@@ -248,8 +251,11 @@ class CookingFlowMixin:
                     self.task.log_warning(f"料理：{recipe} 未完成，停止后续料理。")
                     flow_success = False
                     break
+        except TaskDisabledException:
+            cancelled = True
+            raise
         finally:
-            if self._cooking_opened:
+            if self._cooking_opened and not cancelled:
                 exited = self._leave_cooking_to_q_sp6()
                 flow_success = flow_success and exited
             if unavailable:

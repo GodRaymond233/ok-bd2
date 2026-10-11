@@ -1,12 +1,14 @@
 import os
 import time
 import unittest
+from concurrent.futures import Future
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
 from ok import og
+from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QWidget
 from qfluentwidgets import PushButton, Theme, qconfig
 
@@ -182,6 +184,36 @@ class FeedbackReportUiTest(unittest.TestCase):
 
         widget._shutdown()
         widget.close()
+
+    def test_parent_destruction_releases_capture_and_ignores_late_results(self):
+        for failed in (False, True):
+            with self.subTest(failed=failed):
+                parent = QWidget()
+                executor = _CaptureExecutor()
+                with patch.object(
+                    LiveScreenshotWidget, "_new_capture_executor", return_value=executor
+                ):
+                    widget = LiveScreenshotWidget()
+                widget.setParent(parent)
+                widget._active = True
+                future = Future()
+                widget._capture_future = future
+                widget._capture_pending = True
+                parent.deleteLater()
+                QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+                self.assertFalse(widget._active)
+                self.assertEqual(
+                    [{"wait": False, "cancel_futures": True}], executor.shutdown_calls
+                )
+                if failed:
+                    future.set_exception(RuntimeError("capture ended after deletion"))
+                else:
+                    future.set_result((None, "late frame"))
+                widget._capture_finished(future)
+                widget._shutdown()
+                self.assertEqual(1, len(executor.shutdown_calls))
+                self.assertFalse(widget._capture_pending)
 
     def test_report_build_job_emits_success(self):
         expected_result = object()

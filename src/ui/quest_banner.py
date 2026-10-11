@@ -273,7 +273,9 @@ def _next_refresh_text(now: float | None = None) -> str:
 
     now = time.time() if now is None else now
     next_day = datetime.fromtimestamp(day_start_ts(now) + 86400, tz=BEIJING_TZ)
-    return f"明日 {next_day.hour:02d}:00"
+    today = datetime.fromtimestamp(now, tz=BEIJING_TZ).date()
+    day_label = "今日" if next_day.date() == today else "明日"
+    return f"{day_label} {next_day.hour:02d}:00"
 
 
 def commission_items(store=None) -> list[tuple[str, bool]]:

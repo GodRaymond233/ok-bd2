@@ -10,6 +10,7 @@ from typing import Any, Callable
 import cv2
 import numpy as np
 from ok import BaseTask, Box, Logger
+from ok.task.exceptions import TaskDisabledException
 from PIL import Image
 
 from src.diagnostics.runtime import observe_run, phase_changed, task_error
@@ -25,6 +26,7 @@ from src.utils.image_utils import (
     green_mask_from_template,
     masked_zncc,
     pixel_similarity,
+    read_template_image,
     resize_mask,
     resize_template,
     template_match_response,
@@ -288,6 +290,8 @@ class BaseBD2Task(BaseTask):
             self.log_info(f"{name}：点击右上角主页按钮返回主界面。")
             self.operate_click(x, y, name=name, after_sleep=2.0, down_time=0.02)
             return True
+        except TaskDisabledException:
+            raise
         except Exception as exc:
             self.log_warning(f"{name}：点击返回主页按钮失败：{exc}")
             return False
@@ -333,6 +337,8 @@ class BaseBD2Task(BaseTask):
         for step in range(1, step_limit + 1):
             try:
                 frame = self.capture_frame()
+            except TaskDisabledException:
+                raise
             except Exception as exc:
                 failure_reason = f"截图失败：{exc}"
                 break
@@ -351,6 +357,8 @@ class BaseBD2Task(BaseTask):
                     self.sleep(0.4)
                     try:
                         probe_frame = self.capture_frame()
+                    except TaskDisabledException:
+                        raise
                     except Exception as exc:
                         stable = False
                         failure_reason = f"复核截图失败：{exc}"
@@ -396,6 +404,8 @@ class BaseBD2Task(BaseTask):
                         name="自动返回主页-房子",
                         after_sleep=settle,
                     )
+                except TaskDisabledException:
+                    raise
                 except Exception as exc:
                     failure_reason = f"点击房子按钮失败：{exc}"
                     break
@@ -432,6 +442,8 @@ class BaseBD2Task(BaseTask):
         while True:
             try:
                 frame = self.capture_frame()
+            except TaskDisabledException:
+                raise
             except Exception:
                 return False
             if self._home_scan(frame)[0]:
@@ -522,6 +534,8 @@ class BaseBD2Task(BaseTask):
                     name=name,
                 )
             )
+        except TaskDisabledException:
+            raise
         except Exception:
             return []
 
@@ -627,6 +641,8 @@ class BaseBD2Task(BaseTask):
                 after_sleep=0.0,
             )
             return True
+        except TaskDisabledException:
+            raise
         except Exception as exc:
             self.log_warning(f"自动返回主页：左上角返回点击失败：{exc}")
             return False
@@ -907,6 +923,8 @@ class BaseBD2Task(BaseTask):
         """Persist a failure frame; report bundles pick up *_failed/_error stems."""
         try:
             self.save_frame(name, self.capture_frame())
+        except TaskDisabledException:
+            raise
         except Exception as exc:
             self.log_warning(f"诊断截图保存失败：{exc}")
 
@@ -993,7 +1011,7 @@ class BaseBD2Task(BaseTask):
             return cached
 
         path = TEMPLATE_DIR / RECENT_PVP_CARTRIDGE_TEMPLATE_FILE
-        raw = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+        raw = read_template_image(path)
         if raw is None:
             raise RuntimeError(f"最近卡带 PVP 模板不存在或无法读取：{path}")
         if raw.ndim != 3 or raw.shape[2] < 4:
@@ -1022,6 +1040,9 @@ class BaseBD2Task(BaseTask):
         end_at = monotonic() + max(0.0, float(timeout))
         handled: set[str] = set()
         action_count = 0
+        pvp_pending: str | None = None
+        pvp_attempts = 0
+        pvp_clear_frames = 0
         reward_pending: str | None = None
         reward_clear_frames = 0
 
@@ -1055,11 +1076,35 @@ class BaseBD2Task(BaseTask):
                     boxes,
                     allow_season_reward=allow_season_reward,
                 )
+                if pvp_pending:
+                    if pvp_pending in normalized or not normalized:
+                        pvp_clear_frames = 0
+                    else:
+                        # A non-empty frame with no rank action is evidence
+                        # that the overlay changed.  Empty OCR is ambiguous
+                        # during animation and must keep the pending guard
+                        # armed until the timeout rather than advancing to a
+                        # different cartridge page.
+                        pvp_clear_frames += 1
+                        if pvp_clear_frames >= 2:
+                            handled.add(pvp_pending)
+                            pvp_pending = None
+                            pvp_attempts = 0
+                            pvp_clear_frames = 0
             self.info_set("最近卡带特殊页面 OCR", text or "-")
+
+            if (
+                action_name in ("恭喜晋级", "段位下滑")
+                and action_name == pvp_pending
+                and pvp_attempts >= RECENT_CARTRIDGE_SPECIAL_PAGE_MAX_ACTIONS
+            ):
+                self.info_set(action_name, "点击后关闭未确认，停止卡带切换")
+                return CartridgeSpecialPageResult.BLOCKED
 
             if (
                 action_name
                 and action_name not in handled
+                and action_name != pvp_pending
                 and target_box is not None
                 and action_count < RECENT_CARTRIDGE_SPECIAL_PAGE_MAX_ACTIONS
             ):
@@ -1073,8 +1118,13 @@ class BaseBD2Task(BaseTask):
                         max(0.0, min(1.0, point[1] / frame_height)),
                         after_sleep=0.5,
                     )
-                    handled.add(action_name)
                     action_count += 1
+                    if action_name in ("恭喜晋级", "段位下滑"):
+                        pvp_pending = action_name
+                        pvp_attempts += 1
+                        pvp_clear_frames = 0
+                    else:
+                        handled.add(action_name)
                     if action_name in (FIEND_HUNT_REWARD_TITLE, GOLDEN_ARENA_REWARD_TITLE):
                         end_at = max(end_at, monotonic() + max(0.0, float(timeout)))
 
@@ -1083,6 +1133,7 @@ class BaseBD2Task(BaseTask):
                 or (
                     action_count >= RECENT_CARTRIDGE_SPECIAL_PAGE_MAX_ACTIONS
                     and not reward_pending
+                    and pvp_pending is None
                 )
             ):
                 break
@@ -1090,6 +1141,9 @@ class BaseBD2Task(BaseTask):
 
         if reward_pending:
             self.info_set(reward_pending, "关闭未确认，停止卡带切换")
+            return CartridgeSpecialPageResult.BLOCKED
+        if pvp_pending:
+            self.info_set(pvp_pending, "点击后关闭未确认，停止卡带切换")
             return CartridgeSpecialPageResult.BLOCKED
         return (
             CartridgeSpecialPageResult.HANDLED
@@ -1167,6 +1221,8 @@ class BaseBD2Task(BaseTask):
                 log=False,
                 name=name,
             )
+        except TaskDisabledException:
+            raise
         except Exception as exc:
             self.info_set(f"{name} OCR 错误", str(exc))
             return []
@@ -1208,6 +1264,32 @@ class BaseBD2Task(BaseTask):
     def mark_logged_in(self) -> None:
         if self.scene is not None:
             self.scene.set_logged_in(True)
+
+    def _task_stop_requested(self) -> bool:
+        """Return whether the executor or user disabled this task.
+
+        Long-running debug tasks may otherwise keep issuing clicks after the
+        run panel calls ``disable()``.  The fallback attributes keep lightweight
+        object.__new__ test doubles and non-standard task hosts compatible.
+        """
+        if getattr(self, "_enabled", True) is False:
+            return True
+        checker = getattr(self, "exit_is_set", None)
+        # Lightweight object.__new__ test doubles do not have the executor
+        # state that backs the framework's inherited checker.  Preserve their
+        # compatibility while keeping real task instances fail-closed.
+        has_runtime_state = bool(
+            getattr(self, "__dict__", {}).get("_enabled", None) is not None
+            or getattr(self, "__dict__", {}).get("_executor", None) is not None
+        )
+        if callable(checker) and has_runtime_state:
+            try:
+                return bool(checker())
+            except Exception:
+                # A broken stop signal must fail closed; continuing to issue
+                # clicks after the executor becomes unavailable is unsafe.
+                return True
+        return False
 
 
 def task_info_snapshot(task) -> dict:

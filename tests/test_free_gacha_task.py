@@ -476,6 +476,24 @@ class FreeGachaTaskHelperTest(unittest.TestCase):
         self.assertFalse(FreeGachaTask._run_free_section(task, "装备抽抽乐", True))
         self.assertIn(("状态", "白嫖抽抽乐装备抽抽乐免费入口判断失败。"), statuses)
 
+    def test_run_free_section_fails_when_completion_recheck_is_unjudged(self):
+        task = object.__new__(FreeGachaTask)
+        task.config = {}
+        statuses = []
+        task.info_set = lambda key, value: statuses.append((key, value))
+        task.log_info = lambda *_args, **_kwargs: None
+        task._wait_for_free_gacha = lambda *_args, **kwargs: (
+            (False, "", False)
+            if kwargs.get("timeout") == 1.5
+            else (True, "所有免费抽抽乐", True)
+        )
+        task._open_confirm_dialog_with_retry = lambda *_args, **_kwargs: True
+        task._confirm_dialog_submission = lambda *_args, **_kwargs: True
+        task._handle_result_until_back = lambda *_args, **_kwargs: True
+
+        self.assertFalse(FreeGachaTask._run_free_section(task, "装备抽抽乐", True))
+        self.assertIn(("状态", "白嫖抽抽乐装备抽抽乐领取复核失败。"), statuses)
+
     def test_run_free_section_skips_when_ocr_confirms_no_free_entry(self):
         task = object.__new__(FreeGachaTask)
         task.config = {}
@@ -597,7 +615,8 @@ class FreeGachaTaskHelperTest(unittest.TestCase):
         task._sleep_after_recognition = lambda: None
         clicks = []
         task._click_reference = lambda *_args, **_kwargs: clicks.append(1)
-        task._confirm_dialog_still_open = lambda *_args, **_kwargs: False
+
+        task._confirm_dialog_still_open = lambda _section_name: False
 
         self.assertTrue(FreeGachaTask._confirm_dialog_submission(task, "服装抽抽乐"))
         self.assertEqual(1, len(clicks))
@@ -611,7 +630,13 @@ class FreeGachaTaskHelperTest(unittest.TestCase):
         clicks = []
         task._click_reference = lambda *_args, **_kwargs: clicks.append(1)
         checks = iter([True, True, False])
-        task._confirm_dialog_still_open = lambda *_args, **_kwargs: next(checks)
+
+        def open_then_submitted(_section_name):
+            result = next(checks)
+            task._last_confirm_dialog_state = "open" if result else "submitted"
+            return result
+
+        task._confirm_dialog_still_open = open_then_submitted
 
         self.assertTrue(FreeGachaTask._confirm_dialog_submission(task, "服装抽抽乐"))
         self.assertEqual(3, len(clicks))
@@ -624,7 +649,11 @@ class FreeGachaTaskHelperTest(unittest.TestCase):
         task._sleep_after_recognition = lambda: None
         clicks = []
         task._click_reference = lambda *_args, **_kwargs: clicks.append(1)
-        task._confirm_dialog_still_open = lambda *_args, **_kwargs: True
+        task._confirm_dialog_still_open = (
+            lambda *_args, **_kwargs: (
+                setattr(task, "_last_confirm_dialog_state", "open") or True
+            )
+        )
 
         self.assertFalse(FreeGachaTask._confirm_dialog_submission(task, "服装抽抽乐"))
         self.assertEqual(2, len(clicks))
