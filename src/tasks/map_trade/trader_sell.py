@@ -40,6 +40,9 @@ from src.tasks.map_trade.trader_constants import (
     SALE_EMPTY_NAME_STABLE_HITS,
     SALE_FULL_PAGE_OCR_TARGET_HEIGHT,
     SALE_FULL_PAGE_OCR_TARGET_HEIGHTS,
+    SALE_GRID_FOOD_KEYWORD,
+    SALE_GRID_INGREDIENT_KEYWORD,
+    SALE_ITEMS_GRID_REGION,
     SALE_MARKER_MIN_MARGIN,
     SALE_MARKER_SEARCH_WIDTH,
     SALE_MARKER_VERTICAL_PADDING,
@@ -237,6 +240,42 @@ class SellFlowMixin:
         except KeyError:
             return len(SHOP_CARTRIDGE_ROW_INDEX)
 
+    def _ensure_cartridge_goods_loaded(self, shop: str) -> bool:
+        """检查遗漏食材的商品列表，必要时切换相邻卡带刷新。"""
+        vision = getattr(self, "vision", None)
+        if vision is None or not hasattr(vision, "capture") or not hasattr(vision, "ocr_text"):
+            return True
+        for attempt in range(2):
+            frame = vision.capture()
+            text = vision.ocr_text(
+                frame,
+                f"卡带{shop}商品区",
+                relative_roi=SALE_ITEMS_GRID_REGION,
+            )
+            normalized = normalize_text(text)
+            has_food = SALE_GRID_FOOD_KEYWORD in normalized
+            has_ingredient = SALE_GRID_INGREDIENT_KEYWORD in normalized
+            if has_food and has_ingredient:
+                self.task.log_info(f"卖：卡带{shop}商品列表已完整加载（含料理食材）。")
+                return True
+            if has_food and not has_ingredient:
+                if attempt == 0:
+                    self.task.log_info(
+                        f"卖：卡带{shop}仅检测到食物未显示料理食材，执行相邻卡带切换刷新。"
+                    )
+                    if not self.refresh_shop_cartridge(shop):
+                        self.task.log_warning(
+                            f"卖：卡带{shop}商品列表刷新失败，未确认已返回目标卡带，停止出售。"
+                        )
+                        return False
+                    continue
+                self.task.log_info(
+                    f"卖：卡带{shop}刷新后仍未检测到料理食材，继续尝试出售。"
+                )
+                return True
+            self.task.sleep(0.4)
+        return True
+
     def _sell_resolved_entries(self, entries: list[CalendarEntry]) -> bool:
 
         failed = []
@@ -254,6 +293,11 @@ class SellFlowMixin:
                     self._status("未出售商品", "、".join(not_sold_details))
                     selected_shop = ""
                     continue
+                if not self._ensure_cartridge_goods_loaded(entry.shop):
+                    failed.append(entry)
+                    not_sold_details.append(f"{entry.item}（商店卡带刷新失败）")
+                    self._status("未出售商品", "、".join(not_sold_details))
+                    break
                 selected_shop = entry.shop
             if not self._sell_selected_entry(entry):
                 if self._last_sale_unavailable:
@@ -454,10 +498,16 @@ class SellFlowMixin:
     ) -> bool:
         if not normalized:
             return False
+        if any(keyword in normalized for keyword in ("这里好像", "收购", "如果有多余", "卖掉")):
+            return False
         return any(
             name
             and (
-                name in normalized
+                (
+                    normalized == name
+                    if len(name) == 1
+                    else name in normalized and len(normalized) <= len(name) + 4
+                )
                 or (
                     len(normalized) >= SALE_NAME_FRAGMENT_MIN_CHARS
                     and normalized in name
@@ -465,6 +515,18 @@ class SellFlowMixin:
             )
             for name in normalized_names
         )
+
+    @classmethod
+    def _is_in_sale_grid(cls, box: object, frame_shape: tuple[int, ...]) -> bool:
+        geometry = cls._ocr_box_geometry(box)
+        if geometry is None:
+            return False
+        x, y, width, height = geometry
+        frame_height, frame_width = frame_shape[:2]
+        center_x = (x + width / 2) / frame_width
+        center_y = (y + height / 2) / frame_height
+        left, top, right, bottom = SALE_ITEMS_GRID_REGION
+        return left <= center_x <= right and top <= center_y <= bottom
 
     @classmethod
     def _sale_marker_search_roi(
@@ -583,6 +645,8 @@ class SellFlowMixin:
             )
             saw_ocr_output = saw_ocr_output or bool(ocr_boxes)
             for box in ocr_boxes:
+                if not self._is_in_sale_grid(box, frame.shape):
+                    continue
                 text = str(getattr(box, "name", ""))
                 normalized = self._normal(text)
                 if self._sale_name_matches(normalized, normalized_names):
@@ -746,6 +810,8 @@ class SellFlowMixin:
             "出售商品列表",
             target_height=SALE_FULL_PAGE_OCR_TARGET_HEIGHT,
         ):
+            if not self._is_in_sale_grid(box, frame.shape):
+                continue
             text = str(getattr(box, "name", ""))
             normalized = self._normal(text)
             if not self._sale_name_matches(normalized, normalized_names):

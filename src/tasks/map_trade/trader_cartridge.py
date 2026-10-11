@@ -707,3 +707,40 @@ class ShopCartridgeNavigationMixin:
             return False
         return self._select_shop_cartridge_downward(reference.shop_id)
 
+    def refresh_shop_cartridge(self, shop: str) -> bool:
+        """切到相邻可见卡带再切回，重新加载当前卡带商品。"""
+        try:
+            target_shop_id = shop_purchase_reference(shop).shop_id
+        except KeyError:
+            target_shop_id = shop
+
+        frame = self.vision.capture()
+        detections = self._confirmed_shop_cartridge_detections(frame)
+        if not detections:
+            return False
+
+        visible_ids = list(detections)
+        neighbor_id = None
+        if target_shop_id in visible_ids:
+            index = visible_ids.index(target_shop_id)
+            if index > 0:
+                neighbor_id = visible_ids[index - 1]
+            elif index + 1 < len(visible_ids):
+                neighbor_id = visible_ids[index + 1]
+        if neighbor_id is None:
+            neighbor_id = next((sid for sid in visible_ids if sid != target_shop_id), None)
+        if neighbor_id is None:
+            self.task.log_info(f"卖：卡带{shop}刷新未找到相邻卡带，跳过切换。")
+            return False
+
+        self.task.log_info(
+            f"卖：临时切换至相邻卡带{neighbor_id}以刷新{target_shop_id}商品列表。"
+        )
+        if not self._select_purchase_cartridge(neighbor_id):
+            return False
+        self.task.sleep(0.5)
+        if not self._select_purchase_cartridge(target_shop_id):
+            return False
+        self.task.sleep(0.5)
+        return True
+

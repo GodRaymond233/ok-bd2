@@ -117,6 +117,15 @@ SHOP_MODE_SWITCH_MAX_CLICKS = 3
 # 在全画面搜索。
 SALE_MARKER_SEARCH_WIDTH = 150
 SALE_MARKER_VERTICAL_PADDING = 12
+# 商品网格排除顶部商人对白和底部操作按钮，并覆盖右侧第四列商品名。
+SALE_ITEMS_GRID_REGION = (
+    460 / FHD_1080.width,
+    140 / FHD_1080.height,
+    1.0,
+    960 / FHD_1080.height,
+)
+SALE_GRID_FOOD_KEYWORD = "食物"
+SALE_GRID_INGREDIENT_KEYWORD = "料理食材"
 # 全帧 OCR 目标高度：仅用于商品名识别重试。↑120% 标志本身不再依赖 OCR。
 SALE_FULL_PAGE_OCR_TARGET_HEIGHT = 900
 # 售出一组后的短暂重排/动画仍可能让 900 高度漏读商品名；

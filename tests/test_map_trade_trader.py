@@ -911,6 +911,84 @@ class SellFlowTest(unittest.TestCase):
     def test_sale_name_match_single_char_item_keeps_forward_match(self):
         self.assertTrue(Trader._sale_name_matches("虾", ("虾",)))
         self.assertFalse(Trader._sale_name_matches("虫", ("虾",)))
+        self.assertFalse(Trader._sale_name_matches("玉米", ("米",)))
+
+    def test_sale_name_match_rejects_npc_dialogue(self):
+        self.assertFalse(
+            Trader._sale_name_matches("这里好像正在收购牛奶如果有多余的就卖掉吧", ("牛奶",))
+        )
+        self.assertTrue(Trader._sale_name_matches("牛奶", ("牛奶",)))
+
+    def test_locate_sale_items_ignores_header_and_keeps_fourth_column(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        boxes = [self._text_box("牛奶", 740, 80, 40, 24)]
+        trader, match_calls = self._make_sale_template_trader(
+            lambda *_args, **_kwargs: boxes,
+            (self._marker_result(690, 80), self._marker_result(1650, 180)),
+        )
+        entry = CalendarEntry("牛奶", "S7")
+        self.assertEqual([], trader._locate_sale_items(entry, frame))
+        self.assertTrue(trader._last_sale_unavailable)
+        self.assertEqual([], match_calls)
+        self.assertEqual((), trader._sale_name_signature(entry, frame))
+
+        boxes.append(self._text_box("牛奶", 1710, 180, 80, 24))
+        candidates = trader._locate_sale_items(entry, frame)
+        self.assertEqual([(1750, 192)], [candidate.center for candidate in candidates])
+        self.assertEqual(1, len(trader._sale_name_signature(entry, frame)))
+
+    def test_ensure_cartridge_goods_loaded_refreshes_missing_ingredients_once(self):
+        refreshed = []
+        trader = object.__new__(Trader)
+        trader.task = SimpleNamespace(log_info=lambda *_args: None, sleep=lambda *_args: None)
+        trader.refresh_shop_cartridge = lambda shop: refreshed.append(shop) or True
+        trader.vision = SimpleNamespace(
+            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
+            ocr_text=lambda *_args, **_kwargs: "食物 料理食材 牛奶",
+        )
+        self.assertTrue(trader._ensure_cartridge_goods_loaded("S7"))
+        self.assertEqual([], refreshed)
+
+        readings = iter(["食物 蜂蜜黄油杏仁", "食物 料理食材 牛奶"])
+        trader.vision.ocr_text = lambda *_args, **_kwargs: next(readings)
+        self.assertTrue(trader._ensure_cartridge_goods_loaded("S7"))
+        self.assertEqual(["S7"], refreshed)
+
+        trader.vision.ocr_text = lambda *_args, **_kwargs: "食物 蜂蜜黄油杏仁"
+        self.assertTrue(trader._ensure_cartridge_goods_loaded("S7"))
+        self.assertEqual(["S7", "S7"], refreshed)
+
+    def test_sell_resolved_entries_confirms_target_after_refresh(self):
+        for return_to_target in (True, False):
+            with self.subTest(return_to_target=return_to_target):
+                refresh_selections = []
+                sold = []
+                trader = object.__new__(Trader)
+                trader.task = SimpleNamespace(
+                    log_info=lambda *_args: None,
+                    log_warning=lambda *_args: None,
+                    sleep=lambda *_args: None,
+                    info_set=lambda *_args: None,
+                )
+                trader.vision = SimpleNamespace(
+                    capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
+                    ocr_text=lambda *_args, **_kwargs: "食物 蜂蜜黄油杏仁",
+                )
+                trader.select_shop_tab = lambda _shop: True
+                trader._confirmed_shop_cartridge_detections = lambda _frame: {
+                    "S6": object(), "S7": object(),
+                }
+                trader._select_purchase_cartridge = lambda shop: (
+                    refresh_selections.append(shop) or shop == "S6" or return_to_target
+                )
+                trader._sell_selected_entry = lambda entry: sold.append(entry.item) or True
+
+                self.assertEqual(
+                    return_to_target,
+                    trader._sell_resolved_entries([CalendarEntry("牛奶", "S7")]),
+                )
+                self.assertEqual(["S6", "S7"], refresh_selections)
+                self.assertEqual(["牛奶"] if return_to_target else [], sold)
 
     def test_missing_120_percent_is_recognition_failure_before_any_sale(self):
         trader = object.__new__(Trader)
