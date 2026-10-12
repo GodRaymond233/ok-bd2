@@ -170,7 +170,10 @@ class OnnxOcrRuntimeTest(unittest.TestCase):
             )
 
             model_stat = model_path.stat()
-            os.utime(model_path, ns=(model_stat.st_atime_ns, model_stat.st_mtime_ns + 10_000_000))
+            os.utime(
+                model_path,
+                ns=(model_stat.st_atime_ns, cache_path.stat().st_mtime_ns + 1_000_000_000),
+            )
             self.assertFalse(_cache_is_current(model_path, cache_path))
 
     def test_root_cache_ignore_is_anchored_without_hiding_business_cache(self):
