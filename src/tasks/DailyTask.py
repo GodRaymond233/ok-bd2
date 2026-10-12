@@ -1,13 +1,15 @@
 from time import monotonic
 
+import numpy as np
 from ok.task.exceptions import TaskDisabledException
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task
 from src.tasks.map_trade.models import TemplateSpec
 from src.tasks.quick_hunt import QuickHuntConfigMixin
-from src.tasks.task_vision_mixin import TaskVisionMixin
+from src.tasks.task_vision_mixin import REFERENCE_HEIGHT, REFERENCE_WIDTH, TaskVisionMixin
 from src.utils.home_confirmation import HOME_DIMMED_P95_THRESHOLD_DEFAULT
+from src.utils.ocr_utils import normalize_ocr_text
 
 GUILD_TEMPLATE = TemplateSpec(
     name="guild",
@@ -89,6 +91,9 @@ MY_HOME_TITLE_OCR_RETRY_INTERVAL = 0.4
 BUSINESS_COLLECT_ENTRY_REFERENCE_POINT = (165, 260)
 BUSINESS_COLLECT_CLAIM_REFERENCE_POINT = (1090, 814)
 BUSINESS_COLLECT_CLOSE_REFERENCE_POINT = (832, 814)
+BUSINESS_COLLECT_TIMEOUT = 20.0
+BUSINESS_COLLECT_CLAIM_RETRY_SECONDS = 4.0
+BUSINESS_COLLECT_MAX_CLOSE_CLICKS = 8
 
 
 class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
@@ -135,6 +140,8 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
         "business_collect 关键字",
         "一键收菜弹窗",
         "一键收菜 OCR",
+        "一键收菜领取结果",
+        "一键收菜关闭次数",
         "一键收菜返回主页 小屋按钮",
         "一键收菜返回主页 亮度",
         "一键收菜返回主页 抽抽乐 OCR",
@@ -481,10 +488,144 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
             self._status_set("一键收菜返回主页结果", "未执行")
             return False
 
-        self.sleep(0.5)
-        self._click_reference(*BUSINESS_COLLECT_CLAIM_REFERENCE_POINT, after_sleep=2.0)
-        self._click_reference(*BUSINESS_COLLECT_CLOSE_REFERENCE_POINT, after_sleep=1.0)
-        self._click_reference(*BUSINESS_COLLECT_CLOSE_REFERENCE_POINT)
+        claimed = self._finish_business_collect()
         home_ok = self._wait_for_home_confirmation("一键收菜返回主页")
+        self._status_set("一键收菜领取结果", "已领取或无待领取奖励" if claimed else "未确认")
         self._status_set("一键收菜返回主页结果", "通过" if home_ok else "失败")
-        return home_ok
+        if not (claimed and home_ok):
+            self._save_flow_diagnostic("business_collect_failed")
+        return claimed and home_ok
+
+    def _finish_business_collect(self) -> bool:
+        end_at = monotonic() + BUSINESS_COLLECT_TIMEOUT
+        claim_clicks = close_clicks = fallback_closes = disabled_frames = 0
+        retry_at = 0.0
+        claimed = closing = False
+        while monotonic() < end_at:
+            frame = self.capture_frame()
+            boxes = list(self.ocr(
+                frame=frame,
+                threshold=float(self.config.get("日常 OCR 阈值", 0.2)),
+                target_height=720,
+                log=False,
+                name="一键收菜结算",
+            ))
+            text = " ".join(str(box.name) for box in boxes if getattr(box, "name", ""))
+            self.info_set("一键收菜 OCR", text or "-")
+            reward_button = self._business_reward_button(boxes)
+            menu_visible = self._keyword_match_count(text, BUSINESS_COLLECT_KEYWORDS[:3]) >= 2
+            if reward_button is not None:
+                claimed = claimed or claim_clicks > 0
+                closing = True
+                target = self._business_bounds(reward_button)
+            elif menu_visible:
+                cancel = self._find_ocr_box(boxes, "取消")
+                claim = self._business_claim_bounds(frame, boxes, cancel)
+                if claim_clicks and not claimed:
+                    disabled_frames = (
+                        disabled_frames + 1
+                        if self._business_claim_disabled(frame, claim, cancel) else 0
+                    )
+                    if disabled_frames >= 2:
+                        claimed = closing = True
+                if not closing:
+                    if monotonic() < retry_at:
+                        self.sleep(0.4)
+                        continue
+                    if claim_clicks < 2:
+                        self._click_business_bounds(frame, claim, after_sleep=0.5)
+                        claim_clicks += 1
+                        retry_at = monotonic() + BUSINESS_COLLECT_CLAIM_RETRY_SECONDS
+                        continue
+                    closing = True
+                    self.log_info("一键收菜：领取结果未确认，关闭经营弹窗后报告失败。")
+                if cancel is not None:
+                    target = self._business_bounds(cancel)
+                else:
+                    # 仅在经营弹窗已确认时使用本项目原关闭点，最多两次。
+                    if fallback_closes >= 2:
+                        self.sleep(0.4)
+                        continue
+                    height, width = frame.shape[:2]
+                    x, y = BUSINESS_COLLECT_CLOSE_REFERENCE_POINT
+                    target = (x * width / REFERENCE_WIDTH, y * height / REFERENCE_HEIGHT, 0, 0)
+                    fallback_closes += 1
+            else:
+                disabled_frames = 0
+                if self._frame_confirms_home(frame, "一键收菜返回主页"):
+                    return claimed
+                # 未知画面可能是奖励动画，不投递固定点以免误触其他页面。
+                self.sleep(0.4)
+                continue
+            if close_clicks >= BUSINESS_COLLECT_MAX_CLOSE_CLICKS:
+                break
+            self._click_business_bounds(frame, target, after_sleep=1.0)
+            close_clicks += 1
+            self.info_set("一键收菜关闭次数", close_clicks)
+        self.log_info("一键收菜：结算退出未在限定时间或点击次数内完成。")
+        return claimed
+
+    @staticmethod
+    def _business_bounds(box) -> tuple[float, float, float, float]:
+        return tuple(float(getattr(box, key)) for key in ("x", "y", "width", "height"))
+
+    def _business_claim_bounds(self, frame, boxes, cancel) -> tuple[float, float, float, float]:
+        claim = self._find_ocr_box(boxes, "键获得")
+        if claim is not None:
+            return self._business_bounds(claim)
+        height, width = frame.shape[:2]
+        x, y = BUSINESS_COLLECT_CLAIM_REFERENCE_POINT
+        x = x * width / REFERENCE_WIDTH
+        # 领取文字在灰态可能读空；由取消框及本项目两按钮参考间距定位。
+        if cancel is not None:
+            gap = (
+                BUSINESS_COLLECT_CLAIM_REFERENCE_POINT[0]
+                - BUSINESS_COLLECT_CLOSE_REFERENCE_POINT[0]
+            )
+            x = float(cancel.x) + cancel.width / 2 + gap * width / REFERENCE_WIDTH
+            return x - cancel.width / 2, float(cancel.y), float(cancel.width), float(cancel.height)
+        return x, y * height / REFERENCE_HEIGHT, 0, 0
+
+    def _click_business_bounds(self, frame, bounds, after_sleep: float) -> None:
+        x, y, width, height = bounds
+        frame_height, frame_width = frame.shape[:2]
+        center_x, center_y = x + width / 2, y + height / 2
+        if not (0 <= center_x < frame_width and 0 <= center_y < frame_height):
+            raise ValueError("经营弹窗按钮超出当前截图范围")
+        self.operate_click(
+            center_x / frame_width, center_y / frame_height, after_sleep=after_sleep,
+        )
+
+    def _business_claim_disabled(self, frame, claim, cancel) -> bool:
+        if cancel is None:
+            return False
+        samples = []
+        for x, y, width, height in (claim, self._business_bounds(cancel)):
+            frame_height, frame_width = frame.shape[:2]
+            if not (0 <= x < x + width <= frame_width and 0 <= y < y + height <= frame_height):
+                return False
+            crop = frame[int(y):int(y + height), int(x):int(x + width), :3]
+            if crop.size == 0:
+                return False
+            samples.append((
+                float(np.median(crop.mean(axis=2))),
+                float(np.median(crop.max(axis=2) - crop.min(axis=2))),
+            ))
+        claim_light, claim_colour = samples[0]
+        cancel_light, _ = samples[1]
+        # 同帧取消必须明亮；连续两帧确认低亮中性领取按钮，拒绝动画压暗。
+        return (
+            cancel_light >= HOME_DIMMED_P95_THRESHOLD_DEFAULT
+            and 20 <= claim_light <= cancel_light * 0.6
+            and claim_colour <= 15
+        )
+
+    def _business_reward_button(self, boxes):
+        for box in boxes:
+            text = normalize_ocr_text(getattr(box, "name", ""))
+            if "点击" in text and "返回" in text and ("画面" in text or "即可" in text):
+                return box
+        text = " ".join(str(box.name) for box in boxes if getattr(box, "name", ""))
+        if self._keyword_match_count(text, ["获得奖励", "奖励获得", "REWARD"]) >= 1:
+            return self._find_ocr_box(boxes, "确认") or self._find_ocr_box(boxes, "确定")
+        return None

@@ -980,29 +980,159 @@ class DailyTaskHelperTest(unittest.TestCase):
             calls,
         )
 
-    def test_business_collect_uses_q_script_click_timing(self):
+    @staticmethod
+    def _business_controls(width=1280, height=720, row=0.8, claim=True, cancel=True):
+        def box(name, x, y):
+            return SimpleNamespace(
+                name=name, x=(x - 0.015) * width, y=(y - 0.015) * height,
+                width=0.03 * width, height=0.03 * height,
+            )
+        boxes = [box("餐馆营业额现状", 0.45, 0.3), box("助手工作情况", 0.45, 0.6)]
+        if claim:
+            boxes.append(box("一键获得", 0.6, row))
+        if cancel:
+            boxes.append(box("取消", 0.43, row))
+        return boxes
+
+    def _business_flow_task(self, frames):
         task = object.__new__(DailyTask)
         task.config = {"一键收菜菜单等待秒数": 8.0}
-        task.info_set = lambda *_args, **_kwargs: None
-        task.log_info = lambda *_args, **_kwargs: None
+        statuses, clicks, reference_clicks, clock = {}, [], [], [0.0]
+        task.info_set = lambda key, value: statuses.__setitem__(key, value)
+        task.log_info = Mock()
         task._wait_for_ocr_keywords = lambda *_args, **_kwargs: (True, "一键获得 取消")
-        task._wait_for_home_confirmation = lambda *_args, **_kwargs: True
-        clicks = []
-        sleeps = []
-        task._click_reference = lambda x, y, after_sleep=0.0: clicks.append((x, y, after_sleep))
-        task.sleep = lambda seconds: sleeps.append(seconds)
-
-        self.assertTrue(DailyTask.run_business_collect(task))
-        self.assertEqual([0.5], sleeps)
-        self.assertEqual(
-            [
-                (165, 260, 1.0),
-                (1090, 814, 2.0),
-                (832, 814, 1.0),
-                (832, 814, 0.0),
-            ],
-            clicks,
+        task._save_flow_diagnostic = Mock()
+        task._click_reference = lambda x, y, **_kwargs: reference_clicks.append((x, y))
+        task.sleep = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+        task.operate_click = lambda x, y, after_sleep=0: (
+            clicks.append((round(x, 6), round(y, 6))), task.sleep(after_sleep)
         )
+        current = [None]
+        pending = list(frames) if not callable(frames) else None
+
+        def capture():
+            if callable(frames):
+                current[0] = frames(clicks, clock[0])
+            elif pending:
+                current[0] = pending.pop(0)
+            return current[0][0]
+
+        task.capture_frame = capture
+        task._wait_for_home_confirmation = lambda name: (
+            True if "入口前" in name else current[0][2]
+        )
+        task.ocr = lambda **_kwargs: current[0][1]
+        task._frame_confirms_home = lambda *_args: current[0][2]
+        timer = patch("src.tasks.DailyTask.monotonic", side_effect=lambda: clock[0])
+        timer.start()
+        self.addCleanup(timer.stop)
+        return task, statuses, clicks, reference_clicks, clock
+
+    def test_business_collect_dismisses_reward_and_relocates_cancel(self):
+        for width, height in ((1280, 720), (1920, 1080)):
+            with self.subTest(resolution=(width, height)):
+                frame = np.full((height, width, 3), 230, dtype=np.uint8)
+                reward = SimpleNamespace(
+                    name="点击画面即可返回", x=0.45 * width, y=0.88 * height,
+                    width=0.1 * width, height=0.04 * height,
+                )
+                task, statuses, clicks, refs, _ = self._business_flow_task([
+                    (frame, self._business_controls(width, height, row=0.85), False),
+                    (frame, [reward], False),
+                    (frame, self._business_controls(width, height, row=0.72), False),
+                    (frame, self._business_controls(width, height, row=0.76), False),
+                    (frame, [], True),
+                ])
+                self.assertTrue(task.run_business_collect())
+                self.assertEqual([(0.6, 0.85), (0.5, 0.9), (0.43, 0.72), (0.43, 0.76)], clicks)
+                self.assertEqual([(165, 260)], refs)
+                self.assertEqual("通过", statuses["一键收菜返回主页结果"])
+
+    def test_business_collect_unread_disabled_button_uses_cancel_row(self):
+        frame = np.full((720, 1280, 3), 220, dtype=np.uint8)
+        boxes = self._business_controls(row=0.79, claim=False)
+        task, _, clicks, _, _ = self._business_flow_task([
+            (frame, boxes, False), (frame, boxes, False), (frame, boxes, False),
+            (frame, [], True),
+        ])
+        cancel = boxes[-1]
+        bounds = task._business_claim_bounds(frame, boxes, cancel)
+        x, y, width, height = bounds
+        frame[int(y):int(y + height), int(x):int(x + width)] = (80, 83, 81)
+        self.assertTrue(task.run_business_collect())
+        self.assertEqual([(round(0.43 + (1090 - 832) / 1920, 6), 0.79), (0.43, 0.79)], clicks)
+
+    def test_business_collect_lost_claim_does_not_become_success_after_closing(self):
+        frame = np.full((720, 1280, 3), 230, dtype=np.uint8)
+        popup = self._business_controls()
+        task, statuses, clicks, _, _ = self._business_flow_task(
+            lambda actions, _time: (frame, [], True) if (0.43, 0.8) in actions
+            else (frame, popup, False)
+        )
+        self.assertFalse(task.run_business_collect())
+        self.assertEqual([(0.6, 0.8), (0.6, 0.8), (0.43, 0.8)], clicks)
+        self.assertEqual("未确认", statuses["一键收菜领取结果"])
+        self.assertEqual("通过", statuses["一键收菜返回主页结果"])
+        task._save_flow_diagnostic.assert_called_once()
+
+    def test_business_collect_late_reward_prevents_second_claim(self):
+        frame = np.full((720, 1280, 3), 230, dtype=np.uint8)
+        popup = self._business_controls()
+        reward = SimpleNamespace(name="点击画面即可返回", x=576, y=633.6, width=128, height=28.8)
+
+        def screen(actions, now):
+            if (0.43, 0.8) in actions:
+                return frame, [], True
+            if (0.5, 0.9) in actions:
+                return frame, popup, False
+            return (frame, [reward], False) if now >= 4.0 else (frame, popup, False)
+
+        task, _, clicks, _, _ = self._business_flow_task(screen)
+        self.assertTrue(task.run_business_collect())
+        self.assertEqual([(0.6, 0.8), (0.5, 0.9), (0.43, 0.8)], clicks)
+
+    def test_business_collect_unknown_screen_has_no_blind_clicks(self):
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        task, _, clicks, refs, clock = self._business_flow_task([(frame, [], False)])
+        self.assertFalse(task.run_business_collect())
+        self.assertEqual([], clicks)
+        self.assertEqual([(165, 260)], refs)
+        self.assertLess(clock[0], 21)
+
+    def test_business_collect_caps_popup_close_attempts(self):
+        frame = np.full((720, 1280, 3), 230, dtype=np.uint8)
+        popup = self._business_controls()
+        reward = SimpleNamespace(name="点击画面即可返回", x=576, y=633.6, width=128, height=28.8)
+        task, _, clicks, _, _ = self._business_flow_task([
+            (frame, popup, False), (frame, [reward], False), (frame, popup, False),
+        ])
+        self.assertFalse(task.run_business_collect())
+        self.assertEqual(9, len(clicks))  # 一次领取，奖励层和经营弹窗合计最多八次关闭。
+        self.assertEqual(7, clicks.count((0.43, 0.8)))
+
+    def test_business_collect_limits_fixed_close_to_confirmed_popup(self):
+        frame = np.full((720, 1280, 3), 230, dtype=np.uint8)
+        reward = SimpleNamespace(name="点击画面即可返回", x=576, y=633.6, width=128, height=28.8)
+        task, _, clicks, _, _ = self._business_flow_task([
+            (frame, self._business_controls(), False), (frame, [reward], False),
+            (frame, self._business_controls(cancel=False), False),
+        ])
+        self.assertFalse(task.run_business_collect())
+        self.assertEqual(2, clicks.count((round(832 / 1920, 6), round(814 / 1080, 6))))
+
+    def test_business_collect_dim_or_coloured_button_does_not_prove_claim(self):
+        for background, button in ((90, (35, 35, 35)), (230, (40, 100, 130))):
+            with self.subTest(background=background, button=button):
+                frame = np.full((720, 1280, 3), background, dtype=np.uint8)
+                popup = self._business_controls()
+                claim = popup[-2]
+                frame[int(claim.y):int(claim.y + claim.height),
+                      int(claim.x):int(claim.x + claim.width)] = button
+                task, _, _, _, _ = self._business_flow_task(
+                    lambda actions, _time: (frame, [], True) if (0.43, 0.8) in actions
+                    else (frame, popup, False)
+                )
+                self.assertFalse(task.run_business_collect())
 
     def test_mf_reference_click_uses_1280_by_720_ratios(self):
         task = object.__new__(QuickHuntTask)
