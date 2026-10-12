@@ -83,6 +83,7 @@ class SellFlowMixin:
     _sale_title_entries: tuple[CalendarEntry, ...] = ()
     _sale_dialog_rejected = False
     _sale_title_catalog_cache: dict[str, set[str]] | None = None
+    _last_sale_cleared = False
 
     def run_sell(self) -> bool:
         entries = self._resolve_sale_entries()
@@ -369,6 +370,9 @@ class SellFlowMixin:
             if not sold:
                 return True
             sold_count += 1
+            if self._last_sale_cleared:
+                self._status("出售完成确认", f"{entry.item}:已出售{sold_count}组，库存已全部卖出")
+                return True
             if entry.reserve <= 0 and bool(self.task.config.get("出售保险", False)):
                 self.task.log_info(
                     f"卖：{entry.item}已按出售保险完成最小数量出售，停止继续出售该商品。"
@@ -386,6 +390,7 @@ class SellFlowMixin:
     ) -> tuple[int, bool] | None:
         """Sell one currently visible card and verify that the page advanced."""
 
+        self._last_sale_cleared = False
         before_signature = self._sale_name_signature(entry, frame)
         before_toast_id = self._sale_toast_id(frame)
         known_toast_id = self._last_sale_toast_id
@@ -459,6 +464,11 @@ class SellFlowMixin:
             before_toast_id=before_toast_id,
         ):
             return None
+        self._last_sale_cleared = (
+            entry.reserve <= 0
+            and not bool(self.task.config.get("出售保险", False))
+            and expected_selected == available == owned
+        )
         return owned, True
 
     def _wait_sale_item_candidates(
@@ -500,26 +510,57 @@ class SellFlowMixin:
     def _sale_name_matches(
         normalized: str,
         normalized_names: tuple[str, ...],
-    ) -> bool:
+        catalog: dict[str, set[str]],
+    ) -> bool | None:
+        """Resolve against all goods; None means a possible target is uncertain."""
         if not normalized:
             return False
         if any(keyword in normalized for keyword in ("这里好像", "收购", "如果有多余", "卖掉")):
             return False
-        return any(
-            name
-            and (
-                (
-                    normalized == name
-                    if len(name) == 1
-                    else name in normalized and len(normalized) <= len(name) + 4
-                )
-                or (
-                    len(normalized) >= SALE_NAME_FRAGMENT_MIN_CHARS
-                    and normalized in name
-                )
+        expected = set().union(*(catalog.get(name, set()) for name in normalized_names))
+        if len(expected) != 1:
+            return None
+        identities = catalog.get(normalized, set())
+        if not identities and len(normalized) >= SALE_NAME_FRAGMENT_MIN_CHARS:
+            identities = set().union(*(
+                owners for name, owners in catalog.items() if normalized in name
+            ))
+        if identities:
+            if identities == expected:
+                return True
+            return None if identities & expected else False
+        if any(len(name) > 1 and name in normalized for name in normalized_names):
+            return None
+        return False
+
+    def _sale_box_name_matches(
+        self, box: object, frame: np.ndarray, normalized_names: tuple[str, ...],
+        catalog: dict[str, set[str]],
+    ) -> bool | None:
+        normalized = self._normal(str(getattr(box, "name", "")))
+        matched = self._sale_name_matches(normalized, normalized_names, catalog)
+        if matched is not None:
+            return matched
+        geometry = self._ocr_box_geometry(box)
+        if geometry is None:
+            return None
+        x, y, width, height = geometry
+        padding = max(1, round(height * 0.2))
+        left, top = max(0, round(x) - padding), max(0, round(y) - padding)
+        right = min(frame.shape[1], round(x + width) + padding)
+        bottom = min(frame.shape[0], round(y + height) + padding)
+        crop = frame[top:bottom, left:right]
+        if crop.size == 0:
+            return None
+        for target in (crop, cv2.cvtColor(to_gray(crop), cv2.COLOR_GRAY2BGR)):
+            boxes = self.vision.ocr_boxes(
+                target, "出售商品名复读", target_height=0, ocr_scale=2.0,
             )
-            for name in normalized_names
-        )
+            text = self._normal(" ".join(str(box.name) for box in boxes))
+            matched = self._sale_name_matches(text, normalized_names, catalog)
+            if matched is True or (matched is False and text in catalog):
+                return matched
+        return None
 
     @classmethod
     def _is_in_sale_grid(cls, box: object, frame_shape: tuple[int, ...]) -> bool:
@@ -627,6 +668,7 @@ class SellFlowMixin:
 
         names = (entry.item, *entry.aliases, *ITEM_ALIASES.get(entry.item, ()))
         normalized_names = tuple(self._normal(value) for value in names if value)
+        catalog = self._sale_title_catalog(entry)
         saw_item_name = False
         saw_ocr_output = False
         specific_local_failure = False
@@ -652,9 +694,12 @@ class SellFlowMixin:
             for box in ocr_boxes:
                 if not self._is_in_sale_grid(box, frame.shape):
                     continue
-                text = str(getattr(box, "name", ""))
-                normalized = self._normal(text)
-                if self._sale_name_matches(normalized, normalized_names):
+                matched = self._sale_box_name_matches(box, frame, normalized_names, catalog)
+                if matched is None:
+                    saw_item_name = True
+                    specific_local_failure = True
+                    last_reason = "商品名称存在歧义，局部复读未确认"
+                elif matched:
                     name_boxes.append(box)
 
             if not name_boxes:
@@ -798,7 +843,7 @@ class SellFlowMixin:
         self,
         entry: CalendarEntry,
         frame: np.ndarray,
-    ) -> tuple[tuple[str, int, int, int, int], ...]:
+    ) -> tuple[tuple[str, int, int, int, int], ...] | None:
         """Return a page signature independent of 120% OCR success.
 
         The card list can reflow after a sale.  Including all matching name
@@ -808,18 +853,23 @@ class SellFlowMixin:
 
         names = (entry.item, *entry.aliases, *ITEM_ALIASES.get(entry.item, ()))
         normalized_names = tuple(self._normal(value) for value in names if value)
+        catalog = self._sale_title_catalog(entry)
         signature = []
         matching_boxes = []
-        for box in self.vision.ocr_boxes(
+        boxes = self.vision.ocr_boxes(
             frame,
             "出售商品列表",
             target_height=SALE_FULL_PAGE_OCR_TARGET_HEIGHT,
-        ):
+        )
+        if not boxes:
+            return None
+        for box in boxes:
             if not self._is_in_sale_grid(box, frame.shape):
                 continue
-            text = str(getattr(box, "name", ""))
-            normalized = self._normal(text)
-            if not self._sale_name_matches(normalized, normalized_names):
+            matched = self._sale_box_name_matches(box, frame, normalized_names, catalog)
+            if matched is None:
+                return None
+            if not matched:
                 continue
             matching_boxes.append(box)
         for box in self._deduplicate_ocr_boxes(matching_boxes):
@@ -843,7 +893,7 @@ class SellFlowMixin:
         self,
         entry: CalendarEntry,
         before_frame: np.ndarray,
-        before_signature: tuple[tuple[str, int, int, int, int], ...],
+        before_signature: tuple[tuple[str, int, int, int, int], ...] | None,
         timeout: float = SALE_COMPLETION_TIMEOUT,
         *,
         before_toast_id: int | None = None,
@@ -898,7 +948,11 @@ class SellFlowMixin:
                         )
                         return True
                 current_signature = self._sale_name_signature(entry, frame)
-                if current_signature != before_signature:
+                if (
+                    current_signature is not None
+                    and before_signature is not None
+                    and current_signature != before_signature
+                ):
                     if not current_signature:
                         # An entirely blank full-page OCR frame is a
                         # recognition failure, not evidence that inventory
@@ -922,6 +976,9 @@ class SellFlowMixin:
                         if stable_hits >= SALE_COMPLETION_STABLE_HITS:
                             self._status("出售完成确认", f"{entry.item}:页面重排")
                             return True
+                else:
+                    changed_signature = None
+                    stable_hits = empty_signature_hits = 0
             if monotonic() >= end_at:
                 break
             self.task.sleep(SALE_COMPLETION_INTERVAL)

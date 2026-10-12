@@ -120,6 +120,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class SellFlowTest(unittest.TestCase):
+    @staticmethod
+    def _sale_name_match(text, names):
+        trader = object.__new__(Trader)
+        trader.vision = SimpleNamespace(simplify=lambda value: value)
+        catalog = trader._sale_title_catalog(CalendarEntry(names[0], "", aliases=names[1:]))
+        return Trader._sale_name_matches(text, names, catalog)
+
     def _make_sale_template_trader(self, ocr_boxes, markers=()):
         trader = object.__new__(Trader)
         match_calls = []
@@ -902,26 +909,84 @@ class SellFlowTest(unittest.TestCase):
         # 回归 BUG-20260913-06：卖出后页面上的杂散单字母框"C"曾反向命中
         # 英文别名 Chocolat Cocktail，令已售完页面被误判为商品仍在售。
         normalized_names = ("巧克力鸡尾酒", "chocolatcocktail")
-        self.assertFalse(Trader._sale_name_matches("c", normalized_names))
-        self.assertTrue(Trader._sale_name_matches("cocktail", normalized_names))
-        self.assertTrue(Trader._sale_name_matches("巧克力鸡尾酒", normalized_names))
-        self.assertTrue(Trader._sale_name_matches("鸡尾酒", normalized_names))
+        self.assertFalse(self._sale_name_match("c", normalized_names))
+        self.assertTrue(self._sale_name_match("cocktail", normalized_names))
+        self.assertTrue(self._sale_name_match("巧克力鸡尾酒", normalized_names))
+        self.assertTrue(self._sale_name_match("鸡尾酒", normalized_names))
 
     def test_sale_name_match_fragment_min_chars_boundary(self):
         self.assertEqual(2, SALE_NAME_FRAGMENT_MIN_CHARS)
-        self.assertFalse(Trader._sale_name_matches("克", ("巧克力鸡尾酒",)))
-        self.assertTrue(Trader._sale_name_matches("克力", ("巧克力鸡尾酒",)))
+        self.assertFalse(self._sale_name_match("克", ("巧克力鸡尾酒",)))
+        self.assertIsNone(self._sale_name_match("克力", ("巧克力鸡尾酒",)))
+
+    def test_sale_list_and_completion_ignore_other_full_item_names(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        chocolate = self._text_box("巧克力", 600, 560, 60, 24)
+        cocktail = self._text_box("巧克力鸡尾酒", 600, 180, 126, 24)
+        boxes = [chocolate, cocktail]
+        trader, searches = self._make_sale_template_trader(
+            lambda *_args, **_kwargs: boxes,
+            (self._marker_result(493, 562), self._marker_result(493, 182)),
+        )
+        entry = CalendarEntry("巧克力", "S4")
+        self.assertEqual([(630, 572)], [c.center for c in trader._locate_sale_items(entry, frame)])
+        self.assertEqual((('巧克力', 600, 560, 60, 24),), trader._sale_name_signature(entry, frame))
+        boxes[:] = [cocktail]
+        searches.clear()
+        self.assertEqual([], trader._locate_sale_items(entry, frame))
+        self.assertFalse(trader._last_sale_name_seen)
+        self.assertTrue(trader._last_sale_unavailable)
+        self.assertEqual((), trader._sale_name_signature(entry, frame))
+        self.assertEqual([], searches)
+
+    def test_ambiguous_sale_name_rereads_current_box_at_each_resolution(self):
+        for width, height in ((1920, 1080), (1280, 720)):
+            for recovered in ("巧克", "巧克力"):
+                with self.subTest(size=(width, height), recovered=recovered):
+                    frame = np.zeros((height, width, 3), dtype=np.uint8)
+                    scale = height / 1080
+                    box = self._text_box("巧克", round(600 * scale), round(560 * scale),
+                                         round(60 * scale), round(24 * scale))
+                    rereads = []
+
+                    def ocr_boxes(image, name, **kwargs):
+                        if name == "出售商品名复读":
+                            rereads.append((image.shape, kwargs))
+                            return [self._text_box(recovered, 0, 0, 30, 12)]
+                        return [box]
+
+                    marker = self._marker_result(round(493 * scale), round(562 * scale),
+                                                 round(52 * scale), round(14 * scale))
+                    trader, _searches = self._make_sale_template_trader(ocr_boxes, (marker,))
+                    entry = CalendarEntry("巧克力", "S4")
+                    candidates = trader._locate_sale_items(entry, frame)
+                    if recovered == "巧克":
+                        self.assertEqual([], candidates)
+                        self.assertTrue(trader._last_sale_name_seen)
+                        self.assertFalse(trader._last_sale_unavailable)
+                        self.assertIn("歧义", trader._last_sale_reason)
+                        self.assertEqual(6, len(rereads))
+                        self.assertIsNone(trader._sale_name_signature(entry, frame))
+                    else:
+                        self.assertEqual(1, len(candidates))
+                        self.assertEqual(1, len(rereads))
+                    padding = max(1, round(box.height * 0.2))
+                    self.assertTrue(all(shape == (box.height + 2 * padding,
+                                                 box.width + 2 * padding, 3)
+                                        for shape, _kwargs in rereads))
+                    self.assertTrue(all(kwargs == {"target_height": 0, "ocr_scale": 2.0}
+                                        for _shape, kwargs in rereads))
 
     def test_sale_name_match_single_char_item_keeps_forward_match(self):
-        self.assertTrue(Trader._sale_name_matches("虾", ("虾",)))
-        self.assertFalse(Trader._sale_name_matches("虫", ("虾",)))
-        self.assertFalse(Trader._sale_name_matches("玉米", ("米",)))
+        self.assertTrue(self._sale_name_match("虾", ("虾",)))
+        self.assertFalse(self._sale_name_match("虫", ("虾",)))
+        self.assertFalse(self._sale_name_match("玉米", ("米",)))
 
     def test_sale_name_match_rejects_npc_dialogue(self):
         self.assertFalse(
-            Trader._sale_name_matches("这里好像正在收购牛奶如果有多余的就卖掉吧", ("牛奶",))
+            self._sale_name_match("这里好像正在收购牛奶如果有多余的就卖掉吧", ("牛奶",))
         )
-        self.assertTrue(Trader._sale_name_matches("牛奶", ("牛奶",)))
+        self.assertTrue(self._sale_name_match("牛奶", ("牛奶",)))
 
     def test_locate_sale_items_ignores_header_and_keeps_fourth_column(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -1210,6 +1275,57 @@ class SellFlowTest(unittest.TestCase):
             ],
             clicks,
         )
+        self.assertEqual(1, len(scans))
+
+    def test_last_sale_batch_finishes_only_after_transaction_confirmation(self):
+        for completed in (True, False):
+            with self.subTest(completed=completed):
+                frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+                trader = object.__new__(Trader)
+                trader.task = SimpleNamespace(
+                    config={"出售保险": False}, operate_click=lambda *_a, **_k: None,
+                    info_set=lambda *_a: None, log_info=lambda *_a: None,
+                    log_warning=lambda *_a: None,
+                )
+                trader.vision = SimpleNamespace(click_client=lambda *_a, **_k: None)
+                quantities = iter((132301, 99999))
+                available = iter((32302, 99999))
+                scans = []
+                selected = []
+
+                def scan(_entry):
+                    scans.append(True)
+                    self.assertLessEqual(len(scans), 2, "确认最后一组售完后不得继续扫描")
+                    return [SimpleNamespace(center=(630, 572))], frame
+
+                trader._wait_sale_item_candidates = scan
+                trader._sale_name_signature = lambda *_a: ()
+                trader._sale_toast_id = lambda *_a: None
+                trader._wait_sale_dialog_item = lambda *_a: True
+                trader._wait_owned_quantity = lambda: next(quantities)
+                trader._wait_available_quantity = lambda: next(available)
+                trader._wait_selected_sale_quantity = lambda expected: (
+                    selected.append(expected) or True
+                )
+                trader._wait_sale_completion = lambda *_a, **_k: len(scans) == 1 or completed
+                self.assertEqual(
+                    completed, trader._sell_selected_entry(CalendarEntry("巧克力", "S4")),
+                )
+                self.assertEqual([32302, 99999], selected)
+                self.assertEqual(completed, trader._last_sale_cleared)
+
+    def test_uncertain_sale_signature_cannot_confirm_transaction(self):
+        trader = object.__new__(Trader)
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        trader.vision = SimpleNamespace(capture=lambda: frame,
+                                       ocr_text=lambda *_a, **_k: "出售 食物 料理食材",
+                                       simplify=lambda value: value)
+        trader.task = SimpleNamespace(log_warning=lambda *_a: None)
+        trader._sale_toast_id = lambda *_a: None
+        trader._sale_name_signature = lambda *_a: None
+        self.assertFalse(trader._wait_sale_completion(
+            CalendarEntry("巧克力", "S4"), frame, (("巧克力", 600, 560, 60, 24),), timeout=0,
+        ))
 
     def test_sale_dialog_open_retries_until_third_click(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -1855,7 +1971,7 @@ class SellFlowTest(unittest.TestCase):
                     clicks,
                 )
                 self.assertEqual([1 if insurance else 400], quantities)
-                self.assertEqual(1 if insurance else 0, len(scans))
+                self.assertEqual(1, len(scans))
 
     def test_sale_dialog_accepts_known_alias_as_calendar_item(self):
         for item, title in (
