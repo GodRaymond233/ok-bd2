@@ -47,6 +47,7 @@ from src.tasks.quick_hunt import (
     QUICK_HUNT_START_ROI,
     QUICK_HUNT_STONE_COUNT_ROI,
     QUICK_HUNT_STONE_LIST_ROI,
+    HuntDialog,
 )
 from src.tasks.QuickHuntTask import QuickHuntTask
 from src.tasks.task_vision_mixin import (
@@ -55,6 +56,13 @@ from src.tasks.task_vision_mixin import (
     REFERENCE_WIDTH,
 )
 from src.utils.image_utils import crop_relative
+
+
+def hunt_dialog(**changes):
+    return replace(HuntDialog(
+        "哥布林遗迹极难", 1, 6, 90, "米饭", "on", (1140, 350),
+        (1050, 785), (1080, 1920, 3),
+    ), **changes)
 
 
 class DailyTaskHelperTest(unittest.TestCase):
@@ -1134,59 +1142,8 @@ class DailyTaskHelperTest(unittest.TestCase):
                 )
                 self.assertFalse(task.run_business_collect())
 
-    def test_mf_reference_click_uses_1280_by_720_ratios(self):
-        task = object.__new__(QuickHuntTask)
-        calls = []
-        task.operate_click = lambda x, y, **kwargs: calls.append((x, y, kwargs))
-
-        task._click_mf_reference(640, 360, after_sleep=0.5)
-
-        self.assertEqual([(0.5, 0.5, {"after_sleep": 0.5})], calls)
-
-    def test_quick_hunt_rice_zero_uses_new_90_capacity_and_calibrated_roi(self):
-        task = object.__new__(QuickHuntTask)
-        task.info_set = lambda *_args, **_kwargs: None
-        calls = []
-        text = ["0 / 90"]
-
-        class FakeVision:
-            def ocr_text(self, _frame, name, relative_roi=None, **_kwargs):
-                calls.append((name, relative_roi))
-                return text[0]
-
-        task._quick_vision = lambda: FakeVision()
-        task.capture_frame = lambda: np.zeros((720, 1280, 3), dtype=np.uint8)
-
-        self.assertEqual({"米饭": 90}, QUICK_HUNT_RESOURCE_CAPACITIES)
-        self.assertTrue(task._quick_hunt_resource_empty("米饭"))
-        text[0] = "0 / 60"
-        self.assertFalse(task._quick_hunt_resource_empty("米饭"))
-        text[0] = "18 / 90"
-        self.assertFalse(task._quick_hunt_resource_empty("米饭"))
-        self.assertEqual(
-            [("米饭数量", (0, 0, 1, 1))] * 3,
-            calls,
-        )
-
-    def test_quick_hunt_rice_zero_filters_yellow_counter_before_ocr(self):
-        task = object.__new__(QuickHuntTask)
-        task.info_set = lambda *_args, **_kwargs: None
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        frame[43:70, 1621:1689] = (245, 245, 245)
-        frame[50:60, 1714:1723] = (0, 200, 255)
-        task.capture_frame = lambda: frame
-
-        def read_resource(image, _roi, name):
-            self.assertEqual("米饭数量", name)
-            self.assertFalse(image[12:22, 129:138].any())
-            return "0/90" if image[5:32, 36:104].any() else ""
-
-        task._quick_hunt_ocr_text = read_resource
-        self.assertTrue(task._quick_hunt_resource_empty("米饭"))
-        frame[43:70, 1621:1689] = (0, 200, 255)
-        self.assertFalse(task._quick_hunt_resource_empty("米饭"))
-
     def test_quick_hunt_regions_preserve_all_supplied_1920_calibrations(self):
+        self.assertEqual({"米饭": 90, "火把": 60}, QUICK_HUNT_RESOURCE_CAPACITIES)
         self.assertEqual(
             (1585 / 1920, 38 / 1080, 1740 / 1920, 80 / 1080),
             QUICK_HUNT_RESOURCE_ROI,
@@ -1582,7 +1539,9 @@ class DailyTaskHelperTest(unittest.TestCase):
 
     def test_quick_hunt_stone_counts_follow_top_to_bottom_element_order(self):
         task = object.__new__(QuickHuntTask)
+        task.config = {"快速狩猎界面等待秒数": 1.0}
         task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task.sleep = Mock()
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
         boxes = [
@@ -1594,7 +1553,7 @@ class DailyTaskHelperTest(unittest.TestCase):
         ]
 
         class FakeVision:
-            def ocr_boxes(self, _frame, _name, relative_roi=None):
+            def ocr_boxes(self, _frame, _name, relative_roi=None, ocr_scale=1.0):
                 self.relative_roi = relative_roi
                 return boxes
 
@@ -1618,7 +1577,7 @@ class DailyTaskHelperTest(unittest.TestCase):
             "火之洞穴 水之洞穴 风之洞穴 光之洞穴 暗之洞穴",
             SimpleNamespace(),
         )
-        task._quick_hunt_resource_empty = lambda _resource: False
+        task._quick_hunt_free_resource = Mock(return_value=60)
         task._quick_hunt_stone_counts = lambda: {
             "火": 50,
             "水": 40,
@@ -1645,6 +1604,8 @@ class DailyTaskHelperTest(unittest.TestCase):
         self.assertIn("光", selected[1][0][0])
         self.assertEqual(QUICK_HUNT_CRYSTAL_TITLE_ROI, selected[1][1])
         self.assertEqual(("MAX", "光属性圣石"), executions[0][:2])
+        self.assertEqual("火把", executions[0][2]["resource"])
+        self.assertIsNone(executions[0][2].get("max_cost"))
         pattern = executions[0][2]["expected_map_pattern"]
         self.assertRegex("光之洞穴", pattern)
         self.assertIsNone(re.search(pattern, "火之洞穴"))
@@ -1666,7 +1627,8 @@ class DailyTaskHelperTest(unittest.TestCase):
             return ("火之洞穴 水之洞穴 风之洞穴 光之洞穴 暗之洞穴", SimpleNamespace())
 
         task._quick_hunt_wait_ocr = fake_wait_ocr
-        task._quick_hunt_resource_empty = lambda _resource: True
+        task._quick_hunt_free_resource = lambda _resource: 0
+        task._quick_hunt_menu_still_open = lambda: True
 
         self.assertTrue(task._quick_hunt_run_crystal_cave())
         self.assertEqual([(177, 449, {"after_sleep": 0.8})], clicks)
@@ -1674,6 +1636,21 @@ class DailyTaskHelperTest(unittest.TestCase):
         self.assertEqual(
             ([r"[火水风光暗].?洞穴"], QUICK_HUNT_CRYSTAL_TITLE_ROI), confirm_calls[0][:2]
         )
+
+    def test_quick_hunt_crystal_unknown_torches_cannot_start(self):
+        task = object.__new__(QuickHuntTask)
+        task.config = {"快速狩猎圣石目标": "水"}
+        task.info_set = Mock()
+        task.log_info = Mock()
+        task._quick_hunt_enter_crystal_cave = Mock(return_value=True)
+        task._quick_hunt_free_resource = Mock(return_value=None)
+        task._quick_hunt_click_ocr = Mock()
+        task._quick_hunt_execute_current_map = Mock()
+
+        self.assertFalse(task._quick_hunt_run_crystal_cave())
+        task._quick_hunt_free_resource.assert_called_once_with("火把")
+        task._quick_hunt_click_ocr.assert_not_called()
+        task._quick_hunt_execute_current_map.assert_not_called()
 
     def test_quick_hunt_crystal_retries_when_panel_confirmation_fails(self):
         task = object.__new__(QuickHuntTask)
@@ -1688,7 +1665,7 @@ class DailyTaskHelperTest(unittest.TestCase):
         )
         confirm_results = iter([("", None), ("", None), ("火之洞穴 水之洞穴", None)])
         task._quick_hunt_wait_ocr = lambda *_args, **_kwargs: next(confirm_results)
-        task._quick_hunt_resource_empty = lambda _resource: True
+        task._quick_hunt_free_resource = lambda _resource: 0
 
         self.assertTrue(task._quick_hunt_run_crystal_cave())
         self.assertEqual(3, len(entry_clicks))
@@ -1709,7 +1686,8 @@ class DailyTaskHelperTest(unittest.TestCase):
         task._quick_hunt_wait_ocr = lambda *_args, **_kwargs: ("", None)
         task._save_flow_diagnostic = lambda *_args, **_kwargs: None
         resource_checks = []
-        task._quick_hunt_resource_empty = lambda resource: resource_checks.append(resource) or True
+        task._quick_hunt_free_resource = lambda resource: resource_checks.append(resource) or 0
+        task._quick_hunt_menu_still_open = lambda: True
 
         self.assertFalse(task._quick_hunt_run_crystal_cave())
         self.assertEqual([], resource_checks)
@@ -1735,7 +1713,7 @@ class DailyTaskHelperTest(unittest.TestCase):
         task._quick_hunt_wait_ocr = (
             lambda *_args, **_kwargs: ("火之洞穴 水之洞穴 光之洞穴", None)
         )
-        task._quick_hunt_resource_empty = lambda _resource: True
+        task._quick_hunt_free_resource = lambda _resource: 0
 
         self.assertTrue(task._quick_hunt_run_crystal_cave())
         self.assertEqual(
@@ -1798,7 +1776,7 @@ class DailyTaskHelperTest(unittest.TestCase):
         self.assertEqual(1, len(entrance_clicks))
 
     def test_quick_hunt_reward_must_close_and_return_to_menu_before_finishing(self):
-        for frames, expected, click_count in (
+        for case in (
             (("reward", "menu", "menu"), "done", 1),
             (("reward", "reward", "transition", "menu", "menu"), "done", 2),
             (("reward_title", "menu", "menu"), "done", 1),
@@ -1813,7 +1791,19 @@ class DailyTaskHelperTest(unittest.TestCase):
             (("depleted", "dim_menu"), "failed", 1),
             (("menu",), "failed", 0),
             ((*(["transition"] * 16), "reward", "menu", "menu"), "done", 1),
+            ((*(["unchanged"] * 9), "reward", "menu", "menu"), "done", 1, 1),
+            (("unchanged",), "failed", 0, 2),
+            (("transition", "unchanged"), "failed", 0, 0),
+            (("spent", "unchanged"), "failed", 0, 0),
+            (("changed_count", "unchanged"), "failed", 0, 0),
+            (("transition", "reward", "menu", "menu"), "done", 1, 0),
+            (("reward", "unchanged"), "failed", 1, 0),
+            (("unknown_error",), "failed", 0, 0),
+            (("wrong_resource",), "failed", 0, 0),
         ):
+            frames, expected, click_count = case[:3]
+            submission = hunt_dialog() if len(case) == 4 else None
+            expected_start_retries = case[3] if submission else 0
             with self.subTest(frames=frames):
                 task = object.__new__(QuickHuntTask)
                 task.config = {"快速狩猎结算等待秒数": 5.0, "快速狩猎界面等待秒数": 4.0}
@@ -1841,6 +1831,24 @@ class DailyTaskHelperTest(unittest.TestCase):
                 task.operate_click = Mock(
                     side_effect=lambda *_, after_sleep=0.0: sleep(after_sleep),
                 )
+                vision = Mock()
+                vision.ocr_boxes.return_value = [
+                    SimpleNamespace(name="确定", x=80, y=70, width=30, height=12),
+                ]
+                vision.click_client.side_effect = lambda *_, after_sleep=0: sleep(after_sleep)
+                task._quick_vision = lambda: vision
+
+                def snapshot(frame, *_):
+                    state = states[id(frame)]
+                    if state == "unchanged":
+                        return submission
+                    if state == "spent":
+                        return replace(submission, pool=84)
+                    if state == "changed_count":
+                        return replace(submission, count=2, cost=12)
+                    return None
+
+                task._quick_hunt_dialog_snapshot = Mock(side_effect=snapshot)
 
                 def ocr_text(frame, relative_roi, name):
                     state = states[id(frame)]
@@ -1850,6 +1858,10 @@ class DailyTaskHelperTest(unittest.TestCase):
                         return "REWARD 获得1种"
                     if state == "depleted" and relative_roi == QUICK_HUNT_DIALOG_ROI:
                         return "米饭不足"
+                    if state == "unknown_error" and relative_roi == QUICK_HUNT_DIALOG_ROI:
+                        return "无法进入"
+                    if state == "wrong_resource" and relative_roi == QUICK_HUNT_DIALOG_ROI:
+                        return "火把不足"
                     if (
                         state in {"menu", "dim_menu"}
                         and relative_roi == QUICK_HUNT_MENU_FOREGROUND_ROI
@@ -1859,20 +1871,120 @@ class DailyTaskHelperTest(unittest.TestCase):
 
                 task._quick_hunt_ocr_text = Mock(side_effect=ocr_text)
                 with patch("src.tasks.quick_hunt.monotonic", side_effect=lambda: clock["now"]):
-                    self.assertEqual(expected, task._quick_hunt_wait_result("金币 MAX"))
-                self.assertEqual(click_count, task.operate_click.call_count)
+                    self.assertEqual(
+                        expected, task._quick_hunt_wait_result("金币 MAX", submission=submission),
+                    )
+                start_clicks = [
+                    call for call in vision.click_client.call_args_list
+                    if call.args[0] == hunt_dialog().start_point
+                ]
+                self.assertEqual(expected_start_retries, len(start_clicks))
+                if "depleted" in frames:
+                    self.assertEqual(click_count, vision.click_client.call_count)
+                    self.assertTrue(all(call.args[0] == (95, 76)
+                                        for call in vision.click_client.call_args_list))
+                    task.operate_click.assert_not_called()
+                else:
+                    self.assertEqual(click_count, task.operate_click.call_count)
                 for click in task.operate_click.call_args_list:
-                    if "depleted" in frames:
-                        self.assertAlmostEqual(1 / 1280, click.args[0])
-                        self.assertAlmostEqual(1 / 720, click.args[1])
-                    else:
-                        self.assertAlmostEqual(956 / 1920, click.args[0])
-                        self.assertAlmostEqual(992 / 1080, click.args[1])
+                    self.assertAlmostEqual(956 / 1920, click.args[0])
+                    self.assertAlmostEqual(992 / 1080, click.args[1])
                 if expected == "failed":
                     task._save_flow_diagnostic.assert_called_once()
                     self.assertLessEqual(clock["now"], 5.3)
                 else:
                     task._save_flow_diagnostic.assert_not_called()
+
+    def test_quick_hunt_shortage_uses_unique_confirmation_above_background_cancel(self):
+        for labels, expected_point in (
+            (("取消", "确定"), (70, 30)),
+            (("确认", "确定"), None),
+            ((), None),
+        ):
+            with self.subTest(labels=labels):
+                task = object.__new__(QuickHuntTask)
+                frame = np.zeros((108, 192, 3), dtype=np.uint8)
+                vision = Mock()
+                vision.ocr_boxes.return_value = [
+                    SimpleNamespace(name=name, x=10 + index * 50, y=20, width=20, height=20)
+                    for index, name in enumerate(labels)
+                ]
+                task._quick_vision = lambda: vision
+
+                self.assertEqual(
+                    expected_point is not None, task._quick_hunt_dismiss_shortage(frame),
+                )
+                if expected_point is None:
+                    vision.click_client.assert_not_called()
+                else:
+                    vision.click_client.assert_called_once()
+                    self.assertEqual(
+                        (expected_point, frame.shape), vision.click_client.call_args.args,
+                    )
+
+    def test_quick_hunt_submission_requires_free_switch_and_stable_affordable_cost(self):
+        rice = hunt_dialog()
+        torch = hunt_dialog(map_name="火之洞穴极难", pool=60, resource="火把")
+        rice_max = replace(rice, count=15, cost=90)
+        cases = (
+            ("免费开关未知", "MIN", [replace(rice, free_state="unknown")], 90, "failed"),
+            ("免费开关关闭后开启", "MIN",
+             [replace(rice, free_state="off")] * 2 + [rice] * 4, 90, "done"),
+            ("米饭单次成本错误", "MIN", [replace(rice, cost=5)], 90, "failed"),
+            ("超出本轮额度", "MIN", [rice], 5, "failed"),
+            ("MAX点击未生效", "MAX", [rice], 90, "failed"),
+            ("MAX余额与成本未稳定", "MAX",
+             [rice] * 4 + [rice_max, replace(rice_max, pool=89)] * 8, 90, "failed"),
+            ("MAX弹窗米饭83到84", "MAX",
+             [replace(rice, pool=83)] * 4 + [replace(rice, pool=84)], 83, "budget_limited"),
+            ("米饭MAX", "MAX", [rice] * 4 + [rice_max] * 2, 90, "done"),
+            ("火把极难单次6", "MIN", [torch], 60, "done"),
+            ("火把极难MAX十次", "MAX",
+             [torch] * 4 + [replace(torch, count=10, cost=60)] * 2, 60, "done"),
+        )
+        for name, mode, snapshots, max_cost, expected in cases:
+            with self.subTest(name=name):
+                task = object.__new__(QuickHuntTask)
+                task.config = {"快速狩猎界面等待秒数": 2.5}
+                task.info_set = Mock()
+                task.log_info = Mock()
+                task._save_flow_diagnostic = Mock()
+                task.capture_frame = Mock(return_value=object())
+                clock = {"now": 0.0}
+
+                def sleep(seconds):
+                    clock["now"] += seconds
+
+                task.sleep = Mock(side_effect=sleep)
+                sequence = iter(snapshots)
+                task._quick_hunt_dialog_snapshot = Mock(
+                    side_effect=lambda *_: next(sequence, snapshots[-1]),
+                )
+                task._quick_hunt_click_ocr = Mock(return_value=True)
+                task._quick_hunt_wait_confirmation_dialog = Mock(return_value=True)
+                task._quick_hunt_cancel_dialog = Mock(return_value=True)
+                task._quick_hunt_wait_result = Mock(return_value="done")
+                vision = Mock()
+                vision.click_client.side_effect = lambda *_, after_sleep=0: sleep(after_sleep)
+                task._quick_vision = lambda: vision
+
+                with patch("src.tasks.quick_hunt.monotonic", side_effect=lambda: clock["now"]):
+                    result = task._quick_hunt_execute_current_map(
+                        mode, name, resource=snapshots[0].resource, max_cost=max_cost,
+                    )
+                self.assertEqual(expected, result)
+                start_clicks = [
+                    call for call in vision.click_client.call_args_list
+                    if call.args[0] == rice.start_point
+                ]
+                self.assertEqual(int(expected == "done"), len(start_clicks))
+                if expected == "done":
+                    submission = task._quick_hunt_wait_result.call_args.kwargs["submission"]
+                    self.assertLessEqual(submission.cost, max_cost)
+                    self.assertEqual(snapshots[-1].cost, submission.cost)
+                else:
+                    task._quick_hunt_wait_result.assert_not_called()
+                    task._quick_hunt_cancel_dialog.assert_called_once()
 
     def test_quick_hunt_adventure_map_is_verified_before_consuming_rice(self):
         task = object.__new__(QuickHuntTask)
@@ -1892,7 +2004,11 @@ class DailyTaskHelperTest(unittest.TestCase):
             lambda pattern, name: map_calls.append((pattern, name))
             or ("matched", "哥布林遗迹极难", None)
         )
-        task._quick_hunt_wait_result = lambda _stage: "done"
+        snapshot = hunt_dialog(count=15, cost=90)
+        task._quick_hunt_prepare_dialog = Mock(return_value=snapshot)
+        task._quick_hunt_wait_result = Mock(return_value="done")
+        vision = Mock()
+        task._quick_vision = lambda: vision
 
         self.assertEqual(
             "done",
@@ -1906,16 +2022,69 @@ class DailyTaskHelperTest(unittest.TestCase):
             [(r"哥布林遗迹", "冒险航线-地图确认")],
             map_calls,
         )
-        self.assertEqual("冒险航线-MAX", click_calls[1][3])
-        self.assertEqual("冒险航线-开始狩猎", click_calls[2][3])
+        self.assertEqual(["冒险航线-快速狩猎按钮"], [call[3] for call in click_calls])
+        vision.click_client.assert_called_once()
+        self.assertEqual(
+            (snapshot.start_point, snapshot.frame_shape), vision.click_client.call_args.args,
+        )
+        self.assertIs(snapshot, task._quick_hunt_wait_result.call_args.kwargs["submission"])
+
+    def test_quick_hunt_retries_button_when_count_dialog_was_swallowed(self):
+        task = object.__new__(QuickHuntTask)
+        task.config = {"快速狩猎界面等待秒数": 8.0}
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        button_clicks = []
+        task._quick_hunt_click_ocr = (
+            lambda patterns, roi, timeout, name, **kwargs: button_clicks.append(name)
+            or True
+        )
+        dialog_results = iter((False, True))
+        task._quick_hunt_wait_confirmation_dialog = (
+            lambda *_args, **_kwargs: next(dialog_results)
+        )
+        task._quick_hunt_menu_still_open = lambda: True
+        task._quick_hunt_prepare_dialog = Mock(return_value=hunt_dialog())
+        task._quick_hunt_wait_result = Mock(return_value="done")
+        vision = Mock()
+        task._quick_vision = lambda: vision
+
+        self.assertEqual(
+            "done",
+            task._quick_hunt_execute_current_map("MIN", "狩猎场"),
+        )
+        self.assertEqual(["狩猎场-快速狩猎按钮"] * 2, button_clicks[:2])
+        vision.click_client.assert_called_once()
 
     def test_quick_hunt_adventure_map_mismatch_cancels_before_consuming_rice(self):
-        for target, wrong_map in (("冒险航线", "野猪洞穴"), ("水属性圣石", "火之洞穴")):
-            with self.subTest(target=target):
+        for target, wrong_map, menu_restored in (
+            ("冒险航线", "野猪洞穴", True),
+            ("冒险航线", "野猪洞穴", False),
+            ("水属性圣石", "火之洞穴", True),
+        ):
+            with self.subTest(target=target, menu_restored=menu_restored):
                 task = object.__new__(QuickHuntTask)
-                task.config = {"快速狩猎界面等待秒数": 8.0}
+                task.config = {"快速狩猎界面等待秒数": 3.0, "快速狩猎圣石目标": "水"}
                 task.info_set = Mock()
                 task.log_info = Mock()
+                task._save_flow_diagnostic = Mock()
+                task.capture_frame = Mock(return_value=np.zeros((1080, 1920, 3), dtype=np.uint8))
+                clock = {"now": 0.0}
+
+                def sleep(seconds):
+                    clock["now"] += seconds
+
+                task.sleep = Mock(side_effect=sleep)
+                menu_frames = iter((False, True, True) if menu_restored else (False,))
+                task._quick_hunt_menu_still_open = Mock(
+                    side_effect=lambda _frame: next(menu_frames, menu_restored),
+                )
+                task._quick_hunt_dialog_ocr = Mock(return_value=(True, "MIN MAX 取消", "狩猎6"))
+                cancel = SimpleNamespace(name="取消", x=760, y=770, width=80, height=30)
+                vision = Mock()
+                vision.ocr_boxes.return_value = [cancel]
+                vision.click_client.side_effect = lambda *_, after_sleep=0: sleep(after_sleep)
+                task._quick_vision = lambda: vision
                 click_calls = []
                 task._quick_hunt_click_ocr = (
                     lambda patterns, roi, timeout, name, **kwargs: click_calls.append(
@@ -1927,7 +2096,7 @@ class DailyTaskHelperTest(unittest.TestCase):
                     "火": 2, "水": 1, "风": 2, "光": 2, "暗": 2,
                 })
                 task._quick_hunt_enter_crystal_cave = Mock(return_value=True)
-                task._quick_hunt_resource_empty = Mock(return_value=False)
+                task._quick_hunt_free_resource = Mock(return_value=60)
                 task._quick_hunt_wait_confirmation_dialog = Mock(return_value=True)
                 task._quick_hunt_wait_map_confirmation = Mock(
                     return_value=("wrong", wrong_map, wrong_map)
@@ -1936,19 +2105,22 @@ class DailyTaskHelperTest(unittest.TestCase):
                     side_effect=AssertionError("错误地图不得开始狩猎")
                 )
 
-                if target == "冒险航线":
-                    self.assertEqual(
-                        "wrong_map",
-                        task._quick_hunt_execute_current_map(
-                            "MAX", target, expected_map_pattern=r"哥布林遗迹",
-                        ),
-                    )
-                else:
-                    self.assertFalse(task._quick_hunt_run_crystal_cave())
-                    pattern = task._quick_hunt_wait_map_confirmation.call_args.args[0]
-                    self.assertRegex("水之洞穴", pattern)
-                    self.assertIsNone(re.search(pattern, wrong_map))
-                self.assertEqual(([r"取消"], f"{target}-取消错误地图"), click_calls[-1])
+                with patch("src.tasks.quick_hunt.monotonic", side_effect=lambda: clock["now"]):
+                    if target == "冒险航线":
+                        self.assertEqual(
+                            "wrong_map" if menu_restored else "failed",
+                            task._quick_hunt_execute_current_map(
+                                "MAX", target, expected_map_pattern=r"哥布林遗迹",
+                            ),
+                        )
+                    else:
+                        self.assertFalse(task._quick_hunt_run_crystal_cave())
+                        pattern = task._quick_hunt_wait_map_confirmation.call_args.args[0]
+                        self.assertRegex("水之洞穴", pattern)
+                        self.assertIsNone(re.search(pattern, wrong_map))
+                self.assertGreater(vision.click_client.call_count, 0)
+                for call in vision.click_client.call_args_list:
+                    self.assertEqual((800, 785), call.args[0])
                 self.assertFalse(any(
                     name in (f"{target}-MAX", f"{target}-开始狩猎")
                     for _patterns, name in click_calls
@@ -2007,6 +2179,29 @@ class DailyTaskHelperTest(unittest.TestCase):
         self.assertIn("野猪洞穴极难", text)
         self.assertEqual(QUICK_HUNT_COUNT_ROI, vision.relative_roi)
 
+    def test_quick_hunt_map_confirmation_ignores_background_map_without_dialog(self):
+        task = object.__new__(QuickHuntTask)
+        task.config = {"快速狩猎界面等待秒数": 0.01}
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task.sleep = lambda _seconds: None
+
+        class FakeVision:
+            def ocr_boxes(self, _frame, _name, relative_roi=None):
+                return [SimpleNamespace(name=label) for label in labels]
+
+        task._quick_vision = lambda: FakeVision()
+
+        for labels in (("1.野猪洞穴",), ("1.野猪洞穴", "取消")):
+            with self.subTest(labels=labels):
+                state, text, actual_map = task._quick_hunt_wait_map_confirmation(
+                    r"野猪洞穴", "背景地图确认"
+                )
+                self.assertEqual("timeout", state)
+                self.assertIn("1.野猪洞穴", text)
+                self.assertIsNone(actual_map)
+
     def test_quick_hunt_run_dispatches_rice_then_crystal_and_returns_home(self):
         task = object.__new__(QuickHuntTask)
         task.config = {"快速狩猎圣石洞穴": True}
@@ -2047,11 +2242,74 @@ class DailyTaskHelperTest(unittest.TestCase):
         )
         task._quick_hunt_home_signals = lambda _frame: next(signals)
         task._quick_hunt_current_map_context = lambda _frame: "野猪洞穴"
+        task._quick_hunt_ocr_text = Mock(return_value="")
+        task._quick_hunt_menu_still_open = Mock(return_value=True)
+        task.clear_temporary_home_announcement_if_needed = Mock(return_value=False)
         clicks = []
         task._click_reference = lambda x, y, **kwargs: clicks.append((x, y, kwargs))
 
         self.assertTrue(task._quick_hunt_return_home())
         self.assertEqual([(101, 55, {"after_sleep": 2.0})], clicks)
+
+    def test_quick_hunt_return_home_unwinds_known_layers_and_waits_on_unknown(self):
+        for states, expected, actions in (
+            (("reward", "dialog", "menu", "home"), True, ["reward", "cancel", "back"]),
+            (("shortage_wait",) * 4 + ("shortage", "menu", "home"),
+             True, ["shortage", "back"]),
+            (("unknown",), False, []),
+        ):
+            with self.subTest(states=states):
+                task = object.__new__(QuickHuntTask)
+                task.config = {"快速狩猎界面等待秒数": 4.0, "主页确认等待秒数": 4.0}
+                task.info_set = Mock()
+                task._save_flow_diagnostic = Mock()
+                task._home_p95_threshold = Mock(return_value=185)
+                task._quick_hunt_current_map_context = Mock(return_value="-")
+                task.clear_temporary_home_announcement_if_needed = Mock(return_value=False)
+                frames = iter(states)
+                task.capture_frame = Mock(side_effect=lambda: next(frames, states[-1]))
+                task._quick_hunt_home_signals = lambda frame: (frame == "home", 0, 0, "")
+                def ocr_text(frame, roi, **_):
+                    if frame == "reward" and roi == QUICK_HUNT_REWARD_TITLE_ROI:
+                        return "REWARD"
+                    if frame.startswith("shortage") and roi == QUICK_HUNT_DIALOG_ROI:
+                        return "米饭不足"
+                    return ""
+
+                task._quick_hunt_ocr_text = ocr_text
+                task._quick_hunt_menu_still_open = lambda frame: frame == "menu"
+                task._quick_hunt_dialog_ocr = lambda frame, _: (
+                    frame in {"dialog", "shortage", "shortage_wait"}, "MIN MAX", "",
+                )
+                seen = []
+                clock = {"now": 0.0}
+
+                def sleep(seconds):
+                    clock["now"] += seconds
+
+                task.sleep = Mock(side_effect=sleep)
+                task.operate_click = lambda *_, **kwargs: (
+                    seen.append("reward") or sleep(kwargs["after_sleep"])
+                )
+                task._click_reference = lambda *_, **kwargs: (
+                    seen.append("back") or sleep(kwargs["after_sleep"])
+                )
+                task._quick_hunt_cancel_dialog = Mock(
+                    side_effect=lambda _, **__: seen.append("cancel") or True,
+                )
+                task._quick_hunt_dismiss_shortage = Mock(
+                    side_effect=lambda frame: (
+                        False if frame == "shortage_wait" else seen.append("shortage") or True
+                    ),
+                )
+
+                with patch("src.tasks.quick_hunt.monotonic", side_effect=lambda: clock["now"]):
+                    self.assertEqual(expected, task._quick_hunt_return_home())
+                self.assertEqual(actions, seen)
+                self.assertLessEqual(clock["now"], 4.3)
+                if "shortage" in states:
+                    self.assertEqual(5, task._quick_hunt_dismiss_shortage.call_count)
+                    task._quick_hunt_cancel_dialog.assert_not_called()
 
     def test_quick_hunt_return_home_clears_announcement_before_clicking_back(self):
         task = object.__new__(QuickHuntTask)
@@ -2140,50 +2398,6 @@ class DailyTaskHelperTest(unittest.TestCase):
         self.assertFalse(DailyTask.run(task))
         self.assertEqual(["guild"], calls)
 
-    def test_quick_hunt_retries_button_when_count_dialog_was_swallowed(self):
-        task = object.__new__(QuickHuntTask)
-        task.config = {"快速狩猎界面等待秒数": 8.0}
-        task.info_set = lambda *_args, **_kwargs: None
-        task.log_info = lambda *_args, **_kwargs: None
-        button_clicks = []
-        task._quick_hunt_click_ocr = (
-            lambda patterns, roi, timeout, name, **kwargs: button_clicks.append(name)
-            or True
-        )
-        dialog_results = iter((False, True))
-        task._quick_hunt_wait_confirmation_dialog = (
-            lambda *_args, **_kwargs: next(dialog_results)
-        )
-        task._quick_hunt_menu_still_open = lambda: True
-        task._quick_hunt_wait_result = lambda _stage: "done"
-
-        self.assertEqual(
-            "done",
-            task._quick_hunt_execute_current_map("MIN", "狩猎场"),
-        )
-        self.assertEqual(["狩猎场-快速狩猎按钮"] * 2, button_clicks[:2])
-
-    def test_quick_hunt_map_confirmation_ignores_background_map_without_dialog(self):
-        task = object.__new__(QuickHuntTask)
-        task.config = {"快速狩猎界面等待秒数": 0.01}
-        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        task.info_set = lambda *_args, **_kwargs: None
-        task.log_info = lambda *_args, **_kwargs: None
-        task.sleep = lambda _seconds: None
-
-        class FakeVision:
-            def ocr_boxes(self, _frame, _name, relative_roi=None):
-                return [SimpleNamespace(name="1.野猪洞穴")]
-
-        task._quick_vision = lambda: FakeVision()
-
-        state, text, actual_map = task._quick_hunt_wait_map_confirmation(
-            r"野猪洞穴", "背景地图确认"
-        )
-        self.assertEqual("timeout", state)
-        self.assertIn("1.野猪洞穴", text)
-        self.assertIsNone(actual_map)
-
     def test_free_rice_reader_does_not_use_stored_rice_or_ambiguous_ocr(self):
         from src.tasks.QuickHuntTask import QuickHuntTask
 
@@ -2240,35 +2454,33 @@ class DailyTaskHelperTest(unittest.TestCase):
                 self.assertFalse(task._quick_hunt_run_rice_scheduler())
                 self.assertEqual(expected_calls, stages)
 
-    def test_single_hunt_verifies_count_and_rice_cost_before_submission(self):
-        for count, cost, allowed in (
-            (True, "狩猎 6", True),
-            (False, "狩猎 6", False),
-            (True, "狩猎 60", False),
-            (True, "", False),
+    def test_rice_scheduler_distinguishes_disabled_skipped_and_failed_routes(self):
+        for enabled, strategy, doubled, success in (
+            (False, "优先双倍", True, True),
+            (True, "优先双倍", True, False),
+            (True, "强制双倍", True, False),
+            (True, "忽视双倍", True, False),
+            (True, "优先双倍", False, True),
         ):
-            with self.subTest(count=count, cost=cost):
+            with self.subTest(enabled=enabled, strategy=strategy, doubled=doubled):
                 task = object.__new__(QuickHuntTask)
-                task.config = {}
+                task.config = {
+                    "快速狩猎狩猎场": False,
+                    "快速狩猎冒险航线": enabled,
+                    "快速狩猎双倍策略": strategy,
+                }
                 task.info_set = Mock()
                 task.log_info = Mock()
-                clicks = []
-                task._quick_hunt_click_ocr = (
-                    lambda patterns, roi, timeout, name, **kwargs: clicks.append(name) or True
+                task._quick_hunt_free_rice = Mock(return_value=90)
+                task._quick_hunt_double_states = Mock(
+                    return_value={"金币": doubled, "经验": False},
                 )
-                task._quick_hunt_wait_confirmation_dialog = Mock(return_value=True)
-                task._quick_hunt_wait_ocr = Mock(return_value=(count, ""))
-                task.capture_frame = Mock(return_value=np.zeros((1080, 1920, 3), np.uint8))
-                task._quick_hunt_ocr_text = Mock(return_value=cost)
-                task._quick_hunt_wait_result = Mock(return_value="done")
-                result = task._quick_hunt_execute_current_map(
-                    "MIN", "狩猎场", verify_single_rice=True,
-                )
-                self.assertEqual("done" if allowed else "failed", result)
-                self.assertEqual(allowed, "狩猎场-开始狩猎" in clicks)
-                if not allowed:
-                    self.assertIn("取消未确认次数", clicks)
-                    task._quick_hunt_wait_result.assert_not_called()
+                task._quick_hunt_click_adventure = Mock(return_value=False)
+                task._quick_hunt_execute_current_map = Mock()
+                self.assertEqual(success, task._quick_hunt_run_rice_scheduler())
+                task._quick_hunt_execute_current_map.assert_not_called()
+                if not enabled:
+                    task._quick_hunt_free_rice.assert_not_called()
 
     def test_quick_hunt_cancellation_does_not_click_home(self):
         from ok.task.exceptions import TaskDisabledException

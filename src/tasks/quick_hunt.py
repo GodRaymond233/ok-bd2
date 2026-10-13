@@ -3,20 +3,21 @@
 from __future__ import annotations
 
 import re
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from time import monotonic
+from typing import Literal
 
 import cv2
 import numpy as np
 from ok.task.exceptions import TaskDisabledException
 
 from src.tasks.map_trade.models import TemplateSpec
+from src.tasks.quick_hunt_vision import parse_free_pool, parse_stone_rows, read_free_switch
 from src.tasks.task_vision_mixin import (
     REFERENCE_HEIGHT,
     REFERENCE_WIDTH,
     TaskVisionMixin,
 )
-from src.utils.calibration import HD_720
 from src.utils.home_confirmation import HOME_LEFT_COLUMN_REQUIRED_HITS
 from src.utils.image_utils import crop_relative
 
@@ -69,7 +70,7 @@ RED_DOT_VALUE_MINIMUM = 150
 BUTTON_ENABLED_BRIGHT_GRAY_MINIMUM = 170
 BUTTON_ENABLED_BRIGHT_MIN_RATIO = 0.02
 
-QUICK_HUNT_RESOURCE_CAPACITIES = {"米饭": 90}
+QUICK_HUNT_RESOURCE_CAPACITIES = {"米饭": 90, "火把": 60}
 
 QUICK_HUNT_RESOURCE_ROI = _quick_hunt_relative_roi(1740, 80, 1585, 38)
 
@@ -94,6 +95,8 @@ QUICK_HUNT_MAP_SCAN_ROI = _quick_hunt_relative_roi(1528, 865, 330, 165)
 
 QUICK_HUNT_DIALOG_CONFIRM_ATTEMPTS = 3
 QUICK_HUNT_DIALOG_CONFIRM_TIMEOUT = 2.0
+QUICK_HUNT_ACTION_ATTEMPTS = 3
+QUICK_HUNT_RETRY_INTERVAL = 2.0
 RICE_PER_HUNT = 6
 
 QUICK_HUNT_CRYSTAL_TITLE_ROI = _quick_hunt_relative_roi(340, 452, 235, 128)
@@ -157,6 +160,23 @@ QUICK_HUNT_DOUBLE_TEMPLATE = TemplateSpec(
     relative_roi=QUICK_HUNT_DOUBLE_ROI,
     min_pixel_score=0.72,
 )
+
+
+@dataclass(frozen=True)
+class HuntDialog:
+    map_name: str
+    count: int
+    cost: int
+    pool: int
+    resource: str
+    free_state: str
+    switch_point: tuple[float, float] | None
+    start_point: tuple[int, int]
+    frame_shape: tuple[int, ...]
+
+    @property
+    def signature(self) -> tuple:
+        return self.map_name, self.count, self.cost, self.pool, self.resource, self.free_state
 
 
 class QuickHuntConfigMixin:
@@ -575,8 +595,6 @@ class QuickHuntFeatureMixin:
                 self.operate_click(*QUICK_HUNT_ENTRY_POINT, after_sleep=1.0)
                 self._status_set("快速狩猎入口", "OCR 未命中，已点击固定入口中心")
 
-            # User requirement: external coordinates must not be inferred or converted.
-            # The menu is confirmed by full-frame OCR unless an ok-bd2 ROI is supplied.
             text, _box = self._quick_hunt_wait_ocr(
                 [r"狩猎场"],
                 None,
@@ -593,6 +611,12 @@ class QuickHuntFeatureMixin:
             # 单击定胜负直接失败）；仍在主页才补点，避免在未知页面盲点。
             home_ok, *_rest = self._quick_hunt_home_signals(self.capture_frame())
             if not home_ok:
+                text, _box = self._quick_hunt_wait_ocr(
+                    [r"狩猎场"], None, self._quick_hunt_ui_timeout(),
+                    name="快速狩猎转场确认",
+                )
+                if text:
+                    return "opened"
                 break
             self.log_info(f"快速狩猎：第{attempt}次点击入口后未确认狩猎菜单，重试。")
 
@@ -603,6 +627,11 @@ class QuickHuntFeatureMixin:
         """Run hunting ground first, then an optional MAX adventure route."""
 
         self._status_set("快速狩猎当前阶段", "米饭调度")
+        hunting_enabled = bool(self.config.get("快速狩猎狩猎场", True))
+        adventure_enabled = bool(self.config.get("快速狩猎冒险航线", True))
+        if not hunting_enabled and not adventure_enabled:
+            self._status_set("快速狩猎米饭", "米饭子任务均已关闭")
+            return True
         rice = self._quick_hunt_free_rice()
         if rice is None:
             self.log_info("快速狩猎：无法确认免费米饭数量，停止刷取。")
@@ -611,14 +640,12 @@ class QuickHuntFeatureMixin:
             self._status_set("快速狩猎米饭", "不足一次，跳过")
             return True
 
-        hunting_enabled = bool(self.config.get("快速狩猎狩猎场", True))
-        adventure_enabled = bool(self.config.get("快速狩猎冒险航线", True))
         hunting_mode, adventure_mode = self._quick_hunt_count_modes()
 
         if hunting_enabled:
             self.log_info("快速狩猎：狩猎场使用游戏当前默认关卡，不切换章节。")
             result = self._quick_hunt_execute_current_map(
-                hunting_mode, "狩猎场", verify_single_rice=hunting_mode == "MIN",
+                hunting_mode, "狩猎场",
             )
             if result == "failed":
                 return False
@@ -636,6 +663,8 @@ class QuickHuntFeatureMixin:
         adventure_selected: str | None = None
         if adventure_enabled and adventure_mode is not None:
             adventure_selected = self._quick_hunt_select_adventure_route()
+            if adventure_selected == "failed":
+                return False
             if adventure_selected:
                 expected_map_pattern = QUICK_HUNT_ADVENTURE_MAP_PATTERNS[
                     adventure_selected
@@ -674,7 +703,11 @@ class QuickHuntFeatureMixin:
         self._status_set("快速狩猎当前阶段", "圣石洞穴")
         if not self._quick_hunt_enter_crystal_cave():
             return False
-        if self._quick_hunt_resource_empty("火把"):
+        torches = self._quick_hunt_free_resource("火把")
+        if torches is None:
+            self.log_info("快速狩猎：免费火把数量未确认，停止刷取。")
+            return False
+        if torches == 0:
             self._status_set("快速狩猎火把", "0，跳过")
             return True
 
@@ -698,6 +731,7 @@ class QuickHuntFeatureMixin:
             return False
         result = self._quick_hunt_execute_current_map(
             "MAX", f"{element}属性圣石", expected_map_pattern=expected_map_pattern,
+            resource="火把",
         )
         if result not in ("done", "depleted"):
             return False
@@ -737,6 +771,8 @@ class QuickHuntFeatureMixin:
                     name="圣石洞穴入口区域",
                 )
                 self._status_set("圣石洞穴入口区域 OCR", seen or "-")
+                if not self._quick_hunt_menu_still_open():
+                    break
                 self._click_reference(*QUICK_HUNT_CRYSTAL_POINT, after_sleep=0.8)
             text, _box = self._quick_hunt_wait_ocr(
                 confirm_patterns,
@@ -759,26 +795,26 @@ class QuickHuntFeatureMixin:
         preferred = str(self.config.get("快速狩猎资源倾向", "金币"))
         if preferred not in QUICK_HUNT_ADVENTURE_LABEL_PATTERNS:
             self.log_info(f"快速狩猎：不支持的冒险航线资源：{preferred}")
-            return None
+            return "failed"
         strategy = str(self.config.get("快速狩猎双倍策略", "优先双倍"))
         if strategy == "忽视双倍":
-            return "金币" if self._quick_hunt_click_adventure("金币") else None
+            return "金币" if self._quick_hunt_click_adventure("金币") else "failed"
         states = self._quick_hunt_double_states()
         if strategy == "优先双倍":
             selected = "金币" if states["金币"] else "经验" if states["经验"] else None
             if selected is None:
                 self.log_info("快速狩猎：金币和经验均未识别到双倍，跳过冒险航线。")
                 return None
-            return selected if self._quick_hunt_click_adventure(selected) else None
+            return selected if self._quick_hunt_click_adventure(selected) else "failed"
         if strategy == "强制双倍":
             alternate = "经验" if preferred == "金币" else "金币"
             for resource in (preferred, alternate):
                 if states[resource]:
-                    return resource if self._quick_hunt_click_adventure(resource) else None
+                    return resource if self._quick_hunt_click_adventure(resource) else "failed"
             self.log_info("快速狩猎：首选和备选资源均未识别到双倍，跳过冒险航线。")
             return None
         self.log_info(f"快速狩猎：不支持的双倍策略：{strategy}")
-        return None
+        return "failed"
 
     def _quick_hunt_click_adventure(self, resource: str) -> bool:
         pattern = QUICK_HUNT_ADVENTURE_LABEL_PATTERNS.get(resource)
@@ -820,12 +856,249 @@ class QuickHuntFeatureMixin:
         )
         return states
 
+    def _quick_hunt_dialog_ocr(
+        self,
+        frame,
+        name: str,
+    ) -> tuple[bool, str, str]:
+        """Read controls that are unique to the quick-hunt count dialog."""
+
+        vision = self._quick_vision()
+        count_boxes = vision.ocr_boxes(
+            frame,
+            f"{name}-次数",
+            relative_roi=QUICK_HUNT_COUNT_ROI,
+        )
+        count_values = [
+            self._normalize_text(getattr(box, "name", ""))
+            for box in count_boxes
+        ]
+        count_text = " ".join(
+            str(getattr(box, "name", "")) for box in count_boxes
+        )
+        count_open = any(
+            "min" in value or "max" in value
+            for value in count_values
+        )
+
+        start_text = ""
+        start_open = False
+        if not count_open:
+            start_boxes = vision.ocr_boxes(
+                frame,
+                f"{name}-开始",
+                relative_roi=QUICK_HUNT_START_ROI,
+            )
+            start_values = [
+                self._normalize_text(getattr(box, "name", ""))
+                for box in start_boxes
+            ]
+            start_text = " ".join(
+                str(getattr(box, "name", "")) for box in start_boxes
+            )
+            start_open = any("狩猎" in value for value in start_values)
+        return count_open or start_open, count_text, start_text
+
+    def _quick_hunt_wait_confirmation_dialog(self, timeout: float, name: str) -> bool:
+        end_at = monotonic() + max(0.0, timeout)
+        last_text = ""
+        while monotonic() <= end_at:
+            frame = self.capture_frame()
+            opened, count_text, start_text = self._quick_hunt_dialog_ocr(frame, name)
+            last_text = " ".join(
+                part for part in (count_text, start_text) if part
+            )
+            self._status_set(f"{name} OCR", last_text or "-")
+            if opened:
+                return True
+            self.sleep(0.3)
+        self.log_info(
+            f"快速狩猎：{name}超时，最后一次 OCR={last_text or '-'}。"
+        )
+        return False
+
+    def _quick_hunt_menu_still_open(self, frame=None) -> bool:
+        if frame is None:
+            frame = self.capture_frame()
+        text = self._quick_hunt_ocr_text(
+            frame, QUICK_HUNT_MENU_FOREGROUND_ROI, name="快速狩猎菜单门禁",
+        )
+        crop = crop_relative(self._to_gray(frame), QUICK_HUNT_MENU_FOREGROUND_ROI)
+        return bool(
+            crop.size
+            and np.percentile(crop, 95) >= QUICK_HUNT_MENU_FOREGROUND_P95_MINIMUM
+            and all(word in self._normalize_text(text) for word in ("狩猎场", "圣石洞"))
+        )
+
+    def _quick_hunt_dialog_snapshot(self, frame, stage: str, resource: str) -> HuntDialog | None:
+        boxes = self._quick_vision().ocr_boxes(
+            frame, f"{stage}-提交视窗", relative_roi=QUICK_HUNT_COUNT_ROI,
+        )
+        text = " ".join(str(getattr(box, "name", "")) for box in boxes)
+        normalized = self._normalize_text(text)
+        self._status_set(f"{stage}-提交视窗 OCR", text or "-")
+        if not all(word in normalized for word in ("min", "max", "取消")):
+            return None
+        counts = [(box, re.fullmatch(r"狩猎(\d+)次", self._normalize_text(box.name)))
+                  for box in boxes]
+        counts = [(box, match) for box, match in counts if match]
+        labels = [box for box in boxes
+                  if f"仅使用免费{resource}" in self._normalize_text(box.name)]
+        if len(counts) != 1 or len(labels) != 1:
+            return None
+        count_box, match = counts[0]
+        label = labels[0]
+        label_bottom = getattr(label, "y", 0) + getattr(label, "height", 0)
+        count_top = getattr(count_box, "y", 0)
+        maps = sorted(
+            (box for box in boxes
+             if label_bottom < getattr(box, "y", 0) + getattr(box, "height", 0) / 2 < count_top),
+            key=lambda box: (box.y, box.x),
+        )
+        map_name = self._normalize_text(" ".join(box.name for box in maps))
+        if not map_name:
+            return None
+        starts = []
+        for box in self._quick_vision().ocr_boxes(
+            frame, f"{stage}-消耗", relative_roi=QUICK_HUNT_START_ROI,
+        ):
+            cost = re.fullmatch(r"狩猎\D*(\d+)", self._normalize_text(box.name))
+            point = self._quick_hunt_box_center(box)
+            if cost and point and self._quick_hunt_box_enabled(frame, box):
+                starts.append((int(cost[1]), point))
+        pool = self._quick_hunt_free_resource(resource, frame)
+        if len(starts) != 1 or pool is None:
+            return None
+        free_state, switch_point = read_free_switch(frame, label)
+        return HuntDialog(map_name, int(match[1]), starts[0][0], pool, resource,
+                          free_state, switch_point, starts[0][1], frame.shape)
+
+    def _quick_hunt_ensure_free_only(self, stage: str, resource: str) -> bool:
+        end_at = monotonic() + self._quick_hunt_ui_timeout()
+        previous = None
+        hits = clicks = 0
+        saw_on = False
+        next_click = 0.0
+        while monotonic() <= end_at:
+            snapshot = self._quick_hunt_dialog_snapshot(self.capture_frame(), stage, resource)
+            state = snapshot.free_state if snapshot else "unknown"
+            hits = hits + 1 if state == previous and state != "unknown" else 1
+            previous = state
+            self._status_set("快速狩猎免费开关", state)
+            if state == "on":
+                saw_on = True
+                if hits >= 2:
+                    return True
+            elif (state == "off" and hits >= 2 and not saw_on and snapshot.switch_point
+                  and clicks < 2 and monotonic() >= next_click):
+                self._quick_vision().click_client(
+                    snapshot.switch_point, snapshot.frame_shape, after_sleep=0.5,
+                )
+                clicks += 1
+                hits = 0
+                next_click = monotonic() + QUICK_HUNT_RETRY_INTERVAL
+            self.sleep(0.3)
+        self.log_info(f"快速狩猎：{stage}未能确认仅使用免费{resource}，停止提交。")
+        return False
+
+    def _quick_hunt_prepare_dialog(
+        self, count_mode: str, stage: str, expected_map_pattern: str | None,
+        resource: str, max_cost: int | None,
+    ) -> HuntDialog | Literal["budget_limited"] | None:
+        if not self._quick_hunt_ensure_free_only(stage, resource):
+            return None
+        # Read the price of one hunt on this map before deriving its MAX quantity.
+        modes = ("MIN", "MAX") if count_mode == "MAX" else ("MIN",)
+        unit_cost = None
+        map_name = None
+        for mode in modes:
+            end_at = monotonic() + self._quick_hunt_ui_timeout()
+            previous = None
+            next_click = 0.0
+            clicks = 0
+            confirmed = None
+            while monotonic() <= end_at:
+                snapshot = self._quick_hunt_dialog_snapshot(self.capture_frame(), stage, resource)
+                if snapshot is None or snapshot.free_state != "on":
+                    previous = None
+                    self.sleep(0.3)
+                    continue
+                if (
+                    (expected_map_pattern
+                     and not re.search(expected_map_pattern, snapshot.map_name))
+                    or (map_name is not None and map_name != snapshot.map_name)
+                ):
+                    return None
+                expected_count = 1 if mode == "MIN" else snapshot.pool // unit_cost
+                budget = snapshot.pool if max_cost is None else min(snapshot.pool, max_cost)
+                if mode == "MAX" and expected_count * unit_cost > budget:
+                    self.log_info(f"快速狩猎：{stage}当前MAX超出方案余量，取消后逐次执行。")
+                    return "budget_limited"
+                valid = (
+                    snapshot.count == expected_count and snapshot.count > 0
+                    and 0 < snapshot.cost <= budget
+                    and (mode != "MAX" or snapshot.cost == snapshot.count * unit_cost)
+                    and (resource != "米饭" or snapshot.cost == snapshot.count * RICE_PER_HUNT)
+                )
+                if valid and previous == snapshot.signature:
+                    confirmed = snapshot
+                    break
+                previous = snapshot.signature if valid else None
+                if not valid and clicks < QUICK_HUNT_ACTION_ATTEMPTS and monotonic() >= next_click:
+                    if not self._quick_hunt_click_ocr(
+                        [rf"^{mode}$"], QUICK_HUNT_COUNT_ROI,
+                        min(1.0, max(0.0, end_at - monotonic())), name=f"{stage}-{mode}",
+                    ):
+                        return None
+                    clicks += 1
+                    next_click = monotonic() + QUICK_HUNT_RETRY_INTERVAL
+                self.sleep(0.3)
+            if confirmed is None:
+                self.log_info(f"快速狩猎：{stage}未确认{mode}次数、免费余额与消耗稳定一致。")
+                return None
+            unit_cost = confirmed.cost if mode == "MIN" else unit_cost
+            map_name = confirmed.map_name
+        self._status_set(
+            "快速狩猎消耗核对", f"{confirmed.count}次；{confirmed.cost}/{confirmed.pool}{resource}",
+        )
+        return confirmed
+
+    def _quick_hunt_cancel_dialog(self, stage: str, timeout: float | None = None) -> bool:
+        end_at = monotonic() + (
+            self._quick_hunt_ui_timeout() if timeout is None else max(0.0, timeout)
+        )
+        clicks = menu_hits = 0
+        next_click = 0.0
+        while monotonic() <= end_at:
+            frame = self.capture_frame()
+            if self._quick_hunt_menu_still_open(frame):
+                menu_hits += 1
+                if menu_hits >= 2:
+                    return True
+            else:
+                menu_hits = 0
+                opened, _count, _start = self._quick_hunt_dialog_ocr(frame, stage)
+                if opened and clicks < QUICK_HUNT_ACTION_ATTEMPTS and monotonic() >= next_click:
+                    boxes = self._quick_vision().ocr_boxes(
+                        frame, f"{stage}-取消", relative_roi=QUICK_HUNT_COUNT_ROI,
+                    )
+                    cancel = [box for box in boxes if self._normalize_text(box.name) == "取消"]
+                    point = self._quick_hunt_box_center(cancel[0]) if len(cancel) == 1 else None
+                    if point:
+                        self._quick_vision().click_client(point, frame.shape, after_sleep=0.5)
+                        clicks += 1
+                        next_click = monotonic() + QUICK_HUNT_RETRY_INTERVAL
+            self.sleep(0.3)
+        self._save_flow_diagnostic("quick_hunt_cancel_failed")
+        return False
+
     def _quick_hunt_execute_current_map(
         self,
         count_mode: str,
         stage: str,
         expected_map_pattern: str | None = None,
-        verify_single_rice: bool = False,
+        resource: str = "米饭",
+        max_cost: int | None = None,
     ) -> str:
         self._status_set("快速狩猎当前阶段", stage)
         dialog_timeout = min(
@@ -869,54 +1142,38 @@ class QuickHuntFeatureMixin:
                     f"快速狩猎：{stage}未确认目标地图 {expected_map_pattern}，"
                     f"当前={actual_map or map_text or '-'}，取消本次快速狩猎。"
                 )
-                cancelled = self._quick_hunt_click_ocr(
-                    [r"取消"],
-                    QUICK_HUNT_COUNT_ROI,
-                    min(2.0, self._quick_hunt_ui_timeout()),
-                    name=f"{stage}-取消错误地图",
-                )
+                cancelled = self._quick_hunt_cancel_dialog(f"{stage}-取消错误地图")
                 return "wrong_map" if cancelled else "failed"
         if count_mode not in {"MIN", "MAX"}:
             self.log_info(f"快速狩猎：不支持的次数模式：{count_mode}")
             return "failed"
-        if not self._quick_hunt_click_ocr(
-            [rf"^{count_mode}$"],
-            QUICK_HUNT_COUNT_ROI,
-            self._quick_hunt_ui_timeout(),
-            name=f"{stage}-{count_mode}",
-        ):
+        submission = self._quick_hunt_prepare_dialog(
+            count_mode, stage, expected_map_pattern, resource, max_cost,
+        )
+        if submission == "budget_limited":
+            return "budget_limited" if self._quick_hunt_cancel_dialog(stage) else "failed"
+        if submission is None:
+            self._status_set("快速狩猎提交", "未通过消耗前核验")
+            self._save_flow_diagnostic("quick_hunt_confirmation_failed")
+            self._quick_hunt_cancel_dialog(stage)
             return "failed"
-        if verify_single_rice:
-            count_text, _ = self._quick_hunt_wait_ocr(
-                [r"狩猎\s*1\s*次"], QUICK_HUNT_COUNT_ROI,
-                self._quick_hunt_ui_timeout(), name=f"{stage}-确认单次",
-            )
-            cost_text = self._quick_hunt_ocr_text(
-                self.capture_frame(), QUICK_HUNT_START_ROI, name=f"{stage}-确认6米饭",
-            )
-            if not count_text or not re.search(r"狩猎\D*6\s*$", cost_text):
-                self.log_info("快速狩猎：未确认一次狩猎消耗6米饭，取消。")
-                self._quick_hunt_click_ocr(
-                    [r"取消"], QUICK_HUNT_COUNT_ROI, self._quick_hunt_ui_timeout(),
-                    name="取消未确认次数",
-                )
-                return "failed"
-        if not self._quick_hunt_click_ocr(
-            [r"狩猎"],
-            QUICK_HUNT_START_ROI,
-            self._quick_hunt_ui_timeout(),
-            name=f"{stage}-开始狩猎",
-            require_enabled=True,
-        ):
-            return "failed"
-        return self._quick_hunt_wait_result(stage)
+        self._quick_vision().click_client(
+            submission.start_point, submission.frame_shape, after_sleep=0.3,
+        )
+        return self._quick_hunt_wait_result(stage, submission=submission, resource=resource)
 
-    def _quick_hunt_wait_result(self, stage: str) -> str:
+    def _quick_hunt_wait_result(
+        self, stage: str, submission: HuntDialog | None = None, resource: str = "米饭",
+    ) -> str:
         end_at = monotonic() + float(self.config.get("快速狩猎结算等待秒数", 15.0))
         pending_result = None
         close_clicks = 0
         menu_hits = 0
         last_state = "等待结算"
+        start_clicks = 1 if submission else 0
+        next_start = monotonic() + QUICK_HUNT_RETRY_INTERVAL
+        same_dialog_hits = 0
+        may_have_started = False
         while monotonic() <= end_at:
             frame = self.capture_frame()
             reward_text = self._quick_hunt_ocr_text(
@@ -938,9 +1195,9 @@ class QuickHuntFeatureMixin:
                 QUICK_HUNT_DIALOG_ROI,
                 name=f"{stage}-异常",
             )
-            depleted_open = any(
-                keyword in self._normalize_text(dialog_text)
-                for keyword in ("不足", "无法", "耗尽")
+            depleted_open = bool(
+                re.search(rf"{resource}.*(?:不足|耗尽)|(?:不足|耗尽).*{resource}",
+                          self._normalize_text(dialog_text))
             )
             if reward_open or depleted_open:
                 if pending_result is None:
@@ -950,15 +1207,16 @@ class QuickHuntFeatureMixin:
                 menu_hits = 0
                 last_state = "奖励页未关闭" if reward_open else "资源不足弹窗未关闭"
                 if close_clicks < 3:
-                    close_clicks += 1
                     if reward_open:
+                        self._status_set("快速狩猎提交", "奖励已确认，正在返回菜单")
                         self.operate_click(
                             (QUICK_HUNT_REWARD_ROI[0] + QUICK_HUNT_REWARD_ROI[2]) / 2,
                             (QUICK_HUNT_REWARD_ROI[1] + QUICK_HUNT_REWARD_ROI[3]) / 2,
                             after_sleep=0.8,
                         )
-                    else:
-                        self._click_mf_reference(1, 1, after_sleep=0.8)
+                        close_clicks += 1
+                    elif self._quick_hunt_dismiss_shortage(frame):
+                        close_clicks += 1
             elif pending_result is not None:
                 menu_text = self._quick_hunt_ocr_text(
                     frame, QUICK_HUNT_MENU_FOREGROUND_ROI, name=f"{stage}-结算返回菜单",
@@ -975,69 +1233,69 @@ class QuickHuntFeatureMixin:
                 self._status_set(f"{stage}-结算返回菜单亮度", f"p95={p95:.0f}")
                 if menu_hits >= 2:
                     return pending_result
+            elif submission is not None:
+                current = self._quick_hunt_dialog_snapshot(frame, stage, resource)
+                if current is None or current.signature != submission.signature:
+                    # Once the original dialog changed, a late response may have spent resources.
+                    may_have_started = True
+                    same_dialog_hits = 0
+                    last_state = "提交结果待确认，禁止再次开始"
+                elif not may_have_started:
+                    same_dialog_hits += 1
+                    last_state = "次数弹窗仍在，尚未确认开始"
+                    if (same_dialog_hits >= 2 and monotonic() >= next_start
+                            and start_clicks < QUICK_HUNT_ACTION_ATTEMPTS):
+                        self._quick_vision().click_client(
+                            current.start_point, current.frame_shape, after_sleep=0.3,
+                        )
+                        start_clicks += 1
+                        same_dialog_hits = 0
+                        next_start = monotonic() + QUICK_HUNT_RETRY_INTERVAL
+                self._status_set("快速狩猎提交", f"{last_state}；开始点击={start_clicks}/3")
             self._status_set(f"{stage}-结算退出状态", f"{last_state}；关闭点击={close_clicks}/3")
             self.sleep(0.3)
         self.log_info(f"快速狩猎：{stage}结算退出超时，{last_state}；关闭点击={close_clicks}/3。")
-        self._save_flow_diagnostic("quick_hunt_result_close_failed")
+        self._save_flow_diagnostic(
+            "quick_hunt_result_close_failed" if pending_result else "quick_hunt_start_unconfirmed"
+        )
         return "failed"
 
-    def _quick_hunt_stone_counts(self) -> dict[str, int] | None:
-        frame = self.capture_frame()
+    def _quick_hunt_dismiss_shortage(self, frame) -> bool:
         boxes = self._quick_vision().ocr_boxes(
-            frame,
-            "圣石属性数量",
-            relative_roi=QUICK_HUNT_STONE_COUNT_ROI,
+            frame, "快速狩猎不足提示关闭", relative_roi=QUICK_HUNT_DIALOG_ROI,
         )
-        values: list[tuple[float, int]] = []
-        for box in boxes:
-            text = str(getattr(box, "name", ""))
-            digits = re.sub(r"\D", "", text)
-            if not digits:
-                continue
-            center = self._quick_hunt_box_center(box)
-            if center is None:
-                continue
-            values.append((center[1], int(digits)))
-        values.sort(key=lambda item: item[0])
-        if len(values) != len(QUICK_HUNT_STONE_ELEMENTS):
-            self._status_set(
-                "快速狩猎圣石数量",
-                f"需要5个数字，实际识别{len(values)}个",
-            )
-            self.log_info(
-                "快速狩猎：圣石数量区域未从上到下识别出火、水、风、光、暗5个数字。"
-            )
-            return None
-        return {
-            element: value
-            for element, (_center_y, value) in zip(QUICK_HUNT_STONE_ELEMENTS, values)
-        }
+        buttons = [box for box in boxes
+                   if self._normalize_text(box.name) in ("确认", "确定")]
+        if not buttons:
+            buttons = [box for box in boxes if self._normalize_text(box.name) == "取消"]
+        point = self._quick_hunt_box_center(buttons[0]) if len(buttons) == 1 else None
+        if point is None:
+            return False
+        self._quick_vision().click_client(point, frame.shape, after_sleep=0.5)
+        return True
 
-    def _quick_hunt_resource_empty(self, resource: str) -> bool:
-        frame = self.capture_frame()
-        roi = QUICK_HUNT_RESOURCE_ROI
-        if resource == "米饭":
-            frame = crop_relative(frame, roi)[:, :, :3]
-            # Free rice is white; the adjacent stored-rice counter is yellow.
-            white = cv2.inRange(
-                cv2.cvtColor(frame, cv2.COLOR_BGR2HSV),
-                (0, 0, 170), (179, 60, 255),
-            )
-            frame = cv2.bitwise_and(frame, frame, mask=white)
-            roi = (0, 0, 1, 1)
-        text = self._quick_hunt_ocr_text(frame, roi, name=f"{resource}数量")
-        normalized = self._normalize_text(text).replace("：", ":")
-        expected_capacity = QUICK_HUNT_RESOURCE_CAPACITIES.get(resource)
-        if expected_capacity is None:
-            pattern = r"(?:^|\D)0[/：:|\-~][1-9]\d*(?:\D|$)"
-        else:
-            pattern = (
-                rf"(?:^|\D)0[/：:|\-~]{expected_capacity}"
-                rf"(?:\D|$)"
-            )
-        empty = re.search(pattern, normalized) is not None
-        self._status_set(f"快速狩猎{resource}", text or "未识别")
-        return empty
+    def _quick_hunt_stone_counts(self) -> dict[str, int] | None:
+        end_at = monotonic() + self._quick_hunt_ui_timeout()
+        previous = None
+        while monotonic() <= end_at:
+            frame = self.capture_frame()
+            values = None
+            for scale in (1.0, 2.0):
+                boxes = self._quick_vision().ocr_boxes(
+                    frame, "圣石属性数量", relative_roi=QUICK_HUNT_STONE_COUNT_ROI,
+                    ocr_scale=scale,
+                )
+                self._status_set("圣石属性数量 OCR", " ".join(box.name for box in boxes) or "-")
+                values = parse_stone_rows(boxes)
+                if values is not None:
+                    break
+            if values is not None and values == previous:
+                return dict(zip(QUICK_HUNT_STONE_ELEMENTS, values))
+            previous = values
+            self.sleep(0.3)
+        self.log_info("快速狩猎：未确认五行圣石数量稳定一致，请检查资源列表是否展开。")
+        self._save_flow_diagnostic("quick_hunt_stone_count_failed")
+        return None
 
     def _quick_hunt_count_modes(self) -> tuple[str, str | None]:
         allocation = str(
@@ -1183,7 +1441,11 @@ class QuickHuntFeatureMixin:
 
     def _quick_hunt_return_home(self) -> bool:
         self._status_set("快速狩猎当前阶段", "返回主页")
-        for _attempt in range(4):
+        end_at = monotonic() + max(
+            self._quick_hunt_ui_timeout(), float(self.config.get("主页确认等待秒数", 10.0)),
+        )
+        back_clicks = reward_clicks = shortage_clicks = 0
+        while monotonic() <= end_at:
             frame = self.capture_frame()
             self._status_set(
                 "快速狩猎返回位置 OCR",
@@ -1211,9 +1473,50 @@ class QuickHuntFeatureMixin:
             ):
                 self.sleep(0.35)
                 continue
-            self._click_reference(*QUICK_HUNT_RETURN_POINT, after_sleep=2.0)
-        frame = self.capture_frame()
-        return self._quick_hunt_home_signals(frame)[0]
+            reward = self._normalize_text(self._quick_hunt_ocr_text(
+                frame, QUICK_HUNT_REWARD_ROI, name="快速狩猎退出奖励",
+            ))
+            title = self._normalize_text(self._quick_hunt_ocr_text(
+                frame, QUICK_HUNT_REWARD_TITLE_ROI, name="快速狩猎退出奖励标题",
+            ))
+            dialog_text = self._normalize_text(self._quick_hunt_ocr_text(
+                frame, QUICK_HUNT_DIALOG_ROI, name="快速狩猎退出提示",
+            ))
+            if (("点击" in reward and "返回" in reward) or "reward" in title
+                    or ("画面" in reward and "即可" in reward)):
+                if reward_clicks >= QUICK_HUNT_ACTION_ATTEMPTS:
+                    break
+                self.operate_click(
+                    (QUICK_HUNT_REWARD_ROI[0] + QUICK_HUNT_REWARD_ROI[2]) / 2,
+                    (QUICK_HUNT_REWARD_ROI[1] + QUICK_HUNT_REWARD_ROI[3]) / 2,
+                    after_sleep=0.8,
+                )
+                reward_clicks += 1
+            elif re.search(
+                r"(?:米饭|火把).*(?:不足|耗尽)|(?:不足|耗尽).*(?:米饭|火把)", dialog_text,
+            ):
+                if shortage_clicks >= QUICK_HUNT_ACTION_ATTEMPTS:
+                    break
+                if self._quick_hunt_dismiss_shortage(frame):
+                    shortage_clicks += 1
+                else:
+                    self.sleep(0.3)
+            elif self._quick_hunt_menu_still_open(frame):
+                if back_clicks >= 4:
+                    break
+                self._click_reference(*QUICK_HUNT_RETURN_POINT, after_sleep=2.0)
+                back_clicks += 1
+            elif self._quick_hunt_dialog_ocr(frame, "快速狩猎退出次数窗")[0]:
+                if not self._quick_hunt_cancel_dialog(
+                    "快速狩猎退出次数窗", timeout=end_at - monotonic(),
+                ):
+                    return False
+            else:
+                self.sleep(0.3)
+        if self._quick_hunt_home_signals(self.capture_frame())[0]:
+            return True
+        self._save_flow_diagnostic("quick_hunt_return_home_failed")
+        return False
 
     def _quick_hunt_current_map_context(self, frame) -> str:
         boxes = self._quick_vision().ocr_boxes(
@@ -1253,103 +1556,29 @@ class QuickHuntFeatureMixin:
     def _quick_hunt_ui_timeout(self) -> float:
         return float(self.config.get("快速狩猎界面等待秒数", 8.0))
 
-    def _click_mf_reference(self, x: int, y: int, after_sleep: float = 0.0):
-        self.operate_click(
-            max(0.0, min(1.0, x / HD_720.width)),
-            max(0.0, min(1.0, y / HD_720.height)),
-            after_sleep=after_sleep,
-        )
-
-    def _quick_hunt_dialog_ocr(
-        self,
-        frame,
-        name: str,
-    ) -> tuple[bool, str, str]:
-        """Read controls that are unique to the quick-hunt count dialog."""
-
-        vision = self._quick_vision()
-        count_boxes = vision.ocr_boxes(
-            frame,
-            f"{name}-次数",
-            relative_roi=QUICK_HUNT_COUNT_ROI,
-        )
-        count_values = [
-            self._normalize_text(getattr(box, "name", ""))
-            for box in count_boxes
-        ]
-        count_text = " ".join(
-            str(getattr(box, "name", "")) for box in count_boxes
-        )
-        count_open = any(
-            "min" in value or "max" in value or "取消" in value
-            for value in count_values
-        )
-
-        start_text = ""
-        start_open = False
-        if not count_open:
-            start_boxes = vision.ocr_boxes(
-                frame,
-                f"{name}-开始",
-                relative_roi=QUICK_HUNT_START_ROI,
-            )
-            start_values = [
-                self._normalize_text(getattr(box, "name", ""))
-                for box in start_boxes
-            ]
-            start_text = " ".join(
-                str(getattr(box, "name", "")) for box in start_boxes
-            )
-            start_open = any("狩猎" in value for value in start_values)
-        return count_open or start_open, count_text, start_text
-
-    def _quick_hunt_wait_confirmation_dialog(self, timeout: float, name: str) -> bool:
-        end_at = monotonic() + max(0.0, timeout)
-        last_text = ""
-        while monotonic() <= end_at:
-            frame = self.capture_frame()
-            opened, count_text, start_text = self._quick_hunt_dialog_ocr(frame, name)
-            last_text = " ".join(
-                part for part in (count_text, start_text) if part
-            )
-            self._status_set(f"{name} OCR", last_text or "-")
-            if opened:
-                return True
-            self.sleep(0.3)
-        self.log_info(
-            f"快速狩猎：{name}超时，最后一次 OCR={last_text or '-'}。"
-        )
-        return False
-
-    def _quick_hunt_menu_still_open(self) -> bool:
-        frame = self.capture_frame()
-        boxes = self._quick_vision().ocr_boxes(
-            frame,
-            "快速狩猎补点菜单门禁",
-            relative_roi=None,
-        )
-        text = " ".join(str(getattr(box, "name", "")) for box in boxes)
-        self._status_set("快速狩猎补点菜单 OCR", text or "-")
-        return re.search(r"狩猎场", self._normalize_text(text)) is not None
-
     def _quick_hunt_free_rice(self) -> int | None:
+        return self._quick_hunt_free_resource("米饭")
+
+    def _quick_hunt_free_resource(self, resource: str, frame=None) -> int | None:
+        if frame is not None:
+            crop = crop_relative(frame, QUICK_HUNT_RESOURCE_ROI)
+            if crop.size == 0 or crop.ndim != 3 or crop.shape[2] < 3:
+                return None
+            crop = crop[:, :, :3]
+            # Free balances are white; stored balances are yellow.
+            white = cv2.inRange(cv2.cvtColor(crop, cv2.COLOR_BGR2HSV),
+                                (0, 0, 170), (179, 60, 255))
+            text = self._quick_hunt_ocr_text(
+                cv2.bitwise_and(crop, crop, mask=white), (0, 0, 1, 1),
+                name=f"免费{resource}数量",
+            )
+            value = parse_free_pool(text, QUICK_HUNT_RESOURCE_CAPACITIES[resource])
+            return value[0] if value is not None else None
         values = []
         for _ in range(2):
-            resource = crop_relative(self.capture_frame(), QUICK_HUNT_RESOURCE_ROI)
-            resource = resource[:, :, :3]
-            # Free rice is white; the adjacent stored-rice counter is yellow.
-            white = cv2.inRange(
-                cv2.cvtColor(resource, cv2.COLOR_BGR2HSV),
-                (0, 0, 170), (179, 60, 255),
-            )
-            text = self._quick_hunt_ocr_text(
-                cv2.bitwise_and(resource, resource, mask=white),
-                (0, 0, 1, 1), name="免费米饭数量",
-            )
-            normalized = self._normalize_text(text)
-            numbers = re.findall(r"(?<!\d)(\d{1,3})[/：:|]90(?!\d)", normalized)
-            if len(numbers) != 1 or not 0 <= int(numbers[0]) <= 90:
+            value = self._quick_hunt_free_resource(resource, self.capture_frame())
+            if value is None:
                 return None
-            values.append(int(numbers[0]))
+            values.append(value)
             self.sleep(0.15)
         return values[0] if values[0] == values[1] else None
