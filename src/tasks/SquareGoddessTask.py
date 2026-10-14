@@ -447,7 +447,15 @@ class SquareGoddessTask(BaseBD2Task):
         return False
 
     def _pray_at_goddess(self) -> bool:
+        from src.tasks import run_history
+
+        scope = run_history.stage_scope(self)
+        record = run_history.read_stage(self, "女神像许愿")
         self.info_set("当前阶段", "检查女神像许愿与每日导航")
+        if record.get("state") == "done" and record.get("scope") == scope:
+            self.info_set("女神像许愿 OCR", "本周期许愿已确认，继续检查剩余事项")
+            return self._click_square_notice_if_present(
+                timeout=float(self.config.get("祈祷完成后感叹号等待秒数", 5.0)))
         navigation_result = self._click_goddess_daily_navigation_until(
             timeout=float(self.config.get("女神像导航入口等待秒数", 8.0))
         )
@@ -455,9 +463,14 @@ class SquareGoddessTask(BaseBD2Task):
             self.info_set("女神像许愿 OCR", "已确认女神像许愿任务完成")
             self.log_info("广场女神像：已确认女神像许愿任务完成。")
         elif navigation_result not in (GODDESS_NAVIGATION_CLICKED, GODDESS_PRAYER_READY):
-            self.info_set("女神像许愿 OCR", "未确认女神像每日导航，停止本次任务")
-            self.log_info("广场女神像：未确认每日导航；派遣感叹号处理不代表许愿完成。")
-            return False
+            # The completion row can move outside the navigation crop. Accept only
+            # explicit full-screen completion evidence, never an absent row.
+            text = self._ocr_text(self.capture_frame(), name="许愿完成状态复核")
+            normalized = self._normalize_text(text)
+            if not re.search(r"向女神像许愿(?:1/1|2/2)完成", normalized):
+                self.info_set("女神像许愿 OCR", "未确认女神像每日导航，停止本次任务")
+                self.log_info("广场女神像：未确认许愿完成；已恢复主页后可继续其他日课。")
+                return False
         else:
             self.info_set("当前阶段", "等待并完成女神像许愿")
             if not self._wait_for_goddess_prayer_completion(
@@ -465,6 +478,9 @@ class SquareGoddessTask(BaseBD2Task):
             ):
                 self.log_info("广场女神像：等待许愿或完成确认超时。")
                 return False
+
+        run_history.save_stage(self, "女神像许愿", "done", scope=scope,
+                               evidence={"result": "许愿或当日完成文字已确认"})
 
         self.info_set("当前阶段", "祈祷完成后检查广场感叹号")
         return self._click_square_notice_if_present(

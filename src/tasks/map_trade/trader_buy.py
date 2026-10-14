@@ -40,6 +40,8 @@ BUY_ALL_FAVORITES_CLICK_AFTER_SLEEP = 0.3
 
 class BuyFlowMixin:
     def run_buy(self) -> bool:
+        from src.tasks import run_history
+
         stock_date = purchase_stock_date(self._current_market_time())
         self._status("购买库存日期", stock_date.isoformat())
         self.task.log_info(
@@ -59,8 +61,14 @@ class BuyFlowMixin:
         if purchase_state is None:
             return False
         if purchase_state[0] is None:
+            run_history.save_stage(self.task, "购买全部收藏", "done",
+                                   evidence={"stock_date": stock_date.isoformat()})
             self._buy_completed_in_current_shop = True
             return True
+        if run_history.read_stage(self.task, "购买全部收藏").get("state") == "pending":
+            completed = self.buy_all_favorites()
+            self._buy_completed_in_current_shop = completed
+            return completed
         rebuild_cycle = str(self.task.config.get("收藏重建周期", "每周"))
         every_run = rebuild_cycle == "每次"
         if rebuild_cycle == "永不":
@@ -138,13 +146,27 @@ class BuyFlowMixin:
         return False
 
     def buy_all_favorites(self) -> bool:
+        from src.tasks import run_history
+
+        record = run_history.read_stage(self.task, "购买全部收藏")
         located = self._wait_for_buy_all_favorites_state()
         if located is None:
             self.task.log_warning("买：商店页面未稳定显示可购买按钮或售罄状态。")
             return False
         button_center, frame = located
         if button_center is None:
+            run_history.save_stage(self.task, "购买全部收藏", "done",
+                                   evidence={"result": "已售罄"})
             return True
+        if record.get("state") == "pending":
+            if self._wait_for_purchase_completion():
+                current = self._wait_for_buy_all_favorites_state()
+                if current is not None and current[0] is None:
+                    run_history.save_stage(self.task, "购买全部收藏", "done",
+                                           evidence={"result": "前次购买已核验售罄"})
+                    return True
+            self.task.log_warning("买：前次购买提交结果未知，售罄/完成未确认，禁止重复购买。")
+            return False
         self._status(
             "一键购买全部收藏按钮点击中心",
             f"center=({button_center[0]},{button_center[1]})",
@@ -161,6 +183,8 @@ class BuyFlowMixin:
             f"买：购买确认弹窗OCR完成，等待{BUY_CONFIRM_PRE_CLICK_DELAY:.1f}秒后点击确认。"
         )
         self.task.sleep(BUY_CONFIRM_PRE_CLICK_DELAY)
+        run_history.save_stage(self.task, "购买全部收藏", "pending",
+                               evidence={"target": "全部收藏"})
         self.task.operate_click(
             *BUY_CONFIRM_POINT,
             after_sleep=BUY_CONFIRM_POST_CLICK_DELAY,
@@ -171,6 +195,8 @@ class BuyFlowMixin:
             )
             return False
         self.task.log_info("买：已确认购买全部收藏商品。")
+        run_history.save_stage(self.task, "购买全部收藏", "done",
+                               evidence={"result": "购买完成已确认"})
         return True
 
     def _wait_for_purchase_completion(

@@ -11,6 +11,7 @@ import cv2
 import numpy as np
 from ok.task.exceptions import TaskDisabledException
 
+from src.tasks import run_history
 from src.tasks.map_trade.models import TemplateSpec
 from src.tasks.quick_hunt_vision import parse_free_pool, parse_stone_rows, read_free_switch
 from src.tasks.task_vision_mixin import (
@@ -209,7 +210,7 @@ class QuickHuntConfigMixin:
         "强制双倍优先配置资源；忽视双倍固定选择金币。",
         '快速狩猎资源倾向': "强制双倍策略下优先检查金币或经验。",
         '快速狩猎米饭分配': "狩猎场 MIN 时双倍冒险航线使用 MAX；"
-        "狩猎场 MAX 时跳过冒险航线。",
+        "当天已确认完成的 MIN 不重复执行；狩猎场 MAX 时跳过冒险航线。",
         '快速狩猎模板阈值': "快速狩猎模板匹配最低分数。",
         '快速狩猎像素相似度阈值': "快速狩猎模板还必须达到的像素相似度。",
         '快速狩猎界面等待秒数': "等待狩猎菜单、地图和按钮出现的最长时间。",
@@ -637,6 +638,8 @@ class QuickHuntFeatureMixin:
             self.log_info("快速狩猎：无法确认免费米饭数量，停止刷取。")
             return False
         if rice < RICE_PER_HUNT:
+            if rice == 0:
+                self._quick_hunt_record_exhausted("米饭")
             self._status_set("快速狩猎米饭", "不足一次，跳过")
             return True
 
@@ -708,6 +711,7 @@ class QuickHuntFeatureMixin:
             self.log_info("快速狩猎：免费火把数量未确认，停止刷取。")
             return False
         if torches == 0:
+            self._quick_hunt_record_exhausted("火把")
             self._status_set("快速狩猎火把", "0，跳过")
             return True
 
@@ -737,6 +741,15 @@ class QuickHuntFeatureMixin:
             return False
         self._status_set("快速狩猎火把", "已耗尽" if result == "depleted" else "完成")
         return True
+
+    def _quick_hunt_record_exhausted(self, resource: str) -> None:
+        pending = run_history.default_store().pending_stages(
+            run_history.stage_owner(self), f"狩猎提交:{resource}:")
+        for key, record in pending.items():
+            run_history.save_stage(
+                self, key, "done",
+                evidence={**record["evidence"], "result": "资源已耗尽"},
+            )
 
     def _quick_hunt_enter_crystal_cave(self, attempts: int = 3) -> bool:
         """Open the crystal cave panel and confirm the attribute cave list.
@@ -1101,6 +1114,35 @@ class QuickHuntFeatureMixin:
         max_cost: int | None = None,
     ) -> str:
         self._status_set("快速狩猎当前阶段", stage)
+        checkpoint = f"狩猎提交:{resource}:{stage.removesuffix('重试')}"
+        scope = run_history.stage_scope(self)
+        record = run_history.read_stage(self, checkpoint)
+        pending = run_history.default_store().pending_stages(
+            run_history.stage_owner(self), f"狩猎提交:{resource}:")
+        if pending and checkpoint not in pending:
+            self.log_info(f"快速狩猎：{resource}另一个目标存在待确认提交，不启动新的消费阶段。")
+            return "failed"
+        if record.get("state") == "pending":
+            evidence = record.get("evidence", {})
+            remaining = self._quick_hunt_free_resource(resource)
+            if remaining == 0:
+                run_history.save_stage(self, checkpoint, "done", scope=scope,
+                                       evidence={**evidence, "result": "资源已耗尽"})
+                return "depleted"
+            if record.get("scope") == scope:
+                self._hunt_checkpoint = (checkpoint, scope, evidence)
+                try:
+                    result = self._quick_hunt_wait_result(stage, resource=resource, timeout=2.0)
+                    if result in {"done", "depleted"}:
+                        return result
+                finally:
+                    self._hunt_checkpoint = None
+            self.log_info(f"快速狩猎：{stage}前次提交结果未知，已只读复核资源，本次不再次开始。")
+            return "failed"
+        if (count_mode == "MIN" and record.get("state") == "done"
+                and record.get("scope") == scope):
+            self.log_info(f"快速狩猎：{stage}本周期 MIN 已确认，继续剩余阶段。")
+            return "done"
         dialog_timeout = min(
             QUICK_HUNT_DIALOG_CONFIRM_TIMEOUT,
             max(0.5, self._quick_hunt_ui_timeout()),
@@ -1157,15 +1199,24 @@ class QuickHuntFeatureMixin:
             self._save_flow_diagnostic("quick_hunt_confirmation_failed")
             self._quick_hunt_cancel_dialog(stage)
             return "failed"
-        self._quick_vision().click_client(
-            submission.start_point, submission.frame_shape, after_sleep=0.3,
-        )
-        return self._quick_hunt_wait_result(stage, submission=submission, resource=resource)
+        evidence = {"map": submission.map_name, "count": submission.count,
+                    "cost": submission.cost, "pool": submission.pool, "resource": resource}
+        run_history.save_stage(self, checkpoint, "pending", scope=scope, evidence=evidence)
+        self._hunt_checkpoint = (checkpoint, scope, evidence)
+        try:
+            self._quick_vision().click_client(
+                submission.start_point, submission.frame_shape, after_sleep=0.3,
+            )
+            return self._quick_hunt_wait_result(stage, submission=submission, resource=resource)
+        finally:
+            self._hunt_checkpoint = None
 
     def _quick_hunt_wait_result(
         self, stage: str, submission: HuntDialog | None = None, resource: str = "米饭",
+        timeout: float | None = None,
     ) -> str:
-        end_at = monotonic() + float(self.config.get("快速狩猎结算等待秒数", 15.0))
+        end_at = monotonic() + (float(self.config.get("快速狩猎结算等待秒数", 15.0))
+                               if timeout is None else timeout)
         pending_result = None
         close_clicks = 0
         menu_hits = 0
@@ -1202,6 +1253,11 @@ class QuickHuntFeatureMixin:
             if reward_open or depleted_open:
                 if pending_result is None:
                     pending_result = "done" if reward_open else "depleted"
+                    checkpoint = getattr(self, "_hunt_checkpoint", None)
+                    if checkpoint is not None:
+                        key, scope, evidence = checkpoint
+                        run_history.save_stage(self, key, "done", scope=scope,
+                                               evidence={**evidence, "result": pending_result})
                     # Start the close deadline once, even when settlement used its entire allowance.
                     end_at = monotonic() + self._quick_hunt_ui_timeout()
                 menu_hits = 0

@@ -115,11 +115,46 @@ from src.utils.calibration import FHD_1080, reference_rect_to_relative_roi
 from src.utils.home_confirmation import HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT
 from src.utils.image_utils import relative_roi_frame, scale_reference_roi
 from src.utils.template_resolution import offline_template_scale
+from tests.helpers import StageHistoryTestCase
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-class SellFlowTest(unittest.TestCase):
+class SellFlowTest(StageHistoryTestCase):
+    def test_pending_sale_reads_stock_and_never_repeats_the_confirmation(self):
+        from unittest.mock import Mock
+
+        from src.tasks import run_history
+
+        trader = object.__new__(Trader)
+        trader.task = SimpleNamespace(config={}, log_info=Mock(), log_warning=Mock(),
+                                      info_set=Mock(), operate_click=Mock())
+        trader.vision = SimpleNamespace(click_client=Mock())
+        trader._sale_name_signature = Mock(return_value=())
+        trader._sale_toast_id = Mock(return_value=None)
+        trader._last_sale_toast_id = None
+        trader._wait_sale_dialog_item = Mock(return_value=True)
+        trader._wait_owned_quantity = Mock(return_value=100)
+        trader._wait_available_quantity = Mock(return_value=50)
+        trader._ensure_sell_page = Mock(return_value=True)
+        entry = CalendarEntry("苹果", "1")
+        candidate = SimpleNamespace(center=(10, 10))
+        frame = np.zeros((30, 30, 3), dtype=np.uint8)
+        run_history.save_stage(trader.task, "出售:1:苹果", "pending",
+                               evidence={"owned": 100, "selected": 10})
+        self.assertIsNone(trader._sell_one_candidate(entry, candidate, frame, previous_owned=None))
+        trader.task.operate_click.assert_not_called()
+        trader._wait_owned_quantity.return_value = 90
+        self.assertEqual((100, True),
+                         trader._sell_one_candidate(entry, candidate, frame, previous_owned=None))
+        self.assertEqual("done", run_history.read_stage(trader.task, "出售:1:苹果")["state"])
+        entry = CalendarEntry("苹果", "1", reserve=90)
+        run_history.save_stage(trader.task, "出售:1:苹果", "pending",
+                               evidence={"owned": 100, "selected": None})
+        self.assertEqual((90, False),
+                         trader._sell_one_candidate(entry, candidate, frame, previous_owned=None))
+        self.assertEqual("done", run_history.read_stage(trader.task, "出售:1:苹果")["state"])
+
     @staticmethod
     def _sale_name_match(text, names):
         trader = object.__new__(Trader)
@@ -2778,7 +2813,27 @@ class BuyEntryTest(unittest.TestCase):
         )
 
 
-class BuyPhaseAndClassifyTest(unittest.TestCase):
+class BuyPhaseAndClassifyTest(StageHistoryTestCase):
+    def test_pending_purchase_only_rechecks_result_and_never_confirms_again(self):
+        from unittest.mock import Mock
+
+        from src.tasks import run_history
+
+        trader = object.__new__(Trader)
+        trader.task = SimpleNamespace(config={}, log_warning=Mock())
+        trader._wait_for_buy_all_favorites_state = Mock(return_value=((10, 10), None))
+        trader._wait_for_purchase_completion = Mock(return_value=False)
+        trader.vision = SimpleNamespace(click_client=Mock())
+        run_history.save_stage(trader.task, "购买全部收藏", "pending")
+        self.assertFalse(trader.buy_all_favorites())
+        trader.vision.click_client.assert_not_called()
+        trader._wait_for_purchase_completion.return_value = True
+        self.assertFalse(trader.buy_all_favorites())
+        trader.vision.click_client.assert_not_called()
+        trader._wait_for_buy_all_favorites_state.return_value = (None, None)
+        self.assertTrue(trader.buy_all_favorites())
+        trader.vision.click_client.assert_not_called()
+
     def test_classify_rois_keep_reference_rect_boundaries_at_supported_resolutions(self):
         roi_pairs = (
             (CLASSIFY_LOADING_REFERENCE_ROI, CLASSIFY_LOADING_RELATIVE_ROI),

@@ -37,6 +37,7 @@ from src.tasks.map_trade.trader_cooking import (
     CookingRecipeOutcome,
     _character_coverage,
 )
+from tests.helpers import StageHistoryTestCase
 
 
 class CookingTask:
@@ -91,7 +92,7 @@ class CookingProgress:
         return True
 
 
-class CookingFlowTest(unittest.TestCase):
+class CookingFlowTest(StageHistoryTestCase):
     def _orchestrated_trader(self, *, selected, completed=(), outcomes=(), exit_ok=True):
         task = CookingTask(**{"5星料理": list(selected)})
         progress = CookingProgress(completed)
@@ -350,6 +351,15 @@ class CookingFlowTest(unittest.TestCase):
             trader._cook_one_recipe(recipe),
         )
         self.assertEqual([True], recovered)
+        from src.tasks import run_history
+        self.assertEqual("pending", run_history.read_stage(trader.task, f"料理:{recipe}")["state"])
+        # A restart can open the known recipe to inspect results, but cannot press MAX/start.
+        trader._select_max_cooking_quantity = lambda *_: self.fail("must not resubmit cooking")
+        self.assertIs(CookingRecipeOutcome.FAILED, trader._cook_one_recipe(recipe))
+        trader._wait_for_cooking_detail = lambda *_: CookingDetailSnapshot(frame, match, False, 0.0)
+        trader._return_from_detail_to_list = lambda *_: True
+        self.assertIs(CookingRecipeOutcome.UNAVAILABLE, trader._cook_one_recipe(recipe))
+        self.assertEqual("done", run_history.read_stage(trader.task, f"料理:{recipe}")["state"])
 
     def test_lost_max_click_retries_and_never_starts_without_confirmation(self):
         recipe = DEFAULT_COOKING_RECIPES[0]
@@ -364,6 +374,7 @@ class CookingFlowTest(unittest.TestCase):
             (COOKING_QUANTITY_ATTEMPTS, True, 1, CookingRecipeOutcome.COOKED),
         ):
             with self.subTest(ignored=ignored, already_max=already_max):
+                self.reset_stage_history()
                 state = {"max": already_max, "clicks": 0, "started": False}
                 trader = object.__new__(Trader)
                 trader.task = CookingTask()
@@ -592,7 +603,7 @@ class CookingRecognitionTest(unittest.TestCase):
         self.assertIsNone(COOKING_DETAIL_TEMPLATE.roi)
 
 
-class CookingAbsentRecipeTest(unittest.TestCase):
+class CookingAbsentRecipeTest(StageHistoryTestCase):
     """配方未识别分支：保持原门禁，跳过制作下一个，结尾警报不报错。"""
 
     def _trader_with_snapshot(self, *, identity):

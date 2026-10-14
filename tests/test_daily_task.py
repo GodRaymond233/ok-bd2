@@ -56,6 +56,7 @@ from src.tasks.task_vision_mixin import (
     REFERENCE_WIDTH,
 )
 from src.utils.image_utils import crop_relative
+from tests.helpers import StageHistoryTestCase
 
 
 def hunt_dialog(**changes):
@@ -65,7 +66,95 @@ def hunt_dialog(**changes):
     ), **changes)
 
 
-class DailyTaskHelperTest(unittest.TestCase):
+class DailyTaskHelperTest(StageHistoryTestCase):
+    def test_member_page_without_new_reward_is_accepted_but_other_pages_are_not(self):
+        normal = "公告事项 公会商店 进入公会联合战 公会成员 退出 请检查网络连接"
+        for text, expected in (
+            (normal, True), ("我的小屋 公会 抽抽乐", False),
+            ("搜索公会 公会商店 公告事项 申请加入", False),
+            (normal + " 确认", False),
+        ):
+            with self.subTest(text=text):
+                task = object.__new__(DailyTask)
+                task.capture_frame = Mock(return_value=None)
+                task._ocr_text = Mock(return_value=text)
+                task._status_set = Mock()
+                task.sleep = Mock()
+                with patch("src.tasks.DailyTask.monotonic", side_effect=[0, 0, 4]):
+                    self.assertEqual(expected, task._wait_for_existing_guild_visit())
+
+    def test_daily_failure_keeps_failed_item_and_continues_from_confirmed_home(self):
+        task = object.__new__(DailyTask)
+        task.config = {}
+        task.info_set = Mock()
+        task.log_info = Mock()
+        task.log_error = Mock()
+        task.log_completion = Mock()
+        task.run_guild_sign_in = Mock(return_value=False)
+        task.run_my_home_sign_in = Mock(return_value=True)
+        task.run_business_collect = Mock(return_value=True)
+        task.recover_daily_home = Mock(return_value=True)
+        self.assertFalse(task.run())
+        task.run_my_home_sign_in.assert_called_once()
+        task.run_business_collect.assert_called_once()
+        task.info_set.assert_any_call("失败", "['公会签到']")
+
+    def test_stop_preserves_done_substep_for_incomplete_resume(self):
+        from ok.task.exceptions import TaskDisabledException
+
+        from src.tasks import run_history
+        task = object.__new__(DailyTask)
+        task.config = {"_仅执行未完成步骤": True}
+        task.info_set = Mock()
+        task.log_info = Mock()
+        task.log_error = Mock()
+        task.log_completion = Mock()
+        task.recover_daily_home = Mock(return_value=True)
+        task.run_guild_sign_in = Mock(return_value=True)
+        task.run_my_home_sign_in = Mock(side_effect=TaskDisabledException())
+        task.run_business_collect = Mock(return_value=True)
+        with self.assertRaises(TaskDisabledException):
+            task.run()
+        self.assertEqual("done", run_history.read_stage(task, "公会签到")["state"])
+        task.recover_daily_home.return_value = False
+        self.assertFalse(task.run())
+        task.run_guild_sign_in.assert_called_once()
+        task.recover_daily_home.return_value = True
+        task.run_my_home_sign_in = Mock(return_value=True)
+        self.assertTrue(task.run())
+        task.run_guild_sign_in.assert_called_once()
+
+    def test_hunt_pending_submission_never_starts_again_on_unknown_result(self):
+        from src.tasks import run_history
+        task = object.__new__(QuickHuntTask)
+        task.config = {}
+        task._status_set = Mock()
+        task.log_info = Mock()
+        task._quick_hunt_free_resource = Mock(return_value=84)
+        task._quick_hunt_wait_result = Mock(return_value="failed")
+        task._quick_vision = Mock()
+        run_history.save_stage(task, "狩猎提交:米饭:狩猎场", "pending",
+                               evidence={"pool": 90, "cost": 6})
+        self.assertEqual("failed", task._quick_hunt_execute_current_map("MIN", "狩猎场"))
+        task._quick_vision.assert_not_called()
+        self.assertEqual("pending", run_history.read_stage(task, "狩猎提交:米饭:狩猎场")["state"])
+        self.assertEqual("failed", task._quick_hunt_execute_current_map("MAX", "冒险航线"))
+        task._quick_vision.assert_not_called()
+        task._quick_hunt_free_resource.return_value = 0
+        self.assertEqual("depleted", task._quick_hunt_execute_current_map("MIN", "狩猎场"))
+        self.assertEqual("done", run_history.read_stage(task, "狩猎提交:米饭:狩猎场")["state"])
+
+    def test_confirmed_hunt_min_survives_downstream_failure_without_replay(self):
+        from src.tasks import run_history
+        task = object.__new__(QuickHuntTask)
+        task.config = {}
+        task._status_set = Mock()
+        task.log_info = Mock()
+        task._quick_vision = Mock()
+        run_history.save_stage(task, "狩猎提交:米饭:狩猎场", "done")
+        self.assertEqual("done", task._quick_hunt_execute_current_map("MIN", "狩猎场"))
+        task._quick_vision.assert_not_called()
+
     def test_daily_task_is_renamed_and_has_no_quick_hunt_configuration(self):
         task = object.__new__(DailyTask)
         task.default_config = {}
@@ -467,6 +556,7 @@ class DailyTaskHelperTest(unittest.TestCase):
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
         task.log_error = lambda *_args, **_kwargs: None
+        task.recover_daily_home = lambda: False
         task._wait_for_home_confirmation = lambda *_args, **_kwargs: False
         actions = []
         task.capture_frame = lambda: actions.append("capture")
@@ -1944,6 +2034,7 @@ class DailyTaskHelperTest(unittest.TestCase):
         )
         for name, mode, snapshots, max_cost, expected in cases:
             with self.subTest(name=name):
+                self.reset_stage_history()
                 task = object.__new__(QuickHuntTask)
                 task.config = {"快速狩猎界面等待秒数": 2.5}
                 task.info_set = Mock()
@@ -2009,6 +2100,14 @@ class DailyTaskHelperTest(unittest.TestCase):
         task._quick_hunt_wait_result = Mock(return_value="done")
         vision = Mock()
         task._quick_vision = lambda: vision
+        from src.tasks import run_history
+
+        def check_pending_before_start(*_args, **_kwargs):
+            record = run_history.read_stage(task, "狩猎提交:米饭:冒险航线")
+            self.assertEqual("pending", record["state"])
+            self.assertEqual(90, record["evidence"]["cost"])
+
+        vision.click_client.side_effect = check_pending_before_start
 
         self.assertEqual(
             "done",
@@ -2028,6 +2127,12 @@ class DailyTaskHelperTest(unittest.TestCase):
             (snapshot.start_point, snapshot.frame_shape), vision.click_client.call_args.args,
         )
         self.assertIs(snapshot, task._quick_hunt_wait_result.call_args.kwargs["submission"])
+        self.reset_stage_history()
+        vision.click_client.reset_mock()
+        with patch("src.tasks.run_history.write_json_file", side_effect=OSError("disk full")):
+            with self.assertRaises(RuntimeError):
+                task._quick_hunt_execute_current_map("MAX", "冒险航线")
+        vision.click_client.assert_not_called()
 
     def test_quick_hunt_retries_button_when_count_dialog_was_swallowed(self):
         task = object.__new__(QuickHuntTask)
@@ -2378,7 +2483,7 @@ class DailyTaskHelperTest(unittest.TestCase):
         self.assertFalse(QuickHuntTask._quick_hunt_box_enabled(dark, box))
         self.assertTrue(QuickHuntTask._quick_hunt_box_enabled(light, box))
 
-    def test_daily_run_stops_after_failed_step(self):
+    def test_daily_run_stops_when_failed_step_cannot_recover_home(self):
         task = object.__new__(DailyTask)
         task.config = {
             "启用": True,
@@ -2389,6 +2494,7 @@ class DailyTaskHelperTest(unittest.TestCase):
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
         task.log_error = lambda *_args, **_kwargs: None
+        task.recover_daily_home = lambda: False
         calls = []
         task.run_guild_sign_in = lambda: calls.append("guild") or False
         task.run_my_home_sign_in = lambda: calls.append("home") or True

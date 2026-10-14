@@ -14,11 +14,32 @@ from src.tasks.FreeGachaTask import (
 )
 from src.tasks.map_trade.models import MatchResult
 from src.tasks.task_vision_mixin import REFERENCE_HEIGHT, REFERENCE_WIDTH
+from tests.helpers import StageHistoryTestCase
 
 free_gacha_module = importlib.import_module("src.tasks.FreeGachaTask")
 
 
-class FreeGachaTaskHelperTest(unittest.TestCase):
+class FreeGachaTaskHelperTest(StageHistoryTestCase):
+    def test_uncertain_previous_free_draw_is_not_submitted_again(self):
+        from unittest.mock import Mock
+
+        from src.tasks import run_history
+
+        task = object.__new__(FreeGachaTask)
+        task.config = {}
+        task.info_set = Mock()
+        task.log_info = Mock()
+        task._wait_for_free_gacha = Mock(return_value=(True, "免费", True))
+        task._open_confirm_dialog_with_retry = Mock()
+        task._confirm_dialog_submission = Mock()
+        run_history.save_stage(task, "免费抽:服装抽抽乐", "pending")
+        self.assertFalse(task._run_free_section("服装抽抽乐", True))
+        task._open_confirm_dialog_with_retry.assert_not_called()
+        task._confirm_dialog_submission.assert_not_called()
+        task._wait_for_free_gacha.return_value = (False, "下次免费", True)
+        self.assertTrue(task._run_free_section("服装抽抽乐", True))
+        self.assertEqual("done", run_history.read_stage(task, "免费抽:服装抽抽乐")["state"])
+
     def test_successful_run_emits_standalone_completion_notification(self):
         task = object.__new__(FreeGachaTask)
         task.config = {"启用": True}

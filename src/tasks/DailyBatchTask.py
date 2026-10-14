@@ -7,7 +7,7 @@ from collections import ChainMap
 from dataclasses import dataclass
 
 from ok import BaseTask
-from ok.task.exceptions import TaskDisabledException
+from ok.task.exceptions import FinishedException, TaskDisabledException
 from qfluentwidgets import FluentIcon
 
 from src.tasks.DailyTask import DailyTask
@@ -230,7 +230,7 @@ class DailyBatchTask(BaseTask):
 
         only_incomplete = run_mode == RUN_MODE_INCOMPLETE
         from src.tasks import scheduler as task_scheduler
-        from src.tasks.run_history import default_store
+        from src.tasks.run_history import configuration_scope, default_store
 
         history = default_store()
         schedule_store = task_scheduler.default_store()
@@ -272,7 +272,9 @@ class DailyBatchTask(BaseTask):
                 self.log_error(f"一键完成日常：未找到子任务 {child.config_key}。")
                 continue
 
-            if only_incomplete and history.is_completed_today(str(task.name)):
+            if only_incomplete and history.is_completed_today(
+                str(task.name), scope=configuration_scope(task),
+            ):
                 skipped.append(child.config_key)
                 pre_completed.append(child.config_key)
                 publish_outcome()
@@ -299,7 +301,8 @@ class DailyBatchTask(BaseTask):
                 # The switches on this card are authoritative for this run. Keep
                 # the child task's persisted configuration unchanged while making
                 # its own top-level 启用 gate transparent to the batch runner.
-                task.config = ChainMap({"启用": True}, original_config or {})
+                task.config = ChainMap({"启用": True, "_仅执行未完成步骤": only_incomplete},
+                                       original_config or {})
                 task.info_clear()
                 # 每个子任务开始前先尝试自动回主页（找不到入口也不硬失败，
                 # 子任务自身的入口主页确认/回主页逻辑仍会兜底）。
@@ -311,7 +314,7 @@ class DailyBatchTask(BaseTask):
                                 f"一键完成日常：{child.config_key} 自动回主页未成功，"
                                 "继续执行该子任务（由子任务自身兜底）。"
                             )
-                    except TaskDisabledException:
+                    except (TaskDisabledException, FinishedException):
                         raise
                     except Exception as ensure_exc:
                         self.log_warning(
@@ -328,22 +331,24 @@ class DailyBatchTask(BaseTask):
                     else:
                         failed.append(child.config_key)
                         publish_outcome()
-                        stop_remaining = True
+                        stop_remaining = not self._recover_failed_child(task)
                         self._delay_child_schedule(schedule_store, str(task.name), False)
                         self.log_warning(
-                            f"一键完成日常：{child.config_key} 失败，停止后续子任务。"
+                            f"一键完成日常：{child.config_key} 失败，"
+                            + ("停止后续子任务。" if stop_remaining
+                               else "已恢复主页，继续后续子任务。")
                         )
-            except TaskDisabledException:
+            except (TaskDisabledException, FinishedException):
                 raise
             except Exception as exc:
                 child_result = False
                 child_finished = time.time()
                 failed.append(child.config_key)
                 publish_outcome()
-                stop_remaining = True
+                stop_remaining = not self._recover_failed_child(task)
                 self._delay_child_schedule(schedule_store, str(task.name), False)
                 self.log_error(
-                    f"一键完成日常：{child.config_key} 异常，停止后续子任务。",
+                    f"一键完成日常：{child.config_key} 异常。",
                     exc,
                 )
             finally:
@@ -365,7 +370,8 @@ class DailyBatchTask(BaseTask):
         self.info_set("当前子任务", "-")
         publish_outcome()
         if failed:
-            self.info_set("状态", "一键完成日常中止。")
+            self.info_set("状态", "一键完成日常中止。" if stop_remaining
+                          else f"一键完成日常执行结束，{len(failed)} 项失败。")
             return False
 
         self.info_set("状态", "一键完成日常完成。")
@@ -375,6 +381,16 @@ class DailyBatchTask(BaseTask):
         )
         self._maybe_shutdown_after_daily(completed, pre_completed)
         return True
+
+    @staticmethod
+    def _recover_failed_child(task) -> bool:
+        recover = getattr(task, "recover_daily_home", None)
+        try:
+            return bool(recover and recover())
+        except (TaskDisabledException, FinishedException):
+            raise
+        except Exception:
+            return False
 
     def _maybe_shutdown_after_daily(
         self,
@@ -400,7 +416,7 @@ class DailyBatchTask(BaseTask):
         if not enabled_children:
             self.log_info("一键完成日常：没有已启用子任务，不执行自动关机。")
             return
-        from src.tasks.run_history import default_store
+        from src.tasks.run_history import configuration_scope, default_store
 
         history = default_store()
         for child in enabled_children:
@@ -408,7 +424,7 @@ class DailyBatchTask(BaseTask):
                 continue
             task = self.executor.get_task_by_class(child.task_class)
             name = str(getattr(task, "name", None) or child.config_key)
-            if not history.is_completed_today(name):
+            if not history.is_completed_today(name, scope=configuration_scope(task)):
                 self.log_info(
                     f"一键完成日常：{child.config_key} 今日未完成，不执行自动关机。"
                 )

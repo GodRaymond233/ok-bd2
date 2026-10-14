@@ -9,6 +9,7 @@ from time import monotonic
 
 from ok.task.exceptions import TaskDisabledException
 
+from src.tasks import run_history
 from src.tasks.map_trade.action_icons import COOKING_ICON, SKILL_GROUP_CENTERS_REFERENCE
 from src.tasks.map_trade.models import (
     COOKING_RECIPE_TEMPLATES,
@@ -314,6 +315,13 @@ class CookingFlowMixin:
         self,
         recipe: str,
     ) -> CookingRecipeOutcome:
+        checkpoint = f"料理:{recipe}"
+        scope = run_history.stage_scope(self.task)
+        record = run_history.read_stage(self.task, checkpoint)
+        if (record.get("state") == "done" and record.get("scope") == scope
+                and record.get("evidence", {}).get("result") != "配方已不可制作"):
+            self.task.log_info(f"料理：{recipe} 本周期已确认制作，保留已完成阶段。")
+            return CookingRecipeOutcome.COOKED
         list_snapshot = self._wait_for_cooking_list(2.0)
         if list_snapshot is None:
             self.task.log_warning(f"料理：选择 {recipe} 前料理列表未确认。")
@@ -340,6 +348,9 @@ class CookingFlowMixin:
             self.task.log_warning(f"料理：{recipe} 图标亮度状态不明确。")
             return CookingRecipeOutcome.FAILED
         if not enabled:
+            if record.get("state") == "pending":
+                run_history.save_stage(self.task, checkpoint, "done", scope=scope,
+                                       evidence={"result": "配方已不可制作"})
             self.task.log_info(f"料理：{recipe} 列表图标变灰，跳过。")
             return CookingRecipeOutcome.UNAVAILABLE
         self._status(
@@ -357,10 +368,23 @@ class CookingFlowMixin:
             self._recover_cooking_list()
             return CookingRecipeOutcome.FAILED
         if not detail.enabled:
+            if record.get("state") == "pending":
+                run_history.save_stage(self.task, checkpoint, "done", scope=scope,
+                                       evidence={"result": "配方已不可制作"})
             self.task.log_info(f"料理：{recipe} 当前材料不足或制作按钮不可用。")
             if not self._return_from_detail_to_list(recipe):
                 return CookingRecipeOutcome.FAILED
             return CookingRecipeOutcome.UNAVAILABLE
+        if record.get("state") == "pending":
+            result = self._wait_for_cooking_result(recipe, 1.0)
+            if result is not None:
+                run_history.save_stage(self.task, checkpoint, "done", scope=scope,
+                                       evidence={"result": "前次料理结果已核验"})
+                return (CookingRecipeOutcome.COOKED if self._return_from_detail_to_list(recipe)
+                        else CookingRecipeOutcome.FAILED)
+            self.task.log_warning(f"料理：{recipe} 前次提交结果未知，禁止重复制作。")
+            self._recover_cooking_list()
+            return CookingRecipeOutcome.FAILED
 
         ready = self._select_max_cooking_quantity(recipe)
         if ready is None:
@@ -375,6 +399,8 @@ class CookingFlowMixin:
                 f"pixel={ready.start_match.pixel_score:.3f}"
             ),
         )
+        run_history.save_stage(self.task, checkpoint, "pending", scope=scope,
+                               evidence={"recipe": recipe, "quantity": "MAX"})
         self.vision.click_client(
             ready.start_match.center,
             ready.frame.shape,
@@ -388,6 +414,8 @@ class CookingFlowMixin:
             self.task.log_warning(f"料理：{recipe} 制作超时，未确认结果条。")
             self._recover_cooking_list()
             return CookingRecipeOutcome.FAILED
+        run_history.save_stage(self.task, checkpoint, "done", scope=scope,
+                               evidence={"recipe": recipe, "result": "制作结果已确认"})
         if not self._return_from_detail_to_list(recipe):
             self.task.log_warning(f"料理：{recipe} 结果已确认，但未恢复料理列表。")
             return CookingRecipeOutcome.FAILED

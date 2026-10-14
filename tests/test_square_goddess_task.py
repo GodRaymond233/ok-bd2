@@ -30,9 +30,25 @@ from src.utils.cartridge_quick_switch import (
     LIFE_GAMEPLAY_CATEGORY_POINT,
 )
 from src.utils.goddess_navigation import NavigationObservation
+from tests.helpers import StageHistoryTestCase
 
 
-class SquareGoddessEntryTest(unittest.TestCase):
+class SquareGoddessEntryTest(StageHistoryTestCase):
+    def test_confirmed_wish_survives_failed_followup_and_skips_repeated_prayer(self):
+        from unittest.mock import Mock
+
+        from src.tasks import run_history
+
+        task = object.__new__(SquareGoddessTask)
+        task.config = {}
+        task.info_set = Mock()
+        task._click_goddess_daily_navigation_until = Mock()
+        task._click_square_notice_if_present = Mock(return_value=True)
+        run_history.save_stage(task, "女神像许愿", "done")
+        self.assertTrue(task._pray_at_goddess())
+        task._click_goddess_daily_navigation_until.assert_not_called()
+        task._click_square_notice_if_present.assert_called_once()
+
     def test_home_requires_keyword_votes_brightness_and_gacha_ocr(self):
         task = object.__new__(SquareGoddessTask)
         task.config = {
@@ -383,6 +399,8 @@ class SquareGoddessEntryTest(unittest.TestCase):
         task.config = {}
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
+        task.capture_frame = lambda: None
+        task._ocr_text = lambda *_args, **_kwargs: ""
         stages = []
         task._click_square_notice_if_present = lambda **kwargs: stages.append(
             ("notice", kwargs["timeout"])

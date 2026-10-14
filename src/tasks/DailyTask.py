@@ -1,9 +1,10 @@
 from time import monotonic
 
 import numpy as np
-from ok.task.exceptions import TaskDisabledException
+from ok.task.exceptions import FinishedException, TaskDisabledException
 from qfluentwidgets import FluentIcon
 
+from src.tasks import run_history
 from src.tasks.BaseBD2Task import BaseBD2Task
 from src.tasks.map_trade.models import TemplateSpec
 from src.tasks.quick_hunt import QuickHuntConfigMixin
@@ -233,6 +234,7 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
         failed = []
         skipped = []
         stop_remaining = False
+        scope = run_history.stage_scope(self)
         for name, config_key, func in steps:
             if not bool(self.config.get(config_key, True)):
                 skipped.append(name)
@@ -244,18 +246,41 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
             self.info_set("当前任务", name)
             self.log_info(f"开始日常子任务：{name}")
             try:
+                record = run_history.read_stage(self, name)
+                if (self.config.get("_仅执行未完成步骤", False)
+                        and record.get("state") == "done" and record.get("scope") == scope):
+                    if self.recover_daily_home():
+                        success.append(name)
+                        self.log_info(f"{name}：本周期已有完成证据，继续剩余步骤。")
+                    else:
+                        failed.append(name)
+                        stop_remaining = True
+                        self.log_info(f"{name}：已完成但未恢复主页，停止剩余步骤。")
+                    continue
                 if func():
                     success.append(name)
+                    run_history.save_stage(self, name, "done", scope=scope)
                 else:
                     failed.append(name)
-                    stop_remaining = True
-                    self.log_info(f"{name} 未满足后续触发条件，停止剩余子任务。")
-            except TaskDisabledException:
+                    stop_remaining = not self.recover_daily_home()
+                    self.log_info(f"{name} 失败，" + (
+                        "未恢复主页，停止剩余子任务。" if stop_remaining
+                        else "已确认主页，继续后续独立子任务。"
+                    ))
+            except (TaskDisabledException, FinishedException):
                 raise
             except Exception as exc:
-                failed.append(name)
-                stop_remaining = True
+                if name not in failed:
+                    failed.append(name)
+                if name in success:
+                    success.remove(name)
+                stop_remaining = not self.recover_daily_home()
                 self.log_error(f"日常子任务失败：{name}", exc)
+            finally:
+                # Publish completed steps immediately, including when the user stops later.
+                self.info_set("完成", str(success))
+                self.info_set("失败", str(failed))
+                self.info_set("跳过", str(skipped))
 
         self.info_set("完成", str(success))
         self.info_set("失败", str(failed))
@@ -308,6 +333,12 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
                 reject_template_on_home=True,
             )
         self.info_set("公会签到 OCR", text or "-")
+        if not success_found:
+            success_found = self._wait_for_existing_guild_visit()
+            if success_found:
+                self.info_set("公会签到结果", "公会访问完成，无新奖励提示")
+                home_ok = self._return_home_from_guild()
+                return home_ok
         self._status_set("公会签到成功", "是" if success_found else "否")
         if success_found:
             self.log_info("公会签到：检测到签到成功提示。")
@@ -322,6 +353,31 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
         # 与运行历史误记为成功，并在当日跳过补跑。
         home_ok = self._return_home_from_guild()
         return bool(success_found and home_ok)
+
+    def _wait_for_existing_guild_visit(self) -> bool:
+        deadline = monotonic() + 3.0
+        hits = 0
+        while True:
+            frame = self.capture_frame()
+            text = self._ocr_text(frame, name="公会重复访问确认")
+            normalized = normalize_ocr_text(text)
+            # Membership and persistent page labels distinguish this from the home icon
+            # and guild search/join screens. Chat connection text alone is not a blocker.
+            member_page = (
+                self._keyword_match_count(text, GUILD_PAGE_KEYWORDS) >= 2
+                and "公会成员" in normalized and "退出" in normalized
+                and not any(word in normalized for word in (
+                    "创建公会", "搜索公会", "申请加入", "重新登录", "服务器维护",
+                ))
+                and not any(normalize_ocr_text(part) in {"确认", "确定"} for part in text.split())
+            )
+            hits = hits + 1 if member_page else 0
+            if hits >= 2:
+                self._status_set("公会签到成功", "已访问")
+                return True
+            if monotonic() >= deadline:
+                return False
+            self.sleep(0.4)
 
     def _return_home_from_guild(self) -> bool:
         """Leave the guild page with bounded back-click retries.

@@ -37,6 +37,25 @@ class _ChildTask:
 
 
 class DailyBatchTaskTest(unittest.TestCase):
+    def test_failed_child_recovers_and_later_child_runs_without_successful_batch(self):
+        class First:
+            pass
+        class Later:
+            pass
+        calls = []
+        first = _ChildTask("first", calls, result=False)
+        first.recover_daily_home = mock.Mock(return_value=True)
+        later = _ChildTask("later", calls)
+        task, _ = self.make_task({First: first, Later: later},
+                                (DailyBatchChild("first", First), DailyBatchChild("later", Later)),
+                                {"启用": True, "first": True, "later": True})
+        task._maybe_shutdown_after_daily = mock.Mock()
+        self.assertFalse(task.run())
+        self.assertEqual([("first", True), ("later", True)], calls)
+        self.assertEqual("first", task.info["失败"])
+        self.assertIn("执行结束", task.info["状态"])
+        task._maybe_shutdown_after_daily.assert_not_called()
+
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -294,6 +313,7 @@ class DailyBatchTaskTest(unittest.TestCase):
             store.record_task_done(
                 SimpleNamespace(
                     name="first",
+                    config=first.config,
                     start_time=0,
                     info={"状态": "first 完成。"},
                 )
@@ -333,6 +353,7 @@ class DailyBatchTaskTest(unittest.TestCase):
             store.record_task_done(
                 SimpleNamespace(
                     name="first",
+                    config=first.config,
                     start_time=0,
                     info={"状态": "first 完成。"},
                 )
@@ -728,7 +749,7 @@ class DailyBatchTaskTest(unittest.TestCase):
             def __init__(self):
                 self.calls = 0
 
-            def is_completed_today(self, _name, now=None):
+            def is_completed_today(self, _name, now=None, *, scope=None):
                 self.calls += 1
                 return self.calls == 1
 

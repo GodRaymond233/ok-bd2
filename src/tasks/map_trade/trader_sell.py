@@ -331,6 +331,13 @@ class SellFlowMixin:
         while True:
             located = self._wait_sale_item_candidates(entry)
             if located is None:
+                from src.tasks import run_history
+                checkpoint = f"出售:{entry.shop}:{entry.item}"
+                pending = run_history.read_stage(self.task, checkpoint).get("state") == "pending"
+                if self._last_sale_page_empty and pending:
+                    run_history.save_stage(self.task, checkpoint, "done",
+                                           evidence={"result": "已确认商品无剩余库存"})
+                    return True
                 if sold_count and self._last_sale_page_empty:
                     self._last_sale_unavailable = False
                     self._last_sale_reason = ""
@@ -390,6 +397,10 @@ class SellFlowMixin:
     ) -> tuple[int, bool] | None:
         """Sell one currently visible card and verify that the page advanced."""
 
+        from src.tasks import run_history
+
+        checkpoint = f"出售:{entry.shop}:{entry.item}"
+        record = run_history.read_stage(self.task, checkpoint)
         self._last_sale_cleared = False
         before_signature = self._sale_name_signature(entry, frame)
         before_toast_id = self._sale_toast_id(frame)
@@ -421,6 +432,29 @@ class SellFlowMixin:
         if available is None:
             self.task.log_warning(f"卖：{entry.item}出售弹窗未识别到可购买数量。")
             return None
+        if entry.reserve and owned <= entry.reserve:
+            run_history.save_stage(self.task, checkpoint, "done",
+                                   evidence={"result": "库存已达到保留量", "owned": owned})
+            self.task.log_info(
+                f"卖：{entry.item}弹窗库存{owned}不超过保留量{entry.reserve}，关闭弹窗并跳过。"
+            )
+            self.task.operate_click(*SALE_CLOSE_POINT, after_sleep=0.5)
+            return owned, False
+        if record.get("state") == "pending":
+            evidence = record.get("evidence", {})
+            before = evidence.get("owned")
+            selected = evidence.get("selected")
+            if (isinstance(before, int) and isinstance(selected, int) and selected > 0
+                    and owned <= before - selected):
+                run_history.save_stage(self.task, checkpoint, "done",
+                                       evidence={"result": "前次出售后库存已减少", "owned": owned})
+                self.task.operate_click(*SALE_CLOSE_POINT, after_sleep=0.5)
+                if self._ensure_sell_page():
+                    return before, True
+                return None
+            self.task.log_warning(
+                f"卖：{entry.item} 前次提交结果未知，库存变化未确认，不再次出售。")
+            return None
         if previous_owned is not None and owned >= previous_owned:
             self.task.log_warning(
                 f"卖：{entry.item}出售后拥有数量未下降（当前{owned}，上次{previous_owned}），停止以避免重复出售。"
@@ -432,12 +466,6 @@ class SellFlowMixin:
         self.task.log_info(
             f"卖：{entry.item}出售弹窗记录库存{owned}个，当前组可购买{available}个。"
         )
-        if entry.reserve and owned <= entry.reserve:
-            self.task.log_info(
-                f"卖：{entry.item}弹窗库存{owned}不超过保留量{entry.reserve}，关闭弹窗并跳过。"
-            )
-            self.task.operate_click(*SALE_CLOSE_POINT, after_sleep=0.5)
-            return owned, False
         if not self._choose_sale_quantity(entry, owned):
             return None
         expected_selected = None
@@ -453,6 +481,8 @@ class SellFlowMixin:
                 f"当前组上限{available}），停止确认。"
             )
             return None
+        run_history.save_stage(self.task, checkpoint, "pending",
+                               evidence={"owned": owned, "selected": expected_selected})
         self.task.operate_click(*SALE_CONFIRM_POINT, after_sleep=0.5)
         self.task.log_info(
             f"卖：{entry.item}已点击出售，本组最大可出售{available}个，等待交易完成。"
@@ -464,6 +494,8 @@ class SellFlowMixin:
             before_toast_id=before_toast_id,
         ):
             return None
+        run_history.save_stage(self.task, checkpoint, "done",
+                               evidence={"result": "交易完成已确认"})
         self._last_sale_cleared = (
             entry.reserve <= 0
             and not bool(self.task.config.get("出售保险", False))

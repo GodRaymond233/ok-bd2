@@ -10,7 +10,7 @@ from typing import Any, Callable
 import cv2
 import numpy as np
 from ok import BaseTask, Box, Logger
-from ok.task.exceptions import TaskDisabledException
+from ok.task.exceptions import FinishedException, TaskDisabledException
 from PIL import Image
 
 from src.diagnostics.runtime import observe_run, phase_changed, task_error
@@ -304,6 +304,19 @@ class BaseBD2Task(BaseTask):
             - monotonic(),
         )
 
+    def recover_daily_home(self) -> bool:
+        """Confirm the safe boundary before continuing an independent daily task."""
+        try:
+            # Read-only confirmation is allowed even during the click-recovery cooldown.
+            if self._home_scan(self.capture_frame())[0]:
+                return True
+            return self.auto_return_main_home(notify_failure=False)
+        except (TaskDisabledException, FinishedException):
+            raise
+        except Exception as exc:
+            self.log_warning(f"日常恢复主页失败：{exc}")
+            return False
+
     def auto_return_main_home(
         self,
         max_steps: int | None = None,
@@ -337,7 +350,7 @@ class BaseBD2Task(BaseTask):
         for step in range(1, step_limit + 1):
             try:
                 frame = self.capture_frame()
-            except TaskDisabledException:
+            except (TaskDisabledException, FinishedException):
                 raise
             except Exception as exc:
                 failure_reason = f"截图失败：{exc}"
@@ -357,7 +370,7 @@ class BaseBD2Task(BaseTask):
                     self.sleep(0.4)
                     try:
                         probe_frame = self.capture_frame()
-                    except TaskDisabledException:
+                    except (TaskDisabledException, FinishedException):
                         raise
                     except Exception as exc:
                         stable = False
@@ -404,7 +417,7 @@ class BaseBD2Task(BaseTask):
                         name="自动返回主页-房子",
                         after_sleep=settle,
                     )
-                except TaskDisabledException:
+                except (TaskDisabledException, FinishedException):
                     raise
                 except Exception as exc:
                     failure_reason = f"点击房子按钮失败：{exc}"
@@ -442,7 +455,7 @@ class BaseBD2Task(BaseTask):
         while True:
             try:
                 frame = self.capture_frame()
-            except TaskDisabledException:
+            except (TaskDisabledException, FinishedException):
                 raise
             except Exception:
                 return False

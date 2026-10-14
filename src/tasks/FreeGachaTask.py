@@ -143,6 +143,11 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
         section_name: str,
         verify_finished: bool,
     ) -> bool:
+        from src.tasks import run_history
+
+        checkpoint = f"免费抽:{section_name}"
+        scope = run_history.stage_scope(self)
+        record = run_history.read_stage(self, checkpoint)
         available, _text, judged = self._wait_for_free_gacha(section_name)
         self.info_set(
             f"{section_name} 免费抽",
@@ -150,6 +155,8 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
         )
         if not available:
             if judged:
+                run_history.save_stage(self, checkpoint, "done", scope=scope,
+                                       evidence={"result": "正确卡池已无免费入口"})
                 self.log_info(f"{section_name}：未检测到所有免费抽抽乐，跳过。")
                 return True
             # OCR 全程无文本时不能当作"无免费"成功跳过（BUG-20260913-01）。
@@ -158,9 +165,14 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
             )
             return self._fail_run(f"{section_name}免费入口判断")
 
+        if record.get("state") == "pending":
+            self.log_info(f"{section_name}：前次确认提交结果未知，本次不重复提交。")
+            return self._fail_run(f"{section_name}前次提交核验")
         if not self._open_confirm_dialog_with_retry(section_name):
             return self._fail_run(f"{section_name}确认弹窗")
 
+        run_history.save_stage(self, checkpoint, "pending", scope=scope,
+                               evidence={"pool": section_name})
         if not self._confirm_dialog_submission(section_name):
             return self._fail_run(f"{section_name}确认提交")
 
@@ -180,6 +192,8 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
                 return self._fail_run(f"{section_name}领取复核")
             self.log_info(f"{section_name}：免费抽已结束。")
 
+        run_history.save_stage(self, checkpoint, "done", scope=scope,
+                               evidence={"result": "免费抽结果已确认"})
         return True
 
     def _wait_loading_or_gacha_page(

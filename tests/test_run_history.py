@@ -89,6 +89,30 @@ class RunHistoryStoreTest(unittest.TestCase):
         self.path = os.path.join(self.dir, "task_run_history.json")
         self.store = RunHistoryStore(self.path)
 
+    def test_stage_survives_restart_and_failed_write_keeps_pending_evidence(self):
+        self.store.save_stage("狩猎", "MIN", "pending", "today", {"cost": 6})
+        with open(self.path, encoding="utf-8") as stream:
+            original = stream.read()
+        with patch("src.tasks.run_history.write_json_file", side_effect=OSError("disk full")):
+            with self.assertRaises(RuntimeError):
+                self.store.save_stage("狩猎", "MIN", "done", "today")
+        self.assertEqual("pending", self.store.stage("狩猎", "MIN")["state"])
+        self.assertEqual("pending", RunHistoryStore(self.path).stage("狩猎", "MIN")["state"])
+        with open(self.path, encoding="utf-8") as stream:
+            self.assertEqual(original, stream.read())
+
+    def test_corrupt_history_cannot_authorize_spending_or_be_overwritten(self):
+        with open(self.path, "w", encoding="utf-8") as stream:
+            stream.write("{broken")
+        broken = RunHistoryStore(self.path)
+        with self.assertRaises(RuntimeError):
+            broken.stage("料理", "牛排")
+        with self.assertRaises(RuntimeError):
+            broken.save_stage("料理", "牛排", "pending", "today")
+        broken.record_task_done(_TaskStub("日常", {"状态": "失败"}))
+        with open(self.path, encoding="utf-8") as stream:
+            self.assertEqual("{broken", stream.read())
+
     def test_record_and_reload_roundtrip(self):
         task = _TaskStub("快速狩猎", info={"状态": "快速狩猎完成。"}, start_time=1000.0)
         self.store.record_task_done(task, finished=1090.0)
@@ -276,13 +300,28 @@ class RunHistoryStoreTest(unittest.TestCase):
         self.assertFalse(
             self.store.is_completed_today("广场女神像", now=_beijing_ts(2026, 8, 19, 5, 0))
         )
-        # A failed run never counts.
+        # The last attempt remains failed, while the earlier completed objective survives.
         self.store.record_task_done(
             _TaskStub("广场女神像", info={"Error": "x"}), finished=_beijing_ts(2026, 8, 18, 10, 0)
         )
-        self.assertFalse(
+        self.assertTrue(
             self.store.is_completed_today("广场女神像", now=_beijing_ts(2026, 8, 18, 11, 0))
         )
+        self.assertFalse(self.store.last_run("广场女神像")["ok"])
+        self.assertTrue(RunHistoryStore(self.path).is_completed_today(
+            "广场女神像", now=_beijing_ts(2026, 8, 18, 11)))
+
+    def test_changed_task_configuration_cannot_reuse_previous_completion(self):
+        from src.tasks.run_history import configuration_scope
+        task = _TaskStub("日常", {"状态": "完成"})
+        task.config = {"执行公会签到": True, "执行小屋签到": False}
+        stamp = _beijing_ts(2026, 10, 15, 9)
+        self.store.record_task_done(task, finished=stamp, ok=True)
+        self.assertTrue(self.store.is_completed_today(
+            task.name, now=stamp, scope=configuration_scope(task)))
+        task.config["执行小屋签到"] = True
+        self.assertFalse(self.store.is_completed_today(
+            task.name, now=stamp, scope=configuration_scope(task)))
 
     def test_is_completed_this_week(self):
         task = _TaskStub("每周跑图", info={"状态": "每周跑图完成。"})

@@ -6,13 +6,28 @@ from unittest.mock import Mock
 
 import cv2
 import numpy as np
-from ok.task.exceptions import TaskDisabledException
+from ok.task.exceptions import FinishedException, TaskDisabledException
 
 from src.tasks.BaseBD2Task import TEMPLATE_DIR, BaseBD2Task
 from src.utils.vision_models import MatchResult
 
 
 class AutoReturnMainHomeTest(unittest.TestCase):
+    def test_daily_recovery_confirms_home_during_click_cooldown_without_clicks(self):
+        task, clicks = self._task([(True, False)])
+        task._auto_return_home_cooldown_until = float("inf")
+        self.assertTrue(task.recover_daily_home())
+        self.assertEqual([], clicks)
+
+    def test_daily_recovery_propagates_stop_and_finish_during_return(self):
+        for exception in (TaskDisabledException, FinishedException):
+            with self.subTest(exception=exception):
+                task, clicks = self._task([(False, False)])
+                task.capture_frame = Mock(side_effect=[task._test_frame, exception()])
+                with self.assertRaises(exception):
+                    task.recover_daily_home()
+                self.assertEqual([], clicks)
+
     def _task(self, home_results, *, house_match=None):
         task = object.__new__(BaseBD2Task)
         task.config = {
