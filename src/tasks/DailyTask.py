@@ -348,6 +348,7 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
             )
         else:
             self.log_info("公会签到：未检测到签到成功提示，按流程返回主页。")
+            self._save_flow_diagnostic("guild_sign_in_failed")
 
         # 返回主页是清理动作，不能掩盖签到提示缺失；否则失败会被批处理
         # 与运行历史误记为成功，并在当日跳过补跑。
@@ -595,6 +596,7 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
                         continue
                     closing = True
                     self.log_info("一键收菜：领取结果未确认，关闭经营弹窗后报告失败。")
+                    self._save_flow_diagnostic("business_collect_claim_failed")
                 if cancel is not None:
                     target = self._business_bounds(cancel)
                 else:
@@ -619,6 +621,7 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
             close_clicks += 1
             self.info_set("一键收菜关闭次数", close_clicks)
         self.log_info("一键收菜：结算退出未在限定时间或点击次数内完成。")
+        self._save_flow_diagnostic("business_collect_close_failed")
         return claimed
 
     @staticmethod

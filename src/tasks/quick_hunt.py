@@ -498,8 +498,13 @@ class QuickHuntFeatureMixin:
         except TaskDisabledException:
             cancelled = True
             raise
+        except Exception:
+            self._save_flow_diagnostic("quick_hunt_error")
+            raise
         finally:
             if not cancelled:
+                if not success:
+                    self._save_flow_diagnostic("quick_hunt_failed")
                 home_ok = self._quick_hunt_return_home()
                 success = success and home_ok
 
@@ -1184,6 +1189,7 @@ class QuickHuntFeatureMixin:
                     f"快速狩猎：{stage}未确认目标地图 {expected_map_pattern}，"
                     f"当前={actual_map or map_text or '-'}，取消本次快速狩猎。"
                 )
+                self._save_flow_diagnostic("quick_hunt_wrong_map_failed")
                 cancelled = self._quick_hunt_cancel_dialog(f"{stage}-取消错误地图")
                 return "wrong_map" if cancelled else "failed"
         if count_mode not in {"MIN", "MAX"}:
@@ -1461,6 +1467,7 @@ class QuickHuntFeatureMixin:
                 return True
             self.sleep(0.4)
         self.log_info(f"快速狩猎：未找到可点击 OCR 目标：{name}")
+        self._save_flow_diagnostic("quick_hunt_button_failed")
         return False
 
     def _quick_hunt_ocr_text(

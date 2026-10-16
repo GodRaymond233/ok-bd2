@@ -8,6 +8,7 @@ import threading
 import time
 import unittest
 import zipfile
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -114,6 +115,282 @@ class _DeviceManagerStub:
 
 
 class DiagnosticLogEvidenceTest(unittest.TestCase):
+    def test_failure_frames_survive_recovery_restart_delay_and_consent(self):
+        from src.tasks.BaseBD2Task import BaseBD2Task
+
+        class FailedTask(BaseBD2Task):
+            def run(self):
+                self.info["当前阶段"] = "按钮确认"
+                self.capture_frame()
+                # Framework sleeps invalidate executor.nullable_frame().
+                self._executor._frame = None
+                self._save_flow_diagnostic("button_not_found")
+                self.picture.fill(220)
+                self.info["当前阶段"] = "返回主页"
+                self.capture_frame()
+                return False
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            task = object.__new__(FailedTask)
+            task.info = {"api_key": "secret-example"}
+            task.info_set = lambda key, value: task.info.__setitem__(key, value)
+            task.picture = np.full((48, 64, 3), 20, np.uint8)
+            task.next_frame = lambda: task.picture
+            task._executor = SimpleNamespace(
+                trigger_tasks=[], _frame=None, _last_frame_time=0,
+                nullable_frame=lambda: None, device_manager=SimpleNamespace(capture_method=None),
+            )
+            recorder = RuntimeEvidence(root)
+            try:
+                with patch("src.diagnostics.runtime._recorder", recorder), patch(
+                    "src.diagnostics.runtime.time.time", return_value=time.time() - 7200,
+                ):
+                    self.assertFalse(task.run())
+                    stored = recorder.snapshot()
+                self.assertEqual(2, len(stored["failures"][0]["frames"]))
+                self.assertFalse((root / "probe_outputs").exists())
+            finally:
+                recorder.stop()
+            manager = DiagnosticsManager(
+                project_root=root, output_dir=root / "out", app_version="test",
+            )
+            snapshot = replace(manager.prepare(), task_started_at=time.time() - 1)
+            result = manager.build_report(snapshot, "两小时后重启上报", include_screenshot=True)
+            with zipfile.ZipFile(result.archive_path) as archive:
+                self.assertIsNone(archive.testzip())
+                manifest = json.loads(archive.read("manifest.json"))
+                frames = manifest["capture"]["diagnostic_frames"]
+                self.assertEqual(2, len(frames))
+                for entry, expected in zip(frames, (20, 220)):
+                    image = cv2.imdecode(np.frombuffer(archive.read(entry["path"]), np.uint8), 1)
+                    self.assertAlmostEqual(expected, float(image.mean()), delta=2)
+                    self.assertEqual(snapshot.failures[0]["run"], entry["run"])
+                self.assertEqual("按钮确认", frames[0]["info"]["当前阶段"])
+                self.assertEqual("返回主页", frames[1]["info"]["当前阶段"])
+                state = archive.read("state/failures.json").decode()
+                self.assertNotIn('"data"', state)
+                self.assertNotIn("secret-example", state)
+                for line in archive.read("checksums.sha256").decode().splitlines():
+                    digest, name = line.split("  ", 1)
+                    self.assertEqual(digest, hashlib.sha256(archive.read(name)).hexdigest())
+            result = manager.build_report(snapshot, "不附图片", include_screenshot=False)
+            with zipfile.ZipFile(result.archive_path) as archive:
+                self.assertFalse(any(
+                    name.startswith("screenshots/") for name in archive.namelist()
+                ))
+                self.assertNotIn(
+                    stored["failures"][0]["frames"][0]["data"],
+                    b"".join(archive.read(name) for name in archive.namelist()).decode(),
+                )
+            store = root / "logs" / "diagnostic-evidence.json"
+            corrupted = json.loads(store.read_bytes())
+            corrupted["failures"][0]["frames"][0]["data"] = "not-base64"
+            corrupted["failures"][0]["frames"][1]["data"] = {"invalid": True}
+            store.write_text(json.dumps(corrupted), encoding="utf-8")
+            result = manager.build_report(
+                manager.prepare(), "损坏图片仍保留故障日志", include_screenshot=True,
+            )
+            self.assertEqual([], result.manifest["capture"]["diagnostic_frames"])
+            self.assertTrue(any(
+                "failure_frame_invalid" in item for item in result.manifest["omissions"]
+            ))
+            self.assertTrue(any(
+                "invalid_frame_payload" in item for item in result.manifest["omissions"]
+            ))
+
+    def test_failure_frames_are_bounded_and_encoding_errors_preserve_task_outcome(self):
+        from src.diagnostics.runtime import FAILURE_FRAME_LIMIT
+        from src.tasks.BaseBD2Task import BaseBD2Task
+
+        class Crash(BaseBD2Task):
+            def run(self):
+                for value in (20, 80, 140):
+                    self._save_flow_diagnostic("stage_failed")
+                    self.picture.fill(value)
+                raise ValueError("original failure")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            recorder = RuntimeEvidence(root)
+            task = object.__new__(Crash)
+            task.info = {}
+            task.picture = np.full((24, 32, 3), 0, np.uint8)
+            task._executor = SimpleNamespace(
+                trigger_tasks=[], nullable_frame=lambda: task.picture, _last_frame_time=0,
+            )
+            try:
+                with patch("src.diagnostics.runtime._recorder", recorder):
+                    for _ in range(6):
+                        with self.assertRaisesRegex(ValueError, "original failure"):
+                            task.run()
+                    evidence = recorder.snapshot()
+                    self.assertEqual(5, len(evidence["failures"]))
+                    self.assertTrue(all(len(f["frames"]) == 2 for f in evidence["failures"]))
+                    self.assertTrue(all(f["frames_omitted"] >= 1 for f in evidence["failures"]))
+                    self.assertNotIn('"data"', json.dumps(evidence["events"]))
+                    for failure in evidence["failures"]:
+                        for frame in failure["frames"]:
+                            self.assertLessEqual(
+                                len(frame["data"]), (FAILURE_FRAME_LIMIT + 2) // 3 * 4,
+                            )
+                    manager = DiagnosticsManager(
+                        project_root=root, output_dir=root / "out", app_version="test",
+                    )
+                    snapshot = manager.prepare()
+                    result = manager.build_report(snapshot, "多次失败", include_screenshot=True)
+                    self.assertEqual(8, len(result.manifest["capture"]["diagnostic_frames"]))
+                    self.assertIn("diagnostic_frames_count_limit", result.manifest["omissions"])
+                    with patch("src.diagnostics.bundle._encode_frame", side_effect=OSError("disk")):
+                        with self.assertRaisesRegex(ValueError, "original failure"):
+                            task.run()
+                    failure = recorder.snapshot()["failures"][-1]
+                    self.assertTrue(all("omission" in frame for frame in failure["frames"]))
+                    result = manager.build_report(
+                        manager.prepare(), "截图失败仍可上报", include_screenshot=True,
+                    )
+                    self.assertTrue(any(
+                        "frame_capture_failed:OSError" in item
+                        for item in result.manifest["omissions"]
+                    ))
+            finally:
+                recorder.stop()
+
+    def test_pvp_page_failure_and_quick_hunt_cleanup_keep_original_scene(self):
+        from src.tasks.BaseBD2Task import BaseBD2Task, CartridgeSpecialPageResult
+        from src.tasks.quick_hunt import QuickHuntFeatureMixin
+
+        class PvpEntry(BaseBD2Task):
+            def run(self):
+                return self.open_cartridge_quick_switcher(
+                    ensure_home=lambda: True, click_quick_switch=lambda: True,
+                    confirm_quick_switch_page=lambda: False,
+                )
+
+        class Hunt(QuickHuntFeatureMixin, BaseBD2Task):
+            def run(self):
+                return self.run_quick_hunt()
+
+        with tempfile.TemporaryDirectory() as directory:
+            recorder = RuntimeEvidence(Path(directory))
+            pvp, hunt = object.__new__(PvpEntry), object.__new__(Hunt)
+            for task in (pvp, hunt):
+                task.info = {}
+                task.config = {}
+                task.info_set = lambda key, value: None
+                task._executor = SimpleNamespace(
+                    trigger_tasks=[], nullable_frame=lambda: np.full((24, 32, 3), 40, np.uint8),
+                )
+            pvp._recent_cartridge_is_pvp = lambda: False
+            pvp._sleep_after_recognition = lambda: None
+            pvp.operate_click = lambda *args, **kwargs: None
+            pvp._handle_recent_cartridge_special_pages = (
+                lambda **kwargs: CartridgeSpecialPageResult.ABSENT
+            )
+            hunt._status_set = lambda *args: None
+            hunt._quick_hunt_open_menu = lambda: "opened"
+            hunt._quick_hunt_run_rice_scheduler = lambda: False
+
+            def return_home():
+                hunt._executor.nullable_frame = lambda: np.full((24, 32, 3), 230, np.uint8)
+                return True
+
+            hunt._quick_hunt_return_home = return_home
+            try:
+                with patch("src.diagnostics.runtime._recorder", recorder):
+                    self.assertFalse(pvp.run())
+                    self.assertFalse(hunt.run())
+                evidence = recorder.snapshot()["failures"]
+                self.assertEqual(
+                    "cartridge_quick_switch_page_failed", evidence[0]["frames"][0]["reason"],
+                )
+                self.assertEqual("quick_hunt_failed", evidence[1]["frames"][0]["reason"])
+                self.assertEqual(2, len(evidence[1]["frames"]))
+            finally:
+                recorder.stop()
+
+    def test_login_timeout_is_captured_but_polling_and_explicit_stop_are_not(self):
+        from src.tasks.BaseBD2Task import BaseBD2Task
+        from src.tasks.trigger.AutoLoginTask import AutoLoginTask
+
+        class Login(AutoLoginTask):
+            def run(self):
+                if self.timed_out:
+                    self._handle_login_wait_timeout(301.0)
+                return False
+
+        class Stopped(BaseBD2Task):
+            def run(self):
+                self._enabled = False
+                self._task_stop_requested()
+                return False
+
+        with tempfile.TemporaryDirectory() as directory:
+            recorder = RuntimeEvidence(Path(directory))
+            task = object.__new__(Login)
+            task.info = {}
+            task.config = {}
+            task._login_clicked_at = 0
+            task.info_set = lambda key, value: task.info.__setitem__(key, value)
+            task.log_warning = lambda *args, **kwargs: None
+            task._reset_login_state = lambda: None
+            task._executor = SimpleNamespace(
+                trigger_tasks=[task], nullable_frame=lambda: np.zeros((24, 32, 3), np.uint8),
+            )
+            stopped = object.__new__(Stopped)
+            stopped.info = {}
+            stopped._executor = SimpleNamespace(trigger_tasks=[])
+            try:
+                with patch("src.diagnostics.runtime._recorder", recorder):
+                    task.timed_out = False
+                    self.assertFalse(task.run())
+                    task.timed_out = True
+                    self.assertFalse(task.run())
+                    self.assertFalse(stopped.run())
+                evidence = recorder.snapshot()
+                self.assertEqual(1, len(evidence["failures"]))
+                self.assertEqual(
+                    "auto_login_home_timeout_failed",
+                    evidence["failures"][0]["frames"][0]["reason"],
+                )
+                self.assertEqual("stopped", evidence["events"][-1]["event"])
+            finally:
+                recorder.stop()
+
+    def test_daily_batch_own_failure_records_frame_and_safe_plain_task_info(self):
+        from src.tasks.DailyBatchTask import DailyBatchChild, DailyBatchTask
+        from src.tasks.DailyTask import DailyTask
+
+        with tempfile.TemporaryDirectory() as directory:
+            recorder = RuntimeEvidence(Path(directory))
+            task = object.__new__(DailyBatchTask)
+            task.info = {"api_key": "secret-example"}
+            task.config = {"启用": True}
+            task.child_tasks = (DailyBatchChild("missing", DailyTask),)
+            task._auto_login_pending = lambda: False
+            task._take_run_mode = lambda mode: "all"
+            task.info_set = lambda key, value: task.info.__setitem__(key, value)
+            task.log_info = lambda *args, **kwargs: None
+            task.logger = SimpleNamespace(error=lambda *args: None)
+            task._write_log_images = lambda *args: None
+            task._executor = SimpleNamespace(
+                trigger_tasks=[], get_task_by_class=lambda cls: None,
+                nullable_frame=lambda: np.zeros((24, 32, 3), np.uint8),
+            )
+            try:
+                with patch("src.diagnostics.runtime._recorder", recorder), patch(
+                    "src.tasks.run_history.default_store", return_value=None,
+                ), patch("src.tasks.scheduler.default_store", return_value=None):
+                    self.assertFalse(task.run())
+                failures = recorder.snapshot()["failures"]
+                self.assertEqual(1, len(failures))
+                self.assertEqual("DailyBatchTask", failures[0]["task"])
+                self.assertEqual("missing", failures[0]["info"]["失败"])
+                self.assertIn("data", failures[0]["frames"][0])
+                self.assertNotIn("secret-example", json.dumps(failures))
+            finally:
+                recorder.stop()
+
     def test_framework_exception_observer_survives_handler_reconfiguration(self):
         with tempfile.TemporaryDirectory() as directory:
             task = _TaskStub()
@@ -362,9 +639,15 @@ class DiagnosticLogEvidenceTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             recorder = RuntimeEvidence(Path(directory))
             child, batch = object.__new__(Child), object.__new__(Batch)
+            captures = []
+
+            def frame():
+                captures.append(True)
+                return np.zeros((24, 32, 3), np.uint8)
+
             for task in (child, batch):
                 task.info = {}
-                task._executor = SimpleNamespace(trigger_tasks=[])
+                task._executor = SimpleNamespace(trigger_tasks=[], nullable_frame=frame)
             batch.child = child
             child.stop_requested = False
             try:
@@ -381,6 +664,8 @@ class DiagnosticLogEvidenceTest(unittest.TestCase):
                 outcomes = [event["event"] for event in evidence["events"]]
                 self.assertEqual(2, outcomes.count("stopped"))
                 self.assertEqual(2, outcomes.count("failed"))
+                self.assertEqual(1, len(captures))
+                self.assertEqual(1, len(evidence["failures"][0]["frames"]))
             finally:
                 recorder.stop()
 
@@ -840,6 +1125,8 @@ class ReportBundleBuilderTest(unittest.TestCase):
             (probe_outputs / failed_name).write_bytes(encoded.tobytes())
             (probe_outputs / "map_trade_return_home_error.png").write_bytes(encoded.tobytes())
             (probe_outputs / "ordinary_probe.png").write_bytes(encoded.tobytes())
+            (probe_outputs / "pvp_stage_not_found.png").write_bytes(encoded.tobytes())
+            (probe_outputs / "quick_hunt_start_unconfirmed.png").write_bytes(encoded.tobytes())
 
             builder = ReportBundleBuilder(
                 project_root=root,
@@ -866,11 +1153,13 @@ class ReportBundleBuilderTest(unittest.TestCase):
                 self.assertNotIn("screenshots/diagnostic/ordinary_probe.webp", names)
                 manifest = json.loads(archive.read("manifest.json"))
                 diagnostic_frames = manifest["capture"]["diagnostic_frames"]
-                self.assertEqual(2, len(diagnostic_frames))
+                self.assertEqual(4, len(diagnostic_frames))
                 self.assertEqual(
                     {
                         failed_name,
                         "map_trade_return_home_error.png",
+                        "pvp_stage_not_found.png",
+                        "quick_hunt_start_unconfirmed.png",
                     },
                     {item["source"] for item in diagnostic_frames},
                 )

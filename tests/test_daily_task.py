@@ -773,6 +773,7 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         task.log_info = lambda *_args, **_kwargs: None
         task.sleep = lambda *_args, **_kwargs: None
         clicks = []
+        task._save_flow_diagnostic = lambda _name: self.assertEqual(1, len(clicks))
 
         def fake_match(_frame, spec):
             if spec is GUILD_TEMPLATE:
@@ -810,6 +811,7 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         task.log_info = lambda *_args, **_kwargs: None
         task.sleep = lambda *_args, **_kwargs: None
         clicks = []
+        task._save_flow_diagnostic = lambda _name: self.assertEqual(1, len(clicks))
 
         def fake_match(_frame, spec):
             if spec is GUILD_TEMPLATE:
@@ -1171,7 +1173,10 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         self.assertEqual([(0.6, 0.8), (0.6, 0.8), (0.43, 0.8)], clicks)
         self.assertEqual("未确认", statuses["一键收菜领取结果"])
         self.assertEqual("通过", statuses["一键收菜返回主页结果"])
-        task._save_flow_diagnostic.assert_called_once()
+        self.assertEqual(
+            ["business_collect_claim_failed", "business_collect_failed"],
+            [call.args[0] for call in task._save_flow_diagnostic.call_args_list],
+        )
 
     def test_business_collect_late_reward_prevents_second_claim(self):
         frame = np.full((720, 1280, 3), 230, dtype=np.uint8)
@@ -2326,13 +2331,14 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         task.config = {"快速狩猎圣石洞穴": True}
         task.info_set = lambda *_args, **_kwargs: None
         calls = []
+        task._save_flow_diagnostic = lambda _name: calls.append("snapshot")
         task._quick_hunt_open_menu = lambda: "opened"
         task._quick_hunt_run_rice_scheduler = lambda: calls.append("rice-failed") or False
         task._quick_hunt_run_crystal_cave = lambda: calls.append("crystal") or True
         task._quick_hunt_return_home = lambda: calls.append("home") or True
 
         self.assertFalse(task.run_quick_hunt())
-        self.assertEqual(["rice-failed", "home"], calls)
+        self.assertEqual(["rice-failed", "snapshot", "home"], calls)
 
     def test_quick_hunt_return_home_uses_fixed_point_and_three_signal_confirmation(self):
         task = object.__new__(QuickHuntTask)

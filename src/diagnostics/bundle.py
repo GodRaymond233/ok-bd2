@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -25,7 +26,7 @@ from src.diagnostics.log_collection import (
 )
 from src.diagnostics.models import DiagnosticSnapshot, ReportResult
 from src.diagnostics.redaction import DiagnosticRedactor
-from src.diagnostics.runtime import evidence_for
+from src.diagnostics.runtime import FAILURE_FRAME_COUNT, FAILURE_FRAME_SUFFIXES, evidence_for
 
 SCHEMA_VERSION = 1
 MAX_DESCRIPTION_CHARS = 2000
@@ -143,6 +144,7 @@ class ReportBundleBuilder:
                 diagnostic_frames, diagnostic_omissions = self._diagnostic_frames(
                     stage,
                     snapshot,
+                    logs.get("failure_frames", ()),
                 )
             else:
                 diagnostic_frames = {"files": [], "metadata": []}
@@ -232,14 +234,47 @@ class ReportBundleBuilder:
         self,
         stage: Path,
         snapshot: DiagnosticSnapshot,
+        failure_frames=(),
     ) -> tuple[dict[str, Any], list[str]]:
-        """Package failure frames from the current diagnostic window only."""
+        """Prefer frozen run evidence, then supplement with recent legacy probes."""
+
+        files, metadata, omissions = [], [], []
+        total_bytes = 0
+        for index, evidence in enumerate(failure_frames):
+            entry = {key: value for key, value in evidence.items() if key != "data"}
+            if "omission" in entry:
+                omissions.append(f"failure_frame_unavailable:{entry['run']}:{entry['omission']}")
+                continue
+            if len(files) >= MAX_DIAGNOSTIC_FRAME_COUNT:
+                omissions.append("diagnostic_frames_count_limit")
+                break
+            try:
+                data = evidence.get("data", "")
+                if len(data) > (MAX_SINGLE_DIAGNOSTIC_FRAME_BYTES + 2) // 3 * 4:
+                    raise ValueError("oversized frame")
+                encoded = base64.b64decode(data, validate=True)
+                if not encoded or hashlib.sha256(encoded).hexdigest() != entry.get("sha256"):
+                    raise ValueError("invalid frame checksum")
+            except (ValueError, TypeError):
+                omissions.append(f"failure_frame_invalid:{entry['run']}")
+                continue
+            if total_bytes + len(encoded) > MAX_DIAGNOSTIC_FRAME_BYTES:
+                omissions.append("diagnostic_frames_exceeded_limit")
+                break
+            relative_path = f"screenshots/diagnostic/failure-{index + 1}.webp"
+            target = stage / relative_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(encoded)
+            files.append(_file_record(stage, relative_path))
+            metadata.append({**entry, "path": relative_path})
+            total_bytes += len(encoded)
 
         source_dir = self.project_root / "probe_outputs"
         try:
             captured_at = datetime.fromisoformat(snapshot.captured_at).timestamp()
         except (TypeError, ValueError, OverflowError):
-            return {"files": [], "metadata": []}, ["diagnostic_frames_unavailable"]
+            omissions.append("diagnostic_frame_window_invalid")
+            return {"files": files, "metadata": metadata}, omissions
 
         lower_bound = captured_at - MAX_DIAGNOSTIC_FRAME_LOOKBACK_SECONDS
         if snapshot.task_started_at is not None:
@@ -255,7 +290,7 @@ class ReportBundleBuilder:
         candidates: list[tuple[Path, float]] = []
         try:
             for path in source_dir.glob("*.png"):
-                if not path.is_file() or not path.stem.endswith(("_failed", "_error")):
+                if not path.is_file() or not path.stem.endswith(FAILURE_FRAME_SUFFIXES):
                     continue
                 try:
                     modified_at = path.stat().st_mtime
@@ -265,14 +300,13 @@ class ReportBundleBuilder:
                 if lower_bound <= modified_at <= upper_bound:
                     candidates.append((path, modified_at))
         except OSError:
-            return {"files": [], "metadata": []}, ["diagnostic_frames_unavailable"]
+            omissions.append("diagnostic_probe_directory_unavailable")
+            return {"files": files, "metadata": metadata}, omissions
 
         candidates.sort(key=lambda item: item[1], reverse=True)
-        candidates = candidates[:MAX_DIAGNOSTIC_FRAME_COUNT]
-        metadata: list[dict[str, Any]] = []
-        files: list[dict[str, Any]] = []
-        omissions: list[str] = []
-        total_bytes = 0
+        if len(candidates) > MAX_DIAGNOSTIC_FRAME_COUNT - len(files):
+            omissions.append("diagnostic_frames_count_limit")
+        candidates = candidates[:max(0, MAX_DIAGNOSTIC_FRAME_COUNT - len(files))]
 
         for source, modified_at in candidates:
             try:
@@ -316,7 +350,7 @@ class ReportBundleBuilder:
                 omissions.append(f"diagnostic_frame_unavailable:{source.name}")
                 continue
 
-        if not candidates:
+        if not candidates and not metadata:
             omissions.append(
                 "diagnostic_frames_outside_window"
                 if matching_files
@@ -366,7 +400,14 @@ class ReportBundleBuilder:
     def capture_logs(self, captured_at):
         cutoff = timestamp(captured_at)
         evidence = evidence_for(self.project_root)
+        frozen_frames = {}
         for failure in evidence["failures"]:
+            frames = failure.pop("frames", [])
+            frozen_frames[failure["run"]] = [frame.get("data") for frame in frames]
+            failure["frames"] = [
+                {key: value for key, value in frame.items() if key != "data"}
+                for frame in frames
+            ]
             saved_files = failure["logs"]["files"]
             if "recent-digest.json" in saved_files:
                 saved_files["recent-digest.json"] = json.loads(saved_files["recent-digest.json"])
@@ -427,6 +468,15 @@ class ReportBundleBuilder:
         logs["files"].update(frozen_files)
         logs["sources"] = list(dict.fromkeys(logs["sources"] + frozen_sources))
         logs["omissions"].extend(evidence["omissions"])
+        # Keep image payloads out of text redaction, logs and state JSON exports.
+        # Round-robin gives each retained failure a primary frame before extras.
+        logs["failure_frames"] = [
+            {**failure["frames"][index], "run": failure["run"], "task": failure["task"],
+             "data": frozen_frames[failure["run"]][index]}
+            for index in range(FAILURE_FRAME_COUNT)
+            for failure in reversed(saved[-5:])
+            if index < len(failure.get("frames", ()))
+        ]
         if not flushed:
             logs["omissions"].append("log_flush_incomplete")
         if "recent-digest.json" in logs["files"]:

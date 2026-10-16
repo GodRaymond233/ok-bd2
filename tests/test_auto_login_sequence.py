@@ -44,6 +44,7 @@ class AutoLoginSequenceTest(unittest.TestCase):
         }
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
+        task._save_flow_diagnostic = lambda _name: None
         task.sleep = lambda *_args, **_kwargs: None
         task.ocr = lambda *_args, **_kwargs: []
         task._home_bright_since = None
@@ -453,6 +454,8 @@ class AutoLoginSequenceTest(unittest.TestCase):
     def test_login_wait_hard_timeout_resets_state_and_backs_off(self):
         task = self._task()
         task._state = "waiting_home"
+        snapshots = []
+        task._save_flow_diagnostic = lambda name: snapshots.append((name, task._state))
         task._login_clicked_at = monotonic() - 301.0
         task._waiting_home_since = monotonic() - 301.0
         statuses = {}
@@ -469,6 +472,7 @@ class AutoLoginSequenceTest(unittest.TestCase):
         )
 
         self.assertEqual("waiting", task._state)
+        self.assertEqual([("auto_login_home_timeout_failed", "waiting_home")], snapshots)
         self.assertIsNone(task._login_clicked_at)
         self.assertIsNone(task._waiting_home_since)
         self.assertEqual("登录后等待主页超时", statuses["状态"])

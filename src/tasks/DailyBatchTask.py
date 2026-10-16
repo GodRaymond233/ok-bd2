@@ -10,6 +10,7 @@ from ok import BaseTask
 from ok.task.exceptions import FinishedException, TaskDisabledException
 from qfluentwidgets import FluentIcon
 
+from src.diagnostics.runtime import observe_run, task_error
 from src.tasks.DailyTask import DailyTask
 from src.tasks.FreeGachaTask import FreeGachaTask
 from src.tasks.MapTradeTask import MapTradeTask
@@ -216,6 +217,11 @@ class DailyBatchTask(BaseTask):
         batch.log_info("一键完成日常：自动登录已完成，开始执行。")
         return True
 
+    def log_error(self, *args, **kwargs):
+        task_error()
+        return super().log_error(*args, **kwargs)
+
+    @observe_run
     def run(self, run_mode: str | None = None):
         if self._auto_login_pending():
             # 门控期间不消费注入的 run_mode，放行后的正式运行再取。

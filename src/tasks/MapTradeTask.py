@@ -173,12 +173,7 @@ class MapAutomationTaskBase(BaseBD2Task):
         return True
 
     def _save_diagnostic(self, name: str) -> None:
-        try:
-            self.save_frame(name, self.capture_frame())
-        except TaskDisabledException:
-            raise
-        except Exception as exc:
-            self.log_warning(f"诊断截图保存失败：{exc}")
+        self._save_flow_diagnostic(name)
 
 class MapTradeTask(MapAutomationTaskBase):
     """Daily merchant task, separated from weekly map collection."""

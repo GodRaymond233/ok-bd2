@@ -13,7 +13,15 @@ from ok import BaseTask, Box, Logger
 from ok.task.exceptions import FinishedException, TaskDisabledException
 from PIL import Image
 
-from src.diagnostics.runtime import observe_run, phase_changed, task_error
+from src.diagnostics.runtime import (
+    FAILURE_FRAME_SUFFIXES,
+    capture_failure_frame,
+    observe_frame,
+    observe_run,
+    phase_changed,
+    task_error,
+    task_stopped,
+)
 from src.scene.BD2Scene import BD2Scene
 from src.scene.ScreenPosition import ScreenPosition
 from src.tasks.task_notifications import log_task_completion
@@ -191,6 +199,7 @@ class BaseBD2Task(BaseTask):
         if frame is None:
             raise RuntimeError("未能从 BD2 截取画面。")
 
+        observe_frame(self, frame)
         height, width = frame.shape[:2]
         self.info_set("截图方式", self.capture_method_name)
         self.info_set("游戏分辨率", f"{width}x{height}")
@@ -199,6 +208,8 @@ class BaseBD2Task(BaseTask):
         return frame
 
     def save_frame(self, name: str, frame) -> Path:
+        if name.endswith(FAILURE_FRAME_SUFFIXES):
+            capture_failure_frame(self, name, frame)
         PROBE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         output_path = PROBE_OUTPUT_DIR / f"{name}.png"
         if frame.ndim == 2:
@@ -906,7 +917,10 @@ class BaseBD2Task(BaseTask):
         if not quick_switch_opened:
             self._save_flow_diagnostic("cartridge_quick_switch_failed")
             return False
-        return bool(confirm_quick_switch_page())
+        confirmed = bool(confirm_quick_switch_page())
+        if not confirmed:
+            self._save_flow_diagnostic("cartridge_quick_switch_page_failed")
+        return confirmed
 
     def _retry_recent_cartridge_entry(
         self,
@@ -933,7 +947,9 @@ class BaseBD2Task(BaseTask):
         return click_quick_switch()
 
     def _save_flow_diagnostic(self, name: str) -> None:
-        """Persist a failure frame; report bundles pick up *_failed/_error stems."""
+        """Keep the current game frame with this run before any recovery action."""
+        if capture_failure_frame(self, name):
+            return
         try:
             self.save_frame(name, self.capture_frame())
         except TaskDisabledException:
@@ -1286,6 +1302,7 @@ class BaseBD2Task(BaseTask):
         object.__new__ test doubles and non-standard task hosts compatible.
         """
         if getattr(self, "_enabled", True) is False:
+            task_stopped()
             return True
         checker = getattr(self, "exit_is_set", None)
         # Lightweight object.__new__ test doubles do not have the executor
@@ -1297,10 +1314,14 @@ class BaseBD2Task(BaseTask):
         )
         if callable(checker) and has_runtime_state:
             try:
-                return bool(checker())
+                stopped = bool(checker())
+                if stopped:
+                    task_stopped()
+                return stopped
             except Exception:
                 # A broken stop signal must fail closed; continuing to issue
                 # clicks after the executor becomes unavailable is unsafe.
+                task_stopped()
                 return True
         return False
 

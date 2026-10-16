@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import contextvars
 import functools
+import hashlib
 import json
 import logging
 import queue
@@ -19,6 +21,9 @@ from src.diagnostics.redaction import DiagnosticRedactor
 
 STORE_LIMIT = 8 * 1024 * 1024
 FAILURE_LOG_LIMIT = 512 * 1024
+FAILURE_FRAME_LIMIT = 350 * 1024
+FAILURE_FRAME_COUNT = 2
+FAILURE_FRAME_SUFFIXES = ("_failed", "_error", "_not_found", "_unconfirmed")
 RETENTION_SECONDS = 7 * 24 * 3600
 _recorder = None
 _run = contextvars.ContextVar("diagnostic_run", default=None)
@@ -26,7 +31,8 @@ _run = contextvars.ContextVar("diagnostic_run", default=None)
 
 def safe_info(task, redactor):
     try:
-        info = task.info_snapshot()
+        snapshot = getattr(task, "info_snapshot", None)
+        info = snapshot() if callable(snapshot) else dict(getattr(task, "info", {}) or {})
     except Exception as exc:
         return {"diagnostic_info_omission": type(exc).__name__}
     result = {}
@@ -78,6 +84,8 @@ def observe_run(method):
                 else "exception"
             )
             recorder.event(run, outcome, detail="".join(traceback.format_exception(exc)))
+            if outcome == "exception" and parent is not None:
+                parent["child_failed"] = True
             if outcome == "stopped" and parent is not None:
                 parent["stopped"] = True
             raise
@@ -94,6 +102,10 @@ def observe_run(method):
             if not trigger or new_error:
                 outcome = "failed" if failed or new_error else "finished"
                 recorder.event(run, "stopped" if run.get("stopped") else outcome)
+                if run.get("stopped") and parent is not None:
+                    parent["stopped"] = True
+                if outcome == "failed" and not run.get("stopped") and parent is not None:
+                    parent["child_failed"] = True
             return result
         finally:
             _run.reset(token)
@@ -115,6 +127,29 @@ def task_error():
     run = _run.get()
     if run is not None:
         run["explicit_error"] = True
+        capture_failure_frame(run["object"], "task_error")
+
+
+def task_stopped():
+    run = _run.get()
+    if run is not None:
+        run["stopped"] = True
+
+
+def capture_failure_frame(task, reason, frame=None):
+    """Freeze evidence before recovery, without requesting another game frame."""
+    run = _run.get()
+    if _recorder is None or run is None or run["object"] is not task:
+        return False
+    _recorder.capture_frame(run, reason, frame)
+    return True
+
+
+def observe_frame(task, frame):
+    run = _run.get()
+    if run is not None and run["object"] is task:
+        # ok-script clears its frame on sleep; retain only this run's latest frame.
+        run["last_frame"] = (frame, time.time())
 
 
 class RuntimeEvidence(logging.Filter):
@@ -144,6 +179,21 @@ class RuntimeEvidence(logging.Filter):
             if data.get("version") != 1 or not isinstance(data.get("failures"), list):
                 raise ValueError("schema")
             for failure in data["failures"]:
+                frames = failure.get("frames", [])
+                if not isinstance(frames, list):
+                    frames = [{"omission": "invalid_frame_record"}]
+                failure["frames"] = []
+                for frame in frames[:FAILURE_FRAME_COUNT]:
+                    if not isinstance(frame, dict):
+                        frame = {"omission": "invalid_frame_record"}
+                    payload = frame.get("data", "")
+                    if (
+                        not isinstance(payload, str)
+                        or len(payload) > (FAILURE_FRAME_LIMIT + 2) // 3 * 4
+                    ):
+                        frame.pop("data", None)
+                        frame["omission"] = "invalid_frame_payload"
+                    failure["frames"].append(frame)
                 files = failure["logs"]["files"]
                 if (
                     not set(files).issubset({"incidents.log", "recent.log", "recent-digest.json"})
@@ -195,7 +245,64 @@ class RuntimeEvidence(logging.Filter):
                 item["detail"].encode("utf-8")[: 64 * 1024].decode("utf-8", errors="ignore")
             )
             item["detail_omitted"] = "exception/detail exceeded 64KiB"
+        if outcome in ("failed", "exception"):
+            if not run.get("child_failed"):
+                self.capture_frame(run, f"task_{outcome}")
+            item["frames"] = list(run.get("frames", ()))
+            if run.get("frames_omitted"):
+                item["frames_omitted"] = run["frames_omitted"]
         self._enqueue(item)
+
+    def capture_frame(self, run, reason, frame=None):
+        frames = run.setdefault("frames", [])
+        now = time.time()
+        evidence = {
+            "reason": self.redactor.redact(str(reason))[:200],
+            "captured_at": datetime.fromtimestamp(now).astimezone().isoformat(
+                timespec="milliseconds"
+            ),
+            "info": safe_info(run["object"], self.redactor),
+        }
+        try:
+            if frame is None:
+                evidence["source"] = "executor_frame"
+                executor = getattr(run["object"], "_executor", None)
+                frame = executor.nullable_frame() if executor is not None else None
+                frame_time = float(getattr(executor, "_last_frame_time", 0) or 0)
+                retained, retained_at = run.get("last_frame", (None, 0))
+                if retained is not None and (frame is None or retained_at >= frame_time):
+                    frame, frame_time = retained, retained_at
+                    evidence["source"] = "task_last_frame"
+                evidence["frame_age_seconds"] = (
+                    max(0.0, now - frame_time) if frame_time > 0 else None
+                )
+                if frame_time and frame_time < run["started"]:
+                    evidence["omission"] = "frame_predates_run"
+                    frame = None
+            else:
+                evidence["source"] = "provided_frame"
+            if frame is None:
+                evidence.setdefault("omission", "game_frame_unavailable")
+            else:
+                from src.diagnostics.bundle import _encode_frame
+
+                encoded, metadata = _encode_frame(frame, max_bytes=FAILURE_FRAME_LIMIT)
+                evidence.update(metadata)
+                if encoded is None:
+                    evidence["omission"] = "frame_exceeded_limit"
+                else:
+                    evidence["sha256"] = hashlib.sha256(encoded).hexdigest()
+                    evidence["data"] = base64.b64encode(encoded).decode("ascii")
+        except Exception as exc:
+            evidence["omission"] = f"frame_capture_failed:{type(exc).__name__}"
+        if evidence.get("sha256") and any(f.get("sha256") == evidence["sha256"] for f in frames):
+            return
+        if len(frames) >= FAILURE_FRAME_COUNT:
+            # Preserve the first recovery checkpoint and the latest failure state.
+            frames[-1] = evidence
+            run["frames_omitted"] = run.get("frames_omitted", 0) + 1
+        else:
+            frames.append(evidence)
 
     def _enqueue(self, item):
         try:
@@ -257,6 +364,7 @@ class RuntimeEvidence(logging.Filter):
                 self.pending.task_done()
 
     def _accept(self, item):
+        frames = item.pop("frames", [])
         failure = item["event"] in ("failed", "exception")
         with self.guard:
             self.events.append(item)
@@ -274,6 +382,19 @@ class RuntimeEvidence(logging.Filter):
                 None,
             )
             if failure and previous:
+                if frames:
+                    retained = previous.setdefault("frames", [])
+                    frames = [
+                        frame for frame in frames
+                        if not frame.get("sha256")
+                        or all(f.get("sha256") != frame["sha256"] for f in retained)
+                    ]
+                    available = max(0, FAILURE_FRAME_COUNT - len(retained))
+                    retained.extend(frames[:available])
+                    if len(frames) > available:
+                        previous["frames_omitted"] = (
+                            previous.get("frames_omitted", 0) + len(frames) - available
+                        )
                 previous["count"] += 1
                 previous["last_time"] = item["time"]
                 previous.setdefault("related_events", []).append(item)
@@ -287,6 +408,7 @@ class RuntimeEvidence(logging.Filter):
                 **item,
                 "count": 1,
                 "last_time": item["time"],
+                "frames": frames,
                 "logs": {"files": {}, "sources": [], "omissions": ["failure_logs_pending"]},
             }
             with self.guard:
