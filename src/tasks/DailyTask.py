@@ -262,6 +262,7 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
                     run_history.save_stage(self, name, "done", scope=scope)
                 else:
                     failed.append(name)
+                    self._save_flow_diagnostic("daily_step_failed")
                     stop_remaining = not self.recover_daily_home()
                     self.log_info(f"{name} 失败，" + (
                         "未恢复主页，停止剩余子任务。" if stop_remaining
@@ -274,6 +275,7 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
                     failed.append(name)
                 if name in success:
                     success.remove(name)
+                self._save_flow_diagnostic("daily_step_error")
                 stop_remaining = not self.recover_daily_home()
                 self.log_error(f"日常子任务失败：{name}", exc)
             finally:

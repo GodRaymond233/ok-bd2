@@ -94,6 +94,9 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         task.run_my_home_sign_in = Mock(return_value=True)
         task.run_business_collect = Mock(return_value=True)
         task.recover_daily_home = Mock(return_value=True)
+        task._save_flow_diagnostic = Mock(
+            side_effect=lambda _name: task.recover_daily_home.assert_not_called(),
+        )
         self.assertFalse(task.run())
         task.run_my_home_sign_in.assert_called_once()
         task.run_business_collect.assert_called_once()
@@ -556,6 +559,7 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
         task.log_error = lambda *_args, **_kwargs: None
+        task._save_flow_diagnostic = Mock()
         task.recover_daily_home = lambda: False
         task._wait_for_home_confirmation = lambda *_args, **_kwargs: False
         actions = []
@@ -2500,6 +2504,7 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
         task.log_error = lambda *_args, **_kwargs: None
+        task._save_flow_diagnostic = Mock()
         task.recover_daily_home = lambda: False
         calls = []
         task.run_guild_sign_in = lambda: calls.append("guild") or False
@@ -2516,6 +2521,7 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         task = object.__new__(QuickHuntTask)
         task.capture_frame = Mock(return_value=np.zeros((1080, 1920, 3), dtype=np.uint8))
         task.sleep = Mock()
+        task._quick_vision = Mock(return_value=SimpleNamespace(ocr_boxes=Mock(return_value=[])))
         for text, expected in (
             ("0/90 +1.77K", 0),
             ("84/90", 84),
@@ -2533,6 +2539,7 @@ class DailyTaskHelperTest(StageHistoryTestCase):
 
         task = object.__new__(QuickHuntTask)
         task.sleep = Mock()
+        task._quick_vision = Mock(return_value=SimpleNamespace(ocr_boxes=Mock(return_value=[])))
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         frame[43:70, 1621:1689] = (245, 245, 245)
         frame[50:60, 1726:1736] = (0, 200, 255)
@@ -2547,6 +2554,36 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         self.assertEqual(90, task._quick_hunt_free_rice())
         frame[43:70, 1621:1689] = (0, 200, 255)
         self.assertIsNone(task._quick_hunt_free_rice())
+
+    def test_free_resource_raw_fraction_fallback_keeps_capacity_and_two_frame_guards(self):
+        task = object.__new__(QuickHuntTask)
+        task.info_set = Mock()
+        task.sleep = Mock()
+        task.capture_frame = Mock(return_value=np.zeros((1080, 1920, 3), dtype=np.uint8))
+        task._quick_hunt_ocr_text = Mock(return_value="0 9 0")
+        boxes = Mock()
+        task._quick_vision = Mock(return_value=SimpleNamespace(ocr_boxes=boxes))
+        for resource, texts, expected in (
+            ("米饭", ["0/90", "+3.39K"], 0),
+            ("米饭", ["84/90", "2"], 84),
+            ("火把", ["0/60", "+100"], 0),
+            ("米饭", ["0 9 0"], None),
+            ("米饭", ["0/90 3.39K"], None),
+            ("米饭", ["0/90", "84/90"], None),
+            ("米饭", ["0/90", "0/60"], None),
+            ("米饭", ["91/90"], None),
+            ("米饭", ["0/60"], None),
+            ("米饭", ["+3.39K"], None),
+        ):
+            with self.subTest(resource=resource, texts=texts):
+                boxes.return_value = [SimpleNamespace(name=text) for text in texts]
+                self.assertEqual(expected, task._quick_hunt_free_resource(resource))
+        boxes.side_effect = [[SimpleNamespace(name="0/90")], [SimpleNamespace(name="6/90")]]
+        self.assertIsNone(task._quick_hunt_free_resource("米饭"))
+        boxes.reset_mock(side_effect=True)
+        task._quick_hunt_ocr_text.return_value = "90/90"
+        self.assertEqual(90, task._quick_hunt_free_resource("米饭"))
+        boxes.assert_not_called()
 
     def test_rice_scheduler_stops_on_unknown_resource_before_each_stage(self):
         for readings, expected_calls in (([None], []), ([90, None], ["狩猎场"])):
@@ -2595,18 +2632,21 @@ class DailyTaskHelperTest(StageHistoryTestCase):
                     task._quick_hunt_free_rice.assert_not_called()
 
     def test_quick_hunt_cancellation_does_not_click_home(self):
-        from ok.task.exceptions import TaskDisabledException
+        from ok.task.exceptions import FinishedException, TaskDisabledException
 
         task = object.__new__(QuickHuntTask)
         task.config = {}
         task.info_set = Mock()
         task.log_info = Mock()
         task._quick_hunt_open_menu = Mock(return_value="opened")
-        task._quick_hunt_run_rice_scheduler = Mock(side_effect=TaskDisabledException)
         task._quick_hunt_return_home = Mock()
-        with self.assertRaises(TaskDisabledException):
-            task.run_quick_hunt()
+        task._save_flow_diagnostic = Mock()
+        for exception in (TaskDisabledException, FinishedException):
+            task._quick_hunt_run_rice_scheduler = Mock(side_effect=exception)
+            with self.assertRaises(exception):
+                task.run_quick_hunt()
         task._quick_hunt_return_home.assert_not_called()
+        task._save_flow_diagnostic.assert_not_called()
 
 
 

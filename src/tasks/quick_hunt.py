@@ -9,7 +9,7 @@ from typing import Literal
 
 import cv2
 import numpy as np
-from ok.task.exceptions import TaskDisabledException
+from ok.task.exceptions import FinishedException, TaskDisabledException
 
 from src.tasks import run_history
 from src.tasks.map_trade.models import TemplateSpec
@@ -495,7 +495,7 @@ class QuickHuntFeatureMixin:
             if rice_ok and bool(self.config.get("快速狩猎圣石洞穴", True)):
                 crystal_ok = self._quick_hunt_run_crystal_cave()
                 success = success and crystal_ok
-        except TaskDisabledException:
+        except (TaskDisabledException, FinishedException):
             cancelled = True
             raise
         except Exception:
@@ -1636,6 +1636,19 @@ class QuickHuntFeatureMixin:
                 name=f"免费{resource}数量",
             )
             value = parse_free_pool(text, QUICK_HUNT_RESOURCE_CAPACITIES[resource])
+            if value is None:
+                # Hard white masking can erase the fraction separator. Read intact
+                # text boxes; never join neighbouring reserve counters or guess zero.
+                boxes = self._quick_vision().ocr_boxes(
+                    crop, f"免费{resource}原图回读", relative_roi=(0, 0, 1, 1),
+                )
+                fractions = [
+                    str(box.name).strip() for box in boxes
+                    if re.fullmatch(r"[0-9]+\s*[/：:|\-~]\s*[0-9]+", str(box.name).strip())
+                ]
+                self._status_set(f"免费{resource}原图回读", " | ".join(fractions) or "-")
+                if len(fractions) == 1:
+                    value = parse_free_pool(fractions[0], QUICK_HUNT_RESOURCE_CAPACITIES[resource])
             return value[0] if value is not None else None
         values = []
         for _ in range(2):
