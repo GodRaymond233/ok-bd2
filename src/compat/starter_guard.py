@@ -92,10 +92,12 @@ def starter_preflight_warning(env: dict[str, str] | None = None) -> str | None:
     )
 
 
-def enable_starter_launch_guard() -> None:
-    """Keep game startup pending while the official launcher is updating."""
-    from src.compat.starter_wait_ui import install_starter_wait_ui
+def enable_starter_launch_guard(*, install_ui: bool = True) -> None:
+    """Keep game startup pending while the official launcher is updating.
 
+    ``install_ui`` adds the Qt waiting dialog; the service mode reports the same
+    waiting state through ``starter_wait_status`` instead.
+    """
     start_controller = import_module("ok.core.start_controller")
     if os.name == "nt":
         # rotypes initializes STA at import time; load it before the MTA capture worker.
@@ -105,7 +107,10 @@ def enable_starter_launch_guard() -> None:
             logger.warning(f"starter WinRT unavailable, will try PrintWindow: {exc}")
     _patch_stable_wait(start_controller)
     _patch_execute_preflight(start_controller)
-    install_starter_wait_ui()
+    if install_ui:
+        from src.compat.starter_wait_ui import install_starter_wait_ui
+
+        install_starter_wait_ui()
 
 
 def notify_starter_wizard(windows: Iterable[StarterWindow], elapsed_seconds: float) -> None:

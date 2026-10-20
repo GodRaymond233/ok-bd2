@@ -2,6 +2,7 @@ src
 ok
 main.py
 main_debug.py
+main_desktop.py
 icons
 requirements.txt
 README.md

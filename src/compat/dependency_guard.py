@@ -29,10 +29,25 @@ CORE_MODULE_PACKAGES = {
     "win32api": "pywin32",
     "win32ui": "pywin32",
     "cv2": "opencv-python",
-    "PySide6": "PySide6",
     "openvino": "openvino",
     "onnxocr": "onnxocr-ppocrv5",
 }
+
+# 只有所选界面模式真正需要的包才算核心依赖：Qt 窗口需要 PySide6，
+# 桌面客户端的服务模式需要本机接口栈，二者互不要求。
+UI_MODULE_PACKAGES = {
+    "qt": {"PySide6": "PySide6"},
+    "service": {"fastapi": "fastapi", "uvicorn": "uvicorn", "wsproto": "wsproto"},
+}
+
+
+def core_module_packages() -> dict[str, str]:
+    """Core modules for the UI mode selected before startup (see src.ui_mode)."""
+    from src.ui_mode import ui_mode
+
+    packages = dict(CORE_MODULE_PACKAGES)
+    packages.update(UI_MODULE_PACKAGES[ui_mode()])
+    return packages
 
 # 依次尝试的 --index-url；None 表示不指定，走用户本机 pip 配置（含官方源）。
 PIP_INDEX_FALLBACK: tuple[str | None, ...] = (
@@ -62,7 +77,7 @@ def _log(line: str) -> None:
 def find_missing_modules() -> list[str]:
     """返回核心清单里无法定位的模块名（spec 缺失或定位即抛错）。"""
     missing = []
-    for module_name in CORE_MODULE_PACKAGES:
+    for module_name in core_module_packages():
         try:
             if importlib.util.find_spec(module_name) is None:
                 missing.append(module_name)
@@ -141,7 +156,7 @@ def _notify(text: str, *, error: bool = False) -> None:
 def _missing_packages(missing_modules: list[str]) -> dict[str, list[str]]:
     packages: dict[str, list[str]] = {}
     for module_name in missing_modules:
-        packages.setdefault(CORE_MODULE_PACKAGES[module_name], []).append(module_name)
+        packages.setdefault(core_module_packages()[module_name], []).append(module_name)
     return packages
 
 

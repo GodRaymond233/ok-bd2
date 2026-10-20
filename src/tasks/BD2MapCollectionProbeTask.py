@@ -4,8 +4,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime
 
-from qfluentwidgets import FluentIcon
-
+from src.icons import TaskIcon as FluentIcon
 from src.tasks.map_trade.audit import CollectionVisualAuditStore
 from src.tasks.map_trade.card_status import CardActionState
 from src.tasks.map_trade.models import (

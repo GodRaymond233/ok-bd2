@@ -352,16 +352,19 @@ def set_default_store(store: RunHistoryStore | None) -> None:
         _default_store = store
 
 
-def install_run_history_recorder() -> bool:
+def install_run_history_recorder(exit_event=None) -> bool:
     """Record every finished one-time task into the default store."""
 
     from ok.core.events import communicate
-    from PySide6.QtCore import QObject
 
     if getattr(install_run_history_recorder, "_installed", False):
         return False
 
-    class _Recorder(QObject):
+    class _Recorder:
+        def stop(self):
+            communicate.task_done.disconnect(self.on_task_done)
+            install_run_history_recorder._installed = False
+
         def on_task_done(self, task):
             if task is None or not getattr(task, "name", None):
                 return
@@ -388,6 +391,8 @@ def install_run_history_recorder() -> bool:
 
     recorder = _Recorder()
     communicate.task_done.connect(recorder.on_task_done)
+    if exit_event is not None:
+        exit_event.bind_stop(recorder)
     # Keep the receiver alive for the app's lifetime.
     install_run_history_recorder._recorder = recorder
     install_run_history_recorder._installed = True

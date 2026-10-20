@@ -1,4 +1,5 @@
 import tempfile
+import threading
 import time
 import unittest
 from datetime import datetime
@@ -64,6 +65,7 @@ class DailyBatchTaskTest(unittest.TestCase):
 
     def make_task(self, children, child_specs, task_config):
         task = object.__new__(DailyBatchTask)
+        task.lock = threading.Lock()
         task.child_tasks = child_specs
         task.config = task_config
         task.info = {}

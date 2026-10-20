@@ -1,3 +1,4 @@
+import threading
 import unittest
 from dataclasses import replace
 from time import monotonic
@@ -582,6 +583,7 @@ class AutoLoginSequenceTest(unittest.TestCase):
         batch = SimpleNamespace(
             _start_after_login=True,
             _enabled=False,
+            lock=threading.Lock(),
             log_info=lambda *_args, **_kwargs: None,
         )
         enqueued = []
@@ -605,6 +607,7 @@ class AutoLoginSequenceTest(unittest.TestCase):
         batch = SimpleNamespace(
             _start_after_login=True,
             _enabled=False,
+            lock=threading.Lock(),
             log_info=lambda *_args, **_kwargs: None,
         )
         enqueued = []

@@ -1,9 +1,17 @@
-"""Shared process startup for the production and debug entry points."""
+"""Shared process startup for the production and debug entry points.
+
+Every entry (Qt window, debug window, headless ``-t`` run and the desktop core
+``--service``) passes through here, so every one of them takes the session-wide
+executor lock (``src.executor_guard``) before ok-script builds an executor.
+"""
 
 from __future__ import annotations
 
+import argparse
 import datetime
 import faulthandler
+import os
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -59,27 +67,85 @@ def open_crash_log(
     return crash_log
 
 
+def parse_entry_arguments(argv: list[str] | None = None) -> argparse.Namespace:
+    """Entry flags read before ok-script parses its own (``-t``, ``-e``, ``-h``)."""
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--service", action="store_true")
+    parser.add_argument("-h", "--headless", action="store_true")
+    arguments, _ = parser.parse_known_args(sys.argv[1:] if argv is None else argv)
+    return arguments
+
+
+def entry_mode(arguments: argparse.Namespace, configure) -> str:
+    if arguments.service:
+        return "service"
+    if arguments.headless:
+        return "headless"
+    return "debug" if configure is not None else "qt"
+
+
 def start_application(
     config_loader: Callable[[], dict],
     configure: Callable[[dict], object] | None = None,
 ) -> None:
     """Run an ok-script application after diagnostics and dependency checks."""
-    from src.compat.dependency_guard import ensure_core_dependencies
+    arguments = parse_entry_arguments()
+    if arguments.service:
+        from src.ui_mode import UI_MODE_ENV
+
+        # Must be decided before src.config is imported (no Qt in service mode).
+        os.environ[UI_MODE_ENV] = "service"
+    from src.executor_guard import mark_current_process
+
+    mark_current_process()
 
     crash_log = open_crash_log()
     fault_handler_enabled = False
     try:
         faulthandler.enable(file=crash_log, all_threads=True)
         fault_handler_enabled = True
-        ensure_core_dependencies()
+        if arguments.service:
+            from src.desktop.service import run_service
 
-        import ok
-
-        config = config_loader()
-        if configure is not None:
-            configure(config)
-        ok.OK(config).start()
+            exit_code = run_service(config_loader, configure)
+            if exit_code:
+                raise SystemExit(exit_code)
+            return
+        _run_windowed(config_loader, configure, entry_mode(arguments, configure))
     finally:
         if fault_handler_enabled:
             faulthandler.disable()
         crash_log.close()
+
+
+def _run_windowed(config_loader, configure, mode: str) -> None:
+    from src.compat.dependency_guard import ensure_core_dependencies
+    from src.desktop.protocol import EXIT_EXECUTOR_LOCKED
+    from src.executor_guard import (
+        acquire_executor_lock,
+        install_executor_guards,
+        legacy_guard,
+        refusal_message,
+        show_refusal_dialog,
+    )
+
+    acquired, holder = acquire_executor_lock(mode)
+    if not acquired:
+        if mode != "headless":
+            show_refusal_dialog(refusal_message(holder))
+        raise SystemExit(EXIT_EXECUTOR_LOCKED)
+    ensure_core_dependencies()
+
+    import ok
+
+    config = config_loader()
+    if configure is not None:
+        configure(config)
+    # The session-wide executor lock replaces ok-script's per-directory mutex, which
+    # would terminate a same-directory older instance after five seconds.
+    config["check_mutex"] = False
+    install_executor_guards()
+    legacy_message = legacy_guard().blocking_message(force=True)
+    if legacy_message and mode != "headless":
+        show_refusal_dialog(f"{legacy_message}在它退出之前，本程序不会开始任务。")
+    ok.OK(config).start()

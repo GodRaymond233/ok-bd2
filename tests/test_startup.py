@@ -1,10 +1,11 @@
 import datetime
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from src.compat import startup
 
@@ -46,51 +47,141 @@ class StartApplicationTest(unittest.TestCase):
                 )
                 self.assertIn("start_application(", source)
 
-    def test_start_application_checks_dependencies_before_loading_config(self):
-        events = []
+    def guarded_startup(self, events, *, acquired=True, legacy=None, argv=("main.py",)):
+        """Patch the executor guard so tests never take a real session lock."""
+        legacy_guard = SimpleNamespace(blocking_message=lambda force=False: legacy)
+        holder = None if acquired else SimpleNamespace(describe=lambda: "进程 7（qt）")
+        patches = [
+            patch.object(sys, "argv", list(argv)),
+            patch.object(startup, "open_crash_log"),
+            patch.object(startup.faulthandler, "enable"),
+            patch.object(startup.faulthandler, "disable"),
+            patch("src.executor_guard.mark_current_process"),
+            patch(
+                "src.executor_guard.acquire_executor_lock",
+                side_effect=lambda mode: events.append(("lock", mode)) or (acquired, holder),
+            ),
+            patch(
+                "src.executor_guard.install_executor_guards",
+                side_effect=lambda: events.append("guards"),
+            ),
+            patch("src.executor_guard.legacy_guard", return_value=legacy_guard),
+            patch(
+                "src.executor_guard.show_refusal_dialog",
+                side_effect=lambda message: events.append(("dialog", message)),
+            ),
+            patch(
+                "src.compat.dependency_guard.ensure_core_dependencies",
+                side_effect=lambda: events.append("dependencies"),
+            ),
+        ]
+        for item in patches:
+            self.enterContext(item)
 
+    def fake_ok(self, events):
         class FakeOk:
             def __init__(self, config):
-                events.append(("ok_init", config))
+                events.append(("ok_init", dict(config)))
 
             def start(self):
                 events.append("start")
 
-        fake_ok = SimpleNamespace(OK=FakeOk)
+        return SimpleNamespace(OK=FakeOk)
+
+    def test_start_application_takes_lock_then_checks_dependencies_before_config(self):
+        events = []
+        self.guarded_startup(events)
 
         def load_config():
             events.append("load_config")
             return {"debug": False}
 
         def configure(config):
-            events.append(("configure", config))
+            events.append(("configure", dict(config)))
 
-        with (
-            patch.object(startup, "open_crash_log") as open_log,
-            patch.object(startup.faulthandler, "enable") as enable,
-            patch.object(startup.faulthandler, "disable") as disable,
-            patch(
-                "src.compat.dependency_guard.ensure_core_dependencies",
-                side_effect=lambda: events.append("dependencies"),
-            ),
-            patch.dict(sys.modules, {"ok": fake_ok}),
-        ):
-            crash_log = open_log.return_value
+        with patch.dict(sys.modules, {"ok": self.fake_ok(events)}):
             startup.start_application(load_config, configure)
 
         self.assertEqual(
             [
+                ("lock", "debug"),
                 "dependencies",
                 "load_config",
                 ("configure", {"debug": False}),
-                ("ok_init", {"debug": False}),
+                "guards",
+                ("ok_init", {"debug": False, "check_mutex": False}),
                 "start",
             ],
             events,
         )
-        enable.assert_called_once_with(file=crash_log, all_threads=True)
-        disable.assert_called_once_with()
-        crash_log.close.assert_called_once_with()
+        startup.faulthandler.disable.assert_called_once_with()
+        startup.open_crash_log.return_value.close.assert_called_once_with()
+
+    def test_refused_lock_stops_before_dependencies_and_runtime(self):
+        for argv, mode, dialog in (
+            (("main.py",), "qt", True),
+            (("main.py", "--headless", "-t", "1"), "headless", False),
+        ):
+            with self.subTest(mode=mode):
+                events = []
+                self.guarded_startup(events, acquired=False, argv=argv)
+                with (
+                    patch.dict(sys.modules, {"ok": self.fake_ok(events)}),
+                    self.assertRaises(SystemExit) as raised,
+                ):
+                    startup.start_application(lambda: {"debug": False})
+                self.assertEqual(raised.exception.code, 11)
+                self.assertEqual(events[0], ("lock", mode))
+                self.assertNotIn("dependencies", events)
+                kinds = [event[0] for event in events if isinstance(event, tuple)]
+                self.assertNotIn("ok_init", kinds)
+                self.assertEqual("dialog" in kinds, dialog)
+
+    def test_running_legacy_instance_is_reported_but_not_terminated(self):
+        events = []
+        self.guarded_startup(events, legacy="检测到正在运行的旧版 ok-bd2（进程 40）。")
+        with patch.dict(sys.modules, {"ok": self.fake_ok(events)}):
+            startup.start_application(lambda: {"debug": False})
+        dialogs = [
+            event[1] for event in events if isinstance(event, tuple) and event[0] == "dialog"
+        ]
+        self.assertEqual(len(dialogs), 1)
+        self.assertIn("不会开始任务", dialogs[0])
+        self.assertEqual(events[-1], "start")
+
+    def test_service_flag_selects_the_desktop_core_without_qt(self):
+        events = []
+        self.guarded_startup(events, argv=("main.py", "--service"))
+        run_service = Mock(return_value=0)
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch("src.desktop.service.run_service", run_service),
+        ):
+            startup.start_application(lambda: {})
+            self.assertEqual(os.environ["OK_BD2_UI"], "service")
+        run_service.assert_called_once()
+        self.assertNotIn("dependencies", events)  # the service checks after its handshake
+
+    def test_service_failure_exit_code_is_propagated(self):
+        events = []
+        self.guarded_startup(events, argv=("main_debug.py", "--service"))
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch("src.desktop.service.run_service", return_value=10),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            startup.start_application(lambda: {}, lambda config: None)
+        self.assertEqual(raised.exception.code, 10)
+
+    def test_entry_arguments_and_modes(self):
+        parsed = startup.parse_entry_arguments(["--service", "-t", "2"])
+        self.assertTrue(parsed.service)
+        self.assertEqual(startup.entry_mode(parsed, None), "service")
+        parsed = startup.parse_entry_arguments(["-h", "-t", "1", "-e"])
+        self.assertEqual(startup.entry_mode(parsed, None), "headless")
+        parsed = startup.parse_entry_arguments([])
+        self.assertEqual(startup.entry_mode(parsed, None), "qt")
+        self.assertEqual(startup.entry_mode(parsed, lambda config: None), "debug")
 
 
 if __name__ == "__main__":

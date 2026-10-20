@@ -1,8 +1,8 @@
 from time import monotonic
 
 from ok.task.exceptions import FinishedException, TaskDisabledException
-from qfluentwidgets import FluentIcon
 
+from src.icons import TaskIcon as FluentIcon
 from src.tasks.BaseBD2Task import BaseBD2Task
 from src.tasks.task_vision_mixin import LOADING_TEMPLATE, TaskVisionMixin
 from src.utils.ocr_utils import keyword_match_count

@@ -5,8 +5,8 @@ from time import monotonic
 import cv2
 import numpy as np
 from ok.task.exceptions import FinishedException, TaskDisabledException
-from qfluentwidgets import FluentIcon
 
+from src.icons import TaskIcon as FluentIcon
 from src.tasks.BaseBD2Task import (
     FIEND_HUNT_REWARD_TITLE,
     RANK_OVERLAY_TITLES,

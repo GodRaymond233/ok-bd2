@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 
 # 安装后等待窗口与场景稳定，再执行首次调度检查。
@@ -119,62 +120,73 @@ def _any_batch_child_due(batch, executor, history, schedule_store, now=None) -> 
     return False
 
 
-def install_auto_scheduler() -> bool:
+def install_auto_scheduler(handler=None, exit_event=None) -> bool:
     """Install the startup check and the post-task recheck (idempotent).
 
-    生产入口在 ``src.config`` 导入期调用本函数，此时 QApplication 尚未创建：
-    信号连接不依赖应用实例（与 ``install_run_history_recorder`` 同模式），
-    可以无条件执行；依赖事件循环的首次 QTimer 检查必须推迟到首个框架信号
-    到达后再排布，否则定时器静默失效、启动自动执行在生产入口永不生效。
+    ``src.globals.Globals`` installs this once the runtime handler exists, in the
+    Qt window and in the windowless service alike.  Checks run on the ok-script
+    handler thread instead of a Qt timer; the first one is scheduled when the core
+    reports ``start_success`` and every finished task schedules a recheck.
     """
     from ok.core.events import communicate
-    from PySide6.QtCore import QCoreApplication, QObject, QTimer
 
     if getattr(install_auto_scheduler, "_installed", False):
         return False
+    if handler is None:
+        handler = getattr(_resolve_og(), "handler", None)
+    if handler is None:
+        raise RuntimeError("Install the scheduler after the runtime handler is ready")
     install_auto_scheduler._installed = True
 
-    class _AutoRunner(QObject):
+    class _AutoRunner:
         def __init__(self):
-            super().__init__()
             self._startup_scheduled = False
             self._startup_deadline = 0.0
+            self._stopped = False
+            self._lock = threading.Lock()
 
         def schedule_startup_check(self):
-            if self._startup_scheduled:
-                return
-            self._startup_scheduled = True
-            self._startup_deadline = time.monotonic() + STARTUP_RETRY_BUDGET_SECONDS
-            QTimer.singleShot(int(INSTALL_DELAY_SECONDS * 1000), self._startup_check)
+            with self._lock:
+                if self._startup_scheduled or self._stopped:
+                    return
+                self._startup_scheduled = True
+                self._startup_deadline = time.monotonic() + STARTUP_RETRY_BUDGET_SECONDS
+            handler.post(self._startup_check, delay=INSTALL_DELAY_SECONDS)
 
         def _startup_check(self):
             # ``None`` 含义：执行器忙（自动登录 trigger 尚未结束）、游戏未
             # 就绪或当前无到期任务。前两者靠有限重试等到登录完成；后者重试
             # 只做纯配置读取，开销可忽略。启动了任务或预算耗尽即停止。
+            if self._stopped:
+                return
             if run_due_tasks_once() is None and time.monotonic() < self._startup_deadline:
-                QTimer.singleShot(
-                    int(STARTUP_RETRY_INTERVAL_SECONDS * 1000), self._startup_check
-                )
+                handler.post(self._startup_check, delay=STARTUP_RETRY_INTERVAL_SECONDS)
+
+        def _recheck(self):
+            if not self._stopped:
+                run_due_tasks_once()
 
         def on_first_app_signal(self, *_args):
             self.schedule_startup_check()
 
         def on_task_done(self, task):
-            if not self._startup_scheduled:
-                # 兜底：task_list_updated / starting_emulator 都未覆盖、
-                # 但已有任务跑完的场景（应用一定已存在）。
-                self.schedule_startup_check()
-            QTimer.singleShot(int(RECHECK_DELAY_SECONDS * 1000), run_due_tasks_once)
+            if self._stopped:
+                return
+            # 兜底：启动信号之前已有任务跑完时，同样排布首次检查。
+            self.schedule_startup_check()
+            handler.post(self._recheck, delay=RECHECK_DELAY_SECONDS, remove_existing=True)
+
+        def stop(self):
+            self._stopped = True
+            communicate.task_done.disconnect(self.on_task_done)
+            communicate.start_success.disconnect(self.on_first_app_signal)
+            install_auto_scheduler._installed = False
 
     runner = _AutoRunner()
     communicate.task_done.connect(runner.on_task_done)
-    if QCoreApplication.instance() is not None:
-        runner.schedule_startup_check()
-    else:
-        # QApplication 由 ok 框架在导入完成后创建。任务列表刷新与模拟器
-        # 启动信号都在主窗口/执行器就绪后发出，任一先到即排布首次检查。
-        communicate.task_list_updated.connect(runner.on_first_app_signal)
-        communicate.starting_emulator.connect(runner.on_first_app_signal)
+    communicate.start_success.connect(runner.on_first_app_signal)
+    if exit_event is not None:
+        exit_event.bind_stop(runner)
     # Keep the receiver alive for the app's lifetime.
     install_auto_scheduler._runner = runner
     return True

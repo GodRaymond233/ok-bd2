@@ -5,9 +5,9 @@ from time import monotonic
 import cv2
 import numpy as np
 from ok.task.exceptions import FinishedException, TaskDisabledException
-from qfluentwidgets import FluentIcon
 
 from src.diagnostics.runtime import task_error
+from src.icons import TaskIcon as FluentIcon
 from src.tasks.BaseBD2Task import BaseBD2Task
 from src.tasks.map_trade.models import MatchResult, TemplateSpec
 from src.utils import task_vision

@@ -376,38 +376,26 @@ class RunDueTasksOnceTest(unittest.TestCase):
 
 
 class InstallAutoSchedulerTest(unittest.TestCase):
-    """生产入口在 QApplication 创建前安装，信号必须仍然接上（HIGH 回归）."""
+    """A core-ready event starts scheduling without any GUI event loop."""
 
     def _reset_install_state(self):
-        from ok.core.events import communicate
-
         runner = getattr(auto_scheduler.install_auto_scheduler, "_runner", None)
-        if runner is not None:
-            for signal, slot in (
-                (communicate.task_done, runner.on_task_done),
-                (communicate.task_list_updated, runner.on_first_app_signal),
-                (communicate.starting_emulator, runner.on_first_app_signal),
-            ):
-                try:
-                    signal.disconnect(slot)
-                except (RuntimeError, TypeError):
-                    pass
+        if runner is not None and not getattr(runner, "_stopped", False):
+            runner.stop()
         auto_scheduler.install_auto_scheduler._installed = False
-        if runner is not None:
-            auto_scheduler.install_auto_scheduler._runner = None
+        auto_scheduler.install_auto_scheduler._runner = None
 
     def setUp(self):
-        # 导入 src.config 会触发一次真实安装（install_quest_ui →
-        # install_auto_scheduler）；每个用例前清掉该状态，保证可重装。
+        from unittest.mock import Mock
+
         from ok import og
 
         # ok-script 2.x 的 EventBus 未装 Qt 派发器时同步直调订阅者且异常穿透
         # emit，早前用例残留的框架 tab 订阅者会读 og.executor，给空桩兜底。
         self._prior_executor = getattr(og, "executor", None)
-        og.executor = SimpleNamespace(
-            onetime_tasks=[], trigger_tasks=[], current_task=None
-        )
+        og.executor = SimpleNamespace(onetime_tasks=[], trigger_tasks=[], current_task=None)
         self._reset_install_state()
+        self.handler = Mock()
 
     def tearDown(self):
         from ok import og
@@ -415,52 +403,56 @@ class InstallAutoSchedulerTest(unittest.TestCase):
         og.executor = self._prior_executor
         self._reset_install_state()
 
-    def test_installs_without_qapplication_and_schedules_on_first_signal(self):
+    def test_installs_without_qt_and_schedules_on_core_start(self):
+        from ok.core.events import communicate
+
+        self.assertTrue(auto_scheduler.install_auto_scheduler(handler=self.handler))
+        # 幂等：重复安装直接拒绝。
+        self.assertFalse(auto_scheduler.install_auto_scheduler(handler=self.handler))
+        self.handler.post.assert_not_called()
+        communicate.start_success.emit()
+        self.assertEqual(self.handler.post.call_count, 1)
+        self.assertEqual(
+            self.handler.post.call_args.kwargs["delay"], auto_scheduler.INSTALL_DELAY_SECONDS
+        )
+        # 重复信号不重复排布。
+        communicate.start_success.emit()
+        self.assertEqual(self.handler.post.call_count, 1)
+
+    def test_task_done_before_core_start_schedules_startup_check(self):
+        from ok.core.events import communicate
+
+        self.assertTrue(auto_scheduler.install_auto_scheduler(handler=self.handler))
+        communicate.task_done.emit(None)
+        # task_done 既兜底首次检查，也排布 8 秒后的例行复查。
+        delays = [call.kwargs["delay"] for call in self.handler.post.call_args_list]
+        self.assertIn(auto_scheduler.INSTALL_DELAY_SECONDS, delays)
+        self.assertIn(auto_scheduler.RECHECK_DELAY_SECONDS, delays)
+
+    def test_exit_cancels_queued_checks(self):
         from unittest.mock import patch
 
         from ok.core.events import communicate
+        from ok.util.handler import ExitEvent
 
-        with patch(
-            "PySide6.QtCore.QCoreApplication.instance", return_value=None
-        ), patch(
-            "PySide6.QtCore.QTimer.singleShot"
-        ) as single_shot_mock:
-            self.assertTrue(auto_scheduler.install_auto_scheduler())
-            # 幂等：重复安装直接拒绝。
-            self.assertFalse(auto_scheduler.install_auto_scheduler())
-            # 导入期（无应用实例）不得排布任何定时器。
-            self.assertEqual(single_shot_mock.call_args_list, [])
-            # 任务列表刷新是应用就绪后的必发信号，应触发首次检查排布。
-            communicate.task_list_updated.emit()
-            self.assertEqual(single_shot_mock.call_count, 1)
-            delay = single_shot_mock.call_args[0][0]
-            self.assertEqual(
-                delay, int(auto_scheduler.INSTALL_DELAY_SECONDS * 1000)
-            )
-            # 重复信号不重复排布。
-            communicate.starting_emulator.emit(False, None, 0)
-            self.assertEqual(single_shot_mock.call_count, 1)
+        exit_event = ExitEvent()
+        auto_scheduler.install_auto_scheduler(handler=self.handler, exit_event=exit_event)
+        communicate.start_success.emit()
+        queued = self.handler.post.call_args.args[0]
+        exit_event.set()
+        with patch.object(auto_scheduler, "run_due_tasks_once") as run:
+            queued()
+            run.assert_not_called()
 
-    def test_task_done_before_other_signals_schedules_startup_check(self):
+    def test_install_requires_runtime_handler(self):
         from unittest.mock import patch
 
-        from ok.core.events import communicate
+        from ok import og
 
-        with patch(
-            "PySide6.QtCore.QCoreApplication.instance", return_value=None
-        ), patch(
-            "PySide6.QtCore.QTimer.singleShot"
-        ) as single_shot_mock:
-            self.assertTrue(auto_scheduler.install_auto_scheduler())
-            communicate.task_done.emit(None)
-            # task_done 既兜底首次检查，也排布 8 秒后的例行复查。
-            delays = [call[0][0] for call in single_shot_mock.call_args_list]
-            self.assertIn(
-                int(auto_scheduler.INSTALL_DELAY_SECONDS * 1000), delays
-            )
-            self.assertIn(
-                int(auto_scheduler.RECHECK_DELAY_SECONDS * 1000), delays
-            )
+        with patch.object(og, "handler", None, create=True):
+            with self.assertRaisesRegex(RuntimeError, "handler"):
+                auto_scheduler.install_auto_scheduler()
+        self.assertFalse(getattr(auto_scheduler.install_auto_scheduler, "_installed", False))
 
 
 if __name__ == "__main__":

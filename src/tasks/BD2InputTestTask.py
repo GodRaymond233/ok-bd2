@@ -4,8 +4,8 @@ from typing import Callable
 import numpy as np
 from ok.device.intercation import PostMessageInteraction
 from ok.util.process import is_admin
-from qfluentwidgets import FluentIcon
 
+from src.icons import TaskIcon as FluentIcon
 from src.interaction.BD2Interaction import (
     CLICK_MODE_OPTIONS,
     CLICK_MODE_STANDARD,

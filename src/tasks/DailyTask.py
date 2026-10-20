@@ -3,8 +3,8 @@ from time import monotonic
 
 import numpy as np
 from ok.task.exceptions import FinishedException, TaskDisabledException
-from qfluentwidgets import FluentIcon
 
+from src.icons import TaskIcon as FluentIcon
 from src.tasks import run_history
 from src.tasks.BaseBD2Task import BaseBD2Task
 from src.tasks.map_trade.models import TemplateSpec

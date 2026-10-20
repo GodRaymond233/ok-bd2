@@ -1,5 +1,6 @@
 from ok import DiagnosisTask
-from qfluentwidgets import FluentIcon
+
+from src.icons import TaskIcon as FluentIcon
 
 
 class BD2DiagnosisTask(DiagnosisTask):

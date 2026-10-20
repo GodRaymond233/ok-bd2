@@ -8,9 +8,9 @@ from dataclasses import dataclass
 
 from ok import BaseTask
 from ok.task.exceptions import FinishedException, TaskDisabledException
-from qfluentwidgets import FluentIcon
 
 from src.diagnostics.runtime import observe_run, task_error
+from src.icons import TaskIcon as FluentIcon
 from src.tasks.DailyTask import DailyTask
 from src.tasks.FreeGachaTask import FreeGachaTask
 from src.tasks.MapCollectionTask import MapCollectionTask
@@ -216,12 +216,16 @@ class DailyBatchTask(BaseTask):
     def release_after_login(cls, executor) -> bool:
         """自动登录落定后放行被门控挂起的批次；返回是否有批次被放行。"""
         batch = executor.get_task_by_class(cls)
-        if batch is None or not getattr(batch, "_start_after_login", False):
+        if batch is None:
             return False
-        batch._start_after_login = False
-        batch._enabled = True
-        if not executor.enqueue_onetime_task(batch):
-            return False
+        # 与停止请求共用任务锁：停止后不得再被登录完成事件重新放行。
+        with batch.lock:
+            if not getattr(batch, "_start_after_login", False):
+                return False
+            batch._enabled = True
+            batch._start_after_login = False
+            if not executor.enqueue_onetime_task(batch):
+                return False
         batch.log_info("一键完成日常：自动登录已完成，开始执行。")
         return True
 
@@ -233,7 +237,11 @@ class DailyBatchTask(BaseTask):
     def run(self, run_mode: str | None = None):
         if self._auto_login_pending():
             # 门控期间不消费注入的 run_mode，放行后的正式运行再取。
-            self._start_after_login = True
+            with self.lock:
+                if getattr(self.executor, "current_task", None) is self:
+                    # 已被停止时直接抛出，不再登记登录后放行。
+                    self.executor.check_enabled(check_pause=False)
+                self._start_after_login = True
             self.info_set("状态", "等待自动登录完成，完成后自动开始。")
             self.log_info("一键完成日常：自动登录未完成，待登录完成后自动开始。")
             return True

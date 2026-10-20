@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from qfluentwidgets import FluentIcon
-
+from src.icons import TaskIcon as FluentIcon
 from src.tasks.map_trade.collection_selection import (
     COLLECTION_CARD_NAMES,
     resolve_collection_cards,

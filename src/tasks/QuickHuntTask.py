@@ -1,5 +1,5 @@
-from qfluentwidgets import FluentIcon
 
+from src.icons import TaskIcon as FluentIcon
 from src.tasks.BaseBD2Task import BaseBD2Task
 from src.tasks.quick_hunt import (
     QUICK_HUNT_CHILD_CONFIG_KEYS,

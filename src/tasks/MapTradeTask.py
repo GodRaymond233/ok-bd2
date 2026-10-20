@@ -7,8 +7,8 @@ from pathlib import Path
 from ok import Config
 from ok.task.exceptions import FinishedException, TaskDisabledException
 from ok.util.file import get_relative_path
-from qfluentwidgets import FluentIcon
 
+from src.icons import TaskIcon as FluentIcon
 from src.tasks.BaseBD2Task import BaseBD2Task
 from src.tasks.map_trade.calendar import parse_manual_calendar
 from src.tasks.map_trade.models import DEFAULT_SALE_WHITELIST, OPTIONAL_COOKING_RECIPES
