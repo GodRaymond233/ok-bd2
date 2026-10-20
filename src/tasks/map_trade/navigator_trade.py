@@ -70,7 +70,7 @@ class TradeNavigationMixin:
         )
         if not shop_opened:
             self._status("导航状态", "确认主页")
-            story_menu = self._open_story_quick_switcher()
+            story_menu = self._open_cartridge_quick_switcher()
             if not story_menu.success:
                 return story_menu
             self._status("导航状态", "识别剧情游戏卡6角标")
@@ -470,7 +470,7 @@ class TradeNavigationMixin:
         self._status("折扣商店关闭按钮", "模板未命中，回退到FHD标定点(172,50)")
         self.task.operate_click(*DISCOUNT_SHOP_BACK_POINT, after_sleep=after_sleep)
 
-    def _click_chapter_home_button(self, after_sleep: float = 0.0) -> None:
+    def _click_chapter_home_button(self, after_sleep: float = 0.0) -> bool | None:
         """Click the chapter home button, template-first with a calibrated fallback."""
 
         for attempt in range(1, SHOP_CLOSE_CLICK_RETRIES + 1):
@@ -499,6 +499,9 @@ class TradeNavigationMixin:
                     return
             if attempt < SHOP_CLOSE_CLICK_RETRIES:
                 self.task.sleep(SHOP_CLOSE_CLICK_INTERVAL)
+        if getattr(self, "require_home_match", False):
+            self._status("箱庭主页按钮", "未识别到主页按钮，保留当前画面")
+            return False
         self._status("箱庭主页按钮", "模板未命中，回退到标定相对点(1797,63)")
         self.task.operate_click(*CHAPTER_HOME_POINT, after_sleep=after_sleep)
 
@@ -557,7 +560,8 @@ class TradeNavigationMixin:
                 "当前页面没有已确认的安全返回路径，未执行点击",
             )
 
-        self._click_chapter_home_button()
+        if self._click_chapter_home_button() is False:
+            return NavigationResult(False, state, "未确认箱庭主页按钮，未执行返回点击")
         if self._wait_for_cartridge_home(
             timeout=RETURN_HOME_TIMEOUT,
             allow_return_announcement_cleanup=True,

@@ -13,6 +13,7 @@ from qfluentwidgets import FluentIcon
 from src.diagnostics.runtime import observe_run, task_error
 from src.tasks.DailyTask import DailyTask
 from src.tasks.FreeGachaTask import FreeGachaTask
+from src.tasks.MapCollectionTask import MapCollectionTask
 from src.tasks.MapTradeTask import MapTradeTask
 from src.tasks.PVPTask import PVPTask
 from src.tasks.QuickHuntTask import QuickHuntTask
@@ -70,8 +71,9 @@ DAILY_BATCH_CHILDREN = (
     DailyBatchChild("快速狩猎", QuickHuntTask),
     DailyBatchChild("免费抽抽乐", FreeGachaTask),
     DailyBatchChild("广场女神像", SquareGoddessTask),
-    DailyBatchChild("自动PVP", PVPTask),
     DailyBatchChild("跑商", MapTradeTask),
+    DailyBatchChild("跑图", MapCollectionTask),
+    DailyBatchChild("自动PVP", PVPTask),
 )
 
 
@@ -97,7 +99,7 @@ class DailyBatchTask(BaseTask):
         self.name = "一键完成日常"
         self.description = (
             "按顺序执行已开启的公会、小屋、酒馆、快速狩猎、抽抽乐、"
-            "广场、PVP和跑商。"
+            "广场、跑商、跑图和PVP。"
         )
         self.icon = FluentIcon.COMPLETED
         self.group_name = "日常/周常"
@@ -132,6 +134,10 @@ class DailyBatchTask(BaseTask):
                     key: f"是否在一键完成日常中执行{key}。"
                     for key in child_keys
                 },
+                "跑图": (
+                    "沿用每周跑图卡片的配置；执行剩余时，今日额度已用尽或本周已完成则跳过。"
+                    "技能次数每日08:00、资源周一08:00刷新（北京时间）。"
+                ),
             }
         )
         self.config_type.update(
@@ -175,14 +181,16 @@ class DailyBatchTask(BaseTask):
         return self._validate_run_mode(explicit_run_mode or requested)
 
     def _delay_child_schedule(self, schedule_store, child_name: str, ok: bool) -> None:
-        """ALAS 式 task_delay：子任务结束后按策略推迟 next_run 并落盘。
+        """子任务结束后按完成周期或失败退避时间更新 next_run。
 
         两种运行模式都记录；无调度策略的子任务由账本自行忽略。
         """
         if schedule_store is None:
             return
         try:
-            schedule_store.delay_after_run(child_name, ok=ok)
+            from src.tasks.run_history import default_store
+
+            schedule_store.delay_after_record(child_name, ok=ok, history=default_store())
         except Exception as exc:  # 调度账本失败不影响子任务结果
             self.log_error(f"一键完成日常：记录 {child_name} 的调度时间失败。", exc)
 
@@ -278,7 +286,7 @@ class DailyBatchTask(BaseTask):
                 self.log_error(f"一键完成日常：未找到子任务 {child.config_key}。")
                 continue
 
-            if only_incomplete and history.is_completed_today(
+            if only_incomplete and history.is_completed(
                 str(task.name), scope=configuration_scope(task),
             ):
                 skipped.append(child.config_key)
@@ -287,7 +295,9 @@ class DailyBatchTask(BaseTask):
                 self.log_info(f"一键完成日常：{child.config_key} 今日已完成，跳过。")
                 continue
 
-            if only_incomplete and not schedule_store.is_due(str(task.name)):
+            if only_incomplete and not schedule_store.is_due(
+                str(task.name), scope=configuration_scope(task),
+            ):
                 remaining = schedule_store.backoff_remaining_minutes(str(task.name))
                 skipped.append(child.config_key)
                 publish_outcome()
@@ -333,12 +343,10 @@ class DailyBatchTask(BaseTask):
                         completed.append(child.config_key)
                         publish_outcome()
                         self.log_info(f"一键完成日常：{child.config_key} 完成。")
-                        self._delay_child_schedule(schedule_store, str(task.name), True)
                     else:
                         failed.append(child.config_key)
                         publish_outcome()
                         stop_remaining = not self._recover_failed_child(task)
-                        self._delay_child_schedule(schedule_store, str(task.name), False)
                         self.log_warning(
                             f"一键完成日常：{child.config_key} 失败，"
                             + ("停止后续子任务。" if stop_remaining
@@ -352,7 +360,6 @@ class DailyBatchTask(BaseTask):
                 failed.append(child.config_key)
                 publish_outcome()
                 stop_remaining = not self._recover_failed_child(task)
-                self._delay_child_schedule(schedule_store, str(task.name), False)
                 self.log_error(
                     f"一键完成日常：{child.config_key} 异常。",
                     exc,
@@ -371,6 +378,7 @@ class DailyBatchTask(BaseTask):
                         self.log_error(
                             f"一键完成日常：记录 {child.config_key} 的运行结果失败。", exc
                         )
+                    self._delay_child_schedule(schedule_store, str(task.name), child_result)
                 self.executor.reset_scene(check_enabled=False)
 
         self.info_set("当前子任务", "-")
@@ -430,7 +438,7 @@ class DailyBatchTask(BaseTask):
                 continue
             task = self.executor.get_task_by_class(child.task_class)
             name = str(getattr(task, "name", None) or child.config_key)
-            if not history.is_completed_today(name, scope=configuration_scope(task)):
+            if not history.is_completed(name, scope=configuration_scope(task)):
                 self.log_info(
                     f"一键完成日常：{child.config_key} 今日未完成，不执行自动关机。"
                 )

@@ -1,20 +1,11 @@
-"""Persisted next-run scheduler (ALAS/NKAS 式调度内核的 ok-bd2 移植).
+"""任务下次运行时间与失败退避的持久化管理。
 
-每个受调度任务在 ``configs/task_schedule.json`` 中持久化一个"下次运行时间"
-（``next_run``），对应 ALAS/NKAS 中每个任务的 ``Scheduler.NextRun``：
+日常任务成功后等待北京时间04:00；跑图按今日额度或本周完成状态，
+等待次日或下周一08:00。配置成功间隔时取更早的到期时间。
+失败按配置间隔退避；到期后的执行由启动检查或任务结束事件触发。
 
-- 任务成功后按策略推迟：日常任务推迟到下一次游戏日刷新（北京 04:00），
-  周常任务推迟到下周一 04:00；配置了成功间隔的任务取锚点与间隔中更近者。
-- 任务失败后按失败间隔退避（默认 30 分钟），不推进锚点，避免立即死循环
-  重跑。注意：本调度没有常驻定时器，退避到期后的重试发生在下一次调度
-  检查时（任务完成复查或下次应用启动），而不是退避一到期就自动拉起。
-- 账本随配置文件落盘，重启脚本后原样读回；未到期的任务即视为"不必执行"，
-  这就是"一天内重复打开脚本，已执行过的不会再执行一遍"的来源。
-- ``mark_due_now`` 对应 ALAS 的 ``task_call``：把某任务的 next_run 拉回当前
-  时刻，强制其在下一次调度检查时被执行。
-
-调度门禁只作用于自动执行路径与"执行剩余"模式；用户手动点击任务视为强制
-立即执行（对齐 ALAS 中手动把 NextRun 改到过去的语义），不受 next_run 限制。
+调度门禁作用于自动执行与执行剩余模式，手动启动不受 next_run 限制。
+mark_due_now 将任务设置为下次调度检查时立即可执行。
 """
 
 from __future__ import annotations
@@ -27,6 +18,7 @@ from datetime import datetime, timedelta
 from ok import Logger
 from ok.util.file import get_relative_path, read_json_file, write_json_file
 
+from src.tasks.collection.cycle import COLLECTION_REFRESH_HOUR
 from src.tasks.run_history import BEIJING_TZ, DAILY_REFRESH_HOUR
 
 logger = Logger.get_logger(__name__)
@@ -34,7 +26,7 @@ logger = Logger.get_logger(__name__)
 STORE_VERSION = 1
 DEFAULT_FILE = ("configs", "task_schedule.json")
 
-# 任务失败后的默认退避分钟数（ALAS Scheduler.FailureInterval 的默认语义）。
+# 任务失败后的默认退避分钟数。
 DEFAULT_FAILURE_INTERVAL_MINUTES = 30.0
 
 
@@ -42,21 +34,25 @@ def _to_beijing(ts: float) -> datetime:
     return datetime.fromtimestamp(ts, tz=BEIJING_TZ)
 
 
-def next_daily_anchor_ts(now: float | None = None) -> float:
-    """Return the next game-day refresh (Beijing 04:00) strictly after ``now``."""
+def next_daily_anchor_ts(
+    now: float | None = None, *, refresh_hour: int = DAILY_REFRESH_HOUR,
+) -> float:
+    """Return the next daily Beijing refresh strictly after ``now``."""
     moment = _to_beijing(time.time() if now is None else now)
     anchor = moment.replace(
-        hour=DAILY_REFRESH_HOUR, minute=0, second=0, microsecond=0
+        hour=refresh_hour, minute=0, second=0, microsecond=0
     )
     if anchor <= moment:
         anchor += timedelta(days=1)
     return anchor.timestamp()
 
 
-def next_weekly_anchor_ts(now: float | None = None) -> float:
-    """Return the next Monday 04:00 Beijing strictly after ``now``."""
+def next_weekly_anchor_ts(
+    now: float | None = None, *, refresh_hour: int = DAILY_REFRESH_HOUR,
+) -> float:
+    """Return the next Monday Beijing refresh strictly after ``now``."""
     moment = _to_beijing(time.time() if now is None else now)
-    anchor = moment.replace(hour=DAILY_REFRESH_HOUR, minute=0, second=0, microsecond=0)
+    anchor = moment.replace(hour=refresh_hour, minute=0, second=0, microsecond=0)
     if anchor <= moment:
         anchor += timedelta(days=1)
     while anchor.weekday() != 0:
@@ -68,20 +64,20 @@ def next_weekly_anchor_ts(now: float | None = None) -> float:
 class SchedulePolicy:
     """How a task's next_run is postponed after a run.
 
-    ``anchor``: ``"daily"`` -> next Beijing 04:00; ``"weekly"`` -> next Monday
-    04:00; ``None`` -> anchor-less tasks only use the interval fields.
-    ``success_interval_minutes``: extra candidate applied on success (0 disables
-    it, matching ALAS tasks that only delay to the next server update).
+    ``anchor``: ``"daily"`` -> next Beijing daily refresh; ``"weekly"`` -> next Monday
+    refresh; ``None`` -> anchor-less tasks only use the interval fields.
+    ``success_interval_minutes``: extra candidate applied on success (0 disables it).
     ``failure_interval_minutes``: backoff applied on failure.
     """
 
     anchor: str | None = "daily"
     success_interval_minutes: float = 0.0
     failure_interval_minutes: float = DEFAULT_FAILURE_INTERVAL_MINUTES
+    refresh_hour: int = DAILY_REFRESH_HOUR
 
 
 # 受调度任务注册表，键为任务显示名（run_history 同名）。
-# 日常类锚定北京 04:00；每周跑图锚定周一 04:00。
+# 日常类锚定北京 04:00；跑图资源锚定周一 08:00，技能额度耗尽后等次日 08:00。
 # 不注册“一键完成日常”自身：自动调度只消费子任务账本，批处理整体只在
 # “仅执行今日未完成”模式下作为载体启动，其自身 next_run 无消费者。
 TASK_POLICIES: dict[str, SchedulePolicy] = {
@@ -91,7 +87,7 @@ TASK_POLICIES: dict[str, SchedulePolicy] = {
     "广场女神像": SchedulePolicy("daily"),
     "镜中之战": SchedulePolicy("daily"),
     "每日跑商": SchedulePolicy("daily"),
-    "每周跑图": SchedulePolicy("weekly"),
+    "每周跑图": SchedulePolicy("weekly", refresh_hour=COLLECTION_REFRESH_HOUR),
 }
 
 
@@ -149,8 +145,11 @@ class TaskScheduleStore:
             return None
         return bool(record.get("ok"))
 
-    def is_due(self, task_name: str, now: float | None = None) -> bool:
+    def is_due(self, task_name: str, now: float | None = None, *, scope: str | None = None) -> bool:
         """No record or an expired next_run means the task is due."""
+        record = self._records.get(str(task_name), {})
+        if scope is not None and record.get("ok") and record.get("completion_scope") != scope:
+            return True
         next_run = self.next_run(task_name)
         if next_run is None:
             return True
@@ -164,14 +163,40 @@ class TaskScheduleStore:
         remaining = next_run - (time.time() if now is None else now)
         return max(0.0, remaining / 60.0)
 
+    def delay_after_record(self, task_name: str, ok: bool, history,
+                           now: float | None = None) -> float | None:
+        """Schedule standalone and batch runs from the same completion evidence."""
+        policy = None
+        record = history.last_run(task_name) or {}
+        if task_name == "每周跑图":
+            weekly_complete = history.is_completed_this_week(task_name, now=now)
+            if ok and record.get("collection_period") and not (
+                weekly_complete or history.is_completed_today(task_name, now=now)
+            ):
+                self.mark_due_now(task_name, now=now)
+                return self.next_run(task_name)
+            if not weekly_complete:
+                policy = SchedulePolicy("daily", refresh_hour=COLLECTION_REFRESH_HOUR)
+        elif ok and record.get("daily_cycle") is not None and not history.is_completed_today(
+            task_name, now=now,
+        ):
+            self.mark_due_now(task_name, now=now)
+            return self.next_run(task_name)
+        return self.delay_after_run(
+            task_name, ok=ok, now=now, policy=policy,
+            scope=record.get("completion_scope"),
+        )
+
     def delay_after_run(
         self,
         task_name: str,
         ok: bool,
         now: float | None = None,
         policy: SchedulePolicy | None = None,
+        *,
+        scope: str | None = None,
     ) -> float | None:
-        """Postpone the task per ALAS ``task_delay`` semantics and persist it.
+        """按成功周期或失败退避时间推迟任务，并保存下次运行时间。
 
         Returns the written next_run timestamp, or ``None`` when the task has
         no schedule policy (unregistered tasks stay unscheduled).
@@ -184,9 +209,9 @@ class TaskScheduleStore:
         candidates: list[float] = []
         if ok:
             if resolved.anchor == "daily":
-                candidates.append(next_daily_anchor_ts(moment))
+                candidates.append(next_daily_anchor_ts(moment, refresh_hour=resolved.refresh_hour))
             elif resolved.anchor == "weekly":
-                candidates.append(next_weekly_anchor_ts(moment))
+                candidates.append(next_weekly_anchor_ts(moment, refresh_hour=resolved.refresh_hour))
             if resolved.success_interval_minutes > 0:
                 candidates.append(
                     moment + resolved.success_interval_minutes * 60.0
@@ -202,12 +227,13 @@ class TaskScheduleStore:
                 "next_run": next_run,
                 "ok": bool(ok),
                 "updated": moment,
+                "completion_scope": scope if ok else None,
             }
             self._save()
         return next_run
 
     def mark_due_now(self, task_name: str, now: float | None = None) -> float:
-        """Force the task due at ``now`` (ALAS ``task_call`` equivalent)."""
+        """将任务设为当前到期，在下一次调度检查时执行。"""
         moment = time.time() if now is None else now
         with self._lock:
             record = self._records.setdefault(str(task_name), {})

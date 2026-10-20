@@ -10,7 +10,7 @@ from typing import Iterable
 
 import cv2
 import numpy as np
-from ok.task.exceptions import TaskDisabledException
+from ok.task.exceptions import FinishedException, TaskDisabledException
 
 from src.tasks.map_trade.models import (
     MAP_TRADE_REFERENCE,
@@ -44,9 +44,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 TEMPLATE_DIR = PROJECT_ROOT / "recognition-assets" / "template-assets"
 EMPTY_MATCH = MatchResult(-1.0, (0, 0), (0, 0))
 COUNT_PATTERN = re.compile(r"(?<!\d)(\d+)\s*[/：:|\-~]\s*(\d+)(?!\d)")
-# New evidence matching uses the FHD template calibration.  Keep
-# ``reference_point``/``reference_roi`` on the historical HD calibration for
-# callers that still pass their explicit 1280x720 reference coordinates.
+# Runtime points and ROIs use the FHD client calibration. Template scaling is
+# resolved independently from each asset path by ``template_resolution``.
 FRAME_REFERENCE_WIDTH = FHD_1080.width
 FRAME_REFERENCE_HEIGHT = FHD_1080.height
 FRAME_EXPECTED_ASPECT = 16 / 9
@@ -86,14 +85,37 @@ def normalize_text(value: str) -> str:
     return re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff%]", "", str(value).lower())
 
 
-def parse_used_limit(text: str) -> tuple[int, int] | None:
-    match = COUNT_PATTERN.search(str(text))
-    if match is None:
+def parse_used_limit(
+    text: str, known_limit: int | None = None, expected_used: int | None = None,
+) -> tuple[int, int] | None:
+    """Resolve a unique count consistent with the HUD limit and action history."""
+    matches = {(int(used), int(limit)) for used, limit in COUNT_PATTERN.findall(str(text))}
+    if matches:
+        if len(matches) != 1:
+            return None
+        used, limit = matches.pop()
+        if limit <= 0 or used > limit or (known_limit is not None and limit != known_limit):
+            return None
+        if expected_used is not None and used != expected_used:
+            return None
+        return used, limit
+    digits = "".join(str(text).split())
+    tail = str(known_limit) if known_limit is not None and known_limit > 0 else ""
+    if not tail or not re.fullmatch(r"[0-9]+", digits) or not digits.endswith(tail):
         return None
-    used, limit = int(match.group(1)), int(match.group(2))
-    if limit <= 0 or used < 0 or used > limit:
+    head = digits[:-len(tail)]
+    if not head:
         return None
-    return used, limit
+    candidates = {int(head)}
+    # A missing slash and a slash read as 1 can yield different valid counts.
+    if len(head) > 1 and head.endswith("1"):
+        candidates.add(int(head[:-1]))
+    candidates = {used for used in candidates if 0 <= used <= known_limit}
+    if expected_used is not None:
+        candidates &= {expected_used}
+    if len(candidates) != 1:
+        return None
+    return candidates.pop(), known_limit
 
 
 class Vision:
@@ -231,14 +253,6 @@ class Vision:
             )
         if abs(effective_aspect_ratio - FRAME_EXPECTED_ASPECT) > FRAME_ASPECT_TOLERANCE:
             reasons.append(f"有效内容比例异常：{effective_aspect_ratio:.4f}")
-        if not has_black_bars and (
-            content_left
-            or content_top
-            or content_right != frame_width
-            or content_bottom != frame_height
-        ):
-            reasons.append("画面边界疑似裁切")
-
         for roi in required_relative_rois:
             roi_left, roi_top, roi_right, roi_bottom = roi
             required_left = round(frame_width * max(0.0, min(1.0, roi_left)))
@@ -476,8 +490,8 @@ class Vision:
             roi_x, roi_y, roi_width, roi_height = search_roi
             left = max(0, min(frame_width, int(roi_x)))
             top = max(0, min(frame_height, int(roi_y)))
-            right = max(left, min(frame_width, left + max(0, int(roi_width))))
-            bottom = max(top, min(frame_height, top + max(0, int(roi_height))))
+            right = max(left, min(frame_width, int(roi_x) + max(0, int(roi_width))))
+            bottom = max(top, min(frame_height, int(roi_y) + max(0, int(roi_height))))
             search = gray[top:bottom, left:right]
         elif geometry is not None:
             content_left = max(0, min(frame_width, geometry.content_left))
@@ -572,8 +586,13 @@ class Vision:
         gray_frame: np.ndarray | None = None,
         geometry: FrameGeometry | None = None,
         purpose: str = "专用识别",
+        preserve_variants: bool = False,
     ) -> tuple[MatchCandidateEvidence, ...]:
-        """Collect response peaks before applying pixel or ZNCC identity gates."""
+        """Collect response peaks before applying pixel or ZNCC identity gates.
+
+        With preserve_variants, max_results limits each scale/interpolation;
+        the caller validates identity before merging nearby candidates.
+        """
 
         if geometry is None:
             required = (spec.relative_roi,) if spec.relative_roi is not None else ()
@@ -607,8 +626,8 @@ class Vision:
         )
         base_scale = offline_template_scale(
             spec.file_name,
-            geometry.content_width if geometry is not None else frame_width,
-            geometry.content_height if geometry is not None else frame_height,
+            geometry.content_width,
+            geometry.content_height,
             reference_scale=spec.reference_scale,
         )
         peak_radius = max(1, int(peak_radius))
@@ -665,7 +684,7 @@ class Vision:
             key=lambda value: self._candidate_rank(value.result),
             reverse=True,
         ):
-            if any(
+            if not preserve_variants and any(
                 (candidate.result.center[0] - kept.result.center[0]) ** 2
                 + (candidate.result.center[1] - kept.result.center[1]) ** 2
                 <= peak_radius**2
@@ -673,7 +692,7 @@ class Vision:
             ):
                 continue
             independent.append(candidate)
-            if len(independent) >= limit:
+            if not preserve_variants and len(independent) >= limit:
                 break
         retained = tuple(independent)
         self._last_candidate_evidence[spec.name] = retained
@@ -706,6 +725,7 @@ class Vision:
         minimum_score: float = 0.35,
         max_results: int = 12,
         purpose: str = "固定槽位",
+        preserve_variants: bool = False,
     ) -> tuple[MatchCandidateEvidence, ...]:
         """Search a compact client-space rectangle around one calibrated slot."""
 
@@ -715,20 +735,30 @@ class Vision:
             radius_x = radius_y = radius
         radius_x = max(2, int(radius_x))
         radius_y = max(2, int(radius_y))
+        search_roi = (
+            int(center[0] - radius_x),
+            int(center[1] - radius_y),
+            int(radius_x * 2 + 1),
+            int(radius_y * 2 + 1),
+        )
+        if preserve_variants and geometry is not None:
+            left = max(0, geometry.content_left, search_roi[0])
+            top = max(0, geometry.content_top, search_roi[1])
+            right = min(frame.shape[1], geometry.content_left + geometry.content_width,
+                        search_roi[0] + search_roi[2])
+            bottom = min(frame.shape[0], geometry.content_top + geometry.content_height,
+                         search_roi[1] + search_roi[3])
+            search_roi = (left, top, max(0, right - left), max(0, bottom - top))
         return self.match_evidence_all(
             frame,
-            replace(spec, candidate_center_roi=None),
+            spec if preserve_variants else replace(spec, candidate_center_roi=None),
             minimum_score=minimum_score,
-            peak_radius=max(1, min(radius_x, radius_y) // 3),
+            peak_radius=5 if preserve_variants else max(1, min(radius_x, radius_y) // 3),
             max_results=max_results,
-            search_roi=(
-                int(center[0] - radius_x),
-                int(center[1] - radius_y),
-                int(radius_x * 2 + 1),
-                int(radius_y * 2 + 1),
-            ),
+            search_roi=search_roi,
             geometry=geometry,
             purpose=purpose,
+            preserve_variants=preserve_variants,
         )
 
     def match(self, frame: np.ndarray, spec: TemplateSpec) -> MatchResult:
@@ -764,52 +794,18 @@ class Vision:
         """
 
         template, mask = self._load(spec)
-        gray = gray_frame if gray_frame is not None else self._gray(frame)
-        frame_height, frame_width = gray.shape[:2]
-        left = top = 0
-        search = gray
-        if search_roi is not None:
-            roi_x, roi_y, roi_width, roi_height = search_roi
-            roi_right = int(roi_x) + max(0, int(roi_width))
-            roi_bottom = int(roi_y) + max(0, int(roi_height))
-            left = max(0, min(frame_width, int(roi_x)))
-            top = max(0, min(frame_height, int(roi_y)))
-            right = max(left, min(frame_width, roi_right))
-            bottom = max(top, min(frame_height, roi_bottom))
-            search = gray[top:bottom, left:right]
-        elif offline_template_uses_main_region(spec.file_name):
-            left, top, right, bottom = offline_template_search_region(
-                spec.file_name,
-                frame_width,
-                frame_height,
-            )
-            search = gray[top:bottom, left:right]
-        elif spec.relative_roi is not None:
-            left, top, search = self._relative_roi(gray, spec.relative_roi)
-        elif spec.roi is not None:
-            left, top, width, height = self.reference_roi(
-                spec.roi,
-                frame_width,
-                frame_height,
-            )
-            search = gray[top : top + height, left : left + width]
+        left, top, search, frame_width, frame_height = self._matching_region(
+            frame, spec, search_roi=search_roi, gray_frame=gray_frame,
+        )
         if search.size == 0:
             return ()
 
         radius = max(1, int(peak_radius))
         limit = max(1, int(max_results))
         score_floor = max(-1.0, min(1.0, float(minimum_score)))
-        center_bounds = None
-        if spec.candidate_center_roi is not None:
-            center_left, center_top, center_right, center_bottom = (
-                spec.candidate_center_roi
-            )
-            center_bounds = (
-                round(frame_width * center_left) - left,
-                round(frame_height * center_top) - top,
-                round(frame_width * center_right) - left,
-                round(frame_height * center_bottom) - top,
-            )
+        center_bounds = self._center_bounds(
+            spec, frame_width=frame_width, frame_height=frame_height, left=left, top=top,
+        )
         candidates: list[MatchResult] = []
         base_scale = offline_template_scale(
             spec.file_name,
@@ -847,7 +843,7 @@ class Vision:
                         position=(left + x, top + y),
                         size=(width, height),
                         pixel_score=candidate.pixel_score,
-                        zncc_score=float(getattr(candidate, "zncc_score", -1.0)),
+                        zncc_score=candidate.zncc_score,
                     )
                 )
 
@@ -873,13 +869,13 @@ class Vision:
             threshold=self.threshold_for(spec),
         )
 
-    def template_color_ratios(
+    def _matched_color_region(
         self,
         frame: np.ndarray,
         spec: TemplateSpec,
         result: MatchResult,
-    ) -> tuple[float, float, float] | None:
-        """Measure green, red, and neutral pixels under a template mask."""
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        """Return the matched BGR crop and its active mask, or None for invalid bounds."""
 
         left, top = result.position
         width, height = result.size
@@ -913,6 +909,19 @@ class Vision:
             ) > 0
         if not np.any(active):
             return None
+        return color, active
+
+    def template_color_ratios(
+        self,
+        frame: np.ndarray,
+        spec: TemplateSpec,
+        result: MatchResult,
+    ) -> tuple[float, float, float] | None:
+        """Measure green, red, and neutral pixels under a template mask."""
+        region = self._matched_color_region(frame, spec, result)
+        if region is None:
+            return None
+        color, active = region
 
         pixels = color[active].astype(np.int16)
         blue, green, red = pixels.T
@@ -941,38 +950,10 @@ class Vision:
     ) -> tuple[float, float, float] | None:
         """Measure yellow, neutral, and bright pixels under a match mask."""
 
-        left, top = result.position
-        width, height = result.size
-        right = left + width
-        bottom = top + height
-        if (
-            width <= 0
-            or height <= 0
-            or left < 0
-            or top < 0
-            or right > frame.shape[1]
-            or bottom > frame.shape[0]
-        ):
+        region = self._matched_color_region(frame, spec, result)
+        if region is None:
             return None
-        crop = frame[top:bottom, left:right]
-        if crop.ndim == 2:
-            color = cv2.cvtColor(crop, cv2.COLOR_GRAY2BGR)
-        elif crop.shape[2] == 4:
-            color = cv2.cvtColor(crop, cv2.COLOR_BGRA2BGR)
-        else:
-            color = crop[:, :, :3]
-
-        _template, mask = self._load(spec)
-        if mask is None:
-            active = np.ones((height, width), dtype=bool)
-        else:
-            active = cv2.resize(
-                mask,
-                (width, height),
-                interpolation=cv2.INTER_NEAREST,
-            ) > 0
-        if not np.any(active):
-            return None
+        color, active = region
 
         hsv = cv2.cvtColor(color, cv2.COLOR_BGR2HSV)
         hue, saturation, value = hsv[active].T
@@ -1043,6 +1024,56 @@ class Vision:
         template_mean = float(np.mean(reference_gray[active]))
         region_mean = float(np.mean(sample_gray[active]))
         return region_mean / template_mean if template_mean > 0 else 0.0
+
+    def find_all(
+        self,
+        frame: np.ndarray,
+        spec: TemplateSpec,
+        threshold: float | None = None,
+        max_results: int = 30,
+    ) -> list[MatchResult]:
+        template, mask = self._load(spec)
+        gray = self._gray(frame)
+        frame_height, frame_width = gray.shape[:2]
+        left = top = 0
+        search = gray
+        if spec.roi is not None:
+            left, top, width, height = self.reference_roi(spec.roi, frame_width, frame_height)
+            search = gray[top : top + height, left : left + width]
+        scale = offline_template_scale(
+            spec.file_name,
+            frame_width,
+            frame_height,
+            reference_scale=spec.reference_scale,
+        )
+        scaled = self._resize_template(template, scale)
+        scaled_mask = self._resize_mask(mask, scale)
+        height, width = scaled.shape[:2]
+        if search.size == 0 or height > search.shape[0] or width > search.shape[1]:
+            return []
+        result = template_match_response(search, scaled, scaled_mask)
+        wanted = self.threshold_for(spec) if threshold is None else threshold
+        candidates = independent_pixel_valid_matches(
+            result,
+            search,
+            scaled,
+            scaled_mask,
+            template_threshold=wanted,
+            pixel_threshold=(spec.min_pixel_score or 0.0),
+            zncc_threshold=spec.min_zncc_score,
+            suppression_radius=(round(width * 0.65), round(height * 0.65)),
+            max_matches=max_results,
+        )
+        return [
+            MatchResult(
+                candidate.score,
+                (left + candidate.location[0], top + candidate.location[1]),
+                (width, height),
+                pixel_score=candidate.pixel_score,
+                zncc_score=candidate.zncc_score,
+            )
+            for candidate in candidates
+        ]
 
     def wait_template(
         self, spec: TemplateSpec, timeout: float, interval: float = 0.4
@@ -1136,7 +1167,10 @@ class Vision:
         target_height: int = 720,
         minimum_threshold: float | None = None,
         ocr_scale: float = 1.0,
+        *,
+        raise_on_error: bool = False,
     ) -> list:
+        """Read client-coordinate OCR boxes; strict callers distinguish failure from no text."""
         offset_x = offset_y = 0
         target = frame
         if roi is not None and relative_roi is not None:
@@ -1154,6 +1188,8 @@ class Vision:
                 f"{name} OCR错误",
                 f"识别区域超出画面：roi={region}, frame={width}x{height}",
             )
+            if raise_on_error:
+                raise ValueError(f"{name} OCR区域超出画面")
             return []
         if ocr_scale <= 0:
             raise ValueError("ocr_scale must be positive")
@@ -1185,10 +1221,12 @@ class Vision:
                 log=False,
                 name=name,
             )
-        except TaskDisabledException:
+        except (TaskDisabledException, FinishedException):
             raise
         except Exception as exc:
             self._status(f"{name} OCR错误", str(exc))
+            if raise_on_error:
+                raise
             return []
         if not offset_x and not offset_y and ocr_scale == 1.0:
             return list(boxes)
@@ -1233,7 +1271,10 @@ class Vision:
         target_height: int = 720,
         minimum_threshold: float | None = None,
         ocr_scale: float = 1.0,
+        *,
+        raise_on_error: bool = False,
     ) -> str:
+        """Join OCR text, optionally preserving errors for safety-critical state observations."""
         values = [
             str(getattr(box, "name", ""))
             for box in self.ocr_boxes(
@@ -1244,11 +1285,30 @@ class Vision:
                 target_height=target_height,
                 minimum_threshold=minimum_threshold,
                 ocr_scale=ocr_scale,
+                raise_on_error=raise_on_error,
             )
         ]
         text = " ".join(value for value in values if value)
         self._status(f"{name} OCR", text or "-")
         return text
+
+    def wait_ocr(
+        self,
+        patterns: Iterable[str],
+        timeout: float,
+        name: str,
+        roi: tuple[int, int, int, int] | None = None,
+        interval: float = 0.5,
+    ) -> str | None:
+        compiled = [re.compile(pattern, re.IGNORECASE) for pattern in patterns]
+        end_at = monotonic() + max(0.0, timeout)
+        while monotonic() <= end_at:
+            text = self.ocr_text(self.capture(), name, roi)
+            normalized = self.simplify(text)
+            if any(pattern.search(normalized) for pattern in compiled):
+                return text
+            self.task.sleep(interval)
+        return None
 
     def click_ocr(
         self,
@@ -1274,8 +1334,7 @@ class Vision:
         return False
 
     def simplify(self, text: str) -> str:
-        # OCR 只识别简体中文（2026-08-29 取消繁体识别）：不再做繁转简转换，
-        # 仅保留 str 归一以稳定既有调用面（测试桩同为恒等）。
+        # 国服 OCR 按简体文案匹配，此处仅归一输入类型。
         return str(text)
 
     @staticmethod

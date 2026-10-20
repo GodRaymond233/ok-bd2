@@ -180,7 +180,7 @@ def get_task_badge_info(task) -> tuple[str, str, str, str]:
         return "自动刷级", "#7c3aed", "rgba(124, 58, 237, 0.12)", "rgba(124, 58, 237, 0.28)"
     elif "跑商" in name or "砍价" in name:
         return "跑商", "#ea580c", "rgba(234, 88, 12, 0.12)", "rgba(234, 88, 12, 0.28)"
-    elif "内测" in group or "跑图" in name:
+    elif "内测" in group:
         return "内测功能", "#059669", "rgba(5, 150, 105, 0.12)", "rgba(5, 150, 105, 0.28)"
     elif group == "日常/周常":
         return "日常", "#0284c7", "rgba(2, 132, 199, 0.12)", "rgba(2, 132, 199, 0.28)"

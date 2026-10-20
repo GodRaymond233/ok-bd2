@@ -7,6 +7,21 @@ from unittest.mock import patch
 from src.tasks.run_history import RunHistoryStore
 
 
+class FakeClock:
+    """Advance polling time through simulated sleep, independent of timer read counts."""
+
+    def __init__(self, now=0.0):
+        self.now = float(now)
+        self.sleeps = []
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
 class StageHistoryTestCase(unittest.TestCase):
     """Isolate persistent task evidence for every simulated game run."""
 

@@ -20,7 +20,6 @@ from src.tasks.map_trade.models import (
     ScreenState,
 )
 from src.tasks.map_trade.navigator import MERCHANT_CLICK_LOCATION_TEMPLATE, Navigator
-from src.tasks.map_trade.trader import Trader
 from src.tasks.map_trade.trader_cooking import (
     COOKING_BACK_POINT,
     COOKING_BACK_TEMPLATE,
@@ -38,6 +37,8 @@ from src.tasks.map_trade.trader_cooking import (
     _character_coverage,
 )
 from tests.helpers import StageHistoryTestCase
+from tests.helpers.map_trade import create_trader
+from tests.helpers.recognition_fixtures import load_bgr
 
 
 class CookingTask:
@@ -96,7 +97,7 @@ class CookingFlowTest(StageHistoryTestCase):
     def _orchestrated_trader(self, *, selected, completed=(), outcomes=(), exit_ok=True):
         task = CookingTask(**{"5星料理": list(selected)})
         progress = CookingProgress(completed)
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.task = task
         trader.progress = progress
         trader._selected_cooking_recipes = lambda: tuple(selected)
@@ -200,7 +201,7 @@ class CookingFlowTest(StageHistoryTestCase):
         self.assertEqual("exit", calls[-1])
 
     def test_default_order_optional_selection_and_chicken_last(self):
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.task = CookingTask(**{"5星料理": []})
         self.assertEqual((*DEFAULT_COOKING_RECIPES, FINAL_COOKING_RECIPE),
                          trader._selected_cooking_recipes())
@@ -209,7 +210,7 @@ class CookingFlowTest(StageHistoryTestCase):
                           FINAL_COOKING_RECIPE), trader._selected_cooking_recipes())
 
     def test_missing_templates_stop_before_navigation(self):
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.task = CookingTask(**{"5星料理": []})
         trader._enter_cooking_list = lambda: self.fail("missing assets must stop navigation")
         from unittest.mock import patch
@@ -231,7 +232,7 @@ class CookingFlowTest(StageHistoryTestCase):
                 stable_calls.append((spec, timeout, after_sleep)) or True
             )
         )
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.task = task
         trader.navigator = navigator
         trader.vision = vision
@@ -258,7 +259,7 @@ class CookingFlowTest(StageHistoryTestCase):
                 ("click", point, after_sleep)
             ),
         )
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.task = task
         trader.vision = vision
         trader._cooking_card_enabled = lambda *_args: True
@@ -302,7 +303,7 @@ class CookingFlowTest(StageHistoryTestCase):
             False,
             0.004,
         )
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.task = CookingTask()
         trader._cooking_card_enabled = lambda *_args: True
         trader.vision = SimpleNamespace(
@@ -331,7 +332,7 @@ class CookingFlowTest(StageHistoryTestCase):
         match = MatchResult(0.97, (1000, 650), (80, 80), pixel_score=0.94)
         detail = CookingDetailSnapshot(frame, match, True, 0.72)
         recovered = []
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.task = CookingTask()
         trader._cooking_card_enabled = lambda *_args: True
         trader.vision = SimpleNamespace(
@@ -376,7 +377,7 @@ class CookingFlowTest(StageHistoryTestCase):
             with self.subTest(ignored=ignored, already_max=already_max):
                 self.reset_stage_history()
                 state = {"max": already_max, "clicks": 0, "started": False}
-                trader = object.__new__(Trader)
+                trader = create_trader()
                 trader.task = CookingTask()
 
                 def click(point, _shape, after_sleep=0.0):
@@ -414,7 +415,7 @@ class CookingFlowTest(StageHistoryTestCase):
         recipe = DEFAULT_RECIPES[0]
         frame = np.full((1080, 1920, 3), 60, dtype=np.uint8)
         match = MatchResult(0.97, (1000, 650), (96, 96), zncc_score=0.97)
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.task = CookingTask()
         trader.vision = SimpleNamespace(
             match=lambda *_args: match,
@@ -426,7 +427,7 @@ class CookingFlowTest(StageHistoryTestCase):
 
     def test_start_requires_recognized_detail_with_gray_button(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.task = CookingTask()
         match = MatchResult(0.97, (1110, 975), (40, 40), pixel_score=0.96)
         for detail, expected in (
@@ -446,7 +447,6 @@ class CookingFlowTest(StageHistoryTestCase):
 
         self.assertNotIn("drag_reference", source)
         self.assertNotIn("click_reference", source)
-        self.assertNotIn("1203", source)
         self.assertEqual((1749 / 1920, 1011 / 1080), COOKING_SKILL_GROUP_POINT)
         for spec in COOKING_RECIPE_SPECS.values():
             self.assertEqual(COOKING_LIST_GRID_ROI, spec.relative_roi)
@@ -460,11 +460,11 @@ class CookingRecognitionTest(unittest.TestCase):
         fixtures = Path(__file__).parent / "fixtures/map_trade/cooking_quantity"
         for name, expected in (("min", False), ("max", True)):
             frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-            frame[970:1035, 300:730] = cv2.imread(str(fixtures / f"{name}.png"))
+            frame[970:1035, 300:730] = load_bgr(fixtures / f"{name}.png")
             for size in ((1920, 1080), (1280, 720), (1191, 669)):
                 with self.subTest(state=name, size=size):
                     current = cv2.resize(frame, size)
-                    trader = object.__new__(Trader)
+                    trader = create_trader()
                     trader.task = CookingTask()
                     trader.vision = Vision(trader.task)
                     detail = CookingDetailSnapshot(current, MatchResult(1, (0, 0), (1, 1)),
@@ -498,7 +498,7 @@ class CookingRecognitionTest(unittest.TestCase):
             simplify=lambda value: value,
             bright_neutral_ratio=lambda *_args: current["bright"],
         )
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.task = CookingTask()
         trader.vision = vision
 
@@ -516,7 +516,7 @@ class CookingRecognitionTest(unittest.TestCase):
         recipe = DEFAULT_RECIPES[0]
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         text = {"value": f"{recipe}×260"}
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.task = CookingTask()
         trader.vision = SimpleNamespace(
             capture=lambda: frame,
@@ -541,7 +541,7 @@ class CookingRecognitionTest(unittest.TestCase):
             True,
             0.72,
         )
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.task = CookingTask()
         trader.vision = SimpleNamespace(
             ocr_boxes=lambda _frame, _name, **kwargs: [
@@ -569,7 +569,7 @@ class CookingRecognitionTest(unittest.TestCase):
         task = CookingTask()
         clicked = []
         passed = {"value": True}
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.task = task
         trader.vision = SimpleNamespace(
             match=lambda _frame, spec: (
@@ -609,7 +609,7 @@ class CookingAbsentRecipeTest(StageHistoryTestCase):
     def _trader_with_snapshot(self, *, identity):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         task = CookingTask()
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.task = task
         trader.vision = SimpleNamespace(
             match=lambda _frame, _spec: identity,
@@ -644,7 +644,7 @@ class CookingAbsentRecipeTest(StageHistoryTestCase):
     def test_unknown_brightness_saves_evidence_and_fails(self):
         frame = np.full((64, 64, 3), 100, dtype=np.uint8)
         task = CookingTask()
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.task = task
         trader.vision = SimpleNamespace(
             match=lambda _frame, _spec: MatchResult(0.97, (0, 0), (64, 64)),

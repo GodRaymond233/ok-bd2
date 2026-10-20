@@ -26,6 +26,7 @@ from src.tasks.MapTradeTask import (
     _migrate_collection_config,
     _trade_section_migration_values,
 )
+from src.tasks.run_history import is_successful_run
 
 
 class MapTradeLegacyConfigTest(unittest.TestCase):
@@ -104,13 +105,20 @@ class MapTradeConfigTest(unittest.TestCase):
         actions = []
         task = object.__new__(MapCollectionTask)
         task.config = {"启用": True, "执行地图采集": True}
-        task.info_set = lambda *_args: None
+        task.info = {}
+        task.info_set = lambda key, value: task.info.update({key: value})
         task.log_info = lambda *_args, **_kwargs: None
         task.log_error = lambda *_args, **_kwargs: None
-        task.log_warning = lambda *_args, **_kwargs: None
+        task.log_warning = lambda message: task.info.update({"Warning": message})
         task._save_diagnostic = lambda *_args: None
 
         class FakeProgress:
+            def __init__(self):
+                self.state = SimpleNamespace(
+                    weekly_collection_complete=weekly,
+                    weekly_key="2026-10-12", daily_key="2026-10-16",
+                )
+
             def __enter__(self):
                 return self
 
@@ -126,15 +134,20 @@ class MapTradeConfigTest(unittest.TestCase):
 
             def return_home(self):
                 actions.append("home")
-                return NavigationResult(True, ScreenState.HOME)
+                return NavigationResult(
+                    home_ok, ScreenState.HOME if home_ok else ScreenState.UNKNOWN,
+                )
 
         class FakeCollector:
             def __init__(self, *_args):
                 pass
 
-            def run(self):
+            def run(self, *_args, **_kwargs):
                 actions.append("collection")
-                return CollectionResult(True)
+                return result
+
+            def scope_complete(self):
+                return weekly
 
         with (
             patch.object(map_collection_task_module, "Vision", lambda *_args: object()),
@@ -142,9 +155,37 @@ class MapTradeConfigTest(unittest.TestCase):
             patch.object(map_collection_task_module, "Navigator", FakeNavigator),
             patch.object(map_collection_task_module, "Collector", FakeCollector),
         ):
-            self.assertTrue(MapCollectionTask.run(task))
-
-        self.assertEqual(["collection", "home"], actions)
+            for success, depleted, weekly, partial, home_ok, expected in (
+                (True, True, False, False, True, "今日"),
+                (True, False, True, False, True, "本周"),
+                (True, False, False, False, True, "-"),
+                (False, False, False, False, True, "-"),
+                (False, False, False, True, True, "-"),
+                (False, False, False, True, False, "-"),
+            ):
+                with self.subTest(
+                    success=success, depleted=depleted, weekly=weekly,
+                    partial=partial, home_ok=home_ok,
+                ):
+                    actions.clear()
+                    task.info.clear()
+                    result = CollectionResult(
+                        success, depleted=depleted, partial=partial,
+                        message="第18章未完成，已跳过；其余卡带采集成功。" if partial else "",
+                    )
+                    self.assertEqual(success, MapCollectionTask.run(task))
+                    self.assertEqual(["collection", "home"], actions)
+                    self.assertEqual(expected, task.info["跑图完成范围"])
+                    if success:
+                        self.assertEqual(
+                            "2026-10-12" if weekly else "2026-10-16", task.info["跑图周期"],
+                        )
+                    self.assertEqual(success, is_successful_run(task.info))
+                    if partial and home_ok:
+                        self.assertEqual("跑图执行结束，存在问题。", task.info["状态"])
+                        self.assertEqual(result.message, task.info["Warning"])
+                    else:
+                        self.assertNotIn("存在问题", task.info["状态"])
 
     def test_daily_and_weekly_cards_expose_separate_configurations(self):
         executor = SimpleNamespace(scene=None)

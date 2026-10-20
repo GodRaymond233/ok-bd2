@@ -4,7 +4,7 @@ from time import monotonic
 
 import cv2
 import numpy as np
-from ok.task.exceptions import TaskDisabledException
+from ok.task.exceptions import FinishedException, TaskDisabledException
 from qfluentwidgets import FluentIcon
 
 from src.diagnostics.runtime import task_error
@@ -356,7 +356,7 @@ class AutoLoginTask(BaseBD2Task):
                     name="自动登录页面",
                 )
             )
-        except TaskDisabledException:
+        except (TaskDisabledException, FinishedException):
             raise
         except Exception as exc:
             self.info_set("登录页 OCR", f"错误：{exc}")
@@ -675,7 +675,7 @@ class AutoLoginTask(BaseBD2Task):
                     log=False,
                     name=f"主页抽抽乐 x{scale:g}",
                 )
-            except TaskDisabledException:
+            except (TaskDisabledException, FinishedException):
                 raise
             except Exception as exc:
                 self.info_set(f"主页抽抽乐 x{scale:g} OCR 错误", str(exc))
@@ -961,7 +961,7 @@ class AutoLoginTask(BaseBD2Task):
                 log=False,
                 name=name,
             )
-        except TaskDisabledException:
+        except (TaskDisabledException, FinishedException):
             raise
         except Exception as exc:
             self.info_set(f"{name} 错误", str(exc))

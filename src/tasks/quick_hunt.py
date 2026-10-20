@@ -163,6 +163,9 @@ QUICK_HUNT_DOUBLE_TEMPLATE = TemplateSpec(
 )
 
 
+QUICK_HUNT_TORCH_RESOURCE_ROI = _quick_hunt_relative_roi(1680, 38, 1800, 80)
+
+
 @dataclass(frozen=True)
 class HuntDialog:
     map_name: str
@@ -1624,7 +1627,8 @@ class QuickHuntFeatureMixin:
 
     def _quick_hunt_free_resource(self, resource: str, frame=None) -> int | None:
         if frame is not None:
-            crop = crop_relative(frame, QUICK_HUNT_RESOURCE_ROI)
+            roi = QUICK_HUNT_TORCH_RESOURCE_ROI if resource == "火把" else QUICK_HUNT_RESOURCE_ROI
+            crop = crop_relative(frame, roi)
             if crop.size == 0 or crop.ndim != 3 or crop.shape[2] < 3:
                 return None
             crop = crop[:, :, :3]

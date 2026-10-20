@@ -34,54 +34,143 @@ from src.tasks.map_trade.navigator import (
     PROBE_QUICK_SWITCH_SCROLL_POINT,
     PROBE_QUICK_SWITCH_SCROLL_SETTLE_SECONDS,
     PROBE_STORY_BADGE_CONFIRM_SECONDS,
-    QUICK_SWITCH_SCROLL_FOCUS_POINT,
-    QUICK_SWITCH_SCROLL_INTERVAL,
     QUICK_SWITCH_SCROLL_POINT,
-    QUICK_SWITCH_SCROLL_RESET_AMOUNT,
-    QUICK_SWITCH_SCROLL_RESET_COUNT,
-    QUICK_SWITCH_SCROLL_SETTLE_SECONDS,
-    QUICK_SWITCH_SCROLL_UP_AMOUNT,
-    QUICK_SWITCH_SCROLL_UP_COUNT,
-    QUICK_SWITCH_TEMPLATE,
     STORY_CATEGORY_POINT,
     STORY_SANDBOX_STABLE_HITS,
     LocatedStoryCard,
     Navigator,
     ProbedStoryCard,
-    SandboxConfirmation,
     StoryBadgeCandidate,
     StoryBadgeDetection,
+)
+from src.tasks.map_trade.navigator_constants import (
+    CHARACTER_CATEGORY_HIGHLIGHT_REGION,
+    CHARACTER_CATEGORY_POINT,
+    EVENT_CATEGORY_HIGHLIGHT_REGION,
+    EVENT_CATEGORY_POINT,
+    STORY_CATEGORY_HIGHLIGHT_REGION,
 )
 from src.tasks.map_trade.progress import (
     UTC_PLUS_8,
     ProgressStore,
 )
+from src.tasks.map_trade.vision import normalize_text
+
+
+class StoryBarScrollTest(unittest.TestCase):
+    def test_scroll_requires_stable_page_and_movement_without_clicking(self):
+        before = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        moved = before.copy()
+        moved[924:1015, 200:500] = 100
+        changing = moved.copy()
+        changing[924:1015, 800:1400] = 255
+        for label, frames, page, require_movement, expected in (
+            ("moved", [before, moved, moved, moved], True, True, True),
+            ("unchanged", [before] * 4, True, True, False),
+            ("reset_at_edge", [before] * 4, True, False, True),
+            ("page_lost", [before, moved, moved, moved], False, True, False),
+            ("moving", [before] + [moved, changing] * 6, True, True, False),
+            ("resized", [before, moved[:720]], True, True, False),
+        ):
+            with self.subTest(case=label):
+                captures = iter(frames)
+                scrolls = []
+                task = SimpleNamespace(
+                    info_set=lambda *_args: None,
+                    sleep=lambda *_args: None,
+                    scroll_client=lambda *args, **kwargs: scrolls.append((args, kwargs)),
+                    operate_click=lambda *_args, **_kwargs: self.fail("scroll selected a card"),
+                )
+                navigator = Navigator(task, SimpleNamespace(capture=lambda: next(captures)))
+                navigator._wait_for_quick_switch_page = lambda **_kwargs: page
+                result = navigator._scroll_cartridge_bar(
+                    QUICK_SWITCH_SCROLL_POINT, 1, count=2, interval=0.08,
+                    after_sleep=0.35, require_movement=require_movement,
+                )
+                self.assertEqual(expected, result)
+                self.assertEqual(1, len(scrolls))
 
 
 class CollectionCardTest(unittest.TestCase):
+    def setUp(self):
+        # Selection tests isolate the verified wheel input boundary. Its frame
+        # stability and page-loss behavior are exercised by StoryBarScrollTest.
+        def scroll(navigator, *args, require_movement=True, **kwargs):
+            navigator.task.scroll_client(*args, **kwargs)
+            return True
+
+        patcher = patch.object(
+            Navigator, "_scroll_cartridge_bar", autospec=True, side_effect=scroll,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_completion_policy_does_not_ignore_unrepresented_summon(self):
+        completed = StoryCardCompletion(
+            absorb=CardActionDetection(CardActionState.COMPLETED),
+            suppress=CardActionDetection(CardActionState.COMPLETED),
+            bounds=(0, 0, 100, 100),
+            complete_region=True,
+        )
+
+        self.assertFalse(
+            Navigator._completion_satisfies_actions(
+                completed,
+                required_actions=("吸收", "召集"),
+            )
+        )
+        absorb_only = StoryCardCompletion(
+            absorb=CardActionDetection(CardActionState.COMPLETED),
+            suppress=CardActionDetection(CardActionState.UNKNOWN),
+            bounds=(0, 0, 100, 100), complete_region=True,
+        )
+        self.assertTrue(
+            Navigator._completion_satisfies_actions(absorb_only, card_id="Q_ep2"),
+        )
+        self.assertFalse(
+            Navigator._completion_satisfies_actions(absorb_only, card_id="Q_ep3"),
+        )
+        self.assertFalse(
+            Navigator._completion_satisfies_actions(
+                absorb_only, required_actions=("吸收", "召集"), card_id="Q_ep2",
+            ),
+        )
+
     def test_story_entry_retries_after_late_fiend_reward(self):
-        failure = NavigationResult(False, ScreenState.UNKNOWN, "入场确认超时")
-        success = NavigationResult(True, ScreenState.SANDBOX, "Q_sp1")
-        for reward_result, expected, calls in (
-            (CartridgeSpecialPageResult.HANDLED, success, 2),
-            (CartridgeSpecialPageResult.ABSENT, failure, 1),
+        for reward_result, expected in (
+            (CartridgeSpecialPageResult.HANDLED, True),
+            (CartridgeSpecialPageResult.ABSENT, False),
+            (CartridgeSpecialPageResult.BLOCKED, False),
         ):
             with self.subTest(reward_result=reward_result):
-                task = SimpleNamespace(
-                    _handle_recent_cartridge_special_pages=Mock(return_value=reward_result)
-                )
-                navigator = Navigator(task, SimpleNamespace())
-                navigator._wait_for_confirmed_sandbox = Mock(
-                    side_effect=[failure, success]
-                )
+                clock, recovered = [0.0], [False]
 
-                self.assertIs(expected, navigator._wait_for_story_sandbox(1, timeout=1.0))
-                self.assertEqual(calls, navigator._wait_for_confirmed_sandbox.call_count)
-                task._handle_recent_cartridge_special_pages.assert_called_once()
-                reward_call = task._handle_recent_cartridge_special_pages.call_args
-                self.assertFalse(reward_call.kwargs["allow_pvp_pages"])
-                self.assertGreaterEqual(reward_call.kwargs["timeout"], 0.0)
-                self.assertLessEqual(reward_call.kwargs["timeout"], 1.0)
+                def handle_reward(*, timeout, allow_pvp_pages):
+                    self.assertFalse(allow_pvp_pages)
+                    self.assertGreater(timeout, 0)
+                    self.assertLessEqual(timeout, 2.0 - clock[0])
+                    clock[0] += timeout
+                    recovered[0] = reward_result is CartridgeSpecialPageResult.HANDLED
+                    return reward_result
+
+                task = SimpleNamespace(
+                    _handle_recent_cartridge_special_pages=Mock(side_effect=handle_reward),
+                    sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+                    info_set=lambda *args: None,
+                )
+                navigator = Navigator(task, SimpleNamespace(capture=lambda: None))
+                navigator.classify = lambda frame: (
+                    ScreenState.SANDBOX if recovered[0] else
+                    ScreenState.LOADING if clock[0] < .5 else ScreenState.UNKNOWN
+                )
+                navigator._handle_story_card_intermediate = lambda frame: False
+                with patch("src.tasks.map_trade.navigator_sandbox.monotonic", lambda: clock[0]):
+                    result = navigator._wait_for_story_sandbox(1, timeout=2.0, interval=.1)
+                self.assertEqual(expected, result.success)
+                self.assertTrue(task._handle_recent_cartridge_special_pages.called)
+                if reward_result is not CartridgeSpecialPageResult.ABSENT:
+                    task._handle_recent_cartridge_special_pages.assert_called_once()
+                self.assertLessEqual(clock[0], 2.1)
 
     def test_collection_card_selection_uses_common_quick_switch_and_badge_center(self):
         clicks = []
@@ -117,22 +206,19 @@ class CollectionCardTest(unittest.TestCase):
         )
         vision = SimpleNamespace(
             capture=lambda: frame,
-            click_stable_template=lambda spec, timeout, after_sleep: (
-                template_clicks.append((spec, timeout, after_sleep)) or True
-            ),
             click_client=lambda point, shape, after_sleep=0: client_clicks.append(
                 (point, shape, after_sleep)
             ),
         )
         navigator = Navigator(task, vision)
-        navigator._click_quick_switch = lambda timeout, after_sleep: (
-            template_clicks.append((QUICK_SWITCH_TEMPLATE, timeout, after_sleep)) or True
-        )
         navigator.classify = lambda: ScreenState.HOME
+        navigator._click_quick_switch = lambda timeout, after_sleep: (
+            template_clicks.append((timeout, after_sleep)) or True
+        )
         navigator.return_home = lambda: NavigationResult(True, ScreenState.HOME)
         navigator._wait_for_cartridge_home = lambda: True
         navigator._wait_for_quick_switch_page = lambda: True
-        navigator._wait_for_story_category = lambda: True
+        navigator._wait_for_cartridge_category = lambda **_kwargs: True
         navigator._wait_for_story_badge_with_scroll = lambda number: (
             badge_targets.append(number) or (frame, badge)
         )
@@ -152,7 +238,7 @@ class CollectionCardTest(unittest.TestCase):
             [("ensure_home", "click_quick_switch", "confirm_quick_switch_page")],
             opened_callbacks,
         )
-        self.assertEqual([(QUICK_SWITCH_TEMPLATE, 45.0, 1.0)], template_clicks)
+        self.assertEqual([(45.0, 1.0)], template_clicks)
         self.assertEqual([(*STORY_CATEGORY_POINT, 0.5)], clicks)
         self.assertEqual([(badge.best.result.center, frame.shape, 1.0)], client_clicks)
 
@@ -253,6 +339,39 @@ class CollectionCardTest(unittest.TestCase):
 
         self.assertTrue(result.success)
         self.assertEqual([("Q_sp1", False)], selected)
+        self.assertEqual(
+            {"main_area", "battle_area_1", "battle_area_2"},
+            progress.state.completed_targets("Q_sp1"),
+        )
+        self.assertTrue(progress.state.card_verified("Q_sp1"))
+
+    def test_formal_collection_skips_card_with_custom_policy_when_visually_complete(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            progress = ProgressStore(
+                Path(temp_dir) / "progress.json",
+                lambda: datetime(2026, 8, 3, 12, tzinfo=UTC_PLUS_8),
+            )
+            progress.load()
+            task = SimpleNamespace(
+                config={"卡带单步重试次数": 1},
+                log_warning=lambda *_args: None,
+                info_set=lambda *_args: None,
+            )
+            navigator = SimpleNamespace(
+                select_collection_card=lambda *args, **kwargs: CollectionCardSelectionResult(
+                    CollectionCardSelectionOutcome.VISUALLY_COMPLETE,
+                    NavigationResult(True, ScreenState.CARD_MENU, "视觉完成"),
+                ),
+            )
+            collector = Collector(task, object(), navigator, progress)
+            result = collector.collect_card(
+                CARD_BY_ID["Q_sp1"],
+                battle_actions=("压制",),
+            )
+            self.assertIsNone(result)
+            self.assertTrue(
+                progress.state.card_verified("Q_sp1", required_actions=("吸收", "压制"))
+            )
 
     def test_collection_card_pending_or_unknown_status_still_enters(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -303,7 +422,7 @@ class CollectionCardTest(unittest.TestCase):
             "non-collection card must not be located"
         )
 
-        result = navigator.select_collection_card("Q_sp6")
+        result = navigator.select_collection_card("Q_sp20")
 
         self.assertFalse(result.success)
         self.assertEqual(CollectionCardSelectionOutcome.FAILED, result.outcome)
@@ -345,90 +464,146 @@ class CollectionCardTest(unittest.TestCase):
         self.assertIsNone(result.completion)
         self.assertTrue(any("按未知继续进入" in value for value in warnings))
 
-    def test_collection_card_scroll_resets_down_then_scans_up_in_bottom_region(self):
-        scrolls = []
-        clicks = []
+    def _story_window(self, offset=0, wheel_pixels=180):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        detection = StoryBadgeDetection(
-            best=StoryBadgeCandidate(
-                12,
-                MatchResult(0.99, (500, 930), (30, 28), pixel_score=0.98),
-            ),
-            runner_up=StoryBadgeCandidate(
-                2,
-                MatchResult(0.80, (501, 930), (31, 31), pixel_score=0.82),
-            ),
+        state = SimpleNamespace(
+            offset=offset, scrolls=[], scans=[], omitted=set(), centers={},
+            missing_reason="未达到双阈值", order=tuple(range(1, 21)),
         )
-        results = iter(
-            (
-                (None, "未达到双阈值，检测目标数=9"),
-                (None, "未达到双阈值，检测目标数=9"),
-                (detection, ""),
-            )
-        )
-        task = SimpleNamespace(
-            scroll_client=lambda *args, **kwargs: scrolls.append((args, kwargs)),
-            operate_click=lambda *args, **kwargs: clicks.append((args, kwargs)),
+
+        def scroll(point, amount, *, count, **_kwargs):
+            self.assertEqual(QUICK_SWITCH_SCROLL_POINT, point)
+            self.assertLessEqual(count, 8)
+            state.scrolls.append((amount, count))
+            previous_offset = state.offset
+            state.offset = min(1800, max(0, state.offset + amount * count * wheel_pixels))
+            for number in state.centers:
+                state.centers[number] += previous_offset - state.offset
+
+        def inspect(captured, numbers, **_kwargs):
+            self.assertIs(frame, captured)
+            self.assertEqual(tuple(range(1, 21)), tuple(numbers))
+            state.scans.append(state.offset)
+            inspected = {}
+            for number in range(1, 21):
+                x = state.centers.get(number, 95 + 180 * state.order.index(number) - state.offset)
+                if number in state.omitted or not 0 <= x < 1920:
+                    inspected[number] = (None, state.missing_reason)
+                    continue
+                inspected[number] = (StoryBadgeDetection(
+                    best=StoryBadgeCandidate(number, MatchResult(
+                        0.99, (x - 15, 922), (30, 28), pixel_score=0.98, zncc_score=0.98,
+                    )),
+                    runner_up=StoryBadgeCandidate(number % 20 + 1, MatchResult(
+                        0.75, (x - 15, 922), (30, 28), pixel_score=0.75, zncc_score=0.75,
+                    )),
+                ), "")
+            return inspected
+
+        navigator = Navigator(SimpleNamespace(
+            scroll_client=scroll,
+            operate_click=lambda *_args, **_kwargs: self.fail("locating selected a card"),
             log_warning=lambda *_args, **_kwargs: None,
-        )
-        navigator = Navigator(task, SimpleNamespace(capture=lambda: frame))
-        navigator._find_story_badge = lambda _frame, _number: next(results)
+            info_set=lambda *_args: None,
+        ), SimpleNamespace(capture=lambda: frame))
+        navigator.inspect_story_badges = inspect
+        return navigator, state
 
-        navigator._scroll_story_bar = lambda point, amount, require_movement=True, **kw: (
-            navigator.task.scroll_client(point, amount, **kw) or True
-        )
+    def test_collection_card_scroll_uses_current_visible_window(self):
+        for offset, targets in ((0, (4,)), (1260, (14, 15))):
+            with self.subTest(offset=offset):
+                navigator, state = self._story_window(offset)
+                for number in targets:
+                    found = navigator._wait_for_story_badge_with_scroll(number)
+                    self.assertIsNotNone(found)
+                    self.assertEqual(number, found[1].best.number)
+                self.assertEqual([], state.scrolls)
+                self.assertEqual(len(targets), len(state.scans))
 
-        found = navigator._wait_for_story_badge_with_scroll(12, scan_steps=1)
-
-        self.assertIsNotNone(found)
-        self.assertEqual(detection, found[1])
-        self.assertEqual(
-            [
-                (
-                    (QUICK_SWITCH_SCROLL_POINT, QUICK_SWITCH_SCROLL_RESET_AMOUNT),
-                    {
-                        "count": QUICK_SWITCH_SCROLL_RESET_COUNT,
-                        "interval": QUICK_SWITCH_SCROLL_INTERVAL,
-                        "after_sleep": QUICK_SWITCH_SCROLL_SETTLE_SECONDS,
-                    },
-                ),
-                (
-                    (QUICK_SWITCH_SCROLL_POINT, QUICK_SWITCH_SCROLL_UP_AMOUNT),
-                    {
-                        "count": QUICK_SWITCH_SCROLL_UP_COUNT,
-                        "interval": QUICK_SWITCH_SCROLL_INTERVAL,
-                        "after_sleep": QUICK_SWITCH_SCROLL_SETTLE_SECONDS,
-                    },
-                ),
-            ],
-            scrolls,
+    def test_collection_card_scroll_learns_direction_and_distance(self):
+        pinned_order = (
+            6, 18, 20, *(number for number in range(1, 21) if number not in (6, 18, 20)),
         )
-        self.assertEqual((43 / 1920, 974 / 1080), QUICK_SWITCH_SCROLL_POINT)
-        self.assertEqual(
-            [],
-            clicks,
-        )
-        self.assertEqual(1, QUICK_SWITCH_SCROLL_UP_AMOUNT)
+        for label, offset, target, wheel_pixels, budget, order in (
+            ("later", 0, 14, 180, 5, None),
+            ("earlier", 1440, 2, 180, 8, None),
+            ("reversed", 360, 18, -180, 9, None),
+            ("reversed_at_edge", 0, 14, -180, 6, None),
+            ("pinned_cards", 0, 14, 180, 8, pinned_order),
+            ("pinned_18_from_middle", 1080, 18, 180, 30, pinned_order),
+            ("pinned_20_from_middle", 1080, 20, 180, 30, pinned_order),
+            ("pinned_slow_wheel", 360, 6, 60, 64, pinned_order),
+        ):
+            with self.subTest(case=label):
+                navigator, state = self._story_window(offset, wheel_pixels)
+                if order is not None:
+                    state.order = order
+                found = navigator._wait_for_story_badge_with_scroll(target, scan_steps=budget)
+                self.assertIsNotNone(found)
+                self.assertEqual(target, found[1].best.number)
+                if order is None:
+                    self.assertEqual(1, state.scrolls[0][1])
+                    self.assertLessEqual(len(state.scrolls), 3)
+                self.assertLessEqual(sum(count for _, count in state.scrolls), budget)
+                self.assertEqual(len(state.scrolls) + 1, len(state.scans))
 
-    def test_collection_card_scroll_stops_on_badge_ambiguity(self):
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        warnings = []
-        task = SimpleNamespace(
-            scroll_client=lambda *_args, **_kwargs: self.fail(
-                "ambiguous badge must stop before scrolling"
-            ),
-            log_warning=warnings.append,
-        )
-        navigator = Navigator(task, SimpleNamespace(capture=lambda: frame))
-        navigator._find_story_badge = lambda _frame, _number: (
-            None,
-            "候选分差不足：0.020<0.050",
-        )
+    def test_collection_card_scroll_recovers_clipping_on_either_edge(self):
+        for offset, target, direction, centers in (
+            (0, 11, 1, {}),
+            (1705, 10, -1, {}),
+            (646, 14, 1, {14: 1792}),
+            (1699, 10, -1, {10: 13}),
+        ):
+            with self.subTest(offset=offset):
+                navigator, state = self._story_window(offset)
+                state.centers = centers
+                found = navigator._wait_for_story_badge_with_scroll(target, scan_steps=1)
+                self.assertIsNotNone(found)
+                self.assertEqual(target, found[1].best.number)
+                self.assertEqual([(direction, 1)], state.scrolls)
 
-        found = navigator._wait_for_story_badge_with_scroll(12, scan_steps=1)
+    def test_collection_card_scroll_stops_without_consistent_identity_evidence(self):
+        for label, omitted, centers, target in (
+            ("no_anchors", set(range(1, 21)), {}, 14),
+            ("two_anchors", set(range(3, 21)), {}, 14),
+            ("ambiguous_target", {7}, {}, 7),
+        ):
+            with self.subTest(case=label):
+                navigator, state = self._story_window()
+                state.omitted, state.centers = omitted, centers
+                if label == "ambiguous_target":
+                    state.missing_reason = "候选分差不足：0.020<0.050"
+                self.assertIsNone(navigator._wait_for_story_badge_with_scroll(target))
+                self.assertEqual([], state.scrolls)
 
-        self.assertIsNone(found)
-        self.assertIn("存在歧义", warnings[0])
+    def test_collection_card_scroll_obeys_wheel_budget_and_stops_when_stuck(self):
+        for budget, wheel_pixels, target, omitted in (
+            (0, 180, 14, set()),
+            (1, 180, 14, set()),
+            (3, 20, 14, set()),
+            (16, 0, 14, set()),
+            (16, 180, 7, {7}),
+        ):
+            with self.subTest(budget=budget, wheel_pixels=wheel_pixels):
+                navigator, state = self._story_window(wheel_pixels=wheel_pixels)
+                state.omitted = omitted
+                self.assertIsNone(navigator._wait_for_story_badge_with_scroll(target, budget))
+                self.assertLessEqual(sum(count for _, count in state.scrolls), budget)
+                if wheel_pixels == 0:
+                    self.assertLessEqual(len(state.scrolls), 2)
+                elif omitted:
+                    self.assertTrue(state.scrolls)
+                else:
+                    self.assertEqual(budget, sum(count for _, count in state.scrolls))
+
+    def test_collection_card_scroll_stops_after_unverified_scroll(self):
+        navigator, state = self._story_window()
+        navigator._scroll_cartridge_bar = Mock(return_value=False)
+
+        self.assertIsNone(navigator._wait_for_story_badge_with_scroll(14))
+
+        navigator._scroll_cartridge_bar.assert_called_once()
+        self.assertEqual([0], state.scans)
 
     def test_probe_story_card_scrolls_up_once_then_rechecks_same_frame_status(self):
         first_frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -511,7 +686,7 @@ class CollectionCardTest(unittest.TestCase):
         self.assertEqual(0.1, PROBE_QUICK_SWITCH_SCROLL_INTERVAL_SECONDS)
         self.assertEqual(0.5, PROBE_QUICK_SWITCH_SCROLL_SETTLE_SECONDS)
         self.assertEqual(
-            [((QUICK_SWITCH_SCROLL_FOCUS_POINT), {"after_sleep": 0.0})],
+            [],
             clicks,
         )
         self.assertEqual([PROBE_STORY_BADGE_CONFIRM_SECONDS], sleeps)
@@ -582,7 +757,7 @@ class CollectionCardTest(unittest.TestCase):
         self.assertIs(complete, result.completion)
         self.assertEqual(1, len(scrolls))
         self.assertEqual(
-            [((QUICK_SWITCH_SCROLL_FOCUS_POINT), {"after_sleep": 0.0})],
+            [],
             clicks,
         )
 
@@ -673,7 +848,7 @@ class CollectionCardTest(unittest.TestCase):
         self.assertEqual(3, len(scrolls))
         self.assertEqual([5, 5, 2], [call[1]["count"] for call in scrolls])
         self.assertEqual(
-            [((QUICK_SWITCH_SCROLL_FOCUS_POINT), {"after_sleep": 0.0})],
+            [],
             clicks,
         )
         self.assertTrue(
@@ -714,7 +889,7 @@ class CollectionCardTest(unittest.TestCase):
         self.assertEqual([located], entered)
 
     def test_collection_card_entry_handles_insert_prompt_then_reconfirms_sandbox(self):
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        frame = np.full((1080, 1920, 3), 100, dtype=np.uint8)
         clicks = []
         sleeps = []
         states = iter(
@@ -747,12 +922,6 @@ class CollectionCardTest(unittest.TestCase):
         )
         navigator = Navigator(task, vision)
         navigator.classify = lambda _frame=None: next(states)
-        navigator._match_story_sandbox_signals = lambda _frame: SandboxConfirmation(
-            2,
-            2,
-            3,
-            1,
-        )
 
         result = navigator._wait_for_story_sandbox(12, timeout=2.0, interval=0.0)
 
@@ -772,7 +941,7 @@ class CollectionCardTest(unittest.TestCase):
         self.assertEqual([], sleeps)
 
     def test_collection_card_entry_handles_skip_and_confirmation_with_mouse(self):
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        frame = np.full((1080, 1920, 3), 100, dtype=np.uint8)
         client_clicks = []
         ocr_clicks = []
         skip_result = MatchResult(0.99, (1500, 20), (100, 40), pixel_score=0.98)
@@ -820,12 +989,6 @@ class CollectionCardTest(unittest.TestCase):
             )
         )
         navigator.classify = lambda _frame=None: next(states)
-        navigator._match_story_sandbox_signals = lambda _frame: SandboxConfirmation(
-            2,
-            2,
-            3,
-            1,
-        )
 
         result = navigator._wait_for_story_sandbox(12, timeout=2.0, interval=0.0)
 
@@ -837,7 +1000,7 @@ class CollectionCardTest(unittest.TestCase):
         )
 
     def test_collection_card_entry_requires_consecutive_stable_sandbox_frames(self):
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        frame = np.full((1080, 1920, 3), 100, dtype=np.uint8)
         states = iter(
             (
                 ScreenState.SANDBOX,
@@ -849,17 +1012,16 @@ class CollectionCardTest(unittest.TestCase):
             )
         )
         captures = []
-        task = SimpleNamespace(config={}, sleep=lambda *_args: None)
+        task = SimpleNamespace(
+            config={}, sleep=lambda *_args: None,
+            _handle_recent_cartridge_special_pages=Mock(
+                return_value=CartridgeSpecialPageResult.ABSENT,
+            ),
+        )
         vision = SimpleNamespace(capture=lambda: captures.append(frame) or frame)
         navigator = Navigator(task, vision)
         navigator.classify = lambda _frame=None: next(states)
         navigator._handle_story_card_intermediate = lambda _frame: False
-        navigator._match_story_sandbox_signals = lambda _frame: SandboxConfirmation(
-            2,
-            2,
-            3,
-            1,
-        )
 
         result = navigator._wait_for_story_sandbox(1, timeout=2.0, interval=0.0)
 
@@ -867,113 +1029,81 @@ class CollectionCardTest(unittest.TestCase):
         self.assertEqual(STORY_SANDBOX_STABLE_HITS, 2)
         self.assertEqual(6, len(captures))
 
-    def test_scroll_requires_stable_page_and_movement_without_clicking(self):
-        before = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        moved = before.copy()
-        moved[924:1015, 200:500] = 100
-        changing = moved.copy()
-        changing[924:1015, 800:1400] = 255
-        for label, frames, page, require_movement, expected in (
-            ("moved", [before, moved, moved, moved], True, True, True),
-            ("unchanged", [before] * 4, True, True, False),
-            ("reset_at_edge", [before] * 4, True, False, True),
-            ("page_lost", [before, moved, moved, moved], False, True, False),
-            ("moving", [before] + [moved, changing] * 6, True, True, False),
-            ("resized", [before, moved[:720]], True, True, False),
-        ):
-            with self.subTest(case=label):
-                captures = iter(frames)
-                scrolls = []
-                task = SimpleNamespace(
-                    info_set=lambda *_args: None,
-                    sleep=lambda *_args: None,
-                    scroll_client=lambda *args, **kwargs: scrolls.append((args, kwargs)),
-                    operate_click=lambda *_args, **_kwargs: self.fail("scroll selected a card"),
-                )
-                navigator = Navigator(task, SimpleNamespace(capture=lambda: next(captures)))
-                navigator._wait_for_quick_switch_page = lambda **_kwargs: page
-                result = navigator._scroll_story_bar(
-                    QUICK_SWITCH_SCROLL_POINT, 1, count=2, interval=0.08,
-                    after_sleep=0.35, require_movement=require_movement,
-                )
-                self.assertEqual(expected, result)
-                self.assertEqual(1, len(scrolls))
 
-    def test_collection_card_scroll_rejects_clipped_badges_on_both_edges(self):
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+class CharacterMapTitleTest(unittest.TestCase):
+    def test_a_longer_map_name_is_not_its_prefix(self):
+        card = CARD_BY_ID["Q_cp5"]
 
-        for edge_center, safe_center in (
-            ((1893, 936), (1700, 936)),
-            ((10, 936), (200, 936)),
-        ):
-            with self.subTest(edge_center=edge_center):
-                edge_frame = np.zeros_like(frame)
-                safe_frame = np.ones_like(frame)
-                frames = iter((edge_frame, safe_frame))
-                edge_badge = StoryBadgeDetection(
-                    best=StoryBadgeCandidate(
-                        11,
-                        MatchResult(
-                            0.99,
-                            (edge_center[0] - 15, edge_center[1] - 14),
-                            (30, 28),
-                            pixel_score=0.98,
-                        ),
-                    ),
-                    runner_up=StoryBadgeCandidate(
-                        10,
-                        MatchResult(
-                            0.80,
-                            (edge_center[0] - 14, edge_center[1] - 14),
-                            (31, 31),
-                            pixel_score=0.82,
-                        ),
-                    ),
-                )
-                safe_badge = StoryBadgeDetection(
-                    best=StoryBadgeCandidate(
-                        11,
-                        MatchResult(
-                            0.99,
-                            (safe_center[0] - 15, safe_center[1] - 14),
-                            (30, 28),
-                            pixel_score=0.98,
-                        ),
-                    ),
-                    runner_up=StoryBadgeCandidate(
-                        10,
-                        MatchResult(
-                            0.80,
-                            (safe_center[0] - 14, safe_center[1] - 14),
-                            (31, 31),
-                            pixel_score=0.82,
-                        ),
-                    ),
-                )
-                scrolls = []
-                clicks = []
-                navigator = Navigator(
-                    SimpleNamespace(
-                        scroll_client=lambda *args, **kwargs: scrolls.append((args, kwargs)),
-                        operate_click=lambda *args, **kwargs: clicks.append((args, kwargs)),
-                        log_warning=lambda *_args: None,
-                    ),
-                    SimpleNamespace(capture=lambda: next(frames)),
-                )
-                badges = iter(((edge_badge, ""), (safe_badge, "")))
-                navigator._find_story_badge = lambda *_args: next(badges)
+        self.assertEqual(
+            ("main_area",), Navigator._target_keys_in_text(card, normalize_text("安全 童话镇 普通"))
+        )
+        self.assertEqual(
+            (), Navigator._target_keys_in_text(card, normalize_text("安全 童话镇旅馆 普通"))
+        )
 
-                navigator._scroll_story_bar = lambda point, amount, require_movement=True, **kw: (
-                    navigator.task.scroll_client(point, amount, **kw) or True
-                )
+    def test_parentheses_misread_by_ocr_still_name_the_map(self):
+        # Live 2K: "废墟地道（前段）" read "废墟地道道前段", "（后段）" "直后段".
+        card = CARD_BY_ID["Q_cp2"]
 
-                found = navigator._wait_for_story_badge_with_scroll(11, scan_steps=0)
+        self.assertEqual(
+            ("battle_area_1",),
+            Navigator._target_keys_in_text(
+                card, normalize_text("战斗废墟地道道前段s出现风属性怪物")
+            ),
+        )
+        self.assertEqual(
+            ("battle_area_2",),
+            Navigator._target_keys_in_text(
+                card, normalize_text("战斗废墟地道直后段s出现风属性怪物")
+            ),
+        )
 
-                self.assertIsNotNone(found)
-                self.assertIs(safe_frame, found[0])
-                self.assertIs(safe_badge, found[1])
-                self.assertEqual(1, len(scrolls))
-                self.assertEqual(
-                    [],
-                    clicks,
-                )
+
+
+class CharacterTabTest(unittest.TestCase):
+    def setUp(self):
+        self.clock = 0.0
+        patcher = patch("src.tasks.map_trade.navigator_story.monotonic", lambda: self.clock)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _advance_clock(self, seconds):
+        self.clock += seconds
+
+    def _navigator(self, highlight):
+        clicks = []
+        frame = np.zeros((1080, 1920, 3), np.uint8)
+        vision = SimpleNamespace(
+            capture=lambda: frame,
+            ocr_text=lambda _frame, _name: "最近 店长游戏卡 剧情游戏卡 角色游戏卡 活动游戏卡",
+            simplify=lambda text: text,
+            bright_neutral_ratio=lambda _frame, region: highlight.get(region, 0.0),
+        )
+        task = SimpleNamespace(
+            operate_click=lambda x, y, after_sleep=0: clicks.append((x, y)),
+            sleep=self._advance_clock,
+            log_warning=lambda *_args: None,
+        )
+        return Navigator(task, vision), clicks
+
+    def test_character_tab_is_clicked_and_confirmed_by_its_own_highlight(self):
+        navigator, clicks = self._navigator({CHARACTER_CATEGORY_HIGHLIGHT_REGION: 0.084})
+
+        self.assertTrue(navigator._select_cartridge_category("character"))
+        self.assertEqual([CHARACTER_CATEGORY_POINT], clicks)
+        event, event_clicks = self._navigator({EVENT_CATEGORY_HIGHLIGHT_REGION: 0.084})
+        self.assertTrue(event._select_cartridge_category("event"))
+        self.assertEqual([EVENT_CATEGORY_POINT], event_clicks)
+        self.assertFalse(
+            navigator._wait_for_cartridge_category(timeout=0.1, category="event", warn=False),
+        )
+
+    def test_story_highlight_does_not_confirm_the_character_tab(self):
+        navigator, _clicks = self._navigator({STORY_CATEGORY_HIGHLIGHT_REGION: 0.079})
+
+        self.assertFalse(
+            navigator._wait_for_cartridge_category(timeout=0.2, category="character", warn=False)
+        )
+        self.assertTrue(navigator._wait_for_cartridge_category(timeout=0.2))
+        self.assertEqual((725 / 1920, 877 / 1080), CHARACTER_CATEGORY_POINT)
+        self.assertNotEqual(STORY_CATEGORY_POINT, CHARACTER_CATEGORY_POINT)

@@ -91,7 +91,6 @@ class BuyFlowMixin:
         end_at = monotonic() + max(0.0, timeout)
         sold_out_hits = 0
         last_title = ""
-        last_match = None
         while True:
             frame = self.vision.capture()
             title = self.vision.ocr_text(
@@ -132,12 +131,8 @@ class BuyFlowMixin:
                 break
             self.task.sleep(BUY_TO_SELL_INTERVAL)
         score_text = (
-            "-"
-            if last_match is None
-            else (
-                f"m={last_match.score:.3f}, p={last_match.pixel_score:.3f}, "
-                f"z={last_match.zncc_score:.3f}"
-            )
+            f"m={last_match.score:.3f}, p={last_match.pixel_score:.3f}, "
+            f"z={last_match.zncc_score:.3f}"
         )
         self.task.log_warning(
             "卖：买后等待售罄模板稳定命中超时，未切换出售页，"
@@ -209,22 +204,10 @@ class BuyFlowMixin:
         sold_out_hits = 0
         success_text_hits = 0
         last_text = ""
-        capture = getattr(self.vision, "capture", None)
-        match_fn = getattr(self.vision, "match", None)
-        passes_fn = getattr(self.vision, "passes", None)
-        simplify = getattr(self.vision, "simplify", lambda value: value)
-        if not callable(capture) or not callable(match_fn) or not callable(passes_fn):
-            return False
         while True:
-            frame = capture()
-            text = ""
-            ocr_text = getattr(self.vision, "ocr_text", None)
-            if callable(ocr_text):
-                try:
-                    text = ocr_text(frame, "购买完成确认", relative_roi=SHOP_MODE_TITLE_REGION)
-                except (AttributeError, TypeError, ValueError):
-                    text = ""
-            normalized = normalize_text(simplify(text))
+            frame = self.vision.capture()
+            text = self.vision.ocr_text(frame, "购买完成确认", relative_roi=SHOP_MODE_TITLE_REGION)
+            normalized = normalize_text(self.vision.simplify(text))
             last_text = text or last_text
             if any(keyword in normalized for keyword in ("购买成功", "购买完成", "已购买")):
                 success_text_hits += 1
@@ -236,8 +219,8 @@ class BuyFlowMixin:
                     return True
             else:
                 success_text_hits = 0
-            match = match_fn(frame, BUY_TO_SELL_SOLD_OUT_TEMPLATE)
-            passed = passes_fn(match, BUY_TO_SELL_SOLD_OUT_TEMPLATE)
+            match = self.vision.match(frame, BUY_TO_SELL_SOLD_OUT_TEMPLATE)
+            passed = self.vision.passes(match, BUY_TO_SELL_SOLD_OUT_TEMPLATE)
             sold_out_hits = sold_out_hits + 1 if passed else 0
             self._status(
                 "购买完成售罄确认",
@@ -263,8 +246,6 @@ class BuyFlowMixin:
         consecutive_hits = 0
         sold_out_hits = 0
         last_text = ""
-        last_center: tuple[int, int] | None = None
-        last_frame: np.ndarray | None = None
         expected = normalize_text(self.vision.simplify(BUY_ALL_FAVORITES_KEYWORD))
         while True:
             frame = self.vision.capture()
@@ -306,22 +287,14 @@ class BuyFlowMixin:
             # 售罄时按钮仍可能显示，任一售罄帧都必须阻止按钮点击。
             if matched_center is not None and not sold_out_passed:
                 consecutive_hits += 1
-                last_center = matched_center
-                last_frame = frame
             else:
                 consecutive_hits = 0
-                last_center = None
-                last_frame = None
             self._status(
                 "一键购买全部收藏按钮 OCR稳定",
                 f"{consecutive_hits}/{BUY_ALL_FAVORITES_STABLE_HITS}",
             )
-            if (
-                consecutive_hits >= BUY_ALL_FAVORITES_STABLE_HITS
-                and last_center is not None
-                and last_frame is not None
-            ):
-                return last_center, last_frame
+            if consecutive_hits >= BUY_ALL_FAVORITES_STABLE_HITS:
+                return matched_center, frame
             if monotonic() >= end_at:
                 break
             self.task.sleep(BUY_ALL_FAVORITES_INTERVAL)

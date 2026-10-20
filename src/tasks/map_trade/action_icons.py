@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 
 import numpy as np
@@ -8,7 +8,14 @@ import numpy as np
 from src.tasks.map_trade.models import MatchResult, TemplateSpec
 from src.tasks.map_trade.vision import Vision
 from src.utils.calibration import FHD_1080
-from src.utils.vision_models import MatchCandidateEvidence
+from src.utils.image_utils import (
+    edge_consistency,
+    resize_mask,
+    resize_template_with_interpolation,
+    template_candidate_evidence,
+    template_match_response,
+)
+from src.utils.vision_models import FrameGeometry, MatchCandidateEvidence
 
 ACTION_ICON_TEMPLATE_SCORE = 0.95
 ACTION_ICON_ZNCC_SCORE = 0.80
@@ -17,8 +24,9 @@ SEARCH_ICON_TEMPLATE_SCORE = 0.93
 ACTION_ICON_SCALE_RATIOS = (1.10, 1.15, 1.20, 1.25, 1.30)
 COOKING_ICON_SCALE_RATIOS = (*ACTION_ICON_SCALE_RATIOS, 1.35, 1.40)
 ACTION_ICON_BRIGHT_CORE_GRAY = 180
-ACTION_ICON_USED_MAX_BRIGHTNESS = 0.78
-ACTION_ICON_AVAILABLE_MIN_BRIGHTNESS = 0.85
+ACTION_ICON_REFINEMENT_SEEDS = 6
+ACTION_ICON_RETAINED_CANDIDATES = 8
+ACTION_ICON_DISTINCT_DISTANCE_SQUARED = 25
 # The action HUD is anchored to the lower-right corner of the client.  Keep
 # the calibration in reference pixels and derive all runtime bounds as
 # relative coordinates so the same matcher works at 720p through 4K.
@@ -84,12 +92,8 @@ ACTION_SLOT_CENTER_RELATIVE_ROIS = {
 # floor does not make a wrong-group or empty slot clickable.
 ACTION_ICON_CONSENSUS_TEMPLATE_FLOOR = 0.94
 ACTION_ICON_CONSENSUS_ZNCC_FLOOR = 0.50
-ACTION_ICON_CONSENSUS_PIXEL_VOTE = 0.60
 ACTION_ICON_CONSENSUS_PIXEL_FLOOR = 0.10
-ACTION_ICON_CONSENSUS_ZNCC_VOTE = 0.60
-# These floors apply only to the local multi-evidence path.  The strict
-# compatibility matcher remains unchanged for generic callers and for icons
-# without a calibrated HUD slot.
+# These floors apply to calibrated HUD slots. Icons without a slot use their template gates.
 ACTION_ICON_EVIDENCE_MIN_MARGIN = 0.02
 ACTION_ICON_EVIDENCE_MIN_PIXEL = 0.68
 ACTION_ICON_EVIDENCE_MIN_ZNCC = 0.68
@@ -98,6 +102,10 @@ ACTION_ICON_EVIDENCE_MIN_EDGE = 0.72
 ACTION_ICON_EVIDENCE_MIN_COMPOSITE = 0.76
 ACTION_ICON_MIN_PHYSICAL_SIZE = 8
 LIMITED_ACTION_EVIDENCE_MIN_PIXEL = 0.66
+LIMITED_ACTION_EVIDENCE_MIN_GRADIENT = 0.30
+LIMITED_ACTION_EVIDENCE_MIN_EDGE = 0.82
+LIMITED_ACTION_USED_MAX_CONTRAST = 0.65
+LIMITED_ACTION_AVAILABLE_MIN_CONTRAST = 0.80
 SEARCH_ICON_EVIDENCE_MIN_PIXEL = 0.68
 SEARCH_ICON_EVIDENCE_MIN_ZNCC = 0.55
 SEARCH_ICON_EVIDENCE_MIN_GRADIENT = 0.30
@@ -120,8 +128,6 @@ class ActionIconSpec:
     name: str
     template: TemplateSpec
     dimmed_means_used: bool = False
-    available_min_zncc: float = ACTION_ICON_ZNCC_SCORE
-    used_min_zncc: float | None = None
     # Limited-action icons use a slightly relaxed search spec so a marginal
     # interpolation frame can still be examined by the multi-metric identity
     # gate below.  ``template`` remains the strict production spec used by
@@ -153,6 +159,7 @@ class ActionIconDetection:
     # the same state and physical slot in consecutive captures.
     stable: bool = False
     sample_count: int = 1
+    relative_contrast: float | None = None
 
     @property
     def present(self) -> bool:
@@ -222,8 +229,6 @@ def _limited_action(
         name,
         strict,
         dimmed_means_used=True,
-        available_min_zncc=ACTION_ICON_USED_ZNCC_SCORE,
-        used_min_zncc=ACTION_ICON_USED_ZNCC_SCORE,
         detection_template=detection,
         slot_name=slot_name,
         search_radius_reference=ACTION_SLOT_SEARCH_RADII_REFERENCE[slot_name],
@@ -310,47 +315,6 @@ class ActionIconDetector:
         self.vision = vision
 
     @staticmethod
-    def _identity_passes(
-        match: MatchResult,
-        icon: ActionIconSpec,
-    ) -> tuple[bool, str]:
-        """Apply a location-constrained, multi-evidence identity gate.
-
-        The template score, raw pixel score, and masked ZNCC are correlated,
-        and one of them can dip by a few thousandths during interpolation or
-        animation.  Keep a conservative absolute floor, then require at least
-        two independent-looking votes.  This preserves hard negatives such as
-        a wrong skill group, an empty slot, or a countdown overlay while
-        avoiding an all-metrics ``AND`` veto on a marginal frame.
-        """
-
-        metrics = (match.score, match.pixel_score, match.zncc_score)
-        if not all(np.isfinite(value) for value in metrics):
-            return False, "多证据包含非有限分数"
-        if match.score < icon.identity_min_score:
-            return False, f"模板身份分过低：{match.score:.3f}<{icon.identity_min_score:.3f}"
-        if match.zncc_score < icon.identity_min_zncc:
-            return False, f"结构ZNCC过低：{match.zncc_score:.3f}<{icon.identity_min_zncc:.3f}"
-        if match.pixel_score < ACTION_ICON_CONSENSUS_PIXEL_FLOOR:
-            return False, (
-                f"像素证据过低：{match.pixel_score:.3f}"
-                f"<{ACTION_ICON_CONSENSUS_PIXEL_FLOOR:.3f}"
-            )
-        # The hard floors above are safety guards only.  Votes use stricter,
-        # independent thresholds so a marginal template or ZNCC score can be
-        # offset by the other two metrics, while zero/NaN pixel evidence can
-        # never pass merely because the correlated scores look plausible.
-        pixel_score = match.pixel_score
-        votes = (
-            match.score >= icon.template.threshold,
-            pixel_score >= ACTION_ICON_CONSENSUS_PIXEL_VOTE,
-            match.zncc_score >= ACTION_ICON_CONSENSUS_ZNCC_VOTE,
-        )
-        if sum(votes) < 2:
-            return False, f"多证据票数不足：{sum(votes)}/3"
-        return True, "身份多证据通过"
-
-    @staticmethod
     def _evidence_rank(value: MatchCandidateEvidence) -> tuple[float, ...]:
         result = value.result
         return (
@@ -364,17 +328,10 @@ class ActionIconDetector:
 
     @staticmethod
     def _runtime_slot_center(
-        frame: np.ndarray,
         slot_name: str,
-        geometry=None,
+        geometry: FrameGeometry,
     ) -> tuple[int, int]:
-        height, width = frame.shape[:2]
         reference_x, reference_y = ACTION_SLOT_CENTERS_REFERENCE[slot_name]
-        if geometry is None:
-            return (
-                round(width * reference_x / SKILL_REFERENCE_WIDTH),
-                round(height * reference_y / SKILL_REFERENCE_HEIGHT),
-            )
         return (
             geometry.content_left
             + round(geometry.content_width * reference_x / SKILL_REFERENCE_WIDTH),
@@ -387,18 +344,13 @@ class ActionIconDetector:
         frame: np.ndarray,
         icon: ActionIconSpec,
         geometry=None,
-    ) -> tuple[MatchResult, tuple[MatchCandidateEvidence, ...], float] | None:
+    ) -> tuple[MatchResult, tuple[MatchCandidateEvidence, ...], float, float | None] | None:
         """Find one icon inside its calibrated HUD slot before identity gating."""
 
-        if icon.slot_name is None or icon.search_radius_reference is None:
+        if icon.slot_name is None:
             return None
-        matcher = getattr(self.vision, "match_slot_evidence", None)
-        if not callable(matcher):
-            return None
-
-        assess = getattr(self.vision, "assess_frame", None)
-        if geometry is None and callable(assess):
-            geometry = assess(
+        if geometry is None:
+            geometry = self.vision.assess_frame(
                 frame,
                 required_relative_rois=(ACTION_SLOT_RELATIVE_ROIS[icon.slot_name],),
                 purpose=f"{icon.name}图标",
@@ -413,22 +365,18 @@ class ActionIconDetector:
                     ),
                     (),
                     -1.0,
+                    None,
                 )
-        height, width = frame.shape[:2]
-        client_scale = (
-            geometry.client_scale
-            if geometry is not None
-            else min(width / SKILL_REFERENCE_WIDTH, height / SKILL_REFERENCE_HEIGHT)
-        )
+        client_scale = geometry.client_scale
         radius = tuple(
             max(6, round(float(value) * client_scale))
             for value in icon.search_radius_reference
         )
-        center = self._runtime_slot_center(frame, icon.slot_name, geometry)
+        center = self._runtime_slot_center(icon.slot_name, geometry)
         search_spec = icon.detection_template or icon.template
         try:
             candidates = tuple(
-                matcher(
+                self.vision.match_slot_evidence(
                     frame,
                     search_spec,
                     center,
@@ -437,14 +385,22 @@ class ActionIconDetector:
                     minimum_score=0.35,
                     max_results=8,
                     purpose=f"{icon.name}图标",
+                    preserve_variants=icon.dimmed_means_used,
                 )
             )
-        except (AttributeError, TypeError, ValueError):
-            # Older test doubles and downstream adapters may expose only the
-            # strict matcher signature.  They retain the compatibility path.
-            return None
+        except (AttributeError, TypeError, ValueError) as exc:
+            return (
+                MatchResult(-1.0, (0, 0), (0, 0), rejection_reasons=(
+                    f"技能候选识别失败：{type(exc).__name__}",
+                )),
+                (), -1.0, None,
+            )
         if not candidates:
-            return MatchResult(-1.0, (0, 0), (0, 0)), (), -1.0
+            return MatchResult(-1.0, (0, 0), (0, 0)), (), -1.0, None
+        if icon.dimmed_means_used:
+            return self._limited_evidence_match(
+                frame, icon, candidates, geometry, center, radius, client_scale,
+            )
         ranked = tuple(sorted(candidates, key=self._evidence_rank, reverse=True))
         best = ranked[0]
         margin = (
@@ -452,13 +408,191 @@ class ActionIconDetector:
             if len(ranked) > 1
             else -1.0
         )
-        return best.result, ranked, float(margin)
+        return best.result, ranked, float(margin), None
+
+    def _limited_evidence_match(
+        self,
+        frame: np.ndarray,
+        icon: ActionIconSpec,
+        candidates: tuple[MatchCandidateEvidence, ...],
+        geometry: FrameGeometry,
+        center: tuple[int, int],
+        radius: tuple[int, int],
+        client_scale: float,
+    ) -> tuple[MatchResult, tuple[MatchCandidateEvidence, ...], float, float | None]:
+        """Validate each scale/interpolation before merging candidates at one location."""
+
+        gray = self.vision._gray(frame)
+        template, mask = self.vision._load(icon.template)
+        spec = icon.detection_template or icon.template
+        bounds = self.vision._center_bounds(
+            spec, frame_width=gray.shape[1], frame_height=gray.shape[0],
+            left=0, top=0, geometry=geometry,
+        )
+        content = geometry.content_rect
+        left = max(0, content[0], center[0] - radius[0])
+        top = max(0, content[1], center[1] - radius[1])
+        right = min(gray.shape[1], content[0] + content[2], center[0] + radius[0] + 1)
+        bottom = min(gray.shape[0], content[1] + content[3], center[1] + radius[1] + 1)
+        scaled_templates = {}
+
+        def in_bounds(result: MatchResult) -> bool:
+            x, y = result.position
+            width, height = result.size
+            return (
+                width >= ACTION_ICON_MIN_PHYSICAL_SIZE
+                and height >= ACTION_ICON_MIN_PHYSICAL_SIZE
+                and left <= x and top <= y and x + width <= right and y + height <= bottom
+                and (bounds is None or (
+                    bounds[0] <= x + width / 2 < bounds[2]
+                    and bounds[1] <= y + height / 2 < bounds[3]
+                ))
+            )
+
+        def scaled_for(candidate):
+            key = (candidate.scale, candidate.interpolation)
+            if key not in scaled_templates:
+                scaled_templates[key] = self._scale_limited_template(template, mask, candidate)
+            return scaled_templates[key]
+
+        def measure(candidate):
+            result = candidate.result
+            if (
+                not in_bounds(result)
+                or not all(np.isfinite(value) for value in (
+                    result.score, result.pixel_score, result.zncc_score,
+                    result.gradient_zncc_score, result.edge_score, candidate.scale,
+                ))
+                or result.score < icon.identity_min_score
+                or result.zncc_score < icon.identity_min_zncc
+            ):
+                return None
+            scaled_data = scaled_for(candidate)
+            if scaled_data is None:
+                return None
+            return self._measure_limited_candidate(gray, icon, candidate, scaled_data, client_scale)
+
+        measured = [value for candidate in candidates if (value := measure(candidate)) is not None]
+        if measured and not any(value.accepted for value, _ in measured):
+            # Small glyphs can peak one pixel away from the strongest structural
+            # alignment. Refine only plausible peaks, and keep all slot bounds.
+            seeds = sorted(
+                measured, key=lambda value: self._evidence_rank(value[0]), reverse=True,
+            )[:ACTION_ICON_REFINEMENT_SEEDS]
+            for original, _ in seeds:
+                scaled, scaled_mask, *_ = scaled_for(original)
+                for dx in (-1, 0, 1):
+                    for dy in (-1, 0, 1):
+                        if dx == dy == 0:
+                            continue
+                        result = replace(original.result, position=(
+                            original.result.position[0] + dx, original.result.position[1] + dy,
+                        ))
+                        if not in_bounds(result):
+                            continue
+                        x, y = result.position
+                        width, height = result.size
+                        patch = gray[y:y + height, x:x + width]
+                        score = float(template_match_response(patch, scaled, scaled_mask)[0, 0])
+                        pixel, zncc, gradient, edge = template_candidate_evidence(
+                            patch, scaled, scaled_mask,
+                        )
+                        result = replace(
+                            result, score=score, pixel_score=pixel, zncc_score=zncc,
+                            gradient_zncc_score=gradient, edge_score=edge,
+                        )
+                        refined = measure(replace(original, result=result))
+                        if refined is not None:
+                            measured.append(refined)
+        return self._rank_limited_candidates(measured)
+
+    @staticmethod
+    def _normalize_icon_patch(image, active):
+        low, high = np.percentile(image[active], (10, 90))
+        normalized = (image.astype(float) - low) * 255 / max(1.0, high - low)
+        return np.clip(normalized, 0, 255).astype(np.uint8)
+
+    def _scale_limited_template(self, template, mask, candidate):
+        interpolation = {
+            name: mode for mode, name in self.vision._interpolation_modes(candidate.scale)
+        }
+        if candidate.interpolation not in interpolation or mask is None:
+            return None
+        scaled = resize_template_with_interpolation(
+            template, candidate.scale, interpolation[candidate.interpolation],
+        )
+        scaled_mask = resize_mask(mask, candidate.scale)
+        active = scaled_mask > 0
+        foreground = active & (scaled >= ACTION_ICON_BRIGHT_CORE_GRAY)
+        background = ~active
+        if not foreground.any() or not background.any():
+            return None
+        return (
+            scaled, scaled_mask, foreground, background,
+            self._normalize_icon_patch(scaled, active),
+        )
+
+    def _measure_limited_candidate(self, gray, icon, candidate, scaled_data, client_scale):
+        scaled, scaled_mask, foreground, background, normalized_template = scaled_data
+        result = candidate.result
+        x, y = result.position
+        width, height = result.size
+        patch = gray[y:y + height, x:x + width]
+        if patch.shape != scaled.shape:
+            return None
+        foreground_gray = float(np.median(patch[foreground]))
+        background_gray = float(np.median(patch[background]))
+        contrast = (foreground_gray - background_gray) / max(1.0, 255.0 - background_gray)
+        normalized_edge = edge_consistency(
+            self._normalize_icon_patch(patch, scaled_mask > 0), normalized_template, scaled_mask,
+            tolerance=max(1, round(client_scale)),
+        )
+        result = replace(result, edge_score=normalized_edge)
+        passed, reason = self._evidence_identity_passes(
+            result, icon, 1.0, relative_contrast=contrast,
+        )
+        return (
+            replace(candidate, result=result, rejection_reasons=() if passed else (reason,)),
+            contrast,
+        )
+
+    def _rank_limited_candidates(self, measured):
+        if not measured:
+            return MatchResult(-1.0, (0, 0), (0, 0)), (), -1.0, None
+        measured.sort(
+            key=lambda value: (value[0].accepted, self._evidence_rank(value[0])), reverse=True,
+        )
+        best, contrast = measured[0]
+        # Variants at the same physical position do not compete for the margin.
+        independent = [value for value, _ in measured[1:] if (
+            (value.result.center[0] - best.result.center[0]) ** 2
+            + (value.result.center[1] - best.result.center[1]) ** 2
+            > ACTION_ICON_DISTINCT_DISTANCE_SQUARED
+        )]
+        margin = self._evidence_rank(best)[0] - max(
+            (self._evidence_rank(value)[0] for value in independent),
+            default=self._evidence_rank(best)[0] - 1.0,
+        )
+        retained = [best]
+        for candidate in independent:
+            if any(
+                (candidate.result.center[0] - kept.result.center[0]) ** 2
+                + (candidate.result.center[1] - kept.result.center[1]) ** 2
+                <= ACTION_ICON_DISTINCT_DISTANCE_SQUARED
+                for kept in retained
+            ):
+                continue
+            retained.append(candidate)
+            if len(retained) >= ACTION_ICON_RETAINED_CANDIDATES:
+                break
+        return best.result, tuple(retained), float(margin), contrast
 
     @staticmethod
     def _evidence_identity_passes(
         match: MatchResult,
         icon: ActionIconSpec,
         margin: float,
+        relative_contrast: float | None = None,
     ) -> tuple[bool, str]:
         values = (
             match.score,
@@ -469,7 +603,7 @@ class ActionIconDetector:
         )
         if not all(np.isfinite(value) and value > -1.0 for value in values):
             if match.rejection_reasons:
-                return False, "画面几何拒绝：" + "|".join(match.rejection_reasons)
+                return False, "识别证据拒绝：" + "|".join(match.rejection_reasons)
             return False, "局部证据包含非有限或缺失分数"
         if (
             match.size[0] < ACTION_ICON_MIN_PHYSICAL_SIZE
@@ -481,23 +615,53 @@ class ActionIconDetector:
             )
         if match.score < icon.identity_min_score:
             return False, f"模板身份分过低：{match.score:.3f}<{icon.identity_min_score:.3f}"
-        if match.pixel_score < icon.evidence_min_pixel:
-            return False, f"局部像素证据过低：{match.pixel_score:.3f}<{icon.evidence_min_pixel:.3f}"
         if match.zncc_score < icon.evidence_min_zncc:
             return False, f"原始ZNCC过低：{match.zncc_score:.3f}<{icon.evidence_min_zncc:.3f}"
-        if match.gradient_zncc_score < icon.evidence_min_gradient:
+
+        # Dimmed icons lose pixel intensity while retaining their shape. Only
+        # confirmed dimming may use the low pixel floor; bright/unknown states
+        # keep the stricter pixel gate before becoming clickable.
+        is_dimmed = (
+            icon.dimmed_means_used
+            and relative_contrast is not None
+            and relative_contrast <= LIMITED_ACTION_USED_MAX_CONTRAST
+        )
+        if is_dimmed:
+            if match.pixel_score < ACTION_ICON_CONSENSUS_PIXEL_FLOOR:
+                return False, (
+                    f"变暗图标像素证据低于保底：{match.pixel_score:.3f}"
+                    f"<{ACTION_ICON_CONSENSUS_PIXEL_FLOOR:.3f}"
+                )
+        elif match.pixel_score < icon.evidence_min_pixel:
+            return False, f"局部像素证据过低：{match.pixel_score:.3f}<{icon.evidence_min_pixel:.3f}"
+
+        minimum_gradient = (
+            LIMITED_ACTION_EVIDENCE_MIN_GRADIENT
+            if relative_contrast is not None else icon.evidence_min_gradient
+        )
+        minimum_edge = (
+            LIMITED_ACTION_EVIDENCE_MIN_EDGE
+            if relative_contrast is not None else icon.evidence_min_edge
+        )
+        if match.gradient_zncc_score < minimum_gradient:
             return False, (
                 f"梯度ZNCC过低：{match.gradient_zncc_score:.3f}"
-                f"<{icon.evidence_min_gradient:.3f}"
+                f"<{minimum_gradient:.3f}"
             )
-        if match.edge_score < icon.evidence_min_edge:
-            return False, f"边缘一致性过低：{match.edge_score:.3f}<{icon.evidence_min_edge:.3f}"
-        if match.composite_evidence_score < icon.evidence_min_composite:
+        if match.edge_score < minimum_edge:
+            return False, f"边缘一致性过低：{match.edge_score:.3f}<{minimum_edge:.3f}"
+        if (
+            relative_contrast is None
+            and match.composite_evidence_score < icon.evidence_min_composite
+        ):
             return False, (
                 f"组合证据过低：{match.composite_evidence_score:.3f}"
                 f"<{icon.evidence_min_composite:.3f}"
             )
-        if margin >= 0.0 and margin < ACTION_ICON_EVIDENCE_MIN_MARGIN:
+        if (
+            (relative_contrast is not None or margin >= 0.0)
+            and margin < ACTION_ICON_EVIDENCE_MIN_MARGIN
+        ):
             return False, f"局部候选分差不足：{margin:.3f}<{ACTION_ICON_EVIDENCE_MIN_MARGIN:.3f}"
         return True, "局部多尺度多证据通过"
 
@@ -508,24 +672,23 @@ class ActionIconDetector:
         *,
         geometry=None,
     ) -> ActionIconDetection:
-        search_spec = icon.detection_template or icon.template
         evidence_match = self._evidence_match(frame, icon, geometry)
+        relative_contrast = None
         if evidence_match is not None:
-            match, evidence_candidates, candidate_margin = evidence_match
+            match, evidence_candidates, candidate_margin, relative_contrast = evidence_match
             identity_passed, identity_reason = self._evidence_identity_passes(
                 match,
                 icon,
                 candidate_margin,
+                relative_contrast=relative_contrast,
             )
         else:
-            match = self.vision.match(frame, search_spec)
+            match = self.vision.match(frame, icon.template)
             evidence_candidates = ()
             candidate_margin = -1.0
-            if icon.detection_template is None:
-                identity_passed = self.vision.passes(match, icon.template)
-                identity_reason = "身份门槛通过" if identity_passed else "形状身份门槛未通过"
-            else:
-                identity_passed, identity_reason = self._identity_passes(match, icon)
+            identity_passed = self.vision.passes(match, icon.template)
+            identity_reason = "身份门槛通过" if identity_passed else "形状身份门槛未通过"
+
         if not identity_passed:
             return ActionIconDetection(
                 ActionIconState.ABSENT,
@@ -534,6 +697,7 @@ class ActionIconDetector:
                 evidence_candidates=evidence_candidates,
                 candidate_margin=candidate_margin,
                 semantic_state="absent",
+                relative_contrast=relative_contrast,
             )
 
         bright_core_ratio = self.vision.template_brightness_ratio(
@@ -552,72 +716,29 @@ class ActionIconDetector:
                 candidate_margin,
                 "available",
             )
-        if bright_core_ratio <= ACTION_ICON_USED_MAX_BRIGHTNESS:
-            if icon.detection_template is None and match.zncc_score < (
-                icon.used_min_zncc or icon.available_min_zncc
-            ):
-                return ActionIconDetection(
-                    ActionIconState.ABSENT,
-                    match,
-                    bright_core_ratio,
-                    "暗态形状身份门槛未通过",
-                    evidence_candidates,
-                    candidate_margin,
-                    "absent",
-                )
-            return ActionIconDetection(
-                ActionIconState.USED,
-                match,
-                bright_core_ratio,
-                "身份已确认且亮核心变暗",
-                evidence_candidates,
-                candidate_margin,
-                "used",
-            )
-        if bright_core_ratio >= ACTION_ICON_AVAILABLE_MIN_BRIGHTNESS:
-            if icon.detection_template is None and match.zncc_score < icon.available_min_zncc:
-                return ActionIconDetection(
-                    ActionIconState.UNKNOWN,
-                    match,
-                    bright_core_ratio,
-                    "亮核心正常，但可点击形状门槛未通过",
-                    evidence_candidates,
-                    candidate_margin,
-                    "unknown",
-                )
-            return ActionIconDetection(
-                ActionIconState.AVAILABLE,
-                match,
-                bright_core_ratio,
-                "身份已确认且亮核心亮度正常",
-                evidence_candidates,
-                candidate_margin,
-                "available",
-            )
+        state = (
+            ActionIconState.USED if relative_contrast <= LIMITED_ACTION_USED_MAX_CONTRAST
+            else ActionIconState.AVAILABLE
+            if relative_contrast >= LIMITED_ACTION_AVAILABLE_MIN_CONTRAST
+            else ActionIconState.UNKNOWN
+        )
         return ActionIconDetection(
-            ActionIconState.UNKNOWN,
-            match,
-            bright_core_ratio,
-            "身份已确认，但亮核心处于状态缓冲区",
-            evidence_candidates,
-            candidate_margin,
-            "unknown",
+            state, match, bright_core_ratio,
+            f"身份已确认；相对底色对比度={relative_contrast:.3f}，状态={state.value}",
+            evidence_candidates, candidate_margin, state.value,
+            relative_contrast=relative_contrast,
         )
 
 
 __all__ = [
     "ABSORB_ICON",
     "ACTION_ICONS",
-    "ACTION_ICON_AVAILABLE_MIN_BRIGHTNESS",
     "ACTION_ICON_BRIGHT_CORE_GRAY",
     "ACTION_ICON_CONSENSUS_PIXEL_FLOOR",
-    "ACTION_ICON_CONSENSUS_PIXEL_VOTE",
     "ACTION_ICON_CONSENSUS_TEMPLATE_FLOOR",
     "ACTION_ICON_CONSENSUS_ZNCC_FLOOR",
-    "ACTION_ICON_CONSENSUS_ZNCC_VOTE",
     "ACTION_ICON_SCALE_RATIOS",
     "ACTION_ICON_TEMPLATE_SCORE",
-    "ACTION_ICON_USED_MAX_BRIGHTNESS",
     "ACTION_ICON_USED_ZNCC_SCORE",
     "ACTION_ICON_ZNCC_SCORE",
     "ACTION_ICON_EVIDENCE_MIN_COMPOSITE",

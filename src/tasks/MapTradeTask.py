@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from ok import Config
-from ok.task.exceptions import TaskDisabledException
+from ok.task.exceptions import FinishedException, TaskDisabledException
 from ok.util.file import get_relative_path
 from qfluentwidgets import FluentIcon
 
@@ -105,6 +105,7 @@ class MapAutomationTaskBase(BaseBD2Task):
     def _run_phases(self, navigator, phases) -> bool:
         completed: list[str] = []
         failed: list[str] = []
+        partial_warnings: list[str] = []
         skipped: list[str] = []
         cancelled = False
         self.info_set("状态", f"{self.task_log_name}启动。")
@@ -128,11 +129,14 @@ class MapAutomationTaskBase(BaseBD2Task):
                     (completed if success else failed).append(name)
                     if not success:
                         self._save_diagnostic(f"{self.diagnostic_prefix}_{name}_failed")
+                        if getattr(result, "partial", False):
+                            partial_warnings.append(message)
+                            continue
                         self.log_warning(
                             f"{self.task_log_name}：{name}失败，停止后续阶段。"
                         )
                         break
-                except TaskDisabledException:
+                except (TaskDisabledException, FinishedException):
                     raise
                 except Exception as exc:
                     failed.append(name)
@@ -142,7 +146,7 @@ class MapAutomationTaskBase(BaseBD2Task):
                         f"{self.task_log_name}：{name}异常，停止后续阶段。"
                     )
                     break
-        except TaskDisabledException:
+        except (TaskDisabledException, FinishedException):
             cancelled = True
             raise
         finally:
@@ -150,7 +154,7 @@ class MapAutomationTaskBase(BaseBD2Task):
                 self.info_set("当前阶段", "返回章节主页")
                 try:
                     returned = navigator.return_home()
-                except TaskDisabledException:
+                except (TaskDisabledException, FinishedException):
                     raise
                 except Exception as exc:
                     failed.append("返回章节主页")
@@ -166,6 +170,10 @@ class MapAutomationTaskBase(BaseBD2Task):
         self.info_set("失败", "、".join(failed) or "-")
         self.info_set("跳过", "、".join(skipped) or "-")
         if failed:
+            if len(partial_warnings) == len(failed):
+                self.info_set("状态", f"{self.task_log_name}执行结束，存在问题。")
+                self.log_warning("；".join(partial_warnings))
+                return False
             self.info_set("状态", f"{self.task_log_name}部分流程未完成。")
             return False
         self.info_set("状态", f"{self.task_log_name}完成。")

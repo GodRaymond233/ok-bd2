@@ -70,21 +70,6 @@ SALE_ITEM_CANDIDATES_POLL_INTERVAL = 0.5
 
 
 class SellFlowMixin:
-    # 以下实例状态由 Trader.__init__ 初始化；类级默认值保证裸构造的 mixin（含测试）
-    # 也能直接属性访问，替代原先散落的 getattr 兜底。
-    _buy_completed_in_current_shop = False
-    _last_sale_unavailable = False
-    _last_sale_reason = ""
-    _last_sale_name_seen = False
-    _last_sale_ocr_output = False
-    _last_sale_page_empty = False
-    _sale_entries_override: list[CalendarEntry] | None = None
-    _last_sale_toast_id: int | None = None
-    _sale_title_entries: tuple[CalendarEntry, ...] = ()
-    _sale_dialog_rejected = False
-    _sale_title_catalog_cache: dict[str, set[str]] | None = None
-    _last_sale_cleared = False
-
     def run_sell(self) -> bool:
         entries = self._resolve_sale_entries()
         if entries is None:
@@ -242,10 +227,8 @@ class SellFlowMixin:
             return len(SHOP_CARTRIDGE_ROW_INDEX)
 
     def _ensure_cartridge_goods_loaded(self, shop: str) -> bool:
-        """检查遗漏食材的商品列表，必要时切换相邻卡带刷新。"""
-        vision = getattr(self, "vision", None)
-        if vision is None or not hasattr(vision, "capture") or not hasattr(vision, "ocr_text"):
-            return True
+        """检查卡带商品列表是否只渲染了食物而遗漏料理食材，必要时切卡带刷新。"""
+        vision = self.vision
         for attempt in range(2):
             frame = vision.capture()
             text = vision.ocr_text(
@@ -270,10 +253,11 @@ class SellFlowMixin:
                         )
                         return False
                     continue
-                self.task.log_info(
-                    f"卖：卡带{shop}刷新后仍未检测到料理食材，继续尝试出售。"
-                )
-                return True
+                else:
+                    self.task.log_info(
+                        f"卖：卡带{shop}刷新后仍未检测到料理食材，继续尝试出售。"
+                    )
+                    return True
             self.task.sleep(0.4)
         return True
 
@@ -436,7 +420,8 @@ class SellFlowMixin:
             run_history.save_stage(self.task, checkpoint, "done",
                                    evidence={"result": "库存已达到保留量", "owned": owned})
             self.task.log_info(
-                f"卖：{entry.item}弹窗库存{owned}不超过保留量{entry.reserve}，关闭弹窗并跳过。"
+                f"卖：{entry.item}弹窗库存{owned}已无需继续出售"
+                f"（目标保留约{entry.reserve}），关闭弹窗并跳过。"
             )
             self.task.operate_click(*SALE_CLOSE_POINT, after_sleep=0.5)
             return owned, False
@@ -469,20 +454,26 @@ class SellFlowMixin:
         if not self._choose_sale_quantity(entry, owned):
             return None
         expected_selected = None
+        maximum_selected = (
+            min(available, owned - entry.reserve) if entry.reserve > 0 else available
+        )
         if entry.reserve <= 0:
             expected_selected = (
                 1
                 if bool(self.task.config.get("出售保险", False))
                 else available
             )
-        if not self._wait_selected_sale_quantity(expected_selected):
+        selected = self._wait_selected_sale_quantity(
+            expected_selected, maximum=maximum_selected,
+        )
+        if selected is None:
             self.task.log_warning(
                 f"卖：{entry.item}出售数量未确认（期望{expected_selected or '正数'}，"
-                f"当前组上限{available}），停止确认。"
+                f"安全出售上限{maximum_selected}，当前组上限{available}），停止确认。"
             )
             return None
         run_history.save_stage(self.task, checkpoint, "pending",
-                               evidence={"owned": owned, "selected": expected_selected})
+                               evidence={"owned": owned, "selected": selected})
         self.task.operate_click(*SALE_CONFIRM_POINT, after_sleep=0.5)
         self.task.log_info(
             f"卖：{entry.item}已点击出售，本组最大可出售{available}个，等待交易完成。"
@@ -492,6 +483,8 @@ class SellFlowMixin:
             frame,
             before_signature,
             before_toast_id=before_toast_id,
+            owned=owned,
+            selected=selected,
         ):
             return None
         run_history.save_stage(self.task, checkpoint, "done",
@@ -499,7 +492,7 @@ class SellFlowMixin:
         self._last_sale_cleared = (
             entry.reserve <= 0
             and not bool(self.task.config.get("出售保险", False))
-            and expected_selected == available == owned
+            and selected == available == owned
         )
         return owned, True
 
@@ -508,6 +501,8 @@ class SellFlowMixin:
         entry: CalendarEntry,
         timeout: float = SALE_ITEM_CANDIDATES_WAIT_TIMEOUT,
         interval: float = SALE_ITEM_CANDIDATES_POLL_INTERVAL,
+        *,
+        require_sell_page: bool = False,
     ) -> tuple[list[SaleItemCandidate], np.ndarray] | None:
         """Wait for all OCR-confirmed sale cards for one calendar entry."""
 
@@ -516,6 +511,18 @@ class SellFlowMixin:
         empty_name_hits = 0
         while True:
             frame = self.vision.capture()
+            if require_sell_page:
+                title = self._normal(self.vision.ocr_text(
+                    frame, "出售库存复核页面", relative_roi=SHOP_MODE_TITLE_REGION,
+                ))
+                dialog = self._normal(self.vision.ocr_text(
+                    frame, "出售库存复核弹窗", relative_roi=SALE_DIALOG_REGION,
+                ))
+                if "出售" not in title or "拥有" in dialog or "可购买" in dialog:
+                    if monotonic() >= end_at:
+                        return None
+                    self.task.sleep(interval)
+                    continue
             candidates = self._locate_sale_items(entry, frame)
             if candidates:
                 self._last_sale_page_empty = False
@@ -716,23 +723,14 @@ class SellFlowMixin:
         self._last_sale_ocr_output = False
 
         for target_height in SALE_FULL_PAGE_OCR_TARGET_HEIGHTS:
-            name_boxes: list[object] = []
-            ocr_boxes = self.vision.ocr_boxes(
-                frame,
-                "出售商品列表",
-                target_height=target_height,
+            name_boxes, has_ambiguous_name, has_ocr_output = self._find_sale_name_candidates(
+                frame, normalized_names, catalog, target_height,
             )
-            saw_ocr_output = saw_ocr_output or bool(ocr_boxes)
-            for box in ocr_boxes:
-                if not self._is_in_sale_grid(box, frame.shape):
-                    continue
-                matched = self._sale_box_name_matches(box, frame, normalized_names, catalog)
-                if matched is None:
-                    saw_item_name = True
-                    specific_local_failure = True
-                    last_reason = "商品名称存在歧义，局部复读未确认"
-                elif matched:
-                    name_boxes.append(box)
+            saw_ocr_output = saw_ocr_output or has_ocr_output
+            if has_ambiguous_name:
+                saw_item_name = True
+                specific_local_failure = True
+                last_reason = "商品名称存在歧义，局部复读未确认"
 
             if not name_boxes:
                 if not saw_item_name:
@@ -748,88 +746,38 @@ class SellFlowMixin:
 
             ordered_names = sorted(
                 name_boxes,
-                key=lambda box: (
-                    self._ocr_box_center(box) or (10**9, 10**9)
-                )[1:],
+                key=lambda box: self._ocr_box_center(box)[1],
             )
             candidates: list[SaleItemCandidate] = []
             for name_box in ordered_names:
                 center = self._ocr_box_center(name_box)
-                if center is None:
-                    continue
                 search_roi = self._sale_marker_search_roi(name_box, frame.shape)
                 if search_roi is None:
                     last_reason = "商品名或局部模板框几何无效"
                     specific_local_failure = True
                     continue
 
-                cached_boxes = next(
-                    (
-                        boxes
-                        for searched_roi, boxes in searched_roi_results
-                        if self._sale_roi_overlap_ratio(search_roi, searched_roi) >= 0.90
-                    ),
-                    None,
+                if gray_frame is None:
+                    gray_frame = to_gray(frame)
+                percent_boxes, is_cached = self._sale_marker_candidates(
+                    frame, search_roi, gray_frame, searched_roi_results,
                 )
-                if cached_boxes is None:
-                    if gray_frame is None:
-                        gray_frame = to_gray(frame)
-                    percent_boxes = self._deduplicate_ocr_boxes(
-                        self._sale_template_percent_boxes(
-                            frame,
-                            search_roi,
-                            gray_frame,
-                        )
-                    )
-                    searched_roi_results.append((search_roi, percent_boxes))
+                if not is_cached:
                     roi_searches += 1
                     marker_hits += len(percent_boxes)
                 else:
-                    roi_left, roi_top, roi_width, roi_height = search_roi
-                    roi_right = roi_left + roi_width
-                    roi_bottom = roi_top + roi_height
-                    percent_boxes = [
-                        box
-                        for box in cached_boxes
-                        if roi_left <= box.x
-                        and roi_top <= box.y
-                        and box.x + box.width <= roi_right
-                        and box.y + box.height <= roi_bottom
-                    ]
                     reused_rois += 1
 
                 if not percent_boxes:
                     if not specific_local_failure:
                         last_reason = "商品名左侧局部ROI未命中↑120%模板"
                     continue
-                if len(percent_boxes) > 1 and (
-                    percent_boxes[0].confidence - percent_boxes[1].confidence
-                    < SALE_MARKER_MIN_MARGIN
-                ):
-                    last_reason = "商品名左侧局部ROI模板候选不唯一"
+                candidate, failure_reason = self._pair_sale_item(name_box, percent_boxes, center)
+                if candidate is None:
+                    last_reason = failure_reason
                     specific_local_failure = True
                     continue
-
-                percent_box = percent_boxes[0]
-                _, name_y, _, name_height = self._ocr_box_geometry(name_box)
-                _, marker_y, _, marker_height = self._ocr_box_geometry(percent_box)
-                vertical_overlap = min(
-                    name_y + name_height,
-                    marker_y + marker_height,
-                ) - max(name_y, marker_y)
-                # At non-16:9 sizes independent axis scaling can leave a marker
-                # inside the padded ROI without overlapping the item-name row.
-                if vertical_overlap <= 0:
-                    last_reason = "局部↑120%模板与商品名框几何关系非法"
-                    specific_local_failure = True
-                    continue
-                candidates.append(
-                    SaleItemCandidate(
-                        center=center,
-                        name_box=name_box,
-                        percent_box=percent_box,
-                    )
-                )
+                candidates.append(candidate)
 
             if candidates:
                 self._last_sale_name_seen = True
@@ -870,6 +818,52 @@ class SellFlowMixin:
             self._last_sale_unavailable = not saw_item_name
             self._last_sale_reason = last_reason or "全画面OCR未形成可用商品候选"
         return []
+
+    def _find_sale_name_candidates(self, frame, normalized_names, catalog, target_height):
+        boxes = self.vision.ocr_boxes(frame, "出售商品列表", target_height=target_height)
+        candidates = []
+        has_ambiguous_name = False
+        for box in boxes:
+            if not self._is_in_sale_grid(box, frame.shape):
+                continue
+            matched = self._sale_box_name_matches(box, frame, normalized_names, catalog)
+            if matched is None:
+                has_ambiguous_name = True
+            elif matched:
+                candidates.append(box)
+        return candidates, has_ambiguous_name, bool(boxes)
+
+    def _sale_marker_candidates(self, frame, search_roi, gray_frame, cache):
+        """Reuse overlapping searches while restricting every marker to the current item's ROI."""
+        cached = next((boxes for roi, boxes in cache
+                       if self._sale_roi_overlap_ratio(search_roi, roi) >= 0.90), None)
+        if cached is None:
+            boxes = self._deduplicate_ocr_boxes(
+                self._sale_template_percent_boxes(frame, search_roi, gray_frame),
+            )
+            cache.append((search_roi, boxes))
+            return boxes, False
+        left, top, width, height = search_roi
+        return [box for box in cached
+                if left <= box.x and top <= box.y
+                and box.x + box.width <= left + width
+                and box.y + box.height <= top + height], True
+
+    def _pair_sale_item(
+        self, name_box, percent_boxes, center: tuple[int, int],
+    ) -> tuple[SaleItemCandidate | None, str]:
+        if len(percent_boxes) > 1 and (
+            percent_boxes[0].confidence - percent_boxes[1].confidence < SALE_MARKER_MIN_MARGIN
+        ):
+            return None, "商品名左侧局部ROI模板候选不唯一"
+        marker = percent_boxes[0]
+        _, name_y, _, name_height = self._ocr_box_geometry(name_box)
+        _, marker_y, _, marker_height = self._ocr_box_geometry(marker)
+        overlap = min(name_y + name_height, marker_y + marker_height) - max(name_y, marker_y)
+        # Independent axis scaling may leave the marker inside the padded ROI but in another row.
+        if overlap <= 0:
+            return None, "局部↑120%模板与商品名框几何关系非法"
+        return SaleItemCandidate(center=center, name_box=name_box, percent_box=marker), ""
 
     def _sale_name_signature(
         self,
@@ -929,6 +923,8 @@ class SellFlowMixin:
         timeout: float = SALE_COMPLETION_TIMEOUT,
         *,
         before_toast_id: int | None = None,
+        owned: int | None = None,
+        selected: int | None = None,
     ) -> bool:
         """Wait until the sale dialog closes and the page advances.
 
@@ -945,6 +941,7 @@ class SellFlowMixin:
         stable_hits = 0
         empty_signature_hits = 0
         last_text = ""
+        page_evidence = False
         while True:
             frame = self.vision.capture()
             dialog_text = self.vision.ocr_text(
@@ -954,6 +951,7 @@ class SellFlowMixin:
             )
             normalized_dialog = self._normal(dialog_text)
             last_text = dialog_text or last_text
+            page_evidence = False
             if "拥有" not in normalized_dialog and "可购买" not in normalized_dialog:
                 full_text = self.vision.ocr_text(frame, "出售交易完成")
                 normalized_full = self._normal(full_text)
@@ -1014,9 +1012,39 @@ class SellFlowMixin:
             if monotonic() >= end_at:
                 break
             self.task.sleep(SALE_COMPLETION_INTERVAL)
+        if (
+            owned is not None and selected is not None
+            and 0 < selected < owned
+            and self._confirm_remaining_sale_stock(entry, owned - selected)
+        ):
+            return True
         self.task.log_warning(
             f"卖：{entry.item}点击出售后未确认交易完成，OCR={last_text or '-'}。"
         )
+        return False
+
+    def _confirm_remaining_sale_stock(self, entry: CalendarEntry, expected: int) -> bool:
+        """Confirm a partial sale from stock while its card remains in the grid."""
+        located = self._wait_sale_item_candidates(entry, require_sell_page=True)
+        if located is None:
+            return False
+        candidates, frame = located
+        self.vision.click_client(candidates[0].center, frame.shape, after_sleep=0.5)
+        if not self._wait_sale_dialog_item(entry):
+            return False
+        end_at = monotonic() + SALE_DIALOG_TIMEOUT
+        stable_hits = 0
+        while True:
+            remaining = self._wait_owned_quantity()
+            stable_hits = stable_hits + 1 if remaining == expected else 0
+            if stable_hits >= SALE_COMPLETION_STABLE_HITS or monotonic() >= end_at:
+                break
+            self.task.sleep(SALE_OCR_INTERVAL)
+        self.task.operate_click(*SALE_CLOSE_POINT, after_sleep=0.5)
+        sell_page = self._ensure_sell_page()
+        if stable_hits >= SALE_COMPLETION_STABLE_HITS and sell_page:
+            self._status("出售完成确认", f"{entry.item}:库存已减少至{expected}")
+            return True
         return False
 
     def _sale_toast_id(self, frame: np.ndarray) -> int | None:
@@ -1053,15 +1081,6 @@ class SellFlowMixin:
             return None
         x, y, width, height = geometry
         return round(x + width / 2), round(y + height / 2)
-
-    @classmethod
-    def _ocr_box_contains(cls, box, point: tuple[int, int]) -> bool:
-        geometry = cls._ocr_box_geometry(box)
-        if geometry is None:
-            return False
-        x, y, width, height = geometry
-        px, py = point
-        return x <= px < x + width and y <= py < y + height
 
     @classmethod
     def _deduplicate_ocr_boxes(cls, boxes: list[object]) -> list[object]:
@@ -1220,7 +1239,10 @@ class SellFlowMixin:
         self,
         expected: int | None,
         timeout: float = SALE_DIALOG_TIMEOUT,
-    ) -> bool:
+        *,
+        maximum: int,
+    ) -> int | None:
+        """Return the observed safe quantity, preserving evidence for pending recovery."""
         end_at = monotonic() + max(0.0, timeout)
         while True:
             text = self.vision.ocr_text(
@@ -1229,12 +1251,16 @@ class SellFlowMixin:
                 relative_roi=SALE_DIALOG_REGION,
             )
             selected = self._selected_quantity_from_text(text)
-            if selected is not None and selected > 0:
+            if (
+                selected is not None
+                and selected > 0
+                and selected <= maximum
+            ):
                 if expected is None or selected == expected:
                     self._status("出售已选数量", str(selected))
-                    return True
+                    return selected
             if monotonic() >= end_at:
-                return False
+                return None
             self.task.sleep(SALE_OCR_INTERVAL)
 
     @staticmethod

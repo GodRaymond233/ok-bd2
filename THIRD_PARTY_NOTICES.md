@@ -58,6 +58,9 @@ following public projects. They are credited for reference and learning; source
 files from these projects should not be copied into this repository unless their
 licenses and attribution requirements are also preserved.
 
+The task scheduler's persisted next-run and retry behavior was developed with
+reference to ALAS/NKAS scheduling semantics.
+
 | Project | How it was used | Source |
 |---|---|---|
 | BnanZ0/ok-nte | Reference for current ok-script project layout, README structure, `pyproject.toml`, tasks, scene/interaction layout, and PyAppify release shape | https://github.com/BnanZ0/ok-nte |

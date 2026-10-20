@@ -7,13 +7,13 @@ from pathlib import Path
 from typing import Callable
 
 from src.tasks.map_trade.models import COLLECTABLE_CARDS
-from src.tasks.map_trade.progress import UTC_PLUS_8, weekly_cycle_key
+from src.tasks.map_trade.progress import UTC_PLUS_8, ledger_path, weekly_cycle_key
 
 COLLECTION_VISUAL_AUDIT_SCHEMA_VERSION = 1
-DEFAULT_COLLECTION_VISUAL_AUDIT_PATH = Path("configs") / "map_collection_visual_status.json"
+DEFAULT_COLLECTION_VISUAL_AUDIT_FILENAME = "map_collection_visual_status.json"
 VALID_COLLECTION_CARD_IDS = frozenset(card.card_id for card in COLLECTABLE_CARDS)
 EXPECTED_COLLECTION_CARD_IDS = tuple(card.card_id for card in COLLECTABLE_CARDS)
-EXCLUDED_COLLECTION_CARD_IDS = ("Q_sp6", "Q_sp18", "Q_sp20")
+EXCLUDED_COLLECTION_CARD_IDS = ("Q_sp6", "Q_sp20")
 
 
 class CollectionVisualAuditStore:
@@ -21,10 +21,16 @@ class CollectionVisualAuditStore:
 
     def __init__(
         self,
-        path: Path | str = DEFAULT_COLLECTION_VISUAL_AUDIT_PATH,
+        path: Path | str | None = None,
         now_provider: Callable[[], datetime] | None = None,
     ) -> None:
-        self.path = Path(path)
+        # Resolve through the same runtime config root as the progress ledger;
+        # relative paths would otherwise depend on the process working folder.
+        self.path = (
+            Path(path)
+            if path is not None
+            else ledger_path(DEFAULT_COLLECTION_VISUAL_AUDIT_FILENAME)
+        )
         self.now_provider = now_provider or (lambda: datetime.now(UTC_PLUS_8))
         self.state: dict | None = None
 

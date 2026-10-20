@@ -32,8 +32,10 @@ from src.tasks.map_trade.vision import (
     Vision,
     parse_used_limit,
 )
+from src.utils.image_utils import read_template_image, to_gray
 from src.utils.template_resolution import offline_template_scale
 from tests.helpers.map_trade import FakeTask
+from tests.helpers.recognition_fixtures import load_bgr
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -55,20 +57,38 @@ class SaveFrameTest(unittest.TestCase):
                 for index, frame in enumerate(frames):
                     with self.subTest(channels=frame.shape):
                         path = task.save_frame(f"channel_{index}", frame)
-                        saved = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+                        saved = read_template_image(path)
                         np.testing.assert_array_equal(saved, frame)
 
 
 class VisionTest(unittest.TestCase):
+    def test_search_region_intersects_original_rectangle_at_frame_edges(self):
+        frame = np.arange(80 * 100, dtype=np.uint16).reshape(80, 100)
+        vision = Vision(FakeTask())
+        spec = TemplateSpec("edge", "unused.png")
+        for roi, bounds in (
+            ((-10, 20, 30, 20), (0, 20, 20, 40)),
+            ((-40, 20, 30, 20), (0, 20, 0, 40)),
+            ((90, 70, 30, 20), (90, 70, 100, 80)),
+            ((10, 20, 30, 20), (10, 20, 40, 40)),
+        ):
+            with self.subTest(roi=roi):
+                left, top, crop, width, height = vision._matching_region(
+                    frame, spec, search_roi=roi, gray_frame=frame,
+                )
+                x1, y1, x2, y2 = bounds
+                self.assertEqual((x1, y1, 100, 80), (left, top, width, height))
+                np.testing.assert_array_equal(frame[y1:y2, x1:x2], crop)
+
     def test_reference_conversion_for_all_supported_resolutions(self):
         for width, height in ((1280, 720), (1920, 1080), (2560, 1440), (3840, 2160)):
             with self.subTest(resolution=(width, height)):
                 self.assertEqual(
-                    (width // 2, height // 2), Vision.reference_point(640, 360, width, height)
+                    (width // 2, height // 2), Vision.reference_point(960, 540, width, height)
                 )
                 self.assertEqual(
                     (width // 4, height // 4, width // 2, height // 2),
-                    Vision.reference_roi((320, 180, 640, 360), width, height),
+                    Vision.reference_roi((480, 270, 960, 540), width, height),
                 )
 
     def test_sandbox_teleport_template_uses_tight_shared_slot_at_all_resolutions(self):
@@ -163,8 +183,7 @@ class VisionTest(unittest.TestCase):
             )
         )
         self.assertEqual((120 / 1280, 210 / 720, 0.8), task.clicks[-1])
-        self.assertEqual(10, len(sleeps))
-        self.assertTrue(all(seconds == 0.1 for seconds in sleeps))
+        self.assertAlmostEqual(1.0, sum(sleeps))
         self.assertTrue(any(key == "stable稳定识别" for key, _value in task.infos))
 
     def test_operate_click_log_converts_relative_target_to_client_pixels(self):
@@ -250,14 +269,10 @@ class VisionTest(unittest.TestCase):
 
     def test_story_cartridge_brightness_calibration_separates_selected_state(self):
         template_root = ROOT / "recognition-assets" / "template-assets"
-        normal = cv2.imread(
-            str(template_root / SHOP_CARTRIDGE_BRIGHTNESS.normal_template),
-            cv2.IMREAD_GRAYSCALE,
-        )
-        unselected = cv2.imread(
-            str(template_root / SHOP_CARTRIDGE_BRIGHTNESS.unselected_template),
-            cv2.IMREAD_GRAYSCALE,
-        )
+        normal = to_gray(load_bgr(template_root / SHOP_CARTRIDGE_BRIGHTNESS.normal_template))
+        unselected = to_gray(load_bgr(
+            template_root / SHOP_CARTRIDGE_BRIGHTNESS.unselected_template,
+        ))
         self.assertIsNotNone(normal)
         self.assertIsNotNone(unselected)
 
@@ -396,7 +411,7 @@ class VisionTest(unittest.TestCase):
         task.ocr = lambda **_kwargs: [SimpleNamespace(name="确认", x=10, y=20, width=30, height=10)]
         vision = Vision(task)
 
-        boxes = vision.ocr_boxes(task.capture_frame(), "roi", roi=(100, 200, 300, 100))
+        boxes = vision.ocr_boxes(task.capture_frame(), "roi", roi=(150, 300, 450, 150))
 
         self.assertEqual(
             (110, 220, 30, 10), (boxes[0].x, boxes[0].y, boxes[0].width, boxes[0].height)
@@ -410,7 +425,7 @@ class VisionTest(unittest.TestCase):
         boxes = vision.ocr_boxes(
             task.capture_frame(),
             "outside",
-            roi=(1400, 800, 100, 100),
+            roi=(2100, 1200, 150, 150),
         )
 
         self.assertEqual([], boxes)
@@ -463,6 +478,100 @@ class VisionTest(unittest.TestCase):
         self.assertEqual((10, 10), parse_used_limit("次数 10:10"))
         self.assertIsNone(parse_used_limit("11/10"))
         self.assertIsNone(parse_used_limit("次数未知"))
+        for text, limit, used, expected in (
+            ("7/121", 21, 7, None),
+            ("7|21", 21, 7, (7, 21)),
+            ("7:21", 21, 7, (7, 21)),
+            ("7121", 21, 7, (7, 21)),
+            ("721", 21, None, (7, 21)),
+            ("7175", 75, 7, (7, 75)),
+            ("11775", 75, 11, None),
+            ("1121", 21, None, None),
+            ("1121", 21, 11, (11, 21)),
+            ("1121", 21, 1, (1, 21)),
+            ("2121", 21, None, None),
+            ("2121", 21, 21, (21, 21)),
+            ("2121", 21, 2, (2, 21)),
+            ("121/121", 21, None, None),
+            ("7/21 8/21", 21, 7, None),
+            ("提示7121", 21, 7, None),
+            ("2121", None, None, None),
+        ):
+            with self.subTest(text=text, limit=limit, used=used):
+                self.assertEqual(expected, parse_used_limit(text, limit, used))
+
+    def test_find_all_returns_all_peaks_in_full_frame_coordinates(self):
+        task = FakeTask()
+        vision = Vision(task)
+        rng = np.random.default_rng(11)
+        template = rng.integers(0, 256, (20, 20), dtype=np.uint8)
+        frame = np.zeros((1080, 1920), dtype=np.uint8)
+        frame[400:420, 300:320] = template
+        frame[400:420, 700:720] = template
+        spec = TemplateSpec(
+            "find-all",
+            "quick_switch_cartridges/unused.png",
+        )
+        vision._load = lambda _spec: (template, None)
+
+        matches = vision.find_all(frame, spec, threshold=0.95)
+
+        self.assertEqual(2, len(matches))
+        self.assertEqual([(310, 410), (710, 410)], sorted(value.center for value in matches))
+        self.assertTrue(all(value.score >= 0.95 for value in matches))
+
+    def test_find_all_returns_empty_when_template_larger_than_search_area(self):
+        task = FakeTask()
+        vision = Vision(task)
+        template = np.full((40, 40), 200, dtype=np.uint8)
+        frame = np.zeros((60, 60), dtype=np.uint8)
+        spec = TemplateSpec(
+            "find-all-oversize",
+            "quick_switch_cartridges/unused.png",
+            roi=(0, 0, 20, 20),
+            reference_scale=1.0,
+        )
+
+        def fake_load(_spec):
+            # reference_scale=1.0 in a 60px frame scales to ~2px, so emulate
+            # the oversize case by returning the raw 40px template unscaled.
+            return template, None
+
+        vision._load = fake_load
+        vision._resize_template = lambda template_, _scale: template_
+        vision._resize_mask = lambda mask, _scale: mask
+
+        self.assertEqual([], vision.find_all(frame, spec))
+
+    def test_wait_ocr_returns_first_matching_poll_and_stops(self):
+        task = FakeTask()
+        vision = Vision(task)
+        polls = iter(["无关内容", "生成 魔法阵 确认"])
+
+        def fake_ocr_text(_frame, name, _roi=None, **_kwargs):
+            self.assertEqual("传送生成弹窗", name)
+            return next(polls)
+
+        sleeps = []
+        vision.ocr_text = fake_ocr_text
+        vision.capture = lambda: None
+        task.sleep = lambda seconds: sleeps.append(seconds)
+
+        text = vision.wait_ocr(["生成"], timeout=5.0, name="传送生成弹窗", interval=0.5)
+
+        self.assertEqual("生成 魔法阵 确认", text)
+        self.assertEqual([0.5], sleeps)
+
+    def test_wait_ocr_returns_none_after_timeout(self):
+        task = FakeTask()
+        vision = Vision(task)
+        vision.ocr_text = lambda *_args, **_kwargs: "无关内容"
+        vision.capture = lambda: None
+        task.sleep = lambda *_args: None
+
+        self.assertIsNone(
+            vision.wait_ocr(["生成"], timeout=0.0, name="传送生成弹窗")
+        )
 
 
 class FrameGeometryTest(unittest.TestCase):

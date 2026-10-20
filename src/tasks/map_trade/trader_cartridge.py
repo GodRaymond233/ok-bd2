@@ -101,7 +101,7 @@ class ShopCartridgeNavigationMixin:
         self.task.log_info("买：31张商品卡带的空收藏位置已全部核对完成。")
         return True
 
-    def _show_shop_page(self, page: ShopCartridgePage) -> bool:
+    def _show_shop_page(self, page: ShopCartridgePage, *, phase: str = "买") -> bool:
         """确认目标页边界卡带；落点偏差时按 OCR 实测顶部行号修正一次再确认。"""
         if self._wait_for_shop_page(page.confirmation_shop_ids):
             return True
@@ -112,7 +112,7 @@ class ShopCartridgeNavigationMixin:
         delta = SHOP_CARTRIDGE_ROW_INDEX[page.shop_ids[0]] - top_row_index
         if delta != 0:
             self.task.log_info(
-                f"买：第{page.page_number}页落点偏差，按OCR顶部行号修正{delta:+d}格。"
+                f"{phase}：第{page.page_number}页落点偏差，按OCR顶部行号修正{delta:+d}格。"
             )
             self._scroll_shop_cartridges(
                 scroll_amount=-1 if delta > 0 else 1,
@@ -175,7 +175,7 @@ class ShopCartridgeNavigationMixin:
 
     def _select_shop_cartridge_downward(self, shop_id: str) -> bool:
         """出售会话内单调向下选卡带：按目标页与当前页的差值一口气下滚。"""
-        if getattr(self, "_sell_cartridge_page", None) is None:
+        if self._sell_cartridge_page is None:
             if not self._ensure_sell_list_at_top():
                 return False
         target = SHOP_CARTRIDGE_PAGE_INDEX[shop_id]
@@ -199,39 +199,17 @@ class ShopCartridgeNavigationMixin:
                 after_sleep=0.5,
             )
         page = SHOP_CARTRIDGE_PAGES[target]
-        if not self._wait_for_shop_page(page.confirmation_shop_ids):
-            # 落点偏差时按 OCR 实测顶部行号修正一次。
-            frame = self.vision.capture()
-            top_row_index = self._shop_list_top_row_index(frame)
-            if top_row_index is None:
-                self._sell_cartridge_page = None
-                labels = "、".join(
-                    SHOP_PURCHASE_REFERENCES[value].label
-                    for value in page.confirmation_shop_ids
-                )
-                self.task.log_warning(
-                    f"卖：向下滚动后未确认第{page.page_number}页边界卡带：{labels}。"
-                )
-                return False
-            delta = SHOP_CARTRIDGE_ROW_INDEX[page.shop_ids[0]] - top_row_index
-            if delta != 0:
-                self._scroll_shop_cartridges(
-                    scroll_amount=-1 if delta > 0 else 1,
-                    count=abs(delta),
-                    interval=0.0,
-                    after_sleep=SHOP_UP_SCROLL_RECOGNITION_INTERVAL,
-                )
-            if not self._wait_for_shop_page(page.confirmation_shop_ids):
-                # 修正滚动后落点仍未确认，页号已失真，作废以强制下次重新定位。
-                self._sell_cartridge_page = None
-                labels = "、".join(
-                    SHOP_PURCHASE_REFERENCES[value].label
-                    for value in page.confirmation_shop_ids
-                )
-                self.task.log_warning(
-                    f"卖：向下滚动后未确认第{page.page_number}页边界卡带：{labels}。"
-                )
-                return False
+        if not self._show_shop_page(page, phase="卖"):
+            # 页号已失真，强制下次重新定位，不能沿用本次滚动距离。
+            self._sell_cartridge_page = None
+            labels = "、".join(
+                SHOP_PURCHASE_REFERENCES[value].label
+                for value in page.confirmation_shop_ids
+            )
+            self.task.log_warning(
+                f"卖：向下滚动后未确认第{page.page_number}页边界卡带：{labels}。"
+            )
+            return False
         self._sell_cartridge_page = target
         return self._select_purchase_cartridge(shop_id)
 
@@ -268,6 +246,25 @@ class ShopCartridgeNavigationMixin:
 
     def _cartridge_spec(self, shop_id: str) -> TemplateSpec:
         return self._cartridge_specs(shop_id)[0]
+
+    def _cartridge_specs(self, shop_id: str) -> tuple[TemplateSpec, ...]:
+        """Build every calibrated visual variant for a cartridge.
+
+        S1 has both selected/normal and dimmed/unselected crops.  Keeping the
+        first spec as the public/default spec preserves the selected-state
+        brightness check while allowing competition to match either state.
+        """
+        reference = SHOP_PURCHASE_REFERENCES[shop_id]
+        return tuple(
+            TemplateSpec(
+                name=reference.label,
+                file_name=file_name,
+                threshold=SHOP_CARTRIDGE_CONFIRM_SCORE,
+                relative_roi=SHOP_CARTRIDGE_RECOGNITION_REGION,
+                scale_ratios=SHOP_CARTRIDGE_SCALE_RATIOS,
+            )
+            for file_name in reference.cartridge_templates
+        )
 
     @staticmethod
     def _shop_cartridge_chapter_name(shop_id: str) -> str:
@@ -580,7 +577,7 @@ class ShopCartridgeNavigationMixin:
                     continue
                 self._status(f"{shop_id} 空收藏#{slot}", "点击取消收藏")
                 self.task.operate_click(*point, after_sleep=STAR_POST_CLICK_DELAY)
-                if not self._wait_for_gray_star(slot, point):
+                if not self._wait_for_star_state(slot, point, "gray"):
                     self.task.log_warning(
                         f"买：{reference.label} #{slot} 点击后未确认灰星或移除提示。"
                     )
@@ -592,7 +589,7 @@ class ShopCartridgeNavigationMixin:
                 continue
             self._status(f"{shop_id} 收藏#{slot}", "点击加入收藏")
             self.task.operate_click(*point, after_sleep=STAR_POST_CLICK_DELAY)
-            if not self._wait_for_yellow_star(slot, point):
+            if not self._wait_for_star_state(slot, point, "yellow"):
                 self.task.log_warning(
                     f"买：{reference.label} #{slot} 点击后未确认黄星或加入提示。"
                 )
@@ -633,65 +630,36 @@ class ShopCartridgeNavigationMixin:
             return None
         return "yellow" if self.vision.star_is_yellow(frame, result) else "gray"
 
-    def _wait_for_gray_star(
+    def _wait_for_star_state(
         self,
         slot: int,
         point: tuple[float, float],
+        expected: str,
     ) -> bool:
-        toast_seen = False
-        for attempt in range(STAR_VERIFY_ATTEMPTS):
-            frame = self.vision.capture()
-            if self._gray_star_present(frame, slot, point):
-                return True
-            if not toast_seen:
-                text = self.vision.ocr_text(frame, "取消收藏成功提示")
-                normalized = normalize_text(self.vision.simplify(text))
-                self._status(f"{slot} 取消收藏提示", normalized or "-")
-                if STAR_ADD_TOAST_KEYWORD in normalized:
-                    self.task.log_warning(
-                        f"买：收藏位#{slot} 点击后出现加入收藏提示，取消收藏未生效。"
-                    )
-                    return False
-                if STAR_REMOVE_TOAST_KEYWORD in normalized:
-                    toast_seen = True
-            if attempt + 1 < STAR_VERIFY_ATTEMPTS:
-                self.task.sleep(STAR_VERIFY_INTERVAL)
-        return toast_seen
-
-    def _gray_star_present(
-        self,
-        frame: np.ndarray,
-        slot: int,
-        point: tuple[float, float],
-    ) -> bool:
-        state = self._star_state(frame, slot, point)
-        return state == "gray"
-
-    def _wait_for_yellow_star(
-        self,
-        slot: int,
-        point: tuple[float, float],
-    ) -> bool:
-        toast_seen = False
+        action, opposite, success_toast, wrong_toast = {
+            "gray": ("取消收藏", "加入收藏", STAR_REMOVE_TOAST_KEYWORD, STAR_ADD_TOAST_KEYWORD),
+            "yellow": ("加入收藏", "移除收藏", STAR_ADD_TOAST_KEYWORD, STAR_REMOVE_TOAST_KEYWORD),
+        }[expected]
+        has_toast = False
         for attempt in range(STAR_VERIFY_ATTEMPTS):
             frame = self.vision.capture()
             state = self._star_state(frame, slot, point)
-            if state == "yellow":
+            if state == expected:
                 return True
-            if not toast_seen:
-                text = self.vision.ocr_text(frame, "加入收藏成功提示")
+            if not has_toast:
+                text = self.vision.ocr_text(frame, f"{action}成功提示")
                 normalized = normalize_text(self.vision.simplify(text))
-                self._status(f"{slot} 加入收藏提示", normalized or "-")
-                if STAR_REMOVE_TOAST_KEYWORD in normalized:
+                self._status(f"{slot} {action}提示", normalized or "-")
+                if wrong_toast in normalized:
                     self.task.log_warning(
-                        f"买：收藏位#{slot} 点击后出现移除收藏提示，加入收藏未生效。"
+                        f"买：收藏位#{slot} 点击后出现{opposite}提示，{action}未生效。"
                     )
                     return False
-                if STAR_ADD_TOAST_KEYWORD in normalized:
-                    toast_seen = True
+                if success_toast in normalized:
+                    has_toast = True
             if attempt + 1 < STAR_VERIFY_ATTEMPTS:
                 self.task.sleep(STAR_VERIFY_INTERVAL)
-        return toast_seen
+        return has_toast
 
     def select_shop_tab(self, shop: str) -> bool:
         try:
@@ -702,9 +670,10 @@ class ShopCartridgeNavigationMixin:
         return self._select_shop_cartridge_downward(reference.shop_id)
 
     def refresh_shop_cartridge(self, shop: str) -> bool:
-        """切到相邻可见卡带再切回，重新加载当前卡带商品。"""
+        """切到相邻可见卡带再切回当前卡带，促使游戏重新请求/渲染完整商品列表。"""
         try:
-            target_shop_id = shop_purchase_reference(shop).shop_id
+            reference = shop_purchase_reference(shop)
+            target_shop_id = reference.shop_id
         except KeyError:
             target_shop_id = shop
 
@@ -713,16 +682,20 @@ class ShopCartridgeNavigationMixin:
         if not detections:
             return False
 
-        visible_ids = list(detections)
+        visible_ids = list(detections.keys())
         neighbor_id = None
         if target_shop_id in visible_ids:
-            index = visible_ids.index(target_shop_id)
-            if index > 0:
-                neighbor_id = visible_ids[index - 1]
-            elif index + 1 < len(visible_ids):
-                neighbor_id = visible_ids[index + 1]
+            idx = visible_ids.index(target_shop_id)
+            if idx > 0:
+                neighbor_id = visible_ids[idx - 1]
+            elif idx + 1 < len(visible_ids):
+                neighbor_id = visible_ids[idx + 1]
         if neighbor_id is None:
-            neighbor_id = next((sid for sid in visible_ids if sid != target_shop_id), None)
+            for sid in visible_ids:
+                if sid != target_shop_id:
+                    neighbor_id = sid
+                    break
+
         if neighbor_id is None:
             self.task.log_info(f"卖：卡带{shop}刷新未找到相邻卡带，跳过切换。")
             return False
@@ -737,23 +710,3 @@ class ShopCartridgeNavigationMixin:
             return False
         self.task.sleep(0.5)
         return True
-
-    def _cartridge_specs(self, shop_id: str) -> tuple[TemplateSpec, ...]:
-        """Build every calibrated visual variant for a cartridge.
-
-        S1 has both selected/normal and dimmed/unselected crops.  Keeping the
-        first spec as the public/default spec preserves the selected-state
-        brightness check while allowing competition to match either state.
-        """
-        reference = SHOP_PURCHASE_REFERENCES[shop_id]
-        return tuple(
-            TemplateSpec(
-                name=reference.label,
-                file_name=file_name,
-                threshold=SHOP_CARTRIDGE_CONFIRM_SCORE,
-                relative_roi=SHOP_CARTRIDGE_RECOGNITION_REGION,
-                scale_ratios=SHOP_CARTRIDGE_SCALE_RATIOS,
-            )
-            for file_name in reference.cartridge_templates
-        )
-

@@ -1,14 +1,8 @@
-"""启动后自动执行到期任务（ALAS 式调度的执行入口侧）.
+"""应用启动与任务结束后的到期任务检查。
 
-对应 ALAS 主循环"启动即检查到期任务并执行最早到期者"的行为，但不引入
-常驻等待循环：安装后延迟检查一次，此后每当有任务结束（task_done）且执行
-器空闲时复查一次。自动启动由一键完成日常卡片上的显式开关控制（默认关闭）：
-
-- ``启动自动执行日常``：存在今日未完成且调度到期的日常子任务时，以
-  "仅执行今日未完成"模式启动一键完成日常，由批处理自身跳过已完成项。
-
-用户手动点击任务不受影响（视为强制执行），与 ALAS 中"手动把 NextRun 改
-到过去即强制立即运行"的语义一致。
+安装后延迟检查，执行器繁忙时限次重试；后续在 task_done 且执行器空闲时复查。
+启动自动执行日常开关默认关闭，启用后仅运行尚未完成且到期的子任务。
+用户手动启动不受自动调度门禁影响。
 """
 
 from __future__ import annotations
@@ -108,6 +102,8 @@ def _login_settled(executor) -> bool:
 
 def _any_batch_child_due(batch, executor, history, schedule_store, now=None) -> bool:
     """Whether any enabled batch child still needs to run today and is due."""
+    from src.tasks.run_history import configuration_scope
+
     for child in getattr(batch, "child_tasks", ()) or ():
         if not bool(batch.config.get(child.config_key, True)):
             continue
@@ -115,9 +111,9 @@ def _any_batch_child_due(batch, executor, history, schedule_store, now=None) -> 
         if task is None:
             continue
         name = str(getattr(task, "name", child.config_key))
-        if history.is_completed_today(name, now=now):
+        if history.is_completed(name, now=now, scope=configuration_scope(task)):
             continue
-        if not schedule_store.is_due(name, now=now):
+        if not schedule_store.is_due(name, now=now, scope=configuration_scope(task)):
             continue
         return True
     return False

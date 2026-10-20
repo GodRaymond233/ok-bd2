@@ -3,10 +3,15 @@ from __future__ import annotations
 from time import monotonic
 
 import numpy as np
-from ok.task.exceptions import TaskDisabledException
+from ok.task.exceptions import FinishedException, TaskDisabledException
 
 from src.tasks.map_trade.card_status import CardStatusDetector
-from src.tasks.map_trade.models import COLLECTABLE_CARDS, MapPageMode, ScreenState
+from src.tasks.map_trade.models import (
+    COLLECTION_TRANSIT_MAP_TITLES,
+    REGISTERED_COLLECTION_CARDS,
+    MapPageMode,
+    ScreenState,
+)
 from src.tasks.map_trade.navigator_constants import (
     BARGAIN_CONFIRM_POINT,
     BARGAIN_POINT,
@@ -22,6 +27,7 @@ from src.tasks.map_trade.navigator_constants import (
     DISCOUNT_SHOP_CLOSE_KEYWORDS,
     DISCOUNT_SHOP_CLOSE_POINT,
     DISCOUNT_SHOP_CLOSE_TIMEOUT,
+    FIELD_EXTRA_KEYCAP_TEMPLATES,
     FIELD_KEYCAP_TEMPLATES,
     FIRST_CARD_CONFIRM_REGION,
     FIRST_CARD_INSERT_REGION,
@@ -44,7 +50,6 @@ from src.tasks.map_trade.navigator_constants import (
     Q_SP6_STORY_NUMBER,
     QUICK_SWITCH_CARTRIDGE_REGION,
     QUICK_SWITCH_PAGE_KEYWORDS,
-    QUICK_SWITCH_SCROLL_FOCUS_POINT,
     QUICK_SWITCH_SCROLL_INTERVAL,
     QUICK_SWITCH_SCROLL_POINT,
     QUICK_SWITCH_SCROLL_RESET_AMOUNT,
@@ -58,7 +63,6 @@ from src.tasks.map_trade.navigator_constants import (
     RETURN_HOME_ANNOUNCEMENT_OCR_INTERVAL,
     RETURN_HOME_ANNOUNCEMENT_OCR_REGION,
     RETURN_HOME_TIMEOUT,
-    SANDBOX_CONFIRM_ACTION_TEMPLATES,
     SANDBOX_LARGE_MAP_FOOTER_OCR_RELATIVE_ROI,
     SANDBOX_LARGE_MAP_LEFT_TEMPLATE,
     SANDBOX_LARGE_MAP_RIGHT_TEMPLATE,
@@ -106,7 +110,6 @@ from src.tasks.map_trade.navigator_constants import (
     LocatedStoryCard,
     MapPageDetection,
     ProbedStoryCard,
-    SandboxConfirmation,
     StoryBadgeCandidate,
     StoryBadgeDetection,
 )
@@ -149,7 +152,6 @@ __all__ = [
     "ProbedStoryCard",
     "QUICK_SWITCH_CARTRIDGE_REGION",
     "QUICK_SWITCH_PAGE_KEYWORDS",
-    "QUICK_SWITCH_SCROLL_FOCUS_POINT",
     "QUICK_SWITCH_SCROLL_INTERVAL",
     "QUICK_SWITCH_SCROLL_POINT",
     "QUICK_SWITCH_SCROLL_RESET_AMOUNT",
@@ -164,7 +166,6 @@ __all__ = [
     "Q_SP6_SHOP_PRIORITY_TIMEOUT",
     "Q_SP6_STORY_NUMBER",
     "RETURN_HOME_TIMEOUT",
-    "SANDBOX_CONFIRM_ACTION_TEMPLATES",
     "SANDBOX_SKILL_GROUP_PIXEL_SCORE",
     "SANDBOX_SKILL_GROUP_TEMPLATE_SCORE",
     "SANDBOX_SKILL_SELECTED_YELLOW_MIN_RATIO",
@@ -194,7 +195,6 @@ __all__ = [
     "STORY_CATEGORY_POINT",
     "STORY_SANDBOX_STABLE_HITS",
     "STORY_SANDBOX_SWITCH_WINDOW",
-    "SandboxConfirmation",
     "StoryBadgeCandidate",
     "StoryBadgeDetection",
     "TELEPORT_MAP_RETURN_RELATIVE_POINT",
@@ -226,9 +226,12 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
     def _known_story_map_title_in_text(normalized_text: str) -> bool:
         return any(
             normalize_text(title) in normalized_text
-            for card in COLLECTABLE_CARDS
+            for card in REGISTERED_COLLECTION_CARDS
             for target in card.targets
             for title in target.titles
+        ) or any(title in normalized_text for title in COLLECTION_TRANSIT_MAP_TITLES) or (
+            normalized_text.startswith("安全")
+            and any(word in normalized_text for word in ("旅馆", "救护站"))
         )
 
     def _detect_map_page_mode(self, frame: np.ndarray) -> MapPageDetection:
@@ -242,7 +245,7 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
                     relative_roi=TELEPORT_MAP_HEADER_OCR_RELATIVE_ROI,
                 )
             )
-        except TaskDisabledException:
+        except (TaskDisabledException, FinishedException):
             raise
         except Exception as exc:
             self._status("地图页面左上标题 OCR错误", str(exc))
@@ -274,6 +277,20 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
             )
             has_legend = normalize_text("传说") in normalized_header
             has_teleport_structure = left or right
+            if direct and not generated and not has_legend and not has_teleport_structure:
+                footer_text = self.vision.simplify(
+                    self.vision.ocr_text(
+                        frame,
+                        "传送阵页面底部标签",
+                        relative_roi=TELEPORT_MAP_TITLE_OCR_RELATIVE_ROI,
+                    )
+                )
+                label = normalize_text(footer_text)
+                has_teleport_structure = (
+                    ("战斗" in label or "安全" in label)
+                    and self._known_story_map_title_in_text(label)
+                )
+                evidence.append(f"页面标签={footer_text or '-'}")
             if direct and not generated and not has_legend and has_teleport_structure:
                 mode = MapPageMode.DIRECT_TELEPORT
             elif generated and not direct and has_legend and has_teleport_structure:
@@ -287,7 +304,7 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
                         relative_roi=SANDBOX_LARGE_MAP_FOOTER_OCR_RELATIVE_ROI,
                     )
                 )
-            except TaskDisabledException:
+            except (TaskDisabledException, FinishedException):
                 raise
             except Exception as exc:
                 self._status("箱庭大地图底部控件 OCR错误", str(exc))
@@ -308,7 +325,9 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
                     SANDBOX_LARGE_MAP_RIGHT_TEMPLATE,
                 )
                 evidence.extend((left_evidence, right_evidence))
-                if left and right:
+                # The first sub-area page has no left arrow and the last no right
+                # one; a page without either arrow stays unknown.
+                if left or right:
                     mode = MapPageMode.SANDBOX_LARGE_MAP
 
         self._status(
@@ -360,6 +379,12 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
                 for spec in FIELD_KEYCAP_TEMPLATES
             )
             sandbox_signals.append(f"按键CH={'pass' if sandbox_confirmed else 'miss'}")
+        if not sandbox_confirmed:
+            sandbox_confirmed = all(
+                self.vision.passes(self.vision.match(frame, spec), spec)
+                for spec in FIELD_EXTRA_KEYCAP_TEMPLATES
+            )
+            sandbox_signals.append(f"按键MQ={'pass' if sandbox_confirmed else 'miss'}")
         self._status("箱庭确认信号", "; ".join(sandbox_signals))
         if sandbox_confirmed:
             return ScreenState.SANDBOX

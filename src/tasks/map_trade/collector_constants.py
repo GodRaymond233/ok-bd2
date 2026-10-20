@@ -20,18 +20,32 @@ SEARCH_COUNTDOWN_PATTERN = re.compile(r"^\d{1,3}$")
 ACTION_AFTER_CLICK_SECONDS = 0.0
 ACTION_OCR_WINDOW_SAMPLES = 3
 ACTION_OCR_WINDOW_INTERVAL = 0.25
-ACTION_FEEDBACK_TIMEOUT = 3.0
+# 实测动作横幅出现延迟<=0.3s、驻留约2.8-3.1s：窗口必须盖住"出现+驻留"全程。
+ACTION_FEEDBACK_TIMEOUT = 5.0
 ACTION_FEEDBACK_SUCCESS_DELAY_SECONDS = 0.8
 ACTION_FEEDBACK_CHARACTER_RATIO = 0.80
+# 吸收反馈OCR读到他人横幅（探查文案重合率实测0.25）时不得提前收工；
+# 只有重合率达到该值才认定文本与当前动作相关。
+ACTION_FEEDBACK_RELEVANCE_RATIO = 0.40
+# 探查增益实测90s（玩家+89.9s精准补施）；复用账本时留出后续流程余量。
+SEARCH_BUFF_SECONDS = 90.0
+SEARCH_REUSE_MAX_AGE_SECONDS = 75.0
 SKILL_OCR_UPSCALE = 2.0
 SKILL_OCR_FALLBACK_UPSCALE = 3.0
 ACTION_ICON_DETECTION_SAMPLES = 3
 ACTION_ICON_DETECTION_INTERVAL = 0.15
 SKILL_FAILURE_EVIDENCE_LIMIT = 12
 SKILL_FAILURE_TEXT_LIMIT = 320
-UNSUPPORTED_COLLECTION_CARD_NUMBERS = frozenset({14})
 SKILL_REFERENCE_SIZE = FHD_1080.size
 SKILL_GROUP_SWITCH_SETTLE_SECONDS = 0.8
+
+
+@dataclass(frozen=True)
+class CountWindowObservation:
+    """A count admitted by its requested limits, plus whether multiple frames agreed."""
+
+    count: tuple[int, int] | None
+    is_stable: bool
 
 
 def _relative_reference_point(point: tuple[int, int]) -> tuple[float, float]:
@@ -66,11 +80,12 @@ SKILL_FIXED_COUNT_RELATIVE_ROIS = {
     name: _relative_reference_roi(roi)
     for name, roi in SKILL_FIXED_COUNT_REFERENCE_ROIS.items()
 }
-SEARCH_COUNTDOWN_REFERENCE_ROI = (1550, 969, 52, 44)
+SEARCH_COUNTDOWN_REFERENCE_ROI = (1535, 960, 82, 60)
 SEARCH_COUNTDOWN_RELATIVE_ROI = _relative_reference_roi(
     SEARCH_COUNTDOWN_REFERENCE_ROI
 )
-ACTION_FEEDBACK_REFERENCE_ROI = (735, 210, 1182 - 735, 270 - 210)
+# 横幅堆叠（最多3条）时最上行中心y≈155、单条y≈230：顶部须盖住最上行。
+ACTION_FEEDBACK_REFERENCE_ROI = (735, 140, 1182 - 735, 270 - 140)
 ACTION_FEEDBACK_RELATIVE_ROI = _relative_reference_roi(ACTION_FEEDBACK_REFERENCE_ROI)
 ACTION_SUCCESS_FEEDBACK = {
     "探查": ("在秒内确认隐藏物品的位置",),
@@ -108,6 +123,7 @@ class SkillExecutionResult:
     # pending.  Keep the action names visible to the caller for status and
     # final-map warnings without changing the existing positional interface.
     pending_actions: tuple[str, ...] = ()
+    press_again: bool = False
 
 
 @dataclass(frozen=True)
@@ -149,3 +165,6 @@ SUPPRESS_ACTION = SkillAction(
 )
 BATTLE_ACTIONS = (ABSORB_ACTION, SUMMON_ACTION, SUPPRESS_ACTION)
 
+
+SEARCH_MISSED_FEEDBACK_COUNTDOWN_SECONDS = 3.0
+PRESS_AGAIN_PAUSE_SECONDS = 1.5

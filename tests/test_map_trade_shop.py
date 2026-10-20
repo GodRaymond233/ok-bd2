@@ -3,6 +3,7 @@
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 from PIL import Image
@@ -18,9 +19,7 @@ from src.tasks.map_trade.data import (
 from src.tasks.map_trade.models import (
     COLLECTABLE_CARDS,
     KNOWN_SHOPS,
-    PINNED_CARD_IDS,
     STORY_COLLECTION_MAPS,
-    CollectionMapRole,
     MatchResult,
 )
 from src.tasks.map_trade.trader import (
@@ -32,7 +31,6 @@ from src.tasks.map_trade.trader import (
     STAR_ROI_HALF_SIZE_X,
     STAR_ROI_HALF_SIZE_Y,
     STAR_TEMPLATE_THRESHOLD,
-    Trader,
 )
 from src.tasks.map_trade.trader_constants import (
     SHOP_CARTRIDGE_OCR_RELATIVE_ROI,
@@ -41,6 +39,7 @@ from src.tasks.map_trade.trader_constants import (
 from src.tasks.map_trade.vision import Vision
 from src.utils.calibration import FHD_1080
 from src.utils.image_utils import relative_roi_frame, scale_reference_roi
+from tests.helpers.map_trade import create_trader
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -151,6 +150,24 @@ class ShopAndCatalogTest(unittest.TestCase):
         with self.assertRaisesRegex(KeyError, "未知商品卡带"):
             shop_purchase_reference("E4:旧编号")
 
+    def test_s1_normal_and_dimmed_templates_both_enter_competition(self):
+        seen = []
+        trader = create_trader()
+        trader.vision = SimpleNamespace(
+            match_all=lambda _frame, spec, **_kwargs: seen.append(spec.file_name) or ()
+        )
+        trader._shop_cartridge_template_candidates(
+            np.zeros((1080, 1920, 3), dtype=np.uint8)
+        )
+        self.assertIn(
+            "shop/cartridges/story_cartridge_01.png",
+            seen,
+        )
+        self.assertIn(
+            "shop/cartridges/story_cartridge_01_dimmed.png",
+            seen,
+        )
+
     def test_event_shop_labels_align_with_actual_cartridge_numbers(self):
         # 实机编号：记忆边缘为活动游戏卡5、戏水女王为活动游戏卡7；旧表把
         # 戏水女王编为 E5，会让 E7 价表被拒、E5 价表导航到错误卡带。
@@ -218,7 +235,7 @@ class ShopAndCatalogTest(unittest.TestCase):
             mark_favorite_card=marked.append,
             mark_favorites_built=lambda: built.append(True),
         )
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.task = task
         trader.progress = progress
         trader._reset_shop_to_first_page = lambda: True
@@ -257,7 +274,7 @@ class ShopAndCatalogTest(unittest.TestCase):
             mark_favorite_card=lambda _shop_id: None,
             mark_favorites_built=lambda: None,
         )
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.task = task
         trader.progress = progress
         trader._reset_shop_to_first_page = lambda: True
@@ -298,7 +315,7 @@ class ShopAndCatalogTest(unittest.TestCase):
             mark_favorite_card=lambda _shop_id: None,
             mark_favorites_built=lambda: None,
         )
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.task = task
         trader.progress = progress
         trader._reset_shop_to_first_page = lambda: True
@@ -334,7 +351,7 @@ class ShopAndCatalogTest(unittest.TestCase):
             mark_favorite_card=lambda _shop_id: None,
             mark_favorites_built=lambda: None,
         )
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.task = task
         trader.progress = progress
         trader._reset_shop_to_first_page = lambda: True
@@ -371,7 +388,7 @@ class ShopAndCatalogTest(unittest.TestCase):
             log_warning=lambda *_args, **_kwargs: None,
             info_set=lambda *_args, **_kwargs: None,
         )
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.task = task
         trader.vision = SimpleNamespace(capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8))
         visible = iter((False, False, True))
@@ -391,7 +408,7 @@ class ShopAndCatalogTest(unittest.TestCase):
             log_warning=lambda *_args, **_kwargs: None,
             info_set=lambda *_args, **_kwargs: None,
         )
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.task = task
         trader.vision = SimpleNamespace(
             capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
@@ -417,12 +434,12 @@ class ShopAndCatalogTest(unittest.TestCase):
             log_warning=lambda *_args, **_kwargs: None,
             info_set=lambda *_args, **_kwargs: None,
         )
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.task = task
         trader.vision = SimpleNamespace(capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8))
         states = {1: "gray", 2: "yellow", 6: "gray"}
         trader._star_state = lambda _frame, slot, _point: states.get(slot)
-        trader._wait_for_yellow_star = lambda _slot, _point: True
+        trader._wait_for_star_state = lambda _slot, _point, _expected: True
 
         self.assertTrue(trader._align_unfavorited_points("S1"))
         self.assertEqual(
@@ -445,12 +462,12 @@ class ShopAndCatalogTest(unittest.TestCase):
             ),
             star_is_yellow=lambda *_args: False,
         )
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.task = task
         trader.vision = vision
 
-        self.assertTrue(
-            trader._gray_star_present(
+        self.assertEqual(
+            "gray", trader._star_state(
                 np.zeros((1080, 1920, 3), dtype=np.uint8),
                 6,
                 point,
@@ -507,12 +524,12 @@ class ShopAndCatalogTest(unittest.TestCase):
             ocr_text=lambda _frame, _name: next(texts),
             simplify=lambda value: value,
         )
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.task = task
         trader.vision = vision
-        trader._gray_star_present = lambda *_args: False
+        trader._star_state = lambda *_args: None
 
-        self.assertTrue(trader._wait_for_gray_star(6, SHOP_FAVORITE_POINTS[6]))
+        self.assertTrue(trader._wait_for_star_state(6, SHOP_FAVORITE_POINTS[6], "gray"))
         self.assertIn(("6 取消收藏提示", "已将商品甜椒从收藏中移除"), statuses)
 
     def test_gray_star_wait_fails_when_toast_reports_added_to_favorites(self):
@@ -529,12 +546,12 @@ class ShopAndCatalogTest(unittest.TestCase):
             ocr_text=lambda _frame, _name: "已将商品甜椒加入收藏",
             simplify=lambda value: value,
         )
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.task = task
         trader.vision = vision
-        trader._gray_star_present = lambda *_args: False
+        trader._star_state = lambda *_args: None
 
-        self.assertFalse(trader._wait_for_gray_star(6, SHOP_FAVORITE_POINTS[6]))
+        self.assertFalse(trader._wait_for_star_state(6, SHOP_FAVORITE_POINTS[6], "gray"))
         self.assertTrue(any("取消收藏未生效" in message for message in warnings))
 
     def test_gray_star_recognizer_separates_slot_seven_gray_and_yellow_renders(self):
@@ -549,18 +566,18 @@ class ShopAndCatalogTest(unittest.TestCase):
             ),
             star_is_yellow=lambda *_args, **_kwargs: yellow["value"],
         )
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.task = task
         trader.vision = vision
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
 
-        self.assertTrue(trader._gray_star_present(frame, 7, point))
+        self.assertEqual("gray", trader._star_state(frame, 7, point))
         result["value"] = MatchResult(0.951, (1231, 238), (24, 24), 0.919)
         yellow["value"] = True
-        self.assertFalse(trader._gray_star_present(frame, 7, point))
+        self.assertEqual("yellow", trader._star_state(frame, 7, point))
 
     def test_shop_cartridge_recognition_and_scroll_use_separate_regions(self):
-        trader = object.__new__(Trader)
+        trader = create_trader()
         spec = trader._cartridge_spec("R2")
 
         self.assertEqual(
@@ -602,7 +619,7 @@ class ShopAndCatalogTest(unittest.TestCase):
                 self.assertGreater(crop.size, 0)
 
     def test_shop_cartridge_keeps_strict_local_threshold(self):
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.vision = SimpleNamespace(threshold_for=lambda _spec: 0.72)
         spec = trader._cartridge_spec("E7")
 
@@ -633,7 +650,7 @@ class ShopAndCatalogTest(unittest.TestCase):
             log_warning=lambda *_args, **_kwargs: None,
             sleep=lambda seconds: clock.__setitem__("now", clock["now"] + seconds),
         )
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.task = task
         trader._wait_for_cartridge_match = lambda _shop_id: (
             frame,
@@ -649,12 +666,8 @@ class ShopAndCatalogTest(unittest.TestCase):
             ),
         )
 
-        original_monotonic = cartridge_module.monotonic
-        cartridge_module.monotonic = lambda: clock["now"]
-        try:
+        with patch.object(cartridge_module, "monotonic", lambda: clock["now"]):
             self.assertTrue(trader._select_purchase_cartridge("S3"))
-        finally:
-            cartridge_module.monotonic = original_monotonic
 
         self.assertEqual(2, len(clicks))
 
@@ -687,7 +700,7 @@ class ShopAndCatalogTest(unittest.TestCase):
             info_set=lambda *_args, **_kwargs: None,
             log_warning=lambda *_args, **_kwargs: None,
         )
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.task = task
         trader.vision = SimpleNamespace(
             match_all=match_all,
@@ -760,7 +773,7 @@ class ShopAndCatalogTest(unittest.TestCase):
             info_set=lambda *_args, **_kwargs: None,
             log_warning=lambda *_args, **_kwargs: None,
         )
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.task = task
         trader.vision = SimpleNamespace(
             match_all=match_all,
@@ -784,7 +797,7 @@ class ShopAndCatalogTest(unittest.TestCase):
             info_set=lambda *_args, **_kwargs: None,
             log_warning=lambda *_args, **_kwargs: None,
         )
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.task = task
         trader.vision = SimpleNamespace(
             match_all=lambda _frame, spec, **_kwargs: (
@@ -856,7 +869,7 @@ class ShopAndCatalogTest(unittest.TestCase):
             info_set=lambda *_args, **_kwargs: None,
             log_warning=lambda *_args, **_kwargs: None,
         )
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.task = task
         trader.vision = SimpleNamespace(
             match_all=match_all,
@@ -875,47 +888,16 @@ class ShopAndCatalogTest(unittest.TestCase):
         self.assertEqual(1.0, detection.ocr.name_similarity)
         self.assertEqual([{"relative_roi": SHOP_CARTRIDGE_OCR_RELATIVE_ROI}], ocr_calls)
 
-    def test_catalog_excludes_pinned_cards(self):
+    def test_catalog_includes_story_and_character_collection_routes(self):
         ids = {card.card_id for card in COLLECTABLE_CARDS}
-
-        self.assertEqual(17, len(ids))
-        self.assertTrue(PINNED_CARD_IDS.isdisjoint(ids))
-        self.assertNotIn("Q_sp6", ids)
-        self.assertNotIn("Q_sp18", ids)
+        self.assertEqual(25, len(ids))
         self.assertNotIn("Q_sp20", ids)
-        self.assertEqual(
-            set(STORY_COLLECTION_MAPS),
-            {card.number for card in COLLECTABLE_CARDS},
-        )
-        for card in COLLECTABLE_CARDS:
-            with self.subTest(card=card.card_id):
-                self.assertEqual(
-                    [
-                        CollectionMapRole.MAIN_AREA,
-                        CollectionMapRole.BATTLE_AREA_1,
-                        CollectionMapRole.BATTLE_AREA_2,
-                    ],
-                    [target.role for target in card.targets],
-                )
-                self.assertEqual(
-                    STORY_COLLECTION_MAPS[card.number],
-                    tuple(target.title for target in card.targets),
-                )
-
-    def test_s1_normal_and_dimmed_templates_both_enter_competition(self):
-        seen = []
-        trader = object.__new__(Trader)
-        trader.vision = SimpleNamespace(
-            match_all=lambda _frame, spec, **_kwargs: seen.append(spec.file_name) or ()
-        )
-        trader._shop_cartridge_template_candidates(
-            np.zeros((1080, 1920, 3), dtype=np.uint8)
-        )
-        self.assertIn(
-            "shop/cartridges/story_cartridge_01.png",
-            seen,
-        )
-        self.assertIn(
-            "shop/cartridges/story_cartridge_01_dimmed.png",
-            seen,
-        )
+        self.assertNotIn("Q_sp6", ids)
+        self.assertIn("Q_cp6", ids)
+        self.assertIn("Q_sp18", ids)
+        self.assertEqual(set(STORY_COLLECTION_MAPS), {
+            card.number for card in COLLECTABLE_CARDS if card.category == "story"
+        })
+        self.assertEqual({f"Q_cp{n}" for n in range(1, 8)}, {
+            card.card_id for card in COLLECTABLE_CARDS if card.category == "character"
+        })

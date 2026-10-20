@@ -1,4 +1,4 @@
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import fmean, median
@@ -100,8 +100,8 @@ def stable_match_consensus(
     sample_count: int,
     cluster_radius: float,
     maximum_center_spread: float,
-    minimum_hits: int = 6,
-    required_trailing_hits: int = 3,
+    minimum_hits: int = STABLE_MATCH_MINIMUM_HITS,
+    required_trailing_hits: int = STABLE_MATCH_TRAILING_HITS,
 ) -> StableMatchConsensus | None:
     """Choose a persistent, high-confidence and spatially stable match cluster."""
 
@@ -264,12 +264,6 @@ def template_match_response(
     return sanitize_template_response(response)
 
 
-def binarize_bgr_by_brightness(image, threshold: int = 180):
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    _, binary = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
-    return cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
-
-
 def candidate_scales(
     base_scale: float,
     scale_ratios: Iterable[float] = (1.0,),
@@ -397,6 +391,8 @@ def edge_consistency(
     region: np.ndarray,
     template: np.ndarray,
     mask: np.ndarray | None = None,
+    *,
+    tolerance: int = 1,
 ) -> float:
     """Return a tolerant F1 score for the two binary edge maps."""
 
@@ -417,18 +413,19 @@ def edge_consistency(
     if template_count == 0 or region_count == 0:
         return 0.0
 
-    # A one-pixel displacement is normal after a resize.  Dilating only for
-    # the overlap test keeps the score sensitive to a wrong icon shape while
-    # avoiding a hard veto from anti-aliasing.
-    kernel = np.ones((3, 3), dtype=np.uint8)
+    # Dilating only for overlap tolerates resize displacement while keeping
+    # the score sensitive to a wrong shape. Calibrated callers may scale the
+    # default one-pixel tolerance with the client resolution.
+    diameter = 2 * max(1, int(tolerance)) + 1
+    kernel = np.ones((diameter, diameter), dtype=np.uint8)
     region_dilated = cv2.dilate(region_edges.astype(np.uint8), kernel) > 0
     template_dilated = cv2.dilate(template_edges.astype(np.uint8), kernel) > 0
     true_positive = min(
         int(np.count_nonzero(template_edges & region_dilated)),
         int(np.count_nonzero(region_edges & template_dilated)),
     )
-    precision = true_positive / max(1, region_count)
-    recall = true_positive / max(1, template_count)
+    precision = true_positive / region_count
+    recall = true_positive / template_count
     if precision + recall <= 0:
         return 0.0
     return float(2.0 * precision * recall / (precision + recall))
@@ -447,6 +444,54 @@ def template_candidate_evidence(
         gradient_zncc(region, template, mask),
         edge_consistency(region, template, mask),
     )
+
+
+def _iter_response_peaks(
+    response: np.ndarray,
+    template_shape: tuple[int, ...],
+    template_threshold: float,
+    center_bounds: tuple[int, int, int, int] | None,
+    suppression_radius: int | tuple[int, int] | None,
+    maximum_candidates: int,
+) -> Iterator[tuple[float, tuple[int, int]]]:
+    """Yield independent peaks in score order within the permitted center region."""
+    if response.ndim != 2 or response.size == 0:
+        return
+    sanitize_template_response(response)
+    working = response.copy()
+    height, width = template_shape[:2]
+    if center_bounds is not None:
+        center_left, center_top, center_right, center_bottom = center_bounds
+        x_start = max(0, int(np.ceil(center_left - width / 2)))
+        y_start = max(0, int(np.ceil(center_top - height / 2)))
+        x_stop = min(working.shape[1], int(np.ceil(center_right - width / 2)))
+        y_stop = min(working.shape[0], int(np.ceil(center_bottom - height / 2)))
+        if x_start >= x_stop or y_start >= y_stop:
+            return
+        allowed = np.full(working.shape, -1.0, dtype=working.dtype)
+        allowed[y_start:y_stop, x_start:x_stop] = working[y_start:y_stop, x_start:x_stop]
+        working = allowed
+
+    if suppression_radius is None:
+        suppression_x = max(2, width // 2)
+        suppression_y = max(2, height // 2)
+    elif isinstance(suppression_radius, tuple):
+        suppression_x = max(1, int(suppression_radius[0]))
+        suppression_y = max(1, int(suppression_radius[1]))
+    else:
+        suppression_x = suppression_y = max(1, int(suppression_radius))
+
+    for _ in range(max(1, int(maximum_candidates))):
+        _minimum, score, _minimum_location, location = cv2.minMaxLoc(working)
+        if not np.isfinite(score) or score < template_threshold or score > 1.000001:
+            return
+        x, y = int(location[0]), int(location[1])
+        yield float(score), (x, y)
+        left = max(0, x - suppression_x)
+        top = max(0, y - suppression_y)
+        right = min(working.shape[1], x + suppression_x + 1)
+        bottom = min(working.shape[0], y + suppression_y + 1)
+        working[top:bottom, left:right] = -1.0
 
 
 def independent_match_candidates(
@@ -468,39 +513,12 @@ def independent_match_candidates(
     remains the strict compatibility path for generic callers.
     """
 
-    if response.ndim != 2 or response.size == 0:
-        return ()
-
-    sanitize_template_response(response)
-    working = response.copy()
     height, width = template.shape[:2]
-    if center_bounds is not None:
-        center_left, center_top, center_right, center_bottom = center_bounds
-        x_start = max(0, int(np.ceil(center_left - width / 2)))
-        y_start = max(0, int(np.ceil(center_top - height / 2)))
-        x_stop = min(working.shape[1], int(np.ceil(center_right - width / 2)))
-        y_stop = min(working.shape[0], int(np.ceil(center_bottom - height / 2)))
-        if x_start >= x_stop or y_start >= y_stop:
-            return ()
-        allowed = np.full(working.shape, -1.0, dtype=working.dtype)
-        allowed[y_start:y_stop, x_start:x_stop] = working[y_start:y_stop, x_start:x_stop]
-        working = allowed
-
-    if suppression_radius is None:
-        suppression_x = max(2, width // 2)
-        suppression_y = max(2, height // 2)
-    elif isinstance(suppression_radius, tuple):
-        suppression_x = max(1, int(suppression_radius[0]))
-        suppression_y = max(1, int(suppression_radius[1]))
-    else:
-        suppression_x = suppression_y = max(1, int(suppression_radius))
-
     matches: list[TemplateCandidate] = []
-    for _ in range(max(1, int(max_independent_candidates))):
-        _minimum, score, _minimum_location, location = cv2.minMaxLoc(working)
-        if not np.isfinite(score) or score < template_threshold or score > 1.000001:
-            break
-        x, y = int(location[0]), int(location[1])
+    for score, (x, y) in _iter_response_peaks(
+        response, template.shape, template_threshold, center_bounds,
+        suppression_radius, max_independent_candidates,
+    ):
         region = search[y : y + height, x : x + width]
         if region.shape != template.shape:
             break
@@ -521,11 +539,6 @@ def independent_match_candidates(
         )
         if len(matches) >= max(1, int(max_matches)):
             break
-        left = max(0, x - suppression_x)
-        top = max(0, y - suppression_y)
-        right = min(working.shape[1], x + suppression_x + 1)
-        bottom = min(working.shape[0], y + suppression_y + 1)
-        working[top:bottom, left:right] = -1.0
     return tuple(matches)
 
 
@@ -580,41 +593,12 @@ def independent_pixel_valid_matches(
 ) -> tuple[PixelValidMatch, ...]:
     """Enumerate independent dual-valid candidates in template-score order."""
 
-    if response.ndim != 2 or response.size == 0:
-        return ()
-
-    sanitize_template_response(response)
-    working = response.copy()
     height, width = template.shape[:2]
-
-    if center_bounds is not None:
-        center_left, center_top, center_right, center_bottom = center_bounds
-        x_start = max(0, int(np.ceil(center_left - width / 2)))
-        y_start = max(0, int(np.ceil(center_top - height / 2)))
-        x_stop = min(working.shape[1], int(np.ceil(center_right - width / 2)))
-        y_stop = min(working.shape[0], int(np.ceil(center_bottom - height / 2)))
-        if x_start >= x_stop or y_start >= y_stop:
-            return ()
-        allowed = np.full(working.shape, -1.0, dtype=working.dtype)
-        allowed[y_start:y_stop, x_start:x_stop] = working[y_start:y_stop, x_start:x_stop]
-        working = allowed
-
-    if suppression_radius is None:
-        suppression_x = max(2, width // 2)
-        suppression_y = max(2, height // 2)
-    elif isinstance(suppression_radius, tuple):
-        suppression_x = max(1, int(suppression_radius[0]))
-        suppression_y = max(1, int(suppression_radius[1]))
-    else:
-        suppression_x = suppression_y = max(1, int(suppression_radius))
-
     matches: list[PixelValidMatch] = []
-    for _ in range(max(1, int(max_independent_candidates))):
-        _minimum, score, _minimum_location, location = cv2.minMaxLoc(working)
-        if not np.isfinite(score) or score < template_threshold or score > 1.000001:
-            break
-
-        x, y = int(location[0]), int(location[1])
+    for score, (x, y) in _iter_response_peaks(
+        response, template.shape, template_threshold, center_bounds,
+        suppression_radius, max_independent_candidates,
+    ):
         region = search[y : y + height, x : x + width]
         candidate_pixel_score = pixel_similarity(region, template, mask)
         candidate_zncc_score = (
@@ -635,12 +619,6 @@ def independent_pixel_valid_matches(
             )
             if len(matches) >= max(1, int(max_matches)):
                 break
-
-        left = max(0, x - suppression_x)
-        top = max(0, y - suppression_y)
-        right = min(working.shape[1], x + suppression_x + 1)
-        bottom = min(working.shape[0], y + suppression_y + 1)
-        working[top:bottom, left:right] = -1.0
 
     return tuple(matches)
 

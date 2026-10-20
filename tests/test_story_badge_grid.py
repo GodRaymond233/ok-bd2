@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
-import cv2
 import numpy as np
 
-from src.tasks.map_trade.models import MatchResult
+from src.tasks.map_trade.models import MatchResult, NavigationResult, ScreenState
 from src.tasks.map_trade.navigator import Navigator
 from src.tasks.map_trade.navigator_constants import (
     STORY_BADGE_GRID_MIN_MARGIN,
@@ -19,6 +20,7 @@ from src.tasks.map_trade.navigator_constants import (
     StoryBadgeDetection,
 )
 from src.tasks.map_trade.vision import Vision
+from tests.helpers.recognition_fixtures import load_bgr
 
 FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures" / "map_trade" / "story_badge_grid"
 
@@ -37,10 +39,7 @@ class _FixtureTask:
 
 
 def _load_fixture(name: str) -> np.ndarray:
-    frame = cv2.imread(str(FIXTURE_ROOT / name), cv2.IMREAD_COLOR)
-    if frame is None:
-        raise AssertionError(f"fixture missing: {name}")
-    return frame
+    return load_bgr(FIXTURE_ROOT / name)
 
 
 def _anchor(center_x: int, center_y: int, number: int = 1) -> StoryBadgeDetection:
@@ -72,6 +71,63 @@ class StoryBadgeGridTest(unittest.TestCase):
     def _navigator() -> Navigator:
         task = _FixtureTask()
         return Navigator(task, Vision(task))
+
+    def test_video_badges_use_real_ocr_and_recheck_card_visibility_before_click(self):
+        from onnxocr.onnx_paddleocr import ONNXPaddleOcr
+
+        engine = ONNXPaddleOcr(use_angle_cls=False, use_npu=False, use_openvino=True)
+
+        def ocr(frame, threshold, **_kwargs):
+            return [
+                SimpleNamespace(name=text, confidence=confidence)
+                for row in engine.ocr(frame) if row
+                for _polygon, (text, confidence) in row if confidence >= threshold
+            ]
+
+        frame = _load_fixture("video_810_q16_visible.png")
+        task = _FixtureTask()
+        task.ocr = ocr
+        task.sleep = lambda _seconds: None
+        task.log_warning = lambda *_args: None
+        navigator = Navigator(task, Vision(task))
+        navigator.vision.capture = lambda: frame
+        navigator._scroll_cartridge_bar = Mock(
+            side_effect=AssertionError("target is already visible"),
+        )
+
+        found = navigator._wait_for_story_badge_with_scroll(16)
+
+        self.assertIsNotNone(found)
+        self.assertEqual((1044, 704), found[1].best.result.center)
+        self.assertEqual("16", found[1].ocr_text)
+        self.assertEqual("ordered_slot", found[1].recovery_mode)
+        self.assertIsNotNone(navigator._confirm_story_badge_before_click(*found))
+
+        # Keep the same ordered slot but replace its digit with a real 18 badge.
+        changed = frame.copy()
+        changed[690:719, 1030:1059] = frame[690:719, 1300:1329]
+        navigator.vision.capture = lambda: changed
+        self.assertIsNone(navigator._confirm_story_badge_before_click(*found))
+        navigator._scroll_cartridge_bar.assert_not_called()
+
+        frame = _load_fixture("video_810_q20_at_end.png")
+        navigator.vision.capture = lambda: frame
+        navigator.classify = lambda: ScreenState.CARD_MENU
+        navigator._wait_for_quick_switch_page = lambda: True
+        navigator._wait_for_cartridge_category = lambda **_kwargs: True
+        navigator.vision.click_client = Mock()
+        navigator._wait_for_story_sandbox = Mock(
+            return_value=NavigationResult(True, ScreenState.SANDBOX),
+        )
+
+        self.assertTrue(navigator.select_card("Q_sp20").success)
+        navigator.vision.click_client.assert_called_once_with(
+            (1329, 704), frame.shape, after_sleep=1.0,
+        )
+        navigator._scroll_cartridge_bar.assert_not_called()
+        completion = navigator.card_status.detect(frame, (1329, 704))
+        self.assertFalse(completion.complete_region)
+        self.assertFalse(navigator._completion_satisfies_actions(completion))
 
     def test_native_720_q6_uses_slot_grid_after_strict_gate_rejects(self):
         frame = _load_fixture("native_720_q6_visible.png")

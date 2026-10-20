@@ -1,16 +1,18 @@
-"""ALAS/NKAS 式 next_run 调度账本与启动自动执行的回归."""
+"""任务调度账本、失败退避与启动自动执行的验证。"""
 
 import os
 import tempfile
 import unittest
 from datetime import datetime
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from src.tasks import auto_scheduler, scheduler
 from src.tasks.DailyBatchTask import DailyBatchChild, DailyBatchTask
 from src.tasks.run_history import (
     BEIJING_TZ,
     RunHistoryStore,
+    configuration_scope,
     set_default_store,
 )
 
@@ -57,7 +59,9 @@ class NextAnchorTest(unittest.TestCase):
 
 class TaskScheduleStoreTest(unittest.TestCase):
     def setUp(self):
-        self.dir = tempfile.mkdtemp()
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.dir = directory.name
         self.path = os.path.join(self.dir, "task_schedule.json")
         self.store = scheduler.TaskScheduleStore(self.path)
 
@@ -65,6 +69,39 @@ class TaskScheduleStoreTest(unittest.TestCase):
         self.assertTrue(self.store.is_due("快速狩猎"))
         self.assertIsNone(self.store.next_run("快速狩猎"))
         self.assertEqual(self.store.backoff_remaining_minutes("快速狩猎"), 0.0)
+
+    def test_collection_scope_change_releases_only_success_cooldown(self):
+        from src.tasks.map_trade.collection_selection import COLLECTION_CARD_NAMES
+        from src.ui.quest_cards import meta_text, seal_state
+
+        now = _beijing_ts(2026, 10, 20, 12)
+        history = RunHistoryStore(os.path.join(self.dir, "history.json"))
+        task = SimpleNamespace(
+            name="每周跑图", enabled=False,
+            config={"采集关卡": list(COLLECTION_CARD_NAMES[:1])},
+            info={"状态": "跑图完成。", "跑图完成范围": "本周", "跑图周期": "2026-10-19"},
+        )
+        batch = SimpleNamespace(config={}, child_tasks=[
+            SimpleNamespace(config_key="跑图", task_class=type(task)),
+        ])
+        executor = SimpleNamespace(get_task_by_class=lambda _cls: task)
+        history.record_task_done(task, finished=now, ok=True)
+        self.store.delay_after_record(task.name, True, history, now=now)
+        self.assertFalse(auto_scheduler._any_batch_child_due(
+            batch, executor, history, self.store, now=now,
+        ))
+        task.config["采集关卡"] = list(COLLECTION_CARD_NAMES[:2])
+        reloaded = scheduler.TaskScheduleStore(self.path)
+        self.assertTrue(auto_scheduler._any_batch_child_due(
+            batch, executor, history, reloaded, now=now,
+        ))
+        with patch("time.time", return_value=now):
+            self.assertEqual("idle", seal_state(task, store=history))
+            self.assertNotIn("本周跑图已完成", meta_text(task, store=history))
+        reloaded.delay_after_record(task.name, False, history, now=now)
+        self.assertFalse(reloaded.is_due(task.name, now=now, scope=configuration_scope(task)))
+        self.assertTrue(reloaded.is_due(task.name, now=now + 1800,
+                                        scope=configuration_scope(task)))
 
     def test_success_daily_delay_lands_on_next_4am(self):
         next_run = self.store.delay_after_run(
@@ -82,7 +119,21 @@ class TaskScheduleStoreTest(unittest.TestCase):
         next_run = self.store.delay_after_run(
             "每周跑图", ok=True, now=_beijing_ts(2026, 8, 19, 12, 0)
         )
-        self.assertEqual(next_run, _beijing_ts(2026, 8, 24, 4, 0))
+        self.assertEqual(next_run, _beijing_ts(2026, 8, 24, 8, 0))
+        for hour, minute in ((4, 0), (7, 59), (8, 0)):
+            with self.subTest(hour=hour, minute=minute):
+                moment = _beijing_ts(2026, 8, 24, hour, minute)
+                self.assertEqual(
+                    self.store.delay_after_run("每周跑图", ok=True, now=moment),
+                    _beijing_ts(2026, 8, 31 if hour == 8 else 24, 8),
+                )
+                self.assertEqual(
+                    self.store.delay_after_run(
+                        "每周跑图", ok=True, now=moment,
+                        policy=scheduler.SchedulePolicy("daily", refresh_hour=8),
+                    ),
+                    _beijing_ts(2026, 8, 25 if hour == 8 else 24, 8),
+                )
 
     def test_failure_delays_by_backoff_interval(self):
         now = _beijing_ts(2026, 8, 19, 9, 0)
@@ -101,7 +152,7 @@ class TaskScheduleStoreTest(unittest.TestCase):
         next_run = self.store.delay_after_run(
             "自定义", ok=True, now=now, policy=policy
         )
-        # now+15min(03:45) 比锚点 04:00 更近，按 ALAS 语义取最近者。
+        # now+15min(03:45) 比刷新点04:00更近，取较早的时间。
         self.assertEqual(next_run, now + 15 * 60)
 
     def test_unknown_task_is_not_scheduled(self):
@@ -191,7 +242,9 @@ class _TaskStub:
 
 class RunDueTasksOnceTest(unittest.TestCase):
     def setUp(self):
-        self.dir = tempfile.mkdtemp()
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.dir = directory.name
         self.history = RunHistoryStore(os.path.join(self.dir, "history.json"))
         self.schedule = scheduler.TaskScheduleStore(
             os.path.join(self.dir, "schedule.json")
@@ -269,14 +322,23 @@ class RunDueTasksOnceTest(unittest.TestCase):
 
     def test_child_completed_today_is_not_due(self):
         batch, executor = self._build({})
+        task = executor.get_task_by_class(batch.child_tasks[0].task_class)
+        task.config = {"小屋": False}
         self.history.record_task_done(
             SimpleNamespace(
-                name="first", start_time=0, info={"状态": "first 完成。"}
+                name="first", start_time=0, info={"状态": "first 完成。"}, config=task.config,
             )
         )
         og = _FakeOg(executor)
         self.assertIsNone(auto_scheduler.run_due_tasks_once(og))
         self.assertEqual([], og.app.start_controller.started)
+
+        task.config["小屋"] = True
+        self.schedule.mark_due_now(task.name)
+        self.assertEqual(
+            "一键完成日常（仅执行今日未完成）", auto_scheduler.run_due_tasks_once(og),
+        )
+        self.assertEqual([batch], og.app.start_controller.started)
 
     def test_child_in_failure_backoff_is_not_due(self):
         class First:

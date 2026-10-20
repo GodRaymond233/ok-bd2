@@ -70,15 +70,15 @@ class ReferenceCalibrationTest(unittest.TestCase):
         self.assertEqual(QHD_1440.width, pvp_task_module.ENTRY_REFERENCE_WIDTH)
         self.assertEqual(QHD_1440.height, pvp_task_module.ENTRY_REFERENCE_HEIGHT)
 
-    def test_map_trade_vision_reference_is_720p_calibration(self):
-        self.assertIs(HD_720, MAP_TRADE_REFERENCE)
+    def test_map_trade_vision_reference_is_1080p_calibration(self):
+        self.assertIs(FHD_1080, MAP_TRADE_REFERENCE)
         self.assertEqual(
             (960, 540),
-            vision.Vision.reference_point(640, 360, 1920, 1080),
+            vision.Vision.reference_point(960, 540, 1920, 1080),
         )
         self.assertEqual(
             (480, 270),
-            vision.Vision.reference_point(640, 360, 960, 540),
+            vision.Vision.reference_point(960, 540, 960, 540),
         )
 
     def test_skill_coordinates_share_single_source_of_truth(self):
@@ -152,8 +152,8 @@ class InputUnificationTest(unittest.TestCase):
         task = RecordingTask(np.zeros((1080, 1920, 3), dtype=np.uint8))
         task_vision = vision.Vision(task)
         task_vision.drag_reference(
-            (640, 360),
-            (320, 180),
+            (960, 540),
+            (480, 270),
             duration=0.4,
             after_sleep=0.2,
         )

@@ -7,7 +7,7 @@ from time import monotonic
 
 import cv2
 import numpy as np
-from ok.task.exceptions import TaskDisabledException
+from ok.task.exceptions import FinishedException, TaskDisabledException
 
 from src.tasks.map_trade.models import MatchResult, TemplateSpec
 from src.tasks.map_trade.vision import Vision
@@ -479,7 +479,7 @@ class TaskVisionMixin:
                 log=False,
                 name=name,
             )
-        except TaskDisabledException:
+        except (TaskDisabledException, FinishedException):
             raise
         except Exception as exc:
             self.info_set(f"{name} OCR 错误", str(exc))

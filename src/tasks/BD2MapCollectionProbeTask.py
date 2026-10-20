@@ -32,7 +32,7 @@ from src.tasks.MapTradeTask import (
     MapAutomationTaskBase,
 )
 
-ALL_COLLECTION_CARDS_OPTION = "全部17张"
+ALL_COLLECTION_CARDS_OPTION = "全部25张"
 COLLECTION_CARD_OPTIONS = tuple(card.card_id for card in COLLECTABLE_CARDS)
 DEFAULT_COLLECTION_START = COLLECTION_CARD_OPTIONS[0]
 DEFAULT_COLLECTION_END = COLLECTION_CARD_OPTIONS[-1]
@@ -41,6 +41,9 @@ TELEPORT_MAP_BACKWARD_CLICK_LIMIT = 7
 TELEPORT_MAP_FORWARD_CLICK_INTERVAL = 0.2
 TELEPORT_MAP_PAGE_SETTLE_SECONDS = 0.5
 TELEPORT_MAP_TITLE_RETRY_INTERVAL = 0.2
+TELEPORT_MAP_ARROW_STABLE_HITS = 2
+TELEPORT_MAP_ARROW_MAX_RECHECKS = 3
+TELEPORT_MAP_ARROW_RECHECK_INTERVAL = 0.15
 
 
 def _state_label(value: str) -> str:
@@ -189,9 +192,9 @@ def resolve_collection_map_titles(raw_text: str) -> tuple[dict, ...]:
     )
 
 
-def _match_payload(result: MatchResult, passed: bool) -> dict:
+def _match_payload(result: MatchResult, passed: bool | None) -> dict:
     return {
-        "passed": bool(passed),
+        "passed": None if passed is None else bool(passed),
         "center": list(result.center),
         "match_score": result.score,
         "pixel_score": result.pixel_score,
@@ -322,7 +325,7 @@ class BD2MapCollectionProbeTask(MapAutomationTaskBase):
         # Read old saved configurations without exposing the retired single selector.
         if start_value is None and end_value is None:
             legacy = str(self.config.get("测试卡带范围", ALL_COLLECTION_CARDS_OPTION))
-            if legacy == ALL_COLLECTION_CARDS_OPTION:
+            if legacy in {ALL_COLLECTION_CARDS_OPTION, "全部17张", "全部26张"}:
                 return tuple(COLLECTABLE_CARDS)
             legacy_card = CARD_BY_ID.get(legacy)
             if legacy_card is None or not legacy_card.collectable:
@@ -385,12 +388,22 @@ class BD2MapCollectionProbeTask(MapAutomationTaskBase):
                     f"zncc={forward.zncc_score:.3f}, passed={passed}"
                 ),
             )
+            passed, stable_frame, stable_match = self._stable_teleport_arrow(
+                vision,
+                frame,
+                forward,
+                TELEPORT_MAP_FORWARD_TEMPLATE,
+                initial_passed=passed,
+                label="向前",
+            )
+            if passed is None:
+                return clicks, "向前箭头状态不稳定，未确认到达最前地图"
             if not passed:
                 self.sleep(TELEPORT_MAP_PAGE_SETTLE_SECONDS)
                 return clicks, ""
             vision.click_client(
-                forward.center,
-                frame.shape,
+                stable_match.center,
+                stable_frame.shape,
                 after_sleep=TELEPORT_MAP_FORWARD_CLICK_INTERVAL,
             )
             clicks += 1
@@ -398,9 +411,61 @@ class BD2MapCollectionProbeTask(MapAutomationTaskBase):
         self.sleep(TELEPORT_MAP_PAGE_SETTLE_SECONDS)
         frame = vision.capture()
         forward = vision.match(frame, TELEPORT_MAP_FORWARD_TEMPLATE)
-        if vision.passes(forward, TELEPORT_MAP_FORWARD_TEMPLATE):
+        passed, _stable_frame, _stable_match = self._stable_teleport_arrow(
+            vision,
+            frame,
+            forward,
+            TELEPORT_MAP_FORWARD_TEMPLATE,
+            initial_passed=vision.passes(forward, TELEPORT_MAP_FORWARD_TEMPLATE),
+            label="向前",
+        )
+        if passed is None:
+            return clicks, "向前箭头状态不稳定，未确认到达最前地图"
+        if passed:
             return clicks, "连续向前7次后仍识别到向前按钮，未确认到达最前地图"
         return clicks, ""
+
+    def _stable_teleport_arrow(
+        self,
+        vision: Vision,
+        frame,
+        result,
+        template,
+        *,
+        initial_passed: bool,
+        label: str,
+    ):
+        """Confirm an arrow state across a small bounded run of captures.
+
+        A single missed template match at a page transition must not be treated
+        as a map boundary.  Conversely, a stale positive match must not permit
+        unbounded clicking, so the confirmation window is deliberately capped.
+        """
+        state = bool(initial_passed)
+        stable_hits = 1
+        last_frame = frame
+        last_result = result
+        for attempt in range(TELEPORT_MAP_ARROW_MAX_RECHECKS):
+            if stable_hits >= TELEPORT_MAP_ARROW_STABLE_HITS:
+                return state, last_frame, last_result
+            self.sleep(TELEPORT_MAP_ARROW_RECHECK_INTERVAL)
+            last_frame = vision.capture()
+            last_result = vision.match(last_frame, template)
+            next_state = vision.passes(last_result, template)
+            self.info_set(
+                f"传送阵{label}箭头复核",
+                f"{attempt + 1}/{TELEPORT_MAP_ARROW_MAX_RECHECKS}: passed={next_state}",
+            )
+            if next_state == state:
+                stable_hits += 1
+            else:
+                state = bool(next_state)
+                stable_hits = 1
+        return (
+            state if stable_hits >= TELEPORT_MAP_ARROW_STABLE_HITS else None,
+            last_frame,
+            last_result,
+        )
 
     def _scan_teleport_map_pages(
         self,
@@ -436,6 +501,14 @@ class BD2MapCollectionProbeTask(MapAutomationTaskBase):
             backward = vision.match(frame, TELEPORT_MAP_BACKWARD_TEMPLATE)
             forward_passed = vision.passes(forward, TELEPORT_MAP_FORWARD_TEMPLATE)
             backward_passed = vision.passes(backward, TELEPORT_MAP_BACKWARD_TEMPLATE)
+            backward_passed, backward_frame, backward = self._stable_teleport_arrow(
+                vision,
+                frame,
+                backward,
+                TELEPORT_MAP_BACKWARD_TEMPLATE,
+                initial_passed=backward_passed,
+                label="向后",
+            )
             candidates = resolve_collection_map_titles(raw_text)
             page = {
                 "index": page_number,
@@ -445,12 +518,26 @@ class BD2MapCollectionProbeTask(MapAutomationTaskBase):
                 "forward": _match_payload(forward, forward_passed),
                 "backward": _match_payload(backward, backward_passed),
                 "screenshot": "",
+                "frame_sources": {
+                    "ocr_text": "title_capture",
+                    "forward": "title_capture",
+                    "backward": "arrow_confirmation",
+                    "screenshot": "not_saved",
+                },
             }
             if bool(self.config.get("保存每张传送阵地图截图", True)):
+                # The backward-arrow verdict may come from the bounded
+                # recheck capture rather than the OCR frame above.  Save that
+                # same stable frame so the diagnostic screenshot and arrow
+                # evidence describe one UI state.
+                evidence_frame = backward_frame if backward_frame is not None else frame
+                page["frame_sources"]["screenshot"] = (
+                    "arrow_confirmation" if backward_frame is not None else "title_capture"
+                )
                 page["screenshot"] = str(
                     self.save_frame(
                         f"map_collection_probe_{timestamp}_{card.card_id}_{page_number:02d}",
-                        frame,
+                        evidence_frame,
                     )
                 )
             pages.append(page)
@@ -459,6 +546,14 @@ class BD2MapCollectionProbeTask(MapAutomationTaskBase):
                 f"{card.card_id} 第{page_number}页：{raw_text}，向后={backward_passed}",
             )
 
+            if backward_passed is None:
+                return TeleportMapScanResult(
+                    False,
+                    tuple(pages),
+                    forward_clicks,
+                    backward_clicks,
+                    "向后箭头状态不稳定，未确认到达最后地图",
+                )
             if not backward_passed:
                 return TeleportMapScanResult(
                     True,
@@ -478,7 +573,7 @@ class BD2MapCollectionProbeTask(MapAutomationTaskBase):
 
             vision.click_client(
                 backward.center,
-                frame.shape,
+                backward_frame.shape,
                 after_sleep=TELEPORT_MAP_PAGE_SETTLE_SECONDS,
             )
             backward_clicks += 1
@@ -498,146 +593,163 @@ class BD2MapCollectionProbeTask(MapAutomationTaskBase):
         )
         return records, state
 
-    def _initial_story_quick_switcher(self, navigator: Navigator) -> NavigationResult:
+    def _initial_cartridge_quick_switcher(self, navigator: Navigator) -> NavigationResult:
         if bool(self.config.get("自动从主页打开剧情卡带页", True)):
-            return navigator._open_story_quick_switcher()
+            return navigator._open_cartridge_quick_switcher()
         if not navigator._wait_for_quick_switch_page():
             return NavigationResult(False, navigator.classify(), "当前画面不是快速选择卡带页")
-        if not navigator._select_story_category():
+        if not navigator._select_cartridge_category():
             return NavigationResult(False, navigator.classify(), "未确认剧情游戏卡类别高亮")
         return NavigationResult(True, navigator.classify(), "当前剧情快速选择页已确认")
+
+    def _probe_card(
+        self, card, navigator, vision, store, observations, timestamp, title_retries, scroll_steps,
+    ) -> dict:
+        """Read one card's completion, enter its field and scan named map pages."""
+        value = {
+            "card_id": card.card_id,
+            "number": card.number,
+            "name": card.name,
+            "completion": None,
+            "entry_message": "",
+            "map_entry_message": "",
+            "forward_clicks": 0,
+            "backward_clicks": 0,
+            "maps": [],
+            "returned_to_sandbox": False,
+            "quick_switch_reopened": False,
+            "status": "pending",
+            "error": "",
+        }
+        inspected = navigator.locate_probe_story_card(
+            card.card_id,
+            scan_steps=scroll_steps,
+        )
+        if inspected is None:
+            value["status"] = "card_not_found"
+            value["error"] = "未确认剧情游戏卡角标及完整完成度区域"
+            return value
+
+        completion_value = _completion_observation(
+            card,
+            inspected.located.badge,
+            inspected.completion,
+        )
+        observations[card.card_id].append(completion_value)
+        value["completion"] = completion_value
+        self._save_visual_progress(store, observations)
+        self.info_set(
+            "完成度读取",
+            (
+                f"{card.card_id}: 吸取={completion_value['absorb']['state']}, "
+                f"压制={completion_value['suppress']['state']}"
+            ),
+        )
+        if bool(self.config.get("保存完成度截图", False)):
+            self.save_frame(
+                f"map_collection_probe_{timestamp}_{card.card_id}_completion",
+                inspected.located.frame,
+            )
+
+        entered = navigator.enter_probe_story_card(inspected)
+        value["entry_message"] = entered.message
+        if not entered.success:
+            value["status"] = "entry_failed"
+            value["error"] = entered.message
+            return value
+
+        map_entry = navigator.open_teleport_map_from_sandbox()
+        value["map_entry_message"] = map_entry.message
+        if not map_entry.success or not map_entry.map_page_mode.is_teleport_map:
+            value["status"] = "teleport_map_entry_failed"
+            value["error"] = (
+                map_entry.message if not map_entry.success
+                else f"传送阵地图视觉模式无效：{map_entry.map_page_mode.value}"
+            )
+            return value
+        value["map_page_mode"] = map_entry.map_page_mode.value
+
+        scan = self._scan_teleport_map_pages(vision, card, timestamp, title_retries)
+        value["forward_clicks"] = scan.forward_clicks
+        value["backward_clicks"] = scan.backward_clicks
+        value["maps"] = list(scan.pages)
+        if not scan.success:
+            value["status"] = "map_scan_failed"
+            value["error"] = scan.message
+            return value
+
+        returned = navigator.return_teleport_map_to_sandbox(card.number)
+        value["returned_to_sandbox"] = returned.success
+        value["status"] = "completed" if returned.success else "sandbox_return_failed"
+        if not returned.success:
+            value["error"] = returned.message
+        return value
 
     def run(self):
         cards = self._selected_cards()
         if not cards:
             self.info_set("状态", "未执行：测试卡带起止范围无效")
             return False
-
         vision = Vision(self)
         navigator = Navigator(self, vision)
         store = CollectionVisualAuditStore()
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        title_retries = max(
-            1,
-            min(10, int(self.config.get("传送阵地图名 OCR 重试次数", 3))),
-        )
+        title_retries = max(1, min(10, int(self.config.get("传送阵地图名 OCR 重试次数", 3))))
         scroll_steps = max(
             1,
             min(30, int(self.config.get("目标角标最大滚轮次数", PROBE_QUICK_SWITCH_SCROLL_STEPS))),
         )
-        observations: dict[str, list[dict]] = {
-            card.card_id: [] for card in COLLECTABLE_CARDS
-        }
+        observations: dict[str, list[dict]] = {card.card_id: [] for card in COLLECTABLE_CARDS}
         results: list[dict] = []
-
-        ready = self._initial_story_quick_switcher(navigator)
+        ready = self._initial_cartridge_quick_switcher(navigator)
         if not ready.success:
             self._save_visual_progress(store, observations)
             self.info_set("每周状态表", str(store.path))
             self.info_set("状态", ready.message)
             self.log_warning(f"剧情卡带完成度与地图读取测试未启动：{ready.message}。")
             return False
-
         for index, card in enumerate(cards, start=1):
-            value = {
-                "card_id": card.card_id,
-                "number": card.number,
-                "name": card.name,
-                "completion": None,
-                "entry_message": "",
-                "map_entry_message": "",
-                "forward_clicks": 0,
-                "backward_clicks": 0,
-                "maps": [],
-                "returned_to_sandbox": False,
-                "quick_switch_reopened": False,
-                "status": "pending",
-                "error": "",
-            }
-            results.append(value)
             self.info_set("当前阶段", f"读取并进入 {card.card_id}（{index}/{len(cards)}）")
-
-            inspected = navigator.locate_probe_story_card(
-                card.card_id,
-                scan_steps=scroll_steps,
+            value = self._probe_card(
+                card, navigator, vision, store, observations, timestamp,
+                title_retries, scroll_steps,
             )
-            if inspected is None:
-                value["status"] = "card_not_found"
-                value["error"] = "未确认剧情游戏卡角标及完整完成度区域"
-                break
-
-            completion_value = _completion_observation(
-                card,
-                inspected.located.badge,
-                inspected.completion,
-            )
-            observations[card.card_id].append(completion_value)
-            value["completion"] = completion_value
-            self._save_visual_progress(store, observations)
-            self.info_set(
-                "完成度读取",
-                (
-                    f"{card.card_id}: 吸取={completion_value['absorb']['state']}, "
-                    f"压制={completion_value['suppress']['state']}"
-                ),
-            )
-            if bool(self.config.get("保存完成度截图", False)):
-                self.save_frame(
-                    f"map_collection_probe_{timestamp}_{card.card_id}_completion",
-                    inspected.located.frame,
-                )
-
-            entered = navigator.enter_probe_story_card(inspected)
-            value["entry_message"] = entered.message
-            if not entered.success:
-                value["status"] = "entry_failed"
-                value["error"] = entered.message
-                break
-
-            map_entry = navigator.open_teleport_map_from_sandbox()
-            value["map_entry_message"] = map_entry.message
-            if not map_entry.success or not map_entry.map_page_mode.is_teleport_map:
-                value["status"] = "teleport_map_entry_failed"
-                value["error"] = (
-                    map_entry.message
-                    if not map_entry.success
-                    else f"传送阵地图视觉模式无效：{map_entry.map_page_mode.value}"
-                )
-                break
-            value["map_page_mode"] = map_entry.map_page_mode.value
-
-            scan = self._scan_teleport_map_pages(
-                vision,
-                card,
-                timestamp,
-                title_retries,
-            )
-            value["forward_clicks"] = scan.forward_clicks
-            value["backward_clicks"] = scan.backward_clicks
-            value["maps"] = list(scan.pages)
-            if not scan.success:
-                value["status"] = "map_scan_failed"
-                value["error"] = scan.message
-                break
-
-            returned = navigator.return_teleport_map_to_sandbox(card.number)
-            value["returned_to_sandbox"] = returned.success
-            if not returned.success:
-                value["status"] = "sandbox_return_failed"
-                value["error"] = returned.message
+            results.append(value)
+            if value["status"] != "completed":
                 break
 
             if index < len(cards):
-                reopened = navigator.open_story_quick_switcher_from_sandbox(
+                reopened = navigator.open_cartridge_quick_switcher_from_sandbox(
                     sandbox_already_confirmed=True,
+                    category=cards[index].category,
                 )
                 value["quick_switch_reopened"] = reopened.success
                 if not reopened.success:
                     value["status"] = "quick_switch_reopen_failed"
                     value["error"] = reopened.message
                     break
-            value["status"] = "completed"
+        json_report, markdown_report = self._write_probe_reports(
+            store, observations, cards, results,
+        )
+        success = len(results) == len(cards) and all(
+            value["status"] == "completed" for value in results
+        )
+        self.info_set("每周状态表", str(store.path))
+        self.info_set("合并测试 JSON", str(json_report))
+        self.info_set("合并测试报告", str(markdown_report))
+        self.info_set(
+            "状态",
+            f"完成{sum(value['status'] == 'completed' for value in results)}/{len(cards)}。",
+        )
+        if success:
+            self.log_completion(f"剧情卡带完成度与地图读取测试完成：{markdown_report}")
+        else:
+            failed = next((value for value in results if value["status"] != "completed"), None)
+            reason = failed["error"] if failed is not None else "未处理全部目标卡带"
+            self.log_warning(f"剧情卡带完成度与地图读取测试停止：{reason}。")
+        return success
 
+    def _write_probe_reports(self, store, observations, cards, results):
         records, weekly_state = self._save_visual_progress(store, observations)
         missing, conflicts = _completion_scan_state(records)
         payload = {
@@ -664,23 +776,4 @@ class BD2MapCollectionProbeTask(MapAutomationTaskBase):
             _combined_report_lines(payload),
             info_label="合并测试报告",
         )
-        success = len(results) == len(cards) and all(
-            value["status"] == "completed" for value in results
-        )
-        self.info_set("每周状态表", str(store.path))
-        self.info_set("合并测试 JSON", str(json_report))
-        self.info_set("合并测试报告", str(markdown_report))
-        self.info_set(
-            "状态",
-            f"完成{sum(value['status'] == 'completed' for value in results)}/{len(cards)}。",
-        )
-        if success:
-            self.log_completion(f"剧情卡带完成度与地图读取测试完成：{markdown_report}")
-        else:
-            failed = next(
-                (value for value in results if value["status"] != "completed"),
-                None,
-            )
-            reason = failed["error"] if failed is not None else "未处理全部目标卡带"
-            self.log_warning(f"剧情卡带完成度与地图读取测试停止：{reason}。")
-        return success
+        return json_report, markdown_report

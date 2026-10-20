@@ -1,6 +1,6 @@
 from time import monotonic
 
-from ok.task.exceptions import TaskDisabledException
+from ok.task.exceptions import FinishedException, TaskDisabledException
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task
@@ -581,7 +581,7 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
                 log=False,
                 name=name,
             )
-        except TaskDisabledException:
+        except (TaskDisabledException, FinishedException):
             raise
         except Exception as exc:
             self.info_set(f"{name} OCR 错误", str(exc))

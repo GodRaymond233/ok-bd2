@@ -2,7 +2,7 @@ from pathlib import Path
 from time import monotonic
 
 import numpy as np
-from ok.task.exceptions import TaskDisabledException
+from ok.task.exceptions import FinishedException, TaskDisabledException
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task
@@ -222,7 +222,7 @@ class QuickSuppressionTask(BaseBD2Task):
                 log=False,
                 name=name,
             )
-        except TaskDisabledException:
+        except (TaskDisabledException, FinishedException):
             raise
         except Exception as exc:
             self.info_set("卡带确认 OCR 错误", str(exc))

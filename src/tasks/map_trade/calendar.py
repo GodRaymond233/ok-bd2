@@ -85,7 +85,11 @@ def parse_calendar_payload(payload: str | bytes | dict, source: str = "payload")
         data = payload
     if not isinstance(data, dict):
         raise ValueError("价表根节点必须是对象")
-    if int(data.get("schema_version", -1)) != CALENDAR_SCHEMA_VERSION:
+    try:
+        schema_version = int(data.get("schema_version", -1))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("不支持的价表 schema_version") from exc
+    if schema_version != CALENDAR_SCHEMA_VERSION:
         raise ValueError("不支持的价表 schema_version")
     if str(data.get("timezone", "")) not in {"Asia/Shanghai", "UTC+8"}:
         raise ValueError("价表 timezone 必须是 Asia/Shanghai")
@@ -238,7 +242,7 @@ class PriceCalendarClient:
             except (OSError, ValueError, UnicodeError, urllib.error.URLError, json.JSONDecodeError):
                 continue
 
-        cached = self._read_cache()
+        cached = self._calendar_from_envelope(cached_envelope)
         cache_expired = _cache_is_expired(cached_envelope, now)
         if cached is not None and not cache_expired:
             return cached
@@ -293,10 +297,6 @@ class PriceCalendarClient:
         temp = self.cache_path.with_suffix(self.cache_path.suffix + ".tmp")
         temp.write_text(json.dumps(envelope, ensure_ascii=False, indent=2), encoding="utf-8")
         temp.replace(self.cache_path)
-
-    def _read_cache(self) -> LoadedCalendar | None:
-        envelope = self._read_cache_envelope()
-        return self._calendar_from_envelope(envelope) if envelope is not None else None
 
     def _read_cache_envelope(self) -> dict | None:
         if not self.cache_path.exists():

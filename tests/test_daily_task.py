@@ -2584,6 +2584,13 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         task._quick_hunt_ocr_text.return_value = "90/90"
         self.assertEqual(90, task._quick_hunt_free_resource("米饭"))
         boxes.assert_not_called()
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        frame[43:70, 1760:1790] = 245
+        task.capture_frame.return_value = frame
+        task._quick_hunt_ocr_text.side_effect = lambda image, *_a, **_k: (
+            "60/60" if image[:, 80:].any() else ""
+        )
+        self.assertEqual(60, task._quick_hunt_free_resource("火把"))
 
     def test_rice_scheduler_stops_on_unknown_resource_before_each_stage(self):
         for readings, expected_calls in (([None], []), ([90, None], ["狩猎场"])):
@@ -2647,6 +2654,39 @@ class DailyTaskHelperTest(StageHistoryTestCase):
                 task.run_quick_hunt()
         task._quick_hunt_return_home.assert_not_called()
         task._save_flow_diagnostic.assert_not_called()
+
+    def test_daily_completion_keeps_business_cycle_across_refresh(self):
+        from datetime import datetime
+
+        from src.tasks import run_history, scheduler
+
+        before = datetime(2026, 10, 20, 3, 59, tzinfo=run_history.BEIJING_TZ).timestamp()
+        after = before + 120
+        clock = [before]
+        task = object.__new__(DailyTask)
+        task.name = "公会、小屋、酒馆"
+        task.config = {"_仅执行未完成步骤": True}
+        task.info = {}
+        task.info_set = lambda key, value: task.info.__setitem__(key, value)
+        task.info_snapshot = lambda: dict(task.info)
+        task.log_info = task.log_completion = Mock()
+        task.recover_daily_home = Mock(return_value=True)
+        task.run_guild_sign_in = Mock(return_value=True)
+        task.run_my_home_sign_in = Mock(return_value=True)
+        task.run_business_collect = Mock(
+            side_effect=lambda: clock.__setitem__(0, after) or True,
+        )
+        schedule = scheduler.TaskScheduleStore(str(self.history.path) + ".schedule")
+        with patch("time.time", side_effect=lambda: clock[0]):
+            self.assertTrue(task.run())
+            self.history.record_task_done(task, started=before, ok=True)
+            schedule.delay_after_record(task.name, True, self.history)
+            self.assertFalse(self.history.is_completed_today(task.name))
+            self.assertTrue(schedule.is_due(task.name, scope=run_history.configuration_scope(task)))
+            self.assertTrue(task.run())
+            self.history.record_task_done(task, started=after, ok=True)
+            self.assertTrue(self.history.is_completed_today(task.name))
+        self.assertEqual(2, task.run_guild_sign_in.call_count)
 
 
 

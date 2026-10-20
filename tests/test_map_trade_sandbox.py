@@ -6,7 +6,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import cv2
 import numpy as np
 
 from src.tasks.map_trade.action_icons import (
@@ -23,13 +22,10 @@ from src.tasks.map_trade.models import (
     ScreenState,
 )
 from src.tasks.map_trade.navigator import (
-    SANDBOX_CONFIRM_ACTION_TEMPLATES,
     SANDBOX_SKILL_GROUP_PIXEL_SCORE,
     SANDBOX_SKILL_GROUP_TEMPLATE_SCORE,
     SANDBOX_SKILL_SELECTED_YELLOW_MIN_RATIO,
     SANDBOX_SKILL_SLOT_1_CENTER_ROI,
-    SANDBOX_SKILL_SLOT_1_REFERENCE_CENTER,
-    SANDBOX_SKILL_SLOT_1_RELATIVE_POINT,
     SANDBOX_SKILL_SLOT_1_SELECTED_TEMPLATE,
     SANDBOX_SKILL_SLOT_1_UNSELECTED_TEMPLATE,
     SANDBOX_SKILL_SLOT_2_CENTER_ROI,
@@ -46,12 +42,12 @@ from src.tasks.map_trade.navigator import (
     STORY_BADGE_OCR_MIN_CONFIDENCE,
     STORY_BADGE_PIXEL_SCORE,
     STORY_BADGE_TEMPLATE_SCORE,
-    STORY_SANDBOX_SWITCH_WINDOW,
     Navigator,
-    SandboxConfirmation,
     StoryBadgeCandidate,
     StoryBadgeDetection,
 )
+from src.utils.image_utils import read_template_image
+from tests.helpers import FakeClock
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -68,21 +64,14 @@ class SandboxConfirmationTest(unittest.TestCase):
 
         for file_name, expected_shape in expected_shapes.items():
             with self.subTest(file_name=file_name):
-                template = cv2.imread(
-                    str(template_root / file_name),
-                    cv2.IMREAD_UNCHANGED,
-                )
+                template = read_template_image(template_root / file_name)
                 self.assertIsNotNone(template)
                 self.assertEqual(expected_shape, template.shape)
                 self.assertGreater(np.count_nonzero(template[:, :, 3] == 0), 0)
                 self.assertGreater(np.count_nonzero(template[:, :, 3] == 255), 0)
-        suppress_pending = cv2.imread(
-            str(template_root / SUPPRESS_PENDING_TEMPLATE.file_name),
-            cv2.IMREAD_UNCHANGED,
-        )
-        suppress_completed = cv2.imread(
-            str(template_root / SUPPRESS_COMPLETED_TEMPLATE.file_name),
-            cv2.IMREAD_UNCHANGED,
+        suppress_pending = read_template_image(template_root / SUPPRESS_PENDING_TEMPLATE.file_name)
+        suppress_completed = read_template_image(
+            template_root / SUPPRESS_COMPLETED_TEMPLATE.file_name,
         )
         self.assertEqual(0, suppress_pending[-1, -1, 3])
         self.assertEqual(255, suppress_completed[-1, -1, 3])
@@ -98,10 +87,7 @@ class SandboxConfirmationTest(unittest.TestCase):
 
         for file_name, expected_shape in expected_shapes.items():
             with self.subTest(file_name=file_name):
-                template = cv2.imread(
-                    str(template_root / file_name),
-                    cv2.IMREAD_UNCHANGED,
-                )
+                template = read_template_image(template_root / file_name)
                 self.assertIsNotNone(template)
                 self.assertEqual(expected_shape, template.shape)
                 self.assertGreater(np.count_nonzero(template[:, :, 3] == 0), 0)
@@ -171,11 +157,9 @@ class SandboxConfirmationTest(unittest.TestCase):
         )
         navigator = Navigator(SimpleNamespace(info_set=lambda *_args: None), vision)
 
-        confirmation = navigator._match_story_sandbox_signals(frame)
-
-        self.assertEqual(4, confirmation.skill_state_hits)
-        self.assertEqual(1, confirmation.skill_group)
-        self.assertTrue(confirmation.passed)
+        _matches, hits, group = navigator._sandbox_skill_group_evidence(frame, None)
+        self.assertEqual(4, hits)
+        self.assertEqual(1, group)
 
     def test_story_sandbox_skill_group_rejects_ambiguous_slot_color(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -225,7 +209,7 @@ class SandboxConfirmationTest(unittest.TestCase):
 
         self.assertEqual("selected", state)
 
-    def test_story_sandbox_confirmation_matches_all_signal_groups_and_accepts_three_actions(self):
+    def test_skill_group_evidence_matches_each_slot_on_the_same_frame(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         passed_specs = {
             SANDBOX_TEMPLATES[0],
@@ -248,159 +232,63 @@ class SandboxConfirmationTest(unittest.TestCase):
         )
         navigator = Navigator(SimpleNamespace(info_set=lambda *_args: None), vision)
 
-        confirmation = navigator._match_story_sandbox_signals(frame)
-
-        self.assertEqual(1, confirmation.map_signal_hits)
-        self.assertEqual(2, confirmation.skill_state_hits)
-        self.assertEqual(3, confirmation.action_hits)
-        self.assertEqual(1, confirmation.skill_group)
-        self.assertTrue(confirmation.passed)
+        _matches, hits, group = navigator._sandbox_skill_group_evidence(frame, None)
+        self.assertEqual(2, hits)
+        self.assertEqual(1, group)
         self.assertEqual(
-            (
-                *SANDBOX_TEMPLATES,
-                *SANDBOX_SKILL_STATE_TEMPLATES,
-                *(spec for _name, spec in SANDBOX_CONFIRM_ACTION_TEMPLATES),
-            ),
+            SANDBOX_SKILL_STATE_TEMPLATES,
             tuple(spec for _frame, spec in calls),
         )
 
-    def test_story_sandbox_confirmation_rejects_missing_group_or_action_evidence(self):
-        self.assertFalse(SandboxConfirmation(1, 2, 3, None).passed)
-        self.assertFalse(SandboxConfirmation(0, 2, 3, 1).passed)
-        self.assertFalse(SandboxConfirmation(1, 1, 3, 1).passed)
-        self.assertFalse(SandboxConfirmation(1, 2, 2, 1).passed)
-        self.assertFalse(SandboxConfirmation(1, 4, 3, None).passed)
-
-    def test_story_sandbox_group_two_switches_to_group_one_once_before_stabilizing(self):
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        confirmations = iter(
-            (
-                SandboxConfirmation(1, 2, 3, 2),
-                SandboxConfirmation(1, 2, 3, 1),
-                SandboxConfirmation(1, 2, 3, None),
-                SandboxConfirmation(1, 2, 3, 1),
-                SandboxConfirmation(1, 2, 3, None),
-                SandboxConfirmation(1, 2, 3, 1),
-            )
-        )
-        captures = []
-        clicks = []
-        task = SimpleNamespace(
-            info_set=lambda *_args: None,
-            operate_click=lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep)),
-            sleep=lambda *_args: None,
-        )
+    def test_story_field_confirmation_requires_stable_hud_without_clicking(self):
+        frame = np.full((1080, 1920, 3), 100, dtype=np.uint8)
+        clicks, captures = [], []
         navigator = Navigator(
-            task,
+            SimpleNamespace(
+                info_set=lambda *_: None,
+                operate_click=lambda *args, **kwargs: clicks.append(args),
+                sleep=lambda *_: None,
+            ),
             SimpleNamespace(capture=lambda: captures.append(frame) or frame),
         )
-        navigator.classify = lambda _frame=None: ScreenState.SANDBOX
-        navigator._match_story_sandbox_signals = lambda _frame: next(confirmations)
-
-        with patch(
-            "src.tasks.map_trade.navigator_sandbox.monotonic",
-            side_effect=[100.0] * 20,
-        ):
-            result = navigator._wait_for_current_sandbox(timeout=2.0, interval=0.0)
-
+        navigator.classify = lambda _frame: ScreenState.SANDBOX
+        result = navigator._wait_for_current_sandbox(timeout=2.0, interval=0.0)
         self.assertTrue(result.success)
-        self.assertEqual(
-            [
-                (
-                    SANDBOX_SKILL_SLOT_1_RELATIVE_POINT[0],
-                    SANDBOX_SKILL_SLOT_1_RELATIVE_POINT[1],
-                    0.5,
-                )
-            ],
-            clicks,
-        )
-        self.assertEqual(SANDBOX_SKILL_SLOT_1_REFERENCE_CENTER, (1671, 1011))
-        self.assertEqual(6, len(captures))
+        self.assertEqual([], clicks)
+        self.assertEqual(2, len(captures))
 
-    def test_story_sandbox_group_two_does_not_confirm_when_switch_stays_on_group_two(self):
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        captures = []
-        clicks = []
-        task = SimpleNamespace(
-            info_set=lambda *_args: None,
-            operate_click=lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep)),
-            sleep=lambda *_args: None,
-        )
+    def test_story_field_confirmation_requires_consecutive_hud_frames(self):
+        frame = np.full((1080, 1920, 3), 100, dtype=np.uint8)
+        states = cycle((ScreenState.SANDBOX, ScreenState.UNKNOWN))
+        clock = FakeClock()
         navigator = Navigator(
-            task,
-            SimpleNamespace(capture=lambda: captures.append(frame) or frame),
+            SimpleNamespace(info_set=lambda *_: None, sleep=clock.sleep),
+            SimpleNamespace(
+                capture=lambda: frame,
+                ocr_text=lambda *args, **kwargs: "",
+                simplify=lambda text: text,
+            ),
         )
-        navigator.classify = lambda _frame=None: ScreenState.SANDBOX
-        navigator._match_story_sandbox_signals = lambda _frame: SandboxConfirmation(
-            1,
-            2,
-            3,
-            2,
-        )
-
+        navigator.classify = lambda _frame: next(states)
         with patch(
-            "src.tasks.map_trade.navigator_sandbox.monotonic",
-            side_effect=[100.0] * 20,
+            "src.tasks.map_trade.navigator_sandbox.monotonic", clock,
         ):
-            result = navigator._wait_for_current_sandbox(timeout=2.0, interval=0.0)
-
+            result = navigator._wait_for_current_sandbox(timeout=2.0, interval=0.2)
         self.assertFalse(result.success)
-        self.assertIn("点击技能组1后连续", result.message)
-        self.assertIn("帧仍识别为技能组2，切换失败", result.message)
-        self.assertEqual(
-            [
-                (
-                    SANDBOX_SKILL_SLOT_1_RELATIVE_POINT[0],
-                    SANDBOX_SKILL_SLOT_1_RELATIVE_POINT[1],
-                    0.5,
-                )
-            ],
-            clicks,
-        )
-        self.assertEqual(1 + STORY_SANDBOX_SWITCH_WINDOW, len(captures))
 
-    def test_story_sandbox_group_two_alternating_with_none_does_not_fail_early(self):
+    def test_story_field_confirmation_does_not_accept_black_loading_frames(self):
+        clock = FakeClock()
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        confirmations = cycle(
-            (
-                SandboxConfirmation(1, 2, 3, 2),
-                SandboxConfirmation(1, 2, 3, None),
-            )
-        )
-        captures = []
-        clicks = []
-        task = SimpleNamespace(
-            info_set=lambda *_args: None,
-            operate_click=lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep)),
-            sleep=lambda *_args: None,
-        )
         navigator = Navigator(
-            task,
-            SimpleNamespace(capture=lambda: captures.append(frame) or frame),
+            SimpleNamespace(info_set=lambda *_: None, sleep=clock.sleep),
+            SimpleNamespace(capture=lambda: frame),
         )
-        navigator.classify = lambda _frame=None: ScreenState.SANDBOX
-        navigator._match_story_sandbox_signals = lambda _frame: next(confirmations)
-
+        navigator.classify = lambda _frame: ScreenState.SANDBOX
         with patch(
-            "src.tasks.map_trade.navigator_sandbox.monotonic",
-            side_effect=[100.0] * 9 + [101.0],
+            "src.tasks.map_trade.navigator_sandbox.monotonic", clock,
         ):
-            result = navigator._wait_for_current_sandbox(timeout=0.1, interval=0.0)
-
+            result = navigator._wait_for_current_sandbox(timeout=2.0, interval=0.2)
         self.assertFalse(result.success)
-        self.assertEqual("未稳定确认当前剧情卡带箱庭", result.message)
-        self.assertNotIn("切换失败", result.message)
-        self.assertEqual(
-            [
-                (
-                    SANDBOX_SKILL_SLOT_1_RELATIVE_POINT[0],
-                    SANDBOX_SKILL_SLOT_1_RELATIVE_POINT[1],
-                    0.5,
-                )
-            ],
-            clicks,
-        )
-        self.assertEqual(8, len(captures))
 
 
 class StoryBadgeTest(unittest.TestCase):

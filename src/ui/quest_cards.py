@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import math
 import time
+from datetime import datetime, timedelta
 from html import escape
 from weakref import ref
 
@@ -43,10 +44,10 @@ from PySide6.QtGui import QBrush, QColor, QLinearGradient, QPainter
 from PySide6.QtWidgets import QLabel, QWidget
 
 from src.tasks.BaseBD2Task import task_info_snapshot
-from src.tasks.run_history import day_start_ts, default_store
+from src.tasks.run_history import BEIJING_TZ, configuration_scope, default_store
 from src.ui.quest_theme import MONO_FONT, palette
 
-# Tasks with weekly (Monday 04:00 Beijing) instead of daily refresh semantics.
+# Collection resources refresh Monday 08:00 Beijing; skill quotas refresh daily at 08:00.
 WEEKLY_TASK_NAMES = {"每周跑图"}
 
 HEADER_HEIGHT_PLAIN = 50
@@ -71,7 +72,7 @@ def _badge_kind(task) -> str:
         return "PVP"
     if "跑商" in name or "砍价" in name:
         return "跑商"
-    if "内测" in group or "跑图" in name:
+    if "内测" in group:
         return "内测功能"
     if group == "日常/周常":
         return "日常"
@@ -98,15 +99,12 @@ def format_duration(seconds) -> str:
 def _when_text(finished: float, now: float | None = None) -> str:
     """'今天 09:12' / '昨天 23:40' / '8月5日 18:02', all in Beijing time."""
     now = time.time() if now is None else now
-    from datetime import datetime
-
-    from src.tasks.run_history import BEIJING_TZ
-
     moment = datetime.fromtimestamp(finished, tz=BEIJING_TZ)
+    today = datetime.fromtimestamp(now, tz=BEIJING_TZ).date()
     hm = moment.strftime("%H:%M")
-    if finished >= day_start_ts(now):
+    if moment.date() == today:
         return f"今天 {hm}"
-    if finished >= day_start_ts(now - 86400):
+    if moment.date() == today - timedelta(days=1):
         return f"昨天 {hm}"
     return f"{moment.month}月{moment.day}日 {hm}"
 
@@ -124,8 +122,8 @@ def seal_state(task, store=None, onetime=True) -> str:
     store = store or default_store()
     name = str(getattr(task, "name", ""))
     if name in WEEKLY_TASK_NAMES:
-        return "ok" if store.is_completed_this_week(name) else "idle"
-    return "ok" if store.is_completed_today(name) else "idle"
+        return "ok" if store.is_completed(name, scope=configuration_scope(task)) else "idle"
+    return "ok" if store.is_completed_today(name, scope=configuration_scope(task)) else "idle"
 
 
 def meta_text(task, store=None) -> str:
@@ -142,7 +140,16 @@ def meta_text(task, store=None) -> str:
     when = _when_text(record["finished"])
     duration = format_duration(record.get("duration"))
     if record.get("ok"):
-        text = f"上次完成 · {when}"
+        label = "上次完成"
+        if str(getattr(task, "name", "")) in WEEKLY_TASK_NAMES:
+            if (store.is_completed(task.name, scope=configuration_scope(task))
+                    and store.is_completed_this_week(task.name)):
+                label = "本周跑图已完成"
+            elif store.is_completed_today(task.name, scope=configuration_scope(task)):
+                label = "今日额度已用尽"
+            else:
+                label = "上次运行"
+        text = f"{label} · {when}"
         if duration:
             text += f" · 耗时 {duration}"
         return text

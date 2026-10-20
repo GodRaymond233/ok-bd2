@@ -65,6 +65,38 @@ TEMPLATE_DIR = PROJECT_ROOT / "recognition-assets" / "template-assets"
 _INFO_FALLBACK_LOCK = threading.RLock()
 
 
+OVERLAY_CLEAR_FRAMES = 2
+
+
+RANK_OVERLAY_TITLES = ("恭喜晋级", "段位下滑")
+
+
+@dataclass
+class _PendingOverlay:
+    title: str | None = None
+    clear_frames: int = 0
+    has_clicked: bool = False
+
+    def observe(self, title: str | None, *, is_readable: bool) -> str | None:
+        """Track presence; return a closed title only after consecutive readable clear frames."""
+        if title is not None:
+            if title != self.title:
+                self.has_clicked = False
+            self.title = title
+            self.clear_frames = 0
+            return None
+        if self.title is None:
+            return None
+        self.clear_frames = self.clear_frames + 1 if is_readable else 0
+        if self.clear_frames < OVERLAY_CLEAR_FRAMES:
+            return None
+        closed_title = self.title
+        self.title = None
+        self.clear_frames = 0
+        self.has_clicked = False
+        return closed_title
+
+
 class CartridgeSpecialPageResult(Enum):
     ABSENT = "absent"
     HANDLED = "handled"
@@ -301,7 +333,7 @@ class BaseBD2Task(BaseTask):
             self.log_info(f"{name}：点击右上角主页按钮返回主界面。")
             self.operate_click(x, y, name=name, after_sleep=2.0, down_time=0.02)
             return True
-        except TaskDisabledException:
+        except (TaskDisabledException, FinishedException):
             raise
         except Exception as exc:
             self.log_warning(f"{name}：点击返回主页按钮失败：{exc}")
@@ -399,6 +431,7 @@ class BaseBD2Task(BaseTask):
                 if not stable:
                     break
 
+                frame = probe_frame
                 house_match = self._match_house_button(frame)
                 if house_match is not None:
                     frame_h, frame_w = frame.shape[:2]
@@ -558,7 +591,7 @@ class BaseBD2Task(BaseTask):
                     name=name,
                 )
             )
-        except TaskDisabledException:
+        except (TaskDisabledException, FinishedException):
             raise
         except Exception:
             return []
@@ -665,7 +698,7 @@ class BaseBD2Task(BaseTask):
                 after_sleep=0.0,
             )
             return True
-        except TaskDisabledException:
+        except (TaskDisabledException, FinishedException):
             raise
         except Exception as exc:
             self.log_warning(f"自动返回主页：左上角返回点击失败：{exc}")
@@ -952,7 +985,7 @@ class BaseBD2Task(BaseTask):
             return
         try:
             self.save_frame(name, self.capture_frame())
-        except TaskDisabledException:
+        except (TaskDisabledException, FinishedException):
             raise
         except Exception as exc:
             self.log_warning(f"诊断截图保存失败：{exc}")
@@ -1069,110 +1102,51 @@ class BaseBD2Task(BaseTask):
         end_at = monotonic() + max(0.0, float(timeout))
         handled: set[str] = set()
         action_count = 0
-        pvp_pending: str | None = None
-        pvp_attempts = 0
-        pvp_clear_frames = 0
-        reward_pending: str | None = None
-        reward_clear_frames = 0
+        reads_after_action = OVERLAY_CLEAR_FRAMES
+        reward = _PendingOverlay()
+        rank = _PendingOverlay()
 
         while True:
             boxes = self._recent_cartridge_ocr_boxes()
-            text = " ".join(
-                str(getattr(box, "name", "")) for box in boxes
+            reads_after_action += 1
+            text, action_name, target_box = self._observe_cartridge_overlays(
+                boxes, reward, rank, handled,
+                allow_pvp_pages=allow_pvp_pages, allow_season_reward=allow_season_reward,
             )
-            normalized = normalize_ocr_text(text)
-            action_name, target_box = "", None
-            for title, dismiss_text in (
-                (FIEND_HUNT_REWARD_TITLE, FIEND_HUNT_REWARD_DISMISS_TEXT),
-                (GOLDEN_ARENA_REWARD_TITLE, GOLDEN_ARENA_REWARD_DISMISS_TEXT),
-            ):
-                if title in normalized or dismiss_text in normalized:
-                    reward_pending = title
-                    reward_clear_frames = 0
-                    if title in normalized:
-                        action_name = title
-                        target_box = self._find_ocr_box(boxes, dismiss_text)
-                    break
-            else:
-                if reward_pending:
-                    # An empty OCR result cannot prove that the overlay closed.
-                    reward_clear_frames = reward_clear_frames + 1 if normalized else 0
-                    if reward_clear_frames >= 2:
-                        self.info_set(reward_pending, "已确认关闭")
-                        reward_pending = None
-            if allow_pvp_pages and not reward_pending:
-                text, action_name, target_box = self._pvp_special_page_action(
-                    boxes,
-                    allow_season_reward=allow_season_reward,
-                )
-                if pvp_pending:
-                    if pvp_pending in normalized or not normalized:
-                        pvp_clear_frames = 0
-                    else:
-                        # A non-empty frame with no rank action is evidence
-                        # that the overlay changed.  Empty OCR is ambiguous
-                        # during animation and must keep the pending guard
-                        # armed until the timeout rather than advancing to a
-                        # different cartridge page.
-                        pvp_clear_frames += 1
-                        if pvp_clear_frames >= 2:
-                            handled.add(pvp_pending)
-                            pvp_pending = None
-                            pvp_attempts = 0
-                            pvp_clear_frames = 0
             self.info_set("最近卡带特殊页面 OCR", text or "-")
-
-            if (
-                action_name in ("恭喜晋级", "段位下滑")
-                and action_name == pvp_pending
-                and pvp_attempts >= RECENT_CARTRIDGE_SPECIAL_PAGE_MAX_ACTIONS
-            ):
-                self.info_set(action_name, "点击后关闭未确认，停止卡带切换")
-                return CartridgeSpecialPageResult.BLOCKED
 
             if (
                 action_name
                 and action_name not in handled
-                and action_name != pvp_pending
+                and (action_name != rank.title or not rank.has_clicked)
                 and target_box is not None
                 and action_count < RECENT_CARTRIDGE_SPECIAL_PAGE_MAX_ACTIONS
+                and self._click_cartridge_overlay(action_name, target_box)
             ):
-                point = self._ocr_box_center(target_box)
-                if point is not None:
-                    frame_width = max(1, int(self.width))
-                    frame_height = max(1, int(self.height))
-                    self.info_set("当前阶段", f"处理最近卡带{action_name}")
-                    self.operate_click(
-                        max(0.0, min(1.0, point[0] / frame_width)),
-                        max(0.0, min(1.0, point[1] / frame_height)),
-                        after_sleep=0.5,
-                    )
-                    action_count += 1
-                    if action_name in ("恭喜晋级", "段位下滑"):
-                        pvp_pending = action_name
-                        pvp_attempts += 1
-                        pvp_clear_frames = 0
-                    else:
-                        handled.add(action_name)
-                    if action_name in (FIEND_HUNT_REWARD_TITLE, GOLDEN_ARENA_REWARD_TITLE):
-                        end_at = max(end_at, monotonic() + max(0.0, float(timeout)))
+                action_count += 1
+                if action_name in RANK_OVERLAY_TITLES:
+                    rank.has_clicked = True
+                else:
+                    handled.add(action_name)
+                # A dismissal clicked near the deadline still needs fresh frames to
+                # prove it closed; the action limit bounds deadline extensions.
+                end_at = max(end_at, monotonic() + max(0.0, float(timeout)))
+                reads_after_action = 0
 
             if (
-                monotonic() >= end_at
+                (monotonic() >= end_at and reads_after_action >= OVERLAY_CLEAR_FRAMES)
                 or (
                     action_count >= RECENT_CARTRIDGE_SPECIAL_PAGE_MAX_ACTIONS
-                    and not reward_pending
-                    and pvp_pending is None
+                    and reward.title is None
+                    and rank.title is None
                 )
             ):
                 break
             self.sleep(max(0.0, float(interval)))
 
-        if reward_pending:
-            self.info_set(reward_pending, "关闭未确认，停止卡带切换")
-            return CartridgeSpecialPageResult.BLOCKED
-        if pvp_pending:
-            self.info_set(pvp_pending, "点击后关闭未确认，停止卡带切换")
+        pending_title = reward.title or rank.title
+        if pending_title:
+            self.info_set(pending_title, "关闭未确认，停止卡带切换")
             return CartridgeSpecialPageResult.BLOCKED
         return (
             CartridgeSpecialPageResult.HANDLED
@@ -1250,7 +1224,7 @@ class BaseBD2Task(BaseTask):
                 log=False,
                 name=name,
             )
-        except TaskDisabledException:
+        except (TaskDisabledException, FinishedException):
             raise
         except Exception as exc:
             self.info_set(f"{name} OCR 错误", str(exc))
@@ -1324,6 +1298,55 @@ class BaseBD2Task(BaseTask):
                 task_stopped()
                 return True
         return False
+
+    def _observe_cartridge_overlays(
+        self, boxes: list, reward: _PendingOverlay, rank: _PendingOverlay, handled: set[str],
+        *, allow_pvp_pages: bool, allow_season_reward: bool,
+    ) -> tuple[str, str, object | None]:
+        """Update pending overlays from one frame and select its confirmed action pair."""
+        text = " ".join(str(getattr(box, "name", "")) for box in boxes)
+        normalized = normalize_ocr_text(text)
+        action_name, target_box = "", None
+        for title, dismiss_text in (
+            (FIEND_HUNT_REWARD_TITLE, FIEND_HUNT_REWARD_DISMISS_TEXT),
+            (GOLDEN_ARENA_REWARD_TITLE, GOLDEN_ARENA_REWARD_DISMISS_TEXT),
+        ):
+            if title in normalized or dismiss_text in normalized:
+                reward.observe(title, is_readable=True)
+                if title in normalized:
+                    action_name = title
+                    target_box = self._find_ocr_box(boxes, dismiss_text)
+                break
+        else:
+            closed = reward.observe(None, is_readable=bool(normalized))
+            if closed:
+                self.info_set(closed, "已确认关闭")
+        if reward.title is not None:
+            # A covering reward page interrupts the rank overlay's clear-frame sequence.
+            rank.clear_frames = 0
+        if allow_pvp_pages and reward.title is None:
+            text, action_name, target_box = self._pvp_special_page_action(
+                boxes, allow_season_reward=allow_season_reward,
+            )
+            rank_title = next((title for title in RANK_OVERLAY_TITLES if title in normalized), None)
+            closed = rank.observe(rank_title, is_readable=bool(normalized))
+            if closed:
+                handled.add(closed)
+        return text, action_name, target_box
+
+    def _click_cartridge_overlay(self, action_name: str, target_box) -> bool:
+        point = self._ocr_box_center(target_box)
+        if point is None:
+            return False
+        frame_width = max(1, int(self.width))
+        frame_height = max(1, int(self.height))
+        self.info_set("当前阶段", f"处理最近卡带{action_name}")
+        self.operate_click(
+            max(0.0, min(1.0, point[0] / frame_width)),
+            max(0.0, min(1.0, point[1] / frame_height)),
+            after_sleep=0.5,
+        )
+        return True
 
 
 def task_info_snapshot(task) -> dict:

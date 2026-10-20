@@ -1,16 +1,7 @@
-"""Run summary panel replacing the raw 信息/值 table (mockup V2, window 2).
+"""任务运行摘要、操作按钮与子任务进度。
 
-One panel per state: a status pill (运行中/已暂停/已完成/已中止), task name and
-elapsed time, contextual ops (暂停/停止 while running, 查看日志/关闭 when done),
-and — for the batch task — a segmented progress bar plus a per-child status
-grid.  Everything below the header is derived from ``task.info``, so any task
-that fills the standard keys (状态/当前子任务/完成/失败/跳过/Log) renders
-correctly without task-specific UI code.
-
-``render`` runs on the tab's 1s timer and the done panel stays visible, so
-every section is dirty-checked: unchanged content never re-creates widgets,
-re-applies stylesheets or re-enters layout — the per-second tick collapses to
-a few string comparisons plus the one elapsed-time label that actually ticks.
+根据 task.info 中的状态、当前子任务、完成、失败和跳过字段展示运行结果。
+每秒只更新变化部分；完成结果持续显示，避免重复创建控件和重排布局。
 """
 
 from __future__ import annotations
@@ -58,9 +49,10 @@ def _elapsed_text(task, now: float | None = None, finished: float | None = None)
     return f"已运行 {duration}" if getattr(task, "enabled", False) else f"用时 {duration}"
 
 
-def run_state(task) -> str:
-    """One of run / pause / done / abort / fail for the status pill."""
-    info = task_info_snapshot(task)
+def run_state(task, info=None) -> str:
+    """Return the pill state using the caller's refresh snapshot when supplied."""
+    if info is None:
+        info = task_info_snapshot(task)
     if getattr(task, "enabled", False):
         return "pause" if getattr(task, "paused", False) else "run"
     current_run = (id(task), getattr(task, "start_time", 0))
@@ -69,6 +61,8 @@ def run_state(task) -> str:
     status = str(info.get(_STATUS_KEY, ""))
     if "中止" in status:
         return "abort"
+    if "存在问题" in status and not info.get("Error"):
+        return "warn"
     if not info:
         return "done"
     if not is_successful_run(info):
@@ -80,13 +74,14 @@ _PILL_TEXT = {
     "run": "运行中",
     "pause": "已暂停",
     "done": "已完成",
+    "warn": "存在问题",
     "abort": "已中止",
     "fail": "已中止",
 }
 
 
 class SegmentedBar(QWidget):
-    """Mockup segbar: colored segments sized by child-task counts."""
+    """按子任务数量绘制各状态的分段进度。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -127,7 +122,7 @@ class SegmentedBar(QWidget):
 
 
 class LinkLabel(QLabel):
-    """A plain-text label that acts as a link (mockup's 日志 → line)."""
+    """可点击的纯文本链接标签。"""
 
     def __init__(self, text, callback, parent=None):
         super().__init__(text, parent)
@@ -243,6 +238,7 @@ class RunPanel(QFrame):
             "run": (tokens["accent"], tokens["accent_soft"]),
             "pause": (tokens["warn_ink"], tokens["warn_soft"]),
             "done": (tokens["ok"], tokens["ok_soft"]),
+            "warn": (tokens["warn_ink"], tokens["warn_soft"]),
             "abort": (tokens["warn_ink"], tokens["warn_soft"]),
             "fail": (tokens["warn"], tokens["warn_soft"]),
         }
@@ -292,7 +288,7 @@ class RunPanel(QFrame):
         if task is None:
             return
         info = task_info_snapshot(task)
-        state = run_state(task)
+        state = run_state(task, info)
         if state != self._pill_kind:
             self._pill_kind = state
             self.pill.setText(_PILL_TEXT[state])
@@ -321,39 +317,39 @@ class RunPanel(QFrame):
         if elapsed != self.time_label.text():
             self.time_label.setText(elapsed)
 
-        running = state in ("run", "pause")
+        is_running = state in ("run", "pause")
         pause_text = "继续" if state == "pause" else "暂停"
         if pause_text != self.pause_button.text():
             self.pause_button.setText(pause_text)
         for button, visible in (
-            (self.pause_button, running),
-            (self.stop_button, running),
-            (self.logs_button, not running),
-            (self.close_button, not running),
+            (self.pause_button, is_running),
+            (self.stop_button, is_running),
+            (self.logs_button, not is_running),
+            (self.close_button, not is_running),
         ):
             if button.isHidden() == visible:
                 button.setVisible(visible)
 
-        self._render_batch(task, info, running)
-        self._render_rows(task, info, state)
-
-    def _render_batch(self, task, info, running: bool) -> None:
         children = [child.config_key for child in getattr(task, "child_tasks", ()) or ()]
+        outcomes = {
+            key: [name for name in children if contains_joined_name(info.get(key), name)]
+            for key in (_BATCH_DONE_KEY, _BATCH_FAIL_KEY, _BATCH_SKIP_KEY)
+        }
+        self._render_batch(children, outcomes, info, is_running)
+        self._render_rows(info, state, outcomes[_BATCH_FAIL_KEY])
+
+    def _render_batch(self, children, outcomes, info, is_running: bool) -> None:
         if not children:
             self.segbar.hide()
             self.legend.hide()
             self.grid_container.hide()
             return
 
-        done = [name for name in children if contains_joined_name(info.get(_BATCH_DONE_KEY), name)]
-        failed = [
-            name for name in children if contains_joined_name(info.get(_BATCH_FAIL_KEY), name)
-        ]
-        skipped = [
-            name for name in children if contains_joined_name(info.get(_BATCH_SKIP_KEY), name)
-        ]
+        done = outcomes[_BATCH_DONE_KEY]
+        failed = outcomes[_BATCH_FAIL_KEY]
+        skipped = outcomes[_BATCH_SKIP_KEY]
         current = str(info.get(_CURRENT_KEY, "") or "").strip()
-        doing = [current] if running and current in children else []
+        doing = [current] if is_running and current in children else []
         settled = set(done) | set(failed) | set(skipped) | set(doing)
         todo = [name for name in children if name not in settled]
 
@@ -430,19 +426,15 @@ class RunPanel(QFrame):
             cell.setText(f"<span style='color:{color}'>{icon}</span>&nbsp;&nbsp;{name}")
             self.grid.addWidget(cell, index // 3, index % 3)
 
-    def _render_rows(self, task, info, state: str) -> None:
+    def _render_rows(self, info, state: str, failed) -> None:
         rows: list[tuple[str, str, str]] = []  # (key, value, tone)
         status = str(info.get(_STATUS_KEY, "") or "")
         if status:
-            tone = "warn" if state in ("abort", "fail") else "strong"
+            tone = "warn" if state in ("warn", "abort", "fail") else "strong"
             rows.append((_STATUS_KEY, status, tone))
         current = str(info.get(_CURRENT_KEY, "") or "")
         if current and current != "-" and state in ("run", "pause"):
             rows.append((_CURRENT_KEY, current, "strong"))
-        children = [child.config_key for child in getattr(task, "child_tasks", ()) or ()]
-        failed = [
-            name for name in children if contains_joined_name(info.get(_BATCH_FAIL_KEY), name)
-        ]
         if failed:
             rows.append(("失败子任务", "、".join(failed), "warn"))
         warning = info.get("Warning")

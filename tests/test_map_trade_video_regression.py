@@ -2,6 +2,10 @@
 
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+import cv2
+import numpy as np
 
 from src.tasks.map_trade.action_icons import (
     ABSORB_ICON,
@@ -13,7 +17,7 @@ from src.tasks.map_trade.action_icons import (
 )
 from src.tasks.map_trade.navigator import Navigator
 from src.tasks.map_trade.vision import Vision
-from tests.helpers.recognition_fixtures import load_fhd_bgr
+from tests.helpers.recognition_fixtures import load_bgr, load_fhd_bgr
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "map_trade" / "video_fhd"
 
@@ -52,8 +56,14 @@ class MapTradeVideoRegressionTest(unittest.TestCase):
 
     def test_limited_actions_preserve_available_and_used_states(self) -> None:
         cases = (
-            ("story_sandbox_ready.png", ActionIconState.AVAILABLE),
-            ("story_sandbox_used.png", ActionIconState.USED),
+            ("story_sandbox_ready.png", (ActionIconState.AVAILABLE,) * 3),
+            ("story_sandbox_used.png", (ActionIconState.USED,) * 3),
+            ("beach_skills_dimmed.png", (
+                ActionIconState.USED, ActionIconState.USED, ActionIconState.AVAILABLE,
+            )),
+            ("beach_skills_compressed.png", (
+                ActionIconState.USED, ActionIconState.USED, ActionIconState.AVAILABLE,
+            )),
         )
         icons = (
             (ABSORB_ICON, "absorb"),
@@ -61,30 +71,59 @@ class MapTradeVideoRegressionTest(unittest.TestCase):
             (SUBDUE_ICON, "subdue"),
         )
 
-        for fixture_name, expected_state in cases:
-            frame = load_fhd_bgr(FIXTURE_ROOT / fixture_name)
-            for icon, center_name in icons:
-                with self.subTest(fixture=fixture_name, action=icon.name):
-                    detection = self.actions.detect(frame, icon)
-                    self.assertEqual(expected_state, detection.state)
-                    self._assert_near(
-                        self,
-                        detection.match.center,
-                        ACTION_SLOT_CENTERS_REFERENCE[center_name],
-                    )
+        for fixture_name, expected_states in cases:
+            source = load_fhd_bgr(FIXTURE_ROOT / fixture_name)
+            widths = (1920,) if "compressed" in fixture_name else (1280, 1920, 2560, 3840)
+            for width in widths:
+                frame = cv2.resize(
+                    source, (width, width * 9 // 16),
+                    interpolation=cv2.INTER_AREA if width < 1920 else cv2.INTER_CUBIC,
+                )
+                for (icon, center_name), expected_state in zip(icons, expected_states, strict=True):
+                    with self.subTest(fixture=fixture_name, width=width, action=icon.name):
+                        detection = self.actions.detect(frame, icon)
+                        self.assertEqual(expected_state, detection.state, detection.reason)
+                        self._assert_near(
+                            self, detection.match.center,
+                            tuple(round(value * width / 1920)
+                                  for value in ACTION_SLOT_CENTERS_REFERENCE[center_name]),
+                        )
 
-    def test_story_sandbox_fixtures_confirm_group_one(self) -> None:
+    def test_limited_actions_reject_other_skill_group_and_empty_slots(self) -> None:
+        other_group = load_bgr(FIXTURE_ROOT / "sandbox_other_skill_group.png")
+        self.assertIsNotNone(other_group)
+        for frame in (other_group, np.full((1080, 1920, 3), 220, dtype=np.uint8)):
+            for icon in (ABSORB_ICON, SUMMON_ICON, SUBDUE_ICON):
+                with self.subTest(shape=frame.shape, action=icon.name):
+                    self.assertEqual(ActionIconState.ABSENT, self.actions.detect(frame, icon).state)
+        frame = load_fhd_bgr(FIXTURE_ROOT / "beach_skills_dimmed.png")
+        for error in (AttributeError, TypeError, ValueError):
+            with self.subTest(error=error), patch.object(
+                self.vision, "match_slot_evidence", side_effect=error("invalid evidence"),
+            ):
+                detection = self.actions.detect(frame, ABSORB_ICON)
+                self.assertEqual(ActionIconState.ABSENT, detection.state)
+                self.assertFalse(detection.clickable)
+
+    def test_limited_actions_keep_intermediate_contrast_unknown(self) -> None:
+        source = load_fhd_bgr(FIXTURE_ROOT / "story_sandbox_ready.png")
+        frame = (source.astype(np.float32) * 0.75).astype(np.uint8)
+        for icon in (ABSORB_ICON, SUMMON_ICON, SUBDUE_ICON):
+            with self.subTest(action=icon.name):
+                detection = self.actions.detect(frame, icon)
+                self.assertEqual(ActionIconState.UNKNOWN, detection.state, detection.reason)
+                self.assertFalse(detection.clickable)
+
+    def test_story_sandbox_fixtures_confirm_skill_group_one(self) -> None:
         for fixture_name in (
             "story_sandbox_ready.png",
             "story_sandbox_used.png",
         ):
             with self.subTest(fixture=fixture_name):
-                confirmation = self.navigator._match_story_sandbox_signals(
-                    load_fhd_bgr(FIXTURE_ROOT / fixture_name)
-                )
-
-                self.assertTrue(confirmation.passed)
-                self.assertEqual(1, confirmation.skill_group)
+                frame = load_fhd_bgr(FIXTURE_ROOT / fixture_name)
+                _matches, hits, group = self.navigator._sandbox_skill_group_evidence(frame, None)
+                self.assertGreaterEqual(hits, 2)
+                self.assertEqual(1, group)
 
     def test_teleport_map_keeps_two_enabled_candidates_and_selects_lower_left(self) -> None:
         frame = load_fhd_bgr(FIXTURE_ROOT / "teleport_map_multiple_enabled.png")

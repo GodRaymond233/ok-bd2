@@ -26,8 +26,7 @@ SHOP_CARTRIDGE_SCROLL_POINT = (
     (SHOP_CARTRIDGE_SCROLL_REGION[1] + SHOP_CARTRIDGE_SCROLL_REGION[3]) / 2,
 )
 SHOP_CARTRIDGE_SCALE_RATIOS = (0.95, 1.0, 1.05)
-# 商品卡带竞争 OCR 区域：1920×1080 参考矩形 (200, 70, 300, 1010) 的 LTRB 相对形式。
-# 必须走 ocr_boxes 的 relative_roi 路径；roi= 路径按 720p 参考缩放，会裁错区域。
+# 商品卡带竞争 OCR 区域：1920x1080 参考矩形 (200, 70, 300, 1010) 的 LTRB 相对形式。
 SHOP_CARTRIDGE_OCR_RELATIVE_ROI = reference_rect_to_relative_roi(
     (200, 70, 300, 1010),
     FHD_1080,
@@ -117,7 +116,7 @@ SHOP_MODE_SWITCH_MAX_CLICKS = 3
 # 在全画面搜索。
 SALE_MARKER_SEARCH_WIDTH = 150
 SALE_MARKER_VERTICAL_PADDING = 12
-# 商品网格排除顶部商人对白和底部操作按钮，并覆盖右侧第四列商品名。
+# 出售界面右侧商品卡片网格区域（排除顶部 NPC 对白/标题以及底部按钮）
 SALE_ITEMS_GRID_REGION = (
     460 / FHD_1080.width,
     140 / FHD_1080.height,
@@ -156,15 +155,15 @@ SALE_DIALOG_REGION = (
     785 / FHD_1080.height,
 )
 SALE_MIN_POINT = (677 / FHD_1080.width, 721 / FHD_1080.height)
-SALE_PLUS_TEN_POINT = (789 / FHD_1080.width, 723 / FHD_1080.height)
 SALE_MAX_POINT = (903 / FHD_1080.width, 724 / FHD_1080.height)
 SALE_CONFIRM_POINT = (1312 / FHD_1080.width, 728 / FHD_1080.height)
 SALE_CLOSE_POINT = (1420 / FHD_1080.width, 323 / FHD_1080.height)
+# Quantity follows the thumb center; its 30px diameter insets the track ends by 15px.
 SALE_SLIDER_REGION = (
-    552 / FHD_1080.width,
-    647 / FHD_1080.height,
-    912 / FHD_1080.width,
-    683 / FHD_1080.height,
+    567 / FHD_1080.width,
+    651 / FHD_1080.height,
+    897 / FHD_1080.width,
+    681 / FHD_1080.height,
 )
 SALE_DIALOG_TITLE_REGION = (
     495 / FHD_1080.width,
@@ -189,7 +188,7 @@ COOK_SUBMENU_TEMPLATE = TemplateSpec(
     "料理子菜单",
     "image/green/UI_cooking_submenu.png",
     0.72,
-    roi=(670, 540, 230, 180),
+    roi=(1005, 810, 345, 270),
 )
 
 

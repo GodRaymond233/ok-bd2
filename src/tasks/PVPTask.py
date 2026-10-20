@@ -4,11 +4,12 @@ from time import monotonic
 
 import cv2
 import numpy as np
-from ok.task.exceptions import TaskDisabledException
+from ok.task.exceptions import FinishedException, TaskDisabledException
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import (
     FIEND_HUNT_REWARD_TITLE,
+    RANK_OVERLAY_TITLES,
     RECENT_CARTRIDGE_SPECIAL_PAGE_MAX_ACTIONS,
     BaseBD2Task,
 )
@@ -239,16 +240,16 @@ class PVPTask(BaseBD2Task):
         for round_index in range(1, max_rounds + 1):
             self.info_set("当前阶段", f"第 {round_index} 轮")
             start_state = self._start_auto_battle(current_multiplier)
+            if start_state == "ap_shortage" and current_multiplier != 1:
+                self.log_info("镜中之战：当前倍率 AP 不足，降到 1 倍重试。")
+                current_multiplier = 1
+                self.info_set("目标倍率", current_multiplier)
+                start_state = self._start_auto_battle(current_multiplier)
             if start_state == "ap_depleted":
                 self.info_set("状态", "免费 AP 已耗尽。")
                 self.log_completion("镜中之战：免费 AP 已耗尽，流程结束。")
                 return True
             if start_state == "ap_shortage":
-                if current_multiplier != 1:
-                    self.log_info("镜中之战：当前倍率 AP 不足，降到 1 倍重试。")
-                    current_multiplier = 1
-                    self.info_set("目标倍率", current_multiplier)
-                    continue
                 self.info_set("状态", "1 倍仍 AP 不足。")
                 self.log_completion("镜中之战：1 倍 AP 仍不足，流程结束。")
                 return True
@@ -454,7 +455,10 @@ class PVPTask(BaseBD2Task):
             )
             last_text = text or last_text
             self.info_set("PVP 入场特殊页面 OCR", text or "-")
-            if action_name:
+            has_rank_overlay = any(
+                title in self._normalize_text(text) for title in RANK_OVERLAY_TITLES
+            )
+            if action_name or has_rank_overlay:
                 hub_candidate_at = None
                 if (
                     action_name not in handled
@@ -1515,7 +1519,7 @@ class PVPTask(BaseBD2Task):
                 log=False,
                 name=name,
             )
-        except TaskDisabledException:
+        except (TaskDisabledException, FinishedException):
             raise
         except Exception as exc:
             self.info_set(f"{name} OCR 错误", str(exc))

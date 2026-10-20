@@ -84,7 +84,7 @@ class DailyBatchTaskTest(unittest.TestCase):
             config["onetime_tasks"][0],
         )
 
-    def test_config_hides_map_collection_and_exposes_remaining_children(self):
+    def test_config_exposes_all_daily_children_including_map_collection(self):
         executor = SimpleNamespace(scene=None)
         task = DailyBatchTask(executor, SimpleNamespace())
         expected = [
@@ -92,31 +92,36 @@ class DailyBatchTaskTest(unittest.TestCase):
             "快速狩猎",
             "免费抽抽乐",
             "广场女神像",
-            "自动PVP",
             "跑商",
+            "跑图",
+            "自动PVP",
         ]
         self.assertEqual(expected, task.config_type["启用"]["sub_configs"][True])
         self.assertTrue(all(task.default_config[key] for key in expected))
-        self.assertNotIn("跑图", task.default_config)
-        self.assertNotIn("跑图", task.description)
+        self.assertIn("跑图", task.description)
+        self.assertIs(MapCollectionTask, task.child_tasks[-2].task_class)
 
-    def test_formal_weekly_map_collection_card_is_registered_but_hidden(self):
-        executor = SimpleNamespace(scene=None)
-        task = MapCollectionTask(executor, SimpleNamespace(debug=False))
+    def test_weekly_map_collection_card_is_visible_in_daily_group_in_both_modes(self):
+        from qfluentwidgets import FluentIcon
 
-        self.assertFalse(task.visible)
-        self.assertEqual("日常/周常", task.group_name)
-        self.assertIn(
-            ["src.tasks.MapCollectionTask", "MapCollectionTask"],
-            config["onetime_tasks"],
-        )
+        from src.tasks.debug_registry import install_debug_tasks
 
-    def test_debug_weekly_map_collection_card_moves_to_internal_testing_group(self):
-        executor = SimpleNamespace(scene=None)
-        task = MapCollectionTask(executor, SimpleNamespace(debug=True))
-
-        self.assertTrue(task.visible)
-        self.assertEqual("内测功能", task.group_name)
+        for debug in (False, True):
+            with self.subTest(debug=debug):
+                cfg = {"onetime_tasks": list(config["onetime_tasks"])}
+                if debug:
+                    install_debug_tasks(cfg)
+                    install_debug_tasks(cfg)
+                self.assertEqual(
+                    1, cfg["onetime_tasks"].count(
+                        ["src.tasks.MapCollectionTask", "MapCollectionTask"]
+                    ),
+                )
+                task = MapCollectionTask(SimpleNamespace(scene=None), SimpleNamespace(debug=debug))
+                self.assertEqual("每周跑图", task.name)
+                self.assertTrue(task.visible)
+                self.assertEqual("日常/周常", task.group_name)
+                self.assertEqual(FluentIcon.CALENDAR, task.group_icon)
 
     def test_runs_enabled_children_in_order_and_restores_their_configs(self):
         class First:
@@ -327,6 +332,56 @@ class DailyBatchTaskTest(unittest.TestCase):
         self.assertEqual([("second", True)], calls)
         self.assertIs(original_config, task.config)
         self.assertEqual("第一项", task.info.get("跳过"))
+
+    def test_collection_batch_respects_refresh_cycles_and_schedules_its_result(self):
+        from src.tasks.auto_scheduler import _any_batch_child_due
+        from src.tasks.run_history import day_start_ts, week_start_ts
+
+        for period, day, hour, should_run, result_period, next_day in (
+            ("今日", 17, 7, False, "今日", 17),
+            ("今日", 17, 8, True, "今日", 18),
+            ("今日", 17, 8, True, "本周", 19),
+            ("本周", 17, 8, False, "本周", 19),
+            ("本周", 19, 8, True, "今日", 20),
+        ):
+            with self.subTest(period=period, day=day, hour=hour, result=result_period), \
+                    tempfile.TemporaryDirectory() as directory:
+                now = datetime(2026, 10, day, hour, tzinfo=BEIJING_TZ).timestamp()
+                previous = datetime(2026, 10, 16, 23, tzinfo=BEIJING_TZ).timestamp()
+                history = RunHistoryStore(f"{directory}/history.json")
+                schedule = scheduler.TaskScheduleStore(f"{directory}/schedule.json")
+                calls = []
+                child = _ChildTask("每周跑图", calls)
+
+                def completion_info(period, stamp):
+                    anchor = week_start_ts if period == "本周" else day_start_ts
+                    cycle = datetime.fromtimestamp(anchor(stamp, refresh_hour=8), BEIJING_TZ)
+                    return {"状态": "跑图完成。", "跑图完成范围": period,
+                            "跑图周期": cycle.date().isoformat()}
+
+                child.info = completion_info(period, previous)
+                history.record_task_done(child, finished=previous, ok=True)
+                child.info = completion_info(result_period, now)
+                task, _ = self.make_task(
+                    {MapCollectionTask: child}, (DailyBatchChild("跑图", MapCollectionTask),),
+                    {"启用": True, "跑图": True, "完成日常后自动关机": True},
+                )
+                with mock.patch("time.time", return_value=now), mock.patch(
+                    "src.tasks.run_history.default_store", return_value=history,
+                ), mock.patch.object(scheduler, "default_store", return_value=schedule), \
+                        mock.patch(
+                            "src.tasks.DailyBatchTask._schedule_system_shutdown",
+                        ) as shutdown:
+                    self.assertEqual(should_run, _any_batch_child_due(
+                        task, task.executor, history, schedule, now=now,
+                    ))
+                    self.assertTrue(task.run(RUN_MODE_INCOMPLETE))
+                    self.assertEqual(should_run, bool(calls))
+                    self.assertEqual("跑图", task.info["完成" if should_run else "跳过"])
+                    shutdown.assert_called_once_with(SHUTDOWN_COUNTDOWN_SECONDS)
+                    if should_run:
+                        expected = datetime(2026, 10, next_day, 8, tzinfo=BEIJING_TZ).timestamp()
+                        self.assertEqual(expected, schedule.next_run(child.name))
 
     def test_requested_run_mode_is_transient_and_next_run_defaults_to_all(self):
         class First:
@@ -749,7 +804,7 @@ class DailyBatchTaskTest(unittest.TestCase):
             def __init__(self):
                 self.calls = 0
 
-            def is_completed_today(self, _name, now=None, *, scope=None):
+            def is_completed(self, _name, now=None, *, scope=None):
                 self.calls += 1
                 return self.calls == 1
 
@@ -797,14 +852,14 @@ class DailyBatchTaskTest(unittest.TestCase):
                 with mock.patch(
                     "src.tasks.DailyBatchTask.subprocess.run",
                     return_value=completed,
-                ) as run:
+                ) as run, mock.patch.dict("os.environ", {"SystemRoot": r"C:\Windows"}):
                     self.assertEqual(
                         expected,
                         _schedule_system_shutdown(SHUTDOWN_COUNTDOWN_SECONDS),
                     )
                 command = run.call_args.args[0]
                 # 绝对路径调用 System32 的 shutdown.exe，防止安装目录同名顶替。
-                self.assertTrue(command[0].endswith("shutdown.exe"))
+                self.assertEqual(r"C:\Windows\System32\shutdown.exe", command[0])
                 self.assertEqual(["/s", "/t", "60"], command[1:])
                 self.assertTrue(run.call_args.kwargs["capture_output"])
 

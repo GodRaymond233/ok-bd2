@@ -5,21 +5,15 @@ from dataclasses import dataclass
 import numpy as np
 
 from src.tasks.map_trade.action_icons import (
-    ABSORB_ICON,
     ACTION_SLOT_CENTER_RELATIVE_ROIS,
     ACTION_SLOT_CENTERS_REFERENCE,
     ACTION_SLOT_RELATIVE_ROIS,
-    SANDBOX_ACTION_ICONS,
-    SEARCH_ICON,
     SKILL_GROUP_CENTERS_REFERENCE,
-    SUBDUE_ICON,
-    SUMMON_ICON,
 )
 from src.tasks.map_trade.card_status import StoryCardCompletion
 from src.tasks.map_trade.models import CardSpec, MapPageMode, MatchResult, TemplateSpec
-from src.utils.calibration import FHD_1080, HD_720, reference_rect_to_relative_roi
+from src.utils.calibration import FHD_1080, reference_rect_to_relative_roi
 from src.utils.cartridge_quick_switch import QUICK_SWITCH_PAGE_LABELS, QUICK_SWITCH_SEARCH_REGIONS
-from src.utils.vision_models import FrameGeometry
 
 QUICK_SWITCH_TEMPLATE = TemplateSpec(
     "快速切换按钮",
@@ -95,9 +89,14 @@ STORY_CATEGORY_HIGHLIGHT_REGION = (
     915 / FHD_1080.height,
 )
 STORY_CATEGORY_HIGHLIGHT_MIN_RATIO = 0.05
+EVENT_CATEGORY_POINT = (1358 / FHD_1080.width, 877 / FHD_1080.height)
+EVENT_CATEGORY_HIGHLIGHT_REGION = (
+    1255 / FHD_1080.width, 840 / FHD_1080.height,
+    1460 / FHD_1080.width, 915 / FHD_1080.height,
+)
+EVENT_CARD_SCAN_SECONDS = 3.0
 QUICK_SWITCH_CARTRIDGE_REGION = (0.0, 908 / FHD_1080.height, 1.0, 1.0)
-QUICK_SWITCH_SCROLL_FOCUS_POINT = (43 / FHD_1080.width, 974 / FHD_1080.height)
-QUICK_SWITCH_SCROLL_POINT = QUICK_SWITCH_SCROLL_FOCUS_POINT
+QUICK_SWITCH_SCROLL_POINT = (43 / FHD_1080.width, 974 / FHD_1080.height)
 QUICK_SWITCH_SCROLL_RESET_AMOUNT = -1
 QUICK_SWITCH_SCROLL_RESET_COUNT = 24
 QUICK_SWITCH_SCROLL_UP_AMOUNT = 1
@@ -105,7 +104,7 @@ QUICK_SWITCH_SCROLL_UP_COUNT = 2
 QUICK_SWITCH_SCROLL_SCAN_STEPS = 16
 QUICK_SWITCH_SCROLL_INTERVAL = 0.08
 QUICK_SWITCH_SCROLL_SETTLE_SECONDS = 0.35
-PROBE_QUICK_SWITCH_SCROLL_POINT = QUICK_SWITCH_SCROLL_FOCUS_POINT
+PROBE_QUICK_SWITCH_SCROLL_POINT = QUICK_SWITCH_SCROLL_POINT
 PROBE_QUICK_SWITCH_SCROLL_AMOUNT = 1
 PROBE_QUICK_SWITCH_SCROLL_COUNT = 5
 PROBE_QUICK_SWITCH_SCROLL_STEPS = 30
@@ -218,6 +217,8 @@ RETURN_HOME_ANNOUNCEMENT_KEYWORD_GROUPS = (
 )
 SHOP_CLOSE_CLICK_RETRIES = 2
 SHOP_CLOSE_CLICK_INTERVAL = 0.3
+# 折扣商店使用左上返回箭头。模板来自 720p ``image/`` 素材，但点击回退点
+# 始终按 1920x1080 客户区标定；两种参考系由各自的处理链独立消费。
 DISCOUNT_SHOP_BACK_POINT = (172 / FHD_1080.width, 50 / FHD_1080.height)
 DISCOUNT_SHOP_CLOSE_CONTROL_TEMPLATES = (
     TemplateSpec(
@@ -232,6 +233,17 @@ DISCOUNT_SHOP_CLOSE_CONTROL_TEMPLATES = (
 # Relative template ROIs are always fractional left/top/right/bottom bounds.
 CHAPTER_HOME_RELATIVE_ROI = (0.86, 0.0, 1.0, 0.18)
 CHAPTER_HOME_TEMPLATES = (
+    TemplateSpec(
+        "箱庭主页房子按钮",
+        "return_home_house_button.png",
+        0.85,
+        minimum_safe_threshold=0.85,
+        min_pixel_score=0.70,
+        min_zncc_score=0.70,
+        relative_roi=CHAPTER_HOME_RELATIVE_ROI,
+        candidate_center_roi=(0.91, 0.0, 1.0, 0.13),
+        scale_ratios=(0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15),
+    ),
     TemplateSpec(
         "箱庭主页按钮",
         "image/MapUI_HomeBtum.png",
@@ -281,15 +293,6 @@ SANDBOX_SKILL_SELECTED_YELLOW_MIN_RATIO = 0.20
 SANDBOX_SKILL_UNSELECTED_YELLOW_MAX_RATIO = 0.10
 SANDBOX_SKILL_GROUP_SCALE_RATIOS = (0.90, 0.95, 1.0, 1.05, 1.10, 1.15, 1.20, 1.25, 1.30, 1.35)
 SANDBOX_SKILL_GROUP_SEARCH_ROI = (0.80, 0.85, 0.96, 1.0)
-# The map confirmation path is restricted to these two map-only templates.
-# It is intentionally separate from action-slot identity gates: WGC at a
-# small viewport can lower raw template correlation while preserving edges.
-SANDBOX_MAP_EVIDENCE_MIN_SCORE = 0.80
-SANDBOX_MAP_EVIDENCE_MIN_PIXEL = 0.84
-SANDBOX_MAP_EVIDENCE_MIN_ZNCC = 0.78
-SANDBOX_MAP_EVIDENCE_MIN_GRADIENT = 0.50
-SANDBOX_MAP_EVIDENCE_MIN_EDGE = 0.85
-SANDBOX_MAP_EVIDENCE_MIN_COMPOSITE = 0.80
 SANDBOX_SKILL_SLOT_1_REFERENCE_CENTER = SKILL_GROUP_CENTERS_REFERENCE[1]
 SANDBOX_SKILL_SLOT_2_REFERENCE_CENTER = SKILL_GROUP_CENTERS_REFERENCE[2]
 SANDBOX_SKILL_SLOT_1_RELATIVE_POINT = (
@@ -384,15 +387,14 @@ MERCHANT_CLICK_LOCATION_FAILURE_MESSAGE = "未识别到MerchantClickLocation.png
 # 箱庭内角色位置保持在上次离开处，传送进剧情卡6后商人地标不一定在视野内；
 # 此时经小地图导航菜单的"商店"目的地让游戏自动寻路到商人，再重新识别地标。
 MERCHANT_NAV_GUIDE_TEMPLATE = TemplateSpec(
-    "小地图导航", "image/Nvi_SandGuideButt.png", 0.72, roi=(180, 45, 210, 110)
+    "小地图导航", "image/Nvi_SandGuideButt.png", 0.72, roi=(270, 68, 315, 164)
 )
 MERCHANT_AUTO_NAV_TEMPLATE = TemplateSpec(
-    "自动移动", "image/AutoNvi_ico.png", 0.72, roi=(570, 580, 140, 120)
+    "自动移动", "image/AutoNvi_ico.png", 0.72, roi=(855, 870, 210, 180)
 )
-# 以下两个 OCR 区域与上方模板 roi 同属 map_trade 模块的 1280×720（MAP_TRADE_REFERENCE）
-# 参考系，由 vision.reference_roi / match 统一缩放（代码质量阶段 B-1 补注）。
-MERCHANT_NAV_MENU_OCR_ROI = (220, 40, 360, 340)
-MERCHANT_NAV_CONFIRM_OCR_ROI = (620, 350, 230, 240)
+# 模板搜索框与 OCR 区域都使用 map_trade 的 1920x1080 运行时参考系。
+MERCHANT_NAV_MENU_OCR_ROI = (330, 60, 540, 510)
+MERCHANT_NAV_CONFIRM_OCR_ROI = (930, 525, 345, 360)
 MERCHANT_NAV_GUIDE_TIMEOUT = 3.0
 MERCHANT_NAV_MENU_OCR_TIMEOUT = 6.0
 MERCHANT_NAV_MENU_OCR_INTERVAL = 0.5
@@ -405,10 +407,10 @@ SANDBOX_NAVIGATION_PIN_TEMPLATE = TemplateSpec(
     "image/pin.png",
     0.72,
     candidate_center_roi=(
-        100 / HD_720.width,
-        70 / HD_720.height,
-        210 / HD_720.width,
-        180 / HD_720.height,
+        150 / FHD_1080.width,
+        105 / FHD_1080.height,
+        315 / FHD_1080.width,
+        270 / FHD_1080.height,
     ),
 )
 SANDBOX_NAVIGATION_RUN_TEMPLATE = TemplateSpec(
@@ -417,10 +419,10 @@ SANDBOX_NAVIGATION_RUN_TEMPLATE = TemplateSpec(
     0.72,
     green_mask=True,
     candidate_center_roi=(
-        100 / HD_720.width,
-        70 / HD_720.height,
-        210 / HD_720.width,
-        180 / HD_720.height,
+        150 / FHD_1080.width,
+        105 / FHD_1080.height,
+        315 / FHD_1080.width,
+        270 / FHD_1080.height,
     ),
 )
 SANDBOX_NAVIGATION_OPEN_TEMPLATES = (
@@ -543,29 +545,6 @@ class MapPageDetection:
     evidence: tuple[str, ...] = ()
 
 
-@dataclass(frozen=True)
-class SandboxConfirmation:
-    """One-frame evidence used to confirm a story-card sandbox."""
-
-    map_signal_hits: int
-    skill_state_hits: int
-    action_hits: int
-    skill_group: int | None
-    geometry: FrameGeometry | None = None
-    action_states: tuple[tuple[str, str], ...] = ()
-    reason: str = ""
-
-    @property
-    def passed(self) -> bool:
-        return (
-            (self.geometry is None or self.geometry.accepted)
-            and self.map_signal_hits >= 1
-            and self.skill_state_hits >= 2
-            and self.skill_group == 1
-            and self.action_hits >= 3
-        )
-
-
 HAND_TEMPLATE = TemplateSpec(
     "传送阵交互按钮",
     "image/green/IcoHand.png",
@@ -586,41 +565,10 @@ SANDBOX_TELEPORT_SKILL_TEMPLATE = TemplateSpec(
     minimum_safe_threshold=0.95,
     min_zncc_score=0.85,
 )
-# Keep the historical strict TemplateSpec above for compatibility.  The
-# low-resolution sandbox path uses the independent ActionIconSpec set so its
-# local evidence gates can evolve without changing generic callers.
-SANDBOX_SKILL_ACTION_ICONS = SANDBOX_ACTION_ICONS
-SANDBOX_CONFIRM_ACTION_ICONS = SANDBOX_ACTION_ICONS
-
-
-def _sandbox_empty_slot_template(slot_name: str) -> TemplateSpec:
-    return TemplateSpec(
-        f"{slot_name}空技能槽加号",
-        "image/Skill-Nothing.png",
-        0.78,
-        relative_roi=ACTION_SLOT_RELATIVE_ROIS[slot_name],
-        candidate_center_roi=ACTION_SLOT_CENTER_RELATIVE_ROIS[slot_name],
-        scale_ratios=(0.55, 0.65, 0.75, 0.85, 0.95, 1.05, 1.15, 1.25),
-        min_pixel_score=0.70,
-        minimum_safe_threshold=0.78,
-    )
-
-
-SANDBOX_EMPTY_SLOT_TEMPLATES = tuple(
-    (slot_name, _sandbox_empty_slot_template(slot_name))
-    for slot_name in ACTION_SLOT_CENTERS_REFERENCE
-)
 SANDBOX_TELEPORT_SKILL_REFERENCE_CENTER = ACTION_SLOT_CENTERS_REFERENCE["teleport"]
 SANDBOX_TELEPORT_SKILL_RELATIVE_POINT = (
     SANDBOX_TELEPORT_SKILL_REFERENCE_CENTER[0] / FHD_1080.width,
     SANDBOX_TELEPORT_SKILL_REFERENCE_CENTER[1] / FHD_1080.height,
-)
-SANDBOX_CONFIRM_ACTION_TEMPLATES = (
-    ("吸收", ABSORB_ICON.template),
-    ("探查", SEARCH_ICON.template),
-    ("召集", SUMMON_ICON.template),
-    ("压制", SUBDUE_ICON.template),
-    ("传送阵技能", SANDBOX_TELEPORT_SKILL_TEMPLATE),
 )
 SANDBOX_MAP_TELEPORT_TEMPLATE = TemplateSpec(
     "箱庭地图传送阵模板",
@@ -682,17 +630,21 @@ SANDBOX_LARGE_MAP_RIGHT_TEMPLATE = TemplateSpec(
 TELEPORT_MAP_FORWARD_TEMPLATE = TemplateSpec(
     "传送阵地图向前",
     "image/green/TpMapLeft.png",
-    0.95,
+    0.93,
+    relative_roi=(310 / 1920, 0.42, 450 / 1920, 0.55),
+    scale_ratios=(0.95, 0.975, 1.0, 1.025, 1.05),
     min_pixel_score=0.85,
-    minimum_safe_threshold=0.95,
+    minimum_safe_threshold=0.93,
     min_zncc_score=0.90,
 )
 TELEPORT_MAP_BACKWARD_TEMPLATE = TemplateSpec(
     "传送阵地图向后",
     "image/green/TpMapRight.png",
-    0.95,
+    0.93,
+    relative_roi=(1470 / 1920, 0.42, 1610 / 1920, 0.55),
+    scale_ratios=(0.95, 0.975, 1.0, 1.025, 1.05),
     min_pixel_score=0.85,
-    minimum_safe_threshold=0.95,
+    minimum_safe_threshold=0.93,
     min_zncc_score=0.90,
 )
 # Two 1920×1080 enabled teleport-map samples bottomed out at
@@ -731,7 +683,7 @@ AREA_MAP_BACK_TEMPLATE = TemplateSpec(
     minimum_safe_threshold=0.88,
 )
 AREA_MAP_SCAN_LIMIT = 24
-AREA_MAP_CHANGE_TIMEOUT = 3.0
+AREA_MAP_CHANGE_TIMEOUT = 6.0
 AREA_MAP_CHANGE_INTERVAL = 0.25
 AREA_MAP_CLICK_SETTLE_SECONDS = 0.5
 AREA_MAP_TELEPORT_CLUSTER_RADIUS = 24
@@ -749,7 +701,6 @@ TELEPORT_MAP_TRAVEL_SETTLE_SECONDS = 4.5
 TELEPORT_GENERATION_OCR_KEYWORDS = ("生成魔法阵", "取消", "生成")
 TELEPORT_GENERATION_OCR_TIMEOUT = 8.0
 TELEPORT_GENERATION_OCR_INTERVAL = 0.25
-TELEPORT_MAP_FIRST_PAGE_LIMIT = AREA_MAP_SCAN_LIMIT
 AREA_MAP_REFERENCE_SIZE = FHD_1080.size
 AREA_MAP_OPEN_REFERENCE_POINT = (289, 253)
 AREA_MAP_OPEN_RELATIVE_POINT = (
@@ -777,16 +728,62 @@ AREA_MAP_TELEPORT_BRIGHT_RADIUS_RATIO = 24 / 52
 AREA_MAP_TELEPORT_BRIGHT_MINIMUM_GRAY = 200
 AREA_MAP_TELEPORT_BRIGHT_MAXIMUM_SPREAD = 35
 AREA_MAP_TELEPORT_BRIGHT_NEUTRAL_RATIO = 0.10
-FIRST_CARD_INSERT_REGION = (413, 481, 440, 132)
+FIRST_CARD_INSERT_REGION = (620, 722, 660, 198)
 FIRST_CARD_SKIP_TEMPLATE = TemplateSpec(
     "首次卡带跳过",
     "image/UI_Skip.png",
     0.72,
-    roi=(915, 9, 265, 68),
+    roi=(1372, 14, 398, 102),
 )
-FIRST_CARD_CONFIRM_REGION = (626, 368, 186, 293)
+FIRST_CARD_CONFIRM_REGION = (939, 552, 279, 440)
 
+CHARACTER_CATEGORY_POINT = (725 / FHD_1080.width, 877 / FHD_1080.height)
 
+CHARACTER_CATEGORY_HIGHLIGHT_REGION = (
+    630 / FHD_1080.width,
+    840 / FHD_1080.height,
+    825 / FHD_1080.width,
+    915 / FHD_1080.height,
+)
+
+CHARACTER_BADGE_FIRST_X = 93
+
+CHARACTER_BADGE_SPACING = 180
+
+CHARACTER_BADGE_Y = 936
+
+CHARACTER_BADGE_WINDOW = 34
+
+CHARACTER_BADGE_MIN_SCORE = 0.85
+
+CHARACTER_BADGE_MIN_MARGIN = 0.08
+
+CHARACTER_BADGE_SPECS = tuple(
+    (
+        number,
+        TemplateSpec(
+            name=f"角色游戏卡{number}角标",
+            file_name=(f"quick_switch_cartridges/character_cartridge_badge_{number:02d}.png"),
+            threshold=CHARACTER_BADGE_MIN_SCORE,
+            relative_roi=QUICK_SWITCH_CARTRIDGE_REGION,
+            scale_ratios=(0.97, 1.0, 1.03),
+        ),
+    )
+    for number in range(1, 11)
+)
+
+FIELD_EXTRA_KEYCAP_TEMPLATES = (
+    TemplateSpec(
+        "箱庭按键M", "field/field_keycap_M.png", 0.80,
+        relative_roi=(176 / 1920, 222 / 1080, 238 / 1920, 274 / 1080),
+        min_pixel_score=0.75, minimum_safe_threshold=0.80,
+    ),
+    TemplateSpec(
+        "箱庭按键Q", "field/field_keycap_Q.png", 0.80,
+        relative_roi=(1053 / 1920, 1022 / 1080, 1115 / 1920, 1074 / 1080),
+        min_pixel_score=0.75, minimum_safe_threshold=0.80,
+    ),
+)
 FIELD_KEYCAP_TEMPLATES = (
     TemplateSpec(
         "箱庭按键C",
@@ -805,3 +802,71 @@ FIELD_KEYCAP_TEMPLATES = (
         minimum_safe_threshold=0.78,
     ),
 )
+
+MERCHANT_NAV_UNREACHABLE_KEYWORD = "无法移动"
+
+MERCHANT_NAV_TOAST_OCR_ROI = (645, 172, 630, 150)
+
+MERCHANT_TRAVEL_DIALOG_KEYWORDS = ("立即前往", "自动移动")
+
+MERCHANT_TRAVEL_DIALOG_OCR_ROI = (600, 390, 720, 210)
+
+MERCHANT_NAV_OUTCOME_TIMEOUT = 4.0
+
+TRADE_CARD_SANDBOX_HITS = 2
+
+MINIMAP_CENTER_REFERENCE = (205, 170)
+
+HUNTING_GROUND_NAV_ENTRY = "狩猎场"
+
+TOWN_NPC_NAV_ENTRY = "艾琳"
+
+SANDBOX_MAP_TELEPORT_MIN_PIXEL = 0.90
+
+SANDBOX_MAP_TELEPORT_PIXEL_MARGIN = 0.07
+
+AREA_MAP_EXIT_LABEL_RELATIVE_ROI = (0.10, 0.10, 0.90, 0.86)
+
+AREA_MAP_EXIT_ICON_OFFSETS = (18, 0, 30)
+
+TELEPORT_LOADING_DARK_P95 = 40
+
+TELEPORT_MAP_SEEK_LIMIT = 12
+
+MINIMAP_SMALL_TEMPLATE = TemplateSpec(
+    "小地图(缩小状态)加号",
+    "minimap/minimap_plus.png",
+    0.85,
+    relative_roi=(230 / 1920, 180 / 1080, 350 / 1920, 280 / 1080),
+    scale_ratios=(0.95, 1.0, 1.05),
+)
+
+MINIMAP_LARGE_TEMPLATE = TemplateSpec(
+    "小地图(放大状态)减号",
+    "minimap/minimap_minus.png",
+    0.85,
+    relative_roi=(390 / 1920, 340 / 1080, 510 / 1920, 445 / 1080),
+    scale_ratios=(0.95, 1.0, 1.05),
+)
+
+MINIMAP_SHRINK_ATTEMPTS = 3
+
+WALK_MAP_OPEN_TIMEOUT = 4.0
+
+FIELD_MAP_CLOSE_TIMEOUT = 3.0
+
+WALK_CLICK_SETTLE_SECONDS = 2.5
+
+WALK_LABEL_READ_TIMEOUT = 5.0
+
+WALK_LABEL_READ_INTERVAL = 0.4
+
+WALK_EXIT_ATTEMPTS = 2
+
+WALK_CAUGHT_KEYWORDS = ("驱逐", "驱除", "被发现")
+
+AUTO_MOVE_CANCEL_REFERENCE_POINT = (960, 985)
+
+AUTO_MOVE_CANCEL_ATTEMPTS = 3
+
+AUTO_MOVE_IDLE_READS = 2

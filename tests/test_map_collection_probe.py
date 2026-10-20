@@ -13,6 +13,7 @@ from src.tasks.BD2MapCollectionProbeTask import (
     ALL_COLLECTION_CARDS_OPTION,
     DEFAULT_COLLECTION_END,
     DEFAULT_COLLECTION_START,
+    TELEPORT_MAP_ARROW_RECHECK_INTERVAL,
     TELEPORT_MAP_BACKWARD_CLICK_LIMIT,
     TELEPORT_MAP_FORWARD_CLICK_INTERVAL,
     TELEPORT_MAP_FORWARD_CLICK_LIMIT,
@@ -39,7 +40,6 @@ from src.tasks.map_trade.models import (
 )
 from src.tasks.map_trade.navigator import (
     PROBE_QUICK_SWITCH_SCROLL_POINT,
-    QUICK_SWITCH_SCROLL_FOCUS_POINT,
     TELEPORT_MAP_BACKWARD_TEMPLATE,
     TELEPORT_MAP_FORWARD_TEMPLATE,
     TELEPORT_MAP_RETURN_RELATIVE_POINT,
@@ -124,6 +124,8 @@ def _observation(
 
 
 class MapCollectionProbeTaskTest(unittest.TestCase):
+
+
     def test_only_merged_probe_task_is_registered_in_debug_section(self):
         registration = [
             "src.tasks.BD2MapCollectionProbeTask",
@@ -149,10 +151,12 @@ class MapCollectionProbeTaskTest(unittest.TestCase):
         self.assertTrue(task.visible)
 
     def test_collection_scope_and_all_new_reference_geometry(self):
-        self.assertEqual(17, len(COLLECTABLE_CARDS))
+        self.assertEqual(25, len(COLLECTABLE_CARDS))
         self.assertEqual(
-            {6, 18, 20},
-            set(range(1, 21)) - {card.number for card in COLLECTABLE_CARDS},
+            {6, 20},
+            set(range(1, 21)) - {
+                card.number for card in COLLECTABLE_CARDS if card.category == "story"
+            },
         )
         self.assertEqual(
             (654 / 1920, 946 / 1080, 1268 / 1920, 1021 / 1080),
@@ -160,7 +164,6 @@ class MapCollectionProbeTaskTest(unittest.TestCase):
         )
         self.assertEqual((136 / 1920, 52 / 1080), TELEPORT_MAP_RETURN_RELATIVE_POINT)
         self.assertEqual((43 / 1920, 974 / 1080), PROBE_QUICK_SWITCH_SCROLL_POINT)
-        self.assertEqual((43 / 1920, 974 / 1080), QUICK_SWITCH_SCROLL_FOCUS_POINT)
 
     def test_probe_can_select_one_card_or_an_inclusive_range(self):
         task = object.__new__(BD2MapCollectionProbeTask)
@@ -177,7 +180,7 @@ class MapCollectionProbeTaskTest(unittest.TestCase):
             "测试起始卡带": DEFAULT_COLLECTION_START,
             "测试终止卡带": DEFAULT_COLLECTION_END,
         }
-        self.assertEqual(17, len(task._selected_cards()))
+        self.assertEqual(25, len(task._selected_cards()))
 
         task.config = {"测试起始卡带": "Q_sp14", "测试终止卡带": "Q_sp8"}
         self.assertEqual((), task._selected_cards())
@@ -187,7 +190,7 @@ class MapCollectionProbeTaskTest(unittest.TestCase):
         task.config = {"测试卡带范围": "Q_sp14"}
         self.assertEqual(("Q_sp14",), tuple(card.card_id for card in task._selected_cards()))
         task.config = {"测试卡带范围": ALL_COLLECTION_CARDS_OPTION}
-        self.assertEqual(17, len(task._selected_cards()))
+        self.assertEqual(25, len(task._selected_cards()))
 
     def test_title_resolution_preserves_unknown_and_prefers_longest_known_title(self):
         self.assertEqual((), resolve_collection_map_titles("战斗Ⅰ 尚未建档的位置"))
@@ -225,15 +228,34 @@ class MapCollectionProbeTaskTest(unittest.TestCase):
 
         frames = {
             name: np.full((1080, 1920, 3), index, dtype=np.uint8)
-            for index, name in enumerate(("forward", "front", "page1", "page2", "page3"), 1)
+            for index, name in enumerate(
+                (
+                    "forward",
+                    "forward_confirm",
+                    "front",
+                    "front_confirm",
+                    "page1",
+                    "page1_confirm",
+                    "page2",
+                    "page2_confirm",
+                    "page3",
+                    "page3_confirm",
+                ),
+                1,
+            )
         }
         captures = iter(
             (
                 frames["forward"],
+                frames["forward_confirm"],
                 frames["front"],
+                frames["front_confirm"],
                 frames["page1"],
+                frames["page1_confirm"],
                 frames["page2"],
+                frames["page2_confirm"],
                 frames["page3"],
+                frames["page3_confirm"],
             )
         )
         forward = MatchResult(0.99, (360, 490), (40, 56), 0.96, 0.95)
@@ -251,9 +273,9 @@ class MapCollectionProbeTaskTest(unittest.TestCase):
             def match(frame, spec):
                 marker = int(frame[0, 0, 0])
                 if spec is TELEPORT_MAP_FORWARD_TEMPLATE:
-                    return forward if marker == 1 else missing
+                    return forward if marker in {1, 2} else missing
                 if spec is TELEPORT_MAP_BACKWARD_TEMPLATE:
-                    return backward if marker in {3, 4} else missing
+                    return backward if marker in {5, 6, 7, 8} else missing
                 raise AssertionError(spec.name)
 
             @staticmethod
@@ -274,9 +296,9 @@ class MapCollectionProbeTaskTest(unittest.TestCase):
                 marker = int(frame[0, 0, 0])
                 ocr_calls.append((marker, name))
                 return {
-                    3: "主城 卢戈镇",
-                    4: "战斗Ⅰ 卢戈森林",
-                    5: "战斗Ⅱ 卢戈森林深处",
+                    5: "主城 卢戈镇",
+                    7: "战斗Ⅰ 卢戈森林",
+                    9: "战斗Ⅱ 卢戈森林深处",
                 }[marker]
 
         result = task._scan_teleport_map_pages(
@@ -301,8 +323,15 @@ class MapCollectionProbeTaskTest(unittest.TestCase):
             ],
             clicks,
         )
-        self.assertEqual([TELEPORT_MAP_PAGE_SETTLE_SECONDS], task.sleep_calls)
-        self.assertEqual([3, 4, 5], [value[0] for value in ocr_calls])
+        self.assertEqual(
+            5,
+            task.sleep_calls.count(TELEPORT_MAP_ARROW_RECHECK_INTERVAL),
+        )
+        self.assertEqual(
+            [TELEPORT_MAP_PAGE_SETTLE_SECONDS],
+            [value for value in task.sleep_calls if value == TELEPORT_MAP_PAGE_SETTLE_SECONDS],
+        )
+        self.assertEqual([5, 7, 9], [value[0] for value in ocr_calls])
 
     def test_forward_limit_stops_before_any_ocr_when_arrow_still_exists(self):
         task = object.__new__(BD2MapCollectionProbeTask)
@@ -389,7 +418,43 @@ class MapCollectionProbeTaskTest(unittest.TestCase):
         self.assertEqual(TELEPORT_MAP_BACKWARD_CLICK_LIMIT + 1, len(result.pages))
         self.assertIn("向后点击7次", result.message)
 
-    def test_full_merged_run_processes_seventeen_cards_and_saves_each_completion(self):
+    def test_unstable_arrow_cannot_confirm_first_or_last_map(self):
+        for direction in ("forward", "backward"):
+            with self.subTest(direction=direction):
+                task = object.__new__(BD2MapCollectionProbeTask)
+                task.config = {"保存每张传送阵地图截图": False}
+                task.info_set = lambda *_args, **_kwargs: None
+                task.sleep = lambda *_args: None
+                frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+                arrow = MatchResult(0.99, (360, 490), (40, 56), 0.96, 0.95)
+                missing = MatchResult(-1.0, (0, 0), (0, 0))
+                states = iter((True, False, True, False))
+
+                def match(_frame, spec):
+                    unstable = (
+                        TELEPORT_MAP_FORWARD_TEMPLATE
+                        if direction == "forward" else TELEPORT_MAP_BACKWARD_TEMPLATE
+                    )
+                    return arrow if spec is unstable and next(states, False) else missing
+
+                vision = SimpleNamespace(
+                    capture=lambda: frame,
+                    match=match,
+                    passes=lambda result, _spec: result.score > 0.95,
+                    simplify=lambda value: value,
+                    ocr_text=lambda *_args, **_kwargs: "主城 卢戈镇",
+                    click_client=lambda *_args, **_kwargs: self.fail("unstable arrow clicked"),
+                )
+                result = task._scan_teleport_map_pages(
+                    vision, CARD_BY_ID["Q_sp1"], "stamp", 1,
+                )
+                self.assertFalse(result.success)
+                self.assertIn("箭头状态不稳定", result.message)
+                self.assertEqual(int(direction == "backward"), len(result.pages))
+                if result.pages:
+                    self.assertIsNone(result.pages[0]["backward"]["passed"])
+
+    def test_full_merged_run_processes_supported_cards_and_saves_each_completion(self):
         executor = SimpleNamespace(scene=None)
         task = BD2MapCollectionProbeTask(executor, SimpleNamespace())
         task.config = dict(task.default_config)
@@ -436,7 +501,7 @@ class MapCollectionProbeTaskTest(unittest.TestCase):
                 pass
 
             @staticmethod
-            def _open_story_quick_switcher():
+            def _open_cartridge_quick_switcher():
                 return NavigationResult(True, ScreenState.CARD_MENU, "ready")
 
             @staticmethod
@@ -469,9 +534,10 @@ class MapCollectionProbeTaskTest(unittest.TestCase):
                 return NavigationResult(True, ScreenState.SANDBOX, "returned")
 
             @staticmethod
-            def open_story_quick_switcher_from_sandbox(
+            def open_cartridge_quick_switcher_from_sandbox(
                 *,
                 sandbox_already_confirmed=False,
+                category="story",
             ):
                 self.assertTrue(sandbox_already_confirmed)
                 calls["reopen"] += 1
@@ -503,9 +569,9 @@ class MapCollectionProbeTaskTest(unittest.TestCase):
         self.assertEqual(expected, calls["locate"])
         self.assertEqual(expected, calls["enter"])
         self.assertEqual([card.number for card in COLLECTABLE_CARDS], calls["return"])
-        self.assertEqual(16, calls["reopen"])
-        self.assertEqual(18, len(FakeStore.instance.calls))
-        self.assertEqual(17, len(FakeStore.instance.calls[-1][0]))
+        self.assertEqual(24, calls["reopen"])
+        self.assertEqual(26, len(FakeStore.instance.calls))
+        self.assertEqual(25, len(FakeStore.instance.calls[-1][0]))
         self.assertTrue(FakeStore.instance.calls[-1][1]["completed"])
         payload = json.loads(writes["map_collection_probe_latest.json"])
         self.assertEqual(2, payload["schema_version"])
@@ -535,7 +601,7 @@ class MapCollectionProbeTaskTest(unittest.TestCase):
             def __init__(self, _task, _vision):
                 pass
 
-            _open_story_quick_switcher = staticmethod(
+            _open_cartridge_quick_switcher = staticmethod(
                 lambda: NavigationResult(True, ScreenState.CARD_MENU, "ready")
             )
 
@@ -564,7 +630,7 @@ class MapCollectionProbeTaskTest(unittest.TestCase):
             return_teleport_map_to_sandbox = staticmethod(
                 lambda _number: NavigationResult(True, ScreenState.SANDBOX, "returned")
             )
-            open_story_quick_switcher_from_sandbox = staticmethod(
+            open_cartridge_quick_switcher_from_sandbox = staticmethod(
                 lambda **_kwargs: NavigationResult(
                     True,
                     ScreenState.CARD_MENU,
@@ -595,9 +661,9 @@ class MapCollectionProbeTaskTest(unittest.TestCase):
 
 
 class CollectionVisualAuditStoreTest(unittest.TestCase):
-    def test_visual_table_resets_at_monday_four_am(self):
-        before = datetime(2026, 7, 13, 3, 59, tzinfo=UTC_PLUS_8)
-        after = datetime(2026, 7, 13, 4, 0, tzinfo=UTC_PLUS_8)
+    def test_visual_table_resets_at_monday_eight_am(self):
+        before = datetime(2026, 7, 13, 7, 59, tzinfo=UTC_PLUS_8)
+        after = datetime(2026, 7, 13, 8, 0, tzinfo=UTC_PLUS_8)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "visual.json"
             store = CollectionVisualAuditStore(path, now_provider=lambda: before)
@@ -608,7 +674,7 @@ class CollectionVisualAuditStoreTest(unittest.TestCase):
             current = store.load()
             self.assertIn("Q_sp1", current["cards"])
             self.assertEqual(
-                ["Q_sp6", "Q_sp18", "Q_sp20"],
+                ["Q_sp6", "Q_sp20"],
                 current["excluded_card_ids"],
             )
 

@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
-from ok.task.exceptions import TaskDisabledException
+from ok.task.exceptions import FinishedException, TaskDisabledException
 from ok.task.TaskExecutor import TaskExecutor
 
 from src.tasks.map_trade.models import (
@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class MapTradeSafetyTest(unittest.TestCase):
-    def _cancellable_task(self):
+    def _cancellable_task(self, control_error=TaskDisabledException):
         task = object.__new__(MapTradeTask)
         task.config = {}
         for name in ("info_set", "log_info", "log_warning", "log_error", "log_completion"):
@@ -34,17 +34,23 @@ class MapTradeSafetyTest(unittest.TestCase):
         clicks = []
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
 
+        def check_enabled():
+            if control_error is FinishedException and not executor.current_task._enabled:
+                executor.current_task = None
+                raise FinishedException("executor finished")
+            return TaskExecutor.check_enabled(executor)
+
         def click(*_args, **_kwargs):
-            TaskExecutor.check_enabled(executor)
+            check_enabled()
             clicks.append(executor.current_task is None)
 
         def cancel(*_args, **_kwargs):
             executor.current_task._enabled = False
-            TaskExecutor.check_enabled(executor)
+            check_enabled()
 
         task.operate_click = click
-        task.capture_frame = lambda: TaskExecutor.check_enabled(executor) or frame
-        task.sleep = lambda *_args: TaskExecutor.check_enabled(executor)
+        task.capture_frame = lambda: check_enabled() or frame
+        task.sleep = lambda *_args: check_enabled()
         task.save_frame = lambda *_args: None
         return task, executor, frame, clicks, cancel
 
@@ -75,9 +81,11 @@ class MapTradeSafetyTest(unittest.TestCase):
             ("_click_sandbox_navigation_destination_confirmation", "箱庭徒步导航传送阵确认"),
             ("_click_teleport_generation", "传送阵生成确认"),
         )
-        for method_name, cancel_name in cases:
-            with self.subTest(method=method_name, boundary=cancel_name):
-                task, executor, frame, clicks, cancel = self._cancellable_task()
+        for error, (method_name, cancel_name) in (
+            (error, case) for error in (TaskDisabledException, FinishedException) for case in cases
+        ):
+            with self.subTest(error=error, method=method_name, boundary=cancel_name):
+                task, executor, frame, clicks, cancel = self._cancellable_task(error)
 
                 def ocr(*_args, name, **_kwargs):
                     if name == cancel_name:
@@ -99,15 +107,18 @@ class MapTradeSafetyTest(unittest.TestCase):
                         )
                     return getattr(navigator, method_name)(frame)
 
-                with self.assertRaises(TaskDisabledException):
+                with self.assertRaises(error):
                     task._run_phases(navigator, (("导航", "启用", action),))
                 self.assertIsNone(executor.current_task)
                 self.assertNotIn(True, clicks)
 
     def test_phase_cancellation_skips_ui_cleanup_and_diagnostics(self):
-        for boundary in ("capture_frame", "operate_click", "sleep", "diagnostic", "return_home"):
-            with self.subTest(boundary=boundary):
-                task, executor, _frame, clicks, _cancel = self._cancellable_task()
+        for error, boundary in (
+            (error, boundary) for error in (TaskDisabledException, FinishedException)
+            for boundary in ("capture_frame", "operate_click", "sleep", "diagnostic", "return_home")
+        ):
+            with self.subTest(error=error, boundary=boundary):
+                task, executor, _frame, clicks, _cancel = self._cancellable_task(error)
                 diagnostics = []
                 task.save_frame = lambda *_args: diagnostics.append(True)
 
@@ -125,7 +136,7 @@ class MapTradeSafetyTest(unittest.TestCase):
                     task.operate_click(0.5, 0.5)
                     return NavigationResult(True, ScreenState.HOME)
 
-                with self.assertRaises(TaskDisabledException):
+                with self.assertRaises(error):
                     task._run_phases(
                         SimpleNamespace(return_home=return_home),
                         (("买", "买", phase),),

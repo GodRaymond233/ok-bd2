@@ -7,7 +7,7 @@ from enum import Enum
 from pathlib import Path
 from time import monotonic
 
-from ok.task.exceptions import TaskDisabledException
+from ok.task.exceptions import FinishedException, TaskDisabledException
 
 from src.tasks import run_history
 from src.tasks.map_trade.action_icons import COOKING_ICON, SKILL_GROUP_CENTERS_REFERENCE
@@ -86,6 +86,8 @@ COOKING_RECIPE_TEMPLATE_SCORE = 0.90
 COOKING_RECIPE_PIXEL_SCORE = 0.65
 COOKING_START_ENABLED_PIXEL_SCORE = 0.90
 COOKING_START_ENABLED_BRIGHT_RATIO = 0.30
+COOKING_CARD_DISABLED_MAX_GRAY = 85
+COOKING_CARD_ENABLED_MIN_GRAY = 115
 COOKING_TEXT_CHARACTER_COVERAGE = 0.75
 COOKING_PAGE_TIMEOUT = 10.0
 COOKING_START_TIMEOUT = 6.0
@@ -201,9 +203,6 @@ class CookingFlowMixin:
 
     def run_cooking(self) -> bool:
         selected = self._selected_cooking_recipes()
-        if not selected:
-            self.task.log_info("料理：未选择料理，跳过制作。")
-            return True
 
         unsupported = tuple(
             recipe for recipe in selected if recipe not in COOKING_RECIPE_SPECS
@@ -226,8 +225,6 @@ class CookingFlowMixin:
             )
             return False
 
-        pending = selected
-
         self._cooking_opened = False
         flow_success = False
         unavailable: list[str] = []
@@ -237,7 +234,7 @@ class CookingFlowMixin:
         try:
             if self._enter_cooking_list():
                 flow_success = True
-                for recipe in pending:
+                for recipe in selected:
                     outcome = self._cook_one_recipe(recipe)
                     if outcome is CookingRecipeOutcome.COOKED:
                         cooked.append(recipe)
@@ -252,7 +249,7 @@ class CookingFlowMixin:
                     self.task.log_warning(f"料理：{recipe} 未完成，停止后续料理。")
                     flow_success = False
                     break
-        except TaskDisabledException:
+        except (TaskDisabledException, FinishedException):
             cancelled = True
             raise
         finally:
@@ -465,14 +462,13 @@ class CookingFlowMixin:
         except Exception as exc:
             self.task.log_warning(f"料理：{recipe} 识别证据帧保存失败：{exc}")
             return
-        zncc = getattr(recipe_match, "zncc_score", -1.0)
         self.task.log_warning(
             f"料理：{recipe} 识别证据已保存 {evidence.name}；"
             f"模板={spec.file_name}，"
             f"阈值={spec.threshold:.2f}，"
             f"match={recipe_match.score:.4f}，"
             f"pixel={recipe_match.pixel_score:.4f}，"
-            f"zncc={zncc:.4f}。"
+            f"zncc={recipe_match.zncc_score:.4f}。"
         )
 
     @staticmethod
@@ -489,9 +485,9 @@ class CookingFlowMixin:
         # food icons.  Sample its left strip, outside the food and star art.
         strip = card[height // 4:3 * height // 4, :max(1, width // 12)]
         brightness = float(strip.mean())
-        if brightness <= 85:
+        if brightness <= COOKING_CARD_DISABLED_MAX_GRAY:
             return False
-        if brightness >= 115:
+        if brightness >= COOKING_CARD_ENABLED_MIN_GRAY:
             return True
         return None
 
@@ -542,20 +538,11 @@ class CookingFlowMixin:
         recipe: str,
         frame=None,
     ) -> CookingDetailSnapshot | None:
-        frame = self.vision.capture() if frame is None else frame
-        start = self.vision.match(frame, COOKING_DETAIL_TEMPLATE)
-        if not self.vision.passes(start, COOKING_DETAIL_TEMPLATE):
-            return None
-        header = self.vision.ocr_text(
-            frame,
-            "料理详情标题",
-            relative_roi=COOKING_HEADER_ROI,
-            target_height=900,
-        )
-        if "料理" not in normalize_text(self.vision.simplify(header)):
+        snapshot = self._cooking_controls_snapshot(frame)
+        if snapshot is None:
             return None
         name = self.vision.ocr_text(
-            frame,
+            snapshot.frame,
             f"料理详情-{recipe}",
             relative_roi=COOKING_DETAIL_NAME_ROI,
             target_height=900,
@@ -565,31 +552,25 @@ class CookingFlowMixin:
             < COOKING_TEXT_CHARACTER_COVERAGE
         ):
             return None
-        bright_ratio = self.vision.bright_neutral_ratio(
-            frame,
-            COOKING_START_BRIGHT_ROI,
-        )
-        enabled = (
-            start.pixel_score >= COOKING_START_ENABLED_PIXEL_SCORE
-            and bright_ratio >= COOKING_START_ENABLED_BRIGHT_RATIO
-        )
+        start = snapshot.start_match
         self._status(
             f"料理-{recipe}制作按钮",
             (
-                f"{'可用' if enabled else '不可用'}; match={start.score:.3f}; "
-                f"pixel={start.pixel_score:.3f}; bright={bright_ratio:.3f}"
+                f"{'可用' if snapshot.enabled else '不可用'}; match={start.score:.3f}; "
+                f"pixel={start.pixel_score:.3f}; bright={snapshot.bright_ratio:.3f}"
             ),
         )
-        return CookingDetailSnapshot(frame, start, enabled, bright_ratio)
+        return snapshot
 
-    def _generic_cooking_detail_snapshot(self, frame=None) -> CookingDetailSnapshot | None:
+    def _cooking_controls_snapshot(self, frame=None) -> CookingDetailSnapshot | None:
+        """Observe one frame's detail controls; a recipe name is still required before crafting."""
         frame = self.vision.capture() if frame is None else frame
         start = self.vision.match(frame, COOKING_DETAIL_TEMPLATE)
         if not self.vision.passes(start, COOKING_DETAIL_TEMPLATE):
             return None
         header = self.vision.ocr_text(
             frame,
-            "料理详情恢复标题",
+            "料理详情标题",
             relative_roi=COOKING_HEADER_ROI,
             target_height=900,
         )
@@ -681,7 +662,7 @@ class CookingFlowMixin:
     def _recover_cooking_list(self) -> bool:
         if self._wait_for_cooking_list(1.0) is not None:
             return True
-        detail = self._generic_cooking_detail_snapshot()
+        detail = self._cooking_controls_snapshot()
         if detail is None:
             return False
         self._click_cooking_back(detail.frame, context="料理详情恢复")

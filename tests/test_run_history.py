@@ -85,7 +85,9 @@ class JoinedNameTest(unittest.TestCase):
 
 class RunHistoryStoreTest(unittest.TestCase):
     def setUp(self):
-        self.dir = tempfile.mkdtemp()
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.dir = directory.name
         self.path = os.path.join(self.dir, "task_run_history.json")
         self.store = RunHistoryStore(self.path)
 
@@ -326,12 +328,55 @@ class RunHistoryStoreTest(unittest.TestCase):
     def test_is_completed_this_week(self):
         task = _TaskStub("每周跑图", info={"状态": "每周跑图完成。"})
         self.store.record_task_done(task, finished=_beijing_ts(2026, 8, 17, 8, 0))
+        self.assertFalse(
+            self.store.is_completed_this_week("每周跑图", now=_beijing_ts(2026, 8, 19, 12))
+        )
+        task.info["跑图完成范围"] = "今日"
+        task.info["跑图周期"] = "2026-08-18"
+        self.store.record_task_done(task, finished=_beijing_ts(2026, 8, 18, 23))
+        reloaded = RunHistoryStore(self.path)
+        self.assertTrue(reloaded.is_completed_today(
+            "每周跑图", now=_beijing_ts(2026, 8, 19, 7, 59),
+        ))
+        self.assertFalse(reloaded.is_completed_today("每周跑图", now=_beijing_ts(2026, 8, 19, 8)))
+        self.assertFalse(reloaded.is_completed_this_week(
+            "每周跑图", now=_beijing_ts(2026, 8, 19, 7),
+        ))
+        task.info["跑图完成范围"] = "本周"
+        task.info["跑图周期"] = "2026-08-17"
+        self.store.record_task_done(task, finished=_beijing_ts(2026, 8, 19, 12))
         self.assertTrue(
-            self.store.is_completed_this_week("每周跑图", now=_beijing_ts(2026, 8, 19, 12, 0))
+            self.store.is_completed_this_week("每周跑图", now=_beijing_ts(2026, 8, 24, 7, 59))
         )
         self.assertFalse(
-            self.store.is_completed_this_week("每周跑图", now=_beijing_ts(2026, 8, 24, 4, 1))
+            self.store.is_completed_this_week("每周跑图", now=_beijing_ts(2026, 8, 24, 8))
         )
+        self.store.record_task_done(task, finished=_beijing_ts(2026, 8, 24, 8, 1))
+        self.assertFalse(
+            self.store.is_completed_this_week("每周跑图", now=_beijing_ts(2026, 8, 24, 8, 2))
+        )
+
+    def test_collection_recorder_schedules_daily_weekly_and_crossed_refresh(self):
+        from src.tasks import scheduler
+        from src.tasks.run_history import install_run_history_recorder
+
+        install_run_history_recorder()
+        schedule = scheduler.TaskScheduleStore(os.path.join(self.dir, "schedule.json"))
+        for period, cycle, day, expected in (
+            ("今日", "2026-08-19", 19, _beijing_ts(2026, 8, 20, 8)),
+            ("本周", "2026-08-17", 19, _beijing_ts(2026, 8, 24, 8)),
+            ("本周", "2026-08-17", 24, _beijing_ts(2026, 8, 24, 12)),
+        ):
+            with self.subTest(period=period, day=day):
+                now = _beijing_ts(2026, 8, day, 12)
+                task = _TaskStub("每周跑图", {
+                    "状态": "跑图完成。", "跑图完成范围": period, "跑图周期": cycle,
+                })
+                with patch("src.tasks.run_history.default_store", return_value=self.store), patch(
+                    "src.tasks.scheduler.default_store", return_value=schedule,
+                ), patch("time.time", return_value=now):
+                    install_run_history_recorder._recorder.on_task_done(task)
+                self.assertEqual(expected, schedule.next_run(task.name))
 
     def test_batch_completion_keeps_each_child_actual_finish_time(self):
         daily_cls = type("DailyTask", (), {})

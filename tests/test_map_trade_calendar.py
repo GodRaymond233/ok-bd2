@@ -25,7 +25,7 @@ from src.tasks.map_trade.calendar import (
 )
 from src.tasks.map_trade.models import DEFAULT_SALE_WHITELIST, ScreenState
 from src.tasks.map_trade.progress import UTC_PLUS_8
-from src.tasks.map_trade.trader import Trader
+from tests.helpers.map_trade import create_trader
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -72,7 +72,7 @@ class CalendarTest(unittest.TestCase):
         selected_days = []
         statuses = []
         logs = []
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.started_at = datetime(2026, 7, 19, 22, 50, tzinfo=UTC_PLUS_8)
         trader.now_provider = lambda: datetime(2026, 7, 19, 23, 30, tzinfo=UTC_PLUS_8)
         trader.calendar_client = SimpleNamespace(
@@ -109,7 +109,7 @@ class CalendarTest(unittest.TestCase):
                 warnings = []
                 statuses = []
                 now = datetime(2026, 8, day, 12, tzinfo=UTC_PLUS_8)
-                trader = object.__new__(Trader)
+                trader = create_trader()
                 trader.now_provider = lambda now=now: now
                 trader.started_at = now
                 trader.calendar_client = PriceCalendarClient(BUNDLED_CALENDAR)
@@ -150,7 +150,7 @@ class CalendarTest(unittest.TestCase):
     def test_run_sell_stops_before_navigation_when_calendar_load_fails(self):
         warnings = []
         now = datetime(2026, 8, 31, 12, tzinfo=UTC_PLUS_8)
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.now_provider = lambda: now
         trader.started_at = now
 
@@ -181,7 +181,7 @@ class CalendarTest(unittest.TestCase):
 
     def test_run_sell_enters_sale_flow_for_custom_entry_on_empty_bundled_day(self):
         actions = []
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.now_provider = lambda: datetime(2026, 8, 29, 12, tzinfo=UTC_PLUS_8)
         trader.started_at = trader.now_provider()
         trader.calendar_client = PriceCalendarClient(BUNDLED_CALENDAR)
@@ -236,7 +236,7 @@ class CalendarTest(unittest.TestCase):
             [entry.item for entry in loaded.entries_for(18)],
         )
         butter, charm, *_rest = loaded.entries_for(18)
-        self.assertEqual(5500, butter.reserve)
+        self.assertEqual(0, butter.reserve)
         self.assertTrue(butter.sell)
         self.assertTrue(charm.sell)
         self.assertEqual(["哈密瓜"], [entry.item for entry in loaded.entries_for(19)])
@@ -350,6 +350,18 @@ class CalendarTest(unittest.TestCase):
             with patch.object(client, "_fetch", side_effect=OSError("offline")):
                 with self.assertRaisesRegex(RuntimeError, "本地缓存已过期"):
                     client.load(use_bundled=False, use_online=True)
+
+    def test_invalid_online_schema_uses_valid_cached_calendar(self):
+        now = datetime(2026, 7, 19, 12, 0, tzinfo=UTC_PLUS_8)
+        for version in (None, [], {}, "invalid"):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as directory:
+                client = self._offline_client(Path(directory), "2026-07-19T11:00:00+08:00", now)
+
+                def fetch(*_args, **_kwargs):
+                    return parse_calendar_payload({"schema_version": version})
+
+                with patch.object(client, "_fetch", side_effect=fetch):
+                    self.assertEqual("cache", client.load(use_bundled=False).source)
 
     def test_online_failure_rejects_cache_at_max_age_boundary_after_sale_date_change(self):
         now = datetime(2026, 7, 19, 12, 0, tzinfo=UTC_PLUS_8)
@@ -573,7 +585,7 @@ class CalendarTest(unittest.TestCase):
             captured.update(kwargs)
             return SimpleNamespace(source="manual", entries_for=lambda _day: ())
 
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.started_at = datetime(2026, 7, 18)
         trader.calendar_client = SimpleNamespace(load=load)
         trader.task = SimpleNamespace(
@@ -633,7 +645,7 @@ class CalendarTest(unittest.TestCase):
     def test_bundled_snapshot_covers_default_sale_whitelist(self):
         loaded = parse_calendar_payload(BUNDLED_CALENDAR.read_text(encoding="utf-8"))
         entries = [entry for day in loaded.days.values() for entry in day]
-        trader = object.__new__(Trader)
+        trader = create_trader()
         trader.vision = SimpleNamespace(simplify=lambda value: value)
 
         for item in DEFAULT_SALE_WHITELIST:

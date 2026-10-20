@@ -1,12 +1,7 @@
-"""Daily-board banner and page status bar for the 日常/周常 tab (mockup V2).
+"""日常/周常页的完成进度横幅与状态栏。
 
-The banner summarizes "今日日常": one ring with done/total over the enabled
-一键完成日常 children, the names still missing, the Beijing 04:00 refresh
-hint and actions for running all selected children or only today's incomplete
-children. Daily commissions count a successful run from the run history.
-
-The status bar is the page footer: executor state, capture method and the next
-refresh anchor.
+按已启用日常子任务汇总完成数、待完成项和刷新时间，提供执行全部与执行剩余入口。
+页脚显示执行器状态、截图方式和下一次刷新时间。
 """
 
 from __future__ import annotations
@@ -34,7 +29,7 @@ def _set_label_text(label, text: str) -> None:
 
 
 class ProgressRing(QWidget):
-    """Mockup donut: track ring + accent arc + centered 'done/total'."""
+    """完成进度圆环，中央显示完成数与总数。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -178,10 +173,10 @@ class DailyBoardBanner(QFrame):
             names = "、".join(remaining[:4])
             if len(remaining) > 4:
                 names += f" 等 {len(remaining)} 项"
-            sub = f"{names} 未完成 · 服务器 04:00 刷新(北京时间)"
+            sub = f"{names} 未完成 · 日常04:00，跑商库存/跑图额度08:00刷新(北京时间)"
         else:
             title = "今日日常已全部完成"
-            sub = "服务器 04:00 刷新(北京时间),跑商库存 08:00 刷新"
+            sub = "日常04:00，跑商库存/跑图额度08:00刷新；跑图资源周一08:00刷新(北京时间)"
         _set_label_text(self.title_label, title)
         _set_label_text(self.sub_label, sub)
 
@@ -282,6 +277,8 @@ def commission_items(store=None) -> list[tuple[str, bool]]:
     """[(display name, done)] for the daily board: enabled batch children."""
     from ok import og
 
+    from src.tasks.run_history import configuration_scope
+
     store = store or default_store()
     items: list[tuple[str, bool]] = []
 
@@ -298,7 +295,7 @@ def commission_items(store=None) -> list[tuple[str, bool]]:
                 except Exception:
                     child_task = None
             name = str(getattr(child_task, "name", None) or child.config_key)
-            items.append((name, store.is_completed_today(name)))
+            items.append((name, store.is_completed(name, scope=configuration_scope(child_task))))
     return items
 
 

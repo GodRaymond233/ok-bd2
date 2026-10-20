@@ -10,6 +10,7 @@ from time import monotonic
 import cv2
 import numpy as np
 
+from src.tasks.map_trade import event_card_art
 from src.tasks.map_trade.card_status import (
     CardActionState,
     CollectionCardSelectionOutcome,
@@ -17,12 +18,27 @@ from src.tasks.map_trade.card_status import (
     card_icon_region,
 )
 from src.tasks.map_trade.models import (
+    ABSORB_ONLY_VERIFIED_CARD_IDS,
     CARD_BY_ID,
+    SUPPRESS_ONLY_VERIFIED_CARD_IDS,
     MatchResult,
     NavigationResult,
     ScreenState,
+    collection_action_name,
 )
 from src.tasks.map_trade.navigator_constants import (
+    CHARACTER_BADGE_FIRST_X,
+    CHARACTER_BADGE_MIN_MARGIN,
+    CHARACTER_BADGE_MIN_SCORE,
+    CHARACTER_BADGE_SPACING,
+    CHARACTER_BADGE_SPECS,
+    CHARACTER_BADGE_WINDOW,
+    CHARACTER_BADGE_Y,
+    CHARACTER_CATEGORY_HIGHLIGHT_REGION,
+    CHARACTER_CATEGORY_POINT,
+    EVENT_CARD_SCAN_SECONDS,
+    EVENT_CATEGORY_HIGHLIGHT_REGION,
+    EVENT_CATEGORY_POINT,
     FIRST_CARD_CONFIRM_REGION,
     FIRST_CARD_INSERT_REGION,
     FIRST_CARD_SKIP_TEMPLATE,
@@ -34,7 +50,6 @@ from src.tasks.map_trade.navigator_constants import (
     PROBE_STORY_BADGE_CONFIRM_SECONDS,
     QUICK_SWITCH_CARTRIDGE_REGION,
     QUICK_SWITCH_PAGE_KEYWORDS,
-    QUICK_SWITCH_SCROLL_FOCUS_POINT,
     QUICK_SWITCH_SCROLL_INTERVAL,
     QUICK_SWITCH_SCROLL_POINT,
     QUICK_SWITCH_SCROLL_RESET_AMOUNT,
@@ -95,9 +110,73 @@ from src.utils.image_utils import stabilize_template_match
 # 从箱庭点击快速切换按钮的统一识别窗口与点击后停顿。
 QUICK_SWITCH_CLICK_TIMEOUT = 10.0
 QUICK_SWITCH_CLICK_AFTER_SLEEP = 1.0
+STORY_BAR_SCROLL_MAX_EVENTS = 64
+# The cartridge body is narrower than the completion-icon strip below it.
+# Bounds relative to its number badge, measured in the 1920x1080 client.
+STORY_CARD_BODY_OFFSETS = (-15, -15, 130, 90)
+CARTRIDGE_SCROLL_OBSERVATIONS = 12
+CARTRIDGE_SCROLL_STABLE_DIFFERENCE = 1.5
+CARTRIDGE_SCROLL_MOVEMENT_DIFFERENCE = 2.0
+CARTRIDGE_SCROLL_POLL_SECONDS = 0.15
 
 
 class StoryCardNavigationMixin:
+    @staticmethod
+    def _completion_satisfies_actions(completion, required_actions=None, card_id=None) -> bool:
+        """Return whether card-menu evidence covers the enabled actions."""
+
+        enabled = {"吸收", "压制"} if required_actions is None else {
+            collection_action_name(action)
+            for action in required_actions
+        }
+        if "吸收" not in enabled:
+            enabled.add("吸收")
+        if required_actions is None and card_id in SUPPRESS_ONLY_VERIFIED_CARD_IDS:
+            enabled.discard("吸收")
+        if required_actions is None and card_id in ABSORB_ONLY_VERIFIED_CARD_IDS:
+            enabled.discard("压制")
+        checks = {"吸收": completion.absorb, "压制": completion.suppress}
+        # The card menu has no summon badge.  An action requested by the
+        # caller but absent from the visual evidence must remain unknown;
+        # silently filtering it out can mark a summon-disabled run as a full
+        # production completion.
+        if any(action not in checks for action in enabled):
+            return False
+        return bool(completion.complete_region) and all(
+            checks[action].state == CardActionState.COMPLETED
+            for action in enabled
+        )
+
+    def _confirm_collection_completion(
+        self,
+        frame: np.ndarray,
+        badge_center: tuple[int, int],
+        completion,
+        required_actions=None,
+        card_id=None,
+    ):
+        """Require a second card-menu frame before trusting completion icons."""
+
+        if not self._completion_satisfies_actions(completion, required_actions, card_id):
+            return completion
+        capture = getattr(self.vision, "capture", None)
+        if not callable(capture):
+            # Lightweight adapters may not expose capture; retain compatibility.
+            return completion
+        sleeper = getattr(self.task, "sleep", None)
+        if callable(sleeper):
+            sleeper(PROBE_STORY_BADGE_CONFIRM_SECONDS)
+        try:
+            confirmed_frame = capture()
+            confirmed = self.card_status.detect(confirmed_frame, badge_center)
+        except (AttributeError, TypeError, ValueError, cv2.error) as exc:
+            self._status("卡带完成度复核", f"二帧识别异常：{exc}")
+            return None
+        if not self._completion_satisfies_actions(confirmed, required_actions, card_id):
+            self._status("卡带完成度复核", "二帧未保持完成状态，按未知处理")
+            return None
+        return confirmed
+
     def _wait_for_quick_switch_page(self, timeout: float = 10.0) -> bool:
         return self._wait_for_ocr_keywords(
             QUICK_SWITCH_PAGE_KEYWORDS,
@@ -105,10 +184,84 @@ class StoryCardNavigationMixin:
             "卡带选择页",
         )
 
-    def _open_story_quick_switcher(self) -> NavigationResult:
+    def _find_quick_switch_button(self, frame: np.ndarray) -> MatchResult | None:
+        """Identify the translucent navigation icon independently of its brightness."""
+
+        candidates = []
+        for roi in QUICK_SWITCH_TEMPLATE.relative_rois:
+            candidates.extend(self.vision.match_evidence_all(
+                frame,
+                replace(QUICK_SWITCH_TEMPLATE, relative_rois=(), relative_roi=roi),
+                minimum_score=0.88,
+                peak_radius=max(8, round(22 * frame.shape[0] / FHD_1080.height)),
+                max_results=8,
+                purpose="快速切换按钮",
+            ))
+        if not candidates:
+            self._status("快速切换按钮", "搜索区域内无可信候选")
+            return None
+        candidates.sort(key=lambda candidate: candidate.result.zncc_score, reverse=True)
+        best = candidates[0].result
+        runner = candidates[1].result.zncc_score if len(candidates) > 1 else -1.0
+        # The button is translucent: its background and absolute gray values
+        # change between fields. Identity comes from shape, not pixel brightness.
+        accepted = (
+            best.score >= 0.92
+            and best.zncc_score >= 0.78
+            and best.gradient_zncc_score >= 0.50
+            and best.edge_score >= 0.60
+            and best.zncc_score - runner >= 0.10
+        )
+        self._status(
+            "快速切换按钮",
+            f"{'通过' if accepted else '拒绝'}; center={best.center}; "
+            f"m={best.score:.3f}, pixel={best.pixel_score:.3f}(仅诊断), "
+            f"z={best.zncc_score:.3f}, gradient={best.gradient_zncc_score:.3f}, "
+            f"edge={best.edge_score:.3f}, margin={best.zncc_score - runner:.3f}",
+        )
+        return best if accepted else None
+
+    def _click_quick_switch(self, timeout: float, after_sleep: float) -> bool:
+        end_at = monotonic() + max(0.0, timeout)
+        while monotonic() <= end_at:
+            frame = self.vision.capture()
+            result = self._find_quick_switch_button(frame)
+            if result is None:
+                self.task.sleep(0.35)
+                continue
+
+            def sample_match():
+                sampled = self.vision.capture()
+                match = (
+                    self._find_quick_switch_button(sampled)
+                    if sampled.shape == frame.shape else None
+                )
+                return match, sampled.shape
+
+            stable = stabilize_template_match(
+                result, frame.shape, sample_match=sample_match,
+                passes=lambda match: match is not None, sleep=self.task.sleep,
+            )
+            if stable is None:
+                self._status("快速切换按钮稳定识别", "候选位置或画面尺寸不稳定")
+                return False
+            consensus, shape = stable
+            self._status(
+                "快速切换按钮稳定识别",
+                f"center={consensus.center}; hits={consensus.hit_count}/"
+                f"{consensus.sample_count}; spread={consensus.center_spread:.1f}",
+            )
+            self.vision.click_client(consensus.center, shape, after_sleep=after_sleep)
+            return True
+        return False
+
+    def _open_cartridge_quick_switcher(self, category: str = "story") -> NavigationResult:
         opened = self.task.open_cartridge_quick_switcher(
             ensure_home=self._wait_for_cartridge_home,
             click_quick_switch=lambda: self._click_quick_switch(
+                # 入口点击可能落在主页「返回战场」上（存在挂起会话时），
+                # 直接触发整图加载；快速切换按钮要在加载完成后的卡带
+                # 页面上才出现，搜索窗口按加载超时给足。
                 timeout=self._loading_timeout(),
                 after_sleep=QUICK_SWITCH_CLICK_AFTER_SLEEP,
             ),
@@ -121,7 +274,7 @@ class StoryCardNavigationMixin:
                 "无法从主页打开快速切换卡带页面",
             )
 
-        if not self._select_story_category():
+        if not self._select_cartridge_category(category):
             return NavigationResult(
                 False,
                 self.classify(),
@@ -129,47 +282,95 @@ class StoryCardNavigationMixin:
             )
         return NavigationResult(True, ScreenState.CARD_MENU, "剧情游戏卡类别已确认")
 
-    def _wait_for_story_category(self, timeout: float = 3.0, interval: float = 0.5) -> bool:
+    def _wait_for_cartridge_category(
+        self,
+        timeout: float = 3.0,
+        interval: float = 0.5,
+        *,
+        category: str = "story",
+        warn: bool = True,
+    ) -> bool:
+        label, _point, region = self._card_category(category)
         end_at = monotonic() + max(0.0, timeout)
         last_text = ""
         last_highlight_ratio = 0.0
-        story_label = normalize_text("剧情游戏卡")
+        wanted = normalize_text(label)
         while monotonic() <= end_at:
             frame = self.vision.capture()
-            text = self.vision.simplify(self.vision.ocr_text(frame, "剧情游戏卡类别"))
+            text = self.vision.simplify(self.vision.ocr_text(frame, f"{label}类别"))
             last_text = text or last_text
-            last_highlight_ratio = self.vision.bright_neutral_ratio(
-                frame,
-                STORY_CATEGORY_HIGHLIGHT_REGION,
-            )
-            self._status("剧情类别高亮", f"{last_highlight_ratio:.3f}")
+            last_highlight_ratio = self.vision.bright_neutral_ratio(frame, region)
+            self._status(f"{label}类别高亮", f"{last_highlight_ratio:.3f}")
             if (
-                story_label in normalize_text(text)
+                wanted in normalize_text(text)
                 and last_highlight_ratio >= STORY_CATEGORY_HIGHLIGHT_MIN_RATIO
             ):
+                self._menu_confirmed = (monotonic(), category)
                 return True
             self.task.sleep(interval)
-        self.task.log_warning(
-            "跑商：未确认剧情游戏卡类别高亮，"
-            f"highlight={last_highlight_ratio:.3f}, OCR={last_text or '-'}。"
-        )
+        if warn:
+            self.task.log_warning(
+                f"跑商：未确认{label}类别高亮，"
+                f"highlight={last_highlight_ratio:.3f}, OCR={last_text or '-'}。"
+            )
         return False
 
-    def _select_story_category(self) -> bool:
+    def _select_cartridge_category(self, category: str = "story") -> bool:
         """Click and confirm the category before any quick-bar focus or scroll."""
 
-        self._status("导航状态", "选择剧情游戏卡")
-        self.task.operate_click(*STORY_CATEGORY_POINT, after_sleep=0.5)
-        return self._wait_for_story_category()
+        label, point, _region = self._card_category(category)
+        self._status("导航状态", f"选择{label}")
+        self.task.operate_click(*point, after_sleep=0.5)
+        return self._wait_for_cartridge_category(category=category)
 
-    def _focus_quick_switch_for_scroll(self) -> None:
-        """Focus the selected cartridge bar at the user-calibrated safe point."""
+    def _scroll_cartridge_bar(
+        self, point, amount, *, count, interval, after_sleep, require_movement=True,
+    ) -> bool:
+        """Scroll without selecting a card, then confirm a stable selector."""
 
-        self._status(
-            "卡带滚轮聚焦",
-            "已选择卡带类型，点击参考点(43,974)后开始滚动",
+        def sample(frame):
+            height = frame.shape[0]
+            # Restrict comparison to the badges and card faces, away from the
+            # animated sandbox and completion icons below the cards.
+            band = frame[round(height * 0.855):round(height * 0.94), :, :3]
+            return cv2.resize(band, (480, 48)).astype(np.int16)
+
+        before = self.vision.capture()
+        baseline = sample(before)
+        # scroll_client activates the window and positions the cursor itself.
+        # Clicking this point can select the leftmost visible cartridge.
+        self.task.scroll_client(
+            point, amount, count=count, interval=interval, after_sleep=after_sleep,
         )
-        self.task.operate_click(*QUICK_SWITCH_SCROLL_FOCUS_POINT, after_sleep=0.0)
+        previous = None
+        stable_hits = 0
+        for _ in range(CARTRIDGE_SCROLL_OBSERVATIONS):
+            frame = self.vision.capture()
+            if frame.shape != before.shape:
+                self._status("卡带滚轮", "窗口尺寸变化，停止本次定位")
+                return False
+            current = sample(frame)
+            difference = (
+                float(np.mean(np.abs(current - previous)))
+                if previous is not None else float("inf")
+            )
+            stable_hits = stable_hits + 1 if difference < CARTRIDGE_SCROLL_STABLE_DIFFERENCE else 0
+            if stable_hits >= 2:
+                if not self._wait_for_quick_switch_page(timeout=1.0):
+                    self._status("卡带滚轮", "滚动后卡带选择页已消失，停止本次定位")
+                    return False
+                has_moved = (
+                    float(np.mean(np.abs(current - baseline)))
+                    >= CARTRIDGE_SCROLL_MOVEMENT_DIFFERENCE
+                )
+                self._status(
+                    "卡带滚轮", "列表已稳定且发生位移" if has_moved else "列表已稳定但未位移",
+                )
+                return has_moved or not require_movement
+            previous = current
+            self.task.sleep(CARTRIDGE_SCROLL_POLL_SECONDS)
+        self._status("卡带滚轮", "列表稳定确认超时，停止本次定位")
+        return False
 
     def _story_badge_geometry(self, frame: np.ndarray):
         """Assess the quick-switch frame before using any badge as a target."""
@@ -304,34 +505,26 @@ class StoryCardNavigationMixin:
 
         detections: list[StoryBadgeDetection] = []
         for cluster in clusters:
-            best_by_number: dict[int, StoryBadgeCandidate] = {}
-            for candidate in cluster:
-                current = best_by_number.get(candidate.number)
-                if current is None or (
-                    candidate.combined_score,
-                    candidate.discrimination_score,
-                ) > (
-                    current.combined_score,
-                    current.discrimination_score,
-                ):
-                    best_by_number[candidate.number] = candidate
-            ranked = sorted(
-                best_by_number.values(),
-                key=lambda value: (
-                    value.combined_score,
-                    value.discrimination_score,
-                ),
-                reverse=True,
-            )
-            if not ranked:
-                continue
-            detections.append(
-                StoryBadgeDetection(
-                    best=ranked[0],
-                    runner_up=ranked[1] if len(ranked) > 1 else None,
-                )
-            )
+            detections.append(self._rank_badge_candidates(cluster))
         return tuple(sorted(detections, key=lambda value: value.best.result.center[0]))
+
+    @staticmethod
+    def _rank_badge_candidates(candidates, *, recovery_mode="") -> StoryBadgeDetection:
+        """Choose distinct-number winner and runner-up from one occupied physical slot."""
+        def rank(candidate):
+            return candidate.combined_score, candidate.discrimination_score
+
+        best_by_number: dict[int, StoryBadgeCandidate] = {}
+        for candidate in candidates:
+            current = best_by_number.get(candidate.number)
+            if current is None or rank(candidate) > rank(current):
+                best_by_number[candidate.number] = candidate
+        ranked = sorted(best_by_number.values(), key=rank, reverse=True)
+        return StoryBadgeDetection(
+            best=ranked[0],
+            runner_up=ranked[1] if len(ranked) > 1 else None,
+            recovery_mode=recovery_mode,
+        )
 
     def _story_badge_grid(
         self,
@@ -347,6 +540,61 @@ class StoryCardNavigationMixin:
         badge_width = median(
             max(1, value.best.result.size[0]) for value in detections
         )
+        row = self._dominant_badge_row(detections, badge_width)
+        if len(row) < STORY_BADGE_GRID_MIN_ANCHORS:
+            return None
+        x_values = sorted(float(value.best.result.center[0]) for value in row)
+        y_values = [float(value.best.result.center[1]) for value in row]
+        prior = width * STORY_BADGE_GRID_SPACING_RATIO
+        spacing_candidates = self._badge_spacing_candidates(x_values, width, badge_width)
+        trials = []
+        for spacing in spacing_candidates:
+            seeds = tuple(value % spacing for value in x_values)
+            for seed in seeds:
+                phase, aligned, tolerance = self._fit_badge_grid_phase(
+                    row, spacing, seed, badge_width,
+                )
+                if not aligned:
+                    continue
+                expected_visible_slots = max(1, ceil(width / spacing))
+                required_anchors = max(
+                    STORY_BADGE_GRID_MIN_ANCHORS,
+                    ceil(expected_visible_slots * STORY_BADGE_GRID_MIN_VISIBLE_FRACTION),
+                )
+                residual = sum(
+                    self._badge_phase_error(float(value.best.result.center[0]), phase, spacing)
+                    for value in aligned.values()
+                )
+                quality = sum(max(0.0, value.best.combined_score) for value in aligned.values())
+                trials.append((
+                    len(aligned), len(aligned) / expected_visible_slots, quality,
+                    -residual, -abs(spacing - prior), spacing, phase, aligned,
+                    tolerance, required_anchors,
+                ))
+        if not trials:
+            return None
+        (_count, _fraction, _quality, _residual, _prior_distance,
+         spacing, phase, aligned, _tolerance, required) = max(trials, key=lambda value: value[:5])
+        if len(aligned) < required:
+            return None
+        center_y = float(median(y_values))
+        vertical_tolerance = max(
+            3.0, height * STORY_BADGE_GRID_VERTICAL_TOLERANCE_RATIO, badge_width * 0.85,
+        )
+        aligned = {
+            slot_index: value for slot_index, value in aligned.items()
+            if abs(value.best.result.center[1] - center_y) <= vertical_tolerance
+        }
+        if len(aligned) < required:
+            return None
+        return StoryBadgeGrid(
+            spacing=float(spacing), phase=float(phase),
+            center_y=float(median(value.best.result.center[1] for value in aligned.values())),
+            anchors=len(aligned),
+        )
+
+    @staticmethod
+    def _dominant_badge_row(detections, badge_width):
         row_tolerance = max(
             3.0,
             min(8.0, badge_width * STORY_BADGE_GRID_ROW_TOLERANCE_RATIO),
@@ -371,9 +619,6 @@ class StoryCardNavigationMixin:
                     break
             else:
                 rows.append([detection])
-        if not rows:
-            return None
-
         def row_rank(row: list[StoryBadgeDetection]) -> tuple[float, ...]:
             strong = [
                 value
@@ -391,13 +636,10 @@ class StoryCardNavigationMixin:
                 quality,
             )
 
-        row = max(rows, key=row_rank)
-        if len(row) < STORY_BADGE_GRID_MIN_ANCHORS:
-            return None
-        x_values = sorted(
-            float(value.best.result.center[0]) for value in row
-        )
-        y_values = [float(value.best.result.center[1]) for value in row]
+        return max(rows, key=row_rank)
+
+    @staticmethod
+    def _badge_spacing_candidates(x_values, width, badge_width) -> set[float]:
         minimum_spacing = max(
             8.0,
             badge_width * STORY_BADGE_GRID_MIN_SPACING_BADGE_RATIO,
@@ -424,131 +666,44 @@ class StoryCardNavigationMixin:
         prior = width * STORY_BADGE_GRID_SPACING_RATIO
         if minimum_spacing <= prior <= maximum_spacing:
             spacing_candidates.add(round(prior, 3))
-        if not spacing_candidates:
-            return None
+        return spacing_candidates
 
-        def circular_error(value: float, phase: float, spacing: float) -> float:
-            remainder = (value - phase) % spacing
-            return min(remainder, spacing - remainder)
+    @staticmethod
+    def _badge_phase_error(value: float, phase: float, spacing: float) -> float:
+        remainder = (value - phase) % spacing
+        return min(remainder, spacing - remainder)
 
-        def fit_phase(spacing: float, seed: float):
-            tolerance = max(
-                2.0,
-                min(
-                    spacing * max(0.02, STORY_BADGE_GRID_ALIGNMENT_TOLERANCE_RATIO),
-                    max(3.0, badge_width * 0.85),
-                ),
-            )
-            phase = seed % spacing
-            aligned: dict[int, StoryBadgeDetection] = {}
-            for _ in range(3):
-                aligned = {}
-                for detection in row:
-                    center_x = float(detection.best.result.center[0])
-                    slot_index = round((center_x - phase) / spacing)
-                    if circular_error(center_x, phase, spacing) > tolerance:
-                        continue
-                    current = aligned.get(slot_index)
-                    if current is None or (
-                        detection.best.combined_score,
-                        detection.best.discrimination_score,
-                    ) > (
-                        current.best.combined_score,
-                        current.best.discrimination_score,
-                    ):
-                        aligned[slot_index] = detection
-                if not aligned:
-                    break
-                signed_errors = tuple(
-                    ((
-                        float(value.best.result.center[0])
-                        - (phase + slot_index * spacing)
-                        + spacing / 2
-                    ) % spacing)
-                    - spacing / 2
-                    for slot_index, value in aligned.items()
-                )
-                phase = (phase + median(signed_errors)) % spacing
-            return phase, aligned, tolerance
-
-        trials = []
-        for spacing in spacing_candidates:
-            seeds = tuple(value % spacing for value in x_values)
-            for seed in seeds:
-                phase, aligned, tolerance = fit_phase(spacing, seed)
-                if not aligned:
+    def _fit_badge_grid_phase(self, row, spacing, seed, badge_width):
+        tolerance = max(
+            2.0,
+            min(spacing * max(0.02, STORY_BADGE_GRID_ALIGNMENT_TOLERANCE_RATIO),
+                max(3.0, badge_width * 0.85)),
+        )
+        phase = seed % spacing
+        aligned: dict[int, StoryBadgeDetection] = {}
+        for _ in range(3):
+            aligned = {}
+            for detection in row:
+                center_x = float(detection.best.result.center[0])
+                slot_index = round((center_x - phase) / spacing)
+                if self._badge_phase_error(center_x, phase, spacing) > tolerance:
                     continue
-                expected_visible_slots = max(1, ceil(width / spacing))
-                required_anchors = max(
-                    STORY_BADGE_GRID_MIN_ANCHORS,
-                    ceil(expected_visible_slots * STORY_BADGE_GRID_MIN_VISIBLE_FRACTION),
-                )
-                residual = sum(
-                    circular_error(
-                        float(value.best.result.center[0]),
-                        phase,
-                        spacing,
-                    )
-                    for value in aligned.values()
-                )
-                quality = sum(
-                    max(0.0, value.best.combined_score)
-                    for value in aligned.values()
-                )
-                trials.append(
-                    (
-                        len(aligned),
-                        len(aligned) / expected_visible_slots,
-                        quality,
-                        -residual,
-                        -abs(spacing - prior),
-                        spacing,
-                        phase,
-                        aligned,
-                        tolerance,
-                        required_anchors,
-                    )
-                )
-        if not trials:
-            return None
-        (
-            _count,
-            _fraction,
-            _quality,
-            _residual,
-            _prior_distance,
-            spacing,
-            phase,
-            aligned,
-            _tolerance,
-            required,
-        ) = max(
-            trials,
-            key=lambda value: value[:5],
-        )
-        if len(aligned) < required:
-            return None
-
-        center_y = float(median(y_values))
-        vertical_tolerance = max(
-            3.0,
-            height * STORY_BADGE_GRID_VERTICAL_TOLERANCE_RATIO,
-            badge_width * 0.85,
-        )
-        aligned = {
-            slot_index: value
-            for slot_index, value in aligned.items()
-            if abs(value.best.result.center[1] - center_y) <= vertical_tolerance
-        }
-        if len(aligned) < required:
-            return None
-        center_y = float(median(value.best.result.center[1] for value in aligned.values()))
-        return StoryBadgeGrid(
-            spacing=float(spacing),
-            phase=float(phase),
-            center_y=center_y,
-            anchors=len(aligned),
-        )
+                current = aligned.get(slot_index)
+                if current is None or (
+                    detection.best.combined_score, detection.best.discrimination_score,
+                ) > (
+                    current.best.combined_score, current.best.discrimination_score,
+                ):
+                    aligned[slot_index] = detection
+            if not aligned:
+                break
+            signed_errors = tuple(
+                ((float(value.best.result.center[0])
+                  - (phase + slot_index * spacing) + spacing / 2) % spacing) - spacing / 2
+                for slot_index, value in aligned.items()
+            )
+            phase = (phase + median(signed_errors)) % spacing
+        return phase, aligned, tolerance
 
     def _story_badge_grid_detections(
         self,
@@ -692,35 +847,10 @@ class StoryCardNavigationMixin:
 
         detections: list[tuple[float, StoryBadgeDetection]] = []
         for slot_index, candidates in candidates_by_slot.items():
-            best_by_number: dict[int, StoryBadgeCandidate] = {}
-            for candidate in candidates:
-                current = best_by_number.get(candidate.number)
-                if current is None or (
-                    candidate.combined_score,
-                    candidate.discrimination_score,
-                ) > (
-                    current.combined_score,
-                    current.discrimination_score,
-                ):
-                    best_by_number[candidate.number] = candidate
-            ranked = sorted(
-                best_by_number.values(),
-                key=lambda value: (
-                    value.combined_score,
-                    value.discrimination_score,
-                ),
-                reverse=True,
-            )
-            if not ranked:
-                continue
             detections.append(
                 (
                     grid.phase + slot_index * grid.spacing,
-                    StoryBadgeDetection(
-                        best=ranked[0],
-                        runner_up=ranked[1] if len(ranked) > 1 else None,
-                        recovery_mode="slot_grid",
-                    ),
+                    self._rank_badge_candidates(candidates, recovery_mode="slot_grid"),
                 )
             )
 
@@ -855,6 +985,24 @@ class StoryCardNavigationMixin:
         frame: np.ndarray,
         target_number: int,
     ) -> tuple[StoryBadgeDetection | None, str]:
+        if getattr(self, "_badge_category", "story") == "character":
+            return self._find_character_badge(frame, target_number)
+        if getattr(self, "_badge_category", "story") == "event":
+            check = event_card_art.find_card(frame, target_number)
+            self._status(
+                "活动卡带封面", check.reason or f"{target_number}: margin={check.margin:.3f}",
+            )
+            if check.result is None:
+                return None, check.reason
+            best = StoryBadgeCandidate(target_number, check.result)
+            runner = StoryBadgeCandidate(
+                check.competitor,
+                replace(
+                    check.result, score=check.result.score - check.margin,
+                    zncc_score=check.result.score - check.margin,
+                ),
+            )
+            return StoryBadgeDetection(best, runner, recovery_mode="event_cover"), ""
         detections = self._story_badge_detections(frame)
         detection, reason = self._find_story_badge_from_detections(
             frame,
@@ -911,8 +1059,6 @@ class StoryCardNavigationMixin:
             # A fitted row is useful evidence that the selector is present, but
             # it does not prove that the requested number is visible.
             return None, strict_reason
-        if self._story_badge_reason_is_ambiguous(reason):
-            return None, reason
         return None, reason
 
     @staticmethod
@@ -953,6 +1099,8 @@ class StoryCardNavigationMixin:
         self,
         frame: np.ndarray,
         target_numbers: Iterable[int],
+        *,
+        priority_number: int | None = None,
     ) -> dict[int, tuple[StoryBadgeDetection | None, str]]:
         """Strictly inspect several badge numbers with one shared template scan."""
 
@@ -965,12 +1113,16 @@ class StoryCardNavigationMixin:
             )
             for number in dict.fromkeys(target_numbers)
         }
+        self._recover_ordered_story_badges(frame, inspected, detections)
         recoverable = {
             number
             for number, (detection, reason) in inspected.items()
             if detection is None
             and not reason.startswith(("同一编号出现", "角标OCR数字冲突"))
         }
+        viewport = self._story_bar_viewport(frame, inspected)
+        if priority_number is not None and viewport is not None:
+            recoverable.intersection_update((priority_number,))
         if not recoverable:
             return inspected
         grid_detections = self._story_badge_grid_detections(
@@ -986,7 +1138,79 @@ class StoryCardNavigationMixin:
                 number,
                 grid_detections,
             )
+            detection, reason = inspected[number]
+            if (
+                detection is None
+                and not self._story_badge_reason_is_ambiguous(reason)
+                and not any(value.best.number == number for value in grid_detections)
+            ):
+                runners = self._story_badge_grid_runner_detections(number, grid_detections)
+                if runners:
+                    inspected[number] = self._find_story_badge_from_detections(
+                        frame, number, runners,
+                    )
+        self._recover_ordered_story_badges(frame, inspected, (*detections, *grid_detections))
         return inspected
+
+    def _recover_ordered_story_badges(self, frame, inspected, detections):
+        """Use the ordered row to choose an OCR region, never to infer its digit."""
+
+        viewport = self._story_bar_viewport(frame, inspected)
+        if viewport is None:
+            return
+        origin, spacing = viewport
+        anchors = {
+            number: badge.best.result.center
+            for number, (badge, _reason) in inspected.items() if badge is not None
+        }
+        row_y = median(center[1] for center in anchors.values())
+        for number, (badge, reason) in tuple(inspected.items()):
+            if (
+                badge is not None
+                or not min(anchors) - 1 <= number <= max(anchors) + 1
+                or reason.startswith(("同一编号出现", "角标OCR数字冲突"))
+            ):
+                continue
+            predicted_x = origin + (number - 1) * spacing
+            candidates = []
+            for detection in detections:
+                for candidate, runner in (
+                    (detection.best, detection.runner_up),
+                    (detection.runner_up, detection.best),
+                ):
+                    if candidate is None or runner is None or candidate.number != number:
+                        continue
+                    result = candidate.result
+                    if (
+                        result.score >= STORY_BADGE_GRID_TEMPLATE_SCORE
+                        and result.pixel_score >= STORY_BADGE_GRID_PIXEL_SCORE
+                        and result.zncc_score >= STORY_BADGE_GRID_ZNCC_SCORE
+                        and abs(result.center[0] - predicted_x)
+                        <= spacing * STORY_BADGE_GRID_LOCAL_TOLERANCE_RATIO
+                        and abs(result.center[1] - row_y)
+                        <= frame.shape[0] * STORY_BADGE_GRID_VERTICAL_TOLERANCE_RATIO
+                    ):
+                        candidates.append((candidate, runner))
+            if not candidates:
+                continue
+            tried_regions = set()
+            for best, runner in sorted(candidates, key=lambda pair: -pair[0].combined_score):
+                region = best.result.position, best.result.size
+                if region in tried_regions:
+                    continue
+                tried_regions.add(region)
+                ocr_number, text = self._story_badge_ocr_number(frame, best.result)
+                if ocr_number == number:
+                    inspected[number] = (StoryBadgeDetection(
+                        best, runner, ocr_number=ocr_number, ocr_text=text,
+                        recovery_mode="ordered_slot",
+                    ), "")
+                    self._status("剧情角标", f"顺序槽位与OCR共同确认{number}")
+                    break
+                prefix = "角标OCR数字冲突" if ocr_number is not None else "顺序槽位OCR未确认"
+                inspected[number] = (None, f"{prefix}：目标={number}, OCR={text or '-'}")
+                if ocr_number is not None:
+                    break
 
     def _find_story_badge_from_detections(
         self,
@@ -994,43 +1218,13 @@ class StoryCardNavigationMixin:
         target_number: int,
         detections: tuple[StoryBadgeDetection, ...],
     ) -> tuple[StoryBadgeDetection | None, str]:
-        def strict_identity(value: StoryBadgeDetection) -> bool:
-            return (
-                not value.recovery_mode
-                and value.best.result.score >= STORY_BADGE_TEMPLATE_SCORE
-                and value.best.result.pixel_score >= STORY_BADGE_PIXEL_SCORE
-            )
-
-        def encoded_identity(value: StoryBadgeDetection) -> bool:
-            return (
-                not value.recovery_mode
-                and value.best.result.score >= STORY_BADGE_ENCODED_TEMPLATE_SCORE
-                and value.best.result.pixel_score >= STORY_BADGE_ENCODED_PIXEL_SCORE
-                and value.best.result.zncc_score >= STORY_BADGE_ENCODED_ZNCC_SCORE
-            )
-
-        def grid_identity(value: StoryBadgeDetection) -> bool:
-            return (
-                value.recovery_mode == "slot_grid"
-                and value.best.result.score >= STORY_BADGE_GRID_TEMPLATE_SCORE
-                and value.best.result.pixel_score >= STORY_BADGE_GRID_PIXEL_SCORE
-                and value.best.result.zncc_score >= STORY_BADGE_GRID_ZNCC_SCORE
-            )
-
-        def runner_identity(value: StoryBadgeDetection) -> bool:
-            # Structural floors were already enforced when the runner-up was
-            # promoted; the digit OCR is the deciding vote for this tier.
-            return value.recovery_mode == "slot_grid_runner"
-
         target_detections = [
             value
             for value in detections
             if value.best.number == target_number
             and (
-                strict_identity(value)
-                or encoded_identity(value)
-                or grid_identity(value)
-                or runner_identity(value)
+                self._badge_identity_margins(value)
+                or value.recovery_mode == "slot_grid_runner"
             )
         ]
         if not target_detections:
@@ -1080,25 +1274,20 @@ class StoryCardNavigationMixin:
             detection = confirmed[0]
         else:
             detection = target_detections[0]
+        return self._resolve_badge_identity(frame, target_number, detection)
+
+    def _resolve_badge_identity(
+        self, frame: np.ndarray, target_number: int, detection: StoryBadgeDetection,
+    ) -> tuple[StoryBadgeDetection | None, str]:
+        """Resolve one physical slot using its runner-up margin and independent digit evidence."""
         if detection.runner_up is None:
             return None, "缺少同位置次优编号，无法检查歧义"
-        if runner_identity(detection):
+        if detection.recovery_mode == "slot_grid_runner":
             # The promoted runner-up lost its slot's template vote, so the
             # digit OCR is the deciding independent vote and is mandatory
             # regardless of how the symmetric ZNCC difference came out.
-            if detection.ocr_number is not None:
-                # Already digit-confirmed while resolving duplicate positions.
-                ocr_number, ocr_text = detection.ocr_number, detection.ocr_text
-            else:
-                ocr_number, ocr_text = self._story_badge_ocr_number(
-                    frame,
-                    detection.best.result,
-                )
-                detection = replace(
-                    detection,
-                    ocr_text=ocr_text,
-                    ocr_number=ocr_number,
-                )
+            detection = self._read_badge_ocr(frame, detection)
+            ocr_number, ocr_text = detection.ocr_number, detection.ocr_text
             if ocr_number == target_number:
                 self._status(
                     "剧情角标",
@@ -1117,39 +1306,17 @@ class StoryCardNavigationMixin:
                     f"text={ocr_text or '-'}"
                 ),
             )
-        required_margin = min(
-            threshold
-            for passed, threshold in (
-                (strict_identity(detection), STORY_BADGE_MIN_MARGIN),
-                (encoded_identity(detection), STORY_BADGE_ENCODED_MIN_MARGIN),
-                (grid_identity(detection), STORY_BADGE_GRID_MIN_MARGIN),
-            )
-            if passed
-        )
+        required_margin = min(self._badge_identity_margins(detection))
         if detection.margin < required_margin:
-            if grid_identity(detection):
+            if detection.recovery_mode == "slot_grid":
                 # OCR is an auxiliary discriminator only after the grid's
                 # structural gates and a non-trivial score margin pass.
                 if (
                     detection.margin >= STORY_BADGE_GRID_OCR_MARGIN
                     and detection.combined_margin >= STORY_BADGE_GRID_MIN_COMBINED_MARGIN
                 ):
-                    if detection.ocr_number is not None:
-                        # Already digit-confirmed during duplicate selection.
-                        ocr_number, ocr_text = (
-                            detection.ocr_number,
-                            detection.ocr_text,
-                        )
-                    else:
-                        ocr_number, ocr_text = self._story_badge_ocr_number(
-                            frame,
-                            detection.best.result,
-                        )
-                        detection = replace(
-                            detection,
-                            ocr_text=ocr_text,
-                            ocr_number=ocr_number,
-                        )
+                    detection = self._read_badge_ocr(frame, detection)
+                    ocr_number, ocr_text = detection.ocr_number, detection.ocr_text
                     if ocr_number == target_number:
                         self._status(
                             "剧情角标",
@@ -1176,19 +1343,8 @@ class StoryCardNavigationMixin:
                     f"combined={detection.combined_margin:.3f}"
                 ),
             )
-        if detection.ocr_number is not None:
-            # Digit already confirmed while resolving duplicate positions.
-            ocr_number, ocr_text = detection.ocr_number, detection.ocr_text
-        else:
-            ocr_number, ocr_text = self._story_badge_ocr_number(
-                frame,
-                detection.best.result,
-            )
-            detection = replace(
-                detection,
-                ocr_text=ocr_text,
-                ocr_number=ocr_number,
-            )
+        detection = self._read_badge_ocr(frame, detection)
+        ocr_number, ocr_text = detection.ocr_number, detection.ocr_text
         if ocr_number is not None and ocr_number != target_number:
             return (
                 None,
@@ -1198,6 +1354,34 @@ class StoryCardNavigationMixin:
                 ),
             )
         return detection, ""
+
+    @staticmethod
+    def _badge_identity_margins(detection: StoryBadgeDetection) -> tuple[float, ...]:
+        """Return the ambiguity margins for every structural tier the badge passes."""
+        result = detection.best.result
+        tiers = (
+            (not detection.recovery_mode
+             and result.score >= STORY_BADGE_TEMPLATE_SCORE
+             and result.pixel_score >= STORY_BADGE_PIXEL_SCORE, STORY_BADGE_MIN_MARGIN),
+            (not detection.recovery_mode
+             and result.score >= STORY_BADGE_ENCODED_TEMPLATE_SCORE
+             and result.pixel_score >= STORY_BADGE_ENCODED_PIXEL_SCORE
+             and result.zncc_score >= STORY_BADGE_ENCODED_ZNCC_SCORE,
+             STORY_BADGE_ENCODED_MIN_MARGIN),
+            (detection.recovery_mode == "slot_grid"
+             and result.score >= STORY_BADGE_GRID_TEMPLATE_SCORE
+             and result.pixel_score >= STORY_BADGE_GRID_PIXEL_SCORE
+             and result.zncc_score >= STORY_BADGE_GRID_ZNCC_SCORE, STORY_BADGE_GRID_MIN_MARGIN),
+        )
+        return tuple(margin for passed, margin in tiers if passed)
+
+    def _read_badge_ocr(
+        self, frame: np.ndarray, detection: StoryBadgeDetection,
+    ) -> StoryBadgeDetection:
+        if detection.ocr_number is not None:
+            return detection
+        number, text = self._story_badge_ocr_number(frame, detection.best.result)
+        return replace(detection, ocr_number=number, ocr_text=text)
 
     def _wait_for_story_badge(
         self,
@@ -1235,15 +1419,25 @@ class StoryCardNavigationMixin:
                 "缺少同位置次优编号",
                 "候选分差不足",
                 "角标OCR数字冲突",
+                "顺序槽位OCR未确认",
             )
         )
 
     def _wait_for_story_badge_with_scroll(
         self,
         target_number: int,
-        scan_steps: int = QUICK_SWITCH_SCROLL_SCAN_STEPS,
+        scan_steps: int | None = None,
     ) -> tuple[np.ndarray, StoryBadgeDetection] | None:
-        """Find one story badge, using the quick bar's mouse-wheel direction."""
+        """Locate a confirmed card in its category's quick-switch row."""
+
+        self._event_card_scan_absent = False
+        if getattr(self, "_badge_category", "story") == "story":
+            return self._locate_story_badge_in_viewport(
+                target_number,
+                STORY_BAR_SCROLL_MAX_EVENTS if scan_steps is None else scan_steps,
+            )
+        if scan_steps is None:
+            scan_steps = QUICK_SWITCH_SCROLL_SCAN_STEPS
 
         last_reason = "未执行识别"
 
@@ -1274,6 +1468,18 @@ class StoryCardNavigationMixin:
             )
             return frame, detection
 
+        if getattr(self, "_badge_category", "story") == "event":
+            # 只有扫描窗口内每一帧都是有效画面里的封面低分，才可能表示未持有。
+            self._event_card_scan_absent = True
+            end_at = monotonic() + EVENT_CARD_SCAN_SECONDS
+            while True:
+                found = scan_current_page()
+                if found is None and not event_card_art.is_absent_reason(last_reason):
+                    self._event_card_scan_absent = False
+                if found is not None or monotonic() >= end_at:
+                    return found
+                self.task.sleep(PROBE_STORY_BADGE_CONFIRM_SECONDS)
+
         found = scan_current_page()
         if found is not None:
             return found
@@ -1287,7 +1493,7 @@ class StoryCardNavigationMixin:
         # larger card numbers, so first reset to that edge. Scanning then uses
         # the user-calibrated upward wheel: cards move right, large to small.
         self._status("卡带滚轮", "向下复位到大编号端")
-        if not self._scroll_story_bar(
+        if not self._scroll_cartridge_bar(
             QUICK_SWITCH_SCROLL_POINT,
             QUICK_SWITCH_SCROLL_RESET_AMOUNT,
             count=QUICK_SWITCH_SCROLL_RESET_COUNT,
@@ -1310,7 +1516,7 @@ class StoryCardNavigationMixin:
             if step >= steps:
                 break
             self._status("卡带滚轮", f"向上扫描 {step + 1}/{steps}")
-            if not self._scroll_story_bar(
+            if not self._scroll_cartridge_bar(
                 QUICK_SWITCH_SCROLL_POINT,
                 QUICK_SWITCH_SCROLL_UP_AMOUNT,
                 count=QUICK_SWITCH_SCROLL_UP_COUNT,
@@ -1324,29 +1530,256 @@ class StoryCardNavigationMixin:
         )
         return None
 
+    def _story_card_target_visible(self, frame, detection) -> bool:
+        if getattr(self, "_badge_category", "story") != "story":
+            return card_icon_region(detection.best.result.center, frame.shape)[1]
+        height, width = frame.shape[:2]
+        result = detection.best.result
+        center_x, center_y = result.center
+        left, top, right, bottom = STORY_CARD_BODY_OFFSETS
+        return (
+            result.position[0] >= 0 and result.position[1] >= 0
+            and result.position[0] + result.size[0] <= width
+            and result.position[1] + result.size[1] <= height
+            and round(center_x + left * width / FHD_1080.width) >= 0
+            and round(center_x + right * width / FHD_1080.width) <= width
+            and round(center_y + top * height / FHD_1080.height) >= 0
+            and round(center_y + bottom * height / FHD_1080.height) <= height
+        )
+
+    @staticmethod
+    def _story_bar_viewport(frame, inspected) -> tuple[float, float] | None:
+        """Fit the ordered chapter row using independently identified badges."""
+
+        anchors = sorted(
+            (number, detection.best.result.center)
+            for number, (detection, _reason) in inspected.items()
+            if detection is not None
+        )
+        if len(anchors) < 3:
+            return None
+        spacings = [
+            (right[1][0] - left[1][0]) / (right[0] - left[0])
+            for left, right in zip(anchors, anchors[1:])
+        ]
+        spacing = median(spacings)
+        expected = frame.shape[1] * STORY_BADGE_GRID_SPACING_RATIO
+        tolerance = expected * STORY_BADGE_GRID_LOCAL_TOLERANCE_RATIO
+        if abs(spacing - expected) > tolerance:
+            return None
+        origin = median(x - (number - 1) * spacing for number, (x, _y) in anchors)
+        row_y = median(y for _number, (_x, y) in anchors)
+        if any(
+            abs(x - (origin + (number - 1) * spacing)) > tolerance
+            or abs(y - row_y) > frame.shape[0] * STORY_BADGE_GRID_VERTICAL_TOLERANCE_RATIO
+            for number, (x, y) in anchors
+        ):
+            return None
+        return origin, spacing
+
+    def _locate_story_badge_in_viewport(
+        self, target_number: int, scroll_limit: int,
+    ) -> tuple[np.ndarray, StoryBadgeDetection] | None:
+        """Observe the window after each move; predictions never authorize a click."""
+
+        remaining = max(0, int(scroll_limit))
+        previous = None
+        pixels_per_tick = None
+        reversed_at_edge = False
+        initial_shape = None
+        reason = "未执行识别"
+        while True:
+            frame = self.vision.capture()
+            if initial_shape is not None and frame.shape != initial_shape:
+                reason = "窗口尺寸变化"
+                break
+            initial_shape = frame.shape
+            inspected = self.inspect_story_badges(
+                frame, range(1, 21), priority_number=target_number,
+            )
+            detection, reason = inspected.get(target_number, (None, "目标编号无效"))
+            if detection is not None:
+                if self._story_card_target_visible(frame, detection):
+                    self._status("剧情角标", f"{target_number}: 当前窗口已完整识别")
+                    return frame, detection
+            elif self._story_badge_reason_is_ambiguous(reason):
+                reason = f"目标角标存在歧义：{reason}"
+                break
+
+            viewport = self._story_bar_viewport(frame, inspected)
+            if viewport is None:
+                return self._scan_unordered_story_bar(
+                    frame, inspected, target_number, remaining,
+                )
+            origin, spacing = viewport
+            target_x = (
+                detection.best.result.center[0] if detection is not None
+                else origin + (target_number - 1) * spacing
+            )
+            scale = frame.shape[1] / FHD_1080.width
+            left = -STORY_CARD_BODY_OFFSETS[0] * scale
+            right = frame.shape[1] - STORY_CARD_BODY_OFFSETS[2] * scale
+            if left <= target_x <= right:
+                if detection is None:
+                    return self._scan_unordered_story_bar(
+                        frame, inspected, target_number, remaining,
+                    )
+                reason = f"目标预计已在当前窗口，但未确认完整卡带：{reason}"
+                break
+
+            # Leave half a slot of clearance for the full cartridge body.
+            destination = left + spacing / 2 if target_x < left else right - spacing / 2
+            distance = destination - target_x
+            amount = 1 if distance < 0 else -1
+            count = 1
+            centers = {
+                number: badge.best.result.center[0]
+                for number, (badge, _reason) in inspected.items()
+                if badge is not None
+            }
+            if previous is not None:
+                old_origin, old_spacing, old_centers, last_amount, last_count = previous
+                if (
+                    abs(spacing - old_spacing)
+                    > old_spacing * STORY_BADGE_GRID_LOCAL_TOLERANCE_RATIO
+                ):
+                    reason = "滚动前后卡槽间距不一致"
+                    break
+                common = centers.keys() & old_centers.keys()
+                movement = (
+                    median(centers[number] - old_centers[number] for number in common)
+                    if len(common) >= 2 else origin - old_origin
+                )
+                if abs(movement) < spacing * 0.05:
+                    if pixels_per_tick is not None:
+                        return self._scan_unordered_story_bar(
+                            frame, inspected, target_number, remaining, amount=-last_amount,
+                        )
+                    if reversed_at_edge:
+                        reason = "卡带窗口未继续移动"
+                        break
+                    # The first trial can point out of an endpoint. Try the
+                    # opposite direction once, then require measured movement.
+                    reversed_at_edge = True
+                    amount = -last_amount
+                else:
+                    pixels_per_tick = movement / (last_amount * last_count)
+
+            if pixels_per_tick is not None:
+                amount = 1 if distance * pixels_per_tick > 0 else -1
+                count = min(8, max(1, ceil(abs(distance / pixels_per_tick))))
+            count = min(count, remaining)
+            if count <= 0:
+                reason = "已用尽卡带滚动次数"
+                break
+            visible = sorted(centers)
+            self._status(
+                "卡带窗口定位",
+                f"可见{visible}；目标{target_number}预计x={target_x:.0f}；"
+                f"滚轮{amount:+d}×{count}；剩余{remaining - count}",
+            )
+            if not self._scroll_cartridge_bar(
+                QUICK_SWITCH_SCROLL_POINT, amount, count=count,
+                interval=QUICK_SWITCH_SCROLL_INTERVAL,
+                after_sleep=QUICK_SWITCH_SCROLL_SETTLE_SECONDS,
+                require_movement=False,
+            ):
+                reason = "滚动后未确认稳定的卡带选择页"
+                break
+            remaining -= count
+            previous = origin, spacing, centers, amount, count
+
+        self.task.log_warning(f"跑图跑商：剧情游戏卡{target_number}窗口定位停止：{reason}。")
+        return None
+
+    def _scan_unordered_story_bar(
+        self, frame, inspected, target_number, remaining, *, amount=1,
+    ):
+        """Search overlapping views when chapter order cannot locate the target."""
+
+        reversed_at_edge = False
+        batch_count = 2
+        reason = "已用尽卡带滚动次数"
+        while remaining > 0:
+            centers = {
+                number: badge.best.result.center[0]
+                for number, (badge, _reason) in inspected.items()
+                if badge is not None
+            }
+            if len(centers) < 3:
+                reason = "可信章节不足，无法确定卡带窗口"
+                break
+            count = min(batch_count, remaining)
+            self._status("卡带窗口定位", f"编号排列不连续，局部扫描{amount:+d}×{count}")
+            if not self._scroll_cartridge_bar(
+                QUICK_SWITCH_SCROLL_POINT, amount, count=count,
+                interval=QUICK_SWITCH_SCROLL_INTERVAL,
+                after_sleep=QUICK_SWITCH_SCROLL_SETTLE_SECONDS,
+                require_movement=False,
+            ):
+                reason = "滚动后未确认稳定的卡带选择页"
+                break
+            remaining -= count
+            next_frame = self.vision.capture()
+            if next_frame.shape != frame.shape:
+                reason = "窗口尺寸变化"
+                break
+            inspected = self.inspect_story_badges(
+                next_frame, range(1, 21), priority_number=target_number,
+            )
+            detection, reason = inspected.get(target_number, (None, "目标未识别"))
+            if detection is not None:
+                if self._story_card_target_visible(next_frame, detection):
+                    return next_frame, detection
+                reason = "目标已识别，但卡面仍被窗口边缘截断"
+            elif self._story_badge_reason_is_ambiguous(reason):
+                break
+            shifts = [
+                badge.best.result.center[0] - centers[number]
+                for number, (badge, _reason) in inspected.items()
+                if badge is not None and number in centers
+            ]
+            if len(shifts) < 2:
+                reason = "滚动前后缺少共同章节，无法确认位移"
+                break
+            movement = abs(median(shifts))
+            spacing = frame.shape[1] * STORY_BADGE_GRID_SPACING_RATIO
+            if movement < spacing * 0.05:
+                if reversed_at_edge:
+                    reason = "两个方向均已到达边界"
+                    break
+                reversed_at_edge = True
+                amount = -amount
+            else:
+                batch_count = min(8, max(1, round(2 * spacing * count / movement)))
+            frame = next_frame
+        if remaining <= 0:
+            reason = "已用尽卡带滚动次数"
+        self.task.log_warning(f"跑图跑商：剧情游戏卡{target_number}局部扫描停止：{reason}。")
+        return None
+
     def locate_probe_story_card(
         self,
         card_id: str,
         scan_steps: int = QUICK_SWITCH_SCROLL_SCAN_STEPS,
     ) -> ProbedStoryCard | None:
-        """Locate and read one card in an already-open story quick selector.
+        """Locate one supported cartridge while preserving the current selector viewport.
 
-        This probe-only path preserves the current horizontal viewport.  It
-        advances toward later cards in short wheel batches, waits for the
-        selector to settle, and never uses the formal selector's reset-to-edge
-        operation. ``scan_steps`` is the total wheel-event limit, not the
-        number of recognition attempts.
+        Advance in short wheel batches and wait for a stable selector.
+        ``scan_steps`` bounds total wheel events rather than recognition attempts.
         """
 
         card = CARD_BY_ID.get(card_id)
         if card is None:
             self.task.log_warning(f"剧情卡带合并测试：未知卡带：{card_id}。")
             return None
+        self._badge_category = card.category
+        if card.category == "character" and not self._select_cartridge_category(card.category):
+            return None
 
         scroll_limit = max(0, int(scan_steps))
         scrolled = 0
         last_reason = "未执行识别"
-        scroll_focused = False
         while True:
             frame = self.vision.capture()
             badge, last_reason = self._find_story_badge(frame, card.number)
@@ -1419,9 +1852,6 @@ class StoryCardNavigationMixin:
 
             if scrolled >= scroll_limit:
                 break
-            if not scroll_focused:
-                self._focus_quick_switch_for_scroll()
-                scroll_focused = True
             batch_count = min(
                 PROBE_QUICK_SWITCH_SCROLL_COUNT,
                 scroll_limit - scrolled,
@@ -1431,13 +1861,14 @@ class StoryCardNavigationMixin:
                 "卡带滚轮",
                 f"后续卡带滚动 {scrolled}/{scroll_limit}（本批{batch_count}次）",
             )
-            self.task.scroll_client(
+            if not self._scroll_cartridge_bar(
                 PROBE_QUICK_SWITCH_SCROLL_POINT,
                 PROBE_QUICK_SWITCH_SCROLL_AMOUNT,
                 count=batch_count,
                 interval=PROBE_QUICK_SWITCH_SCROLL_INTERVAL_SECONDS,
                 after_sleep=PROBE_QUICK_SWITCH_SCROLL_SETTLE_SECONDS,
-            )
+            ):
+                return None
 
         self.task.log_warning(
             f"剧情卡带合并测试：分批向上滚动后仍未确认剧情游戏卡{card.number}：{last_reason}。"
@@ -1521,6 +1952,8 @@ class StoryCardNavigationMixin:
         card = CARD_BY_ID.get(card_id)
         if card is None:
             return NavigationResult(False, ScreenState.UNKNOWN, f"未知卡带：{card_id}")
+        category = card.category
+        self._badge_category = category
         if self.classify() == ScreenState.CARD_MENU:
             if not self._wait_for_quick_switch_page():
                 return NavigationResult(
@@ -1528,7 +1961,9 @@ class StoryCardNavigationMixin:
                     ScreenState.CARD_MENU,
                     "当前快速切换卡带页面未通过三项 OCR 确认",
                 )
-            if not self._wait_for_story_category() and not self._select_story_category():
+            if not self._wait_for_cartridge_category(
+                category=category
+            ) and not self._select_cartridge_category(category):
                 return NavigationResult(
                     False,
                     ScreenState.CARD_MENU,
@@ -1538,7 +1973,7 @@ class StoryCardNavigationMixin:
             returned = self.return_home()
             if not returned.success:
                 return returned
-            menu = self._open_story_quick_switcher()
+            menu = self._open_cartridge_quick_switcher(category)
             if not menu.success:
                 return menu
 
@@ -1549,13 +1984,10 @@ class StoryCardNavigationMixin:
                 False,
                 self.classify(),
                 f"未唯一确认剧情游戏卡{card.number}角标",
+                card_not_found=category == "event" and self._event_card_confirmed_absent(),
             )
         badge_frame, badge = badge_match
-        _, complete_region = card_icon_region(
-            badge.best.result.center,
-            badge_frame.shape,
-        )
-        if not complete_region:
+        if not self._story_card_target_visible(badge_frame, badge):
             reason = f"剧情游戏卡{card.number}卡带框架被客户区边缘截断"
             self._status("卡带完成度", reason)
             return NavigationResult(False, ScreenState.CARD_MENU, reason)
@@ -1570,6 +2002,20 @@ class StoryCardNavigationMixin:
             ),
         )
         return LocatedStoryCard(card, badge_frame, badge)
+
+    def _event_card_confirmed_absent(self) -> bool:
+        """Treat a missed event card as not held only on positive evidence.
+
+        Every scanned frame must be a valid quick-switch frame whose target
+        cover scored below the threshold, and the quick-switch page and the
+        event tab must still be confirmed after the scan; an invalid capture,
+        an ambiguous cover or a page that changed stays an ordinary failure.
+        """
+        if not getattr(self, "_event_card_scan_absent", False):
+            return False
+        return self._wait_for_quick_switch_page() and self._wait_for_cartridge_category(
+            category="event",
+        )
 
     def _enter_located_story_card(
         self,
@@ -1658,10 +2104,24 @@ class StoryCardNavigationMixin:
             return None
         try:
             confirmed_frame = capture()
-            confirmed, reason = self._find_story_badge(
-                confirmed_frame,
-                detection.best.number,
-            )
+            if getattr(self, "_badge_category", "story") == "character":
+                current, _ = self._find_character_badge(confirmed_frame, detection.best.number)
+                if current is not None and self._story_badge_identity_is_stable(detection, current):
+                    _, complete = card_icon_region(
+                        current.best.result.center, confirmed_frame.shape,
+                    )
+                    if complete:
+                        return confirmed_frame, current
+                return None
+            if detection.recovery_mode == "ordered_slot":
+                confirmed, reason = self.inspect_story_badges(
+                    confirmed_frame, range(1, 21), priority_number=detection.best.number,
+                )[detection.best.number]
+            else:
+                confirmed, reason = self._find_story_badge(
+                    confirmed_frame,
+                    detection.best.number,
+                )
         except (AttributeError, TypeError, ValueError, cv2.error) as exc:
             reason = f"复核异常：{exc}"
             confirmed = None
@@ -1688,11 +2148,7 @@ class StoryCardNavigationMixin:
             if callable(warning):
                 warning(f"跑图跑商：剧情游戏卡点击前{reason}，已停止点击。")
             return None
-        _, complete_region = card_icon_region(
-            confirmed.best.result.center,
-            confirmed_frame.shape,
-        )
-        if not complete_region:
+        if not self._story_card_target_visible(confirmed_frame, confirmed):
             reason = "点击前复核的卡带框架被客户区边缘截断"
             self._status("剧情角标点击复核", reason)
             warning = getattr(self.task, "log_warning", None)
@@ -1714,6 +2170,15 @@ class StoryCardNavigationMixin:
         return confirmed_frame, confirmed
 
     def select_card(self, card_id: str) -> NavigationResult:
+        """Locate, recheck and click one cartridge, then confirm its field page.
+
+        Args:
+            card_id: A supported story, character or event cartridge identifier.
+
+        Returns:
+            The confirmed navigation state, or a failed result with its reason.
+            Task cancellation and executor shutdown propagate to the caller.
+        """
         located = self._locate_story_card(card_id)
         if isinstance(located, NavigationResult):
             return located
@@ -1724,7 +2189,21 @@ class StoryCardNavigationMixin:
         card_id: str,
         *,
         enter_visually_complete: bool = False,
+        required_actions=None,
     ) -> CollectionCardSelectionResult:
+        """Inspect collection completion before deciding whether to enter a cartridge.
+
+        Args:
+            card_id: A collectable cartridge identifier.
+            enter_visually_complete: Enter even if menu evidence proves completion,
+                allowing pending actions to be reconciled from field observations.
+            required_actions: Enabled action policy; only actions the menu can prove
+                may authorize a visual-completion result.
+
+        Returns:
+            FAILED, ENTERED or VISUALLY_COMPLETE together with navigation evidence.
+            This method does not commit collection progress or consume field skills.
+        """
         card = CARD_BY_ID.get(card_id)
         if card is None or not card.collectable:
             navigation = NavigationResult(
@@ -1754,20 +2233,39 @@ class StoryCardNavigationMixin:
             self.task.log_warning(f"地图采集：{card_id}完成度识别异常，按未知继续进入：{error}。")
 
         if completion is not None:
-            self._status(
-                "卡带吸取状态",
-                f"{completion.absorb.state.value}: {completion.absorb.reason}",
-            )
-            self._status(
-                "卡带压制状态",
-                f"{completion.suppress.state.value}: {completion.suppress.reason}",
-            )
-            self._status("卡带完成度", completion.state.value)
-            if completion.state == CardActionState.COMPLETED and not enter_visually_complete:
+            if self._completion_satisfies_actions(completion, required_actions, card_id):
+                completion = self._confirm_collection_completion(
+                    located.frame,
+                    located.badge.best.result.center,
+                    completion,
+                    required_actions,
+                    card_id,
+                )
+            if (
+                completion is not None
+            ):
+                self._status(
+                    "卡带吸取状态",
+                    f"{completion.absorb.state.value}: {completion.absorb.reason}",
+                )
+                self._status(
+                    "卡带压制状态",
+                    f"{completion.suppress.state.value}: {completion.suppress.reason}",
+                )
+                self._status("卡带完成度", completion.state.value)
+            if (
+                completion is not None
+                and self._completion_satisfies_actions(completion, required_actions, card_id)
+                and not enter_visually_complete
+            ):
                 navigation = NavigationResult(
                     True,
                     ScreenState.CARD_MENU,
-                    f"{card_id}视觉确认吸取与压制均完成",
+                    (
+                        f"{card_id}视觉确认吸取完成"
+                        if card_id in ABSORB_ONLY_VERIFIED_CARD_IDS
+                        else f"{card_id}视觉确认吸取与压制均完成"
+                    ),
                 )
                 return CollectionCardSelectionResult(
                     CollectionCardSelectionOutcome.VISUALLY_COMPLETE,
@@ -1790,6 +2288,8 @@ class StoryCardNavigationMixin:
     def inspect_collection_card_completion(
         self,
         card_id: str,
+        *,
+        required_actions=None,
     ) -> CollectionCardSelectionResult:
         """Read one card's absorb/suppress badges without entering the card."""
 
@@ -1825,6 +2325,24 @@ class StoryCardNavigationMixin:
                 CollectionCardSelectionOutcome.FAILED,
                 navigation,
             )
+        if self._completion_satisfies_actions(completion, required_actions, card_id):
+            completion = self._confirm_collection_completion(
+                located.frame,
+                located.badge.best.result.center,
+                completion,
+                required_actions,
+                card_id,
+            )
+        if completion is None:
+            navigation = NavigationResult(
+                False,
+                ScreenState.CARD_MENU,
+                f"{card_id}完成度二帧复核失败",
+            )
+            return CollectionCardSelectionResult(
+                CollectionCardSelectionOutcome.FAILED,
+                navigation,
+            )
         self._status(
             "卡带吸取状态",
             f"{completion.absorb.state.value}: {completion.absorb.reason}",
@@ -1834,7 +2352,7 @@ class StoryCardNavigationMixin:
             f"{completion.suppress.state.value}: {completion.suppress.reason}",
         )
         self._status("卡带完成度", completion.state.value)
-        completed = completion.state == CardActionState.COMPLETED
+        completed = self._completion_satisfies_actions(completion, required_actions, card_id)
         return CollectionCardSelectionResult(
             (
                 CollectionCardSelectionOutcome.VISUALLY_COMPLETE
@@ -1845,7 +2363,11 @@ class StoryCardNavigationMixin:
                 completed,
                 ScreenState.CARD_MENU,
                 (
-                    f"{card_id}视觉确认吸取与压制均完成"
+                    (
+                        f"{card_id}视觉确认吸取完成"
+                        if card_id in ABSORB_ONLY_VERIFIED_CARD_IDS
+                        else f"{card_id}视觉确认吸取与压制均完成"
+                    )
                     if completed
                     else f"{card_id}未同时确认吸取与压制完成"
                 ),
@@ -1853,12 +2375,18 @@ class StoryCardNavigationMixin:
             completion,
         )
 
-    def open_story_quick_switcher_from_sandbox(
+    def open_cartridge_quick_switcher_from_sandbox(
         self,
         *,
         sandbox_already_confirmed: bool = False,
+        category: str = "story",
     ) -> NavigationResult:
-        """Open the story quick-switch page without detouring through the global home."""
+        """Open and confirm the requested cartridge category from its field page.
+
+        ``sandbox_already_confirmed`` reuses the caller's immediately preceding
+        field confirmation; otherwise this method confirms the field before clicking.
+        Returns a navigation result and propagates task cancellation or shutdown.
+        """
 
         if not sandbox_already_confirmed:
             sandbox = self._wait_for_current_sandbox()
@@ -1882,7 +2410,7 @@ class StoryCardNavigationMixin:
                 "点击快速切换按钮后未确认卡带选择页",
             )
 
-        if not self._select_story_category():
+        if not self._select_cartridge_category(category):
             return NavigationResult(
                 False,
                 self.classify(),
@@ -1890,117 +2418,60 @@ class StoryCardNavigationMixin:
             )
         return NavigationResult(True, ScreenState.CARD_MENU, "剧情游戏卡类别已确认")
 
-    def _find_quick_switch_button(self, frame: np.ndarray) -> MatchResult | None:
-        """Identify the translucent navigation icon independently of its brightness."""
+    @staticmethod
+    def _card_category(category: str) -> tuple[str, tuple[float, float], tuple[float, ...]]:
+        """(tab label, click point, highlight region) of a quick bar tab."""
+        if category == "character":
+            return "角色游戏卡", CHARACTER_CATEGORY_POINT, CHARACTER_CATEGORY_HIGHLIGHT_REGION
+        if category == "event":
+            return "活动游戏卡", EVENT_CATEGORY_POINT, EVENT_CATEGORY_HIGHLIGHT_REGION
+        return "剧情游戏卡", STORY_CATEGORY_POINT, STORY_CATEGORY_HIGHLIGHT_REGION
 
-        candidates = []
-        for roi in QUICK_SWITCH_TEMPLATE.relative_rois:
-            candidates.extend(self.vision.match_evidence_all(
-                frame,
-                replace(QUICK_SWITCH_TEMPLATE, relative_rois=(), relative_roi=roi),
-                minimum_score=0.88,
-                peak_radius=max(8, round(22 * frame.shape[0] / FHD_1080.height)),
-                max_results=8,
-                purpose="快速切换按钮",
-            ))
-        if not candidates:
-            self._status("快速切换按钮", "搜索区域内无可信候选")
-            return None
-        candidates.sort(key=lambda candidate: candidate.result.zncc_score, reverse=True)
-        best = candidates[0].result
-        runner = candidates[1].result.zncc_score if len(candidates) > 1 else -1.0
-        # The button is translucent: its background and absolute gray values
-        # change between fields. Identity comes from shape, not pixel brightness.
-        accepted = (
-            best.score >= 0.92
-            and best.zncc_score >= 0.78
-            and best.gradient_zncc_score >= 0.50
-            and best.edge_score >= 0.60
-            and best.zncc_score - runner >= 0.10
+    def _find_character_badge(
+        self,
+        frame: np.ndarray,
+        target_number: int,
+    ) -> tuple[StoryBadgeDetection | None, str]:
+        """The 角色游戏卡 tab: card n's number circle in its own fixed slot."""
+
+        x = (
+            CHARACTER_BADGE_FIRST_X + CHARACTER_BADGE_SPACING * (target_number - 1)
+        ) / FHD_1080.width
+        y = CHARACTER_BADGE_Y / FHD_1080.height
+        half_x = CHARACTER_BADGE_WINDOW / FHD_1080.width
+        half_y = CHARACTER_BADGE_WINDOW / FHD_1080.height
+        window = (
+            max(0.0, x - half_x),
+            max(0.0, y - half_y),
+            min(1.0, x + half_x),
+            min(1.0, y + half_y),
         )
-        self._status(
-            "快速切换按钮",
-            f"{'通过' if accepted else '拒绝'}; center={best.center}; "
-            f"m={best.score:.3f}, pixel={best.pixel_score:.3f}(仅诊断), "
-            f"z={best.zncc_score:.3f}, gradient={best.gradient_zncc_score:.3f}, "
-            f"edge={best.edge_score:.3f}, margin={best.zncc_score - runner:.3f}",
-        )
-        return best if accepted else None
-
-    def _click_quick_switch(self, timeout: float, after_sleep: float) -> bool:
-        end_at = monotonic() + max(0.0, timeout)
-        while monotonic() <= end_at:
-            frame = self.vision.capture()
-            result = self._find_quick_switch_button(frame)
-            if result is None:
-                self.task.sleep(0.35)
-                continue
-
-            def sample_match():
-                sampled = self.vision.capture()
-                match = (
-                    self._find_quick_switch_button(sampled)
-                    if sampled.shape == frame.shape else None
+        ranked = sorted(
+            (
+                StoryBadgeCandidate(
+                    number, self.vision.match(frame, replace(spec, relative_roi=window))
                 )
-                return match, sampled.shape
-
-            stable = stabilize_template_match(
-                result, frame.shape, sample_match=sample_match,
-                passes=lambda match: match is not None, sleep=self.task.sleep,
-            )
-            if stable is None:
-                self._status("快速切换按钮稳定识别", "候选位置或画面尺寸不稳定")
-                return False
-            consensus, shape = stable
-            self._status(
-                "快速切换按钮稳定识别",
-                f"center={consensus.center}; hits={consensus.hit_count}/"
-                f"{consensus.sample_count}; spread={consensus.center_spread:.1f}",
-            )
-            self.vision.click_client(consensus.center, shape, after_sleep=after_sleep)
-            return True
-        return False
-
-    def _scroll_story_bar(
-        self, point, amount, *, count, interval, after_sleep, require_movement=True,
-    ) -> bool:
-        """Scroll without selecting a card, then confirm a stable selector."""
-
-        def sample(frame):
-            height = frame.shape[0]
-            # Restrict comparison to the badges and card faces, away from the
-            # animated sandbox and completion icons below the cards.
-            band = frame[round(height * 0.855):round(height * 0.94), :, :3]
-            return cv2.resize(band, (480, 48)).astype(np.int16)
-
-        before = self.vision.capture()
-        baseline = sample(before)
-        # scroll_client activates the window and positions the cursor itself.
-        # Clicking this point can select the leftmost visible cartridge.
-        self.task.scroll_client(
-            point, amount, count=count, interval=interval, after_sleep=after_sleep,
+                for number, spec in CHARACTER_BADGE_SPECS
+            ),
+            key=lambda candidate: candidate.result.score,
+            reverse=True,
         )
-        previous = None
-        stable_hits = 0
-        for _ in range(12):
-            frame = self.vision.capture()
-            if frame.shape != before.shape:
-                self._status("卡带滚轮", "窗口尺寸变化，停止本次定位")
-                return False
-            current = sample(frame)
-            difference = (
-                float(np.mean(np.abs(current - previous)))
-                if previous is not None else float("inf")
+        best, runner_up = ranked[0], ranked[1]
+        gap = best.result.score - runner_up.result.score
+        self._status(
+            "角色角标",
+            (
+                f"{target_number}: 最像{best.number} m={best.result.score:.3f}, "
+                f"p={best.result.pixel_score:.3f}, z={best.result.zncc_score:.3f}; "
+                f"次像{runner_up.number} m={runner_up.result.score:.3f}"
+            ),
+        )
+        if best.number != target_number:
+            return None, f"角色卡{target_number}位置上最像的是{best.number}"
+        if best.result.score < CHARACTER_BADGE_MIN_SCORE or gap < CHARACTER_BADGE_MIN_MARGIN:
+            return None, (
+                f"角色卡{target_number}角标不够确定：m={best.result.score:.3f}"
+                f"（需>={CHARACTER_BADGE_MIN_SCORE:.2f}），领先{gap:.3f}"
+                f"（需>={CHARACTER_BADGE_MIN_MARGIN:.2f}）"
             )
-            stable_hits = stable_hits + 1 if difference < 1.5 else 0
-            if stable_hits >= 2:
-                if not self._wait_for_quick_switch_page(timeout=1.0):
-                    self._status("卡带滚轮", "滚动后卡带选择页已消失，停止本次定位")
-                    return False
-                moved = float(np.mean(np.abs(current - baseline))) >= 2.0
-                self._status("卡带滚轮", "列表已稳定且发生位移" if moved else "列表已稳定但未位移")
-                return moved or not require_movement
-            previous = current
-            self.task.sleep(0.15)
-        self._status("卡带滚轮", "列表稳定确认超时，停止本次定位")
-        return False
+        return StoryBadgeDetection(best, runner_up), ""

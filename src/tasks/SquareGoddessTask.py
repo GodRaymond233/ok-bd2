@@ -5,7 +5,7 @@ from time import monotonic
 
 import cv2
 import numpy as np
-from ok.task.exceptions import TaskDisabledException
+from ok.task.exceptions import FinishedException, TaskDisabledException
 from qfluentwidgets import FluentIcon
 
 from src.tasks.BaseBD2Task import BaseBD2Task, CartridgeSpecialPageResult
@@ -766,7 +766,7 @@ class SquareGoddessTask(BaseBD2Task):
                 match=self._match, passes=self._passes,
                 icon_specs=(SQUARE_DAILY_ICON_TEMPLATE, NEW_DAILY_ICON),
             )
-        except TaskDisabledException:
+        except (TaskDisabledException, FinishedException):
             raise
         except Exception as exc:
             observation = NavigationObservation("unknown", f"识别异常：{exc}")
@@ -897,7 +897,7 @@ class SquareGoddessTask(BaseBD2Task):
                 log=False,
                 name=name,
             )
-        except TaskDisabledException:
+        except (TaskDisabledException, FinishedException):
             raise
         except Exception as exc:
             self.info_set(f"{name} OCR 错误", str(exc))

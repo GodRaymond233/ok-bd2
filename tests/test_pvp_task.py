@@ -259,6 +259,66 @@ class FiendRewardEntryTest(unittest.TestCase):
         self.assertEqual(3, len(self.clicks))
         self.assertAlmostEqual(0.65, self.clicks[-1][0])
 
+    def test_rank_pending_requires_consecutive_clear_observations(self):
+        title = SimpleNamespace(name="恭喜晋级", x=820, y=700, width=180, height=50)
+        confirm = SimpleNamespace(name="确认", x=930, y=990, width=60, height=30)
+        rank_page = [title, confirm]
+        normal = self.normal_boxes()
+        for screens, expected, expected_clicks in (
+            ([[title]], CartridgeSpecialPageResult.BLOCKED, 0),
+            ([[title], rank_page, normal, normal], CartridgeSpecialPageResult.HANDLED, 1),
+            ([rank_page, [title], [title]], CartridgeSpecialPageResult.BLOCKED, 1),
+            ([rank_page, normal, [], [title]], CartridgeSpecialPageResult.BLOCKED, 1),
+            ([rank_page, normal, [self.reward_boxes()[0]], normal, normal, []],
+             CartridgeSpecialPageResult.BLOCKED, 1),
+            ([rank_page, normal, normal], CartridgeSpecialPageResult.HANDLED, 1),
+        ):
+            with self.subTest(screens=screens):
+                task = self.make_task(screens, recent_pvp=True)
+                self.assertIs(expected, task._handle_recent_cartridge_special_pages(
+                    timeout=3.0, allow_pvp_pages=True))
+                self.assertEqual(expected_clicks, len(self.clicks))
+
+    def test_late_rank_dismissal_gets_fresh_reads_and_still_requires_closure(self):
+        def boxes(*names):
+            return [SimpleNamespace(name=name, x=930, y=990, width=60, height=30)
+                    for name in names]
+        season = boxes("赛季奖励", "点击画面即可返回")
+        rank = boxes("段位下滑", "确认")
+        normal = self.normal_boxes()
+        for ending, expected in (
+            ([normal, normal], CartridgeSpecialPageResult.HANDLED),
+            ([rank], CartridgeSpecialPageResult.BLOCKED),
+            ([[]], CartridgeSpecialPageResult.BLOCKED),
+        ):
+            with self.subTest(expected=expected, ending=ending):
+                task = self.make_task(
+                    [season, normal, normal, boxes("段位下滑"), rank, *ending], recent_pvp=True,
+                )
+                original_read = task._recent_cartridge_ocr_boxes
+                schedule = iter([0.08, 0.99, 1.6, 2.55, 3.9, 4.5, 4.85])
+                def read():
+                    self.now = max(self.now, next(schedule, self.now))
+                    return original_read()
+                task._recent_cartridge_ocr_boxes = read
+                self.assertIs(expected, task._handle_recent_cartridge_special_pages(
+                    timeout=3, allow_season_reward=True,
+                ))
+                self.assertEqual(2, len(self.clicks))
+                self.assertGreaterEqual(self.screen_index, 7)
+                self.assertLess(self.now, 8)
+
+    def test_zero_timeout_dismissal_still_observes_two_readable_clear_frames(self):
+        task = self.make_task([
+            [SimpleNamespace(name="段位下滑", x=820, y=700, width=180, height=50),
+             SimpleNamespace(name="确认", x=930, y=990, width=60, height=30)],
+            self.normal_boxes(), self.normal_boxes(),
+        ], recent_pvp=True)
+        self.assertIs(CartridgeSpecialPageResult.HANDLED,
+                      task._handle_recent_cartridge_special_pages(timeout=0))
+        self.assertEqual(1, len(self.clicks))
+        self.assertEqual(3, self.screen_index)
+
 
 class PVPTaskHelperTest(unittest.TestCase):
     def test_quick_switch_searches_both_regions_and_rejects_middle(self):
@@ -1113,7 +1173,7 @@ class PVPTaskHelperTest(unittest.TestCase):
 
                 def capture():
                     clock[0] += 0.5
-                    return next(frames)
+                    return next(frames, [])
 
                 task._recent_cartridge_ocr_boxes = capture
                 clicks = []
@@ -1450,7 +1510,7 @@ class PVPTaskHelperTest(unittest.TestCase):
 
     def test_run_falls_back_to_one_multiplier_when_ap_shortage(self):
         task = object.__new__(PVPTask)
-        task.config = {"启用": True, "竞技场战斗倍数": 10, "最多战斗轮次": 3}
+        task.config = {"启用": True, "竞技场战斗倍数": 10, "最多战斗轮次": 1}
         infos = {}
         task.info_set = lambda key, value: infos.__setitem__(key, value)
         notifications = []

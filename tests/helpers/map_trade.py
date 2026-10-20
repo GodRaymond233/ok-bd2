@@ -1,8 +1,15 @@
 """Shared fixtures for map-trade tests (extracted from test_map_trade)."""
 
+from datetime import datetime
+from types import SimpleNamespace
+
 import numpy as np
 
 from src.tasks.map_trade.models import CollectionMapRole
+from src.tasks.map_trade.navigator import Navigator
+from src.tasks.map_trade.progress import UTC_PLUS_8
+from src.tasks.map_trade.trader import Trader
+from src.tasks.map_trade.vision import Vision
 
 
 class FakeTask:
@@ -24,13 +31,23 @@ class FakeTask:
         return None
 
 
-def _seed_action_records(store, card_id, target_key):
+def create_trader() -> Trader:
+    """Construct production trading state; individual flow tests replace their IO boundaries."""
+    task = FakeTask()
+    vision = Vision(task)
+    progress = SimpleNamespace(now_provider=lambda: datetime(2026, 7, 18, tzinfo=UTC_PLUS_8))
+    trader = Trader(task, vision, Navigator(task, vision), progress)
+    trader.now_provider = lambda: trader.started_at
+    return trader
+
+
+def _seed_action_records(store, card_id, target_key, actions=None):
     """Persist the durable role-required records before a target commit."""
 
-    actions = (
+    selected_actions = actions or (
         ("吸收",) if target_key == CollectionMapRole.MAIN_AREA.value else ("吸收", "召集", "压制")
     )
-    for action in actions:
+    for action in selected_actions:
         store.arm_action(card_id, target_key, action)
         store.mark_action_local_done(card_id, target_key, action, pending=False)
 

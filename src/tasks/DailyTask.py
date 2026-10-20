@@ -218,6 +218,7 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
         )
 
     def run(self):
+        self.info_set("日常周期", None)
         if not bool(self.config.get("启用", True)):
             self.info_set("状态", "公会、小屋、酒馆已禁用。")
             self.log_info("公会、小屋、酒馆已禁用。")
@@ -235,6 +236,7 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
         skipped = []
         stop_remaining = False
         scope = run_history.stage_scope(self)
+        self.info_set("日常周期", float(scope.partition(":")[0]))
         for name, config_key, func in steps:
             if not bool(self.config.get(config_key, True)):
                 skipped.append(name)
@@ -433,7 +435,7 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
                 # 补点前重新确认仍在主页；已开始转场/加载则停止补点，交给后续模板等待。
                 try:
                     retry_frame = self.capture_frame()
-                except TaskDisabledException:
+                except (TaskDisabledException, FinishedException):
                     raise
                 except Exception:
                     retry_frame = None
@@ -480,7 +482,7 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
             for attempt in range(MY_HOME_TITLE_OCR_RETRIES):
                 try:
                     frame = self.capture_frame()
-                except TaskDisabledException:
+                except (TaskDisabledException, FinishedException):
                     raise
                 except Exception:
                     frame = None
@@ -503,7 +505,7 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
         while monotonic() <= end_at:
             try:
                 frame = self.capture_frame()
-            except TaskDisabledException:
+            except (TaskDisabledException, FinishedException):
                 raise
             except Exception:
                 frame = None
