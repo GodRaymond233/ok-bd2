@@ -11,6 +11,15 @@ THIRD_PARTY_NOTICES.md
 i18n
 pyappify
 assets
+docs/guides
+docs/images/usage/collection-skill-group.png
+docs/images/usage/collection-skill-setup.png
+docs/images/usage/trade-warehouse.png
+docs/images/usage/trade-skill-group.png
+docs/images/usage/trade-bargain-skill.png
+docs/images/usage/trade-cooking-skill.png
+docs/images/usage/trade-recipes.png
+docs/images/usage/guide-quick-hunt-config.png
 ok_templates
 recognition-assets/template-assets
 pyappify.yml

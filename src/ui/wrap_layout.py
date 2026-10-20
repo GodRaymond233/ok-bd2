@@ -13,10 +13,18 @@ from PySide6.QtWidgets import QLayout, QLayoutItem, QSizePolicy, QWidget
 
 
 class WrapLayout(QLayout):
-    def __init__(self, parent=None, alignment=Qt.AlignmentFlag.AlignLeft):
+    def __init__(self, parent=None, alignment=Qt.AlignmentFlag.AlignLeft, *, spacing=None,
+                 max_columns=None):
         super().__init__(parent)
         self._items: list[QLayoutItem] = []
+        self._max_columns = max_columns
+        self.setAlignment(alignment)
+        if spacing is not None:
+            self.setSpacing(spacing)
+
+    def setAlignment(self, alignment):
         self._alignment = alignment
+        return super().setAlignment(alignment)
 
     def __del__(self):  # pragma: no cover - 安全网
         while self._items:
@@ -57,6 +65,8 @@ class WrapLayout(QLayout):
     def minimumSize(self) -> QSize:
         size = QSize()
         for item in self._items:
+            if item.widget() is not None and item.widget().isHidden():
+                continue
             size = size.expandedTo(item.minimumSize())
         margins = self.contentsMargins()
         return size + QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
@@ -97,12 +107,15 @@ class WrapLayout(QLayout):
         v_space = self._vertical_spacing()
         line: list[tuple[QLayoutItem, int, int]] = []
 
-        def flush_line(line_y: int, line_h: int) -> None:
+        def flush_line(line_y: int) -> None:
             if test_only:
                 return
             if self._alignment & Qt.AlignmentFlag.AlignRight:
                 line_width = sum(w + h_space for _, w, _ in line) - h_space
-                line_x = effective.right() - line_width + 1
+                line_x = max(effective.x(), effective.right() - line_width + 1)
+            elif self._alignment & Qt.AlignmentFlag.AlignHCenter:
+                line_width = sum(w + h_space for _, w, _ in line) - h_space
+                line_x = effective.x() + max(0, (effective.width() - line_width) // 2)
             else:
                 line_x = effective.x()
             for item, width, height in line:
@@ -113,6 +126,8 @@ class WrapLayout(QLayout):
             # 只跳过显式隐藏的子项；页面整体不可见（切走 tab）时 isVisible() 为假，
             # 用它会把整页算成零高，污染 SetMinimumSize 链上的卡片高度缓存。
             if item.widget() is not None and item.widget().isHidden():
+                if not test_only:
+                    item.setGeometry(QRect())
                 continue
             hint = item.sizeHint()
             width = max(item.minimumSize().width(), min(hint.width(), effective.width()))
@@ -120,8 +135,11 @@ class WrapLayout(QLayout):
             if item.hasHeightForWidth():
                 height = max(item.minimumSize().height(), item.heightForWidth(width))
             next_x = x + width + h_space
-            if line and next_x - h_space > effective.right() + 1 and line_height > 0:
-                flush_line(y, line_height)
+            if line and (
+                next_x - h_space > effective.right() + 1
+                or (self._max_columns is not None and len(line) >= self._max_columns)
+            ):
+                flush_line(y)
                 y += line_height + v_space
                 x = effective.x()
                 next_x = x + width + h_space
@@ -130,7 +148,7 @@ class WrapLayout(QLayout):
             line.append((item, width, height))
             x = next_x
             line_height = max(line_height, height)
-        flush_line(y, line_height)
+        flush_line(y)
         return y + line_height - rect.y() + margins.bottom()
 
 

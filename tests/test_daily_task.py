@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import numpy as np
+from ok.task.exceptions import TaskDisabledException
 from ok.util.config import Config
 
 from src.tasks.DailyTask import (
@@ -18,6 +19,7 @@ from src.tasks.DailyTask import (
     GUILD_TEMPLATE,
     MY_HOME_TEMPLATE,
     MY_HOME_TITLE_RELATIVE_ROI,
+    BD2BusinessCollectTestTask,
     DailyTask,
 )
 from src.tasks.map_trade.models import MatchResult
@@ -49,6 +51,7 @@ from src.tasks.quick_hunt import (
     QUICK_HUNT_STONE_LIST_ROI,
     HuntDialog,
 )
+from src.tasks.quick_hunt_plan import legacy_plan, select_steps
 from src.tasks.QuickHuntTask import QuickHuntTask
 from src.tasks.task_vision_mixin import (
     LOADING_TEMPLATE,
@@ -196,12 +199,8 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         visible_keys = task.config_type["启用"]["sub_configs"][True]
         for key in (
             "识别成功后等待秒数",
-            "快速狩猎冒险航线",
-            "快速狩猎狩猎场",
+            "快速狩猎刷取方案",
             "快速狩猎圣石洞穴",
-            "快速狩猎双倍策略",
-            "快速狩猎资源倾向",
-            "快速狩猎米饭分配",
         ):
             self.assertIn(key, visible_keys)
         self.assertNotIn("快速狩猎章节图", visible_keys)
@@ -1106,6 +1105,8 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         task.log_info = Mock()
         task._wait_for_ocr_keywords = lambda *_args, **_kwargs: (True, "一键获得 取消")
         task._save_flow_diagnostic = Mock()
+        task._collect_business_guest_stones = Mock(return_value=True)
+        task.recover_daily_home = Mock(return_value=True)
         task._click_reference = lambda x, y, **_kwargs: reference_clicks.append((x, y))
         task.sleep = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
         task.operate_click = lambda x, y, after_sleep=0: (
@@ -1132,7 +1133,7 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         self.addCleanup(timer.stop)
         return task, statuses, clicks, reference_clicks, clock
 
-    def test_business_collect_dismisses_reward_and_relocates_cancel(self):
+    def test_business_collect_dismisses_reward_and_keeps_menu_for_restaurant(self):
         for width, height in ((1280, 720), (1920, 1080)):
             with self.subTest(resolution=(width, height)):
                 frame = np.full((height, width, 3), 230, dtype=np.uint8)
@@ -1148,9 +1149,11 @@ class DailyTaskHelperTest(StageHistoryTestCase):
                     (frame, [], True),
                 ])
                 self.assertTrue(task.run_business_collect())
-                self.assertEqual([(0.6, 0.85), (0.5, 0.9), (0.43, 0.72), (0.43, 0.76)], clicks)
+                self.assertEqual([(0.6, 0.85), (0.5, 0.9)], clicks)
                 self.assertEqual([(165, 260)], refs)
                 self.assertEqual("通过", statuses["一键收菜返回主页结果"])
+                task._collect_business_guest_stones.assert_called_once()
+                task.recover_daily_home.assert_called_once()
 
     def test_business_collect_unread_disabled_button_uses_cancel_row(self):
         frame = np.full((720, 1280, 3), 220, dtype=np.uint8)
@@ -1164,7 +1167,7 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         x, y, width, height = bounds
         frame[int(y):int(y + height), int(x):int(x + width)] = (80, 83, 81)
         self.assertTrue(task.run_business_collect())
-        self.assertEqual([(round(0.43 + (1090 - 832) / 1920, 6), 0.79), (0.43, 0.79)], clicks)
+        self.assertEqual([(round(0.43 + (1090 - 832) / 1920, 6), 0.79)], clicks)
 
     def test_business_collect_lost_claim_does_not_become_success_after_closing(self):
         frame = np.full((720, 1280, 3), 230, dtype=np.uint8)
@@ -1177,6 +1180,7 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         self.assertEqual([(0.6, 0.8), (0.6, 0.8), (0.43, 0.8)], clicks)
         self.assertEqual("未确认", statuses["一键收菜领取结果"])
         self.assertEqual("通过", statuses["一键收菜返回主页结果"])
+        task._collect_business_guest_stones.assert_not_called()
         self.assertEqual(
             ["business_collect_claim_failed", "business_collect_failed"],
             [call.args[0] for call in task._save_flow_diagnostic.call_args_list],
@@ -1196,7 +1200,7 @@ class DailyTaskHelperTest(StageHistoryTestCase):
 
         task, _, clicks, _, _ = self._business_flow_task(screen)
         self.assertTrue(task.run_business_collect())
-        self.assertEqual([(0.6, 0.8), (0.5, 0.9), (0.43, 0.8)], clicks)
+        self.assertEqual([(0.6, 0.8), (0.5, 0.9)], clicks)
 
     def test_business_collect_unknown_screen_has_no_blind_clicks(self):
         frame = np.zeros((720, 1280, 3), dtype=np.uint8)
@@ -1211,17 +1215,17 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         popup = self._business_controls()
         reward = SimpleNamespace(name="点击画面即可返回", x=576, y=633.6, width=128, height=28.8)
         task, _, clicks, _, _ = self._business_flow_task([
-            (frame, popup, False), (frame, [reward], False), (frame, popup, False),
+            (frame, popup, False), (frame, [reward], False),
         ])
         self.assertFalse(task.run_business_collect())
-        self.assertEqual(9, len(clicks))  # 一次领取，奖励层和经营弹窗合计最多八次关闭。
-        self.assertEqual(7, clicks.count((0.43, 0.8)))
+        self.assertEqual(9, len(clicks))  # 一次领取，奖励层最多八次关闭。
+        self.assertEqual(8, clicks.count((0.5, 0.9)))
+        task._collect_business_guest_stones.assert_not_called()
 
     def test_business_collect_limits_fixed_close_to_confirmed_popup(self):
         frame = np.full((720, 1280, 3), 230, dtype=np.uint8)
-        reward = SimpleNamespace(name="点击画面即可返回", x=576, y=633.6, width=128, height=28.8)
         task, _, clicks, _, _ = self._business_flow_task([
-            (frame, self._business_controls(), False), (frame, [reward], False),
+            (frame, self._business_controls(), False),
             (frame, self._business_controls(cancel=False), False),
         ])
         self.assertFalse(task.run_business_collect())
@@ -1315,7 +1319,7 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         self.assertEqual((0, 255, 255), hsv)
 
     def test_quick_hunt_home_requires_keyword_votes_brightness_and_gacha_ocr(self):
-        task = object.__new__(QuickHuntTask)
+        task = QuickHuntTask(SimpleNamespace(scene=None), None)
         task.config = {"主页压暗阈值": 185.0}
         left_text = ["我的小屋 经营管理格鲁TALK 街机游戏"]
         gacha_text = ["抽抽乐"]
@@ -1516,38 +1520,20 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         )
 
     def test_quick_hunt_prefer_double_uses_gold_when_both_routes_are_double(self):
-        task = object.__new__(QuickHuntTask)
-        task.config = {
+        plan = legacy_plan({
             "快速狩猎双倍策略": "优先双倍",
             "快速狩猎资源倾向": "经验",
-        }
-        task._quick_hunt_double_states = lambda: {"金币": True, "经验": True}
-        clicks = []
-        task._quick_hunt_click_adventure = (
-            lambda resource: clicks.append(resource) or True
-        )
-        task.log_info = lambda *_args, **_kwargs: None
-
-        self.assertTrue(task._quick_hunt_select_adventure_route())
-        self.assertEqual(["金币"], clicks)
+        })
+        _, steps = select_steps(plan, {"金币": True, "经验": True})
+        self.assertEqual("gold", steps[-1]["target"])
 
     def test_quick_hunt_ignore_double_always_selects_gold(self):
-        task = object.__new__(QuickHuntTask)
-        task.config = {
+        plan = legacy_plan({
             "快速狩猎双倍策略": "忽视双倍",
             "快速狩猎资源倾向": "经验",
-        }
-        task._quick_hunt_double_states = lambda: self.fail(
-            "ignore-double mode must not inspect the template"
-        )
-        clicks = []
-        task._quick_hunt_click_adventure = (
-            lambda resource: clicks.append(resource) or True
-        )
-        task.log_info = lambda *_args, **_kwargs: None
-
-        self.assertTrue(task._quick_hunt_select_adventure_route())
-        self.assertEqual(["金币"], clicks)
+        })
+        _, steps = select_steps(plan, {})
+        self.assertEqual("gold", steps[-1]["target"])
 
     def test_quick_hunt_scheduler_uses_current_default_hunting_ground(self):
         task = object.__new__(QuickHuntTask)
@@ -1560,21 +1546,21 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         task.log_info = lambda *_args, **_kwargs: None
         calls = []
         task._quick_hunt_free_rice = lambda: 90
+        task._quick_hunt_plan_double_states = lambda: {"金币": False, "经验": False}
         task._quick_hunt_select_hunting_ground = lambda: self.fail(
             "current default hunting ground must not be changed"
         )
-        task._quick_hunt_select_adventure_route = (
-            lambda: calls.append("adventure-no-double") or False
-        )
+        task._quick_hunt_select_plan_target = lambda target: calls.append(target) or True
         task._quick_hunt_execute_current_map = (
-            lambda mode, stage, **_kwargs: calls.append((stage, mode)) or "done"
+            lambda mode, stage, **kwargs: calls.append(
+                (mode, kwargs.get("expected_map_pattern"))
+            ) or "done"
         )
 
         self.assertTrue(task._quick_hunt_run_rice_scheduler())
         self.assertEqual(
             [
-                ("狩猎场", "MIN"),
-                "adventure-no-double",
+                "hunt", ("MIN", None),
             ],
             calls,
         )
@@ -1588,16 +1574,16 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         }
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
-        task._quick_hunt_free_rice = lambda: 90
-        task._quick_hunt_select_adventure_route = lambda: "金币"
+        task._quick_hunt_free_rice = lambda: 6
+        task._quick_hunt_plan_double_states = lambda: {"金币": True, "经验": False}
         calls = []
         task._quick_hunt_click_adventure = (
             lambda resource: calls.append(("reselect", resource)) or True
         )
         results = iter(("wrong_map", "done"))
         task._quick_hunt_execute_current_map = (
-            lambda mode, stage, expected_map_pattern=None: calls.append(
-                (stage, mode, expected_map_pattern)
+            lambda mode, stage, expected_map_pattern=None, **kwargs: calls.append(
+                (mode, expected_map_pattern)
             )
             or next(results)
         )
@@ -1605,9 +1591,10 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         self.assertTrue(task._quick_hunt_run_rice_scheduler())
         self.assertEqual(
             [
-                ("冒险航线", "MAX", r"哥布林遗迹"),
                 ("reselect", "金币"),
-                ("冒险航线重试", "MAX", r"哥布林遗迹"),
+                ("MAX", r"哥布林遗迹"),
+                ("reselect", "金币"),
+                ("MAX", r"哥布林遗迹"),
             ],
             calls,
         )
@@ -1621,20 +1608,17 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         }
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
-        task._quick_hunt_free_rice = lambda: 90
+        task._quick_hunt_free_rice = lambda: 12
+        task._quick_hunt_select_plan_target = lambda target: target == "hunt"
         task._quick_hunt_select_hunting_ground = lambda: self.fail(
             "current default hunting ground must not be changed"
         )
         calls = []
         task._quick_hunt_execute_current_map = (
-            lambda mode, stage, **_kwargs: calls.append((stage, mode)) or "done"
+            lambda mode, stage, **kwargs: calls.append(mode) or "done"
         )
-        task._quick_hunt_select_adventure_route = lambda: self.fail(
-            "MAX hunting allocation must skip adventure"
-        )
-
         self.assertTrue(task._quick_hunt_run_rice_scheduler())
-        self.assertEqual([("狩猎场", "MAX")], calls)
+        self.assertEqual(["MAX"], calls)
 
     def test_quick_hunt_stone_counts_follow_top_to_bottom_element_order(self):
         task = object.__new__(QuickHuntTask)
@@ -2206,9 +2190,6 @@ class DailyTaskHelperTest(StageHistoryTestCase):
                     )
                     or True
                 )
-                task._quick_hunt_stone_counts = Mock(return_value={
-                    "火": 2, "水": 1, "风": 2, "光": 2, "暗": 2,
-                })
                 task._quick_hunt_enter_crystal_cave = Mock(return_value=True)
                 task._quick_hunt_free_resource = Mock(return_value=60)
                 task._quick_hunt_wait_confirmation_dialog = Mock(return_value=True)
@@ -2331,18 +2312,35 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         self.assertEqual(["open", "rice", "crystal", "home"], calls)
 
     def test_quick_hunt_rice_failure_skips_crystal_and_returns_home(self):
-        task = object.__new__(QuickHuntTask)
-        task.config = {"快速狩猎圣石洞穴": True}
-        task.info_set = lambda *_args, **_kwargs: None
-        calls = []
-        task._save_flow_diagnostic = lambda _name: calls.append("snapshot")
-        task._quick_hunt_open_menu = lambda: "opened"
-        task._quick_hunt_run_rice_scheduler = lambda: calls.append("rice-failed") or False
-        task._quick_hunt_run_crystal_cave = lambda: calls.append("crystal") or True
-        task._quick_hunt_return_home = lambda: calls.append("home") or True
+        from ok.task.exceptions import FinishedException
 
-        self.assertFalse(task.run_quick_hunt())
-        self.assertEqual(["rice-failed", "snapshot", "home"], calls)
+        for error in (None, RuntimeError, TaskDisabledException, FinishedException):
+            with self.subTest(error=error):
+                task = object.__new__(QuickHuntTask)
+                task.config = {"快速狩猎圣石洞穴": True}
+                task.info_set = Mock()
+                task._quick_hunt_open_menu = Mock(return_value="opened")
+                task._quick_hunt_run_rice_scheduler = Mock(return_value=False, side_effect=error)
+                task._quick_hunt_run_crystal_cave = Mock(return_value=True)
+                task._quick_hunt_return_home = Mock(return_value=True)
+                task._save_flow_diagnostic = Mock(
+                    side_effect=lambda _name: task._quick_hunt_return_home.assert_not_called(),
+                )
+
+                if error is None:
+                    self.assertFalse(task.run_quick_hunt())
+                else:
+                    with self.assertRaises(error):
+                        task.run_quick_hunt()
+                task._quick_hunt_run_crystal_cave.assert_not_called()
+                self.assertEqual(
+                    error not in (TaskDisabledException, FinishedException),
+                    bool(task._quick_hunt_return_home.call_count),
+                )
+                self.assertEqual(
+                    error not in (TaskDisabledException, FinishedException),
+                    bool(task._save_flow_diagnostic.call_count),
+                )
 
     def test_quick_hunt_return_home_uses_fixed_point_and_three_signal_confirmation(self):
         task = object.__new__(QuickHuntTask)
@@ -2592,51 +2590,7 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         )
         self.assertEqual(60, task._quick_hunt_free_resource("火把"))
 
-    def test_rice_scheduler_stops_on_unknown_resource_before_each_stage(self):
-        for readings, expected_calls in (([None], []), ([90, None], ["狩猎场"])):
-            with self.subTest(readings=readings):
-                task = object.__new__(QuickHuntTask)
-                task.config = {}
-                task.info_set = Mock()
-                task.log_info = Mock()
-                task._quick_hunt_free_rice = Mock(side_effect=readings)
-                stages = []
-                task._quick_hunt_execute_current_map = (
-                    lambda mode, stage, **kwargs: stages.append(stage) or "done"
-                )
-                task._quick_hunt_select_adventure_route = Mock(
-                    side_effect=AssertionError("unconfirmed rice cannot start another stage")
-                )
-                self.assertFalse(task._quick_hunt_run_rice_scheduler())
-                self.assertEqual(expected_calls, stages)
 
-    def test_rice_scheduler_distinguishes_disabled_skipped_and_failed_routes(self):
-        for enabled, strategy, doubled, success in (
-            (False, "优先双倍", True, True),
-            (True, "优先双倍", True, False),
-            (True, "强制双倍", True, False),
-            (True, "忽视双倍", True, False),
-            (True, "优先双倍", False, True),
-        ):
-            with self.subTest(enabled=enabled, strategy=strategy, doubled=doubled):
-                task = object.__new__(QuickHuntTask)
-                task.config = {
-                    "快速狩猎狩猎场": False,
-                    "快速狩猎冒险航线": enabled,
-                    "快速狩猎双倍策略": strategy,
-                }
-                task.info_set = Mock()
-                task.log_info = Mock()
-                task._quick_hunt_free_rice = Mock(return_value=90)
-                task._quick_hunt_double_states = Mock(
-                    return_value={"金币": doubled, "经验": False},
-                )
-                task._quick_hunt_click_adventure = Mock(return_value=False)
-                task._quick_hunt_execute_current_map = Mock()
-                self.assertEqual(success, task._quick_hunt_run_rice_scheduler())
-                task._quick_hunt_execute_current_map.assert_not_called()
-                if not enabled:
-                    task._quick_hunt_free_rice.assert_not_called()
 
     def test_quick_hunt_cancellation_does_not_click_home(self):
         from ok.task.exceptions import FinishedException, TaskDisabledException
@@ -2687,6 +2641,130 @@ class DailyTaskHelperTest(StageHistoryTestCase):
             self.history.record_task_done(task, started=after, ok=True)
             self.assertTrue(self.history.is_completed_today(task.name))
         self.assertEqual(2, task.run_guild_sign_in.call_count)
+
+
+    def test_business_test_entry_runs_only_collection_and_copies_results(self):
+        for outcome in (True, False, TaskDisabledException()):
+            with self.subTest(outcome=outcome):
+                executor = SimpleNamespace(scene=None, get_task_by_class=Mock())
+                daily = Mock(spec=DailyTask)
+                daily.info_snapshot.return_value = {"常客圣石结果": "未确认"}
+                daily.run_business_collect.side_effect = (
+                    outcome if isinstance(outcome, Exception) else lambda: outcome
+                )
+                executor.get_task_by_class.return_value = daily
+                task = BD2BusinessCollectTestTask(executor, SimpleNamespace())
+                self.assertEqual("测试", task.group_name)
+                if isinstance(outcome, Exception):
+                    with self.assertRaises(TaskDisabledException):
+                        task.run()
+                else:
+                    self.assertIs(outcome, task.run())
+                daily.run_business_collect.assert_called_once()
+                daily.run.assert_not_called()
+                daily.run_guild_sign_in.assert_not_called()
+                daily.run_my_home_sign_in.assert_not_called()
+                self.assertEqual(int(outcome is False), daily.recover_daily_home.call_count)
+                self.assertEqual("未确认", task.info_snapshot()["常客圣石结果"])
+
+
+    def test_business_collect_visits_restaurant_and_confirms_guest_rewards(self):
+        for reward_press, delay, guest_name, home_ok, moved, expected, presses in (
+            (1, 0.2, "常客", True, False, True, 1),
+            (1, 3.0, "常客", True, False, True, 1),
+            (1, 4.0, "常客", True, False, True, 1),
+            (2, 2.0, "常客", True, False, True, 2),
+            (0, 0.0, "常客", True, False, True, 2),
+            (0, 0.0, "常客", True, True, False, 1),
+            (0, 0.0, "常客笔记", True, False, False, 0),
+            (1, 3.0, "常客", False, False, False, 1),
+        ):
+            with self.subTest(reward_press=reward_press, delay=delay, guest=guest_name,
+                              home=home_ok, moved=moved):
+                frame = np.full((720, 1280, 3), 230, dtype=np.uint8)
+
+                def box(name, x, y):
+                    return SimpleNamespace(name=name, x=x - 20, y=y - 10, width=40, height=20)
+
+                popup = self._business_controls()
+                # 餐馆行收菜后上移；列表故意先放其他行的同名按钮。
+                popup[0].y = 169.2
+                popup += [box("立刻前往", 896, 432), box("立刻前往", 896, 180)]
+                restaurant = [box("格鲁菲餐厅", 130, 40), box(guest_name, 192, 216)]
+                reward = box("点击画面即可返回", 640, 648)
+                reward_text = ("暗圣石×10", "光圣石×10", "火圣石×10", "水圣石×10", "风圣石×5")
+                press_state = [0, 0.0]
+
+                def screen(actions, now):
+                    if (0.6, 0.8) not in actions:
+                        return frame, self._business_controls(), False
+                    if (0.5, 0.9) not in actions:
+                        return frame, [reward], False
+                    if (0.7, 0.25) not in actions:
+                        return frame, popup, False
+                    count = actions.count((0.15, 0.3))
+                    if count != press_state[0]:
+                        press_state[:] = [count, now - 0.8]
+                    if moved and count:
+                        return frame, [box("加载中", 640, 360)], False
+                    boxes = restaurant + [box("常客赠送圣石", 400, 400)]
+                    if reward_press and count == reward_press and now - press_state[1] >= delay:
+                        boxes += [box(text, 400, 500 + i * 25)
+                                  for i, text in enumerate(reward_text)]
+                    return frame, boxes, False
+
+                task, statuses, clicks, _, _ = self._business_flow_task(screen)
+                del task._collect_business_guest_stones
+                task._quick_vision = Mock(return_value=SimpleNamespace(
+                    ocr_boxes=lambda *_args: task.ocr(),
+                ))
+                task.recover_daily_home.return_value = home_ok
+                self.assertEqual(expected, task.run_business_collect())
+                self.assertEqual([(0.6, 0.8), (0.5, 0.9), (0.7, 0.25)]
+                                 + [(0.15, 0.3)] * presses, clicks)
+                task.recover_daily_home.assert_called_once()
+                if expected:
+                    self.assertEqual("已领取" if reward_press else "无待领取圣石",
+                                     statuses["常客圣石结果"])
+                    self.assertEqual("、".join(reward_text) if reward_press else "-",
+                                     statuses["常客圣石奖励"])
+                else:
+                    task._save_flow_diagnostic.assert_called_with("business_collect_failed")
+
+
+    def test_business_collect_requires_restaurant_entry_and_arrival(self):
+        for has_restaurant_go, arrived in ((False, True), (True, False)):
+            with self.subTest(go=has_restaurant_go, arrived=arrived):
+                frame = np.full((720, 1280, 3), 230, dtype=np.uint8)
+                popup = self._business_controls()
+                popup.append(SimpleNamespace(
+                    name="立刻前往", x=880, y=206 if has_restaurant_go else 422,
+                    width=32, height=20,
+                ))
+                reward = SimpleNamespace(
+                    name="点击画面即可返回", x=620, y=638, width=40, height=20,
+                )
+                task, statuses, clicks, _, _ = self._business_flow_task([
+                    (frame, popup, False), (frame, [reward], False), (frame, popup, False),
+                ])
+                del task._collect_business_guest_stones
+                task._quick_vision = Mock(return_value=SimpleNamespace(
+                    ocr_boxes=lambda *_args: task.ocr(),
+                ))
+                task._wait_for_ocr_keywords = Mock(side_effect=[(True, ""), (arrived, "")])
+                self.assertFalse(task.run_business_collect())
+                self.assertEqual(3 if has_restaurant_go else 2, len(clicks))
+                self.assertEqual("未确认", statuses["常客圣石结果"])
+                task.recover_daily_home.assert_called_once()
+
+
+    def test_quick_hunt_keeps_default_hunting_ground_tab(self):
+        task = object.__new__(QuickHuntTask)
+        task._quick_hunt_click_ocr = lambda *_args, **_kwargs: self.fail(
+            "the current default hunting ground tab is already selected"
+        )
+
+        self.assertTrue(task._quick_hunt_select_plan_target("hunt"))
 
 
 

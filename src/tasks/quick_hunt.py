@@ -13,6 +13,15 @@ from ok.task.exceptions import FinishedException, TaskDisabledException
 
 from src.tasks import run_history
 from src.tasks.map_trade.models import TemplateSpec
+from src.tasks.quick_hunt_plan import (
+    LEGACY_KEYS,
+    PLAN_KEY,
+    RICE_PER_HUNT,
+    TARGETS,
+    load_book,
+    select_steps,
+    step_count,
+)
 from src.tasks.quick_hunt_vision import parse_free_pool, parse_stone_rows, read_free_switch
 from src.tasks.task_vision_mixin import (
     REFERENCE_HEIGHT,
@@ -23,12 +32,10 @@ from src.utils.home_confirmation import HOME_LEFT_COLUMN_REQUIRED_HITS
 from src.utils.image_utils import crop_relative
 
 QUICK_HUNT_CHILD_CONFIG_KEYS = (
-    "快速狩猎冒险航线",
-    "快速狩猎狩猎场",
+    PLAN_KEY,
     "快速狩猎圣石洞穴",
-    "快速狩猎双倍策略",
-    "快速狩猎资源倾向",
-    "快速狩猎米饭分配",
+    "快速狩猎圣石目标",
+    "快速狩猎火把分配",
     "快速狩猎模板阈值",
     "快速狩猎像素相似度阈值",
     "快速狩猎界面等待秒数",
@@ -39,7 +46,7 @@ QUICK_HUNT_CHILD_CONFIG_KEYS = (
     "快速狩猎完整测试",
 )
 
-QUICK_HUNT_CONFIG_KEYS = ("执行快速狩猎", *QUICK_HUNT_CHILD_CONFIG_KEYS)
+QUICK_HUNT_CONFIG_KEYS = ("执行快速狩猎", *QUICK_HUNT_CHILD_CONFIG_KEYS, *LEGACY_KEYS)
 
 def _quick_hunt_relative_roi(
     x1: int,
@@ -73,7 +80,11 @@ BUTTON_ENABLED_BRIGHT_MIN_RATIO = 0.02
 
 QUICK_HUNT_RESOURCE_CAPACITIES = {"米饭": 90, "火把": 60}
 
+# The client renders the leading rice digit after the icon (x>=1585).
 QUICK_HUNT_RESOURCE_ROI = _quick_hunt_relative_roi(1740, 80, 1585, 38)
+
+# The crystal cave's torch balance sits farther right than the rice balance.
+QUICK_HUNT_TORCH_RESOURCE_ROI = _quick_hunt_relative_roi(1680, 38, 1800, 80)
 
 QUICK_HUNT_BUTTON_ROI = _quick_hunt_relative_roi(1720, 1018, 1599, 963)
 
@@ -94,11 +105,13 @@ QUICK_HUNT_DIALOG_ROI = _quick_hunt_relative_roi(750, 630, 1200, 915)
 
 QUICK_HUNT_MAP_SCAN_ROI = _quick_hunt_relative_roi(1528, 865, 330, 165)
 
+# A quick-hunt count dialog is only trusted after one of its own controls is
+# visible.  The map list behind a swallowed click can contain a valid map name,
+# so map OCR alone must never open the execution path.
 QUICK_HUNT_DIALOG_CONFIRM_ATTEMPTS = 3
 QUICK_HUNT_DIALOG_CONFIRM_TIMEOUT = 2.0
 QUICK_HUNT_ACTION_ATTEMPTS = 3
 QUICK_HUNT_RETRY_INTERVAL = 2.0
-RICE_PER_HUNT = 6
 
 QUICK_HUNT_CRYSTAL_TITLE_ROI = _quick_hunt_relative_roi(340, 452, 235, 128)
 
@@ -143,6 +156,10 @@ QUICK_HUNT_RETURN_MAP_PATTERNS = (
     ("属性洞穴", re.compile(r"[火水风光暗].?之?.?洞穴")),
 )
 
+QUICK_HUNT_HUNTING_MAP_PATTERN = "|".join(
+    pattern.pattern for _label, pattern in QUICK_HUNT_RETURN_MAP_PATTERNS[:3]
+)
+
 QUICK_HUNT_EXECUTION_MAP_PATTERNS = QUICK_HUNT_RETURN_MAP_PATTERNS
 
 QUICK_HUNT_LIST_COLLAPSE_TEMPLATE = TemplateSpec(
@@ -163,7 +180,15 @@ QUICK_HUNT_DOUBLE_TEMPLATE = TemplateSpec(
 )
 
 
-QUICK_HUNT_TORCH_RESOURCE_ROI = _quick_hunt_relative_roi(1680, 38, 1800, 80)
+QUICK_HUNT_TEST_ACTION_LABELS = {
+    "inspect_entry": "只读检查入口",
+    "open_menu": "打开狩猎菜单",
+    "inspect_menu": "只读检查菜单",
+    "rice": "执行米饭流程",
+    "crystal": "执行圣石洞穴",
+    "home": "返回主页",
+    "full": "完整快速狩猎",
+}
 
 
 @dataclass(frozen=True)
@@ -187,10 +212,13 @@ class QuickHuntConfigMixin:
     include_quick_hunt_config = False
 
     quick_hunt_default_config = {
+        PLAN_KEY: "",
         '执行快速狩猎': True,
         '快速狩猎冒险航线': True,
         '快速狩猎狩猎场': True,
         '快速狩猎圣石洞穴': True,
+        '快速狩猎圣石目标': "数量最少的属性",
+        '快速狩猎火把分配': "用完可用火把",
         '快速狩猎双倍策略': "优先双倍",
         '快速狩猎资源倾向': "金币",
         '快速狩猎米饭分配': "狩猎场x1 / 双倍图MAX",
@@ -205,10 +233,13 @@ class QuickHuntConfigMixin:
     }
 
     quick_hunt_config_description = {
+        PLAN_KEY: "按双倍状态选择规则，依次执行自定义刷取步骤。",
         '执行快速狩猎': "消耗免费米饭和火把。",
         '快速狩猎冒险航线': "消耗米饭扫荡金币或经验冒险航线。",
         '快速狩猎狩猎场': "不切换关卡，直接消耗米饭扫荡游戏当前默认狩猎场。",
         '快速狩猎圣石洞穴': "读取五种圣石数量并扫荡当前最少的属性洞穴。",
+        '快速狩猎圣石目标': "自动补充数量最少的属性，或指定需要的属性。",
+        '快速狩猎火把分配': "圣石洞穴独立使用火把，不占用米饭预算。",
         '快速狩猎双倍策略': "优先双倍会检测金币和经验并在都双倍时选择金币；"
         "强制双倍优先配置资源；忽视双倍固定选择金币。",
         '快速狩猎资源倾向': "强制双倍策略下优先检查金币或经验。",
@@ -232,12 +263,10 @@ class QuickHuntConfigMixin:
             '执行快速狩猎': {
                 "sub_configs": {
                     True: [
-                        "快速狩猎冒险航线",
-                        "快速狩猎狩猎场",
+                        PLAN_KEY,
                         "快速狩猎圣石洞穴",
-                        "快速狩猎双倍策略",
-                        "快速狩猎资源倾向",
-                        "快速狩猎米饭分配",
+                        "快速狩猎圣石目标",
+                        "快速狩猎火把分配",
                         "快速狩猎模板阈值",
                         "快速狩猎像素相似度阈值",
                         "快速狩猎界面等待秒数",
@@ -252,6 +281,12 @@ class QuickHuntConfigMixin:
             '快速狩猎双倍策略': {
                 "type": "drop_down",
                 "options": ["优先双倍", "强制双倍", "忽视双倍"],
+            },
+            '快速狩猎圣石目标': {
+                "type": "drop_down", "options": ["数量最少的属性", *QUICK_HUNT_STONE_ELEMENTS],
+            },
+            '快速狩猎火把分配': {
+                "type": "drop_down", "options": ["用完可用火把", "只刷一次"],
             },
             '快速狩猎资源倾向': {
                 "type": "drop_down",
@@ -334,6 +369,8 @@ class QuickHuntConfigMixin:
         self.default_config.update(self.quick_hunt_default_config)
         self.config_description.update(self.quick_hunt_config_description)
         self.config_type.update(self._quick_hunt_type_config())
+        for key in LEGACY_KEYS:
+            self.config_type.setdefault(key, {})["hidden"] = True
         if not self.include_quick_hunt_config:
             for key in QUICK_HUNT_CONFIG_KEYS:
                 self.default_config.pop(key, None)
@@ -343,16 +380,7 @@ class QuickHuntConfigMixin:
 
 class QuickHuntFeatureMixin:
     def _queue_quick_hunt_test(self, action: str) -> None:
-        labels = {
-            "inspect_entry": "只读检查入口",
-            "open_menu": "打开狩猎菜单",
-            "inspect_menu": "只读检查菜单",
-            "rice": "执行米饭流程",
-            "crystal": "执行圣石洞穴",
-            "home": "返回主页",
-            "full": "完整快速狩猎",
-        }
-        label = labels.get(action)
+        label = QUICK_HUNT_TEST_ACTION_LABELS.get(action)
         if label is None:
             self.log_warning(f"不支持的快速狩猎测试动作：{action}", notify=True)
             return
@@ -364,23 +392,12 @@ class QuickHuntFeatureMixin:
         try:
             self.start()
             self._status_set("快速狩猎测试状态", f"已加入队列：{label}")
-        except TaskDisabledException:
-            raise
         except Exception as exc:
             self._quick_hunt_test_action = None
             self.log_error(f"无法启动快速狩猎测试：{label}", exc, notify=True)
 
     def _run_quick_hunt_test(self, action: str) -> bool:
-        labels = {
-            "inspect_entry": "只读检查入口",
-            "open_menu": "打开狩猎菜单",
-            "inspect_menu": "只读检查菜单",
-            "rice": "执行米饭流程",
-            "crystal": "执行圣石洞穴",
-            "home": "返回主页",
-            "full": "完整快速狩猎",
-        }
-        label = labels.get(action, action)
+        label = QUICK_HUNT_TEST_ACTION_LABELS.get(action, action)
         self._status_set("当前任务", f"快速狩猎测试：{label}")
         self._status_set("快速狩猎测试状态", f"执行中：{label}")
         try:
@@ -417,7 +434,7 @@ class QuickHuntFeatureMixin:
             self._status_set("快速狩猎测试状态", f"{label}：{result}；{detail}")
             self.log_completion(f"快速狩猎测试结束：{label}，{result}，{detail}")
             return success
-        except TaskDisabledException:
+        except (TaskDisabledException, FinishedException):
             raise
         except Exception as exc:
             self._status_set("快速狩猎测试状态", f"{label}：异常")
@@ -633,82 +650,222 @@ class QuickHuntFeatureMixin:
         return "failed"
 
     def _quick_hunt_run_rice_scheduler(self) -> bool:
-        """Run hunting ground first, then an optional MAX adventure route."""
-
         self._status_set("快速狩猎当前阶段", "米饭调度")
-        hunting_enabled = bool(self.config.get("快速狩猎狩猎场", True))
-        adventure_enabled = bool(self.config.get("快速狩猎冒险航线", True))
-        if not hunting_enabled and not adventure_enabled:
-            self._status_set("快速狩猎米饭", "米饭子任务均已关闭")
-            return True
-        rice = self._quick_hunt_free_rice()
-        if rice is None:
-            self.log_info("快速狩猎：无法确认免费米饭数量，停止刷取。")
-            return False
-        if rice < RICE_PER_HUNT:
-            if rice == 0:
-                self._quick_hunt_record_exhausted("米饭")
-            self._status_set("快速狩猎米饭", "不足一次，跳过")
-            return True
-
-        hunting_mode, adventure_mode = self._quick_hunt_count_modes()
-
-        if hunting_enabled:
-            self.log_info("快速狩猎：狩猎场使用游戏当前默认关卡，不切换章节。")
-            result = self._quick_hunt_execute_current_map(
-                hunting_mode, "狩猎场",
-            )
-            if result == "failed":
-                return False
-            if result == "depleted":
-                self._status_set("快速狩猎米饭", "已耗尽")
+        self._quick_hunt_selected_plan_target = "hunt"
+        try:
+            book = load_book(self.config)
+            plan = book["plans"][book["active"]]
+            plan_record = run_history.read_stage(self, "狩猎方案")
+            scope = run_history.stage_scope(self)
+            is_same_plan = plan_record.get("scope") == scope
+            if is_same_plan and plan_record.get("state") == "done":
+                self._status_set("快速狩猎米饭", "本周期方案已完成")
+                return True
+            if not plan["fallback"] and all(not rule["steps"] for rule in plan["rules"]):
+                self._status_set("快速狩猎米饭", "方案保留米饭")
                 return True
             rice = self._quick_hunt_free_rice()
-            if rice is None:
-                self.log_info("快速狩猎：无法确认剩余免费米饭，停止后续刷取。")
-                return False
-            if rice < RICE_PER_HUNT:
-                self._status_set("快速狩猎米饭", "不足一次")
+            if rice == 0:
+                self._quick_hunt_record_exhausted("米饭")
+            if rice is not None and rice - plan.get("reserve", 0) < RICE_PER_HUNT:
+                self._status_set("快速狩猎米饭", "可用免费米饭不足一次，保留余量")
                 return True
+            if is_same_plan and plan_record.get("state") == "pending":
+                evidence = plan_record["evidence"]
+                matched, steps = evidence["matched"], evidence["steps"]
+                allowance = evidence["allowance"]
+            else:
+                states = self._quick_hunt_plan_double_states() if plan["rules"] else {}
+                matched, steps = select_steps(plan, states)
+                allowance = max(0, rice - plan.get("reserve", 0)) if rice is not None else 0
+            if not steps:
+                self._status_set("快速狩猎米饭", "方案保留米饭")
+                return True
+            if rice is None:
+                raise ValueError("无法确认免费米饭数量，停止刷取。")
+            run_history.save_stage(self, "狩猎方案", "pending", scope=scope,
+                                   evidence={"matched": matched, "steps": steps,
+                                             "allowance": allowance})
+        except ValueError as exc:
+            self.log_info(f"快速狩猎：{exc}")
+            return False
+        self._status_set("快速狩猎当前阶段", f"{plan['name']} / {matched}")
+        self.log_info(f"快速狩猎方案：{plan['name']}；命中{matched}")
+        return self._quick_hunt_execute_rice_steps(plan, steps, allowance, scope)
 
-        adventure_selected: str | None = None
-        if adventure_enabled and adventure_mode is not None:
-            adventure_selected = self._quick_hunt_select_adventure_route()
-            if adventure_selected == "failed":
-                return False
-            if adventure_selected:
-                expected_map_pattern = QUICK_HUNT_ADVENTURE_MAP_PATTERNS[
-                    adventure_selected
+    def _quick_hunt_execute_rice_steps(
+        self, plan: dict, steps: list[dict], allowance: int, scope: str,
+    ) -> bool:
+        """Consume only the persisted plan allowance, honoring every completed step checkpoint."""
+        # Snapshot the allowance once: newly regenerated rice is left for the next run.
+        for step_index, item in enumerate(steps):
+            target = item["target"]
+            step_key = f"方案:{step_index}:{target}"
+            mode = item.get("mode", "count")
+            expected = (
+                (QUICK_HUNT_HUNTING_MAP_PATTERN
+                 if self._quick_hunt_selected_plan_target != "hunt" else None)
+                if target == "hunt" else
+                QUICK_HUNT_ADVENTURE_MAP_PATTERNS[{"gold": "金币", "exp": "经验"}[target]]
+            )
+            should_use_max = mode == "all" and plan.get("reserve", 0) <= 0
+            if should_use_max:
+                record = run_history.read_stage(self, f"狩猎提交:米饭:{step_key}:MAX")
+                if record.get("state") == "done" and record.get("scope") == scope:
+                    allowance = 0
+                    continue
+                completed = [
+                    run_history.read_stage(self, f"狩猎提交:米饭:{step_key}:{ordinal}")
+                    for ordinal in range(step_count(item, allowance))
                 ]
-                result = self._quick_hunt_execute_current_map(
-                    adventure_mode,
-                    "冒险航线",
-                    expected_map_pattern=expected_map_pattern,
+                should_use_max = not any(
+                    record.get("state") == "done" and record.get("scope") == scope
+                    for record in completed
                 )
-                if result == "wrong_map":
-                    self.log_info(
-                        f"快速狩猎：{adventure_selected}航线首次选择未生效，"
-                        "重新 OCR 选择一次。"
-                    )
-                    if not self._quick_hunt_click_adventure(adventure_selected):
-                        return False
-                    result = self._quick_hunt_execute_current_map(
-                        adventure_mode,
-                        "冒险航线重试",
-                        expected_map_pattern=expected_map_pattern,
-                    )
-                if result in {"failed", "wrong_map"}:
+            if should_use_max:
+                current = self._quick_hunt_free_rice()
+                if current is None:
+                    self.log_info("快速狩猎：无法确认剩余免费米饭，停止刷取。")
                     return False
-                if result == "depleted":
-                    self._status_set("快速狩猎米饭", "已耗尽")
+                # MAX may include rice regenerated after the plan's allowance was frozen.
+                should_use_max = current <= allowance
+            if should_use_max:
+                if current - plan.get("reserve", 0) < RICE_PER_HUNT:
+                    self._status_set("快速狩猎米饭", "已达到保留数量或不足一次")
                     return True
-
-        if not hunting_enabled and not adventure_selected:
-            self.log_info("快速狩猎：狩猎场已关闭且没有可执行的冒险航线，保留米饭。")
-        elif adventure_enabled and adventure_mode is None:
-            self.log_info("快速狩猎：狩猎场使用 MAX，按配置跳过金币和经验航线。")
-        self._status_set("快速狩猎米饭", "调度结束")
+                result = self._quick_hunt_execute_plan_step(
+                    target, "MAX", f"{TARGETS[target]} MAX", expected,
+                    min(current, allowance), f"{step_key}:MAX",
+                )
+                if result == "done":
+                    allowance = 0
+                    continue
+                if result != "budget_limited":
+                    return result == "depleted"
+            count = step_count(item, allowance)
+            if not count:
+                continue
+            for index in range(count):
+                checkpoint_name = f"{step_key}:{index}"
+                record = run_history.read_stage(self, f"狩猎提交:米饭:{checkpoint_name}")
+                if record.get("state") == "done" and record.get("scope") == scope:
+                    allowance -= RICE_PER_HUNT
+                    continue
+                current = self._quick_hunt_free_rice()
+                if current is None:
+                    self.log_info("快速狩猎：无法确认剩余免费米饭，停止刷取。")
+                    return False
+                if current - plan.get("reserve", 0) < RICE_PER_HUNT:
+                    self._status_set("快速狩猎米饭", "已达到保留数量或不足一次")
+                    return True
+                result = self._quick_hunt_execute_plan_step(
+                    target, "MIN", f"{TARGETS[target]} {index + 1}/{count}", expected,
+                    RICE_PER_HUNT, checkpoint_name,
+                )
+                if result != "done":
+                    return result == "depleted"
+                allowance -= RICE_PER_HUNT
+        run_history.save_stage(self, "狩猎方案", "done", scope=scope)
+        self._status_set("快速狩猎米饭", "方案执行结束")
         return True
+
+    def _quick_hunt_execute_plan_step(
+        self, target: str, count_mode: str, stage: str,
+        expected_map_pattern: str | None, max_cost: int, checkpoint_name: str,
+    ) -> str:
+        """Select a plan target and retry once only after a confirmed wrong-map cancellation."""
+        for attempt in range(2):
+            if not self._quick_hunt_select_plan_target(target):
+                return "failed"
+            result = self._quick_hunt_execute_current_map(
+                count_mode, f"{stage}重试" if attempt else stage,
+                expected_map_pattern=expected_map_pattern,
+                max_cost=max_cost,
+                checkpoint_name=checkpoint_name,
+            )
+            if result != "wrong_map":
+                return result
+            self._quick_hunt_selected_plan_target = None
+        return result
+
+    def _quick_hunt_free_rice(self) -> int | None:
+        return self._quick_hunt_free_resource("米饭")
+
+    def _quick_hunt_free_resource(self, resource: str, frame=None) -> int | None:
+        if frame is not None:
+            roi = QUICK_HUNT_TORCH_RESOURCE_ROI if resource == "火把" else QUICK_HUNT_RESOURCE_ROI
+            crop = crop_relative(frame, roi)
+            if crop.size == 0 or crop.ndim != 3 or crop.shape[2] < 3:
+                return None
+            crop = crop[:, :, :3]
+            # Free balances are white; stored balances are yellow.
+            white = cv2.inRange(cv2.cvtColor(crop, cv2.COLOR_BGR2HSV),
+                                (0, 0, 170), (179, 60, 255))
+            text = self._quick_hunt_ocr_text(
+                cv2.bitwise_and(crop, crop, mask=white), (0, 0, 1, 1),
+                name=f"免费{resource}数量",
+            )
+            value = parse_free_pool(text, QUICK_HUNT_RESOURCE_CAPACITIES[resource])
+            if value is None:
+                # Hard white masking can erase the fraction separator. Read intact
+                # text boxes; never join neighbouring reserve counters or guess zero.
+                boxes = self._quick_vision().ocr_boxes(
+                    crop, f"免费{resource}原图回读", relative_roi=(0, 0, 1, 1),
+                )
+                fractions = [
+                    str(box.name).strip() for box in boxes
+                    if re.fullmatch(r"[0-9]+\s*[/：:|\-~]\s*[0-9]+", str(box.name).strip())
+                ]
+                self._status_set(f"免费{resource}原图回读", " | ".join(fractions) or "-")
+                if len(fractions) == 1:
+                    value = parse_free_pool(fractions[0], QUICK_HUNT_RESOURCE_CAPACITIES[resource])
+            return value[0] if value is not None else None
+        values = []
+        for _ in range(2):
+            value = self._quick_hunt_free_resource(resource, self.capture_frame())
+            if value is None:
+                return None
+            values.append(value)
+            self.sleep(0.15)
+        return values[0] if values[0] == values[1] else None
+
+    def _quick_hunt_plan_double_states(self):
+        # Confirm the menu labels before treating an absent badge as non-double.
+        confirmed, _ = self._quick_hunt_wait_ocr(
+            [r"狩猎场"], None, self._quick_hunt_ui_timeout(), name="方案菜单确认",
+        )
+        if not confirmed:
+            return {"金币": None, "经验": None}
+        first = self._quick_hunt_double_states()
+        self.sleep(0.2)
+        second = self._quick_hunt_double_states()
+        return {key: first[key] if first[key] == second[key] else None for key in first}
+
+    def _quick_hunt_select_plan_target(self, target):
+        if target == "hunt":
+            # The quick-hunt menu opens on the current default hunting ground.
+            # Preserve it until an adventure route changed the selected tab.
+            if getattr(self, "_quick_hunt_selected_plan_target", "hunt") == "hunt":
+                return True
+            if not self._quick_hunt_click_ocr(
+                [r"^狩猎场$"],
+                QUICK_HUNT_ADVENTURE_LIST_ROI,
+                self._quick_hunt_ui_timeout(),
+                name="返回狩猎场",
+            ):
+                return False
+            confirmed, _ = self._quick_hunt_wait_ocr(
+                [QUICK_HUNT_HUNTING_MAP_PATTERN],
+                QUICK_HUNT_MAP_SCAN_ROI,
+                self._quick_hunt_ui_timeout(),
+                name="狩猎场地图确认",
+            )
+            selected = bool(confirmed)
+        else:
+            selected = self._quick_hunt_click_adventure({"gold": "金币", "exp": "经验"}[target])
+        if selected:
+            self._quick_hunt_selected_plan_target = target
+        return selected
 
     def _quick_hunt_run_crystal_cave(self) -> bool:
         self._status_set("快速狩猎当前阶段", "圣石洞穴")
@@ -723,15 +880,20 @@ class QuickHuntFeatureMixin:
             self._status_set("快速狩猎火把", "0，跳过")
             return True
 
-        stone_counts = self._quick_hunt_stone_counts()
-        if stone_counts is None:
+        element = self.config.get("快速狩猎圣石目标", "数量最少的属性")
+        if element == "数量最少的属性":
+            stone_counts = self._quick_hunt_stone_counts()
+            if stone_counts is None:
+                return False
+            element = min(QUICK_HUNT_STONE_ELEMENTS, key=stone_counts.__getitem__)
+            self._status_set(
+                "快速狩猎圣石数量",
+                "、".join(f"{name}={stone_counts[name]}" for name in QUICK_HUNT_STONE_ELEMENTS)
+                + f"；选择={element}",
+            )
+        if element not in QUICK_HUNT_STONE_ELEMENTS:
+            self.log_info("快速狩猎：不支持的圣石目标。")
             return False
-        element = min(QUICK_HUNT_STONE_ELEMENTS, key=stone_counts.__getitem__)
-        self._status_set(
-            "快速狩猎圣石数量",
-            "、".join(f"{name}={stone_counts[name]}" for name in QUICK_HUNT_STONE_ELEMENTS)
-            + f"；选择={element}",
-        )
         expected_map_pattern = rf"{re.escape(element)}.?之?.?洞穴"
         clicked = self._quick_hunt_click_ocr(
             [expected_map_pattern],
@@ -741,8 +903,9 @@ class QuickHuntFeatureMixin:
         )
         if not clicked:
             return False
+        mode = "MIN" if self.config.get("快速狩猎火把分配") == "只刷一次" else "MAX"
         result = self._quick_hunt_execute_current_map(
-            "MAX", f"{element}属性圣石", expected_map_pattern=expected_map_pattern,
+            mode, f"{element}属性圣石", expected_map_pattern=expected_map_pattern,
             resource="火把",
         )
         if result not in ("done", "depleted"):
@@ -811,31 +974,6 @@ class QuickHuntFeatureMixin:
         self.log_info("快速狩猎：点击圣石洞穴后未确认属性洞穴列表。")
         self._save_flow_diagnostic("quick_hunt_crystal_entry_failed")
         return False
-
-    def _quick_hunt_select_adventure_route(self) -> str | None:
-        preferred = str(self.config.get("快速狩猎资源倾向", "金币"))
-        if preferred not in QUICK_HUNT_ADVENTURE_LABEL_PATTERNS:
-            self.log_info(f"快速狩猎：不支持的冒险航线资源：{preferred}")
-            return "failed"
-        strategy = str(self.config.get("快速狩猎双倍策略", "优先双倍"))
-        if strategy == "忽视双倍":
-            return "金币" if self._quick_hunt_click_adventure("金币") else "failed"
-        states = self._quick_hunt_double_states()
-        if strategy == "优先双倍":
-            selected = "金币" if states["金币"] else "经验" if states["经验"] else None
-            if selected is None:
-                self.log_info("快速狩猎：金币和经验均未识别到双倍，跳过冒险航线。")
-                return None
-            return selected if self._quick_hunt_click_adventure(selected) else "failed"
-        if strategy == "强制双倍":
-            alternate = "经验" if preferred == "金币" else "金币"
-            for resource in (preferred, alternate):
-                if states[resource]:
-                    return resource if self._quick_hunt_click_adventure(resource) else "failed"
-            self.log_info("快速狩猎：首选和备选资源均未识别到双倍，跳过冒险航线。")
-            return None
-        self.log_info(f"快速狩猎：不支持的双倍策略：{strategy}")
-        return "failed"
 
     def _quick_hunt_click_adventure(self, resource: str) -> bool:
         pattern = QUICK_HUNT_ADVENTURE_LABEL_PATTERNS.get(resource)
@@ -1120,9 +1258,10 @@ class QuickHuntFeatureMixin:
         expected_map_pattern: str | None = None,
         resource: str = "米饭",
         max_cost: int | None = None,
+        checkpoint_name: str | None = None,
     ) -> str:
         self._status_set("快速狩猎当前阶段", stage)
-        checkpoint = f"狩猎提交:{resource}:{stage.removesuffix('重试')}"
+        checkpoint = f"狩猎提交:{resource}:{checkpoint_name or stage.removesuffix('重试')}"
         scope = run_history.stage_scope(self)
         record = run_history.read_stage(self, checkpoint)
         pending = run_history.default_store().pending_stages(
@@ -1131,56 +1270,12 @@ class QuickHuntFeatureMixin:
             self.log_info(f"快速狩猎：{resource}另一个目标存在待确认提交，不启动新的消费阶段。")
             return "failed"
         if record.get("state") == "pending":
-            evidence = record.get("evidence", {})
-            remaining = self._quick_hunt_free_resource(resource)
-            if remaining == 0:
-                run_history.save_stage(self, checkpoint, "done", scope=scope,
-                                       evidence={**evidence, "result": "资源已耗尽"})
-                return "depleted"
-            if record.get("scope") == scope:
-                self._hunt_checkpoint = (checkpoint, scope, evidence)
-                try:
-                    result = self._quick_hunt_wait_result(stage, resource=resource, timeout=2.0)
-                    if result in {"done", "depleted"}:
-                        return result
-                finally:
-                    self._hunt_checkpoint = None
-            self.log_info(f"快速狩猎：{stage}前次提交结果未知，已只读复核资源，本次不再次开始。")
-            return "failed"
-        if (count_mode == "MIN" and record.get("state") == "done"
+            return self._quick_hunt_recover_submission(record, checkpoint, scope, stage, resource)
+        if ((count_mode == "MIN" or checkpoint_name is not None) and record.get("state") == "done"
                 and record.get("scope") == scope):
             self.log_info(f"快速狩猎：{stage}本周期 MIN 已确认，继续剩余阶段。")
             return "done"
-        dialog_timeout = min(
-            QUICK_HUNT_DIALOG_CONFIRM_TIMEOUT,
-            max(0.5, self._quick_hunt_ui_timeout()),
-        )
-        dialog_open = False
-        for attempt in range(1, QUICK_HUNT_DIALOG_CONFIRM_ATTEMPTS + 1):
-            if not self._quick_hunt_click_ocr(
-                [r"快速狩猎"],
-                QUICK_HUNT_BUTTON_ROI,
-                self._quick_hunt_ui_timeout(),
-                name=f"{stage}-快速狩猎按钮",
-                require_enabled=True,
-            ):
-                return "failed"
-            if self._quick_hunt_wait_confirmation_dialog(
-                dialog_timeout,
-                name=f"{stage}-次数弹窗确认",
-            ):
-                dialog_open = True
-                break
-            if attempt >= QUICK_HUNT_DIALOG_CONFIRM_ATTEMPTS:
-                break
-            if not self._quick_hunt_menu_still_open():
-                break
-            self.log_info(
-                f"快速狩猎：{stage}点击后未确认次数弹窗，"
-                f"仍在菜单，补点（{attempt}/{QUICK_HUNT_DIALOG_CONFIRM_ATTEMPTS - 1}）。"
-            )
-        if not dialog_open:
-            self.log_info(f"快速狩猎：{stage}点击后未打开次数确认弹窗。")
+        if not self._quick_hunt_open_confirmation(stage):
             return "failed"
         if expected_map_pattern is not None:
             map_state, map_text, actual_map = self._quick_hunt_wait_map_confirmation(
@@ -1220,6 +1315,83 @@ class QuickHuntFeatureMixin:
         finally:
             self._hunt_checkpoint = None
 
+    def _quick_hunt_recover_submission(
+        self, record: dict, checkpoint: str, scope: str, stage: str, resource: str,
+    ) -> str:
+        """Read pending consumption evidence without submitting another resource spend."""
+        evidence = record.get("evidence", {})
+        remaining = self._quick_hunt_free_resource(resource)
+        if remaining == 0:
+            run_history.save_stage(self, checkpoint, "done", scope=scope,
+                                   evidence={**evidence, "result": "资源已耗尽"})
+            return "depleted"
+        if record.get("scope") == scope:
+            self._hunt_checkpoint = (checkpoint, scope, evidence)
+            try:
+                result = self._quick_hunt_wait_result(stage, resource=resource, timeout=2.0)
+                if result in {"done", "depleted"}:
+                    return result
+            finally:
+                self._hunt_checkpoint = None
+        self.log_info(f"快速狩猎：{stage}前次提交结果未知，已只读复核资源，本次不再次开始。")
+        return "failed"
+
+    def _quick_hunt_open_confirmation(self, stage: str) -> bool:
+        dialog_timeout = min(
+            QUICK_HUNT_DIALOG_CONFIRM_TIMEOUT,
+            max(0.5, self._quick_hunt_ui_timeout()),
+        )
+        for attempt in range(1, QUICK_HUNT_DIALOG_CONFIRM_ATTEMPTS + 1):
+            if not self._quick_hunt_click_ocr(
+                [r"快速狩猎"], QUICK_HUNT_BUTTON_ROI, self._quick_hunt_ui_timeout(),
+                name=f"{stage}-快速狩猎按钮", require_enabled=True,
+            ):
+                return False
+            if self._quick_hunt_wait_confirmation_dialog(
+                dialog_timeout, name=f"{stage}-次数弹窗确认",
+            ):
+                return True
+            if (attempt >= QUICK_HUNT_DIALOG_CONFIRM_ATTEMPTS
+                    or not self._quick_hunt_menu_still_open()):
+                break
+            self.log_info(
+                f"快速狩猎：{stage}点击后未确认次数弹窗，"
+                f"仍在菜单，补点（{attempt}/{QUICK_HUNT_DIALOG_CONFIRM_ATTEMPTS - 1}）。"
+            )
+        self.log_info(f"快速狩猎：{stage}点击后未打开次数确认弹窗。")
+        return False
+
+    def _quick_hunt_settlement_signals(self, frame, stage: str, resource: str) -> tuple[bool, bool]:
+        reward_text = self._quick_hunt_ocr_text(frame, QUICK_HUNT_REWARD_ROI, name=f"{stage}-奖励")
+        normalized = self._normalize_text(reward_text)
+        is_reward_open = ("点击" in normalized and "返回" in normalized) or (
+            "画面" in normalized and "即可" in normalized
+        )
+        if not is_reward_open:
+            title_text = self._quick_hunt_ocr_text(
+                frame, QUICK_HUNT_REWARD_TITLE_ROI, name=f"{stage}-奖励标题",
+            )
+            is_reward_open = "reward" in self._normalize_text(title_text)
+        dialog_text = self._quick_hunt_ocr_text(
+            frame, QUICK_HUNT_DIALOG_ROI, name=f"{stage}-异常",
+        )
+        is_depleted_open = bool(re.search(
+            rf"{resource}.*(?:不足|耗尽)|(?:不足|耗尽).*{resource}",
+            self._normalize_text(dialog_text),
+        ))
+        return is_reward_open, is_depleted_open
+
+    def _quick_hunt_is_menu_restored(self, frame, stage: str) -> bool:
+        menu_text = self._quick_hunt_ocr_text(
+            frame, QUICK_HUNT_MENU_FOREGROUND_ROI, name=f"{stage}-结算返回菜单",
+        )
+        normalized = self._normalize_text(menu_text)
+        menu_crop = crop_relative(self._to_gray(frame), QUICK_HUNT_MENU_FOREGROUND_ROI)
+        p95 = float(np.percentile(menu_crop, 95)) if menu_crop.size else 0.0
+        self._status_set(f"{stage}-结算返回菜单亮度", f"p95={p95:.0f}")
+        return (all(keyword in normalized for keyword in ("狩猎场", "圣石洞"))
+                and p95 >= QUICK_HUNT_MENU_FOREGROUND_P95_MINIMUM)
+
     def _quick_hunt_wait_result(
         self, stage: str, submission: HuntDialog | None = None, resource: str = "米饭",
         timeout: float | None = None,
@@ -1236,32 +1408,12 @@ class QuickHuntFeatureMixin:
         may_have_started = False
         while monotonic() <= end_at:
             frame = self.capture_frame()
-            reward_text = self._quick_hunt_ocr_text(
-                frame,
-                QUICK_HUNT_REWARD_ROI,
-                name=f"{stage}-奖励",
+            is_reward_open, is_depleted_open = self._quick_hunt_settlement_signals(
+                frame, stage, resource,
             )
-            normalized = self._normalize_text(reward_text)
-            reward_open = ("点击" in normalized and "返回" in normalized) or (
-                "画面" in normalized and "即可" in normalized
-            )
-            if not reward_open:
-                title_text = self._quick_hunt_ocr_text(
-                    frame, QUICK_HUNT_REWARD_TITLE_ROI, name=f"{stage}-奖励标题",
-                )
-                reward_open = "reward" in self._normalize_text(title_text)
-            dialog_text = self._quick_hunt_ocr_text(
-                frame,
-                QUICK_HUNT_DIALOG_ROI,
-                name=f"{stage}-异常",
-            )
-            depleted_open = bool(
-                re.search(rf"{resource}.*(?:不足|耗尽)|(?:不足|耗尽).*{resource}",
-                          self._normalize_text(dialog_text))
-            )
-            if reward_open or depleted_open:
+            if is_reward_open or is_depleted_open:
                 if pending_result is None:
-                    pending_result = "done" if reward_open else "depleted"
+                    pending_result = "done" if is_reward_open else "depleted"
                     checkpoint = getattr(self, "_hunt_checkpoint", None)
                     if checkpoint is not None:
                         key, scope, evidence = checkpoint
@@ -1270,9 +1422,9 @@ class QuickHuntFeatureMixin:
                     # Start the close deadline once, even when settlement used its entire allowance.
                     end_at = monotonic() + self._quick_hunt_ui_timeout()
                 menu_hits = 0
-                last_state = "奖励页未关闭" if reward_open else "资源不足弹窗未关闭"
+                last_state = "奖励页未关闭" if is_reward_open else "资源不足弹窗未关闭"
                 if close_clicks < 3:
-                    if reward_open:
+                    if is_reward_open:
                         self._status_set("快速狩猎提交", "奖励已确认，正在返回菜单")
                         self.operate_click(
                             (QUICK_HUNT_REWARD_ROI[0] + QUICK_HUNT_REWARD_ROI[2]) / 2,
@@ -1283,19 +1435,9 @@ class QuickHuntFeatureMixin:
                     elif self._quick_hunt_dismiss_shortage(frame):
                         close_clicks += 1
             elif pending_result is not None:
-                menu_text = self._quick_hunt_ocr_text(
-                    frame, QUICK_HUNT_MENU_FOREGROUND_ROI, name=f"{stage}-结算返回菜单",
-                )
-                menu_normalized = self._normalize_text(menu_text)
-                menu_crop = crop_relative(self._to_gray(frame), QUICK_HUNT_MENU_FOREGROUND_ROI)
-                p95 = float(np.percentile(menu_crop, 95)) if menu_crop.size else 0.0
-                menu_restored = (
-                    all(keyword in menu_normalized for keyword in ("狩猎场", "圣石洞"))
-                    and p95 >= QUICK_HUNT_MENU_FOREGROUND_P95_MINIMUM
-                )
-                menu_hits = menu_hits + 1 if menu_restored else 0
-                last_state = "菜单恢复确认中" if menu_restored else "转场或页面未确认"
-                self._status_set(f"{stage}-结算返回菜单亮度", f"p95={p95:.0f}")
+                is_menu_restored = self._quick_hunt_is_menu_restored(frame, stage)
+                menu_hits = menu_hits + 1 if is_menu_restored else 0
+                last_state = "菜单恢复确认中" if is_menu_restored else "转场或页面未确认"
                 if menu_hits >= 2:
                     return pending_result
             elif submission is not None:
@@ -1362,14 +1504,6 @@ class QuickHuntFeatureMixin:
         self._save_flow_diagnostic("quick_hunt_stone_count_failed")
         return None
 
-    def _quick_hunt_count_modes(self) -> tuple[str, str | None]:
-        allocation = str(
-            self.config.get("快速狩猎米饭分配", "狩猎场x1 / 双倍图MAX")
-        )
-        if allocation in {"狩猎场MAX / 跳过冒险航线", "狩猎场MAX / 双倍图x1"}:
-            return "MAX", None
-        return "MIN", "MAX"
-
     def _quick_hunt_wait_ocr(
         self,
         patterns: list[str],
@@ -1409,7 +1543,7 @@ class QuickHuntFeatureMixin:
         last_text = ""
         while monotonic() <= end_at:
             frame = self.capture_frame()
-            dialog_open, count_text, start_text = self._quick_hunt_dialog_ocr(
+            is_dialog_open, count_text, start_text = self._quick_hunt_dialog_ocr(
                 frame,
                 name,
             )
@@ -1418,7 +1552,7 @@ class QuickHuntFeatureMixin:
             )
             last_text = text
             self._status_set(f"{name} OCR", text or "-")
-            if not dialog_open:
+            if not is_dialog_open:
                 self._status_set(f"{name} 门禁", "未确认次数弹窗")
                 self.sleep(0.4)
                 continue
@@ -1621,44 +1755,3 @@ class QuickHuntFeatureMixin:
 
     def _quick_hunt_ui_timeout(self) -> float:
         return float(self.config.get("快速狩猎界面等待秒数", 8.0))
-
-    def _quick_hunt_free_rice(self) -> int | None:
-        return self._quick_hunt_free_resource("米饭")
-
-    def _quick_hunt_free_resource(self, resource: str, frame=None) -> int | None:
-        if frame is not None:
-            roi = QUICK_HUNT_TORCH_RESOURCE_ROI if resource == "火把" else QUICK_HUNT_RESOURCE_ROI
-            crop = crop_relative(frame, roi)
-            if crop.size == 0 or crop.ndim != 3 or crop.shape[2] < 3:
-                return None
-            crop = crop[:, :, :3]
-            # Free balances are white; stored balances are yellow.
-            white = cv2.inRange(cv2.cvtColor(crop, cv2.COLOR_BGR2HSV),
-                                (0, 0, 170), (179, 60, 255))
-            text = self._quick_hunt_ocr_text(
-                cv2.bitwise_and(crop, crop, mask=white), (0, 0, 1, 1),
-                name=f"免费{resource}数量",
-            )
-            value = parse_free_pool(text, QUICK_HUNT_RESOURCE_CAPACITIES[resource])
-            if value is None:
-                # Hard white masking can erase the fraction separator. Read intact
-                # text boxes; never join neighbouring reserve counters or guess zero.
-                boxes = self._quick_vision().ocr_boxes(
-                    crop, f"免费{resource}原图回读", relative_roi=(0, 0, 1, 1),
-                )
-                fractions = [
-                    str(box.name).strip() for box in boxes
-                    if re.fullmatch(r"[0-9]+\s*[/：:|\-~]\s*[0-9]+", str(box.name).strip())
-                ]
-                self._status_set(f"免费{resource}原图回读", " | ".join(fractions) or "-")
-                if len(fractions) == 1:
-                    value = parse_free_pool(fractions[0], QUICK_HUNT_RESOURCE_CAPACITIES[resource])
-            return value[0] if value is not None else None
-        values = []
-        for _ in range(2):
-            value = self._quick_hunt_free_resource(resource, self.capture_frame())
-            if value is None:
-                return None
-            values.append(value)
-            self.sleep(0.15)
-        return values[0] if values[0] == values[1] else None

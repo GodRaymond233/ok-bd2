@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 
 import cv2
 import numpy as np
+from ok.task.exceptions import TaskDisabledException
 
 from src.tasks.map_trade.models import (
     RECIPE_TEMPLATES,
@@ -110,7 +111,7 @@ from src.tasks.map_trade.trader_constants import (
     SHOP_MODE_TITLE_REGION,
 )
 from src.tasks.map_trade.vision import Vision
-from src.tasks.MapTradeTask import MapTradeTask
+from src.tasks.MapTradeTask import BD2MapTradeSellTestTask, MapTradeTask
 from src.utils.calibration import FHD_1080, reference_rect_to_relative_roi
 from src.utils.home_confirmation import HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT
 from src.utils.image_utils import read_template_image, relative_roi_frame, scale_reference_roi
@@ -122,6 +123,59 @@ from tests.helpers.recognition_fixtures import load_bgr
 ROOT = Path(__file__).resolve().parents[1]
 
 
+class TradeSellTestTaskTest(unittest.TestCase):
+    def test_sell_button_reuses_daily_flow_and_restores_config(self):
+        for outcome in (True, False, TaskDisabledException()):
+            with self.subTest(outcome=outcome):
+                executor = SimpleNamespace(scene=None, get_task_by_class=Mock())
+                daily = MapTradeTask(executor, SimpleNamespace())
+                executor.get_task_by_class.return_value = daily
+                original = dict(daily.default_config)
+                original.update({"启用": False, "买": True, "卖": False,
+                                 "出售白名单": "黄油", "使用出售黑名单": True})
+                daily.config = original
+                daily.log_info = daily.log_warning = daily.log_completion = Mock()
+                daily._save_diagnostic = Mock()
+                task = BD2MapTradeSellTestTask(executor, SimpleNamespace())
+                self.assertEqual("测试", task.group_name)
+                self.assertTrue(task.visible)
+                with (
+                    patch("src.tasks.MapTradeTask.Vision"),
+                    patch("src.tasks.MapTradeTask.Navigator") as navigator_type,
+                    patch("src.tasks.MapTradeTask.ProgressStore"),
+                    patch("src.tasks.MapTradeTask.Trader") as trader_type,
+                ):
+                    trader = trader_type.return_value
+                    observed = []
+
+                    def sell():
+                        observed.append(dict(daily.config))
+                        if isinstance(outcome, Exception):
+                            raise outcome
+                        return outcome
+
+                    trader.run_sell.side_effect = sell
+                    navigator_type.return_value.return_home.return_value = NavigationResult(
+                        True, ScreenState.HOME,
+                    )
+                    if isinstance(outcome, Exception):
+                        with self.assertRaises(TaskDisabledException):
+                            task.run()
+                    else:
+                        self.assertIs(outcome, task.run())
+                        self.assertEqual(daily.info_snapshot(), task.info_snapshot())
+                    trader_type.assert_called_once()
+                    self.assertIs(daily, trader_type.call_args.args[0])
+                    trader.run_cooking.assert_not_called()
+                    trader.run_buy.assert_not_called()
+                    trader.run_sell.assert_called_once_with()
+                expected = dict(original, **{"启用": True, "制作料理": False,
+                                            "买": False, "卖": True})
+                self.assertEqual([expected], observed)
+                self.assertIs(original, daily.config)
+                self.assertFalse(original["启用"])
+                self.assertTrue(original["买"])
+                self.assertFalse(original["卖"])
 
 
 class SellFlowTest(StageHistoryTestCase):

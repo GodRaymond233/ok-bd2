@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import ChainMap
 from pathlib import Path
 
 from ok import Config
@@ -375,3 +376,38 @@ class MapTradeTask(MapAutomationTaskBase):
                 ("卖", "卖", trader.run_sell),
             )
             return self._run_phases(navigator, phases)
+
+
+class BD2MapTradeSellTestTask(BaseBD2Task):
+    """Run the registered daily merchant task with only its sale phase enabled."""
+
+    status_keys = MapTradeTask.status_keys
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.name = "跑商当天纯卖测试"
+        self.description = "按每日跑商当前配置执行当天最高价出售，结束后返回主页。"
+        self.icon = FluentIcon.SHOPPING_CART
+        self.group_name = "测试"
+        self.group_icon = FluentIcon.BOOK_SHELF
+        self.visible = True
+
+    def run(self):
+        trade_task = self.executor.get_task_by_class(MapTradeTask)
+        if trade_task is None:
+            self.log_warning("未找到每日跑商任务，无法启动纯卖测试。")
+            return False
+        original_config = trade_task.config
+        self.info_set("状态", "正在执行当天纯卖，详细进度见每日跑商。")
+        # Use the same task instance so pending-sale evidence also applies to this entry point.
+        trade_task.config = ChainMap(
+            {"启用": True, "制作料理": False, "买": False, "卖": True},
+            original_config or {},
+        )
+        try:
+            trade_task.info_clear()
+            return trade_task.run()
+        finally:
+            trade_task.config = original_config
+            for key, value in trade_task.info_snapshot().items():
+                self.info_set(key, value)

@@ -1227,5 +1227,163 @@ class ExpandTimingTest(QuestUiTestBase):
         card.close()
 
 
+class TaskGuideTest(QuestUiTestBase):
+    def test_guides_load_offline_navigate_and_resize_images(self):
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from PySide6.QtCore import QPoint, QPointF, QRect, QSize, Qt, QUrl
+        from PySide6.QtGui import QTextCursor, QTextDocument, QWheelEvent
+        from PySide6.QtTest import QTest
+        from qfluentwidgets import Theme, qconfig, setTheme
+
+        from src.ui.task_guide import GUIDES, TaskGuideDialog
+
+        self.addCleanup(setTheme, qconfig.theme, False)
+        dialog = TaskGuideDialog()
+        self.addCleanup(dialog.deleteLater)
+        self.addCleanup(dialog.close)
+        for guide in GUIDES.values():
+            is_trade = guide[1] == "trade"
+            section_count = 2 if is_trade else 5
+            dialog.set_guide(guide)
+            dialog.show()
+            self.app.processEvents()
+            self.assertEqual(dialog.contents.count(), section_count)
+            self.assertIn("老手须知" if is_trade else "开始前准备", dialog.browser.toPlainText())
+            document = dialog.browser.document()
+            image_name = "trade-warehouse.png" if is_trade else f"guide-{guide[1]}-config.png"
+            if guide[1] == "collection":
+                image_name = "collection-skill-group.png"
+            image_url = QUrl(f"../images/usage/{image_name}")
+            image = document.resource(QTextDocument.ImageResource, image_url)
+            self.assertFalse(image.isNull())
+            for width in (1060, 640):
+                dialog.resize(width, 720)
+                self.app.processEvents()
+                self.assertEqual(dialog.sidebar.isVisible(), width >= 800)
+                self.assertLessEqual(document.size().width(), dialog.browser.viewport().width())
+            dialog.contents.setCurrentRow(section_count - 1)
+            self.app.processEvents()
+            self.assertGreater(dialog.browser.verticalScrollBar().value(), 0)
+            setTheme(Theme.DARK, save=False)
+            self.assertIn("新手须知" if is_trade else "常见问题", dialog.browser.toPlainText())
+
+            bar = dialog.browser.verticalScrollBar()
+            bar.setValue(0)
+            viewport = dialog.browser.viewport()
+            block = document.begin()
+            image_rect = None
+            while block.isValid():
+                iterator = block.begin()
+                while not iterator.atEnd():
+                    fragment = iterator.fragment()
+                    fmt = fragment.charFormat()
+                    if fmt.isImageFormat():
+                        cursor = QTextCursor(document)
+                        cursor.setPosition(fragment.position())
+                        fmt = fmt.toImageFormat()
+                        image_rect = QRect(
+                            dialog.browser.cursorRect(cursor).topLeft(),
+                            QSize(round(fmt.width()), round(fmt.height())),
+                        ).intersected(viewport.rect())
+                        break
+                    iterator += 1
+                if image_rect is not None:
+                    break
+                block = block.next()
+            self.assertIsNotNone(image_rect)
+            self.assertFalse(image_rect.isEmpty())
+            # Exercise the rendered image's actual mouse path, including Markdown links.
+            QTest.mouseClick(viewport, Qt.LeftButton, pos=image_rect.center())
+            self.app.processEvents()
+            viewer = dialog._image_dialog
+            self.assertIsNotNone(viewer)
+            self.assertTrue(viewer.isVisible())
+            viewer.actual_size()
+            self.assertEqual(viewer.label.pixmap().size(), image.size())
+            viewer.fit()
+            self.assertLessEqual(viewer.label.width(), viewer.area.viewport().width())
+            viewer.close()
+            seen_sections = {dialog.contents.currentRow()}
+            for _ in range(100):
+                center = viewport.rect().center()
+                wheel = QWheelEvent(
+                    QPointF(center), QPointF(viewport.mapToGlobal(center)), QPoint(),
+                    QPoint(0, -120), Qt.NoButton, Qt.NoModifier, Qt.ScrollUpdate, False,
+                )
+                self.app.sendEvent(viewport, wheel)
+                self.app.processEvents()
+                seen_sections.add(dialog.contents.currentRow())
+                if bar.value() == bar.maximum():
+                    break
+            self.assertEqual(bar.value(), bar.maximum())
+            self.assertEqual(dialog.contents.currentRow(), section_count - 1)
+            self.assertIn(1, seen_sections)
+            if not is_trade:
+                self.assertIn(2, seen_sections)
+            bar.setValue(0)
+            self.assertEqual(dialog.contents.currentRow(), 0)
+            # Updating the marker must not snap a manual scroll back to a heading.
+            bar.setValue(50)
+            self.assertEqual(bar.value(), 50)
+            if is_trade:
+                cursor = document.find("Wiki 跑商攻略")
+                self.assertFalse(cursor.isNull())
+                cursor.setPosition(cursor.selectionStart() + 2)
+                dialog.browser.setTextCursor(cursor)
+                dialog.browser.ensureCursorVisible()
+                self.app.processEvents()
+                with patch("src.ui.task_guide.QDesktopServices.openUrl") as open_url:
+                    QTest.mouseClick(viewport, Qt.LeftButton,
+                                     pos=dialog.browser.cursorRect(cursor).center())
+                    open_url.assert_called_once_with(
+                        QUrl("https://www.gamekee.com/zsca2/712120.html")
+                    )
+            setTheme(Theme.LIGHT, save=False)
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("src.ui.task_guide.GUIDE_ROOT", Path(folder)):
+                dialog.set_guide(GUIDES["MapCollectionTask"])
+                self.assertIn("说明暂不可用", dialog.browser.toPlainText())
+
+    def test_card_help_opens_matching_guide_without_changing_config(self):
+        from copy import deepcopy
+        from unittest.mock import Mock
+
+        from ok.ui.qt.tasks.TaskCard import TaskCard
+
+        from src.ui.task_guide import GUIDES, install_task_guides
+
+        self.fresh_store()
+        install_task_guides()
+        install_task_guides()
+        for task_class, guide in GUIDES.items():
+            task = type(task_class, (_TaskStub,), {})(
+                name=guide[0], config=_ConfigStub({"启用": True})
+            )
+            task.run = Mock()
+            before = deepcopy(task.config)
+            card = TaskCard(task, onetime=True)
+            self.addCleanup(card.deleteLater)
+            self.addCleanup(card.close)
+            self.addCleanup(card.dispose)
+            self.assertFalse(card.instructions_button.isHidden())
+            card.instructions_button.click()
+            dialog = card._bd2_task_guide
+            self.assertEqual(dialog.title.text(), guide[0])
+            self.assertFalse(dialog.isModal())
+            self.assertEqual(before, task.config)
+            self.assertFalse(task.enabled)
+            task.run.assert_not_called()
+            dialog.close()
+            card.instructions_button.click()
+            self.assertIs(card._bd2_task_guide, dialog)
+            dialog.close()
+        card = TaskCard(_TaskStub(), onetime=True)
+        self.addCleanup(card.deleteLater)
+        self.addCleanup(card.dispose)
+        self.assertTrue(card.instructions_button.isHidden())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -330,8 +330,13 @@ class ResponsiveTaskConfigUiTest(unittest.TestCase):
         # The product chain hides maintenance rows (阈值/等待秒数/测试);
         # install it explicitly so this module is order-independent.
         from src.ui.hide_config_rows import install_hide_config_rows
+        from src.ui.quick_hunt_plan_editor import (
+            HuntPlanConfigWidget,
+            install_quick_hunt_plan_editor,
+        )
 
         install_hide_config_rows()
+        install_quick_hunt_plan_editor()
 
         task = object.__new__(QuickHuntTask)
         task.default_config = {}
@@ -359,16 +364,20 @@ class ResponsiveTaskConfigUiTest(unittest.TestCase):
 
         for key in (
             "启用",
-            "快速狩猎冒险航线",
-            "快速狩猎狩猎场",
+            "快速狩猎刷取方案",
             "快速狩猎圣石洞穴",
-            "快速狩猎双倍策略",
-            "快速狩猎资源倾向",
-            "快速狩猎米饭分配",
+            "快速狩猎圣石目标",
+            "快速狩猎火把分配",
         ):
             self.assertIn(key, card.config_widget_by_key)
             self.assertTrue(card.config_widget_by_key[key].isVisibleTo(card))
         self.assertNotIn("快速狩猎章节图", card.config_widget_by_key)
+        self.assertIsInstance(card.config_widget_by_key["快速狩猎刷取方案"], HuntPlanConfigWidget)
+        for key in (
+            "快速狩猎冒险航线", "快速狩猎狩猎场", "快速狩猎双倍策略",
+            "快速狩猎资源倾向", "快速狩猎米饭分配",
+        ):
+            self.assertNotIn(key, card.config_widget_by_key)
         # Maintenance rows are hidden; their config values stay readable.
         for key in (
             "快速狩猎模板阈值",

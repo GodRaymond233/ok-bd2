@@ -7,6 +7,8 @@ formal app configuration. ``main_debug.py`` installs them for development runs.
 DEBUG_ONETIME_TASKS = [
     ["src.tasks.BD2ProbeTask", "BD2ProbeTask"],
     ["src.tasks.BD2MapCollectionProbeTask", "BD2MapCollectionProbeTask"],
+    ["src.tasks.MapTradeTask", "BD2MapTradeSellTestTask"],
+    ["src.tasks.DailyTask", "BD2BusinessCollectTestTask"],
     ["src.tasks.BD2OneTimeTask", "BD2OneTimeTask"],
     ["src.tasks.BD2DiagnosisTask", "BD2DiagnosisTask"],
     ["src.tasks.BD2InputTestTask", "BD2BackgroundMouseClickInputTestTask"],
