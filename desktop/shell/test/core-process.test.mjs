@@ -117,19 +117,28 @@ test("hung core is force-ended only after the timeout", async () => {
   assert.equal(alive(core.child.pid), false);
 });
 
-test("forcing the core never ends a process the core started (the game)", async () => {
-  const core = new CoreProcess(command("spawn-game"), {
-    shutdownTimeoutMs: 300,
-    forcedExitWaitMs: 3000,
-  });
-  const ready = await core.start();
-  const gamePid = Number(ready.coreVersion);
-  assert.ok(alive(gamePid));
-  const result = await core.stop("user");
-  assert.equal(result.forced, true);
-  assert.equal(alive(core.child.pid), false);
-  assert.equal(alive(gamePid), true);
-  process.kill(gamePid);
+// Whether the game survives is tested in lifecycle.test.mjs with a Python core: a Node
+// stand-in would put its own children into a kill-on-close job on Windows.
+
+test("the core is spawned outside the shell's kill-on-close job only on Windows", async () => {
+  for (const [platform, detached] of [
+    ["win32", true],
+    ["linux", false],
+    ["darwin", false],
+  ]) {
+    let seen = null;
+    const core = new CoreProcess(command("normal"), {
+      platform,
+      spawnImpl: (_command, _args, options) => {
+        seen = options;
+        throw new Error("not started");
+      },
+    });
+    await assert.rejects(core.start(), (error) => error.kind === "spawn");
+    assert.equal(seen.detached, detached, platform);
+    assert.equal(seen.windowsHide, true);
+    assert.deepEqual(seen.stdio, ["pipe", "pipe", "pipe"]);
+  }
 });
 
 test("missing interpreter is a spawn failure", async () => {

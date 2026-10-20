@@ -3,6 +3,12 @@
 // Process boundary (R3): the shell only ever terminates the one process it spawned, through
 // the ChildProcess handle it got from spawn(). It never looks processes up by PID or name and
 // never ends a process tree, so a game the core launched keeps running.
+//
+// Windows: libuv puts every child spawned without `detached` into a job object that kills
+// its members as soon as the shell process ends (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE). A
+// crashed or ended shell would then take the core down before its safe exit runs. The core
+// is therefore spawned detached on Windows (no console, stdio still piped): it notices the
+// closed stdin or the vanished parent and exits on its own within the R3 limits.
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { EventEmitter } from "node:events";
 import {
@@ -39,6 +45,7 @@ export interface CoreOptions {
   stderrLines?: number;
   spawnImpl?: (command: string, args: string[], options: SpawnOptions) => ChildProcess;
   parentPid?: number;
+  platform?: NodeJS.Platform;
 }
 
 export type CoreErrorKind = "spawn" | "fatal" | "exited" | "timeout" | "incompatible";
@@ -103,6 +110,7 @@ export class CoreProcess extends EventEmitter {
       stderrLines: options.stderrLines ?? 200,
       spawnImpl: options.spawnImpl,
       parentPid: options.parentPid,
+      platform: options.platform ?? process.platform,
     };
   }
 
@@ -130,6 +138,10 @@ export class CoreProcess extends EventEmitter {
         },
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
+        // Outside the shell's kill-on-close job (see the header comment). Elsewhere a child
+        // already outlives its parent, and staying in the shell's process group keeps
+        // Ctrl+C in a development terminal working.
+        detached: this.options.platform === "win32",
       });
     } catch (error) {
       this.state = "exited";

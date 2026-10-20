@@ -1,5 +1,4 @@
 // Stand-in for `python main.py --service`: speaks the stdin/stdout protocol only.
-import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
@@ -28,21 +27,12 @@ lines.on("line", (line) => {
     if (mode === "never-ready") {
       return;
     }
-    let version = "9.9.9";
-    if (mode === "spawn-game") {
-      // A "game" started by the core; it must survive whatever happens to the core.
-      const game = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], {
-        detached: false,
-        stdio: "ignore",
-      });
-      version = String(game.pid);
-    }
     send({
       type: "ready",
       port: 40000,
       pid: process.pid,
       api: mode === "bad-api" ? 99 : 1,
-      core_version: version,
+      core_version: "9.9.9",
     });
     if (mode === "crash-after-ready") {
       process.stderr.write("Traceback (most recent call last): boom\n");
@@ -57,7 +47,7 @@ lines.on("line", (line) => {
     return;
   }
   if (data.cmd === "shutdown") {
-    if (mode === "hang-on-shutdown" || mode === "spawn-game") {
+    if (mode === "hang-on-shutdown") {
       return;
     }
     send({ type: "exiting", reason: `shell:${data.reason}` });
@@ -65,7 +55,7 @@ lines.on("line", (line) => {
   }
 });
 lines.on("close", () => {
-  if (!["hang-on-shutdown", "never-ready", "spawn-game"].includes(mode)) {
+  if (!["hang-on-shutdown", "never-ready"].includes(mode)) {
     process.exit(0);
   }
 });
