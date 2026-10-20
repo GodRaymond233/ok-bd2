@@ -108,7 +108,7 @@ class ProgressTest(unittest.TestCase):
             def now():
                 return datetime(2026, 9, 17, 12, tzinfo=UTC_PLUS_8)
             first = ProgressStore(now_provider=now)
-            self.assertEqual(shared / "map_trade_progress.json", first.path)
+            self.assertEqual((shared / "map_trade_progress.json").resolve(), first.path)
             with first:
                 first.load()
                 first.mark_action_preexisting_used("Q_sp1", "main_area", "吸收")
