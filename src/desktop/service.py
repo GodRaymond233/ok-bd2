@@ -4,12 +4,14 @@ Started by the shell as ``python main.py --service`` (or ``main_debug.py --servi
 Lifecycle travels over stdin/stdout (see ``src.desktop.protocol``); business traffic
 goes over HTTP and one WebSocket on ``127.0.0.1``.
 
-Order of startup: handshake (token within 10 s) -> executor lock -> dependency check ->
-configuration -> loopback socket -> uvicorn (ok-script runtime starts in the lifespan) ->
-``ready`` line.  Shutdown starts on a ``shutdown`` command, on stdin EOF (the shell is
-gone) or when the parent process disappears; the core then starts exiting within
-``PARENT_POLL_SECONDS`` + scheduling slack and a watchdog forces the exit after
-``EXIT_WATCHDOG_SECONDS``.  The core never terminates other processes.
+Order of startup: handshake (token within 10 s) -> shell supervision -> executor lock ->
+dependency check -> configuration -> loopback socket -> uvicorn (ok-script runtime starts in
+the lifespan) -> ``ready`` line.  From the handshake on, shutdown starts on a ``shutdown``
+command, on stdin EOF (the shell is gone) or when the parent process disappears; the core
+then starts exiting within ``PARENT_POLL_SECONDS`` + scheduling slack and a watchdog forces
+the exit after ``EXIT_WATCHDOG_SECONDS``.  A request before ``ready`` stops the startup at
+its next checkpoint: no ``ready`` line, no server, no runtime start.  The core never
+terminates other processes.
 """
 
 from __future__ import annotations
@@ -101,11 +103,25 @@ class ProtocolChannel:
         self.send("fatal", code=code, message=message, **fields)
 
 
+class StartupCancelled(Exception):
+    """An exit was requested before the core became ready."""
+
+
 class ShutdownController:
-    """Starts the safe exit exactly once, whatever asked for it first."""
+    """Starts the safe exit exactly once, whatever asked for it first.
+
+    It exists from the handshake on, before the ok-script runtime does: a request during
+    startup arms the watchdog at once, and the startup stops at its next checkpoint
+    without sending ``ready`` or starting the runtime.
+    """
 
     def __init__(
-        self, channel: ProtocolChannel, quit_runtime, logger, watchdog=None, clock=time.monotonic
+        self,
+        channel: ProtocolChannel,
+        quit_runtime,
+        logger,
+        watchdog=None,
+        clock=time.monotonic,
     ):
         self._channel = channel
         self._quit_runtime = quit_runtime
@@ -126,15 +142,39 @@ class ShutdownController:
                 return False
             self.reason = reason
             self.started_at = self._clock()
+            quit_runtime = self._quit_runtime
         self._logger.info(f"开始安全退出（{reason}）")
         self._channel.send("exiting", reason=reason)
         if self._watchdog is not None:
             self._watchdog(grace_period=protocol.EXIT_WATCHDOG_SECONDS, exit_code=0)
+        if quit_runtime is not None:
+            self._quit(quit_runtime)
+        return True
+
+    def attach_runtime(self, quit_runtime) -> None:
+        """Register the runtime once it exists; an earlier request quits it right away."""
+        with self._lock:
+            self._quit_runtime = quit_runtime
+            pending = self.reason is not None
+        if pending:
+            self._quit(quit_runtime)
+
+    def checkpoint(self) -> None:
+        if self.reason is not None:
+            raise StartupCancelled(self.reason)
+
+    def announce_ready(self, send) -> None:
+        """Send ``ready`` unless an exit has started; never both in the wrong order."""
+        with self._lock:
+            if self.reason is not None:
+                raise StartupCancelled(self.reason)
+            send()
+
+    def _quit(self, quit_runtime) -> None:
         try:
-            self._quit_runtime()
+            quit_runtime()
         except Exception as error:
             self._logger.error(f"退出时停止运行时失败：{error}")
-        return True
 
 
 class CommandReader:
@@ -239,10 +279,12 @@ class CoreServer:
         except BaseException as error:  # SystemExit from a failed lifespan included
             self.failures.append(error)
 
-    def start(self, timeout: float) -> None:
+    def start(self, timeout: float, checkpoint=None) -> None:
         self.thread.start()
         deadline = time.monotonic() + timeout
         while not self.server.started:
+            if checkpoint is not None:
+                checkpoint()
             if not self.thread.is_alive():
                 cause = self.failures[0] if self.failures else None
                 raise RuntimeError("本机服务启动失败") from cause
@@ -288,6 +330,9 @@ def service_config(config: dict) -> dict:
     prepared = dict(config)
     prepared.pop("gui", None)
     prepared["use_gui"] = False
+    # As in the windowed entries: the session-wide executor lock replaces ok-script's
+    # per-directory mutex, which would terminate a same-directory older instance.
+    prepared["check_mutex"] = False
     return prepared
 
 
@@ -312,7 +357,6 @@ def run_service(
         acquire_executor_lock,
         install_executor_guards,
         legacy_guard,
-        refusal_message,
         release_executor_lock,
     )
 
@@ -332,7 +376,51 @@ def run_service(
         channel.fatal("handshake", str(error))
         return protocol.EXIT_HANDSHAKE_FAILED
 
-    acquired, holder = (lock_acquirer or acquire_executor_lock)("service")
+    if watchdog is None:
+        from ok.util.process import start_exit_watchdog as watchdog
+    controller = ShutdownController(channel, None, logger, watchdog=watchdog)
+    # Supervise the shell from the handshake on: a closed window, a closed pipe or a vanished
+    # parent must also end a slow or stuck startup (the watchdog bounds how long it takes).
+    CommandReader(stdin, controller.request, logger).start()
+    watch = ParentWatch(handshake.parent_pid or os.getppid(), controller.request).start()
+    try:
+        return _start_and_serve(
+            controller,
+            channel,
+            logger,
+            handshake,
+            config_loader=config_loader,
+            configure=configure,
+            ready_timeout=ready_timeout,
+            dependency_check=dependency_check,
+            lock_acquirer=lock_acquirer or acquire_executor_lock,
+            guard_installer=guard_installer or install_executor_guards,
+            app_factory=app_factory,
+            guard=legacy if legacy is not None else legacy_guard(),
+        )
+    finally:
+        watch.stop()
+        release_executor_lock()
+
+
+def _start_and_serve(
+    controller,
+    channel,
+    logger,
+    handshake,
+    *,
+    config_loader,
+    configure,
+    ready_timeout,
+    dependency_check,
+    lock_acquirer,
+    guard_installer,
+    app_factory,
+    guard,
+):
+    from src.executor_guard import refusal_message
+
+    acquired, holder = lock_acquirer("service")
     if not acquired:
         message = refusal_message(holder)
         channel.fatal("executor-locked", message, holder_pid=holder.pid if holder else None)
@@ -340,6 +428,7 @@ def run_service(
 
     server = None
     try:
+        controller.checkpoint()
         if dependency_check is None:
             from src.compat.dependency_guard import ensure_core_dependencies
 
@@ -350,25 +439,19 @@ def run_service(
             channel.fatal("dependencies", "核心依赖缺失或已修复，需要重新启动 ok-bd2")
             return int(exit_request.code or protocol.EXIT_STARTUP_FAILED)
 
+        controller.checkpoint()
         config = config_loader()
         if configure is not None:
             configure(config)
-        (guard_installer or install_executor_guards)()
-        guard = legacy if legacy is not None else legacy_guard()
-        legacy = guard.instances(force=True)
-        if legacy:
+        controller.checkpoint()
+        guard_installer()
+        if guard.instances(force=True):
             logger.warning(guard.blocking_message())
 
+        controller.checkpoint()
         server_socket = bind_loopback()
         port = server_socket.getsockname()[1]
         origin = f"http://127.0.0.1:{port}"
-        controller_box = {}
-
-        def request_shutdown(reason):
-            controller = controller_box.get("controller")
-            if controller is not None:
-                controller.request(reason)
-
         if app_factory is None:
             from src.desktop.app import create_app as app_factory
         app = app_factory(
@@ -377,9 +460,12 @@ def run_service(
             origin=origin,
             legacy_check=lambda: guard.blocking_message(force=True),
             legacy_instances=lambda: guard.instances(),
-            request_shutdown=request_shutdown,
+            request_shutdown=controller.request,
         )
         runtime = app.state.runtime
+        controller.attach_runtime(runtime.ok.quit)
+        # The runtime starts in the server's lifespan: never start it after an exit request.
+        controller.checkpoint()
         try:
             from ok.ui.web.server import _configure_server_logging
 
@@ -387,11 +473,6 @@ def run_service(
         except Exception as error:
             logger.warning(f"could not route server logs: {error}")
         server = CoreServer(app, server_socket)
-
-        if watchdog is None:
-            from ok.util.process import start_exit_watchdog as watchdog
-        controller = ShutdownController(channel, runtime.ok.quit, logger, watchdog=watchdog)
-        controller_box["controller"] = controller
 
         def stop_server_when_runtime_exits():
             runtime.ok.exit_event.wait()
@@ -401,28 +482,30 @@ def run_service(
         threading.Thread(
             target=stop_server_when_runtime_exits, name="RuntimeExit", daemon=True
         ).start()
-        server.start(ready_timeout)
+        server.start(ready_timeout, checkpoint=controller.checkpoint)
+        controller.announce_ready(
+            lambda: channel.send(
+                "ready",
+                port=port,
+                pid=os.getpid(),
+                api=protocol.API_VERSION,
+                core_version=str(config.get("version") or ""),
+            )
+        )
+    except StartupCancelled as cancelled:
+        logger.info(f"就绪前收到退出请求（{cancelled}），停止启动")
+        if server is not None:
+            server.stop()
+            server.wait()
+        return protocol.EXIT_OK
     except Exception as error:
         logger.error(f"核心服务启动失败：{error}")
         channel.fatal("startup", f"核心服务启动失败：{error}")
         if server is not None:
             server.stop()
-        release_executor_lock()
         return protocol.EXIT_STARTUP_FAILED
 
-    channel.send(
-        "ready",
-        port=port,
-        pid=os.getpid(),
-        api=protocol.API_VERSION,
-        core_version=str(config.get("version") or ""),
-    )
     logger.info(f"核心服务就绪：{origin}")
-    CommandReader(stdin, controller.request, logger).start()
-    parent_pid = handshake.parent_pid or os.getppid()
-    watch = ParentWatch(parent_pid, controller.request).start()
     server.wait()
-    watch.stop()
     controller.request("server-stopped")
-    release_executor_lock()
     return protocol.EXIT_OK

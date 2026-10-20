@@ -13,7 +13,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from src import executor_guard as guard
 from src.desktop import protocol, service
@@ -186,6 +186,32 @@ def fake_engine():
     )
 
 
+def open_shell_pipe(testcase, **handshake_fields):
+    """stdin as the shell provides it: the handshake, then a pipe that stays open."""
+    read_fd, write_fd = os.pipe()
+    stdin = os.fdopen(read_fd, "r", encoding="utf-8")
+    writer = os.fdopen(write_fd, "w", encoding="utf-8")
+    writer.write(json.dumps({"v": 1, "token": TOKEN, **handshake_fields}) + "\n")
+    writer.flush()
+
+    def close():
+        # EOF first: closing a file another thread is reading would block.
+        try:
+            writer.close()
+        except (OSError, ValueError):
+            pass
+        time.sleep(0.05)
+        stdin.close()
+
+    testcase.addCleanup(close)
+    return stdin, writer
+
+
+NO_LEGACY = SimpleNamespace(
+    instances=lambda force=False: [], blocking_message=lambda force=False: None
+)
+
+
 class RunServiceTest(unittest.TestCase):
     """The real loopback server, with the game runtime replaced by a stand-in."""
 
@@ -221,9 +247,7 @@ class RunServiceTest(unittest.TestCase):
                 guard_installer=lambda: None,
                 app_factory=factory,
                 watchdog=self.watchdog,
-                legacy=SimpleNamespace(
-                    instances=lambda force=False: [], blocking_message=lambda force=False: None
-                ),
+                legacy=NO_LEGACY,
             )
 
         self.thread = threading.Thread(target=run, daemon=True)
@@ -309,13 +333,16 @@ class RunServiceTest(unittest.TestCase):
 
     def test_startup_failure_reports_fatal_and_releases(self):
         stdout = Collector()
+        stdin, _writer = open_shell_pipe(self)
         code = service.run_service(
             lambda: (_ for _ in ()).throw(RuntimeError("配置损坏")),
-            stdin=io.StringIO(json.dumps({"v": 1, "token": TOKEN}) + "\n"),
+            stdin=stdin,
             stdout=stdout,
             dependency_check=lambda: None,
             lock_acquirer=lambda mode: (True, None),
             guard_installer=lambda: None,
+            watchdog=Mock(),
+            legacy=NO_LEGACY,
         )
         self.assertEqual(code, protocol.EXIT_STARTUP_FAILED)
         fatal = stdout.wait_for("fatal", timeout=1)
@@ -325,16 +352,201 @@ class RunServiceTest(unittest.TestCase):
     def test_refused_lock_reports_holder(self):
         stdout = Collector()
         holder = guard.InstanceInfo(77, 1.0, "qt", "D:\\ok-bd2", "now")
+        stdin, _writer = open_shell_pipe(self)
         code = service.run_service(
             lambda: {},
-            stdin=io.StringIO(json.dumps({"v": 1, "token": TOKEN}) + "\n"),
+            stdin=stdin,
             stdout=stdout,
             lock_acquirer=lambda mode: (False, holder),
+            watchdog=Mock(),
+            legacy=NO_LEGACY,
         )
         self.assertEqual(code, protocol.EXIT_EXECUTOR_LOCKED)
         fatal = stdout.wait_for("fatal", timeout=1)
         self.assertEqual((fatal["code"], fatal["holder_pid"]), ("executor-locked", 77))
         self.assertIn("进程 77", fatal["message"])
+
+
+class StartupSupervisionTest(unittest.TestCase):
+    """F3: the shell is supervised from the handshake on, not only after ``ready``."""
+
+    def start_slow_service(self, **handshake_fields):
+        self.stdin, self.writer = open_shell_pipe(self, **handshake_fields)
+        self.stdout = Collector()
+        self.watchdog = Mock()
+        self.loading = threading.Event()
+        self.release = threading.Event()
+        self.factory = Mock()
+        self.addCleanup(self.release.set)
+
+        def slow_config():
+            self.loading.set()
+            self.assertTrue(self.release.wait(20))
+            return {"version": "9.9.9"}
+
+        self.result = {}
+
+        def run():
+            self.result["code"] = service.run_service(
+                slow_config,
+                stdin=self.stdin,
+                stdout=self.stdout,
+                dependency_check=lambda: None,
+                lock_acquirer=lambda mode: (True, None),
+                guard_installer=lambda: None,
+                app_factory=self.factory,
+                watchdog=self.watchdog,
+                legacy=NO_LEGACY,
+            )
+
+        self.thread = threading.Thread(target=run, daemon=True)
+        self.thread.start()
+        self.assertTrue(self.loading.wait(10))
+
+    def assert_cancelled_before_ready(self):
+        self.release.set()
+        self.thread.join(timeout=15)
+        self.assertFalse(self.thread.is_alive())
+        self.assertEqual(self.result["code"], protocol.EXIT_OK)
+        self.assertNotIn("ready", [message["type"] for message in self.stdout.messages()])
+        self.factory.assert_not_called()
+        self.watchdog.assert_called_once_with(
+            grace_period=protocol.EXIT_WATCHDOG_SECONDS, exit_code=0
+        )
+
+    def test_closed_stdin_during_startup_starts_the_exit_at_once(self):
+        self.start_slow_service()
+        closed = time.monotonic()
+        self.writer.close()
+        exiting = self.stdout.wait_for("exiting", timeout=5)
+        self.assertEqual(exiting["reason"], "stdin-closed")
+        self.assertLess(time.monotonic() - closed, 2.0)
+        self.assertTrue(self.thread.is_alive())  # still inside the slow step, watchdog armed
+        self.assert_cancelled_before_ready()
+
+    def test_parent_loss_during_startup_starts_the_exit_within_two_seconds(self):
+        parent = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        self.addCleanup(lambda: parent.poll() is None and parent.kill())
+        self.start_slow_service(parent_pid=parent.pid)
+        parent.kill()
+        parent.wait(timeout=10)
+        killed = time.monotonic()
+        exiting = self.stdout.wait_for("exiting", timeout=5)
+        self.assertEqual(exiting["reason"], "parent-exited")
+        self.assertLessEqual(time.monotonic() - killed, 2.0)
+        self.assert_cancelled_before_ready()
+
+    def test_shutdown_after_the_runtime_exists_quits_it_without_starting_it(self):
+        stdin, writer = open_shell_pipe(self)
+        stdout = Collector()
+        engine = fake_engine()
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        from src.desktop.app import create_app
+
+        def factory(config, **kwargs):
+            app = create_app(config, ok_instance=engine, ui_dist=Path(directory.name), **kwargs)
+            writer.write('{"cmd": "shutdown", "reason": "tray"}\n')
+            writer.flush()
+            stdout.wait_for("exiting", timeout=5)
+            return app
+
+        code = service.run_service(
+            lambda: {"version": "9.9.9"},
+            stdin=stdin,
+            stdout=stdout,
+            dependency_check=lambda: None,
+            lock_acquirer=lambda mode: (True, None),
+            guard_installer=lambda: None,
+            app_factory=factory,
+            watchdog=Mock(),
+            legacy=NO_LEGACY,
+        )
+        self.assertEqual(code, protocol.EXIT_OK)
+        self.assertEqual(stdout.wait_for("exiting")["reason"], "shell:tray")
+        self.assertNotIn("ready", [message["type"] for message in stdout.messages()])
+        self.assertTrue(engine.exit_event.is_set())  # quit as soon as it was attached
+        engine.start_runtime.assert_not_called()  # the server lifespan never ran
+
+    def test_controller_orders_ready_and_exit(self):
+        stream = io.StringIO()
+        controller = service.ShutdownController(
+            service.ProtocolChannel(stream), None, Mock(), watchdog=Mock()
+        )
+        controller.checkpoint()
+        sent = []
+        controller.announce_ready(lambda: sent.append("ready"))
+        self.assertEqual(sent, ["ready"])
+        self.assertTrue(controller.request("stdin-closed"))  # no runtime yet: nothing to quit
+        with self.assertRaises(service.StartupCancelled):
+            controller.checkpoint()
+        with self.assertRaises(service.StartupCancelled):
+            controller.announce_ready(lambda: sent.append("late"))
+        self.assertEqual(sent, ["ready"])
+        quit_runtime = Mock()
+        controller.attach_runtime(quit_runtime)
+        quit_runtime.assert_called_once_with()
+
+
+class ServiceConfigTest(unittest.TestCase):
+    """F2: the service entry must not run ok-script's per-directory mutex either."""
+
+    def test_service_config_drops_gui_and_the_directory_mutex(self):
+        prepared = service.service_config({"gui": {"type": "qt"}, "check_mutex": True, "a": 1})
+        self.assertNotIn("gui", prepared)
+        self.assertIs(prepared["use_gui"], False)
+        self.assertIs(prepared["check_mutex"], False)
+        self.assertEqual(prepared["a"], 1)
+
+    def test_the_runtime_built_by_run_service_skips_the_directory_mutex(self):
+        """Through the real create_app -> WebRuntime -> ok.OK, stopped right after the check."""
+        import ok
+        from ok import og
+        from ok.util.config import Config
+
+        class ReachedAfterMutex(Exception):
+            pass
+
+        missing = object()
+        saved_globals = {name: getattr(og, name, missing) for name in ("ok", "config")}
+        saved_folder = Config.__dict__.get("config_folder", missing)
+
+        def restore():
+            for name, value in saved_globals.items():
+                if value is missing:
+                    if hasattr(og, name):
+                        delattr(og, name)
+                else:
+                    setattr(og, name, value)
+            if saved_folder is not missing:
+                Config.config_folder = saved_folder
+
+        self.addCleanup(restore)
+        check_mutex = Mock(return_value=True)
+        stdin, _writer = open_shell_pipe(self)
+        stdout = Collector()
+        with (
+            patch.object(ok, "check_mutex", check_mutex, create=True),
+            patch.object(
+                ok,
+                "config_logger",
+                Mock(side_effect=ReachedAfterMutex("ok.OK 已越过互斥检查")),
+                create=True,
+            ),
+        ):
+            code = service.run_service(
+                lambda: {"version": "9.9.9", "check_mutex": True},
+                stdin=stdin,
+                stdout=stdout,
+                dependency_check=lambda: None,
+                lock_acquirer=lambda mode: (True, None),
+                guard_installer=lambda: None,
+                watchdog=Mock(),
+                legacy=NO_LEGACY,
+            )
+        self.assertEqual(code, protocol.EXIT_STARTUP_FAILED)
+        self.assertIn("ok.OK 已越过互斥检查", stdout.wait_for("fatal", timeout=1)["message"])
+        check_mutex.assert_not_called()
 
 
 class EntryProcessTest(unittest.TestCase):
@@ -354,11 +566,14 @@ class EntryProcessTest(unittest.TestCase):
         )
 
     def fatal(self, result):
-        lines = [
-            line for line in result.stdout.splitlines() if line.startswith(protocol.LINE_PREFIX)
+        messages = [
+            json.loads(line[len(protocol.LINE_PREFIX) :])
+            for line in result.stdout.splitlines()
+            if line.startswith(protocol.LINE_PREFIX)
         ]
-        self.assertTrue(lines, result.stdout + result.stderr[-2000:])
-        return json.loads(lines[-1][len(protocol.LINE_PREFIX) :])
+        fatal = [message for message in messages if message["type"] == "fatal"]
+        self.assertTrue(fatal, result.stdout + result.stderr[-2000:])
+        return fatal[-1]
 
     def test_missing_handshake_exits_with_code_10(self):
         with tempfile.TemporaryDirectory() as temp_dir:
