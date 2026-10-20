@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ok-bd2</title>
+    <link rel="stylesheet" href="status.css" />
+  </head>
+  <body>
+    <main>
+      <div id="spinner" class="spinner" aria-hidden="true"></div>
+      <h1 id="title">正在启动 ok-bd2</h1>
+      <p id="message">正在启动自动化核心，请稍候。</p>
+      <pre id="details" hidden></pre>
+      <div class="actions">
+        <button id="restart" type="button" hidden>重新启动核心</button>
+        <button id="logs" type="button">打开日志文件夹</button>
+        <button id="quit" type="button">退出</button>
+      </div>
+    </main>
+    <script src="status.js"></script>
+  </body>
+</html>

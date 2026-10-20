@@ -1,0 +1,44 @@
+{
+  "name": "ok-bd2-desktop-shell",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ok-bd2 desktop shell: hosts the client window and supervises the Python core",
+  "author": "GodRaymond233",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test test/",
+    "start": "npm run build && electron .",
+    "pack:win": "npm run build && electron-builder --win dir && node scripts/write-manifest.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.1",
+    "electron": "44.9.1",
+    "electron-builder": "26.17.0",
+    "typescript": "5.9.3"
+  },
+  "build": {
+    "appId": "io.github.godraymond233.okbd2.desktop",
+    "productName": "ok-bd2-desktop",
+    "executableName": "ok-bd2-desktop",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "static/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        "dir"
+      ],
+      "icon": "../../icons/icon.ico"
+    }
+  },
+  "allowScripts": {
+    "electron-winstaller": false
+  }
+}

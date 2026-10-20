@@ -85,3 +85,6 @@ Desktop.ini
 *.mov
 /recognition-assets/template-assets/QQ????????-??????.png
 /recognition-assets/template-assets/*.mp4_*.png
+
+# Desktop client: UI bundle built from desktop/ui (npm run build), served by the core
+/src/desktop/ui_dist/
