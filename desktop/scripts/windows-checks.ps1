@@ -1,7 +1,9 @@
 # Stage 1 Windows checks for the desktop client (run in the electron-client worktree).
 #
-# Steps: Python gate (run_checks Final) -> UI build -> shell tests and package ->
-# shell smoke with the real core (no game needed) -> bootstrap smoke -> process cleanup.
+# Steps: Python gate (run_checks Final) -> UI tests and build -> shell tests (lifecycle tests
+# with the venv interpreter) and package -> lifecycle tests with the packaged Electron and the
+# standalone interpreter -> lifecycle probe with the real service layer -> shell smoke with
+# the real core (no game needed) -> bootstrap smoke -> process cleanup.
 # Every native step runs as its own process with stdout/stderr written to files under the
 # output directory (PowerShell never wraps native stderr), and summary.json lists them all.
 # Nothing here starts the game or sends input to it.
@@ -164,11 +166,34 @@ $passed = (Invoke-Npm -Name 'ui-npm-ci' -Directory $uiDir -NpmArguments @('ci', 
 $passed = (Invoke-Npm -Name 'ui-test' -Directory $uiDir -NpmArguments @('test')) -and $passed
 $passed = (Invoke-Npm -Name 'ui-build' -Directory $uiDir -NpmArguments @('run', 'build')) -and $passed
 $passed = (Invoke-Npm -Name 'shell-npm-ci' -Directory $shellDir -NpmArguments @('ci', '--no-audit', '--no-fund')) -and $passed
-$passed = (Invoke-Npm -Name 'shell-test' -Directory $shellDir -NpmArguments @('test')) -and $passed
+# The lifecycle tests use a Python stand-in core: first the venv interpreter (a redirector).
+$env:OKBD2_TEST_PYTHON = $python
+try {
+    $passed = (Invoke-Npm -Name 'shell-test' -Directory $shellDir -NpmArguments @('test')) -and $passed
+} finally {
+    Remove-Item Env:OKBD2_TEST_PYTHON -ErrorAction SilentlyContinue
+}
 $passed = (Invoke-Npm -Name 'shell-pack' -Directory $shellDir -NpmArguments @('run', 'pack:win')) -and $passed
 
 $exe = Join-Path $unpacked 'ok-bd2-desktop.exe'
 if (Test-Path $exe) {
+    # Again with the packaged Electron as the shell and the standalone interpreter behind the
+    # venv, which is how PyAppify starts the core.
+    $standalone = ((& $python -c 'import sys; print(sys._base_executable)') | Out-String).Trim()
+    $results['standalone-python'] = [ordered]@{ exit_code = 0; seconds = 0; logs = @(); path = $standalone }
+    $env:OKBD2_TEST_PYTHON = $standalone
+    $env:OKBD2_TEST_HOST = $exe
+    try {
+        $passed = (Invoke-NativeStep -Name 'shell-lifecycle-electron' -File 'cmd.exe' -Arguments @('/d', '/c', 'node', '--test', 'test/lifecycle.test.mjs') -WorkingDirectory $shellDir) -and $passed
+    } finally {
+        Remove-Item Env:OKBD2_TEST_PYTHON, Env:OKBD2_TEST_HOST -ErrorAction SilentlyContinue
+    }
+    # Real service layer, both interpreters: normal stop, shell crash, core crash, ready
+    # timeout, shell crash during startup, same-directory mutex (lifecycle-probe.json).
+    $probe = Join-Path $root 'desktop\scripts\lifecycle_probe.py'
+    $probeOut = Join-Path $OutDir 'lifecycle-probe'
+    $passed = (Invoke-NativeStep -Name 'lifecycle-probe' -File $python -Arguments @("`"$probe`"", '--out', "`"$probeOut`"", '--host', "`"$exe`"")) -and $passed
+
     $smoke = Join-Path $OutDir 'shell-smoke.json'
     $arguments = @(
         '--core-python', "`"$python`"",

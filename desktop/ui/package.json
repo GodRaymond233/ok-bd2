@@ -4,9 +4,12 @@
   "private": true,
   "type": "module",
   "description": "ok-bd2 desktop client pages, served by the Python core",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "check": "tsc -p tsconfig.json && tsc -p test/tsconfig.json",
-    "test": "node --test test/",
+    "test": "node --test \"test/**/*.test.ts\"",
     "build": "npm run check && vite build"
   },
   "dependencies": {

@@ -4,11 +4,14 @@
   "private": true,
   "description": "ok-bd2 desktop shell: hosts the client window and supervises the Python core",
   "author": "GodRaymond233",
+  "engines": {
+    "node": ">=24"
+  },
   "main": "dist/main.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test test/",
+    "test": "npm run build && node --test \"test/**/*.test.mjs\"",
     "start": "npm run build && electron .",
     "pack:win": "npm run build && electron-builder --win dir && node scripts/write-manifest.mjs"
   },
