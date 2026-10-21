@@ -80,11 +80,9 @@ BUTTON_ENABLED_BRIGHT_MIN_RATIO = 0.02
 
 QUICK_HUNT_RESOURCE_CAPACITIES = {"米饭": 90, "火把": 60}
 
-# The client renders the leading rice digit after the icon (x>=1585).
-QUICK_HUNT_RESOURCE_ROI = _quick_hunt_relative_roi(1740, 80, 1585, 38)
-
-# The crystal cave's torch balance sits farther right than the rice balance.
-QUICK_HUNT_TORCH_RESOURCE_ROI = _quick_hunt_relative_roi(1680, 38, 1800, 80)
+# Both free counters shift right when the yellow stored balance is absent.
+# Cover both layouts; color filtering and fraction validation exclude reserves.
+QUICK_HUNT_RESOURCE_ROI = _quick_hunt_relative_roi(1580, 38, 1800, 80)
 
 QUICK_HUNT_BUTTON_ROI = _quick_hunt_relative_roi(1720, 1018, 1599, 963)
 
@@ -793,8 +791,7 @@ class QuickHuntFeatureMixin:
 
     def _quick_hunt_free_resource(self, resource: str, frame=None) -> int | None:
         if frame is not None:
-            roi = QUICK_HUNT_TORCH_RESOURCE_ROI if resource == "火把" else QUICK_HUNT_RESOURCE_ROI
-            crop = crop_relative(frame, roi)
+            crop = crop_relative(frame, QUICK_HUNT_RESOURCE_ROI)
             if crop.size == 0 or crop.ndim != 3 or crop.shape[2] < 3:
                 return None
             crop = crop[:, :, :3]

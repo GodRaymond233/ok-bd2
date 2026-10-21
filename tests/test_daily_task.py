@@ -1248,7 +1248,7 @@ class DailyTaskHelperTest(StageHistoryTestCase):
     def test_quick_hunt_regions_preserve_all_supplied_1920_calibrations(self):
         self.assertEqual({"米饭": 90, "火把": 60}, QUICK_HUNT_RESOURCE_CAPACITIES)
         self.assertEqual(
-            (1585 / 1920, 38 / 1080, 1740 / 1920, 80 / 1080),
+            (1580 / 1920, 38 / 1080, 1800 / 1920, 80 / 1080),
             QUICK_HUNT_RESOURCE_ROI,
         )
         self.assertEqual(
