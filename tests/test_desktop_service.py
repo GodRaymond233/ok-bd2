@@ -124,6 +124,139 @@ class ProtocolPiecesTest(unittest.TestCase):
                 watch.stop()
 
 
+class FakePipe:
+    """A pipe as PeekNamedPipe and ReadFile see it: chunks arrive over time, then it ends.
+
+    ``None`` is a poll that finds nothing waiting.
+    """
+
+    def __init__(self, *arrivals):
+        self.arrivals = list(arrivals)
+        self.pending = b""
+        self.overreads = []
+
+    def waiting(self):
+        if not self.pending:
+            if not self.arrivals:
+                raise BrokenPipeError(109, "The pipe has been ended")
+            self.pending = self.arrivals.pop(0) or b""
+        return len(self.pending)
+
+    def read(self, size):
+        if size > len(self.pending):
+            self.overreads.append(size)  # a real pipe would block here
+        data, self.pending = self.pending[:size], self.pending[size:]
+        return data
+
+    def reader(self):
+        return service.PolledPipeReader(self.waiting, self.read, interval=0)
+
+
+class ControlInputTest(unittest.TestCase):
+    def test_polled_reader_splits_lines_and_ends_with_the_pipe(self):
+        shutdown = json.dumps({"cmd": "shutdown", "reason": "退出"}, ensure_ascii=False).encode()
+        pipe = FakePipe(
+            b'{"v": 1',
+            None,
+            b"}\n" + shutdown[:-4],  # cuts the last character in half
+            shutdown[-4:] + b'\n{"cmd"',
+            None,
+            b': "x"}',
+        )
+        reader = pipe.reader()
+        self.assertEqual(reader.readline(), '{"v": 1}\n')
+        self.assertEqual(json.loads(reader.readline()), {"cmd": "shutdown", "reason": "退出"})
+        self.assertEqual(reader.readline(), '{"cmd": "x"}')
+        self.assertEqual(reader.readline(), "")
+        self.assertEqual(reader.readline(), "")
+        self.assertEqual(pipe.overreads, [])
+
+    def test_handshake_and_commands_share_the_polled_reader(self):
+        handshake = json.dumps({"v": 1, "token": TOKEN}) + "\n"
+        command = '{"cmd": "shutdown", "reason": "tray"}\n'
+        reader = FakePipe((handshake + command).encode()).reader()  # one chunk, two lines
+        self.assertEqual(service.read_handshake(reader, timeout=2).token, TOKEN)
+        requests = []
+        service.CommandReader(reader, requests.append, Mock()).start().thread.join(timeout=2)
+        self.assertEqual(requests, ["shell:tray", "stdin-closed"])
+
+    def test_other_streams_are_read_as_before(self):
+        text = io.StringIO("line\n")
+        self.assertIs(service.control_input(text), text)
+        self.assertIsNone(service.control_input(None))
+        if os.name != "nt":
+            read_fd, write_fd = os.pipe()
+            os.close(write_fd)
+            with os.fdopen(read_fd, "r", encoding="utf-8") as stream:
+                self.assertIs(service.control_input(stream), stream)
+
+    @unittest.skipUnless(os.name == "nt", "PeekNamedPipe exists on Windows only")
+    def test_windows_pipe_is_polled(self):
+        read_fd, write_fd = os.pipe()
+        stream = os.fdopen(read_fd, "rb")
+        self.addCleanup(stream.close)
+        reader = service.control_input(stream)
+        self.assertIsInstance(reader, service.PolledPipeReader)
+        os.write(write_fd, b'{"cmd": "shutdown"}\n{"cmd"')
+        self.assertEqual(reader.readline(), '{"cmd": "shutdown"}\n')
+        os.close(write_fd)
+        self.assertEqual(reader.readline(), '{"cmd"')
+        self.assertEqual(reader.readline(), "")
+
+
+NATIVE_IMPORT_CHILD = """
+import logging
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from src.desktop import service
+
+assert "numpy" not in sys.modules, "numpy was loaded before the command reader started"
+reader = service.CommandReader(
+    service.control_input(sys.stdin),
+    lambda reason: print("EXIT", reason, flush=True),
+    logging.getLogger(),
+).start()
+import numpy  # noqa: E402,F401  native DLLs load while the reader waits on a silent pipe
+
+print("IMPORTED", flush=True)
+reader.thread.join(30)
+"""
+
+
+class NativeImportWhileReadingTest(unittest.TestCase):
+    """F5: a blocking stdin read on Windows stopped ``import numpy`` until the shell wrote."""
+
+    def test_numpy_loads_while_the_command_reader_waits(self):
+        child = subprocess.Popen(
+            [sys.executable, "-B", "-c", NATIVE_IMPORT_CHILD, str(ROOT)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            env=dict(os.environ, PYTHONUTF8="1"),
+        )
+        lines = []
+        output = threading.Thread(target=lambda: lines.extend(child.stdout), daemon=True)
+        output.start()
+        try:
+            deadline = time.monotonic() + 60
+            while "IMPORTED\n" not in lines and child.poll() is None:
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.05)
+            self.assertIn("IMPORTED\n", lines, "".join(lines)[-2000:])
+            child.stdin.close()  # the shell is gone
+            self.assertEqual(child.wait(timeout=10), 0, "".join(lines)[-2000:])
+        finally:
+            if child.poll() is None:
+                child.kill()  # only the child started here
+                child.wait(timeout=10)
+            output.join(timeout=5)
+        self.assertIn("EXIT stdin-closed\n", lines)
+
+
 class Collector:
     """A stdout stand-in that notices protocol lines as they arrive."""
 

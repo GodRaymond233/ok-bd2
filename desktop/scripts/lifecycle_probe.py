@@ -5,7 +5,8 @@ Each scenario starts the real CoreProcess inside a stand-in shell
 ELECTRON_RUN_AS_NODE=1, or by Node) and the real service layer with a stand-in runtime
 (``probe_core.py``), then checks what happens to the processes:
 
-    normal-stop                  the shell asks; the core exits by itself, nothing forced
+    normal-stop                  the shell asks; the core exits by itself, nothing forced;
+                                 cv2/numpy loaded only after the reading of stdin began
     shell-crash                  the shell is ended abruptly; the core starts its safe exit
                                  within 2 s, ends within 20 s, and the "game" keeps running
     core-crash                   the core dies after ready; the shell reports it
@@ -131,6 +132,13 @@ def check(checks, name, passed, detail=None):
 def normal_stop(run, checks):
     stopped = wait_for(lambda: run.host_event("stopped"), START_TIMEOUT + 30)
     check(checks, "the shell's stop finished", stopped)
+    config = run.core_event("config")
+    check(
+        checks,
+        "native modules loaded under supervision, as in main.py",
+        config and config["native_preloaded"] is False,
+        config,
+    )
     if stopped:
         check(checks, "not forced", stopped["result"]["forced"] is False, stopped["result"])
     request = run.core_event("request")

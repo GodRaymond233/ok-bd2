@@ -11,7 +11,8 @@ command, on stdin EOF (the shell is gone) or when the parent process disappears;
 then starts exiting within ``PARENT_POLL_SECONDS`` + scheduling slack and a watchdog forces
 the exit after ``EXIT_WATCHDOG_SECONDS``.  A request before ``ready`` stops the startup at
 its next checkpoint: no ``ready`` line, no server, no runtime start.  The core never
-terminates other processes.
+terminates other processes.  On Windows the stdin pipe is polled, never read with a blocking
+call that stays pending (``PolledPipeReader``).
 """
 
 from __future__ import annotations
@@ -211,6 +212,69 @@ class CommandReader:
                 self._logger.warning(f"忽略未知的外壳指令：{command!r:.80}")
 
 
+CONTROL_POLL_SECONDS = 0.05
+
+
+class PolledPipeReader:
+    """Reads lines from the shell's pipe without leaving a blocking read pending (Windows).
+
+    A blocking ``ReadFile`` on the synchronous stdin pipe keeps the handle busy until the
+    shell writes, and other calls on that handle wait for it.  Native libraries check the
+    standard handles while they load, so a reader thread waiting on stdin stopped
+    ``import numpy`` until the next line arrived (F5).  This reader asks how many bytes are
+    waiting (``PeekNamedPipe`` returns at once) and reads only those.
+    """
+
+    def __init__(self, waiting, read, interval=CONTROL_POLL_SECONDS):
+        self._waiting = waiting  # bytes ready to read; OSError once the shell's end is closed
+        self._read = read  # (size) -> at most size bytes, without waiting
+        self._interval = interval
+        self._buffer = b""
+        self._closed = False
+
+    def readline(self) -> str:
+        while b"\n" not in self._buffer and not self._closed:
+            try:
+                size = self._waiting()
+                chunk = self._read(size) if size else None
+            except OSError:
+                self._closed = True
+                break
+            if chunk is None:
+                time.sleep(self._interval)
+            elif chunk:
+                self._buffer += chunk
+            else:
+                self._closed = True
+        line, newline, self._buffer = self._buffer.partition(b"\n")
+        return (line + newline).decode("utf-8", errors="replace")
+
+
+def control_input(stream):
+    """The shell's command input: a polled reader for a Windows pipe, otherwise the stream.
+
+    The handshake and the commands must share it, since it may buffer more than one line.
+    A console or a file (a core started by hand) is read as before.
+    """
+    if os.name != "nt":
+        return stream
+    try:
+        import _winapi
+        import msvcrt
+        import stat
+
+        fd = stream.fileno()
+        if not stat.S_ISFIFO(os.fstat(fd).st_mode):
+            return stream
+        handle = msvcrt.get_osfhandle(fd)
+    except (AttributeError, OSError, ValueError):
+        return stream
+    return PolledPipeReader(
+        lambda: _winapi.PeekNamedPipe(handle)[0],
+        lambda size: _winapi.ReadFile(handle, size)[0],
+    )
+
+
 def _process_identity(pid: int):
     try:
         import psutil
@@ -361,7 +425,7 @@ def run_service(
     )
 
     logger = Logger.get_logger("desktop_service")
-    stdin = stdin if stdin is not None else sys.stdin
+    stdin = control_input(stdin if stdin is not None else sys.stdin)
     if stdout is None:
         # Keep stdout for lifecycle messages only; library prints go to stderr.
         stdout = sys.stdout

@@ -2,8 +2,11 @@
 
 ``service`` (default) runs ``src.desktop.service.run_service`` as ``main.py --service``
 does, except that the ok-script engine is a stand-in (no game window, no OCR) and the
-executor lock, legacy scan and dependency check are skipped.  Every exit request reaching
-``ShutdownController.request`` is appended to PROBE_MARKER as a JSON line.  Options:
+executor lock, legacy scan and dependency check are skipped.  As in ``main.py``, the
+configuration step imports ``src.config`` and with it the native modules (cv2, numpy) while
+the shell's commands are already being read; the stand-in engine is built after it.  Every
+exit request reaching ``ShutdownController.request`` is appended to PROBE_MARKER as a JSON
+line.  Options:
 
     PROBE_GAME=1               start a sleeping child first, the way ok-script starts the game
     PROBE_SLOW_START=<seconds> stall the configuration step (a slow first start)
@@ -83,7 +86,6 @@ def stand_in_engine():
 
 def run_service_probe():
     from src.desktop import service
-    from src.desktop.app import create_app
 
     record(event="start", create_time=create_time(os.getpid()))
     original_request = service.ShutdownController.request
@@ -105,6 +107,9 @@ def run_service_probe():
         service.ProtocolChannel.send = send_then_crash
 
     def load_config():
+        record(event="config", native_preloaded="numpy" in sys.modules)
+        import src.config  # noqa: F401  the first native imports, as in main.py (F5)
+
         if os.environ.get("PROBE_GAME") == "1":
             game = subprocess.Popen(
                 [sys.executable, "-c", f"import time; time.sleep(300)  # {GAME_TOKEN}"]
@@ -116,16 +121,18 @@ def run_service_probe():
             time.sleep(delay)
         return {"version": "probe"}
 
-    engine = stand_in_engine()
-    ui_dist = ROOT / "src" / "desktop" / "ui_dist"
+    def app_factory(config, **kw):
+        from src.desktop.app import create_app
+
+        ui_dist = ROOT / "src" / "desktop" / "ui_dist"
+        return create_app(config, ok_instance=stand_in_engine(), ui_dist=ui_dist, **kw)
+
     return service.run_service(
         load_config,
         dependency_check=lambda: None,
         lock_acquirer=lambda mode: (True, None),
         guard_installer=lambda: None,
-        app_factory=lambda config, **kw: create_app(
-            config, ok_instance=engine, ui_dist=ui_dist, **kw
-        ),
+        app_factory=app_factory,
         legacy=SimpleNamespace(
             instances=lambda force=False: [], blocking_message=lambda force=False: None
         ),
