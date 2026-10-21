@@ -54,6 +54,7 @@ class Collector(SkillExecutionMixin):
         self._last_skill_geometry: dict[str, object] = {}
         self._count_actions_seen: set[str] = set()
         self._completed_this_run = 0
+        self._collection_target = None
         # (card_id, map_role) -> 探查施放时刻（monotonic）：重进卡带时
         # 倒计时数字 OCR 不可靠，靠账本判定增益仍在进行并复用。
         self._search_cast_monotonic: dict[tuple[str, str], float] = {}
@@ -232,6 +233,7 @@ class Collector(SkillExecutionMixin):
         调用前须加载 progress；每个消费动作先写入意图，再点击和结算。
         返回 None 表示整卡核验完成，CollectionResult 表达停止、额度或失败原因。
         """
+        self._collection_target = None
         required_actions = collection_action_policy(battle_actions)
 
         state = self.progress.state
@@ -414,6 +416,7 @@ class Collector(SkillExecutionMixin):
                 index = 0
                 continue
             current = target
+            self._collection_target = (card, target)
             if not recovery_only and not self.progress.weekly_action_complete(
                 card.card_id, target.role, ABSORB_ACTION.name,
             ):

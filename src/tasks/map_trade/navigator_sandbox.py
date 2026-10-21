@@ -1846,27 +1846,34 @@ class SandboxNavigationMixin:
         )
 
     def wait_for_collection_field(self, frame=None) -> np.ndarray:
-        """Pause skill preparation through an encounter, then re-confirm the field."""
+        """Recover encounters before accepting a stationary collection field."""
         frame = self.vision.capture() if frame is None else frame
         end_at = monotonic() + self._loading_timeout()
         battle_seen = False
+        retreated = False
         waiting = False
         idle = 0
         while monotonic() <= end_at:
             if self._black_frame(frame):
                 idle = 0
             else:
-                turn_text = self.vision.ocr_text(
-                    frame, "采集遭遇战回合",
-                    relative_roi=FIELD_BATTLE_TURN_RELATIVE_ROI,
-                )
-                if re.search(r"\bTURN[\s.]*\d+\b", turn_text, re.IGNORECASE):
+                if self._field_battle_visible(frame):
                     if not battle_seen:
                         end_at = monotonic() + FIELD_BATTLE_TIMEOUT
                         battle_seen = True
                     idle = 0
-                    self._status("导航状态", "遭遇战进行中，等待当前自动战斗结束")
+                    frame = self._retreat_from_field_battle(frame, end_at=end_at)
+                    retreated = True
+                    waiting = True
+                    continue
                 elif self.classify(frame) == ScreenState.SANDBOX:
+                    if retreated and self._walk_flags(frame)[0]:
+                        self._cancel_walk()
+                        idle = 0
+                        waiting = True
+                        self.task.sleep(0.5)
+                        frame = self.vision.capture()
+                        continue
                     if self._walk_state(frame) == "idle":
                         idle += 1
                         if not waiting or idle >= AUTO_MOVE_IDLE_READS:
@@ -1885,6 +1892,73 @@ class SandboxNavigationMixin:
             frame = self.vision.capture()
         message = "遭遇战恢复超时" if battle_seen else "采集前箱庭确认超时"
         raise RuntimeError(f"{message}，未确认返回静止箱庭，停止采集技能操作")
+
+    def _field_battle_visible(self, frame: np.ndarray) -> bool:
+        text = self.vision.ocr_text(
+            frame, "采集遭遇战回合", relative_roi=FIELD_BATTLE_TURN_RELATIVE_ROI,
+        )
+        return re.search(r"\bTURN[\s.]*\d+\b", text, re.IGNORECASE) is not None
+
+    def _retreat_from_field_battle(self, frame: np.ndarray, *, end_at: float) -> np.ndarray:
+        """Follow pause, escape and its confirmation using fresh observations."""
+        end_at = min(end_at, monotonic() + FIELD_RETREAT_TIMEOUT)
+        attempts = {"pause": 0, "escape": 0, "confirm": 0}
+        menu_point = None
+        confirmed = False
+        field_hits = 0
+        while monotonic() <= end_at:
+            if not self._black_frame(frame):
+                boxes = self.vision.ocr_boxes(frame, "采集战斗逃跑")
+                exits = [
+                    point for box in boxes
+                    if normalize_text(str(box.name)) == "逃跑"
+                    and (point := self._ocr_box_center(box)) is not None
+                ]
+                # A confirmation may leave the dimmed menu button visible behind it.
+                # Only the newly placed escape button can confirm that transition.
+                dialogs = [point for point in exits if menu_point is not None and (
+                    abs(point[0] / frame.shape[1] - menu_point[0]) > 0.03
+                    or abs(point[1] / frame.shape[0] - menu_point[1]) > 0.03
+                )]
+                stage = None
+                point = None
+                if len(dialogs) == 1:
+                    stage, point = "confirm", dialogs[0]
+                elif len(exits) == 1 and not confirmed:
+                    stage, point = "escape", exits[0]
+                elif not exits and not confirmed and self._field_battle_visible(frame):
+                    stage = "pause"
+                    point = (
+                        round(frame.shape[1] * FIELD_BATTLE_PAUSE_POINT[0]),
+                        round(frame.shape[0] * FIELD_BATTLE_PAUSE_POINT[1]),
+                    )
+                if stage is not None:
+                    field_hits = 0
+                    if attempts[stage] >= FIELD_RETREAT_ATTEMPTS:
+                        raise RuntimeError(f"遭遇战退出失败：{stage}点击后未确认切页，停止采集")
+                    attempts[stage] += 1
+                    self._status("导航状态", {
+                        "pause": "遭遇战：打开暂停菜单",
+                        "escape": "遭遇战：点击逃跑",
+                        "confirm": "遭遇战：确认逃跑",
+                    }[stage])
+                    self.vision.click_client(point, frame.shape, after_sleep=1.0)
+                    if stage == "escape":
+                        menu_point = (point[0] / frame.shape[1], point[1] / frame.shape[0])
+                    elif stage == "confirm":
+                        confirmed = True
+                elif not exits and self.classify(frame) == ScreenState.SANDBOX:
+                    field_hits += 1
+                    if field_hits >= AUTO_MOVE_IDLE_READS:
+                        return frame
+                else:
+                    field_hits = 0
+                    self._leave_walk_battle_result(frame)
+            else:
+                field_hits = 0
+            self.task.sleep(0.5)
+            frame = self.vision.capture()
+        raise RuntimeError("遭遇战退出超时，未确认返回箱庭，停止采集")
 
     def _wait_for_field_hud(
         self,
@@ -2003,7 +2077,10 @@ class SandboxNavigationMixin:
             else:
                 idle = 0
                 if state == "unknown":
-                    self._leave_walk_battle_result(frame)
+                    if self._field_battle_visible(frame):
+                        self._retreat_from_field_battle(frame, end_at=end_at)
+                    else:
+                        self._leave_walk_battle_result(frame)
                 self._status("导航状态", "自动移动中，等待走到传送阵")
             self.task.sleep(0.5)
         return "timeout"
@@ -2034,7 +2111,10 @@ class SandboxNavigationMixin:
                 else:
                     # A loading screen with art (not black), a dialog...
                     idle = 0
-                    self._leave_walk_battle_result(frame)
+                    if self._field_battle_visible(frame):
+                        self._retreat_from_field_battle(frame, end_at=end_at)
+                    else:
+                        self._leave_walk_battle_result(frame)
             self.task.sleep(0.5)
         self._status("导航状态", f"自动移动{timeout:.0f}秒仍未结束，停止本次徒步")
         return False
@@ -2655,5 +2735,9 @@ AUTO_MOVE_TEXT_RELATIVE_ROI = (560 / 1920, 80 / 1080, 1360 / 1920, 980 / 1080)
 AUTO_MOVE_QUESTION_KEYWORDS = ("是否自动移动", "前往所选目的地")
 FIELD_BATTLE_TURN_RELATIVE_ROI = (0.40, 0.05, 0.60, 0.16)
 FIELD_BATTLE_TIMEOUT = 180.0
+# Pause button in the user's 1920x1080 battle capture.
+FIELD_BATTLE_PAUSE_POINT = (1792 / 1920, 52 / 1080)
+FIELD_RETREAT_TIMEOUT = 30.0
+FIELD_RETREAT_ATTEMPTS = 3
 
 TELEPORT_PAGE_ARROW_REFERENCE = {"left": (380, 520), "right": (1540, 520)}

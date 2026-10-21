@@ -228,6 +228,7 @@ class CollectionRunTest(unittest.TestCase):
                 sandbox = NavigationResult(True, ScreenState.SANDBOX)
                 card_menu = NavigationResult(True, ScreenState.CARD_MENU)
                 navigator = SimpleNamespace(
+                    wait_for_collection_field=lambda frame: frame,
                     select_collection_card=Mock(return_value=CollectionCardSelectionResult(
                         CollectionCardSelectionOutcome.ENTERED, sandbox,
                     )),
@@ -897,7 +898,10 @@ class CollectorSkillTest(unittest.TestCase):
                 used = ActionIconDetection(ActionIconState.USED, match, stable=True, sample_count=2)
                 task = SimpleNamespace(config={}, sleep=Mock(), info_set=Mock())
                 vision = SimpleNamespace(capture=lambda: frame, click_client=Mock())
-                collector = Collector(task, vision, SimpleNamespace(), progress)
+                collector = Collector(
+                    task, vision, SimpleNamespace(wait_for_collection_field=lambda frame: frame),
+                    progress,
+                )
                 collector._open_skill_menu = Mock(return_value=True)
                 collector._detect_action_icon = Mock(
                     side_effect=[
@@ -907,6 +911,7 @@ class CollectorSkillTest(unittest.TestCase):
                         (frame, used),
                     ]
                 )
+                collector.action_icons = SimpleNamespace(detect=Mock(return_value=available))
                 windows = iter(
                     [
                         ((0, 21), True),
@@ -1177,7 +1182,10 @@ class CollectorSkillTest(unittest.TestCase):
             info_set=lambda *_args: None,
         )
         vision = SimpleNamespace(capture=lambda: frame)
-        collector = Collector(task, vision, SimpleNamespace(), SimpleNamespace())
+        collector = Collector(
+            task, vision, SimpleNamespace(wait_for_collection_field=lambda frame: frame),
+            SimpleNamespace(),
+        )
         collector.action_icons = SimpleNamespace(
             detect=lambda *_args: next(detections),
         )
@@ -1487,7 +1495,7 @@ class CollectorSkillTest(unittest.TestCase):
             stable=True,
             sample_count=2,
         )
-        detections = iter((available, used))
+        detections = iter((available, available, used))
         count_values = iter(((0, 21), (1, 21)))
         task = SimpleNamespace(
             config={},
@@ -1505,7 +1513,10 @@ class CollectorSkillTest(unittest.TestCase):
             lambda: datetime(2026, 8, 11, 12, tzinfo=UTC_PLUS_8),
         )
         progress.load()
-        collector = Collector(task, vision, SimpleNamespace(), progress)
+        collector = Collector(
+            task, vision, SimpleNamespace(wait_for_collection_field=lambda frame: frame),
+            progress,
+        )
         collector.action_icons = SimpleNamespace(detect=lambda _frame, _icon: next(detections))
 
         def read_count(action, _detection=None, **_kwargs):
@@ -1641,7 +1652,7 @@ class CollectorSkillTest(unittest.TestCase):
                 capture=lambda: frame,
                 click_client=lambda center, shape, after_sleep=0: clicks.append(center),
             ),
-            SimpleNamespace(),
+            SimpleNamespace(wait_for_collection_field=lambda frame: frame),
             SimpleNamespace(),
         )
         unknown = ActionIconDetection(
@@ -1699,7 +1710,10 @@ class CollectorSkillTest(unittest.TestCase):
             match=lambda *_args: MatchResult(-1.0, (0, 0), (0, 0)),
             passes=lambda *_args: False,
         )
-        collector = Collector(task, vision, SimpleNamespace(), SimpleNamespace())
+        collector = Collector(
+            task, vision, SimpleNamespace(wait_for_collection_field=lambda frame: frame),
+            SimpleNamespace(),
+        )
         collector._open_skill_menu = lambda *_args, **_kwargs: True
         collector.action_icons = SimpleNamespace(detect=lambda *_args: available)
 
@@ -1726,7 +1740,7 @@ class CollectorSkillTest(unittest.TestCase):
                 info_set=lambda *_args: None,
             ),
             SimpleNamespace(),
-            SimpleNamespace(),
+            SimpleNamespace(wait_for_collection_field=lambda frame: frame),
             SimpleNamespace(),
         )
         collector._open_skill_menu = lambda *_args, **_kwargs: False
@@ -1768,7 +1782,10 @@ class CollectorSkillTest(unittest.TestCase):
             match=lambda *_args: MatchResult(-1.0, (0, 0), (0, 0)),
             passes=lambda *_args: False,
         )
-        collector = Collector(task, vision, SimpleNamespace(), SimpleNamespace())
+        collector = Collector(
+            task, vision, SimpleNamespace(wait_for_collection_field=lambda frame: frame),
+            SimpleNamespace(),
+        )
         collector._open_skill_menu = lambda *_args, **_kwargs: True
         collector.action_icons = SimpleNamespace(detect=lambda *_args: next(detections))
 
@@ -1808,7 +1825,7 @@ class CollectorSkillTest(unittest.TestCase):
                     or ("在48秒内确认隐藏物品的位置。" if name == "探查执行反馈" else "48")
                 ),
             ),
-            SimpleNamespace(),
+            SimpleNamespace(wait_for_collection_field=lambda frame: frame),
             SimpleNamespace(),
         )
         collector._open_skill_menu = lambda *_args, **_kwargs: True
@@ -2043,8 +2060,8 @@ class CollectorSkillTest(unittest.TestCase):
             MatchResult(0.98, (960, 420), (52, 48), 0.95, 0.92),
             0.65,
         )
-        frames = iter((before_frame, before_frame, after_frame, after_frame))
-        detections = iter((before, before, after, after))
+        frames = iter((before_frame, before_frame, before_frame, after_frame, after_frame))
+        detections = iter((before, before, before, after, after))
         count_detections = []
         clicks = []
         progress = ProgressStore(
@@ -2062,7 +2079,7 @@ class CollectorSkillTest(unittest.TestCase):
                 capture=lambda: next(frames),
                 click_client=lambda *args, **kwargs: clicks.append((args, kwargs)),
             ),
-            SimpleNamespace(),
+            SimpleNamespace(wait_for_collection_field=lambda frame: frame),
             progress,
         )
         collector.action_icons = SimpleNamespace(detect=lambda *_args: next(detections))
@@ -2153,7 +2170,7 @@ class CollectorSkillTest(unittest.TestCase):
                 log_warning=lambda *_args: None,
             ),
             vision,
-            SimpleNamespace(),
+            SimpleNamespace(wait_for_collection_field=lambda frame: frame),
             SimpleNamespace(),
         )
         collector._open_skill_menu = Mock(return_value=True)
@@ -2303,6 +2320,101 @@ class CollectorSkillTest(unittest.TestCase):
         vision.click_client.assert_not_called()
         collector.action_icons.detect.assert_not_called()
 
+    def test_action_sampling_discards_pre_encounter_evidence_and_rechecks_map(self):
+        card = CARD_BY_ID["Q_sp1"]
+        target = card.targets[1]
+        for correct_map in (True, False):
+            with self.subTest(correct_map=correct_map):
+                field = np.full((8, 8, 3), 100, dtype=np.uint8)
+                battle = np.zeros_like(field)
+                restored = np.full_like(field, 140)
+                current = [field]
+                seen = []
+
+                def wait(frame):
+                    if frame is battle:
+                        current[0] = restored
+                        return restored
+                    return frame
+
+                def detect(frame, _icon):
+                    self.assertIsNot(frame, battle)
+                    seen.append(frame)
+                    return ActionIconDetection(
+                        ActionIconState.AVAILABLE,
+                        MatchResult(0.99, (100 if frame is field else 200, 100), (40, 40)),
+                    )
+
+                collector = Collector(
+                    SimpleNamespace(config={}, info_set=Mock(), sleep=lambda _s: (
+                        current.__setitem__(0, battle) if current[0] is field else None
+                    )),
+                    SimpleNamespace(capture=lambda: current[0], click_client=Mock()),
+                    SimpleNamespace(
+                        wait_for_collection_field=wait,
+                        current_collection_target=Mock(
+                            return_value=target.key if correct_map else None,
+                        ),
+                    ),
+                    SimpleNamespace(),
+                )
+                collector._collection_target = (card, target)
+                collector.action_icons = SimpleNamespace(detect=detect)
+                if correct_map:
+                    frame, detection = collector._detect_action_icon(
+                        ABSORB_ICON, require_stable=True,
+                    )
+                    self.assertIs(restored, frame)
+                    self.assertTrue(detection.stable)
+                    self.assertEqual(2, sum(frame is restored for frame in seen))
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "目标地图未确认"):
+                        collector._detect_action_icon(ABSORB_ICON, require_stable=True)
+                collector.navigator.current_collection_target.assert_called_once_with(card)
+                collector.vision.click_client.assert_not_called()
+
+    def test_preclick_encounter_retries_with_fresh_counts_before_reserving(self):
+        for first_count in ((0, 21), None):
+            with self.subTest(first_count=first_count):
+                collector, clicks, _status, progress = self._skill_collector(
+                    {ABSORB_ICON.name: ActionIconState.AVAILABLE},
+                    {"吸收": (first_count, (0, 21), (1, 21))},
+                )
+                field = collector.vision.capture()
+                battle = np.ones_like(field)
+                restored = np.full_like(field, 120)
+                current = [field]
+                collector.vision.capture = lambda: current[0]
+                collector._open_skill_menu = Mock(return_value=True)
+                read_count = collector._read_count_window
+                reads = []
+
+                def count(*args, **kwargs):
+                    result = read_count(*args, **kwargs)
+                    reads.append(result)
+                    if len(reads) == 1:
+                        current[0] = battle
+                    return result
+
+                def wait(frame):
+                    if frame is battle:
+                        self.assertIsNone(progress.get_action_record("Q_sp1", "main_area", "吸收"))
+                        self.assertEqual([], clicks)
+                        current[0] = restored
+                        return restored
+                    return frame
+
+                collector._read_count_window = count
+                collector.navigator.wait_for_collection_field = wait
+                result = collector._use_actions(
+                    (ABSORB_ACTION,), card_id="Q_sp1", map_role=CollectionMapRole.MAIN_AREA,
+                )
+                self.assertTrue(result.completed, result.message)
+                self.assertEqual(1, len(clicks))
+                record = progress.get_action_record("Q_sp1", "main_area", "吸收")
+                self.assertEqual("settled", record["state"])
+                self.assertEqual(1, record["attempts"])
+
     def test_skill_menu_recovery_stops_after_all_three_groups(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         clicks = []
@@ -2432,7 +2544,7 @@ class CollectorSkillTest(unittest.TestCase):
         collector = Collector(
             task,
             SimpleNamespace(capture=lambda: frame),
-            SimpleNamespace(),
+            SimpleNamespace(wait_for_collection_field=lambda frame: frame),
             progress,
         )
         collector._open_skill_menu = lambda *_args, **_kwargs: True
@@ -2521,8 +2633,7 @@ class CollectorSkillTest(unittest.TestCase):
                         self.assertIsNone(failure)
                         self.assertEqual((0, limit), before)
                         self.assertEqual((0, limit), progress.trusted_action_baseline(action.name))
-                        self.assertEqual([0, limit], record["baseline"])
-                        self.assertEqual(CollectionActionState.ARMED.value, record["state"])
+                        self.assertIsNone(record, "次数准备不能在最后一次场景检查前预占动作")
                     else:
                         self.assertIsNone(before)
                         self.assertFalse(failure.completed)
@@ -2557,7 +2668,7 @@ class CollectorSkillTest(unittest.TestCase):
             self.assertEqual((7, 21), before)
             self.assertIn(SKILL_OCR_FALLBACK_UPSCALE, scales)
             record = progress.get_action_record("Q_cp5", "main_area", "吸收")
-            self.assertEqual([7, 21], record["baseline"])
+            self.assertIsNone(record)
             self.assertEqual((7, 21), progress.trusted_action_baseline("吸收"))
 
     def test_transient_used_after_click_keeps_intent_unresolved(self):
@@ -2569,7 +2680,7 @@ class CollectorSkillTest(unittest.TestCase):
         available = collector.action_icons.detect(frame, ABSORB_ACTION.icon)
         used = ActionIconDetection(ActionIconState.USED, available.match)
         missing = ActionIconDetection(ActionIconState.ABSENT, available.match)
-        detections = iter((available, used, missing, used))
+        detections = iter((available, available, used, missing, used))
         collector.action_icons.detect = lambda *_args: next(detections)
         collector._read_action_feedback = lambda _action: SkillFeedbackObservation("", None)
 
@@ -2615,6 +2726,11 @@ class CollectorSkillTest(unittest.TestCase):
                         0.95,
                     ),
                     ActionIconDetection(
+                        ActionIconState.AVAILABLE,
+                        MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
+                        0.95,
+                    ),
+                    ActionIconDetection(
                         ActionIconState.USED,
                         MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
                         0.65,
@@ -2641,7 +2757,10 @@ class CollectorSkillTest(unittest.TestCase):
                 capture=lambda: frame,
                 click_client=lambda center, _shape, after_sleep=0: clicks.append(center),
             )
-            collector = Collector(task, vision, SimpleNamespace(), progress)
+            collector = Collector(
+                task, vision, SimpleNamespace(wait_for_collection_field=lambda frame: frame),
+                progress,
+            )
             collector.action_icons = SimpleNamespace(detect=lambda *_args: next(detections))
             count_values = iter(((0, 21), None))
             def read_count_window(action, detection, **_kwargs):
@@ -2687,6 +2806,11 @@ class CollectorSkillTest(unittest.TestCase):
                         0.95,
                     ),
                     ActionIconDetection(
+                        ActionIconState.AVAILABLE,
+                        MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
+                        0.95,
+                    ),
+                    ActionIconDetection(
                         ActionIconState.USED,
                         MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
                         0.65,
@@ -2713,7 +2837,7 @@ class CollectorSkillTest(unittest.TestCase):
                     capture=lambda: frame,
                     click_client=lambda center, _shape, after_sleep=0: clicks.append(center),
                 ),
-                SimpleNamespace(),
+                SimpleNamespace(wait_for_collection_field=lambda frame: frame),
                 progress,
             )
             collector.action_icons = SimpleNamespace(detect=lambda *_args: next(detections))
@@ -2765,7 +2889,7 @@ class CollectorSkillTest(unittest.TestCase):
                     capture=lambda: frame,
                     click_client=lambda *args, **kwargs: clicks.append((args, kwargs)),
                 ),
-                SimpleNamespace(),
+                SimpleNamespace(wait_for_collection_field=lambda frame: frame),
                 progress,
             )
             collector.action_icons = SimpleNamespace(detect=lambda *_args: used)
@@ -2806,7 +2930,7 @@ class CollectorSkillTest(unittest.TestCase):
                     sleep=lambda *_args: None,
                 ),
                 SimpleNamespace(capture=lambda: frame),
-                SimpleNamespace(),
+                SimpleNamespace(wait_for_collection_field=lambda frame: frame),
                 progress,
             )
             first.action_icons = SimpleNamespace(detect=lambda *_args: used)
@@ -2834,7 +2958,7 @@ class CollectorSkillTest(unittest.TestCase):
                 MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
                 0.95,
             )
-            detections = iter((available, available, used, used))
+            detections = iter((available, available, available, used, used))
             clicks = []
             second = Collector(
                 SimpleNamespace(
@@ -2846,7 +2970,7 @@ class CollectorSkillTest(unittest.TestCase):
                     capture=lambda: frame,
                     click_client=lambda center, _shape, after_sleep=0: clicks.append(center),
                 ),
-                SimpleNamespace(),
+                SimpleNamespace(wait_for_collection_field=lambda frame: frame),
                 progress,
             )
             second.action_icons = SimpleNamespace(detect=lambda *_args: next(detections))
@@ -2910,7 +3034,7 @@ class CollectorSkillTest(unittest.TestCase):
                     sleep=lambda *_args: None,
                 ),
                 SimpleNamespace(capture=lambda: frame),
-                SimpleNamespace(),
+                SimpleNamespace(wait_for_collection_field=lambda frame: frame),
                 progress,
             )
             collector.action_icons = SimpleNamespace(detect=lambda *_args: used)
@@ -2986,7 +3110,11 @@ class CollectorSkillTest(unittest.TestCase):
                     )
 
                     def collector_for(store):
-                        collector = Collector(task, vision, SimpleNamespace(), store)
+                        collector = Collector(
+                            task, vision,
+                            SimpleNamespace(wait_for_collection_field=lambda frame: frame),
+                            store,
+                        )
                         collector._detect_action_icon = lambda *_a, **_k: (
                             frame,
                             ActionIconDetection(
@@ -2994,6 +3122,9 @@ class CollectorSkillTest(unittest.TestCase):
                                 MatchResult(0.99, (900, 420), (44, 43), 0.95, 0.92),
                                 stable=True, sample_count=2,
                             ),
+                        )
+                        collector.action_icons = SimpleNamespace(
+                            detect=lambda *_a: collector._detect_action_icon()[1],
                         )
                         collector._read_action_feedback = lambda _a: SkillFeedbackObservation(
                             "成功反馈", "success", 1.0,
@@ -3064,7 +3195,7 @@ class CollectorSkillTest(unittest.TestCase):
                     capture=lambda: frame,
                     click_client=lambda *args, **kwargs: clicks.append((args, kwargs)),
                 ),
-                SimpleNamespace(),
+                SimpleNamespace(wait_for_collection_field=lambda frame: frame),
                 progress,
             )
             collector.action_icons = SimpleNamespace(detect=lambda *_args: available)
@@ -3126,7 +3257,7 @@ class CollectorSkillTest(unittest.TestCase):
                 MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
                 0.65,
             )
-            detections = iter((available, available, used, used))
+            detections = iter((available, available, available, used, used))
             clicks = []
             collector = Collector(
                 SimpleNamespace(
@@ -3138,7 +3269,7 @@ class CollectorSkillTest(unittest.TestCase):
                     capture=lambda: frame,
                     click_client=lambda center, _shape, after_sleep=0: clicks.append(center),
                 ),
-                SimpleNamespace(),
+                SimpleNamespace(wait_for_collection_field=lambda frame: frame),
                 progress,
             )
             collector.action_icons = SimpleNamespace(detect=lambda *_args: next(detections))
@@ -3210,7 +3341,7 @@ class CollectorSkillTest(unittest.TestCase):
                 MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
                 0.65,
             )
-            detections = iter((available, available, used, used))
+            detections = iter((available, available, available, used, used))
             clicks = []
             collector = Collector(
                 SimpleNamespace(
@@ -3222,7 +3353,7 @@ class CollectorSkillTest(unittest.TestCase):
                     capture=lambda: frame,
                     click_client=lambda center, _shape, after_sleep=0: clicks.append(center),
                 ),
-                SimpleNamespace(),
+                SimpleNamespace(wait_for_collection_field=lambda frame: frame),
                 progress,
             )
             collector.action_icons = SimpleNamespace(detect=lambda *_args: next(detections))
@@ -3297,7 +3428,7 @@ class CollectorSkillTest(unittest.TestCase):
                     capture=lambda: frame,
                     click_client=lambda *args, **kwargs: clicks.append((args, kwargs)),
                 ),
-                SimpleNamespace(),
+                SimpleNamespace(wait_for_collection_field=lambda frame: frame),
                 progress,
             )
             collector.action_icons = SimpleNamespace(detect=lambda *_args: available)
@@ -3353,7 +3484,7 @@ class CollectorSkillTest(unittest.TestCase):
                     capture=lambda: frame,
                     click_client=lambda *args, **kwargs: clicks.append((args, kwargs)),
                 ),
-                SimpleNamespace(),
+                SimpleNamespace(wait_for_collection_field=lambda frame: frame),
                 progress,
             )
             collector.action_icons = SimpleNamespace(detect=lambda *_args: used)
@@ -3412,7 +3543,7 @@ class CollectorSkillTest(unittest.TestCase):
                     capture=lambda: frame,
                     click_client=lambda *args, **kwargs: clicks.append((args, kwargs)),
                 ),
-                SimpleNamespace(),
+                SimpleNamespace(wait_for_collection_field=lambda frame: frame),
                 progress,
             )
             collector.action_icons = SimpleNamespace(detect=lambda *_args: available)
@@ -3490,7 +3621,7 @@ class CollectorSkillTest(unittest.TestCase):
                         RuntimeError("click interrupted")
                     ),
                 ),
-                SimpleNamespace(),
+                SimpleNamespace(wait_for_collection_field=lambda frame: frame),
                 progress,
             )
             collector.action_icons = SimpleNamespace(detect=lambda *_args: available)

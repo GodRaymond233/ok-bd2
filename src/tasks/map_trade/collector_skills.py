@@ -56,6 +56,22 @@ from src.tasks.map_trade.vision import parse_used_limit
 
 
 class SkillExecutionMixin:
+    def _capture_skill_field(self):
+        captured = self.vision.capture()
+        frame = self.navigator.wait_for_collection_field(captured)
+        recovered = frame is not captured
+        if recovered:
+            self._forget_skill_evidence()
+            if self._collection_target is not None:
+                card, target = self._collection_target
+                if self.navigator.current_collection_target(card) != target.key:
+                    raise RuntimeError("遭遇战恢复后目标地图未确认，停止采集技能操作")
+                captured = self.vision.capture()
+                frame = self.navigator.wait_for_collection_field(captured)
+                if frame is not captured:
+                    raise RuntimeError("地图复核后场景再次变化，停止采集技能操作")
+        return frame, recovered
+
     @staticmethod
     def _action_detection_is_stable(
         previous: ActionIconDetection,
@@ -155,10 +171,18 @@ class SkillExecutionMixin:
         best_detection = None
         previous_detection = None
         observed_samples = 0
-        for attempt in range(ACTION_ICON_DETECTION_SAMPLES):
-            frame = self.vision.capture()
+        attempt = recoveries = 0
+        while attempt < ACTION_ICON_DETECTION_SAMPLES:
+            frame, recovered = self._capture_skill_field()
+            if recovered:
+                recoveries += 1
+                if recoveries > 2:
+                    raise RuntimeError("技能采样期间反复发生场景切换，停止采集")
+                best_frame = best_detection = previous_detection = None
+                observed_samples = attempt = 0
             detection = self.action_icons.detect(frame, icon)
             observed_samples += 1
+            attempt += 1
             if (
                 best_detection is None
                 or self._action_detection_rank(detection)
@@ -193,7 +217,7 @@ class SkillExecutionMixin:
                     previous_detection = detection
                 else:
                     previous_detection = None
-                if attempt + 1 < ACTION_ICON_DETECTION_SAMPLES:
+                if attempt < ACTION_ICON_DETECTION_SAMPLES:
                     self.task.sleep(ACTION_ICON_DETECTION_INTERVAL)
                 continue
             if detection.state not in {
@@ -201,7 +225,7 @@ class SkillExecutionMixin:
                 ActionIconState.UNKNOWN,
             }:
                 return frame, detection
-            if attempt + 1 < ACTION_ICON_DETECTION_SAMPLES:
+            if attempt < ACTION_ICON_DETECTION_SAMPLES:
                 self.task.sleep(ACTION_ICON_DETECTION_INTERVAL)
         if best_detection is None:
             best_detection = ActionIconDetection(
@@ -240,14 +264,15 @@ class SkillExecutionMixin:
 
         def inspect_window():
             best_detections = None
-            attempt = 0
+            attempt = recoveries = 0
             while attempt < ACTION_ICON_DETECTION_SAMPLES:
-                captured = self.vision.capture()
-                frame = self.navigator.wait_for_collection_field(captured)
-                if frame is not captured:
+                frame, recovered = self._capture_skill_field()
+                if recovered:
+                    recoveries += 1
+                    if recoveries > 2:
+                        raise RuntimeError("技能栏确认期间反复发生场景切换，停止采集")
                     best_detections = None
                     attempt = 0
-                    self._forget_skill_evidence()
                 current, opened = inspect(frame)
                 if opened:
                     return current, True
@@ -301,10 +326,7 @@ class SkillExecutionMixin:
 
         # 采集技能可能配置在任意技能组，逐组识别并停留在包含目标技能的一组。
         for group, point in sorted(SKILL_GROUP_RELATIVE_POINTS.items()):
-            captured = self.vision.capture()
-            frame = self.navigator.wait_for_collection_field(captured)
-            if frame is not captured:
-                self._forget_skill_evidence()
+            frame, _recovered = self._capture_skill_field()
             detections, opened = inspect(frame)
             if opened:
                 return True
@@ -743,10 +765,25 @@ class SkillExecutionMixin:
             map_role=map_role,
         )
         if failure is not None:
+            _frame, recovered = self._capture_skill_field()
+            if recovered:
+                return SkillExecutionResult(
+                    False, message="次数读取期间场景变化，恢复后重新准备技能", press_again=True,
+                )
             return failure
         assert before is not None
+        frame, recovered = self._capture_skill_field()
+        fresh = self.action_icons.detect(frame, action.icon)
+        if recovered or not self._action_detection_is_stable(detection, fresh):
+            return SkillExecutionResult(
+                False, message="消费前场景或技能状态变化，重新读取次数和图标", press_again=True,
+            )
+        if not self.progress.arm_action(card_id, map_role, action.name, baseline=before):
+            return SkillExecutionResult(
+                False, True, f"{action.name}每日额度或未决动作已阻止新点击",
+            )
         self.vision.click_client(
-            detection.match.center,
+            fresh.match.center,
             frame.shape,
             after_sleep=ACTION_AFTER_CLICK_SECONDS,
         )
@@ -904,17 +941,6 @@ class SkillExecutionMixin:
                 f"{action.name}次数已达到 {before[0]}/{before[1]}，当前地图未完成",
             )
         self._count_actions_seen.add(action.name)
-        if not self.progress.arm_action(
-            card_id,
-            map_role,
-            action.name,
-            baseline=before,
-        ):
-            return None, SkillExecutionResult(
-                False,
-                True,
-                f"{action.name}每日额度或未决动作已阻止新点击",
-            )
         return before, None
 
     def _finish_after_click(

@@ -562,7 +562,7 @@ class NavigatorTest(unittest.TestCase):
             )
             self.assertEqual(int(expected), navigator.vision.click_client.call_count)
 
-    def test_collection_field_waits_through_auto_battle_until_idle_field(self):
+    def test_collection_field_retries_battle_result_until_idle_field(self):
         frame = np.full((8, 8, 3), 120, dtype=np.uint8)
         leave = SimpleNamespace(name="离开", x=900, y=900, width=100, height=40)
         for accepted_click in (1, 2, None):
@@ -576,10 +576,6 @@ class NavigatorTest(unittest.TestCase):
                 )
 
                 def phase():
-                    if clock[0] < 1:
-                        return "battle"
-                    if clock[0] < 12:
-                        return "animation"
                     if field_at[0] is None or clock[0] < field_at[0]:
                         return "victory"
                     return "field"
@@ -632,9 +628,9 @@ class NavigatorTest(unittest.TestCase):
                     self.assertEqual(((950, 920), frame.shape), call.args)
                     self.assertEqual({"after_sleep": 1.0}, call.kwargs)
 
-    def test_collection_field_timeout_only_extends_for_a_turn_counter(self):
+    def test_collection_field_does_not_retreat_without_a_turn_counter(self):
         frame = np.full((8, 8, 3), 120, dtype=np.uint8)
-        for text, timeout in (("TURN 1", 180), ("RETURN 1", 10), ("TURN", 10)):
+        for text, timeout in (("RETURN 1", 10), ("TURN", 10), ("", 10)):
             with self.subTest(text=text):
                 clock = [0.0]
                 task = SimpleNamespace(
@@ -656,6 +652,99 @@ class NavigatorTest(unittest.TestCase):
                 self.assertLess(clock[0], timeout + 1)
                 task.operate_click.assert_not_called()
                 vision.click_client.assert_not_called()
+
+    def test_collection_retreat_confirms_each_transition_and_bounds_retries(self):
+        for width, height in ((1920, 1080), (1280, 720)):
+            for blocked in (None, "pause", "escape", "confirm", "ambiguous", "loading", "stop"):
+                with self.subTest(size=(width, height), blocked=blocked):
+                    clock = [0.0]
+                    state = ["battle"]
+                    clicks = []
+                    attempts = {"pause": 0, "escape": 0, "confirm": 0}
+                    frame = np.full((height, width, 3), 120, dtype=np.uint8)
+
+                    def box(name, x, y):
+                        return SimpleNamespace(
+                            name=name, x=x * width, y=y * height,
+                            width=width * 0.05, height=height * 0.03,
+                        )
+
+                    menu = box("逃跑", 0.26, 0.90)
+                    dialog = box("逃跑", 0.58, 0.55)
+
+                    def ocr_boxes(*_args, **_kwargs):
+                        if state[0] == "menu":
+                            return [menu, menu] if blocked == "ambiguous" else [menu]
+                        if state[0] == "dialog":
+                            return [menu, dialog]
+                        return []
+
+                    def click(point, _shape, *, after_sleep=0):
+                        stage = {"battle": "pause", "menu": "escape", "dialog": "confirm"}[state[0]]
+                        expected = {
+                            "pause": (round(width * 1792 / 1920), round(height * 52 / 1080)),
+                            "escape": Navigator._ocr_box_center(menu),
+                            "confirm": Navigator._ocr_box_center(dialog),
+                        }[stage]
+                        self.assertEqual(expected, point)
+                        clicks.append(stage)
+                        attempts[stage] += 1
+                        # Exercise a dropped first click at every stage.
+                        if stage != blocked and attempts[stage] >= 2:
+                            state[0] = {
+                                "pause": "menu", "escape": "dialog", "confirm": "loading",
+                            }[stage]
+                        clock[0] += after_sleep
+
+                    def capture():
+                        if state[0] == "loading" and blocked != "loading":
+                            state[0] = "field"
+                        return frame
+
+                    def sleep(seconds):
+                        if blocked == "stop":
+                            raise TaskDisabledException()
+                        clock[0] += seconds
+
+                    task = SimpleNamespace(
+                        config={"加载页面等待秒数": 10}, info_set=Mock(),
+                        sleep=sleep,
+                    )
+                    vision = SimpleNamespace(
+                        capture=capture, ocr_boxes=ocr_boxes, click_client=click,
+                        ocr_text=lambda *_a, **_k: "TURN.1" if state[0] == "battle" else "",
+                    )
+                    navigator = Navigator(task, vision)
+                    navigator._black_frame = lambda _frame: state[0] == "loading"
+                    navigator.classify = lambda _frame: (
+                        ScreenState.SANDBOX if state[0] == "field" else ScreenState.UNKNOWN
+                    )
+                    navigator._walk_flags = lambda _frame: (False, False)
+                    navigator._walk_state = lambda _frame: "idle"
+                    navigator._leave_walk_battle_result = Mock(return_value=False)
+                    with patch(
+                        "src.tasks.map_trade.navigator_sandbox.monotonic",
+                        side_effect=lambda: clock[0],
+                    ):
+                        if blocked is None:
+                            self.assertIs(frame, navigator.wait_for_collection_field(frame))
+                            self.assertEqual(
+                                ["pause"] * 2 + ["escape"] * 2 + ["confirm"] * 2, clicks,
+                            )
+                            self.assertEqual("field", state[0])
+                        elif blocked == "stop":
+                            with self.assertRaises(TaskDisabledException):
+                                navigator.wait_for_collection_field(frame)
+                            self.assertEqual(["pause"], clicks)
+                        else:
+                            with self.assertRaisesRegex(RuntimeError, "遭遇战退出"):
+                                navigator.wait_for_collection_field(frame)
+                            self.assertLessEqual(clock[0], 31)
+                            self.assertLessEqual(max(attempts.values()), 3)
+                            if blocked in attempts:
+                                self.assertEqual(3, attempts[blocked])
+                            if blocked == "ambiguous":
+                                self.assertEqual(0, attempts["escape"])
 
     def test_activity_walk_accepts_alias_and_rechecks_arrival_map(self):
         card = CARD_BY_ID["Q_ep7"]
@@ -682,6 +771,7 @@ class NavigatorTest(unittest.TestCase):
             ("moving", ("moving",) * 6 + ("idle",)),
             ("expelled", ("moving", "caught", "loading", "moving", "idle")),
             ("battle", ("moving", "battle", "moving", "idle")),
+            ("encounter", ("moving", "encounter", "moving", "idle")),
             ("timeout", ("moving",)),
         )
         for card_id, source, destination in (*WALK_LABEL_EDGES, *EVENT_WALK_EDGES):
@@ -704,16 +794,19 @@ class NavigatorTest(unittest.TestCase):
                         simplify=lambda text: text,
                         ocr_text=lambda *_args, **_kwargs: {
                             "moving": "自动移动中", "caught": "被发现驱逐",
+                            "encounter": "TURN.1",
                         }.get(phase(), ""),
                     )
                     navigator = Navigator(task, vision)
                     navigator.ensure_small_minimap = lambda: True
                     navigator.classify = lambda _frame=None: (
-                        ScreenState.UNKNOWN if phase() == "battle" else ScreenState.SANDBOX
+                        ScreenState.UNKNOWN
+                        if phase() in {"battle", "encounter"} else ScreenState.SANDBOX
                     )
                     navigator._click_walk_exit = Mock(return_value=True)
                     navigator._close_field_map = Mock(return_value=True)
                     navigator._leave_walk_battle_result = Mock(return_value=True)
+                    navigator._retreat_from_field_battle = Mock(return_value=frame)
                     opened = []
 
                     def open_map():
@@ -740,6 +833,8 @@ class NavigatorTest(unittest.TestCase):
                         navigator._close_field_map.assert_not_called()
                     if name == "battle":
                         navigator._leave_walk_battle_result.assert_called_once()
+                    if name == "encounter":
+                        navigator._retreat_from_field_battle.assert_called_once()
 
 
     def test_quick_switch_identity_survives_brightness_and_client_scaling(self):
