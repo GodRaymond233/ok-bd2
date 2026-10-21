@@ -171,6 +171,7 @@ class CollectionRunTest(unittest.TestCase):
                 return SkillExecutionResult(True)
 
             collector._use_action = use
+            collector._prepare_action = use
             result = collector.run((CARD_BY_ID["Q_sp1"], card))
             self.assertTrue(result.success)
             self.assertTrue(result.depleted)
@@ -873,6 +874,95 @@ class CollectionRunTest(unittest.TestCase):
 
 
 class CollectorSkillTest(unittest.TestCase):
+    def test_summon_suppression_prepares_quotas_then_clicks_before_settlement(self):
+        for scenario in ("normal", "encounter", "quota", "unresolved", "failed_feedback"):
+            with self.subTest(scenario=scenario):
+                collector, clicks, _statuses, progress = self._skill_collector(
+                    {action.icon.name: ActionIconState.AVAILABLE for action in BATTLE_ACTIONS},
+                    {
+                        "召集": ((0, 21), (1, 21)),
+                        "压制": ((21, 21),) if scenario == "quota" else ((0, 21), (1, 21)),
+                    },
+                )
+                role = CollectionMapRole.BATTLE_AREA_1
+                if scenario == "unresolved":
+                    progress.reconcile_pending("压制", (0, 21))
+                    progress.arm_action("Q_sp1", role, "压制", baseline=(0, 21))
+                events = []
+                count = collector._read_count_window
+                feedback = collector._read_action_feedback
+                capture = collector._capture_skill_field
+                click = collector.vision.click_client
+
+                def read_count(action, *args, **kwargs):
+                    stage = "post" if kwargs.get("allow_single") else "prepare"
+                    events.append((stage, action.name))
+                    return count(action, *args, **kwargs)
+
+                def read_feedback(action):
+                    events.append(("feedback", action.name))
+                    result = feedback(action)
+                    if scenario == "failed_feedback" and action is SUMMON_ACTION:
+                        return SkillFeedbackObservation("无可召集的战场怪物", "failure")
+                    return result
+
+                def click_client(*args, **kwargs):
+                    self.assertIn(("prepare", "召集"), events)
+                    self.assertIn(("prepare", "压制"), events)
+                    if len(clicks) == 1:
+                        self.assertNotIn(("post", "召集"), events)
+                        record = progress.get_action_record("Q_sp1", role, "召集")
+                        self.assertEqual("clicked", record["state"])
+                    return click(*args, **kwargs)
+
+                recovered = []
+                def capture_field():
+                    if scenario == "encounter" and len(clicks) == 1 and not recovered:
+                        recovered.append(True)
+                        collector._skill_field_generation += 1
+                        # Recovery must invalidate both icon evidence and the prepared quota.
+                        frame, _ = capture()
+                        return frame, True
+                    return capture()
+
+                collector._open_skill_menu = Mock(return_value=True)
+                collector._read_count_window = read_count
+                collector._read_action_feedback = read_feedback
+                collector._capture_skill_field = capture_field
+                collector.vision.click_client = click_client
+                if scenario == "encounter":
+                    # Suppression must obtain a new baseline after returning from battle.
+                    count_calls = [0]
+                    original_count = collector._read_count_window
+                    def repeated_suppress_count(action, *args, **kwargs):
+                        if action is SUPPRESS_ACTION and not kwargs.get("allow_single"):
+                            count_calls[0] += 1
+                            if count_calls[0] == 2:
+                                events.append(("prepare", action.name))
+                                return CountWindowObservation((0, 21), True)
+                        return original_count(action, *args, **kwargs)
+                    collector._read_count_window = repeated_suppress_count
+                result = collector._use_actions(
+                    (SUMMON_ACTION, SUPPRESS_ACTION), card_id="Q_sp1", map_role=role,
+                )
+                self.assertEqual(scenario in {"normal", "encounter"}, result.completed)
+                self.assertEqual(
+                    2 if result.completed else int(scenario == "failed_feedback"), len(clicks),
+                )
+                if result.completed:
+                    self.assertLess(
+                        events.index(("feedback", "压制")), events.index(("post", "召集")),
+                    )
+                    again = collector._use_actions(
+                        (SUMMON_ACTION, SUPPRESS_ACTION), card_id="Q_sp1", map_role=role,
+                    )
+                    self.assertTrue(again.completed)
+                    self.assertEqual(2, len(clicks))
+                    self.assertEqual(1, progress.effective_used("召集"))
+                    self.assertEqual(1, progress.effective_used("压制"))
+                if scenario == "encounter":
+                    self.assertEqual(2, count_calls[0])
+
     def test_missed_press_retries_only_with_a_stable_available_icon_and_unchanged_count(self):
         cases = (
             (None, True, True, True),
@@ -1034,7 +1124,7 @@ class CollectorSkillTest(unittest.TestCase):
         collector._read_action_feedback = feedback
         return collector, clicks, statuses, progress
 
-    def test_summon_missing_post_icon_requires_stable_increment_and_success_to_continue(self):
+    def test_summon_missing_post_icon_requires_stable_increment_and_success_to_settle(self):
         cases = (
             ((2, 21), True, "success", True),
             ((2, 21), False, "success", False),
@@ -1088,13 +1178,16 @@ class CollectorSkillTest(unittest.TestCase):
                     map_role=CollectionMapRole.BATTLE_AREA_2,
                 )
                 self.assertEqual(expected, result.completed)
-                self.assertEqual(3 if expected else 2, len(clicks))
+                self.assertEqual(3 if outcome == "success" else 2, len(clicks))
                 self.assertIn(("压制执行反馈", "-"), statuses)
                 record = progress.get_action_record(
                     "Q_sp1", CollectionMapRole.BATTLE_AREA_2, "压制"
                 )
-                if expected:
+                if outcome == "success":
                     self.assertEqual(CollectionActionState.SETTLED.value, record["state"])
+                else:
+                    self.assertIsNone(record)
+                if expected:
                     for action in BATTLE_ACTIONS:
                         resumed = collector._use_action(
                             action,
@@ -1104,8 +1197,10 @@ class CollectorSkillTest(unittest.TestCase):
                         self.assertTrue(resumed.completed)
                     self.assertEqual(3, len(clicks))
                 else:
-                    self.assertIsNone(record)
-                    self.assertNotIn("压制", collector._last_skill_observations)
+                    summon_record = progress.get_action_record(
+                        "Q_sp1", CollectionMapRole.BATTLE_AREA_2, "召集",
+                    )
+                    self.assertNotEqual(CollectionActionState.SETTLED.value, summon_record["state"])
                     if outcome == "failure":
                         self.assertEqual((1, 21), progress.trusted_action_baseline("召集"))
                         self.assertFalse(result.depleted)

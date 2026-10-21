@@ -658,12 +658,15 @@ class NavigatorTest(unittest.TestCase):
             for blocked in (
                 None, "pause", "escape", "confirm", "ambiguous", "loading", "stop",
                 "dialog_ambiguous", "missing_cancel", "missing_question", "title_only", "wrong_row",
+                "field_moving", "field_unreadable",
             ):
                 with self.subTest(size=(width, height), blocked=blocked):
                     clock = [0.0]
                     state = ["battle"]
                     clicks = []
                     attempts = {"pause": 0, "escape": 0, "confirm": 0}
+                    field_observations = []
+                    cancelled = []
                     frame = np.full((height, width, 3), 120, dtype=np.uint8)
 
                     def box(name, x, y):
@@ -682,6 +685,7 @@ class NavigatorTest(unittest.TestCase):
                     cancel = box("取消", 0.42, 0.70 if blocked == "wrong_row" else 0.55)
 
                     def ocr_boxes(*_args, **_kwargs):
+                        self.assertNotEqual("field", state[0])
                         if state[0] == "menu":
                             return [pause, restart, resume, menu] + (
                                 [menu] if blocked == "ambiguous" else []
@@ -733,22 +737,31 @@ class NavigatorTest(unittest.TestCase):
                     )
                     navigator = Navigator(task, vision)
                     navigator._black_frame = lambda _frame: state[0] == "loading"
-                    navigator.classify = lambda _frame: (
-                        ScreenState.SANDBOX if state[0] == "field" else ScreenState.UNKNOWN
+                    def classify(_frame):
+                        if state[0] == "field":
+                            field_observations.append(clock[0])
+                            return ScreenState.SANDBOX
+                        return ScreenState.UNKNOWN
+                    navigator.classify = classify
+                    navigator._walk_text = lambda _frame: (
+                        None if blocked == "field_unreadable" else
+                        "自动移动中" if blocked == "field_moving" and not cancelled else ""
                     )
-                    navigator._walk_flags = lambda _frame: (False, False)
-                    navigator._walk_state = lambda _frame: "idle"
+                    navigator._cancel_walk = lambda: cancelled.append(True)
                     navigator._leave_walk_battle_result = Mock(return_value=False)
                     with patch(
                         "src.tasks.map_trade.navigator_sandbox.monotonic",
                         side_effect=lambda: clock[0],
                     ):
-                        if blocked is None:
+                        if blocked in (None, "field_moving"):
                             self.assertIs(frame, navigator.wait_for_collection_field(frame))
                             self.assertEqual(
                                 ["pause"] * 2 + ["escape"] * 2 + ["confirm"] * 2, clicks,
                             )
                             self.assertEqual("field", state[0])
+                            self.assertEqual(3 if cancelled else 2, len(field_observations))
+                            self.assertLessEqual(clock[0] - field_observations[0], 0.31)
+                            self.assertEqual(int(blocked == "field_moving"), len(cancelled))
                         elif blocked == "stop":
                             with self.assertRaises(TaskDisabledException):
                                 navigator.wait_for_collection_field(frame)

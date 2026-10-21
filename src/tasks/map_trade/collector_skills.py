@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from dataclasses import replace
+from functools import partial
 from time import monotonic
 
 from src.tasks.map_trade.action_icons import (
@@ -61,6 +62,7 @@ class SkillExecutionMixin:
         frame = self.navigator.wait_for_collection_field(captured)
         recovered = frame is not captured
         if recovered:
+            self._skill_field_generation += 1
             self._forget_skill_evidence()
             if self._collection_target is not None:
                 card, target = self._collection_target
@@ -679,11 +681,17 @@ class SkillExecutionMixin:
 
         depleted = False
         pending_actions: list[str] = []
-        for action in actions:
-            result = self._use_action(action, card_id=card_id, map_role=map_role)
+        index = 0
+        while index < len(actions):
+            action = actions[index]
+            paired = (
+                not recovery_only and actions[index:index + 2] == (SUMMON_ACTION, SUPPRESS_ACTION)
+            )
+            execute = self._use_summon_and_suppress if paired else partial(self._use_action, action)
+            result = execute(card_id=card_id, map_role=map_role)
             if result.press_again and not recovery_only:
                 self.task.sleep(PRESS_AGAIN_PAUSE_SECONDS)
-                result = self._use_action(action, card_id=card_id, map_role=map_role)
+                result = execute(card_id=card_id, map_role=map_role)
             if not result.completed:
                 return SkillExecutionResult(
                     False,
@@ -693,6 +701,7 @@ class SkillExecutionMixin:
                 )
             depleted = depleted or result.depleted
             pending_actions.extend(result.pending_actions)
+            index += 2 if paired else 1
         message = ""
         if pending_actions:
             message = "动作已完成；次数待后续明亮帧对账：" + "、".join(pending_actions)
@@ -710,6 +719,70 @@ class SkillExecutionMixin:
         card_id: str,
         map_role: CollectionMapRole,
     ) -> SkillExecutionResult:
+        prepared = self._prepare_action(action, card_id=card_id, map_role=map_role)
+        if isinstance(prepared, SkillExecutionResult):
+            return prepared
+        failure = self._click_prepared_action(action, prepared, card_id=card_id, map_role=map_role)
+        if failure is not None:
+            return failure
+        feedback = self._read_action_feedback(action)
+        self._wait_after_feedback_match(action, feedback)
+        return self._verify_clicked_action(
+            action, prepared, feedback, card_id=card_id, map_role=map_role,
+        )
+
+    def _use_summon_and_suppress(self, *, card_id, map_role) -> SkillExecutionResult:
+        """Prepare both quotas before attracting enemies; verify after suppression."""
+        kwargs = {"card_id": card_id, "map_role": map_role}
+        summon = self._prepare_action(SUMMON_ACTION, **kwargs)
+        if isinstance(summon, SkillExecutionResult):
+            if not summon.completed:
+                return summon
+            suppress_result = self._use_action(SUPPRESS_ACTION, **kwargs)
+            summon_result = summon
+        else:
+            suppress = self._prepare_action(SUPPRESS_ACTION, **kwargs)
+            if isinstance(suppress, SkillExecutionResult) and not suppress.completed:
+                return suppress
+            failure = self._click_prepared_action(SUMMON_ACTION, summon, **kwargs)
+            if failure is not None:
+                return failure
+            feedback = self._read_action_feedback(SUMMON_ACTION)
+            if feedback.outcome != "success":
+                summon_result = self._verify_clicked_action(
+                    SUMMON_ACTION, summon, feedback, **kwargs,
+                )
+                if not summon_result.completed:
+                    return summon_result
+            if isinstance(suppress, SkillExecutionResult):
+                suppress_result = suppress
+            else:
+                failure = self._click_prepared_action(SUPPRESS_ACTION, suppress, **kwargs)
+                if failure is not None:
+                    # A changed scene invalidates preparation, but has not armed this action.
+                    suppress_result = (
+                        self._use_action(SUPPRESS_ACTION, **kwargs)
+                        if failure.press_again else failure
+                    )
+                else:
+                    suppress_feedback = self._read_action_feedback(SUPPRESS_ACTION)
+                    self._wait_after_feedback_match(SUPPRESS_ACTION, suppress_feedback)
+                    suppress_result = self._verify_clicked_action(
+                        SUPPRESS_ACTION, suppress, suppress_feedback, **kwargs,
+                    )
+            if feedback.outcome == "success":
+                summon_result = self._verify_clicked_action(
+                    SUMMON_ACTION, summon, feedback, **kwargs,
+                )
+        return SkillExecutionResult(
+            summon_result.completed and suppress_result.completed,
+            summon_result.depleted or suppress_result.depleted,
+            "; ".join(r.message for r in (summon_result, suppress_result) if r.message),
+            summon_result.pending_actions + suppress_result.pending_actions,
+            press_again=summon_result.press_again or suppress_result.press_again,
+        )
+
+    def _prepare_action(self, action, *, card_id, map_role):
         existing = self.progress.get_action_record(card_id, map_role, action.name)
         # A process restart may leave an ARMED/CLICKED intent.  Even when the
         # icon is bright again we must not click a second time; a later USED
@@ -772,9 +845,16 @@ class SkillExecutionMixin:
                 )
             return failure
         assert before is not None
+        return detection, before, self._skill_field_generation
+
+    def _click_prepared_action(self, action, prepared, *, card_id, map_role):
+        detection, before, generation = prepared
         frame, recovered = self._capture_skill_field()
         fresh = self.action_icons.detect(frame, action.icon)
-        if recovered or not self._action_detection_is_stable(detection, fresh):
+        if (
+            recovered or generation != self._skill_field_generation
+            or not self._action_detection_is_stable(detection, fresh)
+        ):
             return SkillExecutionResult(
                 False, message="消费前场景或技能状态变化，重新读取次数和图标", press_again=True,
             )
@@ -791,8 +871,10 @@ class SkillExecutionMixin:
         # returns successfully.  A crash/exception during the click
         # therefore leaves the pre-click ARMED intent for safe recovery.
         self.progress.mark_action_clicked(card_id, map_role, action.name)
-        feedback = self._read_action_feedback(action)
-        self._wait_after_feedback_match(action, feedback)
+        return None
+
+    def _verify_clicked_action(self, action, prepared, feedback, *, card_id, map_role):
+        detection, before, _generation = prepared
         post_frame, post_detection = self._detect_action_icon(
             action.icon,
             require_stable=True,

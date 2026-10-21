@@ -1850,7 +1850,6 @@ class SandboxNavigationMixin:
         frame = self.vision.capture() if frame is None else frame
         end_at = monotonic() + self._loading_timeout()
         battle_seen = False
-        retreated = False
         waiting = False
         idle = 0
         while monotonic() <= end_at:
@@ -1862,19 +1861,9 @@ class SandboxNavigationMixin:
                         end_at = monotonic() + FIELD_BATTLE_TIMEOUT
                         battle_seen = True
                     idle = 0
-                    frame = self._retreat_from_field_battle(frame, end_at=end_at)
-                    retreated = True
-                    waiting = True
-                    continue
+                    return self._retreat_from_field_battle(frame, end_at=end_at, stop_walk=True)
                 elif self.classify(frame) == ScreenState.SANDBOX:
-                    if retreated and self._walk_flags(frame)[0]:
-                        self._cancel_walk()
-                        idle = 0
-                        waiting = True
-                        self.task.sleep(0.5)
-                        frame = self.vision.capture()
-                        continue
-                    if self._walk_state(frame) == "idle":
+                    if self._walk_state(frame, field_confirmed=True) == "idle":
                         idle += 1
                         if not waiting or idle >= AUTO_MOVE_IDLE_READS:
                             return frame
@@ -1934,7 +1923,9 @@ class SandboxNavigationMixin:
             stage = "escape"
         return (stage, candidates[0]) if len(candidates) == 1 else (None, None)
 
-    def _retreat_from_field_battle(self, frame: np.ndarray, *, end_at: float) -> np.ndarray:
+    def _retreat_from_field_battle(
+        self, frame: np.ndarray, *, end_at: float, stop_walk: bool = False,
+    ) -> np.ndarray:
         """Follow pause, escape and its confirmation using fresh observations."""
         end_at = min(end_at, monotonic() + FIELD_RETREAT_TIMEOUT)
         attempts = {"pause": 0, "escape": 0, "confirm": 0}
@@ -1942,6 +1933,16 @@ class SandboxNavigationMixin:
         field_hits = 0
         while monotonic() <= end_at:
             if not self._black_frame(frame):
+                if confirmed and self.classify(frame) == ScreenState.SANDBOX:
+                    walk = self._walk_state(frame, field_confirmed=True) if stop_walk else "idle"
+                    field_hits = field_hits + 1 if walk == "idle" else 0
+                    if field_hits >= AUTO_MOVE_IDLE_READS:
+                        return frame
+                    if walk == "moving":
+                        self._cancel_walk()
+                    self.task.sleep(0.15)
+                    frame = self.vision.capture()
+                    continue
                 boxes = self.vision.ocr_boxes(frame, "采集战斗逃跑")
                 exits = [
                     point for box in boxes
@@ -1974,9 +1975,12 @@ class SandboxNavigationMixin:
                     if stage == "confirm":
                         confirmed = True
                 elif not exits and self.classify(frame) == ScreenState.SANDBOX:
-                    field_hits += 1
+                    walk = self._walk_state(frame, field_confirmed=True) if stop_walk else "idle"
+                    field_hits = field_hits + 1 if walk == "idle" else 0
                     if field_hits >= AUTO_MOVE_IDLE_READS:
                         return frame
+                    if walk == "moving":
+                        self._cancel_walk()
                 else:
                     field_hits = 0
                     self._leave_walk_battle_result(frame)
@@ -2071,7 +2075,7 @@ class SandboxNavigationMixin:
             return False, False
         return "移动中" in text, self._walk_caught(text)
 
-    def _walk_state(self, frame: np.ndarray) -> str:
+    def _walk_state(self, frame: np.ndarray, *, field_confirmed: bool = False) -> str:
         """Return caught/moving/idle; unreadable or non-field observations stay unknown."""
         text = self._walk_text(frame)
         if text is None:
@@ -2080,7 +2084,9 @@ class SandboxNavigationMixin:
             return "caught"
         if "移动中" in text:
             return "moving"
-        return "idle" if self.classify(frame) == ScreenState.SANDBOX else "unknown"
+        if field_confirmed or self.classify(frame) == ScreenState.SANDBOX:
+            return "idle"
+        return "unknown"
 
     def _auto_moving(self, frame: np.ndarray) -> bool:
         """"自动移动中" shows: the game is walking the character somewhere."""

@@ -55,6 +55,7 @@ class Collector(SkillExecutionMixin):
         self._count_actions_seen: set[str] = set()
         self._completed_this_run = 0
         self._collection_target = None
+        self._skill_field_generation = 0
         # (card_id, map_role) -> 探查施放时刻（monotonic）：重进卡带时
         # 倒计时数字 OCR 不可靠，靠账本判定增益仍在进行并复用。
         self._search_cast_monotonic: dict[tuple[str, str], float] = {}
