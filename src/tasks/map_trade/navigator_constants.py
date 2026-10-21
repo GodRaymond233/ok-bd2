@@ -10,7 +10,7 @@ from src.tasks.map_trade.action_icons import (
     ACTION_SLOT_RELATIVE_ROIS,
     SKILL_GROUP_CENTERS_REFERENCE,
 )
-from src.tasks.map_trade.card_status import StoryCardCompletion
+from src.tasks.map_trade.card_status import CardStructure, StoryCardCompletion, card_structure
 from src.tasks.map_trade.models import CardSpec, MapPageMode, MatchResult, TemplateSpec
 from src.utils.calibration import FHD_1080, reference_rect_to_relative_roi
 from src.utils.cartridge_quick_switch import QUICK_SWITCH_PAGE_LABELS, QUICK_SWITCH_SEARCH_REGIONS
@@ -509,6 +509,13 @@ class LocatedStoryCard:
     card: CardSpec
     frame: np.ndarray
     badge: StoryBadgeDetection
+
+    @property
+    def structure(self) -> CardStructure:
+        return card_structure(
+            self.badge.best.result.center, self.frame.shape,
+            short_resource_row=self.card.card_id == "Q_sp20",
+        )
 
 
 @dataclass(frozen=True)

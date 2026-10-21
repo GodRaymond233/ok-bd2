@@ -104,6 +104,9 @@ class CollectionCardTest(unittest.TestCase):
         )
         patcher.start()
         self.addCleanup(patcher.stop)
+        category = patch.object(Navigator, "_cartridge_category_confirmed", return_value=True)
+        category.start()
+        self.addCleanup(category.stop)
 
     def test_completion_policy_does_not_ignore_unrepresented_summon(self):
         completed = StoryCardCompletion(
@@ -282,6 +285,8 @@ class CollectionCardTest(unittest.TestCase):
             SimpleNamespace(),
         )
         navigator._locate_story_card = lambda _card_id: located
+        navigator.vision.capture = lambda: frame
+        navigator._find_story_badge = lambda *_args: (badge, "")
         navigator.card_status = SimpleNamespace(
             detect=lambda detected_frame, center: (
                 self.assertIs(frame, detected_frame)
@@ -289,7 +294,7 @@ class CollectionCardTest(unittest.TestCase):
                 or completion
             )
         )
-        navigator._enter_located_story_card = lambda _located: self.fail(
+        navigator._click_located_story_card = lambda _located: self.fail(
             "visually completed card must not be clicked"
         )
 
@@ -392,7 +397,9 @@ class CollectionCardTest(unittest.TestCase):
             SimpleNamespace(),
         )
         navigator._locate_story_card = lambda _card_id: located
-        navigator._enter_located_story_card = lambda value: (
+        navigator.vision.capture = lambda: frame
+        navigator._find_story_badge = lambda *_args: (badge, "")
+        navigator._click_located_story_card = lambda value: (
             entered.append(value) or NavigationResult(True, ScreenState.SANDBOX, "Q_sp1")
         )
 
@@ -428,7 +435,76 @@ class CollectionCardTest(unittest.TestCase):
         self.assertEqual(CollectionCardSelectionOutcome.FAILED, result.outcome)
         self.assertIn("非跑图剧情卡带", result.message)
 
-    def test_collection_status_detection_error_continues_without_skipping(self):
+    def test_collection_decisions_bind_fresh_identity_structure_and_status(self):
+        for scenario in (
+            "complete", "pending", "became_complete", "lost_complete",
+            "moved", "renumbered", "category", "resized",
+        ):
+            with self.subTest(scenario=scenario):
+                first = np.zeros((1080, 1920, 3), dtype=np.uint8)
+                fresh = np.ones((720, 1280, 3) if scenario == "resized" else first.shape,
+                                dtype=np.uint8)
+
+                def badge(number, x):
+                    return StoryBadgeDetection(StoryBadgeCandidate(
+                        number, MatchResult(0.99, (x, 922), (30, 28), 0.98, 0.97),
+                    ), None)
+
+                initial = badge(12, 300)
+                updated = badge(13 if scenario == "renumbered" else 12,
+                                480 if scenario == "moved" else 302)
+                located = LocatedStoryCard(CARD_BY_ID["Q_sp12"], first, initial)
+                readings = []
+
+                def status(frame, center):
+                    readings.append((frame, center))
+                    self.assertEqual(initial.best.result.center if frame is first
+                                     else updated.best.result.center, center)
+                    if scenario == "became_complete":
+                        state = (
+                            CardActionState.PENDING if frame is first else CardActionState.COMPLETED
+                        )
+                    elif scenario == "lost_complete":
+                        state = (
+                            CardActionState.COMPLETED if frame is first else CardActionState.UNKNOWN
+                        )
+                    else:
+                        state = (
+                            CardActionState.PENDING if scenario == "pending"
+                            else CardActionState.COMPLETED
+                        )
+                    return StoryCardCompletion(
+                        CardActionDetection(state), CardActionDetection(state), (0, 0, 1, 1), True,
+                    )
+
+                navigator = Navigator(
+                    SimpleNamespace(info_set=Mock(), log_warning=Mock(), sleep=Mock()),
+                    SimpleNamespace(capture=lambda: fresh),
+                )
+                navigator._locate_story_card = lambda _: located
+                navigator._find_story_badge = lambda *_: (updated, "")
+                navigator._cartridge_category_confirmed = lambda *_: scenario != "category"
+                navigator.card_status = SimpleNamespace(detect=status)
+                navigator._click_located_story_card = Mock(
+                    return_value=NavigationResult(True, ScreenState.SANDBOX),
+                )
+                result = navigator.select_collection_card("Q_sp12")
+                expected = {
+                    "complete": CollectionCardSelectionOutcome.VISUALLY_COMPLETE,
+                    "became_complete": CollectionCardSelectionOutcome.VISUALLY_COMPLETE,
+                    "pending": CollectionCardSelectionOutcome.ENTERED,
+                }.get(scenario, CollectionCardSelectionOutcome.FAILED)
+                self.assertEqual(expected, result.outcome)
+                if scenario == "pending":
+                    clicked = navigator._click_located_story_card.call_args.args[0]
+                    self.assertIs(fresh, clicked.frame)
+                    self.assertIs(updated, clicked.badge)
+                else:
+                    navigator._click_located_story_card.assert_not_called()
+                if scenario == "became_complete":
+                    self.assertEqual(3, len(readings))
+
+    def test_collection_status_detection_error_stops_without_clicking(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         located = LocatedStoryCard(
             CARD_BY_ID["Q_sp1"],
@@ -453,16 +529,13 @@ class CollectionCardTest(unittest.TestCase):
         navigator.card_status = SimpleNamespace(
             detect=lambda *_args: (_ for _ in ()).throw(RuntimeError("template missing"))
         )
-        navigator._enter_located_story_card = lambda _located: NavigationResult(
-            True,
-            ScreenState.SANDBOX,
-        )
+        navigator._click_located_story_card = Mock()
 
         result = navigator.select_collection_card("Q_sp1")
 
-        self.assertEqual(CollectionCardSelectionOutcome.ENTERED, result.outcome)
+        self.assertEqual(CollectionCardSelectionOutcome.FAILED, result.outcome)
         self.assertIsNone(result.completion)
-        self.assertTrue(any("按未知继续进入" in value for value in warnings))
+        navigator._click_located_story_card.assert_not_called()
 
     def _story_window(self, offset=0, wheel_pixels=180):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -553,6 +626,8 @@ class CollectionCardTest(unittest.TestCase):
             (1705, 10, -1, {}),
             (646, 14, 1, {14: 1792}),
             (1699, 10, -1, {10: 13}),
+            (302, 12, 1, {12: 1773}),
+            (319, 12, 1, {12: 1756}),
         ):
             with self.subTest(offset=offset):
                 navigator, state = self._story_window(offset)
@@ -723,12 +798,6 @@ class CollectionCardTest(unittest.TestCase):
                 MatchResult(0.80, (501, 930), (31, 31), 0.82, 0.70),
             ),
         )
-        clipped = StoryCardCompletion(
-            CardActionDetection(CardActionState.UNKNOWN),
-            CardActionDetection(CardActionState.UNKNOWN),
-            (1835, 1010, 1920, 1060),
-            complete_region=False,
-        )
         complete = StoryCardCompletion(
             CardActionDetection(CardActionState.COMPLETED),
             CardActionDetection(CardActionState.COMPLETED),
@@ -747,7 +816,7 @@ class CollectionCardTest(unittest.TestCase):
         navigator = Navigator(task, SimpleNamespace(capture=lambda: next(frames)))
         badges = iter(((edge_badge, ""), (centered_badge, ""), (centered_badge, "")))
         navigator._find_story_badge = lambda *_args: next(badges)
-        completions = iter((clipped, complete, complete))
+        completions = iter((complete, complete))
         navigator.card_status = SimpleNamespace(detect=lambda *_args: next(completions))
 
         result = navigator.locate_probe_story_card("Q_sp10", scan_steps=1)
@@ -821,7 +890,7 @@ class CollectionCardTest(unittest.TestCase):
         result = navigator.locate_probe_story_card("Q_sp10", scan_steps=3)
 
         self.assertIsNone(result)
-        self.assertIn("点击前复核失败", warnings[0])
+        self.assertIn("复核失败", warnings[0])
 
     def test_probe_story_card_scan_limit_is_bounded_without_reset(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -881,7 +950,8 @@ class CollectionCardTest(unittest.TestCase):
         entered = []
         navigator = Navigator(SimpleNamespace(), SimpleNamespace())
         expected = NavigationResult(True, ScreenState.SANDBOX, "Q_sp10")
-        navigator._enter_located_story_card = lambda value: entered.append(value) or expected
+        navigator._confirm_collection_completion = lambda value: value
+        navigator._click_located_story_card = lambda value: entered.append(value) or expected
 
         result = navigator.enter_probe_story_card(probed)
 

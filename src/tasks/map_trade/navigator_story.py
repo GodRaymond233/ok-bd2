@@ -15,7 +15,7 @@ from src.tasks.map_trade.card_status import (
     CardActionState,
     CollectionCardSelectionOutcome,
     CollectionCardSelectionResult,
-    card_icon_region,
+    card_structure,
 )
 from src.tasks.map_trade.models import (
     ABSORB_ONLY_VERIFIED_CARD_IDS,
@@ -111,9 +111,6 @@ from src.utils.image_utils import stabilize_template_match
 QUICK_SWITCH_CLICK_TIMEOUT = 10.0
 QUICK_SWITCH_CLICK_AFTER_SLEEP = 1.0
 STORY_BAR_SCROLL_MAX_EVENTS = 64
-# The cartridge body is narrower than the completion-icon strip below it.
-# Bounds relative to its number badge, measured in the 1920x1080 client.
-STORY_CARD_BODY_OFFSETS = (-15, -15, 130, 90)
 CARTRIDGE_SCROLL_OBSERVATIONS = 12
 CARTRIDGE_SCROLL_STABLE_DIFFERENCE = 1.5
 CARTRIDGE_SCROLL_MOVEMENT_DIFFERENCE = 2.0
@@ -147,35 +144,28 @@ class StoryCardNavigationMixin:
             for action in enabled
         )
 
-    def _confirm_collection_completion(
-        self,
-        frame: np.ndarray,
-        badge_center: tuple[int, int],
-        completion,
-        required_actions=None,
-        card_id=None,
-    ):
-        """Require a second card-menu frame before trusting completion icons."""
-
-        if not self._completion_satisfies_actions(completion, required_actions, card_id):
-            return completion
-        capture = getattr(self.vision, "capture", None)
-        if not callable(capture):
-            # Lightweight adapters may not expose capture; retain compatibility.
-            return completion
-        sleeper = getattr(self.task, "sleep", None)
-        if callable(sleeper):
-            sleeper(PROBE_STORY_BADGE_CONFIRM_SECONDS)
+    def _collection_observation(self, located: LocatedStoryCard) -> ProbedStoryCard | None:
+        """Bind resources to the identified card and its complete structure in one frame."""
+        if not located.structure.complete_region:
+            self._status("卡带完成度复核", "卡带结构被客户区边缘截断")
+            return None
         try:
-            confirmed_frame = capture()
-            confirmed = self.card_status.detect(confirmed_frame, badge_center)
-        except (AttributeError, TypeError, ValueError, cv2.error) as exc:
-            self._status("卡带完成度复核", f"二帧识别异常：{exc}")
+            completion = self.card_status.detect(located.frame, located.badge.best.result.center)
+        except (RuntimeError, ValueError, cv2.error) as exc:
+            self._status("卡带完成度复核", f"资源状态识别异常：{exc}")
             return None
-        if not self._completion_satisfies_actions(confirmed, required_actions, card_id):
-            self._status("卡带完成度复核", "二帧未保持完成状态，按未知处理")
+        if not completion.complete_region:
+            self._status("卡带完成度复核", "资源状态条不完整")
             return None
-        return confirmed
+        return ProbedStoryCard(located, completion)
+
+    def _confirm_collection_completion(self, observed: ProbedStoryCard) -> ProbedStoryCard | None:
+        located = observed.located
+        confirmed = self._confirm_story_badge_before_click(located.frame, located.badge)
+        if confirmed is None:
+            return None
+        frame, badge = confirmed
+        return self._collection_observation(LocatedStoryCard(located.card, frame, badge))
 
     def _wait_for_quick_switch_page(self, timeout: float = 10.0) -> bool:
         return self._wait_for_ocr_keywords(
@@ -290,30 +280,29 @@ class StoryCardNavigationMixin:
         category: str = "story",
         warn: bool = True,
     ) -> bool:
-        label, _point, region = self._card_category(category)
+        label, _point, _region = self._card_category(category)
         end_at = monotonic() + max(0.0, timeout)
-        last_text = ""
-        last_highlight_ratio = 0.0
-        wanted = normalize_text(label)
         while monotonic() <= end_at:
             frame = self.vision.capture()
-            text = self.vision.simplify(self.vision.ocr_text(frame, f"{label}类别"))
-            last_text = text or last_text
-            last_highlight_ratio = self.vision.bright_neutral_ratio(frame, region)
-            self._status(f"{label}类别高亮", f"{last_highlight_ratio:.3f}")
-            if (
-                wanted in normalize_text(text)
-                and last_highlight_ratio >= STORY_CATEGORY_HIGHLIGHT_MIN_RATIO
-            ):
+            if self._cartridge_category_confirmed(frame, category):
                 self._menu_confirmed = (monotonic(), category)
                 return True
             self.task.sleep(interval)
         if warn:
             self.task.log_warning(
-                f"跑商：未确认{label}类别高亮，"
-                f"highlight={last_highlight_ratio:.3f}, OCR={last_text or '-'}。"
+                f"跑商：未确认{label}类别文字与高亮。"
             )
         return False
+
+    def _cartridge_category_confirmed(self, frame, category: str) -> bool:
+        label, _point, region = self._card_category(category)
+        text = self.vision.simplify(self.vision.ocr_text(frame, f"{label}类别"))
+        ratio = self.vision.bright_neutral_ratio(frame, region)
+        self._status(f"{label}类别高亮", f"{ratio:.3f}")
+        return (
+            normalize_text(label) in normalize_text(text)
+            and ratio >= STORY_CATEGORY_HIGHLIGHT_MIN_RATIO
+        )
 
     def _select_cartridge_category(self, category: str = "story") -> bool:
         """Click and confirm the category before any quick-bar focus or scroll."""
@@ -1448,11 +1437,7 @@ class StoryCardNavigationMixin:
             if detection is None:
                 self._status("剧情角标", f"{target_number}: {last_reason}")
                 return None
-            _, complete_region = card_icon_region(
-                detection.best.result.center,
-                frame.shape,
-            )
-            if not complete_region:
+            if not self._story_card_target_visible(frame, detection):
                 last_reason = "角标已命中，但卡带框架被客户区边缘截断"
                 self._status("卡带完成度", last_reason)
                 return None
@@ -1530,21 +1515,22 @@ class StoryCardNavigationMixin:
         )
         return None
 
+    def _story_card_structure(self, frame, number, center):
+        category = getattr(self, "_badge_category", "story")
+        return card_structure(
+            center, frame.shape, short_resource_row=category == "story" and number == 20,
+        )
+
     def _story_card_target_visible(self, frame, detection) -> bool:
-        if getattr(self, "_badge_category", "story") != "story":
-            return card_icon_region(detection.best.result.center, frame.shape)[1]
         height, width = frame.shape[:2]
         result = detection.best.result
-        center_x, center_y = result.center
-        left, top, right, bottom = STORY_CARD_BODY_OFFSETS
         return (
             result.position[0] >= 0 and result.position[1] >= 0
             and result.position[0] + result.size[0] <= width
             and result.position[1] + result.size[1] <= height
-            and round(center_x + left * width / FHD_1080.width) >= 0
-            and round(center_x + right * width / FHD_1080.width) <= width
-            and round(center_y + top * height / FHD_1080.height) >= 0
-            and round(center_y + bottom * height / FHD_1080.height) <= height
+            and self._story_card_structure(
+                frame, detection.best.number, result.center,
+            ).complete_region
         )
 
     @staticmethod
@@ -1616,9 +1602,8 @@ class StoryCardNavigationMixin:
                 detection.best.result.center[0] if detection is not None
                 else origin + (target_number - 1) * spacing
             )
-            scale = frame.shape[1] / FHD_1080.width
-            left = -STORY_CARD_BODY_OFFSETS[0] * scale
-            right = frame.shape[1] - STORY_CARD_BODY_OFFSETS[2] * scale
+            bounds = self._story_card_structure(frame, target_number, (0, 0)).bounds
+            left, right = -bounds[0], frame.shape[1] - bounds[2]
             if left <= target_x <= right:
                 if detection is None:
                     return self._scan_unordered_story_bar(
@@ -1627,7 +1612,7 @@ class StoryCardNavigationMixin:
                 reason = f"目标预计已在当前窗口，但未确认完整卡带：{reason}"
                 break
 
-            # Leave half a slot of clearance for the full cartridge body.
+            # Keep the entire observed card inside the same viewport used by the gate.
             destination = left + spacing / 2 if target_x < left else right - spacing / 2
             distance = destination - target_x
             amount = 1 if distance < 0 else -1
@@ -1791,64 +1776,19 @@ class StoryCardNavigationMixin:
                     )
                     return None
             else:
-                try:
-                    completion = self.card_status.detect(
-                        frame,
-                        badge.best.result.center,
+                located = LocatedStoryCard(card, frame, badge)
+                if located.structure.complete_region:
+                    observed = self._collection_observation(located)
+                    confirmed = (
+                        self._confirm_collection_completion(observed)
+                        if observed is not None else None
                     )
-                except (RuntimeError, ValueError, cv2.error) as error:
-                    self.task.log_warning(f"剧情卡带合并测试：{card_id}完成度识别异常：{error}。")
-                    return None
-                if completion.complete_region:
-                    self.task.sleep(PROBE_STORY_BADGE_CONFIRM_SECONDS)
-                    confirmed_frame = self.vision.capture()
-                    confirmed_badge, confirmed_reason = self._find_story_badge(
-                        confirmed_frame,
-                        card.number,
-                    )
-                    if confirmed_badge is None:
-                        last_reason = f"等待0.4秒后角标复核失败：{confirmed_reason}"
-                        self._status("剧情角标", f"{card.number}: {last_reason}")
-                        self.task.log_warning(
-                            f"剧情卡带合并测试：剧情游戏卡{card.number}"
-                            f"角标在点击前复核失败：{confirmed_reason}。"
-                        )
+                    if confirmed is None:
+                        self.task.log_warning(f"剧情卡带合并测试：{card_id}完整结构复核失败。")
                         return None
-                    else:
-                        try:
-                            confirmed_completion = self.card_status.detect(
-                                confirmed_frame,
-                                confirmed_badge.best.result.center,
-                            )
-                        except (RuntimeError, ValueError, cv2.error) as error:
-                            self.task.log_warning(
-                                f"剧情卡带合并测试：{card_id}复核帧完成度识别异常：{error}。"
-                            )
-                            return None
-                        if confirmed_completion.complete_region:
-                            located = LocatedStoryCard(
-                                card,
-                                confirmed_frame,
-                                confirmed_badge,
-                            )
-                            self._status(
-                                "目标卡带",
-                                (
-                                    f"{card_id}: center="
-                                    f"({confirmed_badge.best.result.center[0]},"
-                                    f"{confirmed_badge.best.result.center[1]}), "
-                                    f"match={confirmed_badge.best.result.score:.3f}, "
-                                    f"pixel={confirmed_badge.best.result.pixel_score:.3f}, "
-                                    f"zncc={confirmed_badge.best.result.zncc_score:.3f}, "
-                                    f"margin={confirmed_badge.margin:.3f}"
-                                ),
-                            )
-                            return ProbedStoryCard(located, confirmed_completion)
-                        last_reason = "角标复核帧的吸取/压制区域被客户区边缘截断"
-                        self._status("卡带完成度", last_reason)
-                else:
-                    last_reason = "角标已命中，但吸取/压制区域被客户区边缘截断"
-                    self._status("卡带完成度", last_reason)
+                    return confirmed
+                last_reason = "编号已命中，但卡带完整结构被客户区边缘截断"
+                self._status("卡带完成度", last_reason)
 
             if scrolled >= scroll_limit:
                 break
@@ -1878,7 +1818,10 @@ class StoryCardNavigationMixin:
     def enter_probe_story_card(self, probed: ProbedStoryCard) -> NavigationResult:
         """Click the revalidated probe center and confirm a stable sandbox."""
 
-        return self._enter_located_story_card(probed.located)
+        confirmed = self._confirm_collection_completion(probed)
+        if confirmed is None:
+            return NavigationResult(False, ScreenState.CARD_MENU, "探针卡带完整结构复核失败")
+        return self._click_located_story_card(confirmed.located)
 
     def _handle_story_card_intermediate(self, frame: np.ndarray) -> bool:
         prompt = normalize_text(
@@ -2033,6 +1976,12 @@ class StoryCardNavigationMixin:
                 f"剧情游戏卡{card.number}点击前角标复核失败，已停止点击",
             )
         badge_frame, badge = confirmed
+        return self._click_located_story_card(LocatedStoryCard(card, badge_frame, badge))
+
+    def _click_located_story_card(self, located: LocatedStoryCard) -> NavigationResult:
+        if not located.structure.complete_region:
+            return NavigationResult(False, ScreenState.CARD_MENU, "卡带结构不完整，停止点击")
+        card, badge_frame, badge = located.card, located.frame, located.badge
         self._status(
             f"剧情游戏卡{card.number}角标点击中心",
             (
@@ -2104,13 +2053,17 @@ class StoryCardNavigationMixin:
             return None
         try:
             confirmed_frame = capture()
+            category = getattr(self, "_badge_category", "story")
+            if (
+                confirmed_frame.shape != frame.shape
+                or not self._cartridge_category_confirmed(confirmed_frame, category)
+            ):
+                self._status("剧情角标点击复核", "窗口尺寸或卡带类别变化，停止点击")
+                return None
             if getattr(self, "_badge_category", "story") == "character":
                 current, _ = self._find_character_badge(confirmed_frame, detection.best.number)
                 if current is not None and self._story_badge_identity_is_stable(detection, current):
-                    _, complete = card_icon_region(
-                        current.best.result.center, confirmed_frame.shape,
-                    )
-                    if complete:
+                    if self._story_card_target_visible(confirmed_frame, current):
                         return confirmed_frame, current
                 return None
             if detection.recovery_mode == "ordered_slot":
@@ -2223,66 +2176,46 @@ class StoryCardNavigationMixin:
                 located,
             )
 
-        completion = None
-        try:
-            completion = self.card_status.detect(
-                located.frame,
-                located.badge.best.result.center,
+        observed = self._collection_observation(located)
+        confirmed = self._confirm_collection_completion(observed) if observed is not None else None
+        if confirmed is None:
+            return CollectionCardSelectionResult(
+                CollectionCardSelectionOutcome.FAILED,
+                NavigationResult(False, ScreenState.CARD_MENU, f"{card_id}完整卡带复核失败"),
             )
-        except (RuntimeError, ValueError, cv2.error) as error:
-            self.task.log_warning(f"地图采集：{card_id}完成度识别异常，按未知继续进入：{error}。")
-
-        if completion is not None:
-            if self._completion_satisfies_actions(completion, required_actions, card_id):
-                completion = self._confirm_collection_completion(
-                    located.frame,
-                    located.badge.best.result.center,
-                    completion,
-                    required_actions,
-                    card_id,
-                )
-            if (
-                completion is not None
-            ):
-                self._status(
-                    "卡带吸取状态",
-                    f"{completion.absorb.state.value}: {completion.absorb.reason}",
-                )
-                self._status(
-                    "卡带压制状态",
-                    f"{completion.suppress.state.value}: {completion.suppress.reason}",
-                )
-                self._status("卡带完成度", completion.state.value)
-            if (
-                completion is not None
-                and self._completion_satisfies_actions(completion, required_actions, card_id)
-                and not enter_visually_complete
-            ):
-                navigation = NavigationResult(
-                    True,
-                    ScreenState.CARD_MENU,
-                    (
-                        f"{card_id}视觉确认吸取完成"
-                        if card_id in ABSORB_ONLY_VERIFIED_CARD_IDS
-                        else f"{card_id}视觉确认吸取与压制均完成"
-                    ),
-                )
-                return CollectionCardSelectionResult(
-                    CollectionCardSelectionOutcome.VISUALLY_COMPLETE,
-                    navigation,
-                    completion,
-                )
-
-        navigation = self._enter_located_story_card(located)
-        outcome = (
-            CollectionCardSelectionOutcome.ENTERED
-            if navigation.success
-            else CollectionCardSelectionOutcome.FAILED
+        was_done = self._completion_satisfies_actions(
+            observed.completion, required_actions, card_id,
         )
+        done = self._completion_satisfies_actions(confirmed.completion, required_actions, card_id)
+        if done and not was_done:
+            confirmed = self._confirm_collection_completion(confirmed)
+            done = confirmed is not None and self._completion_satisfies_actions(
+                confirmed.completion, required_actions, card_id,
+            )
+            if not done:
+                confirmed = None
+        if confirmed is None or (was_done and not done):
+            return CollectionCardSelectionResult(
+                CollectionCardSelectionOutcome.FAILED,
+                NavigationResult(False, ScreenState.CARD_MENU, f"{card_id}完成状态复核不一致"),
+            )
+        completion = confirmed.completion
+        self._status("卡带吸取状态", f"{completion.absorb.state.value}: {completion.absorb.reason}")
+        self._status(
+            "卡带压制状态", f"{completion.suppress.state.value}: {completion.suppress.reason}",
+        )
+        self._status("卡带完成度", completion.state.value)
+        if done and not enter_visually_complete:
+            return CollectionCardSelectionResult(
+                CollectionCardSelectionOutcome.VISUALLY_COMPLETE,
+                NavigationResult(True, ScreenState.CARD_MENU, f"{card_id}视觉确认已启用动作完成"),
+                completion,
+            )
+        navigation = self._click_located_story_card(confirmed.located)
         return CollectionCardSelectionResult(
-            outcome,
-            navigation,
-            completion,
+            CollectionCardSelectionOutcome.ENTERED if navigation.success
+            else CollectionCardSelectionOutcome.FAILED,
+            navigation, completion,
         )
 
     def inspect_collection_card_completion(
@@ -2310,39 +2243,27 @@ class StoryCardNavigationMixin:
                 CollectionCardSelectionOutcome.FAILED,
                 located,
             )
-        try:
-            completion = self.card_status.detect(
-                located.frame,
-                located.badge.best.result.center,
-            )
-        except (RuntimeError, ValueError, cv2.error) as error:
-            navigation = NavigationResult(
-                False,
-                ScreenState.CARD_MENU,
-                f"{card_id}完成度识别异常：{error}",
-            )
+        observed = self._collection_observation(located)
+        confirmed = self._confirm_collection_completion(observed) if observed is not None else None
+        if confirmed is None:
             return CollectionCardSelectionResult(
                 CollectionCardSelectionOutcome.FAILED,
-                navigation,
+                NavigationResult(False, ScreenState.CARD_MENU, f"{card_id}完整卡带复核失败"),
             )
-        if self._completion_satisfies_actions(completion, required_actions, card_id):
-            completion = self._confirm_collection_completion(
-                located.frame,
-                located.badge.best.result.center,
-                completion,
-                required_actions,
-                card_id,
+        completion = confirmed.completion
+        if (
+            self._completion_satisfies_actions(completion, required_actions, card_id)
+            and not self._completion_satisfies_actions(
+                observed.completion, required_actions, card_id,
             )
-        if completion is None:
-            navigation = NavigationResult(
-                False,
-                ScreenState.CARD_MENU,
-                f"{card_id}完成度二帧复核失败",
-            )
-            return CollectionCardSelectionResult(
-                CollectionCardSelectionOutcome.FAILED,
-                navigation,
-            )
+        ):
+            confirmed = self._confirm_collection_completion(confirmed)
+            if confirmed is None:
+                return CollectionCardSelectionResult(
+                    CollectionCardSelectionOutcome.FAILED,
+                    NavigationResult(False, ScreenState.CARD_MENU, f"{card_id}完成状态复核失败"),
+                )
+            completion = confirmed.completion
         self._status(
             "卡带吸取状态",
             f"{completion.absorb.state.value}: {completion.absorb.reason}",

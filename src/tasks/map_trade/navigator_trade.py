@@ -74,16 +74,12 @@ class TradeNavigationMixin:
             if not story_menu.success:
                 return story_menu
             self._status("导航状态", "识别剧情游戏卡6角标")
-            badge_match = self._wait_for_story_badge(Q_SP6_STORY_NUMBER)
+            self._badge_category = "story"
+            badge_match = self._wait_for_story_badge_with_scroll(Q_SP6_STORY_NUMBER)
             if badge_match is None:
                 return NavigationResult(False, self.classify(), "未唯一确认剧情游戏卡6角标")
-            confirmed = (
-                self._confirm_story_badge_before_click(
-                    badge_match[0],
-                    badge_match[1],
-                )
-                if callable(getattr(self.vision, "capture", None))
-                else badge_match
+            confirmed = self._confirm_story_badge_before_click(
+                badge_match[0], badge_match[1],
             )
             if confirmed is None:
                 return NavigationResult(
@@ -341,13 +337,8 @@ class TradeNavigationMixin:
         located = self._locate_story_card(card_id)
         if isinstance(located, NavigationResult):
             return located
-        confirmed = (
-            self._confirm_story_badge_before_click(
-                located.frame,
-                located.badge,
-            )
-            if callable(getattr(self.vision, "capture", None))
-            else (located.frame, located.badge)
+        confirmed = self._confirm_story_badge_before_click(
+            located.frame, located.badge,
         )
         if confirmed is None:
             return NavigationResult(

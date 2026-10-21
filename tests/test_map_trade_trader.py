@@ -74,6 +74,7 @@ from src.tasks.map_trade.navigator_constants import (
     MERCHANT_AUTO_NAV_TEMPLATE,
     MERCHANT_NAV_GUIDE_TIMEOUT,
     MERCHANT_NAV_LANDMARK_TIMEOUT,
+    PROBE_STORY_BADGE_CONFIRM_SECONDS,
 )
 from src.tasks.map_trade.progress import UTC_PLUS_8
 from src.tasks.map_trade.trader import (
@@ -2412,7 +2413,10 @@ class BuyEntryTest(unittest.TestCase):
         navigator._wait_for_cartridge_home = lambda: True
         navigator._wait_for_quick_switch_page = lambda: True
         navigator._wait_for_cartridge_category = lambda **_kwargs: True
-        navigator._wait_for_story_badge = lambda _number: (badge_frame, badge_detection)
+        navigator._wait_for_story_badge_with_scroll = lambda _number: (badge_frame, badge_detection)
+        navigator.vision.capture = lambda: badge_frame
+        navigator._cartridge_category_confirmed = lambda *_args: True
+        navigator._find_story_badge = lambda *_args: (badge_detection, "")
         shop_entry_results = iter((False, True))
         navigator._enter_q_sp6_shop = lambda timeout, *, log_timeout: (
             shop_entry_attempts.append((timeout, log_timeout)) or next(shop_entry_results)
@@ -2471,7 +2475,8 @@ class BuyEntryTest(unittest.TestCase):
             keyword_checks,
         )
         self.assertEqual(
-            [Q_SP6_BARGAIN_RECHECK_DELAY, Q_SP6_BARGAIN_CLICK_DELAY],
+            [PROBE_STORY_BADGE_CONFIRM_SECONDS, Q_SP6_BARGAIN_RECHECK_DELAY,
+             Q_SP6_BARGAIN_CLICK_DELAY],
             sleeps,
         )
 
@@ -3143,7 +3148,10 @@ class MerchantNavigationTest(unittest.TestCase):
         navigator._wait_for_cartridge_home = lambda: True
         navigator._wait_for_quick_switch_page = lambda: True
         navigator._wait_for_cartridge_category = lambda **_kwargs: True
-        navigator._wait_for_story_badge = lambda _number: (badge_frame, badge_detection)
+        navigator._wait_for_story_badge_with_scroll = lambda _number: (badge_frame, badge_detection)
+        navigator.vision.capture = lambda: badge_frame
+        navigator._cartridge_category_confirmed = lambda *_args: True
+        navigator._find_story_badge = lambda *_args: (badge_detection, "")
         shop_entry_results = iter((False, False))
         navigator._enter_q_sp6_shop = lambda timeout, *, log_timeout: (
             shop_entry_attempts.append((timeout, log_timeout)) or next(shop_entry_results)
@@ -3213,7 +3221,10 @@ class MerchantNavigationTest(unittest.TestCase):
         navigator._wait_for_cartridge_home = lambda: True
         navigator._wait_for_quick_switch_page = lambda: True
         navigator._wait_for_cartridge_category = lambda **_kwargs: True
-        navigator._wait_for_story_badge = lambda _number: (badge_frame, badge_detection)
+        navigator._wait_for_story_badge_with_scroll = lambda _number: (badge_frame, badge_detection)
+        navigator.vision.capture = lambda: badge_frame
+        navigator._cartridge_category_confirmed = lambda *_args: True
+        navigator._find_story_badge = lambda *_args: (badge_detection, "")
         shop_entry_results = iter((False, False))
         navigator._enter_q_sp6_shop = lambda timeout, *, log_timeout: (
             shop_entry_attempts.append((timeout, log_timeout)) or next(shop_entry_results)

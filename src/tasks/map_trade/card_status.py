@@ -18,6 +18,45 @@ CARD_ICON_LEFT_OFFSET = -15
 CARD_ICON_RIGHT_OFFSET = 165
 CARD_ICON_TOP_OFFSET = 80
 CARD_ICON_BOTTOM_OFFSET = 130
+CARD_BODY_OFFSETS = (-15, -15, 130, 90)
+
+
+@dataclass(frozen=True)
+class CardStructure:
+    body_bounds: tuple[int, int, int, int]
+    resource_bounds: tuple[int, int, int, int]
+    bounds: tuple[int, int, int, int]
+    complete_region: bool
+
+
+def card_structure(badge_center, frame_shape, *, short_resource_row: bool = False) -> CardStructure:
+    height, width = frame_shape[:2]
+    center_x, center_y = badge_center
+
+    def bounds(offsets):
+        left, top, right, bottom = offsets
+        return (
+            round(center_x + left * width / FHD_1080.width),
+            round(center_y + top * height / FHD_1080.height),
+            round(center_x + right * width / FHD_1080.width),
+            round(center_y + bottom * height / FHD_1080.height),
+        )
+
+    body = bounds(CARD_BODY_OFFSETS)
+    resources = bounds((
+        CARD_ICON_LEFT_OFFSET, CARD_ICON_TOP_OFFSET,
+        CARD_BODY_OFFSETS[2] if short_resource_row else CARD_ICON_RIGHT_OFFSET,
+        CARD_ICON_BOTTOM_OFFSET,
+    ))
+    regions = (body, resources)
+    whole = (
+        min(region[0] for region in regions), min(region[1] for region in regions),
+        max(region[2] for region in regions), max(region[3] for region in regions),
+    )
+    return CardStructure(
+        body, resources, whole,
+        whole[0] >= 0 and whole[1] >= 0 and whole[2] <= width and whole[3] <= height,
+    )
 
 ABSORB_PENDING_TEMPLATE = TemplateSpec(
     "剧情卡带未吸取",
@@ -151,13 +190,7 @@ def card_icon_region(
     """Return the full card-width icon strip relative to one numeric badge."""
 
     height, width = frame_shape[:2]
-    scale_x = width / FHD_1080.width
-    scale_y = height / FHD_1080.height
-    center_x, center_y = badge_center
-    left = round(center_x + CARD_ICON_LEFT_OFFSET * scale_x)
-    right = round(center_x + CARD_ICON_RIGHT_OFFSET * scale_x)
-    top = round(center_y + CARD_ICON_TOP_OFFSET * scale_y)
-    bottom = round(center_y + CARD_ICON_BOTTOM_OFFSET * scale_y)
+    left, top, right, bottom = card_structure(badge_center, frame_shape).resource_bounds
     complete = left >= 0 and top >= 0 and right <= width and bottom <= height
     return (
         (

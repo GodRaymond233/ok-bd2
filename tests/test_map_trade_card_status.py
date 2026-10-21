@@ -15,11 +15,31 @@ from src.tasks.map_trade.card_status import (
     CardStatusDetector,
     StoryCardCompletion,
     card_icon_region,
+    card_structure,
 )
 from src.tasks.map_trade.models import MatchResult
 
 
 class CardStatusTest(unittest.TestCase):
+    def test_whole_card_bounds_include_resources_and_preserve_short_rows(self):
+        for width, height in ((1280, 720), (1920, 1080), (2560, 1440)):
+            for center, complete in (
+                ((1773, 936), False), ((1756, 936), False), ((1754, 936), True),
+                ((13, 936), False), ((200, 936), True), ((200, 1000), False),
+                ((200, 10), False),
+            ):
+                scaled = (round(center[0] * width / 1920), round(center[1] * height / 1080))
+                with self.subTest(size=(width, height), center=center):
+                    structure = card_structure(scaled, (height, width, 3))
+                    self.assertEqual(complete, structure.complete_region)
+                    self.assertEqual(structure.resource_bounds[2], structure.bounds[2])
+                    if center == (1773, 936):
+                        self.assertLessEqual(structure.body_bounds[2], width)
+                        self.assertGreater(structure.resource_bounds[2], width)
+                        short = card_structure(scaled, (height, width, 3), short_resource_row=True)
+                        self.assertTrue(short.complete_region)
+                        self.assertGreater(short.bounds[3], short.body_bounds[3])
+
     @staticmethod
     def _detection(state):
         return CardActionDetection(state)
