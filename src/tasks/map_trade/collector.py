@@ -5,7 +5,7 @@ from copy import deepcopy
 from dataclasses import replace
 
 from src.tasks.map_trade.action_icons import ActionIconDetector
-from src.tasks.map_trade.card_status import CollectionCardSelectionOutcome
+from src.tasks.map_trade.card_status import CardActionState, CollectionCardSelectionOutcome
 from src.tasks.map_trade.collector_constants import (
     ABSORB_ACTION,
     BATTLE_ACTIONS,
@@ -249,7 +249,11 @@ class Collector(SkillExecutionMixin):
             )
         }
         if len(completed) >= len(card.targets):
-            return self._verify_collection_card(card, required_actions)
+            failure = self._verify_collection_card(card, required_actions)
+            remaining_completed = completed & state.completed_targets(card.card_id)
+            if failure is None or remaining_completed == completed:
+                return failure
+            completed = remaining_completed
 
         remaining, recovery_only = self._plan_collection_work(card, completed, required_actions)
         if recovery_only and not remaining:
@@ -470,6 +474,19 @@ class Collector(SkillExecutionMixin):
         if set(required_actions) == COLLECTION_ACTION_NAMES:
             verified = self.navigator.inspect_collection_card_completion(card.card_id)
             if not verified.success:
+                completion = getattr(verified, "completion", None)
+                pending = {
+                    action for action, detection in (
+                        ("吸收", completion.absorb), ("压制", completion.suppress),
+                    ) if detection.state is CardActionState.PENDING
+                } if completion is not None and completion.complete_region else set()
+                if pending:
+                    reopened = self.progress.invalidate_observed_completion(card.card_id, pending)
+                    if reopened:
+                        self._status(
+                            "采集进度", f"{card.card_id}未完成，重新核验未点击的观察记录："
+                            + "、".join(sorted(reopened)),
+                        )
                 return CollectionResult(
                     False,
                     completed_submaps=self._completed_this_run,

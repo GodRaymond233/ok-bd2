@@ -3,7 +3,9 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import win32api
 from ok.device.intercation import PostMessageInteraction
+from ok.task.exceptions import FinishedException, TaskDisabledException
 
 from src.interaction.BD2Interaction import (
     CLICK_MODE_BACKGROUND,
@@ -27,6 +29,80 @@ def make_interaction():
 
 
 class BD2InteractionOperateTest(unittest.TestCase):
+    def test_task_waits_for_cursor_access_before_dispatching_once(self):
+        interaction, calls = make_interaction()
+        task = object.__new__(BaseBD2Task)
+        task.info_set = lambda key, message: calls.append((key, message))
+
+        def wait(seconds):
+            self.assertEqual(0.25, seconds)
+            self.assertFalse(interaction._operating)
+            self.assertNotIn("block_input", calls)
+            self.assertNotIn("click", calls)
+            calls.append("wait")
+
+        task._executor = SimpleNamespace(
+            interaction=interaction, check_enabled=lambda: None,
+            exit_event=SimpleNamespace(wait=wait), reset_scene=lambda **_kwargs: None,
+        )
+        denied = win32api.error(5, "GetCursorPos", "access denied")
+        with patch(
+            "src.interaction.BD2Interaction.GetCursorPos",
+            side_effect=[denied, denied, (7, 8)],
+        ):
+            self.assertEqual(42, task.operate(lambda: calls.append("click") or 42))
+        self.assertEqual(2, calls.count("wait"))
+        self.assertEqual(1, calls.count("click"))
+        self.assertEqual((7, 8), interaction.cursor_position)
+        self.assertFalse(interaction._operating)
+        self.assertTrue(interaction._activate_required)
+        self.assertEqual(["block_input", "click", "restore_cursor", "unblock_input"], calls[-4:])
+
+    def test_input_wait_timeout_or_cancellation_never_dispatches_or_blocks(self):
+        for interruption in (None, TaskDisabledException(), FinishedException()):
+            with self.subTest(interruption=type(interruption).__name__):
+                interaction, calls = make_interaction()
+
+                def wait(_seconds):
+                    if interruption is not None:
+                        raise interruption
+
+                with (
+                    patch("src.interaction.BD2Interaction.GetCursorPos", side_effect=
+                          win32api.error(5, "GetCursorPos", "access denied")),
+                    patch("src.interaction.BD2Interaction.time.monotonic", side_effect=[0, 0, 30]),
+                ):
+                    with self.assertRaises(type(interruption) if interruption else TimeoutError):
+                        interaction.operate(
+                            lambda: calls.append("click"), block=True, input_wait=wait,
+                        )
+                self.assertEqual([], calls)
+                self.assertFalse(interaction._operating)
+                self.assertTrue(interaction.wait_until_idle(0))
+
+    def test_non_access_errors_and_callback_errors_are_not_replayed(self):
+        for from_callback in (False, True):
+            with self.subTest(from_callback=from_callback):
+                interaction, calls = make_interaction()
+                error = win32api.error(5 if from_callback else 1400, "test", "failure")
+
+                def callback():
+                    calls.append("callback")
+                    raise error
+
+                with patch(
+                    "src.interaction.BD2Interaction.GetCursorPos",
+                    side_effect=None if from_callback else error, return_value=(7, 8),
+                ):
+                    with self.assertRaises(win32api.error) as caught:
+                        interaction.operate(
+                            callback, block=True, input_wait=lambda _: calls.append("wait"),
+                        )
+                self.assertIs(error, caught.exception)
+                self.assertNotIn("wait", calls)
+                self.assertEqual(int(from_callback), calls.count("callback"))
+                self.assertFalse(interaction._operating)
+
     def test_operate_reraises_callback_exception_and_cleans_up(self):
         interaction, calls = make_interaction()
         error = ValueError("boom")

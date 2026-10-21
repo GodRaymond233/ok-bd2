@@ -1105,6 +1105,59 @@ class ProgressStore:
         self.save()
         return True
 
+    def invalidate_observed_completion(self, card_id: str, actions: Iterable[str]) -> set[str]:
+        """Reopen unclicked observations contradicted by the card's pending badges."""
+        state = self._require_state()
+        if card_id not in VALID_CARD_IDS:
+            raise ValueError(f"invalid collection card: {card_id}")
+        actions = set(actions)
+        if not actions <= VALID_ACTION_NAMES:
+            raise ValueError("invalid collection actions")
+        reopened = set()
+        for role in VALID_TARGET_KEYS[card_id]:
+            for action in actions:
+                key = f"{card_id}|{role}|{action}"
+                weekly = state.weekly_actions.get(key)
+                records = [
+                    record for record in state.action_records.values()
+                    if record.get("card_id") == card_id
+                    and record.get("map_role") == role and record.get("action") == action
+                ]
+                if weekly is None or weekly.get("source") != "observed":
+                    continue
+                history = [
+                    record for record in state.archived_action_records.values()
+                    if record.get("card_id") == card_id
+                    and record.get("map_role") == role and record.get("action") == action
+                    and str(record.get("daily_key", "")) >= state.weekly_key
+                ]
+                # Never reopen a cast or unresolved intent, even if its weekly
+                # provenance was damaged or replaced by a later observation.
+                if any(
+                    record.get("previous_state", record.get("state")) != "preexisting_used"
+                    or record.get("source") != "observed"
+                    or record.get("attempts", 0) != 0
+                    or record.get("pending") or record.get("reservation")
+                    for record in (*records, *history)
+                ):
+                    continue
+                del state.weekly_actions[key]
+                for record in records:
+                    record.update(
+                        state="void", status="void", local_done=False, covered=False,
+                        message="卡带未完成证据否定未点击的技能观察，需重新核验地图",
+                    )
+                reopened.add(role)
+        if reopened:
+            state.cards[card_id] = sorted(state.completed_targets(card_id) - reopened)
+            state.verified_cards = [key for key in state.verified_cards if key != card_id]
+            for cards in state.verified_card_policies.values():
+                if card_id in cards:
+                    cards.remove(card_id)
+            state.visual_completions.pop(card_id, None)
+            self.save()
+        return reopened
+
     def mark_action_local_done(
         self,
         card_id: str,

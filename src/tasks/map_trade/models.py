@@ -264,6 +264,8 @@ def _story_collection_targets(number: int) -> tuple[CollectionMapTarget, ...]:
     return tuple(
         CollectionMapTarget(
             role, title, aliases=("科库托斯圣城",) if title == "科库托斯圣域" else (),
+            excludes=("雷瓦汀基地救护站",)
+            if number == 9 and role is CollectionMapRole.MAIN_AREA else (),
         )
         for role, title in zip(CollectionMapRole, titles, strict=True)
     )

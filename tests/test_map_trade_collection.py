@@ -1032,14 +1032,23 @@ class CollectionCardTest(unittest.TestCase):
 
 class CharacterMapTitleTest(unittest.TestCase):
     def test_a_longer_map_name_is_not_its_prefix(self):
-        card = CARD_BY_ID["Q_cp5"]
-
-        self.assertEqual(
-            ("main_area",), Navigator._target_keys_in_text(card, normalize_text("安全 童话镇 普通"))
-        )
-        self.assertEqual(
-            (), Navigator._target_keys_in_text(card, normalize_text("安全 童话镇旅馆 普通"))
-        )
+        for card_id, town, annex in (
+            ("Q_cp5", "童话镇", "童话镇旅馆"),
+            ("Q_sp9", "雷瓦汀基地", "雷瓦汀基地救护站"),
+        ):
+            for suffix in ("", " 普通 ?"):
+                with self.subTest(card=card_id, suffix=suffix):
+                    card = CARD_BY_ID[card_id]
+                    self.assertEqual(
+                        ("main_area",), Navigator._target_keys_in_text(
+                            card, normalize_text(f"安全 {town}{suffix}"),
+                        ),
+                    )
+                    self.assertEqual(
+                        (), Navigator._target_keys_in_text(
+                            card, normalize_text(f"安全 {annex}{suffix}"),
+                        ),
+                    )
 
     def test_parentheses_misread_by_ocr_still_name_the_map(self):
         # Live 2K: "废墟地道（前段）" read "废墟地道道前段", "（后段）" "直后段".

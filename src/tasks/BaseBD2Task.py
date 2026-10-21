@@ -322,8 +322,23 @@ class BaseBD2Task(BaseTask):
     def operate(self, func: Callable, block: bool = True, restore_cursor: bool = True):
         interaction = getattr(self.executor, "interaction", None)
         if interaction is not None and hasattr(interaction, "operate"):
+            if hasattr(interaction, "wait_for_input"):
+                return interaction.operate(
+                    func, block=block, restore_cursor=restore_cursor,
+                    input_wait=self._wait_for_input,
+                    input_status=lambda message: self.info_set("输入状态", message),
+                )
             return interaction.operate(func, block=block, restore_cursor=restore_cursor)
         return func()
+
+    def _wait_for_input(self, seconds: float) -> None:
+        # TaskExecutor.sleep also waits for capture readiness. Cursor access
+        # needs its own bounded wait when Windows switches input desktops.
+        self.executor.check_enabled()
+        if self.executor.exit_event.wait(seconds):
+            raise FinishedException()
+        self.executor.check_enabled()
+        self.executor.reset_scene(check_enabled=False)
 
     def attempt_return_home(self, name: str = "自动返回主页") -> bool:
         """点右上角“房子”按钮一次（需调用方已确认不在主页）。正式路径会移动真实光标。"""

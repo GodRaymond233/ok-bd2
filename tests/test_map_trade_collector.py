@@ -18,8 +18,11 @@ from src.tasks.map_trade.action_icons import (
     ActionIconState,
 )
 from src.tasks.map_trade.card_status import (
+    CardActionDetection,
+    CardActionState,
     CollectionCardSelectionOutcome,
     CollectionCardSelectionResult,
+    StoryCardCompletion,
 )
 from src.tasks.map_trade.collector import (
     Collector,
@@ -70,6 +73,65 @@ from tests.helpers.map_trade import _seed_action_records, _seed_battle_supplemen
 
 
 class CollectionRunTest(unittest.TestCase):
+    def test_card_recheck_recovers_observed_town_without_recasting_battles(self):
+        for visual_state in (CardActionState.PENDING, CardActionState.UNKNOWN):
+            with self.subTest(state=visual_state), tempfile.TemporaryDirectory() as directory:
+                progress = ProgressStore(
+                    Path(directory) / "progress.json",
+                    lambda: datetime(2026, 10, 21, 12, tzinfo=UTC_PLUS_8),
+                )
+                progress.load()
+                card = CARD_BY_ID["Q_sp9"]
+                for target in card.targets[1:]:
+                    _seed_action_records(progress, card.card_id, target.key)
+                    progress.mark_target(card.card_id, target.key)
+                progress.mark_action_preexisting_used(card.card_id, "main_area", "吸收")
+                progress.mark_target(card.card_id, "main_area")
+                sandbox = NavigationResult(True, ScreenState.SANDBOX)
+                menu = NavigationResult(True, ScreenState.CARD_MENU)
+                initial = CollectionCardSelectionResult(
+                    CollectionCardSelectionOutcome.FAILED,
+                    NavigationResult(False, ScreenState.CARD_MENU, "卡带未完成"),
+                    StoryCardCompletion(
+                        CardActionDetection(visual_state),
+                        CardActionDetection(CardActionState.COMPLETED), (0, 0, 1, 1), True,
+                    ),
+                )
+                navigator = SimpleNamespace(
+                    inspect_collection_card_completion=Mock(side_effect=[initial, menu]),
+                    select_collection_card=Mock(return_value=CollectionCardSelectionResult(
+                        CollectionCardSelectionOutcome.ENTERED, sandbox,
+                    )),
+                    current_collection_target=lambda _card: "battle_area_2",
+                    advance_collection_map=Mock(return_value=sandbox),
+                    open_cartridge_quick_switcher_from_sandbox=Mock(return_value=menu),
+                )
+                collector = Collector(
+                    SimpleNamespace(config={}, info_set=Mock(), log_warning=Mock()),
+                    SimpleNamespace(), navigator, progress,
+                )
+                collector._start_search = Mock()
+                performed = []
+
+                def use(actions, *, card_id, map_role):
+                    performed.append((map_role.value, tuple(a.name for a in actions)))
+                    _seed_action_records(progress, card_id, map_role.value, ("吸收",))
+                    return SkillExecutionResult(True)
+
+                collector._use_actions = use
+                result = collector.collect_card(card)
+                if visual_state is CardActionState.PENDING:
+                    self.assertIsNone(result)
+                    self.assertEqual([("main_area", ("吸收",))], performed)
+                    self.assertTrue(progress.state.card_verified(card.card_id))
+                else:
+                    self.assertFalse(result.success)
+                    self.assertEqual([], performed)
+                    navigator.select_collection_card.assert_not_called()
+                    self.assertTrue(
+                        progress.weekly_action_complete(card.card_id, "main_area", "吸收"),
+                    )
+
     def test_exhausted_absorb_does_not_block_other_cards_remaining_actions(self):
         with tempfile.TemporaryDirectory() as directory:
             progress = ProgressStore(
