@@ -655,7 +655,10 @@ class NavigatorTest(unittest.TestCase):
 
     def test_collection_retreat_confirms_each_transition_and_bounds_retries(self):
         for width, height in ((1920, 1080), (1280, 720)):
-            for blocked in (None, "pause", "escape", "confirm", "ambiguous", "loading", "stop"):
+            for blocked in (
+                None, "pause", "escape", "confirm", "ambiguous", "loading", "stop",
+                "dialog_ambiguous", "missing_cancel", "missing_question", "title_only", "wrong_row",
+            ):
                 with self.subTest(size=(width, height), blocked=blocked):
                     clock = [0.0]
                     state = ["battle"]
@@ -671,12 +674,26 @@ class NavigatorTest(unittest.TestCase):
 
                     menu = box("逃跑", 0.26, 0.90)
                     dialog = box("逃跑", 0.58, 0.55)
+                    pause = box("暂停", 0.47, 0.18)
+                    restart = box("重新挑战", 0.46, 0.90)
+                    resume = box("点击继续", 0.66, 0.90)
+                    title = box("逃跑", 0.47, 0.39)
+                    question = box("是否放弃战斗逃跑？", 0.39, 0.49)
+                    cancel = box("取消", 0.42, 0.70 if blocked == "wrong_row" else 0.55)
 
                     def ocr_boxes(*_args, **_kwargs):
                         if state[0] == "menu":
-                            return [menu, menu] if blocked == "ambiguous" else [menu]
+                            return [pause, restart, resume, menu] + (
+                                [menu] if blocked == "ambiguous" else []
+                            )
                         if state[0] == "dialog":
-                            return [menu, dialog]
+                            return (
+                                [pause, restart, resume, menu, title]
+                                + ([] if blocked == "missing_question" else [question])
+                                + ([] if blocked == "missing_cancel" else [cancel])
+                                + ([] if blocked == "title_only" else [dialog])
+                                + ([dialog] if blocked == "dialog_ambiguous" else [])
+                            )
                         return []
 
                     def click(point, _shape, *, after_sleep=0):
@@ -745,6 +762,42 @@ class NavigatorTest(unittest.TestCase):
                                 self.assertEqual(3, attempts[blocked])
                             if blocked == "ambiguous":
                                 self.assertEqual(0, attempts["escape"])
+                            if blocked in {
+                                "dialog_ambiguous", "missing_cancel", "missing_question",
+                                "title_only", "wrong_row",
+                            }:
+                                self.assertEqual(0, attempts["confirm"])
+
+    def test_retreat_dialog_ocr_separates_title_from_confirm_button(self):
+        from onnxocr.onnx_paddleocr import ONNXPaddleOcr
+
+        from src.tasks.BaseBD2Task import BaseBD2Task
+
+        engine = ONNXPaddleOcr(use_angle_cls=False, use_npu=False, use_openvino=True)
+        task = object.__new__(BaseBD2Task)
+        task._executor = SimpleNamespace(
+            paused=False, debug=False, config={"ocr": {"default": {"lib": "onnxocr"}}},
+            ocr_lib=lambda _: engine, ocr_po_translation=None, text_fix={},
+        )
+        task.config = {}
+        task.info_set = Mock()
+        task.log_info = task.log_warning = Mock()
+        task.log_debug = None
+        task.ocr_default_threshold = 0.2
+        task.ocr_target_height = 0
+        vision = Vision(task)
+        navigator = Navigator(task, vision)
+        source = load_bgr(
+            Path(__file__).parent / "fixtures/map_trade/video_fhd/field_retreat_confirm.png",
+        )
+        for width, height in ((1280, 720), (1920, 1080), (2560, 1440)):
+            with self.subTest(size=(width, height)):
+                boxes = vision.ocr_boxes(cv2.resize(source, (width, height)), "采集战斗逃跑")
+                self.assertEqual(3, sum(box.name == "逃跑" for box in boxes))
+                stage, point = navigator._field_retreat_action(boxes)
+                self.assertEqual("confirm", stage)
+                self.assertAlmostEqual(1060 / 1920, point[0] / width, delta=0.006)
+                self.assertAlmostEqual(635 / 1080, point[1] / height, delta=0.006)
 
     def test_activity_walk_accepts_alias_and_rechecks_arrival_map(self):
         card = CARD_BY_ID["Q_ep7"]

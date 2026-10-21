@@ -1899,11 +1899,45 @@ class SandboxNavigationMixin:
         )
         return re.search(r"\bTURN[\s.]*\d+\b", text, re.IGNORECASE) is not None
 
+    def _field_retreat_action(self, boxes):
+        """Resolve escape controls by their dialog/menu row, excluding headings."""
+        text = normalize_text(" ".join(str(box.name) for box in boxes))
+        controls = []
+        for box in boxes:
+            center = self._ocr_box_center(box)
+            height = float(getattr(box, "height", 0) or 0)
+            if center is not None and height > 0:
+                controls.append((normalize_text(str(box.name)), center, height))
+        escapes = [control for control in controls if control[0] == "逃跑"]
+        cancels = [control for control in controls if control[0] == "取消"]
+
+        def same_row(left, right):
+            return (
+                right[1][0] > left[1][0]
+                and abs(right[1][1] - left[1][1]) <= max(left[2], right[2]) * 0.6
+            )
+
+        question = "放弃战斗逃跑" in text
+        if question or cancels:
+            candidates = [
+                escape[1] for cancel in cancels for escape in escapes
+                if question and same_row(cancel, escape)
+            ]
+            stage = "confirm"
+        else:
+            companions = [control for control in controls if control[0] in {"重新挑战", "点击继续"}]
+            candidates = [
+                escape[1] for escape in escapes
+                if len(escapes) == 1 and any(control[0] == "暂停" for control in controls)
+                and any(same_row(escape, companion) for companion in companions)
+            ]
+            stage = "escape"
+        return (stage, candidates[0]) if len(candidates) == 1 else (None, None)
+
     def _retreat_from_field_battle(self, frame: np.ndarray, *, end_at: float) -> np.ndarray:
         """Follow pause, escape and its confirmation using fresh observations."""
         end_at = min(end_at, monotonic() + FIELD_RETREAT_TIMEOUT)
         attempts = {"pause": 0, "escape": 0, "confirm": 0}
-        menu_point = None
         confirmed = False
         field_hits = 0
         while monotonic() <= end_at:
@@ -1914,19 +1948,13 @@ class SandboxNavigationMixin:
                     if normalize_text(str(box.name)) == "逃跑"
                     and (point := self._ocr_box_center(box)) is not None
                 ]
-                # A confirmation may leave the dimmed menu button visible behind it.
-                # Only the newly placed escape button can confirm that transition.
-                dialogs = [point for point in exits if menu_point is not None and (
-                    abs(point[0] / frame.shape[1] - menu_point[0]) > 0.03
-                    or abs(point[1] / frame.shape[0] - menu_point[1]) > 0.03
-                )]
-                stage = None
-                point = None
-                if len(dialogs) == 1:
-                    stage, point = "confirm", dialogs[0]
-                elif len(exits) == 1 and not confirmed:
-                    stage, point = "escape", exits[0]
-                elif not exits and not confirmed and self._field_battle_visible(frame):
+                stage, point = self._field_retreat_action(boxes)
+                if stage == "escape" and confirmed:
+                    stage, point = None, None
+                if (
+                    stage is None and not exits and not confirmed
+                    and self._field_battle_visible(frame)
+                ):
                     stage = "pause"
                     point = (
                         round(frame.shape[1] * FIELD_BATTLE_PAUSE_POINT[0]),
@@ -1943,9 +1971,7 @@ class SandboxNavigationMixin:
                         "confirm": "遭遇战：确认逃跑",
                     }[stage])
                     self.vision.click_client(point, frame.shape, after_sleep=1.0)
-                    if stage == "escape":
-                        menu_point = (point[0] / frame.shape[1], point[1] / frame.shape[0])
-                    elif stage == "confirm":
+                    if stage == "confirm":
                         confirmed = True
                 elif not exits and self.classify(frame) == ScreenState.SANDBOX:
                     field_hits += 1

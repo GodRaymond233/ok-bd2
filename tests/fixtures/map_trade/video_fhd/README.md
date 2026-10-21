@@ -16,6 +16,7 @@ UI is retained in these masked fixtures.
 | `teleport_map_multiple_enabled.png` | 25.5s | enabled circles `(780, 575, 890, 675)` and `(995, 275, 1105, 375)` | Exactly two enabled teleport candidates; the lower-left candidate near `(834, 625)` is selected. |
 | `story_badge_05_encoded.png` | 47.0s | Q5 selector neighborhood `(1325, 905, 1385, 968)` | Full badge ranking identifies the encoded Q5 candidate; no Q6 selection is accepted. |
 | `city_absorb_used.png` | User screenshot, 2026-10-21 | Skill HUD `(1440, 640, 1920, 1080)` in the original 1920×1080 client | Absorb is used against the bright city background. Other HUD slots support wrong-glyph negative controls. |
+| `field_retreat_confirm.png` | User screenshot, 2026-10-22 | Confirmation `(610, 360, 1310, 710)`; background menu `(610, 960, 1320, 1060)`; pause title `(880, 185, 1040, 265)` | Three OCR labels say escape; only the button beside cancel confirms the dialog. |
 
 The Q5 source candidate deliberately falls just below the prior strict
 pixel/margin acceptance gates, so it protects the intended tolerant production
