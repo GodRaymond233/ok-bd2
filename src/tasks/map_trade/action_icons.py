@@ -106,6 +106,9 @@ LIMITED_ACTION_EVIDENCE_MIN_GRADIENT = 0.30
 LIMITED_ACTION_EVIDENCE_MIN_EDGE = 0.82
 LIMITED_ACTION_USED_MAX_CONTRAST = 0.65
 LIMITED_ACTION_AVAILABLE_MIN_CONTRAST = 0.80
+ABSORB_USED_MIN_ZNCC = 0.55
+ABSORB_USED_MIN_PIXEL = 0.75
+ABSORB_USED_MIN_GRADIENT = 0.50
 SEARCH_ICON_EVIDENCE_MIN_PIXEL = 0.68
 SEARCH_ICON_EVIDENCE_MIN_ZNCC = 0.55
 SEARCH_ICON_EVIDENCE_MIN_GRADIENT = 0.30
@@ -615,9 +618,6 @@ class ActionIconDetector:
             )
         if match.score < icon.identity_min_score:
             return False, f"模板身份分过低：{match.score:.3f}<{icon.identity_min_score:.3f}"
-        if match.zncc_score < icon.evidence_min_zncc:
-            return False, f"原始ZNCC过低：{match.zncc_score:.3f}<{icon.evidence_min_zncc:.3f}"
-
         # Dimmed icons lose pixel intensity while retaining their shape. Only
         # confirmed dimming may use the low pixel floor; bright/unknown states
         # keep the stricter pixel gate before becoming clickable.
@@ -626,6 +626,17 @@ class ActionIconDetector:
             and relative_contrast is not None
             and relative_contrast <= LIMITED_ACTION_USED_MAX_CONTRAST
         )
+        # The translucent used absorb glyph needs stronger gradient/pixel evidence
+        # when the scene beneath it reduces raw correlation. This cannot admit a cast.
+        used_absorb_shape = (
+            icon.slot_name == "absorb" and is_dimmed
+            and match.zncc_score >= ABSORB_USED_MIN_ZNCC
+            and match.pixel_score >= ABSORB_USED_MIN_PIXEL
+            and match.gradient_zncc_score >= ABSORB_USED_MIN_GRADIENT
+            and match.edge_score >= LIMITED_ACTION_EVIDENCE_MIN_EDGE
+        )
+        if match.zncc_score < icon.evidence_min_zncc and not used_absorb_shape:
+            return False, f"原始ZNCC过低：{match.zncc_score:.3f}<{icon.evidence_min_zncc:.3f}"
         if is_dimmed:
             if match.pixel_score < ACTION_ICON_CONSENSUS_PIXEL_FLOOR:
                 return False, (

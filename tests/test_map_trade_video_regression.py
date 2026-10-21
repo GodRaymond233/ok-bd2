@@ -105,6 +105,34 @@ class MapTradeVideoRegressionTest(unittest.TestCase):
                 self.assertEqual(ActionIconState.ABSENT, detection.state)
                 self.assertFalse(detection.clickable)
 
+    def test_used_absorb_on_bright_scene_keeps_identity_without_becoming_clickable(self):
+        source = load_fhd_bgr(FIXTURE_ROOT / "city_absorb_used.png")
+        variants = {"used": source}
+        x, y = ACTION_SLOT_CENTERS_REFERENCE["absorb"]
+        for name in ("summon", "subdue", "teleport"):
+            sx, sy = ACTION_SLOT_CENTERS_REFERENCE[name]
+            frame = source.copy()
+            frame[y - 45:y + 45, x - 45:x + 45] = source[sy - 45:sy + 45, sx - 45:sx + 45]
+            variants[name] = frame
+        flipped = source.copy()
+        flipped[y - 45:y + 45, x - 45:x + 45] = cv2.flip(
+            source[y - 45:y + 45, x - 45:x + 45], 1,
+        )
+        variants["mirrored"] = flipped
+        empty = source.copy()
+        empty[y - 72:y + 73, x - 82:x + 83] = 160
+        variants["empty"] = empty
+        for name, source in variants.items():
+            for width in (1280, 1920, 2560):
+                with self.subTest(variant=name, width=width):
+                    frame = cv2.resize(source, (width, width * 9 // 16))
+                    detected = self.actions.detect(frame, ABSORB_ICON)
+                    self.assertEqual(
+                        ActionIconState.USED if name == "used" else ActionIconState.ABSENT,
+                        detected.state, detected.reason,
+                    )
+                    self.assertFalse(detected.clickable)
+
     def test_limited_actions_keep_intermediate_contrast_unknown(self) -> None:
         source = load_fhd_bgr(FIXTURE_ROOT / "story_sandbox_ready.png")
         frame = (source.astype(np.float32) * 0.75).astype(np.uint8)
