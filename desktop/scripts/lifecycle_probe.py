@@ -295,6 +295,7 @@ def remove_folder(folder, checks):
 def same_directory_mutex(out, python, checks):
     if os.name != "nt":
         return "skipped: ok-script's directory mutex exists on Windows only"
+    out.mkdir(parents=True, exist_ok=True)  # with --only, no other scenario has made it (F9)
     env = dict(os.environ, PYTHONUTF8="1", PROBE_SITE=sysconfig.get_paths()["purelib"])
     folder = Path(tempfile.mkdtemp(prefix="okbd2-probe-mutex-"))
     try:
@@ -375,7 +376,13 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--host", help="Electron executable (default: the packaged shell)")
-    parser.add_argument("--only", action="append", help="run only these scenarios")
+    # A misspelt name would otherwise run nothing and pass.
+    parser.add_argument(
+        "--only",
+        action="append",
+        choices=[*PROCESS_SCENARIOS, "same-directory-mutex"],
+        help="run only these scenarios",
+    )
     args = parser.parse_args(argv)
     if not (ROOT / "desktop" / "shell" / "dist" / "core-process.js").is_file():
         parser.error("desktop/shell/dist is missing: run npm run build in desktop/shell first")

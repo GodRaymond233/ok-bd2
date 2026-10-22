@@ -1,11 +1,16 @@
-"""Cleanup in desktop/scripts/lifecycle_probe.py (F8 of the stage 1 Windows checks).
+"""The same-directory-mutex scenario of desktop/scripts/lifecycle_probe.py on its own.
 
-The same-directory-mutex scenario removes a temporary folder that the older instance runs
-in. Under the venv that instance is the python.exe redirector, whose child interpreter ends
-a moment after the redirector does; these tests stand in a parent that behaves the same way.
+F8 of the stage 1 Windows checks: the scenario removes a temporary folder that the older
+instance runs in. Under the venv that instance is the python.exe redirector, whose child
+interpreter ends a moment after the redirector does; these tests stand in a parent that
+behaves the same way. F9: run alone (--only), the scenario wrote its log into a folder that
+only the other scenarios created.
 """
 
+import contextlib
 import importlib.util
+import io
+import os
 import shutil
 import subprocess
 import sys
@@ -32,6 +37,18 @@ REDIRECTOR = textwrap.dedent(
     )
     print("READY", child.pid, flush=True)
     child.wait()
+    """
+)
+
+# probe_core.py's mutex modes without ok-script: the holder waits, the contender reports.
+STAND_IN_CORE = textwrap.dedent(
+    """
+    import json, sys, time
+    if sys.argv[1] == "mutex-holder":
+        print("PROBE_HOLDER_READY", flush=True)
+        time.sleep(60)
+    else:
+        print("PROBE_CONTENDER " + json.dumps({"check_mutex_called": False, "reached": True}))
     """
 )
 
@@ -86,6 +103,29 @@ class RemoveFolderTest(unittest.TestCase):
         self.assertIn("PermissionError", result["detail"]["error"])
         users = [item["pid"] for item in result["detail"]["working directory inside"]]
         self.assertIn(user.pid, users)
+
+
+class RunAloneTest(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "the scenario runs on Windows only")
+    def test_scenario_makes_its_own_folder(self):
+        with tempfile.TemporaryDirectory() as base:
+            core = Path(base) / "core.py"
+            core.write_text(STAND_IN_CORE, encoding="utf-8")
+            out = Path(base) / "run" / "venv"  # main makes only run; the other scenarios made venv
+            checks = []
+            with patch.object(probe, "CORE", core):
+                skipped = probe.same_directory_mutex(out, Path(sys.executable), checks)
+            self.assertIsNone(skipped)
+            self.assertTrue(all(item["passed"] for item in checks), checks)
+            self.assertIn("PROBE_CONTENDER", (out / "same-directory-mutex.log").read_text("utf-8"))
+
+    def test_misspelt_scenario_is_refused(self):
+        base = Path(tempfile.mkdtemp(prefix="okbd2-probe-test-"))
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as refused:
+            probe.main(["--out", str(base / "run"), "--only", "same-directory-mutx"])
+        self.assertEqual(refused.exception.code, 2)
+        self.assertFalse((base / "run").exists())
 
 
 if __name__ == "__main__":
