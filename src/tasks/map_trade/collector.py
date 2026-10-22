@@ -56,6 +56,7 @@ class Collector(SkillExecutionMixin):
         self._completed_this_run = 0
         self._collection_target = None
         self._skill_field_generation = 0
+        self._recovery_suppression_enabled = False
         # (card_id, map_role) -> 探查施放时刻（monotonic）：重进卡带时
         # 倒计时数字 OCR 不可靠，靠账本判定增益仍在进行并复用。
         self._search_cast_monotonic: dict[tuple[str, str], float] = {}
@@ -357,6 +358,9 @@ class Collector(SkillExecutionMixin):
         self, card, completed, remaining, required_actions, battle_actions, *, recovery_only,
     ) -> tuple[CollectionResult | None, bool]:
         """Follow the named route, allowing one restart while preserving completed targets."""
+        self._recovery_suppression_enabled = (
+            not recovery_only and "压制" in required_actions
+        )
         action_kwargs = {"recovery_only": True} if recovery_only else {}
         current_target_key = self.navigator.current_collection_target(card)
         keys = [target.key for target in card.targets]

@@ -72,7 +72,82 @@ class SkillExecutionMixin:
                 frame = self.navigator.wait_for_collection_field(captured)
                 if frame is not captured:
                     raise RuntimeError("地图复核后场景再次变化，停止采集技能操作")
+                if (
+                    self._recovery_suppression_enabled
+                    and target.role is not CollectionMapRole.MAIN_AREA
+                ):
+                    self._suppress_after_retreat(frame, card_id=card.card_id, map_role=target.role)
+                    captured = self.vision.capture()
+                    frame = self.navigator.wait_for_collection_field(captured)
+                    if frame is not captured:
+                        raise RuntimeError("退战压制后场景再次变化，停止采集")
         return frame, recovered
+
+    def _suppress_after_retreat(self, frame, *, card_id, map_role):
+        """Use the verified field frames for both icon and quota before an urgent cast."""
+        action = SUPPRESS_ACTION
+        existing = self.progress.get_action_record(card_id, map_role, action.name)
+        early = self._existing_record_outcome(action, existing)
+        if early is not None:
+            if not early.completed:
+                raise RuntimeError(early.message)
+            return
+        if self.progress.weekly_action_complete(card_id, map_role, action.name):
+            return
+        detections = []
+        counts = []
+        baseline = self.progress.trusted_action_baseline(action.name)
+        unresolved = self.progress.has_unresolved_action(card_id, map_role, action.name)
+        for sample in range(2):
+            if sample:
+                frame = self.vision.capture()
+                if self.navigator.wait_for_collection_field(frame) is not frame:
+                    raise RuntimeError("退战压制准备期间场景再次变化，停止采集")
+            detection = self.action_icons.detect(frame, action.icon)
+            detections.append(detection)
+            if detection.state is ActionIconState.AVAILABLE and not unresolved:
+                # First-use capacity needs agreement at both OCR scales as well as two frames.
+                scales = (SKILL_OCR_UPSCALE,) if baseline else (
+                    SKILL_OCR_UPSCALE, SKILL_OCR_FALLBACK_UPSCALE,
+                )
+                readings = [
+                    self._read_count(
+                        action, detection, frame=frame, ocr_scale=scale,
+                        known_limit=baseline[1] if baseline else None,
+                    ) for scale in scales
+                ]
+                counts.append(readings[0] if all(c == readings[0] for c in readings) else None)
+        first, last = detections
+        if not self._action_detection_is_stable(first, last):
+            raise RuntimeError("退战后压制图标未稳定确认，未点击")
+        detection = self._stable_detection(last, 2)
+        self._report_icon_detection(action, detection)
+        result = self._resume_pending_intent(
+            action, existing, detection, card_id=card_id, map_role=map_role,
+        )
+        if result is None and detection.state is ActionIconState.USED:
+            result = self._resolve_preexisting_used(
+                action, detection, card_id=card_id, map_role=map_role,
+            )
+        if result is not None:
+            if not result.completed:
+                raise RuntimeError(result.message)
+            return
+        count = counts[0] if len(counts) == 2 and counts[0] == counts[1] else None
+        before, failure = self._prepare_before_click(
+            action, detection, card_id=card_id, map_role=map_role,
+            observation=CountWindowObservation(count, count is not None),
+        )
+        if failure is not None:
+            raise RuntimeError(failure.message)
+        if not self.progress.arm_action(card_id, map_role, action.name, baseline=before):
+            raise RuntimeError("退战压制已被每日额度或未决动作阻止")
+        self._status("导航状态", "目标地图已确认，优先压制")
+        self.vision.click_client(
+            detection.match.center, frame.shape, after_sleep=ACTION_AFTER_CLICK_SECONDS,
+        )
+        # The ordinary action loop settles this durable intent; recovery never replays it.
+        self.progress.mark_action_clicked(card_id, map_role, action.name)
 
     @staticmethod
     def _action_detection_is_stable(
@@ -799,6 +874,10 @@ class SkillExecutionMixin:
             action.icon,
             require_stable=True,
         )
+        existing = self.progress.get_action_record(card_id, map_role, action.name)
+        early = self._existing_record_outcome(action, existing)
+        if early is not None:
+            return early
         self._report_icon_detection(action, detection)
         if (
             detection.state in {ActionIconState.AVAILABLE, ActionIconState.USED}
@@ -850,6 +929,10 @@ class SkillExecutionMixin:
     def _click_prepared_action(self, action, prepared, *, card_id, map_role):
         detection, before, generation = prepared
         frame, recovered = self._capture_skill_field()
+        existing = self.progress.get_action_record(card_id, map_role, action.name)
+        early = self._existing_record_outcome(action, existing)
+        if early is not None:
+            return early
         fresh = self.action_icons.detect(frame, action.icon)
         if (
             recovered or generation != self._skill_field_generation
@@ -976,6 +1059,7 @@ class SkillExecutionMixin:
         *,
         card_id: str,
         map_role: CollectionMapRole,
+        observation: CountWindowObservation | None = None,
     ) -> tuple[tuple[int, int] | None, SkillExecutionResult | None]:
         remaining_pending = self.progress.pending_count(action.name)
         # A fresh run may observe casts performed outside this task. During a
@@ -985,10 +1069,17 @@ class SkillExecutionMixin:
             if action.name in self._count_actions_seen or remaining_pending else None
         )
         baseline = self.progress.trusted_action_baseline(action.name)
-        observation = self._read_count_window(
-            action, detection, expected_used=expected_used,
-            expected_limit=baseline[1] if baseline is not None else None,
-        )
+        if observation is None:
+            observation = self._read_count_window(
+                action, detection, expected_used=expected_used,
+                expected_limit=baseline[1] if baseline is not None else None,
+            )
+        elif (
+            observation.count is None or not observation.is_stable
+            or (expected_used is not None and observation.count[0] != expected_used)
+            or (baseline is not None and observation.count[1] != baseline[1])
+        ):
+            observation = CountWindowObservation(None, False)
         before = observation.count
         if before is None:
             return None, SkillExecutionResult(
@@ -1281,6 +1372,7 @@ class SkillExecutionMixin:
         ocr_scale: float | None = None,
         known_limit: int | None = None,
         expected_used: int | None = None,
+        frame=None,
     ) -> tuple[int, int] | None:
         # The calibrated fixed ROI is intentionally reused at 3x after a 2x
         # miss.  This catches the reproduced dark ``2`` without widening the
@@ -1291,10 +1383,10 @@ class SkillExecutionMixin:
             else (SKILL_OCR_UPSCALE,)
         )
         for index, scale in enumerate(scales):
-            frame = self.vision.capture()
+            count_frame = self.vision.capture() if frame is None else frame
             if action.fixed_count_relative_roi is not None:
                 text = self.vision.ocr_text(
-                    frame,
+                    count_frame,
                     f"{action.name}次数",
                     relative_roi=action.fixed_count_relative_roi,
                     target_height=1080,
@@ -1302,11 +1394,11 @@ class SkillExecutionMixin:
                 )
             elif detection is not None:
                 text = self.vision.ocr_text(
-                    frame,
+                    count_frame,
                     f"{action.name}次数",
                     relative_roi=self._action_text_relative_roi(
                         detection,
-                        frame.shape,
+                        count_frame.shape,
                     ),
                     target_height=1080,
                     ocr_scale=scale,

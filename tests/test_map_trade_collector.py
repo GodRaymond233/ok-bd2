@@ -2,6 +2,7 @@
 
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import datetime
 from itertools import cycle
 from pathlib import Path
@@ -2467,6 +2468,111 @@ class CollectorSkillTest(unittest.TestCase):
                         collector._detect_action_icon(ABSORB_ICON, require_stable=True)
                 collector.navigator.current_collection_target.assert_called_once_with(card)
                 collector.vision.click_client.assert_not_called()
+
+    def test_retreat_confirms_map_then_suppresses_before_resuming_skills(self):
+        for scenario in (
+            "ready", "known_quota", "used", "settled", "armed", "clicked_used",
+            "exhausted", "count_changed", "wrong_map", "disabled", "town", "click_error",
+        ):
+            with self.subTest(scenario=scenario):
+                collector, clicks, _status, progress = self._skill_collector(
+                    {SUPPRESS_ACTION.icon.name: (
+                        ActionIconState.USED if scenario in {"used", "clicked_used"}
+                        else ActionIconState.AVAILABLE
+                    )}, {},
+                )
+                card = CARD_BY_ID["Q_sp1"]
+                target = card.targets[0 if scenario == "town" else 1]
+                role = target.role
+                if scenario == "settled":
+                    progress.mark_action_preexisting_used(card.card_id, role, "压制")
+                if scenario in {"known_quota", "armed", "clicked_used"}:
+                    progress.reconcile_pending("压制", (0, 80))
+                if scenario in {"armed", "clicked_used"}:
+                    progress.arm_action(card.card_id, role, "压制", baseline=(0, 80))
+                if scenario == "clicked_used":
+                    progress.mark_action_clicked(card.card_id, role, "压制")
+                battle = collector.vision.capture()
+                field = np.full_like(battle, 140)
+                current = [battle]
+                events = []
+
+                def wait(frame):
+                    if frame is battle:
+                        current[0] = field
+                        return field
+                    return frame
+
+                def map_key(_card):
+                    events.append("map")
+                    return None if scenario == "wrong_map" else target.key
+
+                reads = []
+                def read_count(_action, _detection, **kwargs):
+                    self.assertIs(field, kwargs["frame"])
+                    self.assertEqual(["map"], events)
+                    reads.append(kwargs["ocr_scale"])
+                    if scenario == "count_changed" and len(reads) > 2:
+                        return (1, 80)
+                    return (80 if scenario == "exhausted" else 0, 80)
+
+                click = collector.vision.click_client
+                def click_client(*args, **kwargs):
+                    self.assertEqual(["map"], events)
+                    self.assertEqual("armed", progress.get_action_record(
+                        card.card_id, role, "压制",
+                    )["state"])
+                    events.append("suppress")
+                    if scenario == "click_error":
+                        raise RuntimeError("click interrupted")
+                    click(*args, **kwargs)
+
+                collector._collection_target = (card, target)
+                collector._recovery_suppression_enabled = scenario != "disabled"
+                collector.vision.capture = lambda: current[0]
+                collector.navigator.wait_for_collection_field = wait
+                collector.navigator.current_collection_target = map_key
+                collector.vision.click_client = click_client
+                collector._read_count = read_count
+                collector._read_count_window = Mock(side_effect=AssertionError("slow window"))
+                collector.task.sleep = Mock(side_effect=AssertionError("preclick sleep"))
+                if scenario in {"armed", "exhausted", "count_changed", "wrong_map", "click_error"}:
+                    with self.assertRaises(RuntimeError):
+                        collector._capture_skill_field()
+                else:
+                    frame, recovered = collector._capture_skill_field()
+                    self.assertIs(field, frame)
+                    self.assertTrue(recovered)
+                if scenario in {"ready", "known_quota"}:
+                    self.assertEqual(["map", "suppress"], events)
+                    self.assertEqual(1, len(clicks))
+                    record = progress.get_action_record(card.card_id, role, "压制")
+                    self.assertEqual("clicked", record["state"])
+                    self.assertEqual(2 if scenario == "known_quota" else 4, len(reads))
+                    # Re-entering recovery with an unconfirmed intent never repeats the click.
+                    with self.assertRaisesRegex(RuntimeError, "未决"):
+                        collector._suppress_after_retreat(
+                            field, card_id=card.card_id, map_role=role,
+                        )
+                    self.assertEqual(1, len(clicks))
+                    detect = collector.action_icons.detect
+                    collector.action_icons.detect = lambda frame, icon: replace(
+                        detect(frame, icon), state=ActionIconState.USED,
+                    )
+                    result = collector._use_action(
+                        SUPPRESS_ACTION, card_id=card.card_id, map_role=role,
+                    )
+                    self.assertTrue(result.completed)
+                    self.assertTrue(progress.weekly_action_complete(card.card_id, role, "压制"))
+                    self.assertEqual(1, len(clicks))
+                else:
+                    self.assertEqual([], clicks)
+                if scenario == "click_error":
+                    self.assertEqual("armed", progress.get_action_record(
+                        card.card_id, role, "压制",
+                    )["state"])
+                if scenario in {"used", "clicked_used"}:
+                    self.assertTrue(progress.weekly_action_complete(card.card_id, role, "压制"))
 
     def test_preclick_encounter_retries_with_fresh_counts_before_reserving(self):
         for first_count in ((0, 21), None):
