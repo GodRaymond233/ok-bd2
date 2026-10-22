@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   INITIAL_STATS,
   appendLogs,
+  captureSummary,
   executorLabel,
   levelName,
   logFromEvent,
@@ -86,4 +87,21 @@ test("executor summary", () => {
   assert.equal(executorLabel({ ...base, paused: true }), "已暂停");
   assert.equal(executorLabel({ ...base, starting: true }), "正在启动游戏");
   assert.equal(executorLabel({ ...base, running: false }), "未启动");
+});
+
+test("capture summary shows the method in use and how it was chosen", () => {
+  const capture_methods = ["WGC", "BitBlt_RenderFull", "ForegroundBitBlt"].map((id) => ({
+    id,
+    label: id,
+    selected: false,
+  }));
+  const ui = { capture_methods, capture_preference: null, capture_in_use: "WGC" };
+  assert.equal(captureSummary(ui), "WGC（自动选择）");
+  assert.equal(captureSummary({ ...ui, capture_in_use: null }), "未使用（自动选择）");
+  assert.equal(captureSummary({ ...ui, capture_preference: "WGC" }), "WGC");
+  assert.equal(
+    captureSummary({ ...ui, capture_preference: "BitBlt_RenderFull" }),
+    "WGC（设置为 BitBlt_RenderFull）",
+  );
+  assert.equal(captureSummary({ ...ui, capture_preference: "WGC", capture_in_use: null }), "未使用（设置为 WGC）");
 });

@@ -20,11 +20,15 @@ from fastapi import FastAPI, WebSocket
 from fastapi.testclient import TestClient
 from ok import BaseTask, Config
 from ok.core.events import EventMessage
+from ok.device.capture_methods import bitblt
+from ok.device.capture_methods.bitblt import BitBltCaptureMethod, ForegroundBitBltCaptureMethod
+from ok.device.capture_methods.windows_graphics import WindowsGraphicsCaptureMethod
 from ok.task.exceptions import TaskDisabledException
 from ok.task.TaskExecutor import TaskExecutor
 from ok.ui.web import app as framework
 from starlette.websockets import WebSocketDisconnect
 
+from src.config import config as bd2_config
 from src.desktop.app import adapt_runtime, create_app, frontend_ready
 from src.desktop.config_store import save_config
 from src.desktop.events import EventBuffer, install_events
@@ -376,6 +380,139 @@ class DesktopAppTest(unittest.TestCase):
                 break
             threading.Event().wait(0.02)
         ready.assert_called_once()
+
+
+class FakeDeviceManager:
+    """The parts of ok-script's DeviceManager that capture_ui reads, with BD2's methods."""
+
+    def __init__(self, device, capture="windows", capture_method=None):
+        self.device = device
+        self.config = {"capture": capture, "interaction": ""}
+        self.capture_method = capture_method
+
+    def get_preferred_device(self):
+        return self.device
+
+    def get_devices(self):
+        return [self.device]
+
+    def get_preferred_capture(self):
+        return self.config["capture"]
+
+    def available_capture_methods(self, device=None):
+        return list(bd2_config["windows"]["capture_method"])
+
+    def available_interaction_methods(self, device=None):
+        return ["BD2Interaction"]
+
+    def set_capture(self, capture):
+        self.config["capture"] = capture
+
+
+GAME_WINDOW = {
+    "imei": "pc_660888",
+    "device": "windows",
+    "nick": "BrownDust II",
+    "address": "",
+    "connected": True,
+    "resolution": "1920x1080",
+}
+# What update_pc_device records while the game is not running.
+NO_GAME_WINDOW = {
+    "imei": "pc",
+    "device": "windows",
+    "nick": "BrownDust II.exe",
+    "address": "",
+    "connected": False,
+}
+
+
+def new(capture_class):
+    """A capture object without a window; capture_in_use only looks at its class."""
+    return capture_class.__new__(capture_class)
+
+
+class CaptureUiTest(unittest.TestCase):
+    """The game window card of the link check page (F7 of the stage 1 Windows checks)."""
+
+    def client(self, device, **manager_options):
+        manager = FakeDeviceManager(device, **manager_options)
+        engine = SimpleNamespace(
+            config={},
+            task_executor=make_executor(),
+            device_manager=manager,
+            headless_app=SimpleNamespace(
+                start_controller=SimpleNamespace(start=Mock(), starting=False),
+                overlay_state=lambda: {},
+                tr=lambda text: text,
+            ),
+            start_runtime=Mock(),
+            quit=Mock(),
+        )
+        app = framework.create_web_app({}, ok_instance=engine)
+        adapt_runtime(app.state.runtime)
+        return TestClient(app)
+
+    def capture_ui(self, device, **manager_options):
+        with self.client(device, **manager_options) as client:
+            response = client.get("/api/ui/capture")
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
+    def test_automatic_choice_reports_the_method_in_use(self):
+        # U4: devices.json keeps capture="windows" and ok-script started WGC.
+        ui = self.capture_ui(GAME_WINDOW, capture_method=new(WindowsGraphicsCaptureMethod))
+        self.assertIsNone(ui["capture_preference"])
+        self.assertEqual(ui["capture_in_use"], "WGC")
+        self.assertFalse(any(item["selected"] for item in ui["capture_methods"]))
+        self.assertEqual(
+            [item["id"] for item in ui["capture_methods"]],
+            ["WGC", "BitBlt_RenderFull", "ForegroundBitBlt"],
+        )
+
+    def test_chosen_method_and_fallback(self):
+        for render_full, expected in ((True, "BitBlt_RenderFull"), (False, "BitBlt")):
+            with (
+                self.subTest(render_full=render_full),
+                patch.object(bitblt, "render_full", render_full),
+            ):
+                ui = self.capture_ui(
+                    GAME_WINDOW,
+                    capture="BitBlt_RenderFull",
+                    capture_method=new(BitBltCaptureMethod),
+                )
+                self.assertEqual(ui["capture_preference"], "BitBlt_RenderFull")
+                self.assertEqual(ui["capture_in_use"], expected)
+        ui = self.capture_ui(
+            GAME_WINDOW, capture="WGC", capture_method=new(ForegroundBitBltCaptureMethod)
+        )
+        self.assertEqual(ui["capture_preference"], "WGC")
+        self.assertEqual(ui["capture_in_use"], "ForegroundBitBlt")
+
+    def test_nothing_in_use_without_a_connected_window(self):
+        # ok-script keeps its last capture object after the game window is gone.
+        ui = self.capture_ui(NO_GAME_WINDOW, capture_method=new(WindowsGraphicsCaptureMethod))
+        self.assertIsNone(ui["capture_in_use"])
+        self.assertIsNone(self.capture_ui(GAME_WINDOW)["capture_in_use"])
+
+    def test_device_labels_are_chinese(self):
+        for device, label in (
+            (GAME_WINDOW, "PC 已连接：BrownDust II 1920x1080"),
+            (NO_GAME_WINDOW, "PC 未连接：BrownDust II.exe"),
+            ({"imei": "emulator-5554", "device": "adb", "connected": False}, "安卓 未连接"),
+        ):
+            with self.subTest(label=label):
+                (payload,) = self.capture_ui(device)["devices"]
+                self.assertEqual(payload["label"], label)
+                self.assertEqual(payload["id"], device["imei"])
+                self.assertEqual(payload["connected"], device["connected"])
+
+    def test_selecting_a_method_returns_the_same_payload(self):
+        with self.client(GAME_WINDOW, capture_method=new(WindowsGraphicsCaptureMethod)) as client:
+            ui = client.post("/api/capture-methods/select", json={"id": "BitBlt_RenderFull"}).json()
+        self.assertEqual(ui["capture_preference"], "BitBlt_RenderFull")
+        self.assertEqual(ui["capture_in_use"], "WGC")
+        self.assertEqual(ui["devices"][0]["label"], "PC 已连接：BrownDust II 1920x1080")
 
 
 class ConfigPersistenceTest(unittest.TestCase):

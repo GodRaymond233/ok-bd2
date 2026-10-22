@@ -7,6 +7,7 @@ import {
   ACTION_LABELS,
   INITIAL_STATS,
   appendLogs,
+  captureSummary,
   executorLabel,
   levelName,
   logFromEvent,
@@ -130,7 +131,7 @@ export function App() {
   const status = ui?.status;
   const current = status?.current_task ?? null;
   const visibleTasks = tasks.filter((task) => task.visible);
-  const selectedCapture = ui?.capture_methods.find((item) => item.selected)?.label ?? t("无");
+  const capture = ui ? captureSummary(ui) : "…";
   const selectedInteraction = ui?.interaction_methods.find((item) => item.selected)?.label ?? t("无");
 
   return (
@@ -208,7 +209,7 @@ export function App() {
                 : t("未找到游戏窗口")}
             </dd>
             <dt>{t("截图方式")}</dt>
-            <dd>{selectedCapture}</dd>
+            <dd>{capture}</dd>
             <dt>{t("交互方式")}</dt>
             <dd>{selectedInteraction}</dd>
           </dl>

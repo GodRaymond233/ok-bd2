@@ -66,7 +66,10 @@ def stand_in_engine():
     )
     exit_event = threading.Event()
     devices = SimpleNamespace(
-        get_preferred_device=lambda: None, get_devices=lambda: [], refresh=lambda: True
+        get_preferred_device=lambda: None,
+        get_devices=lambda: [],
+        get_preferred_capture=lambda: "windows",
+        refresh=lambda: True,
     )
     return SimpleNamespace(
         config={},

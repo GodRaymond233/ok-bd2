@@ -18,7 +18,7 @@
   pyappify.yml                   测试用启动器配置（更新源 = 本地测试仓库，入口 = main_desktop.py）
   update-repo.git\               本地测试仓库（tag v0.9.0；U10 再加 v0.9.1）
   test-package-notes.md          本说明
-  data\logs\                     启动器日志
+  logs\                          启动器日志（app.<日期>）
   data\apps\ok-bd2\
     working\                     核心代码与 configs\、logs\（由启动器同步）
     python\                      启动器安装的 Python 3.12
@@ -32,7 +32,7 @@
 |---|---|
 | 外壳日志 | `data\apps\ok-bd2\working\logs\desktop-shell.log` |
 | 核心日志 | `data\apps\ok-bd2\working\logs\` 下的其他文件 |
-| 启动器日志 | `data\logs\` |
+| 启动器日志 | `logs\app.<日期>`（测试包根目录下，不在 `data\` 里） |
 
 验证页右上角的"打开日志文件夹"会直接打开核心日志所在的文件夹。
 
@@ -83,7 +83,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File desktop\scripts\build-test-p
 ### U4 连接游戏（需要游戏）
 
 1. 先手动打开游戏，再启动客户端（或在验证页点"刷新窗口"）。
-2. 预期："游戏窗口与截图方式"显示游戏窗口、分辨率和截图方式。
+2. 预期："游戏窗口与截图方式"的"窗口"显示 `PC 已连接：BrownDust II 1920x1080`（分辨率按实际窗口），"截图方式"显示实际在用的方式，默认配置下是 `WGC（自动选择）`。没有找到游戏窗口时，"截图方式"显示"未使用"。
 
 回传：截图。
 
@@ -119,6 +119,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File desktop\scripts\build-test-p
 
 ### U9 执行器锁与旧版（部分需要游戏）
 
+启动器只允许开一个（见"已知限制"）。第 2、3 步要求正式版和测试包同时运行，开始前先和 Codex 确认第二个程序从哪里启动。
+
 1. 新代码的两个入口：客户端运行时，在 PowerShell 执行下面的命令（`<测试包>` 换成实际路径）。预期：弹出"……正在控制游戏。同一时间只能运行一个 ok-bd2，请先退出它。"，然后这个窗口退出。
 
    ```powershell
@@ -137,14 +139,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File desktop\scripts\build-test-p
 2. 由 Codex 或你添加一个更新版本：
 
    ```powershell
-   powershell -NoProfile -ExecutionPolicy Bypass -File desktop\scripts\build-test-package.ps1 -Output D:\ok-bd2-desktop-test -AddUpdateTag
+   powershell -NoProfile -ExecutionPolicy Bypass -File desktop\scripts\build-test-package.ps1 -Output <测试包> -AddUpdateTag
    ```
 
 3. 启动 `ok-bd2.exe`，按启动器提示更新到 v0.9.1，然后启动。
 4. 检查：
    - 验证页顶部"核心"后面的版本是 v0.9.1；
    - `working\configs\`、`shell\0.1.0\`、`shell-data\` 都还在；
-   - 在 `data\logs\` 里搜索 `cnb.cool` 和 `github.com`，应该没有结果。
+   - 在启动器日志 `logs\` 里搜索 `cnb.cool` 和 `github.com`，应该没有结果。
 5. （可选，只用副本）在启动器里切换配置（国内 ⇄ 海外，两个配置都指向本地仓库），记录 `working\configs\` 是否被删除。
 
 回传：更新前后的目录列表，以及启动器日志。
@@ -157,4 +159,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File desktop\scripts\build-test-p
 - 启动器"安装/切换配置"会先删除整个 `working\`，`working\configs\` 也会一起删除。这是现有启动器的行为，新核心的配置备份无法保护首次启动前就被删掉的文件。所以测试包只放副本。
 - 旧版（v1.3.19）不认识新的执行器锁。新版只检测旧版、拒绝开始任务，不会结束旧版。
 - 外壳没有签名，Defender 可能会提示。
-- 删除测试包：退出客户端后，直接删除整个文件夹。如果启动器创建过快捷方式，需要另外手动删除。
+- **开始菜单快捷方式会被测试包改写。** 启动器每次成功启动应用后，都会按应用名重写开始菜单里的 `ok-bd2.lnk` 和 `ok-bd2 启动器.lnk`；桌面上已经有 `ok-bd2.lnk` 时，桌面上这两个也会被改写。测试包和正式版的应用名都是 `ok-bd2`，所以测试包启动过之后，这些快捷方式指向测试包。测试期间请直接双击各自文件夹里的 `ok-bd2.exe`，不要用开始菜单或桌面的 ok-bd2 入口。测试结束后，用正式版文件夹里的 `ok-bd2.exe` 正常启动一次，它会把快捷方式改回正式版。
+- **测试包和正式版的启动器不能同时开着。** 两个启动器是同一个程序，只允许开一个：另一个已经开着时，再双击 `ok-bd2.exe` 只会把已经开着的那个调到前台。客户端运行期间启动器也一直开着，所以要换另一边时，先退出客户端并关闭它的启动器。
+- 删除测试包：退出客户端后，直接删除整个文件夹。删除前先按上面"开始菜单快捷方式"一条把快捷方式改回正式版，否则开始菜单里的 ok-bd2 入口会失效。

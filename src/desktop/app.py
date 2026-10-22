@@ -38,6 +38,55 @@ MISSING_UI_PAGE = """<!doctype html>
 <p>核心服务已启动，但没有找到界面文件。开发时请在 desktop/ui 目录运行 npm ci 和 npm run build。</p>
 </body></html>"""
 
+DEVICE_KINDS = {"windows": "PC", "adb": "安卓", "browser": "浏览器"}
+
+# ok-script's capture classes by the identifiers that the windows config and
+# select_capture use. BitBltCaptureMethod serves both BitBlt and BitBlt_RenderFull;
+# ok-script keeps that choice in bitblt.render_full.
+CAPTURE_IDS = {
+    "WindowsGraphicsCaptureMethod": "WGC",
+    "ForegroundBitBltCaptureMethod": "ForegroundBitBlt",
+    "DesktopDuplicationCaptureMethod": "DXGI",
+    "BrowserCaptureMethod": "browser",
+    "ADBCaptureMethod": "adb",
+    "NemuIpcCaptureMethod": "ipc",
+}
+
+
+def device_payload(device, preferred_id):
+    """ok-script's device entry with a Chinese label (ok-script labels it in English)."""
+    payload = framework._device_payload(device, preferred_id)
+    kind = DEVICE_KINDS.get(payload["kind"], payload["kind"] or "设备")
+    state = "已连接" if payload["connected"] else "未连接"
+    details = " ".join(
+        str(value)
+        for value in (device.get("nick"), device.get("address"), device.get("resolution"))
+        if value
+    )
+    payload["label"] = f"{kind} {state}：{details}" if details else f"{kind} {state}"
+    return payload
+
+
+def capture_in_use(manager):
+    """Identifier of the capture method running for the connected window, if any.
+
+    The config may hold ``windows`` (pick automatically, in the configured order) instead
+    of a method, and a preferred method that fails falls back to the next one, so the
+    config value does not say which method runs.
+    """
+    method = getattr(manager, "capture_method", None)
+    preferred = manager.get_preferred_device()
+    if method is None or not (preferred and preferred.get("connected")):
+        return None
+    for cls in type(method).__mro__:
+        if cls.__name__ == "BitBltCaptureMethod":
+            from ok.device.capture_methods import bitblt
+
+            return "BitBlt_RenderFull" if bitblt.render_full else "BitBlt"
+        if cls.__name__ in CAPTURE_IDS:
+            return CAPTURE_IDS[cls.__name__]
+    return type(method).__name__
+
 
 def task_payload(task):
     with config_lock:
@@ -266,6 +315,24 @@ def adapt_runtime(runtime, legacy_check=None):
     runtime.select_device = device_command(runtime.select_device)
     runtime.select_capture = device_command(runtime.select_capture)
     runtime.select_interaction = device_command(runtime.select_interaction)
+
+    original_capture_ui = runtime.capture_ui
+
+    def capture_ui():
+        ui = original_capture_ui()
+        manager = runtime.device_manager
+        preferred = manager.get_preferred_device()
+        preferred_id = preferred.get("imei") if preferred else None
+        ui["devices"] = [device_payload(device, preferred_id) for device in manager.get_devices()]
+        preference = manager.get_preferred_capture()
+        methods = {item["id"] for item in ui["capture_methods"]}
+        # None: no method chosen, the device manager tries capture_methods in order.
+        ui["capture_preference"] = preference if preference in methods else None
+        ui["capture_in_use"] = capture_in_use(manager)
+        return ui
+
+    # The routes, the select_* operations and the event stream all go through this.
+    runtime.capture_ui = capture_ui
 
 
 def frontend_ready(config, runtime):

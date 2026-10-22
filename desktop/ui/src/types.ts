@@ -44,6 +44,10 @@ export interface CaptureUi {
   status: ExecutorStatus;
   devices: Device[];
   capture_methods: Choice[];
+  /** Chosen capture method; null when the core tries capture_methods in order. */
+  capture_preference: string | null;
+  /** Capture method running for the connected game window, if any. */
+  capture_in_use: string | null;
   interaction_methods: Choice[];
 }
 

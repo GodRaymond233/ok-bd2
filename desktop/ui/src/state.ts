@@ -1,6 +1,6 @@
 // Pure state helpers for the link check page (tested with node --test).
 import { t } from "./i18n.ts";
-import type { EventPayload, TaskPayload } from "./types.ts";
+import type { CaptureUi, EventPayload, TaskPayload } from "./types.ts";
 
 export interface LogLine {
   key: number;
@@ -136,4 +136,18 @@ export function executorLabel(status: {
     return t("已暂停");
   }
   return status.running ? t("空闲") : t("未启动");
+}
+
+export function captureSummary(
+  ui: Pick<CaptureUi, "capture_methods" | "capture_preference" | "capture_in_use">,
+): string {
+  const label = (id: string) => ui.capture_methods.find((item) => item.id === id)?.label ?? id;
+  const inUse = ui.capture_in_use ? label(ui.capture_in_use) : t("未使用");
+  if (!ui.capture_preference) {
+    return `${inUse}（${t("自动选择")}）`;
+  }
+  if (ui.capture_preference === ui.capture_in_use) {
+    return inUse;
+  }
+  return `${inUse}（${t("设置为")} ${label(ui.capture_preference)}）`;
 }
