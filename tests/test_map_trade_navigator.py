@@ -53,6 +53,7 @@ from src.tasks.map_trade.navigator_constants import (
     StoryBadgeCandidate,
     StoryBadgeDetection,
 )
+from src.tasks.map_trade.navigator_sandbox import TELEPORT_PAGE_ARROW_REFERENCE
 from src.tasks.map_trade.vision import Vision
 from src.utils.image_utils import read_template_image
 from tests.helpers import FakeClock
@@ -1562,7 +1563,7 @@ class NavigatorTest(unittest.TestCase):
             ScreenState.AREA_MAP,
             map_page_mode=MapPageMode.DIRECT_TELEPORT,
         )
-        navigator._wait_for_collection_teleport_map = lambda _card, **_kwargs: self._area_context(
+        navigator._wait_for_collection_teleport_map = lambda _card: self._area_context(
             card.targets[0].title,
             card.targets[0].key,
             right=True,
@@ -1621,7 +1622,7 @@ class NavigatorTest(unittest.TestCase):
             card.targets[2].key,
             left=True,
         )
-        navigator._wait_for_collection_teleport_map = lambda _card, **_kwargs: initial
+        navigator._wait_for_collection_teleport_map = lambda _card: initial
         navigator._move_area_map = lambda _card, _context, direction: (
             moves.append(direction) or next(contexts)
         )
@@ -1693,13 +1694,9 @@ class NavigatorTest(unittest.TestCase):
             left=True,
             right=True,
         )
-        wait_modes = []
-
-        def wait_for_map(_card, **kwargs):
-            wait_modes.append(kwargs.get("allow_unresolved"))
-            return hotel_initial
-
-        navigator._wait_for_collection_teleport_map = wait_for_map
+        clock = [0.0]
+        navigator.task.sleep = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+        navigator._capture_area_map_context = Mock(return_value=hotel_initial)
         navigator._move_area_map = lambda _card, _context, direction: (
             moves.append(direction) or next(contexts)
         )
@@ -1712,10 +1709,11 @@ class NavigatorTest(unittest.TestCase):
             return_value=NavigationResult(True, ScreenState.SANDBOX)
         )
 
-        result = navigator.prepare_collection_main_area(card.card_id)
+        with patch("src.tasks.map_trade.navigator_sandbox.monotonic", lambda: clock[0]):
+            result = navigator.prepare_collection_main_area(card.card_id)
 
         self.assertTrue(result.success)
-        self.assertEqual([True], wait_modes)
+        self.assertEqual(2, navigator._capture_area_map_context.call_count)
         self.assertEqual(["left", "left", "left"], moves)
         self.assertEqual(
             [(teleport.center, (1080, 1920, 3), 0.0)],
@@ -1723,77 +1721,141 @@ class NavigatorTest(unittest.TestCase):
         )
         navigator._confirm_collection_arrival.assert_called_once_with(card, card.targets[0])
 
-    def test_wait_for_collection_teleport_map_accepts_unresolved_submap(self):
+    def test_wait_for_collection_teleport_map_confirms_stable_transit_titles(self):
         card = CARD_BY_ID["Q_sp10"]
-        hotel_context = self._area_context(
-            "安全 埃兰旅馆",
-            target_key=None,
-            left=True,
-            right=True,
-        )
-        navigator = Navigator(SimpleNamespace(), SimpleNamespace())
-        navigator._capture_area_map_context = lambda _card: hotel_context
+        for mode in (MapPageMode.DIRECT_TELEPORT, MapPageMode.GENERATE_TELEPORT):
+            for title in ("安全 埃兰旅馆", "战斗 君主之墓", "战斗 蜥蜴人祭坛"):
+                with self.subTest(mode=mode, title=title):
+                    observed = self._area_context(title, page_mode=mode)
+                    clock = [0.0]
+                    navigator = Navigator(SimpleNamespace(
+                        sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+                    ), SimpleNamespace())
+                    navigator._capture_area_map_context = Mock(return_value=observed)
+                    with patch("src.tasks.map_trade.navigator_sandbox.monotonic", lambda: clock[0]):
+                        context = navigator._wait_for_collection_teleport_map(card, timeout=1)
+                    self.assertIs(context, observed)
+                    self.assertEqual(2, navigator._capture_area_map_context.call_count)
+                    self.assertIsNone(context.resolved_target_key)
 
-        context = navigator._wait_for_collection_teleport_map(
-            card,
-            timeout=0.1,
-            allow_unresolved=True,
-        )
-
-        self.assertIsInstance(context, AreaMapContext)
-        self.assertEqual("安全 埃兰旅馆", context.raw_text)
-        self.assertIsNone(context.resolved_target_key)
-        self.assertTrue(context.left_arrow is not None)
-
-    def test_wait_for_collection_teleport_map_strict_mode_rejects_unresolved_submap(self):
+    def test_wait_for_collection_teleport_map_requires_consecutive_page_evidence(self):
         card = CARD_BY_ID["Q_sp10"]
-        hotel_context = self._area_context(
-            "安全 埃兰旅馆",
-            target_key=None,
-            left=True,
-            right=True,
+        transit = self._area_context("安全 埃兰旅馆", left=True, right=True)
+        unknown = replace(transit, map_page_mode=MapPageMode.UNKNOWN)
+        large_map = replace(transit, map_page_mode=MapPageMode.SANDBOX_LARGE_MAP)
+        generated = replace(transit, map_page_mode=MapPageMode.GENERATE_TELEPORT)
+        ambiguous = replace(transit, candidate_target_keys=("main_area", "battle_area_1"))
+        cases = (
+            ("changing title", [transit, replace(transit, normalized_text="其他旅馆")] * 2, False),
+            ("blank title", [replace(transit, normalized_text="")] * 4, False),
+            ("large map", [large_map] * 4, False),
+            ("unknown", [unknown] * 4, False),
+            ("ambiguous targets", [ambiguous], False),
+            ("changing mode", [transit, generated] * 2, False),
+            ("interrupted", [transit, unknown] * 2, False),
+            ("fresh confirmation after interruption", [transit, unknown, transit, transit], True),
         )
-        navigator = Navigator(
-            SimpleNamespace(sleep=lambda _seconds: None),
-            SimpleNamespace(),
-        )
-        navigator._capture_area_map_context = lambda _card: hotel_context
+        for name, observations, accepted in cases:
+            with self.subTest(case=name):
+                samples = iter(observations)
+                clock = [0.0]
+                navigator = Navigator(SimpleNamespace(
+                    sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+                ), SimpleNamespace(click_client=Mock()))
+                navigator._capture_area_map_context = Mock(
+                    side_effect=lambda _card: next(samples, observations[-1]),
+                )
+                with patch("src.tasks.map_trade.navigator_sandbox.monotonic", lambda: clock[0]):
+                    result = navigator._wait_for_collection_teleport_map(
+                        card, timeout=AREA_MAP_CHANGE_INTERVAL * 3.5,
+                    )
+                if accepted:
+                    self.assertIs(result, transit)
+                    self.assertEqual(4, navigator._capture_area_map_context.call_count)
+                else:
+                    self.assertFalse(result.success)
+                navigator.vision.click_client.assert_not_called()
+        for signal in (TaskDisabledException, FinishedException):
+            with self.subTest(signal=signal):
+                navigator._capture_area_map_context = Mock(side_effect=signal)
+                with self.assertRaises(signal):
+                    navigator._wait_for_collection_teleport_map(card)
 
-        with patch(
-            "src.tasks.map_trade.navigator_sandbox.monotonic",
-            side_effect=(100.0, 100.0, 101.0),
+    def test_collection_routes_seek_named_targets_after_hunting_ground_transit(self):
+        left = MatchResult(0.99, (100, 500), (30, 30), pixel_score=0.98)
+        right = MatchResult(0.99, (1500, 500), (30, 30), pixel_score=0.98)
+        teleport = MatchResult(0.99, (880, 450), (60, 60), 0.95, 0.93)
+        for card_id, transit_title in (
+            ("Q_sp5", "战斗 君主之墓"), ("Q_sp7", "战斗 蜥蜴人祭坛"),
+            ("Q_sp10", "安全 埃兰旅馆"),
         ):
-            result = navigator._wait_for_collection_teleport_map(card, timeout=0.1)
+            for operation in ("initialize", "advance", "target absent"):
+                with self.subTest(card=card_id, operation=operation):
+                    card = CARD_BY_ID[card_id]
+                    target = card.targets[0 if operation == "initialize" else 1]
+                    pages = [self._area_context(
+                        item.title, item.key, teleports=(teleport,),
+                    ) for item in card.targets if operation != "target absent" or item != target]
+                    pages.append(self._area_context(transit_title))
+                    pages = [replace(page,
+                        left_arrow=left if index else None,
+                        right_arrow=right if index < len(pages) - 1 else None,
+                    ) for index, page in enumerate(pages)]
+                    position = [len(pages) - 1]
+                    clock = [0.0]
+                    destination_clicks = []
 
-        self.assertFalse(result.success)
-        self.assertIn("未在限定时间内", result.message)
+                    def click(point, _shape, **_kwargs):
+                        if point in (left.center, TELEPORT_PAGE_ARROW_REFERENCE["left"]):
+                            position[0] = max(0, position[0] - 1)
+                        elif point in (right.center, TELEPORT_PAGE_ARROW_REFERENCE["right"]):
+                            position[0] = min(len(pages) - 1, position[0] + 1)
+                        else:
+                            self.assertEqual(teleport.center, point)
+                            self.assertEqual(target.key, pages[position[0]].resolved_target_key)
+                            destination_clicks.append(point)
 
-    def test_advance_collection_map_rejects_unresolved_initial_map(self):
-        card = CARD_BY_ID["Q_sp10"]
-        current, target = card.targets[1:]
-        hotel_context = self._area_context(
-            "安全 埃兰旅馆",
-            target_key=None,
-            left=True,
-            right=True,
-        )
-        clock = [0.0]
-        navigator = Navigator(
-            SimpleNamespace(sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds)),
-            SimpleNamespace(click_client=Mock()),
-        )
-        navigator.open_teleport_map_from_sandbox = lambda: NavigationResult(
-            True,
-            ScreenState.AREA_MAP,
-            map_page_mode=MapPageMode.DIRECT_TELEPORT,
-        )
-        navigator._capture_area_map_context = lambda _card: hotel_context
-        with patch("src.tasks.map_trade.navigator_sandbox.monotonic", lambda: clock[0]):
-            result = navigator.advance_collection_map(card.card_id, current, target)
-
-        self.assertFalse(result.success)
-        self.assertIn("未在限定时间内", result.message)
-        navigator.vision.click_client.assert_not_called()
+                    navigator = Navigator(SimpleNamespace(
+                        info_set=Mock(),
+                        sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+                    ), SimpleNamespace(click_client=click))
+                    sandbox = NavigationResult(True, ScreenState.SANDBOX)
+                    opened = NavigationResult(
+                        True, ScreenState.AREA_MAP, map_page_mode=MapPageMode.DIRECT_TELEPORT,
+                    )
+                    navigator.ensure_small_minimap = Mock(return_value=True)
+                    navigator._click_sandbox_teleport_interaction = Mock(return_value=False)
+                    navigator.open_teleport_map_from_sandbox = Mock(side_effect=(
+                        (opened,) if operation == "initialize" else
+                        (NavigationResult(False, ScreenState.SANDBOX), opened)
+                    ))
+                    navigator._restore_navigation_field = Mock(return_value=sandbox)
+                    navigator._walk_to_circle_neighbour = Mock(return_value=None)
+                    navigator._walk_to_sandbox_teleport_interaction = Mock(
+                        return_value=NavigationResult(False, ScreenState.SANDBOX),
+                    )
+                    navigator._travel_to_hunting_ground = Mock(return_value="狩猎场")
+                    navigator._capture_area_map_context = lambda _card: pages[position[0]]
+                    navigator._wait_for_loading_screen = Mock(return_value=True)
+                    navigator._wait_for_story_sandbox = Mock(return_value=sandbox)
+                    navigator._confirm_collection_arrival = Mock(return_value=sandbox)
+                    with patch("src.tasks.map_trade.navigator_sandbox.monotonic", lambda: clock[0]):
+                        result = (
+                            navigator.prepare_collection_main_area(card_id, via_hunting_ground=True)
+                            if operation == "initialize" else
+                            navigator.advance_collection_map(card_id, card.targets[0], target)
+                        )
+                    navigator._travel_to_hunting_ground.assert_called_once_with()
+                    if operation == "target absent":
+                        self.assertFalse(result.success)
+                        self.assertIn("左右翻页都未找到", result.message)
+                        self.assertEqual([], destination_clicks)
+                        navigator._confirm_collection_arrival.assert_not_called()
+                        self.assertLess(clock[0], 60)
+                    else:
+                        self.assertTrue(result.success)
+                        self.assertEqual([teleport.center], destination_clicks)
+                        navigator._confirm_collection_arrival.assert_called_once_with(card, target)
 
     def test_advance_collection_map_moves_back_exactly_one_confirmed_page(self):
         card = CARD_BY_ID["Q_sp1"]

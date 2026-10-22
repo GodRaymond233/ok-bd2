@@ -857,6 +857,31 @@ class CollectionRunTest(unittest.TestCase):
                     )
                     self.assertTrue(progress.state.card_verified(card_id))
 
+    def test_route_failure_preserves_destination_and_recovery_errors(self):
+        card = CARD_BY_ID["Q_sp5"]
+        navigator = SimpleNamespace(
+            current_collection_target=lambda _: card.targets[0].key,
+            prepare_collection_main_area=Mock(return_value=NavigationResult(
+                False, ScreenState.AREA_MAP, "箱庭恢复未确认",
+            )),
+        )
+        collector = Collector(
+            SimpleNamespace(info_set=Mock()), object(), navigator, SimpleNamespace(),
+        )
+        collector._go_to_collection_target = Mock(return_value=NavigationResult(
+            False, ScreenState.AREA_MAP, "传送页目标未找到",
+        ))
+        result, depleted = collector._collect_card_targets(
+            card, set(), {card.targets[1].key}, ("吸收",), (), recovery_only=True,
+        )
+        self.assertFalse(result.success)
+        self.assertFalse(depleted)
+        self.assertIn(f"前往{card.targets[1].title}失败：传送页目标未找到", result.message)
+        self.assertIn("回起点失败：箱庭恢复未确认", result.message)
+        navigator.prepare_collection_main_area.assert_called_once_with(
+            card.card_id, via_hunting_ground=True,
+        )
+
     def test_resumed_route_passes_through_the_completed_middle_map(self):
         card = CARD_BY_ID["Q_sp14"]
         navigator = SimpleNamespace(

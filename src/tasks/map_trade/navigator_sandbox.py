@@ -1484,10 +1484,11 @@ class SandboxNavigationMixin:
         self,
         card: CardSpec,
         timeout: float = TELEPORT_MAP_OPEN_TIMEOUT,
-        allow_unresolved: bool = False,
     ) -> AreaMapContext | NavigationResult:
+        """Confirm a route target or a stable transit page before seeking a target."""
         end_at = monotonic() + max(0.0, timeout)
         last = None
+        previous = None
         while monotonic() <= end_at:
             last = self._capture_area_map_context(card)
             if last.is_area_map:
@@ -1500,11 +1501,15 @@ class SandboxNavigationMixin:
                 if last.resolved_target_key is not None:
                     return last
                 if (
-                    allow_unresolved
-                    and bool(last.normalized_text)
-                    and (last.left_arrow is not None or last.right_arrow is not None)
+                    last.normalized_text
+                    and previous is not None
+                    and last.normalized_text == previous.normalized_text
+                    and last.map_page_mode == previous.map_page_mode
                 ):
                     return last
+                previous = last
+            else:
+                previous = None
             self.task.sleep(AREA_MAP_CHANGE_INTERVAL)
         return NavigationResult(
             False,
@@ -1657,7 +1662,7 @@ class SandboxNavigationMixin:
             opened = self._open_teleport_map_anywhere(card)
         if not opened.success:
             return opened
-        context = self._wait_for_collection_teleport_map(card, allow_unresolved=True)
+        context = self._wait_for_collection_teleport_map(card)
         if isinstance(context, NavigationResult):
             return context
         if context.map_page_mode != opened.map_page_mode:

@@ -410,7 +410,10 @@ class Collector(SkillExecutionMixin):
                     return CollectionResult(
                         False,
                         completed_submaps=self._completed_this_run,
-                        message=f"{card.card_id}回起点失败：{reset.message}",
+                        message=(
+                            f"{card.card_id}前往{target.title}失败：{arrived.message}；"
+                            f"回起点失败：{reset.message}"
+                        ),
                     ), observed_depleted
                 current = card.targets[0]
                 order = [
