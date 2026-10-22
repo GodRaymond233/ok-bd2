@@ -12,7 +12,9 @@ ELECTRON_RUN_AS_NODE=1, or by Node) and the real service layer with a stand-in r
     core-crash                   the core dies after ready; the shell reports it
     ready-timeout                a stalled startup; the shell's stop reaches the core at once
     shell-crash-during-startup   the shell is ended while the core is still starting
-    same-directory-mutex         (Windows) the service never ends a same-directory instance
+    same-directory-mutex         (Windows) the service never ends a same-directory instance;
+                                 that instance's interpreter has ended and its folder is gone
+                                 afterwards (a folder still in use is reported, not raised)
 
 Every process scenario runs with this venv's interpreter (a redirector on Windows) and with
 the standalone interpreter behind it, as PyAppify starts it. No game is started: the "game"
@@ -231,12 +233,72 @@ PROCESS_SCENARIOS = {
 }
 
 
+def end_holder(holder, checks):
+    """End the older instance, and wait until the interpreter that runs it has ended too.
+
+    Under the venv, ``holder`` is the python.exe redirector. The interpreter that has the
+    folder as its working directory is its child, which the redirector's job ends only after
+    the redirector itself is gone, so waiting for the redirector alone leaves the folder in
+    use for a moment (F8).
+    """
+    children = []
+    if holder.poll() is None:
+        try:
+            children = psutil.Process(holder.pid).children(recursive=True)
+        except psutil.NoSuchProcess:
+            pass
+        holder.kill()
+    holder.wait(timeout=10)
+    holder.stdout.close()
+    lagging = [child.pid for child in children if child.is_running()]
+    started = time.monotonic()
+    _, alive = psutil.wait_procs(children, timeout=10)
+    check(
+        checks,
+        "the older instance's processes ended",
+        not alive,
+        {
+            "children": [child.pid for child in children],
+            "still running after the holder ended": lagging,
+            "seconds": round(time.monotonic() - started, 3),
+        },
+    )
+    for process in alive:  # started here; the redirector's job should have ended them
+        try:
+            process.kill()
+        except psutil.NoSuchProcess:
+            pass
+    psutil.wait_procs(alive, timeout=10)
+
+
+def remove_folder(folder, checks):
+    """Remove the scenario's temporary folder; if that fails, name the processes in it."""
+    try:
+        shutil.rmtree(folder)
+    except OSError as error:
+        inside = os.path.normcase(os.path.realpath(folder))
+        users = [
+            {"pid": process.pid, "name": process.info["name"], "cwd": process.info["cwd"]}
+            for process in psutil.process_iter(["name", "cwd"])
+            if process.info["cwd"]
+            and (
+                os.path.normcase(process.info["cwd"]) == inside
+                or os.path.normcase(process.info["cwd"]).startswith(inside + os.sep)
+            )
+        ]
+        detail = {"folder": str(folder), "error": repr(error), "working directory inside": users}
+        check(checks, "the temporary folder was removed", False, detail)
+    else:
+        check(checks, "the temporary folder was removed", True, str(folder))
+
+
 def same_directory_mutex(out, python, checks):
     if os.name != "nt":
         return "skipped: ok-script's directory mutex exists on Windows only"
     env = dict(os.environ, PYTHONUTF8="1", PROBE_SITE=sysconfig.get_paths()["purelib"])
-    with tempfile.TemporaryDirectory(prefix="okbd2-probe-mutex-") as folder:
-        entry = str(Path(folder) / "main.py")
+    folder = Path(tempfile.mkdtemp(prefix="okbd2-probe-mutex-"))
+    try:
+        entry = str(folder / "main.py")
         holder = subprocess.Popen(
             [str(python), str(CORE), "mutex-holder", entry],
             cwd=folder,
@@ -287,10 +349,9 @@ def same_directory_mutex(out, python, checks):
             time.sleep(0.5)
             check(checks, "the older instance is still running", holder.poll() is None)
         finally:
-            if holder.poll() is None:
-                holder.kill()
-            holder.wait(timeout=10)
-            holder.stdout.close()
+            end_holder(holder, checks)
+    finally:
+        remove_folder(folder, checks)
     return None
 
 
