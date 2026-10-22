@@ -4,7 +4,8 @@ F8 of the stage 1 Windows checks: the scenario removes a temporary folder that t
 instance runs in. Under the venv that instance is the python.exe redirector, whose child
 interpreter ends a moment after the redirector does; these tests stand in a parent that
 behaves the same way. F9: run alone (--only), the scenario wrote its log into a folder that
-only the other scenarios created.
+only the other scenarios created. F10: where psutil may not read working directories, the
+process in the folder went unlisted without a word.
 """
 
 import contextlib
@@ -18,6 +19,7 @@ import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import psutil
@@ -87,13 +89,27 @@ class RemoveFolderTest(unittest.TestCase):
     def test_names_the_processes_in_a_folder_it_cannot_remove(self):
         folder = Path(tempfile.mkdtemp(prefix="okbd2-probe-test-"))
         self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        # Under the venv on Windows, user is the redirector; the interpreter prints its own PID.
         user = subprocess.Popen(
-            [sys.executable, "-c", "import sys; sys.stdin.read()"],
+            [
+                sys.executable,
+                "-c",
+                "import os, sys; print(os.getpid(), flush=True); sys.stdin.read()",
+            ],
             cwd=folder,
             stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
         )
         self.addCleanup(user.wait, 30)
+        self.addCleanup(user.stdout.close)
         self.addCleanup(user.stdin.close)
+        interpreter = int(user.stdout.readline())  # it has started, in the folder
+        try:
+            cwd = psutil.Process(interpreter).cwd()
+        except psutil.AccessDenied as denied:
+            # remove_folder counts such processes as unreadable (see the test below).
+            self.skipTest(f"psutil may not read working directories here (F10): {denied!r}")
         checks = []
         in_use = PermissionError(32, "The process cannot access the file")
         with patch.object(probe.shutil, "rmtree", side_effect=in_use):
@@ -102,7 +118,29 @@ class RemoveFolderTest(unittest.TestCase):
         self.assertFalse(result["passed"])
         self.assertIn("PermissionError", result["detail"]["error"])
         users = [item["pid"] for item in result["detail"]["working directory inside"]]
-        self.assertIn(user.pid, users)
+        self.assertIn(interpreter, users, f"psutil reads {cwd!r}; {result['detail']}")
+
+    def test_matches_the_folder_as_set_or_resolved_and_counts_the_unreadable(self):
+        folder = Path(tempfile.mkdtemp(prefix="okbd2-probe-test-"))
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        resolved = folder.parent / "elsewhere" / folder.name  # behind a junction or symlink
+        processes = [
+            SimpleNamespace(pid=1, info={"name": "as set", "cwd": str(folder / "sub")}),  # Windows
+            SimpleNamespace(pid=2, info={"name": "resolved", "cwd": str(resolved)}),  # Linux
+            SimpleNamespace(pid=3, info={"name": "beside", "cwd": f"{folder}-other"}),
+            SimpleNamespace(pid=4, info={"name": "above", "cwd": str(folder.parent)}),
+            SimpleNamespace(pid=5, info={"name": "refused", "cwd": None}),
+        ]
+        checks = []
+        with (
+            patch.object(probe.shutil, "rmtree", side_effect=PermissionError(32, "in use")),
+            patch.object(probe.os.path, "realpath", return_value=str(resolved)),
+            patch.object(probe.psutil, "process_iter", return_value=processes),
+        ):
+            probe.remove_folder(folder, checks)
+        detail = checks[0]["detail"]
+        self.assertEqual([item["pid"] for item in detail["working directory inside"]], [1, 2])
+        self.assertEqual(detail["working directory unreadable"], 1)
 
 
 class RunAloneTest(unittest.TestCase):

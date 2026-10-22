@@ -276,17 +276,25 @@ def remove_folder(folder, checks):
     try:
         shutil.rmtree(folder)
     except OSError as error:
-        inside = os.path.normcase(os.path.realpath(folder))
-        users = [
-            {"pid": process.pid, "name": process.info["name"], "cwd": process.info["cwd"]}
-            for process in psutil.process_iter(["name", "cwd"])
-            if process.info["cwd"]
-            and (
-                os.path.normcase(process.info["cwd"]) == inside
-                or os.path.normcase(process.info["cwd"]).startswith(inside + os.sep)
-            )
-        ]
-        detail = {"folder": str(folder), "error": repr(error), "working directory inside": users}
+        # Windows reports a working directory as it was set, Linux reports it resolved.
+        normcase = os.path.normcase
+        roots = {normcase(os.path.abspath(folder)), normcase(os.path.realpath(folder))}
+        users, unreadable = [], 0
+        for process in psutil.process_iter(["name", "cwd"]):
+            cwd = process.info["cwd"]
+            if not cwd:  # psutil was refused, or the process has none
+                unreadable += 1
+            elif any(
+                normcase(cwd) == root or normcase(cwd).startswith(root + os.sep) for root in roots
+            ):
+                users.append({"pid": process.pid, "name": process.info["name"], "cwd": cwd})
+        detail = {
+            "folder": str(folder),
+            "error": repr(error),
+            "working directory inside": users,
+            # An empty list proves little when many working directories could not be read (F10).
+            "working directory unreadable": unreadable,
+        }
         check(checks, "the temporary folder was removed", False, detail)
     else:
         check(checks, "the temporary folder was removed", True, str(folder))
