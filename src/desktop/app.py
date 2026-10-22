@@ -21,11 +21,21 @@ from src.desktop.config_store import config_lock, save_config, task_config_busy
 from src.desktop.events import install_events
 from src.desktop.protocol import API_VERSION
 from src.desktop.security import LocalSession
+from src.task_guides import GUIDES
 from src.tasks.BaseBD2Task import task_info_snapshot
-from src.tasks.DailyBatchTask import DailyBatchTask
+from src.tasks.DailyBatchTask import RUN_MODE_ALL, RUN_MODE_INCOMPLETE, DailyBatchTask
+from src.tasks.quick_hunt_plan import PLAN_KEY
+from src.tasks.run_history import default_store, run_state
+from src.tasks.today import find_batch, today_summary
 from src.ui.hide_config_rows import mark_hidden_config_keys
 
 UI_DIST = Path(__file__).with_name("ui_dist")
+# MiSans ships with the app for the Qt window too (src/ui/quest_theme.py).
+FONTS = Path(__file__).resolve().parents[2] / "assets" / "fonts"
+HISTORY_LIMIT = 100
+# Settings that only a dedicated editor may change; the client shows them read-only until
+# it has that editor (the quick-hunt plan is JSON written by the Qt plan editor).
+DEDICATED_EDITORS = {PLAN_KEY: "hunt_plan"}
 
 
 class LegacyInstanceRunning(RuntimeError):
@@ -93,6 +103,7 @@ def task_payload(task):
         waiting = (
             task.executor.waiting_for_task(task) if task in task.executor.onetime_tasks else None
         )
+        info = task_info_snapshot(task)
         fields = build_config_fields(
             task.config,
             task.config_description,
@@ -100,6 +111,9 @@ def task_payload(task):
             task.default_config,
             serialize=framework._json_value,
         )
+        for field in fields:
+            if field["key"] in DEDICATED_EDITORS:
+                field["editor"] = DEDICATED_EDITORS[field["key"]]
         return {
             "name": task.name,
             "class_name": type(task).__name__,
@@ -111,12 +125,27 @@ def task_payload(task):
             "visible": bool(task.visible),
             "group_name": task.group_name,
             "instructions": getattr(task, "instructions", None),
+            "guide": GUIDES.get(type(task).__name__, (None, None, None))[2],
             "waiting_for": waiting.name if waiting else None,
             "start_time": float(task.start_time or 0),
-            "info": framework._json_value(task_info_snapshot(task)),
+            "info": framework._json_value(info),
+            "run_state": run_state(task, info),
             "config_busy": task_config_busy(task),
             "config": fields,
+            "hidden_config_count": hidden_config_count(task),
         }
+
+
+def hidden_config_count(task):
+    """How many maintenance settings the form leaves out (see hide_config_rows)."""
+    config_type = getattr(task, "config_type", None) or {}
+    return sum(
+        1
+        for key in task.config
+        if not str(key).startswith("_")
+        and isinstance(config_type.get(key), dict)
+        and config_type[key].get("hidden")
+    )
 
 
 def adapt_runtime(runtime, legacy_check=None):
@@ -290,6 +319,30 @@ def adapt_runtime(runtime, legacy_check=None):
                 raise ValueError("此任务不支持该操作")
             return task_payload(task)
 
+    def start_daily(mode):
+        """Run 一键完成日常 for the remaining dailies or all of them; never queue it."""
+        if mode not in (RUN_MODE_ALL, RUN_MODE_INCOMPLETE):
+            raise ValueError("未知的运行方式")
+        with config_lock:
+            ensure_config_write()
+            batch = find_batch(runtime.executor)
+            if batch is None:
+                raise ValueError("没有一键完成日常任务")
+            if controller.starting:
+                raise ValueError("正在启动游戏，请等待或取消启动")
+            if (
+                runtime.executor.current_task is not None
+                or batch.enabled
+                or getattr(batch, "_start_after_login", False)
+            ):
+                raise ValueError("已有任务在运行或排队，请先停止")
+            refuse_legacy()
+            batch.request_run_mode(mode)
+            if controller.start(batch) is False:
+                raise ValueError("任务未启动，请等待启动流程结束")
+            return task_payload(batch)
+
+    runtime.start_daily = start_daily
     runtime.tasks = lambda: [task_payload(task) for task in runtime.executor.get_all_tasks()]
     runtime.set_task_config = task_config
     runtime.reset_task_config = reset_task_config
@@ -386,6 +439,8 @@ def create_app(
 
     if (ui_dist / "assets").is_dir():
         app.mount("/assets", StaticFiles(directory=ui_dist / "assets"), name="desktop-assets")
+    if FONTS.is_dir():
+        app.mount("/fonts", StaticFiles(directory=FONTS), name="desktop-fonts")
 
     @app.post("/api/ui/ready")
     def ui_ready():
@@ -418,6 +473,21 @@ def create_app(
                 for item in instances
             ],
         }
+
+    @app.get("/api/bd2/today")
+    def today():
+        return today_summary(runtime.executor)
+
+    @app.post("/api/bd2/daily/start")
+    def start_daily(body: dict):
+        try:
+            return runtime.start_daily(str(body.get("mode", "")))
+        except (ValueError, RuntimeError) as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.get("/api/bd2/history")
+    def history(task: str | None = None, limit: int = 20):
+        return default_store().recent_runs(task, min(max(limit, 1), HISTORY_LIMIT))
 
     @app.post("/api/desktop/shutdown")
     def desktop_shutdown():

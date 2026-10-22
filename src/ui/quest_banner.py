@@ -15,11 +15,11 @@ from qfluentwidgets import FluentIcon, PrimaryPushButton, PushButton
 
 from src.tasks.DailyBatchTask import RUN_MODE_ALL, RUN_MODE_INCOMPLETE
 from src.tasks.run_history import default_store
+from src.tasks.today import BATCH_TASK_NAME, batch_items, find_batch
 from src.ui.quest_theme import MONO_FONT, mix, on_theme_changed, palette
 from src.ui.shrinkable_label import ShrinkableLabel
 
 DAILY_BOARD_GROUP = "日常/周常"
-BATCH_TASK_NAME = "一键完成日常"
 
 
 def _set_label_text(label, text: str) -> None:
@@ -277,36 +277,18 @@ def commission_items(store=None) -> list[tuple[str, bool]]:
     """[(display name, done)] for the daily board: enabled batch children."""
     from ok import og
 
-    from src.tasks.run_history import configuration_scope
-
-    store = store or default_store()
-    items: list[tuple[str, bool]] = []
-
-    batch = _find_batch_task()
-    if batch is not None:
-        executor = getattr(og, "executor", None)
-        for child in getattr(batch, "child_tasks", ()):
-            if not bool(getattr(batch, "config", {}).get(child.config_key, True)):
-                continue
-            child_task = None
-            if executor is not None:
-                try:
-                    child_task = executor.get_task_by_class(child.task_class)
-                except Exception:
-                    child_task = None
-            name = str(getattr(child_task, "name", None) or child.config_key)
-            items.append((name, store.is_completed(name, scope=configuration_scope(child_task))))
-    return items
+    executor = getattr(og, "executor", None)
+    return [
+        (item["name"], item["done"])
+        for item in batch_items(executor, store or default_store())
+        if item["enabled"]
+    ]
 
 
 def _find_batch_task():
     from ok import og
 
-    executor = getattr(og, "executor", None)
-    for task in getattr(executor, "onetime_tasks", []) or []:
-        if str(getattr(task, "name", "")) == BATCH_TASK_NAME:
-            return task
-    return None
+    return find_batch(getattr(og, "executor", None))
 
 
 def install_quest_tab_chrome() -> bool:

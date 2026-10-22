@@ -15,7 +15,7 @@ from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QVBoxLay
 from qfluentwidgets import FluentIcon, PushButton, ToolButton
 
 from src.tasks.BaseBD2Task import task_info_snapshot
-from src.tasks.run_history import contains_joined_name, default_store, is_successful_run
+from src.tasks.run_history import contains_joined_name, default_store, run_state
 from src.ui.quest_theme import MONO_FONT, mix, on_theme_changed, palette, rgba
 
 logger = Logger.get_logger(__name__)
@@ -47,27 +47,6 @@ def _elapsed_text(task, now: float | None = None, finished: float | None = None)
     minutes, secs = divmod(remainder, 60)
     duration = f"{hours}h {minutes}m {secs}s" if hours else f"{minutes}m {secs:02d}s"
     return f"已运行 {duration}" if getattr(task, "enabled", False) else f"用时 {duration}"
-
-
-def run_state(task, info=None) -> str:
-    """Return the pill state using the caller's refresh snapshot when supplied."""
-    if info is None:
-        info = task_info_snapshot(task)
-    if getattr(task, "enabled", False):
-        return "pause" if getattr(task, "paused", False) else "run"
-    current_run = (id(task), getattr(task, "start_time", 0))
-    if getattr(task, "_bd2_stopped_run", None) == current_run:
-        return "abort"
-    status = str(info.get(_STATUS_KEY, ""))
-    if "中止" in status:
-        return "abort"
-    if "存在问题" in status and not info.get("Error"):
-        return "warn"
-    if not info:
-        return "done"
-    if not is_successful_run(info):
-        return "fail"
-    return "done"
 
 
 _PILL_TEXT = {

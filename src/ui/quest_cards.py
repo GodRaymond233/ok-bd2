@@ -44,11 +44,9 @@ from PySide6.QtGui import QBrush, QColor, QLinearGradient, QPainter
 from PySide6.QtWidgets import QLabel, QWidget
 
 from src.tasks.BaseBD2Task import task_info_snapshot
-from src.tasks.run_history import BEIJING_TZ, configuration_scope, default_store
+from src.tasks.run_history import BEIJING_TZ, default_store
+from src.tasks.today import WEEKLY_TASK_NAMES, completion_state
 from src.ui.quest_theme import MONO_FONT, palette
-
-# Collection resources refresh Monday 08:00 Beijing; skill quotas refresh daily at 08:00.
-WEEKLY_TASK_NAMES = {"每周跑图"}
 
 HEADER_HEIGHT_PLAIN = 50
 HEADER_HEIGHT_WITH_META = 68
@@ -119,11 +117,7 @@ def seal_state(task, store=None, onetime=True) -> str:
         return "run" if onetime else "ok"
     if not onetime:
         return "idle"
-    store = store or default_store()
-    name = str(getattr(task, "name", ""))
-    if name in WEEKLY_TASK_NAMES:
-        return "ok" if store.is_completed(name, scope=configuration_scope(task)) else "idle"
-    return "ok" if store.is_completed_today(name, scope=configuration_scope(task)) else "idle"
+    return "ok" if completion_state(task, store) else "idle"
 
 
 def meta_text(task, store=None) -> str:
@@ -142,13 +136,9 @@ def meta_text(task, store=None) -> str:
     if record.get("ok"):
         label = "上次完成"
         if str(getattr(task, "name", "")) in WEEKLY_TASK_NAMES:
-            if (store.is_completed(task.name, scope=configuration_scope(task))
-                    and store.is_completed_this_week(task.name)):
-                label = "本周跑图已完成"
-            elif store.is_completed_today(task.name, scope=configuration_scope(task)):
-                label = "今日额度已用尽"
-            else:
-                label = "上次运行"
+            label = {"week": "本周跑图已完成", "quota": "今日额度已用尽"}.get(
+                completion_state(task, store), "上次运行"
+            )
         text = f"{label} · {when}"
         if duration:
             text += f" · 耗时 {duration}"

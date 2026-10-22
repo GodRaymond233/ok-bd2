@@ -25,14 +25,8 @@ from PySide6.QtWidgets import (
 )
 from qfluentwidgets import PushButton, qconfig
 
+from src.task_guides import GUIDE_ROOT, GUIDES
 from src.ui.quest_theme import APP_FONT_FAMILIES, palette
-
-GUIDE_ROOT = Path(__file__).resolve().parents[2] / "docs" / "guides"
-GUIDES = {
-    "MapCollectionTask": ("每周跑图", "collection", "选择卡带，按周进度完成采集。"),
-    "MapTradeTask": ("每日跑商", "trade", "先确认买卖范围，再开始每日跑商。"),
-    "QuickHuntTask": ("快速狩猎", "quick-hunt", "安排米饭用途，按需补充属性圣石。"),
-}
 
 
 def size_dialog(dialog, width, height):

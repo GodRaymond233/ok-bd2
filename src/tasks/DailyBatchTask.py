@@ -107,6 +107,7 @@ class DailyBatchTask(BaseTask):
         self.visible = True
         self._requested_run_mode = RUN_MODE_ALL
         self._start_after_login = False
+        self._skip_reasons: dict[str, dict] = {}
 
         child_keys = [child.config_key for child in self.child_tasks]
         self.default_config.update(
@@ -149,6 +150,18 @@ class DailyBatchTask(BaseTask):
                 }
             }
         )
+
+    def skip_reasons(self) -> dict[str, dict]:
+        """Why each child of the current or last run was skipped, by config key.
+
+        ``reason`` is ``off`` (not taking part), ``stopped`` (an earlier child failed and
+        could not return home), ``done`` (completed this cycle) or ``not_due`` (failure
+        back-off; ``minutes`` until it may run). Kept in memory until the next run.
+        """
+        # dict() copies in one step, so the executor thread adding a reason mid-copy
+        # cannot break the API thread's iteration.
+        reasons = dict(getattr(self, "_skip_reasons", {}))
+        return {key: dict(value) for key, value in reasons.items()}
 
     def request_run_mode(self, run_mode: str) -> None:
         """Select the next executor-driven run without persisting UI config.
@@ -251,6 +264,7 @@ class DailyBatchTask(BaseTask):
             return True
 
         only_incomplete = run_mode == RUN_MODE_INCOMPLETE
+        self._skip_reasons = {}
         from src.tasks import scheduler as task_scheduler
         from src.tasks.run_history import configuration_scope, default_store
 
@@ -281,8 +295,12 @@ class DailyBatchTask(BaseTask):
         )
 
         for child in self.child_tasks:
-            if not bool(self.config.get(child.config_key, True)) or stop_remaining:
+            taking_part = bool(self.config.get(child.config_key, True))
+            if not taking_part or stop_remaining:
                 skipped.append(child.config_key)
+                self._skip_reasons[child.config_key] = {
+                    "reason": "off" if not taking_part else "stopped", "minutes": None,
+                }
                 publish_outcome()
                 continue
 
@@ -299,6 +317,7 @@ class DailyBatchTask(BaseTask):
             ):
                 skipped.append(child.config_key)
                 pre_completed.append(child.config_key)
+                self._skip_reasons[child.config_key] = {"reason": "done", "minutes": None}
                 publish_outcome()
                 self.log_info(f"一键完成日常：{child.config_key} 今日已完成，跳过。")
                 continue
@@ -308,6 +327,9 @@ class DailyBatchTask(BaseTask):
             ):
                 remaining = schedule_store.backoff_remaining_minutes(str(task.name))
                 skipped.append(child.config_key)
+                self._skip_reasons[child.config_key] = {
+                    "reason": "not_due", "minutes": round(remaining),
+                }
                 publish_outcome()
                 self.log_info(
                     f"一键完成日常：{child.config_key} 调度未到期"

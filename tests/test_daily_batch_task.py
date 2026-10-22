@@ -483,6 +483,72 @@ class DailyBatchTaskTest(unittest.TestCase):
 
         self.assertEqual([("快速狩猎", True)], calls)
 
+    def test_skip_reasons_say_why_each_child_was_skipped(self):
+        class Off:
+            pass
+
+        class Done:
+            pass
+
+        class Waiting:
+            pass
+
+        class Failing:
+            pass
+
+        class Later:
+            pass
+
+        calls = []
+        done = _ChildTask("done", calls)
+        waiting = _ChildTask("快速狩猎", calls)
+        failing = _ChildTask("failing", calls, result=False)
+        specs = (
+            DailyBatchChild("不参与", Off),
+            DailyBatchChild("已完成", Done),
+            DailyBatchChild("退避中", Waiting),
+            DailyBatchChild("失败", Failing),
+            DailyBatchChild("之后", Later),
+        )
+        task, _resets = self.make_task(
+            {Off: _ChildTask("off", calls), Done: done, Waiting: waiting,
+             Failing: failing, Later: _ChildTask("later", calls)},
+            specs,
+            {"启用": True, "不参与": False, "已完成": True, "退避中": True,
+             "失败": True, "之后": True},
+        )
+        self.assertEqual({}, task.skip_reasons())
+        with tempfile.TemporaryDirectory() as temp_dir:
+            schedule_store = scheduler.TaskScheduleStore(f"{temp_dir}/schedule.json")
+            scheduler.set_default_store(schedule_store)
+            history = RunHistoryStore(f"{temp_dir}/history.json")
+            set_default_store(history)
+            try:
+                history.record_task_done(SimpleNamespace(
+                    name="done", config=done.config, start_time=0, info={"状态": "done 完成。"}))
+                schedule_store.delay_after_run("快速狩猎", ok=False)
+                self.assertFalse(DailyBatchTask.run(task, RUN_MODE_INCOMPLETE))
+                reasons = task.skip_reasons()
+                self.assertEqual(
+                    {"不参与": "off", "已完成": "done", "退避中": "not_due", "之后": "stopped"},
+                    {key: value["reason"] for key, value in reasons.items()},
+                )
+                self.assertGreater(reasons["退避中"]["minutes"], 0)
+                self.assertIsNone(reasons["已完成"]["minutes"])
+                self.assertEqual([("failing", True)], calls)
+
+                # The next run starts from a clean slate, and callers get copies.
+                reasons["之后"]["reason"] = "changed"
+                task.config["不参与"] = True
+                task.config["失败"] = False
+                schedule_store.mark_due_now("快速狩猎", now=time.time() - 3600)
+                self.assertTrue(DailyBatchTask.run(task, RUN_MODE_ALL))
+                self.assertEqual({"失败": "off"}, {
+                    key: value["reason"] for key, value in task.skip_reasons().items()})
+            finally:
+                scheduler.set_default_store(None)
+                set_default_store(None)
+
     def test_requested_run_mode_expires_and_defaults_to_all(self):
         # MEDIUM 回归：启动自动执行注入的 run_mode 带有效期。启动失败时
         # run() 不执行、请求无法消费，过期作废，避免残留的 INCOMPLETE 被
