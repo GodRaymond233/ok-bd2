@@ -283,6 +283,7 @@ class CookingFlowMixin:
         return (*DEFAULT_COOKING_RECIPES, *optional, FINAL_COOKING_RECIPE)
 
     def _enter_cooking_list(self) -> bool:
+        self._buy_completed_in_current_shop = False
         entered = self.navigator.select_trade_card(MERCHANT_CARD_ID)
         if not entered.success:
             self.task.log_warning(f"料理：{entered.message}")

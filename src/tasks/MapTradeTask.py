@@ -221,7 +221,7 @@ class MapTradeTask(MapAutomationTaskBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.name = "每日跑商"
-        self.description = "每日按配置依次执行制作料理、购买和出售。"
+        self.description = "每日按配置依次执行购买、制作料理和出售。"
         self.icon = FluentIcon.SHOPPING_CART
         self.group_name = "日常/周常"
         self.group_icon = FluentIcon.CALENDAR
@@ -230,10 +230,10 @@ class MapTradeTask(MapAutomationTaskBase):
         self.default_config.update(
             {
                 "启用": True,
-                "制作料理": True,
-                "5星料理": [],
                 "买": True,
                 "收藏重建周期": "每周",
+                "制作料理": True,
+                "5星料理": [],
                 "卖": True,
                 "使用程序默认价表": True,
                 "使用在线价表": True,
@@ -250,7 +250,7 @@ class MapTradeTask(MapAutomationTaskBase):
         )
         self.config_description.update(
             {
-                "制作料理": "跑商前按优先级制作料理，全部选择 MAX；灰色料理跳过，"
+                "制作料理": "购买阶段后按优先级制作料理，全部选择 MAX；灰色料理跳过，"
                 "当天同一配置已确认制作的料理不重复。",
                 "5星料理": "额外制作的白框五道料理，默认不选；街头烤鸡肉串始终最后制作。",
                 "买": "按每日08:00库存批次进入 Q_sp6 完成砍价，并按本地卡带与灰星坐标表重建收藏。",
@@ -371,8 +371,8 @@ class MapTradeTask(MapAutomationTaskBase):
             progress.load()
             trader = Trader(self, vision, navigator, progress)
             phases = (
-                ("制作料理", "制作料理", trader.run_cooking),
                 ("买", "买", trader.run_buy),
+                ("制作料理", "制作料理", trader.run_cooking),
                 ("卖", "卖", trader.run_sell),
             )
             return self._run_phases(navigator, phases)

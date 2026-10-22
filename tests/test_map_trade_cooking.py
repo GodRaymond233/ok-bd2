@@ -1,4 +1,4 @@
-"""Regression coverage for the Q_sp6 cooking-before-trade flow."""
+"""Regression coverage for the Q_sp6 cooking flow."""
 
 import inspect
 import unittest
@@ -237,12 +237,14 @@ class CookingFlowTest(StageHistoryTestCase):
         trader.navigator = navigator
         trader.vision = vision
         trader._cooking_opened = False
+        trader._buy_completed_in_current_shop = True
         trader._wait_for_cooking_list = lambda _timeout: object()
 
         self.assertTrue(trader._enter_cooking_list())
         self.assertEqual([(*COOKING_SKILL_GROUP_POINT, 0.0)], task.clicks)
         self.assertIs(COOKING_ICON.template, stable_calls[0][0])
         self.assertTrue(trader._cooking_opened)
+        self.assertFalse(trader._buy_completed_in_current_shop)
 
     def test_recipe_state_machine_requires_result_and_list_restoration(self):
         recipe = DEFAULT_RECIPES[0]
