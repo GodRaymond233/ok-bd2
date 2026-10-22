@@ -158,11 +158,8 @@ class TradeNavigationMixin:
             timeout,
             after_sleep=0.0,
             interval=interval,
+            log_timeout=log_timeout,
         ):
-            if log_timeout:
-                self.task.log_warning(
-                    f"跑商：{MERCHANT_CLICK_LOCATION_FAILURE_MESSAGE}。"
-                )
             return False
         self._status("商店进入", "成功，已点击MerchantClickLocation中心")
         return True
@@ -173,6 +170,7 @@ class TradeNavigationMixin:
         *,
         after_sleep: float,
         interval: float = 0.25,
+        log_timeout: bool = True,
     ) -> bool:
         """Find the calibrated merchant location crop and click its center."""
 
@@ -202,10 +200,11 @@ class TradeNavigationMixin:
                 )
                 return True
             self.task.sleep(interval)
-        self.task.log_warning(
-            f"跑商：{MERCHANT_CLICK_LOCATION_FAILURE_MESSAGE}，"
-            f"最后匹配={last.score:.3f}/{last.pixel_score:.3f}/{last.zncc_score:.3f}。"
-        )
+        if log_timeout:
+            self.task.log_warning(
+                f"跑商：{MERCHANT_CLICK_LOCATION_FAILURE_MESSAGE}，"
+                f"最后匹配={last.score:.3f}/{last.pixel_score:.3f}/{last.zncc_score:.3f}。"
+            )
         return False
 
     def _auto_navigate_to_merchant_shop(self) -> bool:
@@ -294,6 +293,7 @@ class TradeNavigationMixin:
         timeout: float,
         *,
         interval: float = 0.25,
+        log_timeout: bool = True,
     ) -> bool:
         """Strictly confirm the trade sandbox and the Q_sp6 merchant location.
 
@@ -327,11 +327,12 @@ class TradeNavigationMixin:
             if monotonic() >= end_at:
                 break
             self.task.sleep(interval)
-        self.task.log_warning(
-            "跑商：未同时确认 Q_sp6 箱庭与商人位置，"
-            f"state={last_state.value}, "
-            f"merchant={last.score:.3f}/{last.pixel_score:.3f}/{last.zncc_score:.3f}。"
-        )
+        if log_timeout:
+            self.task.log_warning(
+                "跑商：未同时确认 Q_sp6 箱庭与商人位置，"
+                f"state={last_state.value}, "
+                f"merchant={last.score:.3f}/{last.pixel_score:.3f}/{last.zncc_score:.3f}。"
+            )
         return False
 
     def select_trade_card(self, card_id: str) -> NavigationResult:
@@ -573,7 +574,7 @@ class TradeNavigationMixin:
             "点击一次箱庭主页按钮后未在10秒内确认主页",
         )
 
-    def _return_home_from_discount_shop(self) -> NavigationResult:
+    def leave_discount_shop(self) -> NavigationResult:
         if not self._close_sale_dialog_before_return():
             return NavigationResult(False, ScreenState.SHOP, "返回前未确认出售弹窗已关闭")
         self._click_shop_close_control()
@@ -592,6 +593,14 @@ class TradeNavigationMixin:
 
         self.task.operate_click(*DISCOUNT_SHOP_CLOSE_POINT, after_sleep=0.8)
         self._click_shop_close_control(after_sleep=0.8)
+        if self.wait_for_q_sp6_sandbox(self._loading_timeout()):
+            return NavigationResult(True, ScreenState.SANDBOX, "已关闭折扣商店并确认第六章箱庭")
+        return NavigationResult(False, self.classify_trade(), "关闭折扣商店后未确认第六章箱庭")
+
+    def _return_home_from_discount_shop(self) -> NavigationResult:
+        closed = self.leave_discount_shop()
+        if not closed.success:
+            return closed
         self._click_chapter_home_button()
         if self._wait_for_cartridge_home(
             timeout=RETURN_HOME_TIMEOUT,

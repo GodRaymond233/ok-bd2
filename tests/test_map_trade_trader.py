@@ -2926,6 +2926,7 @@ class BuyEntryTest(unittest.TestCase):
         failed_match = MatchResult(-1.0, (0, 0), (0, 0))
         clicks = []
         fallback_calls = []
+        warnings = []
 
         def passes(result, spec):
             return (
@@ -2937,7 +2938,7 @@ class BuyEntryTest(unittest.TestCase):
         task = SimpleNamespace(
             config={},
             sleep=clock.sleep,
-            log_warning=lambda *_args: None,
+            log_warning=warnings.append,
             info_set=lambda *_args: None,
         )
         vision = SimpleNamespace(
@@ -2956,6 +2957,11 @@ class BuyEntryTest(unittest.TestCase):
         self.assertFalse(clicked)
         self.assertEqual([], clicks)
         self.assertEqual([], fallback_calls)
+        self.assertEqual(1, len(warnings))
+        warnings.clear()
+        with patch("src.tasks.map_trade.navigator_trade.monotonic", clock):
+            self.assertFalse(navigator._enter_q_sp6_shop(0.0, log_timeout=False))
+        self.assertEqual([], warnings)
 
     def test_merchant_marker_asset_is_removed(self):
         template_root = ROOT / "recognition-assets" / "template-assets"
@@ -4279,6 +4285,9 @@ class TradeHomeRecoveryTest(unittest.TestCase):
         navigator._wait_for_cartridge_home = lambda timeout, **kwargs: (
             actions.append(("home", timeout, kwargs)) or True
         )
+        navigator.wait_for_q_sp6_sandbox = lambda timeout: (
+            actions.append(("sandbox", timeout)) or True
+        )
 
         result = navigator.return_home()
 
@@ -4297,6 +4306,7 @@ class TradeHomeRecoveryTest(unittest.TestCase):
                 ),
                 ("click", *DISCOUNT_SHOP_CLOSE_POINT, 0.8),
                 ("click", *DISCOUNT_SHOP_BACK_POINT, 0.8),
+                ("sandbox", navigator._loading_timeout()),
                 ("click", *CHAPTER_HOME_POINT, 0.0),
                 (
                     "home",
@@ -4309,6 +4319,20 @@ class TradeHomeRecoveryTest(unittest.TestCase):
         self.assertEqual((1045 / 1920, 639 / 1080), DISCOUNT_SHOP_CLOSE_POINT)
         self.assertEqual((1797 / 1920, 63 / 1080), CHAPTER_HOME_POINT)
         self.assertEqual(10.0, RETURN_HOME_TIMEOUT)
+        close_actions = actions[:5]
+        actions.clear()
+        result = navigator.leave_discount_shop()
+        self.assertTrue(result.success)
+        self.assertEqual(ScreenState.SANDBOX, result.state)
+        self.assertEqual(close_actions, actions)
+
+        actions.clear()
+        navigator.wait_for_q_sp6_sandbox = lambda _timeout: False
+        navigator.classify_trade = lambda: ScreenState.UNKNOWN
+        result = navigator.return_home()
+        self.assertFalse(result.success)
+        self.assertEqual(ScreenState.UNKNOWN, result.state)
+        self.assertEqual(close_actions[:4], actions)
 
     def test_return_home_from_shop_stops_when_close_dialog_is_not_confirmed(self):
         actions = []

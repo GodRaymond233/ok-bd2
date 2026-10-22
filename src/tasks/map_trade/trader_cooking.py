@@ -283,8 +283,13 @@ class CookingFlowMixin:
         return (*DEFAULT_COOKING_RECIPES, *optional, FINAL_COOKING_RECIPE)
 
     def _enter_cooking_list(self) -> bool:
+        bought_in_current_shop = self._buy_completed_in_current_shop
         self._buy_completed_in_current_shop = False
-        entered = self.navigator.select_trade_card(MERCHANT_CARD_ID)
+        entered = (
+            self.navigator.leave_discount_shop()
+            if bought_in_current_shop
+            else self.navigator.select_trade_card(MERCHANT_CARD_ID)
+        )
         if not entered.success:
             self.task.log_warning(f"料理：{entered.message}")
             return False
@@ -685,7 +690,7 @@ class CookingFlowMixin:
         self.task.operate_click(*COOKING_BACK_POINT, after_sleep=0.0)
 
     def _leave_cooking_to_q_sp6(self) -> bool:
-        if self.navigator.wait_for_q_sp6_sandbox(0.0):
+        if self.navigator.wait_for_q_sp6_sandbox(0.0, log_timeout=False):
             self._cooking_opened = False
             return True
         if not self._recover_cooking_list():

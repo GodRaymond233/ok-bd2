@@ -220,10 +220,15 @@ class CookingFlowTest(StageHistoryTestCase):
     def test_entry_uses_relative_skill_group_two_and_detected_cooking_icon(self):
         task = CookingTask()
         stable_calls = []
+        entries = []
         navigator = SimpleNamespace(
-            select_trade_card=lambda card_id: NavigationResult(
-                card_id == MERCHANT_CARD_ID,
-                ScreenState.SANDBOX,
+            select_trade_card=lambda card_id: (
+                entries.append("select") or NavigationResult(
+                    card_id == MERCHANT_CARD_ID, ScreenState.SANDBOX,
+                )
+            ),
+            leave_discount_shop=lambda: (
+                entries.append("close-shop") or NavigationResult(True, ScreenState.SANDBOX)
             ),
             wait_for_q_sp6_sandbox=lambda timeout: timeout > 0,
         )
@@ -237,7 +242,7 @@ class CookingFlowTest(StageHistoryTestCase):
         trader.navigator = navigator
         trader.vision = vision
         trader._cooking_opened = False
-        trader._buy_completed_in_current_shop = True
+        trader._buy_completed_in_current_shop = False
         trader._wait_for_cooking_list = lambda _timeout: object()
 
         self.assertTrue(trader._enter_cooking_list())
@@ -245,6 +250,18 @@ class CookingFlowTest(StageHistoryTestCase):
         self.assertIs(COOKING_ICON.template, stable_calls[0][0])
         self.assertTrue(trader._cooking_opened)
         self.assertFalse(trader._buy_completed_in_current_shop)
+        self.assertEqual(["select"], entries)
+
+        trader._buy_completed_in_current_shop = True
+        self.assertTrue(trader._enter_cooking_list())
+        self.assertEqual(["select", "close-shop"], entries)
+        self.assertFalse(trader._buy_completed_in_current_shop)
+
+        task.clicks.clear()
+        trader._buy_completed_in_current_shop = True
+        navigator.leave_discount_shop = lambda: NavigationResult(False, ScreenState.UNKNOWN)
+        self.assertFalse(trader._enter_cooking_list())
+        self.assertEqual([], task.clicks)
 
     def test_recipe_state_machine_requires_result_and_list_restoration(self):
         recipe = DEFAULT_RECIPES[0]
@@ -692,7 +709,10 @@ class CookingSandboxConfirmationTest(unittest.TestCase):
         self.assertEqual([MERCHANT_CLICK_LOCATION_TEMPLATE], matched_specs)
 
         navigator._classify_trade_frame = lambda _frame: ScreenState.HOME
+        self.assertFalse(navigator.wait_for_q_sp6_sandbox(0.0, log_timeout=False))
+        self.assertEqual([], task.logs)
         self.assertFalse(navigator.wait_for_q_sp6_sandbox(0.0))
+        self.assertEqual("warning", task.logs[-1][0])
 
 
 if __name__ == "__main__":
