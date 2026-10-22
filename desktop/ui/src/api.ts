@@ -1,5 +1,12 @@
 // Same-origin calls to the core. The launch cookie authenticates every request.
-import type { CaptureUi, DesktopInfo, ExecutorStatus, TaskPayload } from "./types.ts";
+import type {
+  CaptureUi,
+  DesktopInfo,
+  ExecutorStatus,
+  HistoryRun,
+  TaskPayload,
+  TodaySummary,
+} from "./types.ts";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -41,4 +48,12 @@ export const api = {
   resume: () => request<ExecutorStatus>("/api/executor/resume", "POST"),
   stopTask: () => request<ExecutorStatus>("/api/executor/stop-task", "POST"),
   uiReady: () => request<{ accepted: boolean }>("/api/ui/ready", "POST"),
+  setTaskConfig: (name: string, key: string, value: unknown) =>
+    request<TaskPayload>(`/api/tasks/${encodeURIComponent(name)}/config`, "POST", { key, value }),
+  resetTaskConfig: (name: string) =>
+    request<TaskPayload>(`/api/tasks/${encodeURIComponent(name)}/config/reset`, "POST", {}),
+  today: () => request<TodaySummary>("/api/bd2/today"),
+  startDaily: (mode: "all" | "incomplete") => request<TaskPayload>("/api/bd2/daily/start", "POST", { mode }),
+  history: (task: string, limit: number) =>
+    request<HistoryRun[]>(`/api/bd2/history?task=${encodeURIComponent(task)}&limit=${limit}`),
 };

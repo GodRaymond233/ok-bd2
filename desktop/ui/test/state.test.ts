@@ -1,68 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  INITIAL_STATS,
-  appendLogs,
-  captureSummary,
-  executorLabel,
-  levelName,
-  logFromEvent,
-  logsFromFile,
-  taskActions,
-  taskState,
-  trackEvent,
-} from "../src/state.ts";
-import type { TaskPayload } from "../src/types.ts";
-
-function task(overrides: Partial<TaskPayload> = {}): TaskPayload {
-  return {
-    name: "白嫖抽抽乐",
-    class_name: "FreeGachaTask",
-    enabled: false,
-    running: false,
-    paused: false,
-    trigger: false,
-    description: "",
-    visible: true,
-    group_name: null,
-    waiting_for: null,
-    start_time: 0,
-    info: {},
-    ...overrides,
-  };
-}
-
-test("one-time task states and the actions they allow", () => {
-  assert.equal(taskState(task(), null), "空闲");
-  assert.deepEqual(taskActions(task(), null), ["start"]);
-  const queued = task({ enabled: true, waiting_for: "自动登录游戏" });
-  assert.equal(taskState(queued, null), "排队中（自动登录游戏）");
-  assert.deepEqual(taskActions(queued, null), ["stop"]);
-  const running = task({ enabled: true, running: true });
-  assert.equal(taskState(running, "白嫖抽抽乐"), "运行中");
-  assert.deepEqual(taskActions(running, "白嫖抽抽乐"), ["pause", "stop"]);
-  const paused = task({ enabled: true, paused: true });
-  assert.equal(taskState(paused, null), "已暂停");
-  assert.deepEqual(taskActions(paused, null), ["resume", "stop"]);
-});
-
-test("trigger tasks toggle between enabled and disabled", () => {
-  const login = task({ name: "自动登录游戏", trigger: true, enabled: true });
-  assert.equal(taskState(login, null), "已启用");
-  assert.deepEqual(taskActions(login, null), ["disable"]);
-  assert.deepEqual(taskActions({ ...login, enabled: false }, null), ["enable"]);
-});
-
-test("event stream statistics notice gaps and resyncs", () => {
-  let stats = trackEvent(INITIAL_STATS, { event: "log", seq: 1 });
-  stats = trackEvent(stats, { event: "log", seq: 2 });
-  stats = trackEvent(stats, { event: "task", seq: 5 });
-  stats = trackEvent(stats, { event: "task", resync: true });
-  assert.equal(stats.received, 4);
-  assert.equal(stats.lastSeq, 5);
-  assert.equal(stats.gaps, 1);
-  assert.equal(stats.resyncs, 1);
-});
+import { appendLogs, captureSummary, levelName, logFromEvent, logsFromFile, noticeFromEvent, shortLogText } from "../src/state.ts";
 
 test("log lines from events and from the log file", () => {
   const line = logFromEvent({ event: "log", args: [30, "旧版 ok-bd2 正在运行"] });
@@ -80,15 +18,6 @@ test("log lines from events and from the log file", () => {
   assert.equal(capped.length, 3);
 });
 
-test("executor summary", () => {
-  const base = { paused: false, running: true, starting: false, current_task: null };
-  assert.equal(executorLabel(base), "空闲");
-  assert.equal(executorLabel({ ...base, current_task: "一键完成日常" }), "运行中 · 一键完成日常");
-  assert.equal(executorLabel({ ...base, paused: true }), "已暂停");
-  assert.equal(executorLabel({ ...base, starting: true }), "正在启动游戏");
-  assert.equal(executorLabel({ ...base, running: false }), "未启动");
-});
-
 test("capture summary shows the method in use and how it was chosen", () => {
   const capture_methods = ["WGC", "BitBlt_RenderFull", "ForegroundBitBlt"].map((id) => ({
     id,
@@ -104,4 +33,29 @@ test("capture summary shows the method in use and how it was chosen", () => {
     "WGC（设置为 BitBlt_RenderFull）",
   );
   assert.equal(captureSummary({ ...ui, capture_preference: "WGC", capture_in_use: null }), "未使用（设置为 WGC）");
+});
+
+test("notifications and a failed game start become notices", () => {
+  assert.deepEqual(noticeFromEvent({ event: "starting_emulator", args: [true, "游戏路径不存在，请手动打开游戏", 0] }), {
+    text: "游戏路径不存在，请手动打开游戏",
+    error: true,
+  });
+  assert.equal(noticeFromEvent({ event: "starting_emulator", args: [false, null, 60] }), null);
+  assert.deepEqual(
+    noticeFromEvent({ event: "notification", args: ["已完成 {count} 项", "一键完成日常", false, true, null, { count: 3 }, null] }),
+    { text: "一键完成日常：已完成 3 项", error: false },
+  );
+  assert.deepEqual(noticeFromEvent({ event: "notification", args: ["Game Exited", null, true] }), {
+    text: "Game Exited",
+    error: true,
+  });
+  assert.equal(noticeFromEvent({ event: "log", args: [20, "x"] }), null);
+});
+
+test("log tail lines drop the date, level, thread and logger", () => {
+  assert.equal(
+    shortLogText("2026-10-23 00:09:52,753 INFO MainThread AutoLoginTask:info_set 阶段 等待登录页"),
+    "00:09:52 阶段 等待登录页",
+  );
+  assert.equal(shortLogText("一键完成日常：开始 广场女神像。"), "一键完成日常：开始 广场女神像。");
 });

@@ -1,25 +1,17 @@
-// Stage 1 link check page: proves the shell → core → game chain. Not the final design.
-import { useCallback, useEffect, useRef, useState } from "react";
+// The desktop client: navigation rail, pages and the run panel shared by all pages.
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api.ts";
 import { connectEvents } from "./events.ts";
 import { t } from "./i18n.ts";
-import {
-  ACTION_LABELS,
-  INITIAL_STATS,
-  appendLogs,
-  captureSummary,
-  executorLabel,
-  levelName,
-  logFromEvent,
-  logsFromFile,
-  taskActions,
-  taskState,
-  trackEvent,
-  type LogLine,
-  type StreamStats,
-  type TaskAction,
-} from "./state.ts";
-import type { CaptureUi, DesktopInfo, ShellBridge, ShellInfo, TaskPayload } from "./types.ts";
+import { DevicePage, LogsPage, RecordsPage, SettingsPage } from "./OtherPages.tsx";
+import { type DockRun, RunDock } from "./RunDock.tsx";
+import { childRuns, isActive, sealOf, shutdownSeconds } from "./run.ts";
+import { appendLogs, captureSummary, type LogLine, logFromEvent, logsFromFile, type Notice, noticeFromEvent } from "./state.ts";
+import { TasksPage } from "./TasksPage.tsx";
+import { TodayPage } from "./TodayPage.tsx";
+import type { BatchRun } from "./today.ts";
+import type { CaptureUi, DesktopInfo, Device, HistoryRun, ShellBridge, TaskPayload, TodayItem, TodaySummary } from "./types.ts";
+import { Icon, SharedDefs } from "./ui.tsx";
 
 declare global {
   interface Window {
@@ -27,29 +19,98 @@ declare global {
   }
 }
 
+export type Page = "today" | "tasks" | "records" | "logs" | "device" | "settings";
+
+export interface Core {
+  ui: CaptureUi | null;
+  tasks: TaskPayload[];
+  today: TodaySummary | null;
+  /** Seconds since the epoch; ticks every second while a run is active. */
+  now: number;
+  current: string | null;
+  /** A task runs or waits in the queue, or the game is starting. */
+  busy: boolean;
+  /** Why starting a task is refused right now, if it is. */
+  startBlocked: string | null;
+  batchRun: BatchRun | null;
+  allDone: boolean;
+  device: Device | null;
+  deviceName: string;
+  captureText: string;
+  /** Changes whenever a task finishes, so run lists refetch. */
+  historyVersion: number;
+  childStage: (item: TodayItem) => string;
+  act: (action: () => Promise<unknown>) => Promise<boolean>;
+  setConfig: (task: string, key: string, value: unknown) => Promise<TaskPayload>;
+  resetTask: (task: string) => Promise<TaskPayload>;
+  startTask: (task: string) => Promise<TaskPayload>;
+  startDaily: (mode: "all" | "incomplete") => Promise<TaskPayload>;
+  taskAction: (task: string, action: "pause" | "resume" | "stop" | "enable" | "disable") => Promise<TaskPayload>;
+  history: (task: string, limit: number) => Promise<HistoryRun[]>;
+  refreshDevices: () => Promise<unknown>;
+  openLogsFolder: () => Promise<void>;
+  navigate: (page: Page) => void;
+  openTask: (name: string) => void;
+}
+
 const REFRESH_EVENTS = new Set(["task", "task_done", "task_list_updated", "executor_paused"]);
+const DOCK_KEY = "okbd2.dockExpanded";
+
+const message = (reason: unknown) => (reason instanceof Error ? reason.message : String(reason));
+
+function storedDockExpanded(): boolean {
+  try {
+    const value = localStorage.getItem(DOCK_KEY);
+    if (value !== null) {
+      return value === "1";
+    }
+  } catch {
+    // storage can be unavailable; fall back to the width rule
+  }
+  return window.innerWidth >= 900;
+}
+
+const NAV: { page: Page; label: string; icon: string; later?: string }[] = [
+  { page: "today", label: "今日", icon: "today" },
+  { page: "tasks", label: "任务", icon: "tasks" },
+  { page: "records", label: "记录", icon: "history", later: "阶段 3" },
+  { page: "logs", label: "日志", icon: "logs" },
+  { page: "device", label: "设备", icon: "device" },
+  { page: "settings", label: "设置", icon: "settings" },
+];
 
 export function App() {
   const [ui, setUi] = useState<CaptureUi | null>(null);
-  const [info, setInfo] = useState<DesktopInfo | null>(null);
-  const [shellInfo, setShellInfo] = useState<ShellInfo | null>(null);
   const [tasks, setTasks] = useState<TaskPayload[]>([]);
+  const [today, setToday] = useState<TodaySummary | null>(null);
+  const [info, setInfo] = useState<DesktopInfo | null>(null);
   const [logs, setLogs] = useState<LogLine[]>([]);
-  const [stats, setStats] = useState<StreamStats>(INITIAL_STATS);
-  const [error, setError] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [coreError, setCoreError] = useState<string | null>(null);
+  const [eventsConnected, setEventsConnected] = useState(false);
+  const [everConnected, setEverConnected] = useState(false);
+  const [toast, setToast] = useState<Notice | null>(null);
+  const [page, setPage] = useState<Page>("today");
+  const [selectedTask, setSelectedTask] = useState<string | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [now, setNow] = useState(() => Date.now() / 1000);
+  const [historyVersion, setHistoryVersion] = useState(0);
+  const [dockName, setDockName] = useState<string | null>(null);
+  const [dockDismissed, setDockDismissed] = useState(false);
+  const [dockDuration, setDockDuration] = useState<number | null>(null);
+  const [shutdownSeen, setShutdownSeen] = useState<number | null>(null);
+  const [dockExpanded, setDockExpanded] = useState(storedDockExpanded);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const [capture, taskList, desktop] = await Promise.all([api.capture(), api.tasks(), api.info()]);
+      const [capture, taskList, summary, desktop] = await Promise.all([api.capture(), api.tasks(), api.today(), api.info()]);
       setUi(capture);
       setTasks(taskList);
+      setToday(summary);
       setInfo(desktop);
-      setError(null);
+      setCoreError(null);
     } catch (reason) {
-      setError(String(reason instanceof Error ? reason.message : reason));
+      setCoreError(message(reason));
     }
   }, []);
 
@@ -71,7 +132,7 @@ export function App() {
       try {
         const file = await api.logs();
         if (!cancelled) {
-          setLogs((current) => appendLogs(logsFromFile(file.text).slice(-100), current));
+          setLogs((current) => appendLogs(logsFromFile(file.text).slice(-200), current));
         }
       } catch {
         // the log file is optional on a fresh install
@@ -83,7 +144,6 @@ export function App() {
       connection = connectEvents(
         capture.event_session_key,
         (payload) => {
-          setStats((current) => trackEvent(current, payload));
           const line = logFromEvent(payload);
           if (line) {
             setLogs((current) => appendLogs(current, [line]));
@@ -91,176 +151,336 @@ export function App() {
           if (payload.ui) {
             setUi(payload.ui);
           }
+          const notice = noticeFromEvent(payload);
+          if (notice) {
+            setToast(notice);
+          }
+          if (payload.event === "task_done") {
+            setHistoryVersion((version) => version + 1);
+          }
           if (REFRESH_EVENTS.has(payload.event) || payload.resync) {
             scheduleRefresh();
           }
         },
-        (connected) => setStats((current) => ({ ...current, connected })),
+        (connected) => {
+          setEventsConnected(connected);
+          if (connected) {
+            setEverConnected(true);
+            scheduleRefresh();
+          }
+        },
       );
       void api.uiReady().catch(() => undefined);
     })();
-    void window.okbd2Shell?.info().then(setShellInfo);
     return () => {
       cancelled = true;
       connection?.close();
     };
   }, [refresh, scheduleRefresh]);
 
-  const run = useCallback(
-    async (action: () => Promise<unknown>, done?: string) => {
-      setBusy(true);
-      setMessage(null);
+  useEffect(() => {
+    if (!toast) {
+      return;
+    }
+    const timer = setTimeout(() => setToast(null), 6000);
+    return () => clearTimeout(timer);
+  }, [toast]);
+
+  const current = ui?.status.current_task ?? null;
+  const starting = Boolean(ui?.status.starting);
+
+  // The run panel follows the task that ran last; a new run brings it back after a dismissal.
+  useEffect(() => {
+    if (current) {
+      setDockName(current);
+      setDockDismissed(false);
+      setDockDuration(null);
+      setShutdownSeen(null);
+    }
+  }, [current]);
+
+  const dockTask = dockName ? tasks.find((task) => task.name === dockName) : undefined;
+  const dockSeal = dockTask ? sealOf(dockTask, current) : null;
+  const dockActive = dockSeal !== null && isActive(dockSeal);
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now() / 1000), dockActive ? 1000 : 30_000);
+    setNow(Date.now() / 1000);
+    return () => clearInterval(timer);
+  }, [dockActive]);
+
+  // Once a run ends, its duration comes from the run record the core wrote.
+  const dockStart = dockTask?.start_time ?? 0;
+  useEffect(() => {
+    if (!dockName || dockActive) {
+      return;
+    }
+    let cancelled = false;
+    api.history(dockName, 1).then(
+      (runs) => {
+        const run = runs[0];
+        if (!cancelled && run && run.finished >= dockStart - 1) {
+          setDockDuration(run.duration);
+        }
+      },
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [dockName, dockActive, dockStart, historyVersion]);
+
+  const shutdownTotal = dockTask && !dockActive ? shutdownSeconds(dockTask) : null;
+  useEffect(() => {
+    if (shutdownTotal !== null && shutdownSeen === null) {
+      setShutdownSeen(Date.now() / 1000);
+    }
+  }, [shutdownTotal, shutdownSeen]);
+
+  const batch = today?.batch ? tasks.find((task) => task.name === today.batch?.name) : undefined;
+  const showRun = Boolean(dockTask && dockSeal && !dockDismissed);
+  const batchRun = useMemo<BatchRun | null>(() => {
+    if (!showRun || !batch || !dockSeal || dockTask?.name !== batch.name || !today) {
+      return null;
+    }
+    return { batch, seal: dockSeal, runs: childRuns(batch, today.items.filter((item) => item.enabled), dockSeal) };
+  }, [showRun, batch, dockSeal, dockTask, today]);
+
+  const dockRun: DockRun | null =
+    showRun && dockTask && dockSeal
+      ? {
+          task: dockTask,
+          seal: dockSeal,
+          duration: dockDuration,
+          shutdownLeft:
+            shutdownTotal !== null && shutdownSeen !== null ? Math.max(0, shutdownTotal - (now - shutdownSeen)) : null,
+        }
+      : null;
+
+  const queued = tasks.find((task) => !task.trigger && task.enabled && task.name !== current);
+  const busy = Boolean(current) || Boolean(queued) || starting;
+  const legacy = info && info.legacy_instances.length > 0 ? info.legacy_instances : null;
+  const startBlocked = legacy
+    ? t("旧版 ok-bd2 正在运行，请先关闭它")
+    : starting
+      ? t("正在启动游戏")
+      : busy
+        ? `${t("正在运行")} ${current ?? queued?.name ?? ""}`
+        : null;
+  const devices = ui?.devices ?? [];
+  const device = devices.find((item) => item.selected) ?? devices[0] ?? null;
+  const taking = today?.items.filter((item) => item.enabled) ?? [];
+
+  const act = useCallback(
+    async (action: () => Promise<unknown>) => {
       try {
         await action();
-        if (done) {
-          setMessage(done);
-        }
+        return true;
       } catch (reason) {
-        setMessage(String(reason instanceof Error ? reason.message : reason));
+        setToast({ text: message(reason), error: true });
+        return false;
       } finally {
-        setBusy(false);
-        void refresh();
+        scheduleRefresh();
       }
     },
-    [refresh],
+    [scheduleRefresh],
   );
 
-  const onTaskAction = (task: TaskPayload, action: TaskAction) =>
-    run(() => (action === "start" ? api.startTask(task.name) : api.taskAction(task.name, action)));
+  const replaceTask = useCallback((updated: TaskPayload) => {
+    setTasks((list) => list.map((task) => (task.name === updated.name ? updated : task)));
+    return updated;
+  }, []);
 
-  const status = ui?.status;
-  const current = status?.current_task ?? null;
-  const visibleTasks = tasks.filter((task) => task.visible);
-  const capture = ui ? captureSummary(ui) : "…";
-  const selectedInteraction = ui?.interaction_methods.find((item) => item.selected)?.label ?? t("无");
+  const core: Core = {
+    ui,
+    tasks,
+    today,
+    now,
+    current,
+    busy,
+    startBlocked,
+    batchRun,
+    allDone: taking.length > 0 && taking.every((item) => item.done),
+    device,
+    deviceName: device ? device.label.split("：").slice(1).join("：") || device.label : "",
+    captureText: ui ? captureSummary(ui) : "",
+    historyVersion,
+    childStage: (item) => {
+      const child = tasks.find((task) => task.name === item.name);
+      const stage = String(child?.info["当前子任务"] || child?.info["状态"] || "");
+      return stage === "-" ? "" : stage.replace(/。$/, "");
+    },
+    act,
+    setConfig: async (task, key, value) => {
+      const updated = replaceTask(await api.setTaskConfig(task, key, value));
+      scheduleRefresh();
+      return updated;
+    },
+    resetTask: async (task) => replaceTask(await api.resetTaskConfig(task)),
+    startTask: api.startTask,
+    startDaily: api.startDaily,
+    taskAction: (task, action) => api.taskAction(task, action),
+    history: api.history,
+    refreshDevices: api.refreshDevices,
+    openLogsFolder: async () => {
+      await window.okbd2Shell?.openLogsFolder();
+    },
+    navigate: (target) => {
+      setPage(target);
+      if (target === "tasks") {
+        setDetailOpen(false);
+      }
+    },
+    openTask: (name) => {
+      setSelectedTask(name);
+      setDetailOpen(true);
+      setPage("tasks");
+    },
+  };
+
+  const setExpanded = (expanded: boolean) => {
+    setDockExpanded(expanded);
+    try {
+      localStorage.setItem(DOCK_KEY, expanded ? "1" : "0");
+    } catch {
+      // remembering the choice is a convenience only
+    }
+  };
+
+  const connected = Boolean(device?.connected);
+  let content;
+  switch (page) {
+    case "tasks":
+      content = (
+        <TasksPage
+          core={core}
+          selected={selectedTask}
+          detailOpen={detailOpen}
+          onSelect={(name) => {
+            setSelectedTask(name);
+            setDetailOpen(true);
+          }}
+          onBack={() => setDetailOpen(false)}
+        />
+      );
+      break;
+    case "records":
+      content = <RecordsPage />;
+      break;
+    case "logs":
+      content = <LogsPage core={core} logs={logs} />;
+      break;
+    case "device":
+      content = <DevicePage core={core} />;
+      break;
+    case "settings":
+      content = <SettingsPage />;
+      break;
+    default:
+      content = <TodayPage core={core} />;
+  }
 
   return (
     <div
-      className="page"
-      data-core={error ? "error" : ui ? "ok" : "loading"}
-      data-events={stats.connected ? "connected" : "disconnected"}
-      data-tasks={visibleTasks.length}
+      className="app"
+      data-core={coreError ? "error" : ui ? "ok" : "loading"}
+      data-events={eventsConnected ? "connected" : "disconnected"}
+      data-tasks={tasks.filter((task) => task.visible).length}
     >
-      <header>
-        <div>
-          <h1>{t("ok-bd2 链路验证")}</h1>
-          <p className="muted">
-            {t("核心")} {info?.core_version ?? "…"} · {t("接口")} {info?.api ?? "…"} · {t("外壳")}{" "}
-            {shellInfo?.shellVersion ?? t("未知")}
-          </p>
-        </div>
-        <div className="actions">
-          <button type="button" onClick={() => void window.okbd2Shell?.openLogsFolder()}>
-            {t("打开日志文件夹")}
+      <SharedDefs />
+      {coreError && (
+        <div className="banner error" role="alert">
+          <Icon name="alert" />
+          <b>{t("无法连接核心")}</b>
+          <span className="t">{coreError}</span>
+          <button type="button" className="btn sm" onClick={() => void refresh()}>
+            {t("重试")}
           </button>
-          <button type="button" onClick={() => void window.okbd2Shell?.quit()}>
-            {t("退出")}
-          </button>
-        </div>
-      </header>
-
-      {error && <div className="banner error">{t("无法连接核心：")}{error}</div>}
-      {info && info.legacy_instances.length > 0 && (
-        <div className="banner warning">
-          {t("检测到正在运行的旧版 ok-bd2，退出它之前不会开始任务：")}
-          {info.legacy_instances.map((item) => item.description).join("；")}
         </div>
       )}
-      {message && <div className="banner info">{message}</div>}
-
-      <section className="grid">
-        <div className="card">
-          <h2>{t("连接")}</h2>
-          <dl>
-            <dt>{t("核心接口")}</dt>
-            <dd>{error ? t("断开") : ui ? t("正常") : t("连接中")}</dd>
-            <dt>{t("事件流")}</dt>
-            <dd>
-              {stats.connected ? t("已连接") : t("未连接")} · {t("已收")} {stats.received} · {t("序号")}{" "}
-              {stats.lastSeq} · {t("缺口")} {stats.gaps} · {t("重新同步")} {stats.resyncs}
-            </dd>
-            <dt>{t("执行器")}</dt>
-            <dd>{status ? executorLabel(status) : "…"}</dd>
-          </dl>
-          <div className="actions">
-            <button type="button" disabled={busy || !status || status.paused} onClick={() => void run(api.pause)}>
-              {t("暂停执行器")}
-            </button>
-            <button type="button" disabled={busy || !status?.paused} onClick={() => void run(api.resume)}>
-              {t("继续执行器")}
-            </button>
-            <button type="button" disabled={busy || !current} onClick={() => void run(api.stopTask)}>
-              {t("停止当前任务")}
-            </button>
-          </div>
+      {legacy && (
+        <div className="banner warning" role="alert">
+          <Icon name="alert" />
+          <b>{t("旧版 ok-bd2 正在运行")}</b>
+          <span className="t">
+            {legacy.map((item) => item.description).join("；")}
+            {t("。新客户端不能同时控制游戏，开始任务前请先关闭它。")}
+          </span>
+          <button type="button" className="btn sm" onClick={() => void refresh()}>
+            {t("重新检查")}
+          </button>
         </div>
-
-        <div className="card">
-          <h2>{t("游戏窗口与截图方式")}</h2>
-          <dl>
-            <dt>{t("窗口")}</dt>
-            <dd>
-              {ui && ui.devices.length > 0
-                ? ui.devices.map((device) => (
-                    <span key={device.id} className={device.connected ? "ok" : "muted"}>
-                      {device.label}
-                    </span>
-                  ))
-                : t("未找到游戏窗口")}
-            </dd>
-            <dt>{t("截图方式")}</dt>
-            <dd>{capture}</dd>
-            <dt>{t("交互方式")}</dt>
-            <dd>{selectedInteraction}</dd>
-          </dl>
-          <div className="actions">
-            <button type="button" disabled={busy} onClick={() => void run(api.refreshDevices, t("已请求刷新"))}>
-              {t("刷新窗口")}
-            </button>
-          </div>
+      )}
+      {everConnected && !eventsConnected && !coreError && (
+        <div className="banner info" role="status">
+          <Icon name="refresh" />
+          <span className="t">{t("与核心的实时连接中断，正在重新同步…")}</span>
         </div>
-      </section>
-
-      <section className="card">
-        <h2>{t("任务")}</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>{t("名称")}</th>
-              <th>{t("类型")}</th>
-              <th>{t("状态")}</th>
-              <th>{t("操作")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {visibleTasks.map((task) => (
-              <tr key={task.name}>
-                <td title={task.description}>{task.name}</td>
-                <td>{task.trigger ? t("触发") : t("一次性")}</td>
-                <td>{taskState(task, current)}</td>
-                <td className="actions">
-                  {taskActions(task, current).map((action) => (
-                    <button key={action} type="button" disabled={busy} onClick={() => void onTaskAction(task, action)}>
-                      {t(ACTION_LABELS[action])}
-                    </button>
-                  ))}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </section>
-
-      <section className="card">
-        <h2>{t("实时日志")}</h2>
-        <pre className="log" aria-live="polite">
-          {logs.map((line) => (
-            <div key={line.key} className={`level-${levelName(line.level).toLowerCase()}`}>
-              {line.text}
-            </div>
+      )}
+      <div className="app-body">
+        <nav className="rail" aria-label={t("主导航")}>
+          <div className="id">
+            <span className="avatar" aria-hidden="true">
+              BD
+            </span>
+            <span className="txt">
+              <div className="nm">ok-bd2</div>
+              <div className="ver">{info ? `v${info.core_version}` : "…"}</div>
+            </span>
+          </div>
+          {NAV.map((item) => (
+            <button
+              key={item.page}
+              type="button"
+              className="nav"
+              aria-current={page === item.page ? "page" : undefined}
+              title={t(item.label)}
+              onClick={() => core.navigate(item.page)}
+            >
+              <Icon name={item.icon} />
+              <span className="tx">{t(item.label)}</span>
+              {item.later && <span className="later">{t(item.later)}</span>}
+            </button>
           ))}
-        </pre>
-      </section>
+          <div className="foot">
+            <button
+              type="button"
+              className="nav conn"
+              title={connected ? `${t("已连接")} ${device?.label ?? ""}` : t("未连接游戏")}
+              onClick={() => core.navigate("device")}
+            >
+              <span className={connected ? "d" : "d off"} />
+              <span className="t">
+                {connected ? t("已连接") : t("未连接游戏")}
+                <small>{connected ? core.captureText : t("点此查看")}</small>
+              </span>
+            </button>
+            <button type="button" className="nav" disabled title={t("问题报告（阶段 3）")}>
+              <Icon name="report" />
+              <span className="tx">{t("问题报告")}</span>
+              <span className="later">{t("阶段 3")}</span>
+            </button>
+          </div>
+        </nav>
+        <main className="main">{content}</main>
+      </div>
+      <RunDock
+        core={core}
+        run={dockRun}
+        logs={logs}
+        expanded={dockExpanded}
+        onExpand={setExpanded}
+        onDismiss={() => setDockDismissed(true)}
+      />
+      {toast && (
+        <div className={toast.error ? "toast" : "toast info"} role={toast.error ? "alert" : "status"}>
+          <Icon name={toast.error ? "alert" : "info"} />
+          <span>{toast.text}</span>
+          <button type="button" className="btn subtle sm icon" aria-label={t("关闭")} onClick={() => setToast(null)}>
+            <Icon name="x" />
+          </button>
+        </div>
+      )}
     </div>
   );
 }

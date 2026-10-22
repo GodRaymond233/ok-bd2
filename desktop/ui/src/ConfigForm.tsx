@@ -1,0 +1,234 @@
+// A task's settings, generated from the core's field descriptions. Switches, lists and
+// choices save at once; text and numbers save when the field loses focus or on Enter.
+// A refused value shows the core's reason under the field and the field shows the saved value.
+import { type KeyboardEvent, useEffect, useState } from "react";
+import { isModified, linesToList, numberStep, optionList, parseNumber, stepNumber, toggleChoice, valueText } from "./form.ts";
+import { t } from "./i18n.ts";
+import type { ConfigField } from "./types.ts";
+import { Icon, Toggle } from "./ui.tsx";
+
+export type SaveField = (key: string, value: unknown) => Promise<void>;
+
+function Control({
+  field,
+  disabled,
+  save,
+  setError,
+}: {
+  field: ConfigField;
+  disabled: boolean;
+  save: (value: unknown) => void;
+  setError: (message: string | null) => void;
+}) {
+  const textValue = field.kind === "list" && !field.options ? (Array.isArray(field.value) ? field.value.join("\n") : "") : String(field.value ?? "");
+  const [draft, setDraft] = useState(textValue);
+  useEffect(() => setDraft(textValue), [textValue]);
+  const commitText = () => {
+    if (draft === textValue) {
+      return;
+    }
+    if (field.kind === "integer" || field.kind === "number") {
+      const parsed = parseNumber(draft, field);
+      if (typeof parsed === "string") {
+        setError(parsed);
+        setDraft(textValue);
+        return;
+      }
+      save(parsed);
+    } else if (field.kind === "list") {
+      save(linesToList(draft));
+    } else {
+      save(draft);
+    }
+  };
+  const onEnter = (event: KeyboardEvent) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      (event.target as HTMLElement).blur();
+    }
+  };
+
+  if (field.editor) {
+    return <span className="why">{field.value ? t("已设置方案") : t("未设置方案（按默认规则）")}</span>;
+  }
+  switch (field.kind) {
+    case "boolean":
+      return <Toggle checked={Boolean(field.value)} disabled={disabled} label={field.key} onChange={save} />;
+    case "select":
+      return (
+        <select className="select" value={String(field.value)} disabled={disabled} aria-label={field.key} onChange={(event) => save(event.target.value)}>
+          {optionList(field).map((option) => (
+            <option key={option} value={option}>
+              {option}
+            </option>
+          ))}
+        </select>
+      );
+    case "multi_selection":
+    case "list":
+      if (field.options) {
+        const chosen = Array.isArray(field.value) ? field.value.map(String) : [];
+        return (
+          <span className="chips" role="group" aria-label={field.key}>
+            {optionList(field).map((option) => (
+              <button
+                key={option}
+                type="button"
+                aria-pressed={chosen.includes(option)}
+                disabled={disabled}
+                onClick={() => save(toggleChoice(field.value, option))}
+              >
+                {chosen.includes(option) && <Icon name="check" />}
+                {option}
+              </button>
+            ))}
+          </span>
+        );
+      }
+      return (
+        <textarea
+          className="input"
+          value={draft}
+          disabled={disabled}
+          aria-label={field.key}
+          placeholder={t("每行一项")}
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={commitText}
+        />
+      );
+    case "integer":
+    case "number":
+      return (
+        <>
+          <span className="numbox">
+            <button
+              type="button"
+              disabled={disabled || (field.minimum !== null && Number(field.value) <= field.minimum)}
+              aria-label={`${field.key} ${t("减少")}`}
+              onClick={() => save(stepNumber(field.value, field, -1))}
+            >
+              <Icon name="minus" />
+            </button>
+            <input
+              inputMode="decimal"
+              value={draft}
+              disabled={disabled}
+              aria-label={field.key}
+              step={numberStep(field)}
+              onChange={(event) => setDraft(event.target.value)}
+              onBlur={commitText}
+              onKeyDown={onEnter}
+            />
+            <button
+              type="button"
+              disabled={disabled || (field.maximum !== null && Number(field.value) >= field.maximum)}
+              aria-label={`${field.key} ${t("增加")}`}
+              onClick={() => save(stepNumber(field.value, field, 1))}
+            >
+              <Icon name="plus" />
+            </button>
+          </span>
+          {(field.minimum !== null || field.maximum !== null) && (
+            <span className="range">
+              {field.minimum ?? "…"}–{field.maximum ?? "…"}
+            </span>
+          )}
+        </>
+      );
+    case "multiline":
+      return (
+        <textarea
+          className="input"
+          value={draft}
+          disabled={disabled}
+          aria-label={field.key}
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={commitText}
+        />
+      );
+    default:
+      return (
+        <input
+          className="input"
+          value={draft}
+          disabled={disabled}
+          aria-label={field.key}
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={commitText}
+          onKeyDown={onEnter}
+        />
+      );
+  }
+}
+
+function Field({ field, disabled, saveField }: { field: ConfigField; disabled: boolean; saveField: SaveField }) {
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(0);
+  const save = (value: unknown) => {
+    setError(null);
+    saveField(field.key, value).then(
+      () => setSaved(Date.now()),
+      (reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)),
+    );
+  };
+  const modified = isModified(field);
+  return (
+    <div className={field.sub_config ? "fld sub" : "fld"}>
+      <div className="lb">
+        {field.key}
+        {modified && !field.editor && (
+          <>
+            <span className="mod" title={t("与默认值不同")} />
+            <button type="button" className="reset" disabled={disabled} onClick={() => save(field.default)}>
+              {t("恢复默认")}（{valueText(field.default)}）
+            </button>
+          </>
+        )}
+        {saved > 0 && (
+          <span key={saved} className="saved" role="status">
+            <Icon name="check" />
+            {t("已保存")}
+          </span>
+        )}
+      </div>
+      {field.description && <div className="dsc">{field.description}</div>}
+      {field.editor && <div className="dsc">{t("方案编辑器在阶段 3 接入；现在请在 Qt 版编辑。")}</div>}
+      <div className="ctrl">
+        <Control field={field} disabled={disabled} save={save} setError={setError} />
+      </div>
+      {error && (
+        <div className="ferr" role="alert">
+          <Icon name="alert" />
+          {error}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function ConfigForm({
+  fields,
+  hidden,
+  disabled,
+  saveField,
+}: {
+  fields: ConfigField[];
+  hidden: number;
+  disabled: boolean;
+  saveField: SaveField;
+}) {
+  return (
+    <div className="card form">
+      {fields.length === 0 && <div className="empty">{t("这个任务没有可修改的设置。")}</div>}
+      {fields.map((field) => (
+        <Field key={field.key} field={field} disabled={disabled} saveField={saveField} />
+      ))}
+      {hidden > 0 && (
+        <div className="hidden-note">
+          <Icon name="info" />
+          {t("已隐藏")} {hidden} {t("项识别与维护参数（阈值、等待秒数、测试按钮等），与 Qt 版一致")}
+        </div>
+      )}
+    </div>
+  );
+}

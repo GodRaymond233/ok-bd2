@@ -1,3 +1,23 @@
+/** ok-script's form field description (ok/core/config_schema.py build_config_fields). */
+export interface ConfigField {
+  key: string;
+  value: unknown;
+  default: unknown;
+  description: string;
+  kind: "boolean" | "integer" | "number" | "select" | "multi_selection" | "list" | "text" | "multiline" | "file";
+  options: unknown[] | null;
+  allow_duplication: boolean;
+  minimum: number | null;
+  maximum: number | null;
+  /** Shown under a parent switch (sub_configs). */
+  sub_config: boolean;
+  /** Set when only a dedicated editor may change the value (the quick-hunt plan). */
+  editor?: string;
+}
+
+/** Result of a task's current or last run (src/tasks/run_history.py run_state). */
+export type RunState = "run" | "pause" | "done" | "warn" | "abort" | "fail";
+
 export interface TaskPayload {
   name: string;
   class_name: string;
@@ -12,6 +32,50 @@ export interface TaskPayload {
   start_time: number;
   info: Record<string, unknown>;
   config_busy?: boolean;
+  run_state?: RunState;
+  config?: ConfigField[];
+  hidden_config_count?: number;
+  instructions?: string | null;
+  guide?: string | null;
+}
+
+export interface LastRun {
+  finished: number;
+  duration: number | null;
+  ok: boolean;
+  status: string;
+}
+
+export interface TodayItem {
+  /** The child's switch on 一键完成日常; also the name the batch reports progress by. */
+  key: string;
+  name: string;
+  enabled: boolean;
+  done: boolean;
+  completion: "today" | "quota" | "week" | null;
+  weekly: boolean;
+  last: LastRun | null;
+}
+
+export interface SkipReason {
+  reason: "off" | "stopped" | "done" | "not_due";
+  minutes: number | null;
+}
+
+export interface TodaySummary {
+  batch: { name: string; enabled: boolean; auto_start: boolean; shutdown: boolean } | null;
+  items: TodayItem[];
+  skipped: Record<string, SkipReason>;
+  refresh: { daily: number; collection_quota: number; collection_week: number };
+}
+
+export interface HistoryRun {
+  task: string;
+  started: number | null;
+  finished: number;
+  duration: number | null;
+  ok: boolean;
+  status: string;
 }
 
 export interface ExecutorStatus {
