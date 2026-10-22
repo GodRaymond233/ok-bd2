@@ -209,6 +209,7 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
         self.task = task
         self.vision = vision
         self.card_status = CardStatusDetector(vision)
+        self._navigation_failure = ""
 
     def _map_page_template_signal(
         self,
@@ -325,9 +326,8 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
                     SANDBOX_LARGE_MAP_RIGHT_TEMPLATE,
                 )
                 evidence.extend((left_evidence, right_evidence))
-                # The first sub-area page has no left arrow and the last no right
-                # one; a page without either arrow stays unknown.
-                if left or right:
+                # 地图边界或浅色背景会使箭头缺失；完整底栏可独立确认已知地图。
+                if left or right or keyword_hits == len(SANDBOX_NAVIGATION_PAGE_KEYWORDS):
                     mode = MapPageMode.SANDBOX_LARGE_MAP
 
         self._status(

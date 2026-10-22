@@ -62,6 +62,215 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class NavigatorTest(unittest.TestCase):
+    def test_portal_entry_reuses_maps_and_restores_field_before_skill_actions(self):
+        frame = np.full((90, 160, 3), 120, dtype=np.uint8)
+        for initial in MapPageMode:
+            for can_close in (True, False):
+                with self.subTest(mode=initial, can_close=can_close):
+                    mode = [initial]
+                    events = []
+                    navigator = Navigator(SimpleNamespace(info_set=Mock()), SimpleNamespace(
+                        capture=lambda: frame,
+                    ))
+                    navigator._detect_map_page_mode = lambda _frame: SimpleNamespace(mode=mode[0])
+                    navigator.classify = Mock(return_value=ScreenState.UNKNOWN)
+                    navigator._wait_for_current_sandbox = Mock(return_value=NavigationResult(
+                        True, ScreenState.SANDBOX,
+                    ))
+                    def close(*_args, **_kwargs):
+                        events.append("close")
+                        if can_close:
+                            mode[0] = MapPageMode.UNKNOWN
+                            navigator.classify.return_value = ScreenState.SANDBOX
+                        return NavigationResult(can_close, ScreenState.UNKNOWN)
+                    navigator._close_confirmed_map_page = Mock(side_effect=close)
+                    navigator._click_sandbox_teleport_interaction = Mock(return_value=False)
+                    navigator._click_sandbox_teleport_skill = Mock(
+                        side_effect=lambda: events.append("skill") or True,
+                    )
+                    navigator._wait_for_sandbox_map_open = Mock(return_value=NavigationResult(
+                        True, ScreenState.AREA_MAP, map_page_mode=MapPageMode.GENERATE_TELEPORT,
+                    ))
+                    result = navigator.open_teleport_map_from_sandbox()
+                    if initial.is_teleport_map:
+                        self.assertTrue(result.success)
+                        self.assertEqual(initial, result.map_page_mode)
+                        self.assertEqual([], events)
+                    elif initial == MapPageMode.SANDBOX_LARGE_MAP and can_close:
+                        self.assertTrue(result.success)
+                        self.assertEqual(["close", "skill"], events)
+                    else:
+                        self.assertFalse(result.success)
+                        navigator._click_sandbox_teleport_skill.assert_not_called()
+                        navigator._click_sandbox_teleport_interaction.assert_not_called()
+
+    def test_portal_interaction_retries_only_after_field_recovery_and_stops_at_limit(self):
+        failed = NavigationResult(False, ScreenState.UNKNOWN, "直传页未确认")
+        passed = NavigationResult(
+            True, ScreenState.AREA_MAP, map_page_mode=MapPageMode.DIRECT_TELEPORT,
+        )
+        for waits, recover, success, reclicks in (
+            ([passed], True, True, 0),
+            ([failed, passed], True, True, 1),
+            ([failed] * 3, True, False, 2),
+            ([failed], False, False, 0),
+        ):
+            with self.subTest(waits=waits, recover=recover):
+                events = []
+                navigator = Navigator(SimpleNamespace(info_set=Mock()), SimpleNamespace())
+                navigator._wait_for_sandbox_map_open = Mock(side_effect=waits)
+                navigator._restore_navigation_field = Mock(side_effect=lambda: (
+                    events.append("restore") or NavigationResult(recover, ScreenState.UNKNOWN)
+                ))
+                navigator._click_sandbox_teleport_interaction = Mock(side_effect=lambda: (
+                    events.append("click") or True
+                ))
+                result = navigator._confirm_portal_interaction("交互")
+                self.assertEqual(success, result.success)
+                self.assertEqual(reclicks, navigator._click_sandbox_teleport_interaction.call_count)
+                for index, event in enumerate(events):
+                    if event == "click":
+                        self.assertEqual("restore", events[index - 1])
+        navigator._wait_for_sandbox_map_open = Mock(side_effect=TaskDisabledException())
+        navigator._restore_navigation_field.reset_mock()
+        with self.assertRaises(TaskDisabledException):
+            navigator._confirm_portal_interaction("交互")
+        navigator._restore_navigation_field.assert_not_called()
+
+    def test_navigation_menu_upscale_requires_unique_stable_destination(self):
+        frame = np.full((720, 1280, 3), 120, dtype=np.uint8)
+        for labels, expected in (
+            (["狩猎扬", "快速狩猎", "艾琳"], "狩猎场"),
+            (["快速狩猎"], None),
+            (["狩猎场", "狩猎场"], None),
+            (["艾琳"], "艾琳"),
+        ):
+            with self.subTest(labels=labels):
+                clock = [0.0]
+                scales = []
+                def boxes(_frame, _label, _roi, *, ocr_scale=1.0):
+                    scales.append(ocr_scale)
+                    return [] if ocr_scale == 1.0 else [
+                        SimpleNamespace(name=text, x=300, y=100 + row * 40, width=80, height=20)
+                        for row, text in enumerate(labels)
+                    ]
+                navigator = Navigator(SimpleNamespace(
+                    info_set=Mock(),
+                    sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+                ), SimpleNamespace(capture=lambda: frame, ocr_boxes=boxes, simplify=str))
+                with patch("src.tasks.map_trade.navigator_sandbox.monotonic",
+                           side_effect=lambda: clock[0]):
+                    result = navigator._nav_menu_choice(("狩猎场", "艾琳"))
+                self.assertEqual(expected, None if result is None else result[0])
+                self.assertIn(2.0, scales)
+                if result is not None:
+                    self.assertEqual((720, 1280, 3), result[2])
+                    self.assertGreaterEqual(scales.count(2.0), 2)
+
+    def test_navigation_menu_open_retries_are_bounded_and_reset_each_trip(self):
+        frame = np.full((90, 160, 3), 120, dtype=np.uint8)
+        destination = ("艾琳", (100, 60), frame.shape)
+        for choices, button_closed, menu_text, expected, presses in (
+            ([None, destination], True, [], "艾琳", 2),
+            ([None] * 3, True, [], None, 3),
+            ([None], False, [], None, 1),
+            ([None], True, ["旅馆"], None, 1),
+        ):
+            with self.subTest(choices=choices, closed=button_closed):
+                vision = SimpleNamespace(
+                    capture=lambda: frame, click_template=Mock(return_value=True),
+                    match=Mock(), passes=Mock(return_value=button_closed), click_client=Mock(),
+                )
+                navigator = Navigator(SimpleNamespace(config={}, log_warning=Mock()), vision)
+                navigator._restore_navigation_field = Mock(return_value=NavigationResult(
+                    True, ScreenState.SANDBOX,
+                ))
+                navigator._nav_menu_choice = Mock(side_effect=choices)
+                navigator._nav_menu_entries = Mock(return_value=({}, menu_text))
+                navigator._confirm_travel = Mock(return_value="moving")
+                navigator._wait_for_field_hud = Mock(return_value=NavigationResult(
+                    True, ScreenState.SANDBOX,
+                ))
+                navigator._wait_auto_move_finished = Mock(return_value="done")
+                navigator._navigation_failure = "旧失败"
+                self.assertEqual(expected, navigator._travel_via_nav_menu("艾琳"))
+                self.assertEqual(presses, vision.click_template.call_count)
+                self.assertNotIn("旧失败", navigator._navigation_failure)
+                self.assertEqual(int(expected is not None), vision.click_client.call_count)
+
+    def test_navigation_destination_reclicks_fresh_menu_and_stops_on_unconfirmed_trip(self):
+        for outcomes, success, click_count in (
+            (["menu", "moving"], True, 2),
+            (["menu"] * 3, False, 3),
+            (["stuck"], False, 1),
+        ):
+            with self.subTest(outcomes=outcomes):
+                vision = SimpleNamespace(
+                    click_template=Mock(return_value=True), click_client=Mock(),
+                )
+                navigator = Navigator(SimpleNamespace(config={}), vision)
+                navigator._restore_navigation_field = Mock(return_value=NavigationResult(
+                    True, ScreenState.SANDBOX,
+                ))
+                navigator._nav_menu_choice = Mock(side_effect=[
+                    ("艾琳", (100 + i, 60), (900, 1600, 3)) for i in range(click_count)
+                ])
+                navigator._confirm_travel = Mock(side_effect=outcomes)
+                navigator._wait_for_field_hud = Mock(return_value=NavigationResult(
+                    True, ScreenState.SANDBOX,
+                ))
+                navigator._wait_auto_move_finished = Mock(return_value="done")
+                self.assertEqual("艾琳" if success else None,
+                                 navigator._travel_via_nav_menu("艾琳"))
+                self.assertEqual(click_count, vision.click_client.call_count)
+                self.assertEqual([(100 + i, 60) for i in range(click_count)], [
+                    call.args[0] for call in vision.click_client.call_args_list
+                ])
+                self.assertEqual(int(success), navigator._wait_for_field_hud.call_count)
+
+    def test_navigation_confirmation_requires_observed_transition_and_finite_clicks(self):
+        frame = np.full((90, 160, 3), 120, dtype=np.uint8)
+        for mode, expected, expected_clicks in (
+            ("accepted_second", "moving", 2),
+            ("stuck", "stuck", 3),
+            ("menu", "menu", 0),
+            ("other_menu_text", "stuck", 0),
+            ("unknown", "stuck", 0),
+        ):
+            with self.subTest(mode=mode):
+                clock = [0.0]
+                clicks = []
+                def title(*_args, **_kwargs):
+                    return "是否自动移动前往所选目的地" if mode == "stuck" or (
+                        mode == "accepted_second" and len(clicks) < 2
+                    ) else ""
+                def boxes(_frame, name, **_kwargs):
+                    return [SimpleNamespace(name="确认", x=80, y=50, width=20, height=10)]
+                def click(*args, after_sleep=0):
+                    clicks.append(args[0])
+                    clock[0] += after_sleep
+                navigator = Navigator(SimpleNamespace(
+                    log_warning=Mock(), info_set=Mock(),
+                    sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+                ), SimpleNamespace(
+                    capture=lambda: frame, simplify=str, ocr_boxes=boxes,
+                    ocr_text=lambda _frame, name, **kwargs: "" if name == "导航提示" else title(),
+                    click_client=click, match=Mock(), passes=Mock(return_value=True),
+                    click_ocr=Mock(),
+                ))
+                navigator._nav_menu_entries = Mock(return_value=(
+                    {"艾琳": (100, 60)} if mode == "menu" else {},
+                    ["旅馆"] if mode == "other_menu_text" else [],
+                ))
+                navigator.classify = Mock(return_value=(
+                    ScreenState.SANDBOX if mode in {"accepted_second", "other_menu_text"}
+                    else ScreenState.UNKNOWN
+                ))
+                with patch("src.tasks.map_trade.navigator_sandbox.monotonic",
+                           side_effect=lambda: clock[0]):
+                    self.assertEqual(expected, navigator._confirm_travel("艾琳"))
+                self.assertEqual(expected_clicks, len(clicks))
+
     def test_walk_question_is_confirmed_and_remaining_map_is_closed_before_waiting(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         clock = [0.0]
@@ -263,29 +472,31 @@ class NavigatorTest(unittest.TestCase):
 
     def test_field_map_close_requires_field_evidence_and_only_retries_visible_map(self):
         frame = np.full((8, 8, 3), 120, dtype=np.uint8)
-        for sequence, expected, clicks in (
-            (("field",), True, 1), (("unknown",), False, 1),
-            (("map",), False, 2), (("map", "map", "field"), True, 2),
-            (("map", "unknown", "map", "field"), True, 1),
+        for modes, waits, expected, clicks in (
+            ((MapPageMode.SANDBOX_LARGE_MAP,), (True,), True, 1),
+            ((MapPageMode.UNKNOWN,), (), False, 0),
+            ((MapPageMode.SANDBOX_LARGE_MAP,) * 2, (False, False), False, 2),
+            ((MapPageMode.SANDBOX_LARGE_MAP,) * 2, (False, True), True, 2),
+            ((MapPageMode.SANDBOX_LARGE_MAP, MapPageMode.UNKNOWN), (False, False), False, 1),
+            ((MapPageMode.SANDBOX_LARGE_MAP, MapPageMode.UNKNOWN), (False, True), True, 1),
         ):
-            with self.subTest(sequence=sequence):
+            with self.subTest(modes=modes, waits=waits):
                 clock = [0.0]
-                observations = iter(sequence)
-                phase = [sequence[0]]
                 task = SimpleNamespace(
                     config={}, info_set=Mock(), operate_click=Mock(), log_warning=Mock(),
                     sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
                 )
-                def capture():
-                    phase[0] = next(observations, sequence[-1])
-                    return frame
                 vision = SimpleNamespace(
-                    capture=capture, simplify=lambda text: text,
-                    ocr_text=lambda *_args, **_kwargs: "安全 学校" if phase[0] == "map" else "",
+                    capture=lambda: frame,
+                    match=Mock(), passes=Mock(return_value=False),
                 )
                 navigator = Navigator(task, vision)
-                navigator.classify = lambda _frame: (
-                    ScreenState.SANDBOX if phase[0] == "field" else ScreenState.UNKNOWN
+                navigator._detect_map_page_mode = Mock(
+                    side_effect=[SimpleNamespace(mode=mode) for mode in modes],
+                )
+                navigator.classify = Mock(return_value=ScreenState.UNKNOWN)
+                navigator._wait_for_current_sandbox = Mock(
+                    side_effect=[NavigationResult(value, ScreenState.UNKNOWN) for value in waits],
                 )
                 with patch(
                     "src.tasks.map_trade.navigator_sandbox.monotonic", side_effect=lambda: clock[0],
@@ -354,7 +565,11 @@ class NavigatorTest(unittest.TestCase):
                 )
                 navigator = Navigator(task, vision)
                 navigator.classify = Mock(return_value=state)
+                navigator._restore_navigation_field = Mock(return_value=NavigationResult(
+                    state == ScreenState.SANDBOX, state,
+                ))
                 navigator._nav_menu_choice = Mock(return_value=None)
+                navigator._nav_menu_entries = Mock(return_value=({}, []))
                 self.assertIsNone(navigator._travel_via_nav_menu("艾琳"))
                 self.assertEqual(int(state == ScreenState.SANDBOX), task.operate_click.call_count)
 
@@ -445,6 +660,9 @@ class NavigatorTest(unittest.TestCase):
             click_template=Mock(return_value=True), click_client=Mock(),
         ))
         navigator._nav_menu_choice = Mock(return_value=("艾琳", (100, 100), (1080, 1920, 3)))
+        navigator._restore_navigation_field = Mock(return_value=NavigationResult(
+            True, ScreenState.SANDBOX,
+        ))
         navigator._confirm_travel = Mock(return_value="unreachable")
         navigator._wait_for_field_hud = Mock()
         self.assertIsNone(navigator._travel_via_nav_menu("艾琳"))
@@ -1062,7 +1280,8 @@ class NavigatorTest(unittest.TestCase):
                 MapPageMode.SANDBOX_LARGE_MAP,
             ),
         }
-        for height in (720, 1080, 1440, 2160):
+        cases["direct_900"] = ("移动魔法阵", "", MapPageMode.DIRECT_TELEPORT)
+        for height in (720, 900, 1080, 1440, 2160):
             width = height * 16 // 9
             for name, (header, footer, expected) in cases.items():
                 with self.subTest(height=height, page=name):
@@ -1252,9 +1471,12 @@ class NavigatorTest(unittest.TestCase):
                     left if "左箭头" in spec.name else right, spec.name,
                 )
                 self.assertEqual(
-                    MapPageMode.SANDBOX_LARGE_MAP if left or right else MapPageMode.UNKNOWN,
+                    MapPageMode.SANDBOX_LARGE_MAP,
                     navigator._detect_map_page_mode(frame).mode,
                 )
+        navigator._map_page_template_signal = lambda *_: (False, "miss")
+        text["箱庭大地图底部控件"] = "探索 世界地图"
+        self.assertEqual(MapPageMode.UNKNOWN, navigator._detect_map_page_mode(frame).mode)
         self.assertEqual((), navigator._target_keys_in_text(CARD_BY_ID["Q_sp18"], "安全记忆岔路口"))
 
     def test_ensure_area_map_recovers_existing_generate_mode(self):
@@ -1700,6 +1922,12 @@ class NavigatorTest(unittest.TestCase):
             ),
         )
         navigator = Navigator(task, vision)
+        navigator._detect_map_page_mode = Mock(
+            return_value=SimpleNamespace(mode=MapPageMode.UNKNOWN),
+        )
+        navigator._restore_navigation_field = Mock(return_value=NavigationResult(
+            True, ScreenState.SANDBOX,
+        ))
         navigator._wait_for_sandbox_map_open = lambda *_args, **_kwargs: NavigationResult(
             True,
             ScreenState.AREA_MAP,
@@ -1753,6 +1981,12 @@ class NavigatorTest(unittest.TestCase):
         )
         navigator = Navigator(task, vision)
         navigator._click_sandbox_teleport_interaction = lambda: False
+        navigator._detect_map_page_mode = Mock(
+            return_value=SimpleNamespace(mode=MapPageMode.UNKNOWN),
+        )
+        navigator._restore_navigation_field = Mock(return_value=NavigationResult(
+            True, ScreenState.SANDBOX,
+        ))
         navigator._wait_for_sandbox_map_open = lambda *_args, **_kwargs: NavigationResult(
             True,
             ScreenState.AREA_MAP,
@@ -1791,6 +2025,12 @@ class NavigatorTest(unittest.TestCase):
         )
         navigator = Navigator(task, vision)
         navigator._click_sandbox_teleport_interaction = lambda: False
+        navigator._detect_map_page_mode = Mock(
+            return_value=SimpleNamespace(mode=MapPageMode.UNKNOWN),
+        )
+        navigator._restore_navigation_field = Mock(return_value=NavigationResult(
+            True, ScreenState.SANDBOX,
+        ))
         navigator._wait_for_sandbox_map_open = lambda *_args, **_kwargs: NavigationResult(
             False,
             ScreenState.SANDBOX,
@@ -1837,7 +2077,14 @@ class NavigatorTest(unittest.TestCase):
 
     def test_teleport_skill_failure_routes_to_walk_fallback_result(self):
         task = SimpleNamespace(info_set=lambda *_args: None)
-        navigator = Navigator(task, SimpleNamespace())
+        frame = np.zeros((8, 8, 3), dtype=np.uint8)
+        navigator = Navigator(task, SimpleNamespace(capture=lambda: frame))
+        navigator._detect_map_page_mode = Mock(
+            return_value=SimpleNamespace(mode=MapPageMode.UNKNOWN),
+        )
+        navigator._restore_navigation_field = Mock(return_value=NavigationResult(
+            True, ScreenState.SANDBOX,
+        ))
         navigator._click_sandbox_teleport_interaction = lambda: False
         navigator._click_sandbox_teleport_skill = lambda: True
         navigator._wait_for_sandbox_map_open = lambda *_args, **_kwargs: NavigationResult(
@@ -2249,6 +2496,7 @@ class NavigatorTest(unittest.TestCase):
         clicks = []
         confirmed_numbers = []
         task = SimpleNamespace(
+            config={},
             operate_click=lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep)),
         )
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -2281,6 +2529,7 @@ class NavigatorTest(unittest.TestCase):
         back = MatchResult(0.98, (110, 35), (40, 40), 0.95, 0.92)
         clicks = []
         task = SimpleNamespace(
+            config={},
             operate_click=lambda *_args, **_kwargs: self.fail(
                 "recognized back button must win over the fallback point"
             )
@@ -2355,6 +2604,7 @@ class NavigatorTest(unittest.TestCase):
             ),
         )
         navigator = Navigator(task, SimpleNamespace(capture=lambda: frame))
+        navigator.classify = Mock(return_value=ScreenState.UNKNOWN)
         navigator._detect_map_page_mode = lambda _frame: SimpleNamespace(
             mode=MapPageMode.UNKNOWN
         )
@@ -2498,6 +2748,9 @@ class NavigatorTest(unittest.TestCase):
             mode=MapPageMode.UNKNOWN
         )
         navigator.classify = lambda _frame=None: ScreenState.SANDBOX
+        navigator._wait_for_current_sandbox = Mock(return_value=NavigationResult(
+            True, ScreenState.SANDBOX,
+        ))
         navigator._click_sandbox_teleport_interaction = lambda: False
         navigator._wait_for_sandbox_map_open = lambda *_args, **_kwargs: NavigationResult(
             True,

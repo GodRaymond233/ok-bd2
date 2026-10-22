@@ -599,7 +599,7 @@ TELEPORT_MAP_DIRECT_HEADER_TEMPLATE = TemplateSpec(
     "TeleportMapDirectHeader.png",
     0.95,
     relative_roi=(0.09, 0.01, 0.15, 0.10),
-    scale_ratios=(0.95, 1.0, 1.05),
+    scale_ratios=(0.95, 0.975, 1.0, 1.025, 1.05),
     min_pixel_score=0.90,
     minimum_safe_threshold=0.95,
     min_zncc_score=0.90,
