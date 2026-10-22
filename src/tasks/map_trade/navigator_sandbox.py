@@ -2058,7 +2058,7 @@ class SandboxNavigationMixin:
     ) -> NavigationResult:
         """通过连续箱庭 HUD 画面确认入场，不依赖玩家的技能分组。
 
-        技能栏由采集步骤单独识别；本步骤只负责场景、加载和移动状态。
+        技能栏由采集步骤单独识别；入场遭遇战恢复后仍须确认箱庭。
         """
         stall = max(0.0, timeout)
         end_at = monotonic() + stall
@@ -2068,10 +2068,24 @@ class SandboxNavigationMixin:
         last_state = ScreenState.UNKNOWN
         while monotonic() <= end_at:
             frame = self.vision.capture()
+            loading = frame is not None and self._black_frame(frame)
+            if (
+                handle_intermediate and frame is not None and not loading
+                and self._field_battle_visible(frame)
+            ):
+                try:
+                    self._retreat_from_field_battle(
+                        frame, end_at=monotonic() + FIELD_RETREAT_TIMEOUT, stop_walk=True,
+                    )
+                except (TaskDisabledException, FinishedException):
+                    raise
+                except RuntimeError as exc:
+                    return NavigationResult(False, ScreenState.UNKNOWN, f"{failure_message}；{exc}")
+                return NavigationResult(True, ScreenState.SANDBOX, success_message)
             # 黑屏加载帧直接分类，省去主页和箱庭识别开销。
             last_state = (
                 ScreenState.LOADING
-                if frame is not None and self._black_frame(frame)
+                if loading
                 else self.classify(frame)
             )
             self._status("导航状态", last_state.value)

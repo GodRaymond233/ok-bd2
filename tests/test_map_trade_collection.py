@@ -974,7 +974,7 @@ class CollectionCardTest(unittest.TestCase):
             sleep=lambda seconds: sleeps.append(seconds),
         )
 
-        def ocr_text(_frame, name, roi=None):
+        def ocr_text(_frame, name, roi=None, **_kwargs):
             if name == "新卡带插入提示":
                 self.assertEqual(FIRST_CARD_INSERT_REGION, roi)
                 return "未插好游戏卡 插入"
@@ -1019,7 +1019,7 @@ class CollectionCardTest(unittest.TestCase):
         prompts = iter(("", ""))
         confirmations = iter(("确认",))
 
-        def ocr_text(_frame, name, roi=None):
+        def ocr_text(_frame, name, roi=None, **_kwargs):
             if name == "新卡带插入提示":
                 return next(prompts)
             if name == "首次卡带确认":
@@ -1088,7 +1088,10 @@ class CollectionCardTest(unittest.TestCase):
                 return_value=CartridgeSpecialPageResult.ABSENT,
             ),
         )
-        vision = SimpleNamespace(capture=lambda: captures.append(frame) or frame)
+        vision = SimpleNamespace(
+            capture=lambda: captures.append(frame) or frame, ocr_text=Mock(return_value=""),
+            simplify=lambda value: value,
+        )
         navigator = Navigator(task, vision)
         navigator.classify = lambda _frame=None: next(states)
         navigator._handle_story_card_intermediate = lambda _frame: False

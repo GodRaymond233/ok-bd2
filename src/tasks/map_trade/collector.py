@@ -268,6 +268,7 @@ class Collector(SkillExecutionMixin):
                 message="今日剩余吸取/召集/压制次数不足，未完成地图留待次日",
             )
         selected = None
+        selection_errors = []
         for _attempt in range(card_retries):
             selection_kwargs = {"enter_visually_complete": recovery_only}
             if set(required_actions) != COLLECTION_ACTION_NAMES:
@@ -278,11 +279,13 @@ class Collector(SkillExecutionMixin):
             )
             if selected.success:
                 break
+            if selected.message and selected.message not in selection_errors:
+                selection_errors.append(selected.message)
         if selected is None or not selected.success:
             return CollectionResult(
                 False,
                 completed_submaps=self._completed_this_run,
-                message=f"未能进入卡带 {card.card_id}：{selected.message if selected else '-'}",
+                message=f"未能进入卡带 {card.card_id}：{'；'.join(selection_errors) or '-'}",
                 card_missing=(
                     card.category == "event"
                     and selected is not None

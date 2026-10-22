@@ -725,6 +725,7 @@ class NavigatorTest(unittest.TestCase):
         )
         vision = SimpleNamespace(
             capture=lambda: frame,
+            ocr_text=Mock(return_value=""),
             click_client=lambda *_args, after_sleep=0: task.sleep(after_sleep),
         )
         navigator = Navigator(task, vision)
@@ -873,13 +874,16 @@ class NavigatorTest(unittest.TestCase):
                 vision.click_client.assert_not_called()
 
     def test_collection_retreat_confirms_each_transition_and_bounds_retries(self):
-        for width, height in ((1920, 1080), (1280, 720)):
+        for width, height, entry in (
+            (1920, 1080, False), (1280, 720, False),
+            (1920, 1080, True), (1280, 720, True),
+        ):
             for blocked in (
                 None, "pause", "escape", "confirm", "ambiguous", "loading", "stop",
                 "dialog_ambiguous", "missing_cancel", "missing_question", "title_only", "wrong_row",
                 "field_moving", "field_unreadable",
             ):
-                with self.subTest(size=(width, height), blocked=blocked):
+                with self.subTest(size=(width, height), entry=entry, blocked=blocked):
                     clock = [0.0]
                     state = ["battle"]
                     clicks = []
@@ -949,6 +953,7 @@ class NavigatorTest(unittest.TestCase):
                     task = SimpleNamespace(
                         config={"加载页面等待秒数": 10}, info_set=Mock(),
                         sleep=sleep,
+                        _handle_recent_cartridge_special_pages=Mock(return_value=None),
                     )
                     vision = SimpleNamespace(
                         capture=capture, ocr_boxes=ocr_boxes, click_client=click,
@@ -968,12 +973,25 @@ class NavigatorTest(unittest.TestCase):
                     )
                     navigator._cancel_walk = lambda: cancelled.append(True)
                     navigator._leave_walk_battle_result = Mock(return_value=False)
+                    navigator._handle_story_card_intermediate = Mock(return_value=False)
+                    navigator._auto_moving = Mock(return_value=False)
                     with patch(
                         "src.tasks.map_trade.navigator_sandbox.monotonic",
                         side_effect=lambda: clock[0],
                     ):
+                        def recover():
+                            return (
+                                navigator._wait_for_story_sandbox(14)
+                                if entry else navigator.wait_for_collection_field(frame)
+                            )
+
                         if blocked in (None, "field_moving"):
-                            self.assertIs(frame, navigator.wait_for_collection_field(frame))
+                            result = recover()
+                            if entry:
+                                self.assertTrue(result.success)
+                                self.assertEqual(ScreenState.SANDBOX, result.state)
+                            else:
+                                self.assertIs(frame, result)
                             self.assertEqual(
                                 ["pause"] * 2 + ["escape"] * 2 + ["confirm"] * 2, clicks,
                             )
@@ -983,11 +1001,16 @@ class NavigatorTest(unittest.TestCase):
                             self.assertEqual(int(blocked == "field_moving"), len(cancelled))
                         elif blocked == "stop":
                             with self.assertRaises(TaskDisabledException):
-                                navigator.wait_for_collection_field(frame)
+                                recover()
                             self.assertEqual(["pause"], clicks)
                         else:
-                            with self.assertRaisesRegex(RuntimeError, "遭遇战退出"):
-                                navigator.wait_for_collection_field(frame)
+                            if entry:
+                                result = recover()
+                                self.assertFalse(result.success)
+                                self.assertIn("遭遇战退出", result.message)
+                            else:
+                                with self.assertRaisesRegex(RuntimeError, "遭遇战退出"):
+                                    recover()
                             self.assertLessEqual(clock[0], 31)
                             self.assertLessEqual(max(attempts.values()), 3)
                             if blocked in attempts:
@@ -999,6 +1022,54 @@ class NavigatorTest(unittest.TestCase):
                                 "title_only", "wrong_row",
                             }:
                                 self.assertEqual(0, attempts["confirm"])
+
+    def test_story_entry_limits_battle_recovery_to_confirmed_encounters(self):
+        for text, black, entry, field in (
+            ("TURN.1", False, True, False), ("RETURN.1", False, True, False),
+            ("TURN", False, True, False), ("", False, True, True),
+            ("TURN.1", True, True, False), ("TURN.1", False, False, False),
+        ):
+            with self.subTest(text=text, black=black, entry=entry, field=field):
+                frame = np.full((8, 8, 3), 0 if black else 120, dtype=np.uint8)
+                clock = [0.0]
+                task = SimpleNamespace(
+                    config={"加载页面等待秒数": 1}, info_set=Mock(),
+                    sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+                    _handle_recent_cartridge_special_pages=Mock(return_value=None),
+                )
+                vision = SimpleNamespace(
+                    capture=lambda: frame, ocr_text=Mock(return_value=text), click_client=Mock(),
+                )
+                navigator = Navigator(task, vision)
+                navigator.classify = Mock(return_value=(
+                    ScreenState.SANDBOX if field else ScreenState.UNKNOWN
+                ))
+                navigator._auto_moving = Mock(return_value=False)
+                navigator._handle_story_card_intermediate = Mock(return_value=False)
+                navigator._retreat_from_field_battle = Mock(return_value=frame)
+                with patch("src.tasks.map_trade.navigator_sandbox.monotonic", lambda: clock[0]):
+                    result = (
+                        navigator._wait_for_story_sandbox(14)
+                        if entry else navigator._wait_for_current_sandbox(timeout=1)
+                    )
+                should_retreat = entry and not black and text == "TURN.1"
+                self.assertEqual(field or should_retreat, result.success)
+                self.assertEqual(
+                    int(should_retreat), navigator._retreat_from_field_battle.call_count,
+                )
+                if should_retreat:
+                    navigator.classify.assert_not_called()
+                    task._handle_recent_cartridge_special_pages.assert_not_called()
+                    self.assertTrue(navigator._retreat_from_field_battle.call_args.kwargs["stop_walk"])
+                if black or not entry:
+                    vision.ocr_text.assert_not_called()
+                vision.click_client.assert_not_called()
+        for signal in (TaskDisabledException, FinishedException):
+            with self.subTest(signal=signal):
+                navigator.vision.capture = lambda: np.full((8, 8, 3), 120, dtype=np.uint8)
+                navigator._retreat_from_field_battle = Mock(side_effect=signal)
+                with self.assertRaises(signal):
+                    navigator._wait_for_story_sandbox(14)
 
     def test_retreat_dialog_ocr_separates_title_from_confirm_button(self):
         from onnxocr.onnx_paddleocr import ONNXPaddleOcr

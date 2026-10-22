@@ -301,7 +301,9 @@ class CollectionRunTest(unittest.TestCase):
                 attempts.append((card_id, enter_visually_complete))
                 return CollectionCardSelectionResult(
                     CollectionCardSelectionOutcome.FAILED,
-                    NavigationResult(False, ScreenState.UNKNOWN, "failed"),
+                    NavigationResult(False, ScreenState.UNKNOWN, (
+                        "入场遭遇战退出超时" if len(attempts) == 1 else "未确认安全返回路径"
+                    )),
                 )
 
             navigator = SimpleNamespace(
@@ -314,7 +316,8 @@ class CollectionRunTest(unittest.TestCase):
 
         self.assertFalse(result.success)
         self.assertFalse(result.partial)
-        self.assertIn("未能进入卡带 Q_sp1：failed", result.message)
+        self.assertIn("未能进入卡带 Q_sp1：入场遭遇战退出超时", result.message)
+        self.assertEqual(1, result.message.count("未确认安全返回路径"))
         self.assertIn("返回主页失败", result.message)
         self.assertEqual([("Q_sp1", False)] * 3, attempts)
 
