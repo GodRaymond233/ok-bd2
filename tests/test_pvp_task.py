@@ -21,6 +21,8 @@ from src.tasks.BaseBD2Task import (
 )
 from src.tasks.BaseBD2Task import TEMPLATE_DIR as RECENT_CARTRIDGE_TEMPLATE_DIR
 from src.tasks.BD2MapCollectionProbeTask import BD2MapCollectionProbeTask
+from src.tasks.map_trade.models import MatchResult, ScreenState
+from src.tasks.map_trade.navigator import Navigator
 from src.tasks.map_trade.navigator_constants import CHAPTER_HOME_POINT
 from src.tasks.MapCollectionTask import MapCollectionTask
 from src.tasks.MapTradeTask import MapTradeTask
@@ -200,11 +202,92 @@ class FiendRewardEntryTest(unittest.TestCase):
                 task = self.make_task(screens)
                 quick = Mock(return_value=True)
                 confirm = Mock(return_value=True)
-                self.assertFalse(task.open_cartridge_quick_switcher(lambda: True, quick, confirm))
+                ready = Mock(return_value=True)
+                self.assertFalse(task.open_cartridge_quick_switcher(
+                    lambda: True, quick, confirm, entry_ready=ready,
+                ))
                 self.assertEqual(2, len(self.clicks))
                 quick.assert_not_called()
                 confirm.assert_not_called()
+                ready.assert_not_called()
                 task._save_flow_diagnostic.assert_called_once_with("cartridge_quick_switch_failed")
+
+    def test_story_recent_entry_confirms_field_and_recovers_before_quick_switch(self):
+        from ok.task.exceptions import FinishedException, TaskDisabledException
+
+        for scenario in (
+            "field", "battle", "battle_during_window", "unknown", "black", "pvp",
+            "retreat_timeout", "stop", "finished",
+        ):
+            with self.subTest(scenario=scenario):
+                task = self.make_task([self.normal_boxes()], recent_pvp=scenario == "pvp")
+                state = [
+                    "battle" if scenario in {"battle", "pvp", "retreat_timeout", "stop", "finished"}
+                    else scenario if scenario in {"unknown", "black"} else "field"
+                ]
+                frame = np.full((90, 160, 3), 120, dtype=np.uint8)
+                events = []
+                matches = []
+                quick_times = []
+
+                def click(_point, _shape, after_sleep=0):
+                    self.assertEqual("field", state[0])
+                    events.append("quick")
+                    quick_times.append(self.now)
+                    self.now += after_sleep
+
+                def find(_frame):
+                    matches.append(state[0])
+                    if scenario == "battle_during_window" and len(matches) == 2:
+                        state[0] = "battle"
+                    return MatchResult(.98, (60, 70), (10, 10)) if state[0] == "field" else None
+
+                def retreat(_frame, *, stop_walk):
+                    self.assertTrue(stop_walk)
+                    events.append("retreat")
+                    if scenario == "retreat_timeout":
+                        raise RuntimeError("遭遇战退出超时")
+                    if scenario in {"stop", "finished"}:
+                        raise (TaskDisabledException if scenario == "stop" else FinishedException)()
+                    state[0] = "field"
+                    return frame
+
+                nav = Navigator(task, SimpleNamespace(capture=lambda: frame, click_client=click))
+                nav._loading_timeout = lambda: 1
+                nav._black_frame = lambda _frame: state[0] == "black"
+                nav._field_battle_visible = lambda _frame: state[0] == "battle"
+                nav.classify = lambda *_args: (
+                    ScreenState.SANDBOX if state[0] == "field" else ScreenState.UNKNOWN
+                )
+                nav._find_quick_switch_button = find
+                nav._retreat_from_field_battle = retreat
+                nav._wait_for_cartridge_home = Mock(side_effect=[True, False])
+                nav._wait_for_quick_switch_page = Mock(return_value=True)
+                nav._select_cartridge_category = Mock(return_value=True)
+                expected_error = {
+                    "retreat_timeout": RuntimeError, "stop": TaskDisabledException,
+                    "finished": FinishedException,
+                }.get(scenario)
+                with patch("src.tasks.map_trade.navigator_story.monotonic", lambda: self.now):
+                    if expected_error is not None:
+                        with self.assertRaises(expected_error):
+                            nav._open_cartridge_quick_switcher()
+                    else:
+                        result = nav._open_cartridge_quick_switcher()
+                        self.assertEqual(scenario in {"field", "battle", "battle_during_window"},
+                                         result.success)
+                self.assertEqual(1, len(self.clicks))
+                if scenario in {"field", "battle", "battle_during_window"}:
+                    self.assertEqual(["quick"] if scenario == "field" else ["retreat", "quick"],
+                                     events)
+                    nav._wait_for_cartridge_home.assert_called_once()
+                    nav._wait_for_quick_switch_page.assert_called_once()
+                    self.assertLess(quick_times[0], .5)
+                else:
+                    self.assertNotIn("quick", events)
+                    nav._wait_for_quick_switch_page.assert_not_called()
+                if scenario in {"unknown", "black", "pvp"}:
+                    self.assertNotIn("retreat", events)
 
     def test_partial_or_cross_frame_reward_words_never_trigger_click(self):
         title, action = self.reward_boxes()
@@ -631,6 +714,7 @@ class PVPTaskHelperTest(unittest.TestCase):
                         confirm_quick_switch_page=lambda: (
                             calls.append("confirm") or True
                         ),
+                        entry_ready=lambda: self.fail("PVP entry must not recover a story battle"),
                     )
                 )
                 self.assertEqual(

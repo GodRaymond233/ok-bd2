@@ -1563,13 +1563,24 @@ class CollectorSkillTest(unittest.TestCase):
             )
         )
 
-    def test_suppress_feedback_accepts_video_wording_with_or_without_de(self):
+    def test_action_feedback_distinguishes_stacked_success_and_continuous_failure(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        for text in (
-            "已制伏地图内所有怪物。",
-            "已制伏地图内所有的怪物。",
+        for action, text, expected in (
+            (SUPPRESS_ACTION, "已制伏地图内所有怪物。", "success"),
+            (SUPPRESS_ACTION, "已制伏地图内所有的怪物。", "success"),
+            (SUPPRESS_ACTION, "已制伏地图内所有怪物 升星天赋技能后，可获得经验值。", "success"),
+            (SUPPRESS_ACTION, "召集带奖励的战场怪物。 已制伏地图内所有怪物 "
+             "升星天赋技能后，可获得经验值。", "success"),
+            (SUMMON_ACTION, "召集带奖励的战场怪物。升星天赋技能后，可获得经验值。", "success"),
+            (SUPPRESS_ACTION, "没有可制伏的怪物。", "failure"),
+            (SUPPRESS_ACTION, "已制伏地图内所有怪物。没有可制伏的怪物。", "failure"),
+            (SUPPRESS_ACTION, "没有可制服的怪物。", "failure"),
+            (SUMMON_ACTION, "无可召集的战场怪物。", "failure"),
+            (SUMMON_ACTION, "无 可召集的战场怪物。", "failure"),
+            (ABSORB_ACTION, "周围没有可以吸收的拾取勿。", "failure"),
+            (ABSORB_ACTION, "周围没有可以吸收拾取物。", "failure"),
         ):
-            with self.subTest(text=text):
+            with self.subTest(action=action.name, text=text):
                 collector = Collector(
                     SimpleNamespace(
                         config={},
@@ -1585,9 +1596,50 @@ class CollectorSkillTest(unittest.TestCase):
                     SimpleNamespace(),
                 )
 
-                feedback = collector._read_action_feedback(SUPPRESS_ACTION)
+                feedback = collector._read_action_feedback(action)
 
-                self.assertEqual("success", feedback.outcome)
+                self.assertEqual(expected, feedback.outcome)
+
+    def test_stacked_feedback_settles_consumption_and_resumes_blocked_used_without_recast(self):
+        role = CollectionMapRole.BATTLE_AREA_2
+        for action, before, text in (
+            (SUPPRESS_ACTION, (9, 80), "召集带奖励的战场怪物。已制伏地图内所有怪物。"
+             "升星天赋技能后，可获得经验值。"),
+            (SUMMON_ACTION, (1, 18), "召集带奖励的战场怪物。升星天赋技能后，可获得经验值。"),
+        ):
+            for blocked in (False, True):
+                with self.subTest(action=action.name, blocked=blocked):
+                    collector, clicks, _statuses, progress = self._skill_collector(
+                        {action.icon.name: ActionIconState.USED}, {},
+                    )
+                    progress.arm_action("Q_sp19", role, action.name, baseline=before)
+                    progress.mark_action_clicked("Q_sp19", role, action.name)
+                    if blocked:
+                        progress.mark_action_blocked("Q_sp19", role, action.name, text)
+                        result = collector._use_action(action, card_id="Q_sp19", map_role=role)
+                    else:
+                        collector.vision.ocr_text = lambda *_args, **_kwargs: text
+                        feedback = Collector._read_action_feedback(collector, action)
+                        self.assertEqual("success", feedback.outcome)
+                        after = (before[0] + 1, before[1])
+                        collector._read_count_window = Mock(return_value=CountWindowObservation(
+                            after, True,
+                        ))
+                        used = collector.action_icons.detect(
+                            collector.vision.capture(), action.icon,
+                        )
+                        result = collector._finish_after_click(
+                            action, card_id="Q_sp19", map_role=role, before=before,
+                            detection=replace(used, state=ActionIconState.AVAILABLE),
+                            post_detection=used, feedback=feedback,
+                        )
+                        self.assertEqual(after, progress.trusted_action_baseline(action.name))
+                    self.assertTrue(result.completed, result.message)
+                    self.assertTrue(progress.weekly_action_complete("Q_sp19", role, action.name))
+                    self.assertEqual([], clicks)
+                    self.assertEqual(1, progress.get_action_record("Q_sp19", role, action.name)[
+                        "attempts"
+                    ])
 
     def test_absorb_failure_feedback_has_precedence_over_positive_text(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)

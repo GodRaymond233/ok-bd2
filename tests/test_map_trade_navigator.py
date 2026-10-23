@@ -877,6 +877,7 @@ class NavigatorTest(unittest.TestCase):
         for width, height, entry in (
             (1920, 1080, False), (1280, 720, False),
             (1920, 1080, True), (1280, 720, True),
+            (1920, 1080, "recent"), (1280, 720, "recent"),
         ):
             for blocked in (
                 None, "pause", "escape", "confirm", "ambiguous", "loading", "stop",
@@ -980,6 +981,8 @@ class NavigatorTest(unittest.TestCase):
                         side_effect=lambda: clock[0],
                     ):
                         def recover():
+                            if entry == "recent":
+                                return navigator._recent_field_ready()
                             return (
                                 navigator._wait_for_story_sandbox(14)
                                 if entry else navigator.wait_for_collection_field(frame)
@@ -987,7 +990,9 @@ class NavigatorTest(unittest.TestCase):
 
                         if blocked in (None, "field_moving"):
                             result = recover()
-                            if entry:
+                            if entry == "recent":
+                                self.assertTrue(result)
+                            elif entry:
                                 self.assertTrue(result.success)
                                 self.assertEqual(ScreenState.SANDBOX, result.state)
                             else:
@@ -1004,7 +1009,7 @@ class NavigatorTest(unittest.TestCase):
                                 recover()
                             self.assertEqual(["pause"], clicks)
                         else:
-                            if entry:
+                            if entry is True:
                                 result = recover()
                                 self.assertFalse(result.success)
                                 self.assertIn("遭遇战退出", result.message)

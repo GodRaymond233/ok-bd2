@@ -217,6 +217,8 @@ class StoryCardNavigationMixin:
             frame = self.vision.capture()
             result = self._find_quick_switch_button(frame)
             if result is None:
+                if not self._black_frame(frame) and self._field_battle_visible(frame):
+                    return False
                 self.task.sleep(0.35)
                 continue
 
@@ -231,6 +233,8 @@ class StoryCardNavigationMixin:
             stable = stabilize_template_match(
                 result, frame.shape, sample_match=sample_match,
                 passes=lambda match: match is not None, sleep=self.task.sleep,
+                window_samples=2, maximum_samples=3,
+                minimum_hits=2, required_trailing_hits=2,
             )
             if stable is None:
                 self._status("快速切换按钮稳定识别", "候选位置或画面尺寸不稳定")
@@ -245,6 +249,15 @@ class StoryCardNavigationMixin:
             return True
         return False
 
+    def _recent_field_ready(self) -> bool:
+        frame = self.vision.capture()
+        if self._black_frame(frame):
+            return False
+        if self._field_battle_visible(frame):
+            self._retreat_from_field_battle(frame, stop_walk=True)
+            return True
+        return self.classify(frame) == ScreenState.SANDBOX
+
     def _open_cartridge_quick_switcher(self, category: str = "story") -> NavigationResult:
         opened = self.task.open_cartridge_quick_switcher(
             ensure_home=self._wait_for_cartridge_home,
@@ -256,6 +269,7 @@ class StoryCardNavigationMixin:
                 after_sleep=QUICK_SWITCH_CLICK_AFTER_SLEEP,
             ),
             confirm_quick_switch_page=self._wait_for_quick_switch_page,
+            entry_ready=self._recent_field_ready,
         )
         if not opened:
             return NavigationResult(

@@ -924,6 +924,8 @@ class BaseBD2Task(BaseTask):
         ensure_home: Callable[[], bool],
         click_quick_switch: Callable[[], bool],
         confirm_quick_switch_page: Callable[[], bool],
+        *,
+        entry_ready: Callable[[], bool] | None = None,
     ) -> bool:
         """Open the recent cartridge, click quick-switch, and confirm its page."""
         if not ensure_home():
@@ -939,8 +941,13 @@ class BaseBD2Task(BaseTask):
         self._sleep_after_recognition()
         self.info_set("当前阶段", "点击最近卡带")
         self.operate_click(*CARTRIDGE_RECENT_ENTRY_POINT, after_sleep=0.0)
+        entry_options = (
+            {"entry_ready": entry_ready}
+            if entry_ready is not None and not recent_cartridge_is_pvp else {}
+        )
         special_pages = self._handle_recent_cartridge_special_pages(
             allow_pvp_pages=recent_cartridge_is_pvp,
+            **entry_options,
         )
         if special_pages is CartridgeSpecialPageResult.BLOCKED:
             self._save_flow_diagnostic("cartridge_quick_switch_failed")
@@ -950,17 +957,19 @@ class BaseBD2Task(BaseTask):
         if not quick_switch_opened:
             special_pages = self._handle_recent_cartridge_special_pages(
                 allow_pvp_pages=recent_cartridge_is_pvp,
+                **entry_options,
             )
             if special_pages is CartridgeSpecialPageResult.BLOCKED:
                 self._save_flow_diagnostic("cartridge_quick_switch_failed")
                 return False
             if special_pages is CartridgeSpecialPageResult.HANDLED:
-                self.info_set("当前阶段", "特殊页面后重试快速切换按钮")
+                self.info_set("当前阶段", "入场恢复后重试快速切换按钮")
                 quick_switch_opened = click_quick_switch()
             elif not recent_cartridge_is_pvp:
                 quick_switch_opened = self._retry_recent_cartridge_entry(
                     ensure_home=ensure_home,
                     click_quick_switch=click_quick_switch,
+                    **entry_options,
                 )
         if not quick_switch_opened:
             self._save_flow_diagnostic("cartridge_quick_switch_failed")
@@ -974,6 +983,8 @@ class BaseBD2Task(BaseTask):
         self,
         ensure_home: Callable[[], bool],
         click_quick_switch: Callable[[], bool],
+        *,
+        entry_ready: Callable[[], bool] | None = None,
     ) -> bool:
         """Re-click the recent cartridge once after a lost confirmed-home click.
 
@@ -990,6 +1001,7 @@ class BaseBD2Task(BaseTask):
         self.operate_click(*CARTRIDGE_RECENT_ENTRY_POINT, after_sleep=0.0)
         if self._handle_recent_cartridge_special_pages(
             allow_pvp_pages=False,
+            **({"entry_ready": entry_ready} if entry_ready is not None else {}),
         ) is CartridgeSpecialPageResult.BLOCKED:
             return False
         return click_quick_switch()
@@ -1110,8 +1122,9 @@ class BaseBD2Task(BaseTask):
         allow_season_reward: bool | None = None,
         *,
         allow_pvp_pages: bool = True,
+        entry_ready: Callable[[], bool] | None = None,
     ) -> CartridgeSpecialPageResult:
-        """Dismiss shared reward pages and PVP pages when enabled."""
+        """Dismiss overlays and accept a caller-confirmed field when requested."""
         if allow_season_reward is None:
             allow_season_reward = self._is_beijing_monday()
         end_at = monotonic() + max(0.0, float(timeout))
@@ -1120,6 +1133,7 @@ class BaseBD2Task(BaseTask):
         reads_after_action = OVERLAY_CLEAR_FRAMES
         reward = _PendingOverlay()
         rank = _PendingOverlay()
+        field_ready = False
 
         while True:
             boxes = self._recent_cartridge_ocr_boxes()
@@ -1149,6 +1163,13 @@ class BaseBD2Task(BaseTask):
                 reads_after_action = 0
 
             if (
+                entry_ready is not None and reward.title is None and rank.title is None
+                and reads_after_action >= OVERLAY_CLEAR_FRAMES and entry_ready()
+            ):
+                field_ready = True
+                break
+
+            if (
                 (monotonic() >= end_at and reads_after_action >= OVERLAY_CLEAR_FRAMES)
                 or (
                     action_count >= RECENT_CARTRIDGE_SPECIAL_PAGE_MAX_ACTIONS
@@ -1165,7 +1186,7 @@ class BaseBD2Task(BaseTask):
             return CartridgeSpecialPageResult.BLOCKED
         return (
             CartridgeSpecialPageResult.HANDLED
-            if handled else CartridgeSpecialPageResult.ABSENT
+            if handled or field_ready else CartridgeSpecialPageResult.ABSENT
         )
 
     @classmethod

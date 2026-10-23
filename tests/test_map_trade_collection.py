@@ -195,6 +195,7 @@ class CollectionCardTest(unittest.TestCase):
 
         def open_quick_switcher(**callbacks):
             opened_callbacks.append(tuple(callbacks))
+            self.assertEqual(navigator._recent_field_ready, callbacks["entry_ready"])
             return (
                 callbacks["ensure_home"]()
                 and callbacks["click_quick_switch"]()
@@ -238,7 +239,7 @@ class CollectionCardTest(unittest.TestCase):
         self.assertEqual("Q_sp1", result.message)
         self.assertEqual([1], badge_targets)
         self.assertEqual(
-            [("ensure_home", "click_quick_switch", "confirm_quick_switch_page")],
+            [("ensure_home", "click_quick_switch", "confirm_quick_switch_page", "entry_ready")],
             opened_callbacks,
         )
         self.assertEqual([(45.0, 1.0)], template_clicks)

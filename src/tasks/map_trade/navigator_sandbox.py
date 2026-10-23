@@ -1993,10 +1993,11 @@ class SandboxNavigationMixin:
         return (stage, candidates[0]) if len(candidates) == 1 else (None, None)
 
     def _retreat_from_field_battle(
-        self, frame: np.ndarray, *, end_at: float, stop_walk: bool = False,
+        self, frame: np.ndarray, *, end_at: float | None = None, stop_walk: bool = False,
     ) -> np.ndarray:
         """Follow pause, escape and its confirmation using fresh observations."""
-        end_at = min(end_at, monotonic() + FIELD_RETREAT_TIMEOUT)
+        deadline = monotonic() + FIELD_RETREAT_TIMEOUT
+        end_at = deadline if end_at is None else min(end_at, deadline)
         attempts = {"pause": 0, "escape": 0, "confirm": 0}
         confirmed = False
         field_hits = 0

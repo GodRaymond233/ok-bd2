@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from dataclasses import replace
+from difflib import SequenceMatcher
 from functools import partial
 from time import monotonic
 
@@ -460,6 +461,22 @@ class SkillExecutionMixin:
             return 0.0
         return sum((actual & expected).values()) / expected_count
 
+    @staticmethod
+    def _feedback_failure_ratio(text: str, keyword: str) -> float:
+        negative = re.search(r"没有|无可", keyword)
+        if negative is None:
+            return 0.0
+        best = 0.0
+        for sentence in re.split(r"[。.!！？?；;\r\n]+", text):
+            compact = "".join(character for character in sentence if character.isalnum())
+            for match in re.finditer(negative.group(), compact):
+                start = max(0, match.start() - negative.start())
+                end = match.start() + len(keyword) - negative.start() + 1
+                best = max(best, SequenceMatcher(
+                    None, keyword, compact[start:end], autojunk=False,
+                ).ratio())
+        return best
+
     def _read_action_feedback(self, action: SkillAction) -> SkillFeedbackObservation:
         best = SkillFeedbackObservation("", None)
         keywords = (
@@ -474,15 +491,13 @@ class SkillExecutionMixin:
                 relative_roi=ACTION_FEEDBACK_RELATIVE_ROI,
                 target_height=1080,
             )
-            # OCR 只输出简体中文（繁体转换已取消）；引擎可能粘连相邻文本，
-            # 先归一再打分，并让显式失败关键字在平分（或更强正向词）时获胜，
-            # 确保 ``没有可以吸收`` 不会被当成成功。
+            # 失败需在同一语句中匹配否定短语和词序，避免横幅堆叠时跨句凑字。
             try:
                 normalized = self.vision.simplify(text)
             except AttributeError:
                 normalized = str(text)
             failure_matches = [
-                (self._feedback_character_ratio(normalized, keyword), keyword)
+                (self._feedback_failure_ratio(normalized, keyword), keyword)
                 for outcome, keyword in keywords
                 if outcome == "failure"
             ]
