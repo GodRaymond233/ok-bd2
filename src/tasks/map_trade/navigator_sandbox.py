@@ -1653,7 +1653,7 @@ class SandboxNavigationMixin:
             if opened is None or not opened.success:
                 entry = self._travel_to_hunting_ground()
                 if entry == HUNTING_GROUND_NAV_ENTRY:
-                    opened = self.open_teleport_map_from_sandbox()
+                    opened = self._open_hunting_ground_portal()
                 else:
                     # 导航到城镇 NPC 后可能已在路线起点，先确认位置。
                     if (
@@ -2401,7 +2401,7 @@ class SandboxNavigationMixin:
                 f"导航菜单也未能前往狩猎场或艾琳：{self._navigation_failure}",
             )
         if entry == HUNTING_GROUND_NAV_ENTRY:
-            return self.open_teleport_map_from_sandbox()
+            return self._open_hunting_ground_portal()
         # 艾琳 stands in the town: its circle, walking there if needed.
         if self._click_sandbox_teleport_interaction():
             return self._confirm_portal_interaction("传送阵交互按钮")
@@ -2429,6 +2429,32 @@ class SandboxNavigationMixin:
         """优先导航到狩猎场，其次艾琳；返回实际到达的入口，失败时返回 None。"""
         return self._travel_via_nav_menu(HUNTING_GROUND_NAV_ENTRY, TOWN_NPC_NAV_ENTRY)
 
+    def _open_hunting_ground_portal(self) -> NavigationResult:
+        """确认传送页；人物未在阵上时，通过大地图步行后重新交互。"""
+        opened = self.open_teleport_map_from_sandbox()
+        if opened.success or opened.state != ScreenState.SANDBOX:
+            return opened
+        ready = self._restore_navigation_field()
+        if not ready.success:
+            return ready
+        walked = self._walk_to_sandbox_teleport_interaction()
+        if walked.success:
+            return walked
+        return NavigationResult(
+            False, walked.state,
+            f"狩猎场传送入口未确认：{opened.message}；{walked.message}",
+            map_page_mode=walked.map_page_mode,
+        )
+
+    def _hunting_ground_field(self) -> bool:
+        frame = self.vision.capture()
+        if self.classify(frame) != ScreenState.SANDBOX:
+            return False
+        text = normalize_text(self.vision.simplify(
+            self.vision.ocr_text(frame, "狩猎场控制栏"),
+        ))
+        return "离开" in text and any(word in text for word in ("自动狩猎", "更改"))
+
     def _travel_via_nav_menu(self, *entries: str) -> str | None:
         """The minimap's ≡ menu -> the first of ``entries`` it lists (狩猎场,
         or a town NPC such as 艾琳) -> 确认, then the field once the trip (and
@@ -2440,6 +2466,9 @@ class SandboxNavigationMixin:
         if not ready.success:
             self._navigation_failure = ready.message
             return None
+        if HUNTING_GROUND_NAV_ENTRY in entries and self._hunting_ground_field():
+            self._status("导航状态", "已确认狩猎场，直接寻找当前场地的传送阵")
+            return HUNTING_GROUND_NAV_ENTRY
         choice = None
         for attempt in range(NAV_MENU_OPEN_ATTEMPTS):
             if not self.vision.click_template(

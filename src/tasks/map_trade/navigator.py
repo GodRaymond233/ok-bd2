@@ -296,7 +296,10 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
                 mode = MapPageMode.DIRECT_TELEPORT
             elif generated and not direct and has_legend and has_teleport_structure:
                 mode = MapPageMode.GENERATE_TELEPORT
-        elif self._known_story_map_title_in_text(normalized_header):
+        elif (
+            self._known_story_map_title_in_text(normalized_header)
+            or normalized_header.startswith(("战斗", "安全"))
+        ):
             try:
                 footer_text = self.vision.simplify(
                     self.vision.ocr_text(

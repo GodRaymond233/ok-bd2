@@ -1501,7 +1501,7 @@ class NavigatorTest(unittest.TestCase):
         self.assertEqual(2, len(captures))
         self.assertEqual([0.15], sleeps)
 
-    def test_sandbox_large_map_requires_two_footer_keywords_and_known_title(self):
+    def test_sandbox_large_map_requires_map_header_and_footer_structure(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         text = {
             "地图页面左上标题": "战斗Ⅱ 卢戈森林深处",
@@ -1536,6 +1536,8 @@ class NavigatorTest(unittest.TestCase):
         )
         for title in (
             "安全 科库托斯暗黑神殿", "安全 记忆岔路口", "安全 学校2楼", "安全 埃兰旅馆",
+            "战斗 蜥蜴人祭坛 出现水属性怪物", "战斗 君主之墓", "战斗 守山人休息处",
+            "战斗 伯爵家宝库",
         ):
             with self.subTest(title=title):
                 text["地图页面左上标题"] = title
@@ -1554,7 +1556,116 @@ class NavigatorTest(unittest.TestCase):
         navigator._map_page_template_signal = lambda *_: (False, "miss")
         text["箱庭大地图底部控件"] = "探索 世界地图"
         self.assertEqual(MapPageMode.UNKNOWN, navigator._detect_map_page_mode(frame).mode)
+        for title, footer, arrow, expected in (
+            ("战斗 蜥蜴人祭坛", "探索 世界地图", True, MapPageMode.SANDBOX_LARGE_MAP),
+            ("战斗 蜥蜴人祭坛", "探索", True, MapPageMode.UNKNOWN),
+            ("战斗 蜥蜴人祭坛", "", False, MapPageMode.UNKNOWN),
+            ("蜥蜴人祭坛", "在战场中查看 探索 世界地图", True, MapPageMode.UNKNOWN),
+            ("商店战斗用品", "在战场中查看 探索 世界地图", True, MapPageMode.UNKNOWN),
+        ):
+            with self.subTest(title=title, footer=footer, arrow=arrow):
+                text["地图页面左上标题"] = title
+                text["箱庭大地图底部控件"] = footer
+                navigator._map_page_template_signal = lambda *_: (arrow, "signal")
+                self.assertEqual(expected, navigator._detect_map_page_mode(frame).mode)
+        for card_id, title in (("Q_sp5", "君主之墓"), ("Q_sp7", "蜥蜴人祭坛")):
+            self.assertEqual((), navigator._target_keys_in_text(CARD_BY_ID[card_id], title))
         self.assertEqual((), navigator._target_keys_in_text(CARD_BY_ID["Q_sp18"], "安全记忆岔路口"))
+
+    def test_existing_hunting_ground_requires_closed_map_and_same_frame_field_controls(self):
+        for height in (720, 1080):
+            frame = np.full((height, height * 16 // 9, 3), 120, dtype=np.uint8)
+            for closed in (True, False):
+                with self.subTest(height=height, closed=closed):
+                    state = [MapPageMode.SANDBOX_LARGE_MAP]
+                    events = []
+                    task = SimpleNamespace(config={}, info_set=Mock(), operate_click=Mock())
+                    vision = SimpleNamespace(
+                        capture=lambda: frame, simplify=str, click_template=Mock(),
+                        ocr_text=Mock(return_value="自动狩猎 M 离开"),
+                    )
+                    navigator = Navigator(task, vision)
+                    navigator._detect_map_page_mode = lambda _frame: SimpleNamespace(mode=state[0])
+                    navigator.classify = lambda _frame: (
+                        ScreenState.SANDBOX
+                        if state[0] == MapPageMode.UNKNOWN else ScreenState.UNKNOWN
+                    )
+                    def close(_frame, _mode):
+                        events.append("close")
+                        if closed:
+                            state[0] = MapPageMode.UNKNOWN
+                    navigator._click_map_return = close
+                    navigator._wait_for_current_sandbox = Mock(side_effect=lambda **_: (
+                        NavigationResult(
+                            closed, ScreenState.SANDBOX if closed else ScreenState.UNKNOWN,
+                        )
+                    ))
+                    entry = navigator._travel_via_nav_menu("狩猎场", "艾琳")
+                    self.assertEqual("狩猎场" if closed else None, entry)
+                    self.assertEqual(["close"] * (1 if closed else 2), events)
+                    vision.click_template.assert_not_called()
+                    task.operate_click.assert_not_called()
+                    if closed:
+                        self.assertIs(frame, vision.ocr_text.call_args.args[0])
+                    else:
+                        vision.ocr_text.assert_not_called()
+            for field, text, expected in (
+                (True, "自动狩猎 M 离开", True), (True, "极难 更改 离开", True),
+                (True, "自动狩猎", False), (True, "离开", False),
+                (True, "旅馆 商店 快速狩猎", False), (False, "自动狩猎 离开", False),
+            ):
+                with self.subTest(height=height, field=field, text=text):
+                    vision = SimpleNamespace(capture=lambda: frame, simplify=str,
+                        ocr_text=Mock(return_value=text))
+                    navigator = Navigator(SimpleNamespace(), vision)
+                    navigator.classify = Mock(return_value=(
+                        ScreenState.SANDBOX if field else ScreenState.UNKNOWN
+                    ))
+                    self.assertEqual(expected, navigator._hunting_ground_field())
+                    navigator.classify.assert_called_once_with(frame)
+                    if not field:
+                        vision.ocr_text.assert_not_called()
+
+    def test_hunting_ground_portal_walks_only_after_confirmed_field_and_preserves_failure(self):
+        passed = NavigationResult(
+            True, ScreenState.AREA_MAP, map_page_mode=MapPageMode.DIRECT_TELEPORT,
+        )
+        for opened, restored, walked, expected, walk_count in (
+            (passed, True, passed, True, 0),
+            (NavigationResult(False, ScreenState.UNKNOWN, "页面未知"), True, passed, False, 0),
+            (NavigationResult(False, ScreenState.SANDBOX, "交互未确认"), False, passed, False, 0),
+            (NavigationResult(False, ScreenState.SANDBOX, "交互未确认"), True, passed, True, 1),
+            (NavigationResult(False, ScreenState.SANDBOX, "交互未确认"), True,
+             NavigationResult(False, ScreenState.UNKNOWN, "目的地未确认"), False, 1),
+        ):
+            with self.subTest(opened=opened, restored=restored, walked=walked):
+                events = []
+                navigator = Navigator(SimpleNamespace(), SimpleNamespace())
+                navigator.open_teleport_map_from_sandbox = Mock(return_value=opened)
+                navigator._restore_navigation_field = Mock(side_effect=lambda: (
+                    events.append("restore") or NavigationResult(restored, ScreenState.UNKNOWN)
+                ))
+                navigator._walk_to_sandbox_teleport_interaction = Mock(side_effect=lambda: (
+                    events.append("walk") or walked
+                ))
+                result = navigator._open_hunting_ground_portal()
+                self.assertEqual(expected, result.success)
+                self.assertEqual(
+                    walk_count, navigator._walk_to_sandbox_teleport_interaction.call_count,
+                )
+                if walk_count:
+                    self.assertEqual(["restore", "walk"], events)
+                    if not walked.success:
+                        self.assertIn("交互未确认", result.message)
+                        self.assertIn("目的地未确认", result.message)
+                if opened.success or opened.state == ScreenState.UNKNOWN:
+                    navigator._restore_navigation_field.assert_not_called()
+        for signal in (TaskDisabledException, FinishedException):
+            navigator.open_teleport_map_from_sandbox = Mock(side_effect=signal)
+            navigator._walk_to_sandbox_teleport_interaction.reset_mock()
+            with self.assertRaises(signal):
+                navigator._open_hunting_ground_portal()
+            navigator._walk_to_sandbox_teleport_interaction.assert_not_called()
 
     def test_ensure_area_map_recovers_existing_generate_mode(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
