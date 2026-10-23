@@ -1636,31 +1636,43 @@ class SandboxNavigationMixin:
                     True, ScreenState.SANDBOX, f"经{npc}到达{card.targets[0].title}"
                 )
             self._status("导航状态", f"经{npc}未到{card.targets[0].title}，改用原来的回城方式")
+        portal_failure = ""
         if via_hunting_ground:
-            entry = None
+            opened = None
             if self._click_sandbox_teleport_interaction():
-                # Already on a teleport circle: its map reaches the town
-                # directly, no need for the hunting ground.
-                opened = self._wait_for_sandbox_map_open(
-                    "传送阵交互按钮",
-                    expected_mode=MapPageMode.DIRECT_TELEPORT,
-                    detect_skill_failure=False,
-                )
-            elif (entry := self._travel_to_hunting_ground()) == HUNTING_GROUND_NAV_ENTRY:
-                opened = self.open_teleport_map_from_sandbox()
-            elif entry is not None:
-                # 导航到城镇 NPC 后可能已在路线起点，先确认位置。
-                if self.current_collection_target(card) == card.targets[0].key:
-                    return NavigationResult(
-                        True, ScreenState.SANDBOX, f"经{entry}到达{card.targets[0].title}"
-                    )
-                opened = self._open_teleport_map_anywhere(card)
-            else:
-                # 菜单入口不可用时，通过当前地图的传送阵恢复。
-                opened = self._open_teleport_map_anywhere(card)
+                opened = self._confirm_portal_interaction("传送阵交互按钮")
+                if not opened.success:
+                    portal_failure = opened.message
+                    ready = self._restore_navigation_field()
+                    if not ready.success:
+                        return NavigationResult(
+                            False, ready.state, f"{portal_failure}；{ready.message}",
+                            map_page_mode=ready.map_page_mode,
+                        )
+                    self._status("导航状态", f"原地交互未确认传送页，改用导航：{portal_failure}")
+            if opened is None or not opened.success:
+                entry = self._travel_to_hunting_ground()
+                if entry == HUNTING_GROUND_NAV_ENTRY:
+                    opened = self.open_teleport_map_from_sandbox()
+                else:
+                    # 导航到城镇 NPC 后可能已在路线起点，先确认位置。
+                    if (
+                        entry is not None
+                        and self.current_collection_target(card) == card.targets[0].key
+                    ):
+                        return NavigationResult(
+                            True, ScreenState.SANDBOX, f"经{entry}到达{card.targets[0].title}"
+                        )
+                    opened = self._open_teleport_map_anywhere(card)
         else:
             opened = self._open_teleport_map_anywhere(card)
         if not opened.success:
+            if portal_failure:
+                return NavigationResult(
+                    False, opened.state,
+                    f"原地交互失败：{portal_failure}；导航/徒步回退失败：{opened.message}",
+                    map_page_mode=opened.map_page_mode,
+                )
             return opened
         context = self._wait_for_collection_teleport_map(card)
         if isinstance(context, NavigationResult):

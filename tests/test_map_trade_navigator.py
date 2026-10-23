@@ -1651,6 +1651,125 @@ class NavigatorTest(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual([("return", 1)], events)
 
+    def test_collection_reset_retries_interaction_before_confirmed_navigation_fallback(self):
+        card = CARD_BY_ID["Q_sp1"]
+        frame = np.full((90, 160, 3), 120, dtype=np.uint8)
+        cases = (
+            (1, True, "狩猎场", True),
+            (2, True, "狩猎场", True),
+            (3, True, "狩猎场", True),
+            (None, True, "狩猎场", True),
+            (None, True, "艾琳", True),
+            (None, True, None, True),
+            (None, True, "狩猎场", False),
+            (None, True, None, False),
+            (None, False, "狩猎场", True),
+        )
+        scenarios = [(*case, None) for case in cases]
+        scenarios.extend(
+            (None, True, "狩猎场", True, (stage, error))
+            for stage in ("wait", "field", "navigation")
+            for error in (TaskDisabledException, FinishedException)
+        )
+        for opens_on, field_ready, entry, fallback_ok, stop in scenarios:
+            with self.subTest(opens_on=opens_on, field=field_ready, entry=entry,
+                              fallback=fallback_ok, stop=stop):
+                clock = FakeClock()
+                events = []
+                clicks = []
+
+                def observe(stage):
+                    events.append(stage)
+                    if stop is not None and stop[0] == stage:
+                        raise stop[1]()
+
+                def sleep(seconds):
+                    observe("wait")
+                    clock.sleep(seconds)
+
+                def click():
+                    clicks.append(clock.now)
+                    observe("click")
+                    return True
+
+                def restore():
+                    observe("field")
+                    return NavigationResult(
+                        field_ready, ScreenState.SANDBOX if field_ready else ScreenState.UNKNOWN,
+                        "箱庭已确认" if field_ready else "页面未知，未执行点击",
+                    )
+
+                def navigate():
+                    self.assertEqual("field", events[-1])
+                    observe("navigation")
+                    return entry
+
+                passed = NavigationResult(
+                    True, ScreenState.AREA_MAP, map_page_mode=MapPageMode.DIRECT_TELEPORT,
+                )
+                fallback = passed if fallback_ok else NavigationResult(
+                    False, ScreenState.UNKNOWN, "回退入口未确认",
+                )
+                task = SimpleNamespace(info_set=Mock(), sleep=sleep)
+                navigator = Navigator(task, SimpleNamespace(capture=lambda: frame))
+                navigator.ensure_small_minimap = lambda: True
+                navigator._click_sandbox_teleport_interaction = click
+                navigator._detect_map_page_mode = lambda _frame: SimpleNamespace(
+                    mode=(MapPageMode.DIRECT_TELEPORT if opens_on is not None
+                          and len(clicks) >= opens_on else MapPageMode.UNKNOWN),
+                    header_text="移动魔法阵", evidence=("交互直传页图标=pass",),
+                )
+                navigator._restore_navigation_field = restore
+                navigator._travel_to_hunting_ground = Mock(side_effect=navigate)
+                navigator.open_teleport_map_from_sandbox = Mock(return_value=fallback)
+                navigator.current_collection_target = Mock(return_value=None)
+                navigator._open_teleport_map_anywhere = Mock(return_value=fallback)
+                navigator._wait_for_collection_teleport_map = Mock(return_value=self._area_context(
+                    card.targets[0].title, card.targets[0].key, right=True,
+                ))
+                navigator.return_teleport_map_to_sandbox = Mock(return_value=NavigationResult(
+                    True, ScreenState.SANDBOX,
+                ))
+                with patch("src.tasks.map_trade.navigator_sandbox.monotonic", clock):
+                    if stop is not None:
+                        with self.assertRaises(stop[1]):
+                            navigator.prepare_collection_main_area(
+                                card.card_id, via_hunting_ground=True,
+                            )
+                        navigator.return_teleport_map_to_sandbox.assert_not_called()
+                        navigator.open_teleport_map_from_sandbox.assert_not_called()
+                        navigator._open_teleport_map_anywhere.assert_not_called()
+                    else:
+                        result = navigator.prepare_collection_main_area(
+                            card.card_id, via_hunting_ground=True,
+                        )
+                        self.assertEqual(
+                            field_ready and (opens_on is not None or fallback_ok), result.success,
+                        )
+                        self.assertEqual(opens_on or (3 if field_ready else 1), len(clicks))
+                        if result.success:
+                            navigator.return_teleport_map_to_sandbox.assert_called_once_with(card.number)
+                        else:
+                            navigator.return_teleport_map_to_sandbox.assert_not_called()
+                        if field_ready and opens_on is None:
+                            self.assertEqual(1, navigator._travel_to_hunting_ground.call_count)
+                            self.assertEqual(
+                                int(entry == "狩猎场"),
+                                navigator.open_teleport_map_from_sandbox.call_count,
+                            )
+                            self.assertEqual(
+                                int(entry != "狩猎场"),
+                                navigator._open_teleport_map_anywhere.call_count,
+                            )
+                            if not fallback_ok:
+                                self.assertIn("原地交互失败", result.message)
+                                self.assertIn("回退入口未确认", result.message)
+                        else:
+                            navigator._travel_to_hunting_ground.assert_not_called()
+                for index, event in enumerate(events):
+                    if event == "click" and index:
+                        self.assertEqual("field", events[index - 1])
+
     def test_prepare_collection_main_pages_to_first_title_then_teleports(self):
         card = CARD_BY_ID["Q_sp1"]
         teleport = MatchResult(0.99, (800, 400), (60, 60), 0.95, 0.93)
