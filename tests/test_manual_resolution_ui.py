@@ -195,7 +195,7 @@ class ManualResolutionTest(unittest.TestCase):
         user32 = SimpleNamespace(IsZoomed=is_zoomed)
 
         with patch(
-            "src.ui.manual_resolution.ctypes.WinDLL",
+            "src.window_resolution.ctypes.WinDLL",
             return_value=user32,
         ) as win_dll:
             self.assertTrue(Win32WindowBackend.is_maximized(101))

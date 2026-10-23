@@ -21,6 +21,9 @@ from src.desktop.config_store import config_lock, save_config, task_config_busy
 from src.desktop.events import install_events
 from src.desktop.protocol import API_VERSION
 from src.desktop.security import LocalSession
+from src.desktop.settings_text import FIELD_TEXT, TEST_CHANNELS, describe_group
+from src.desktop.starter_wait import STARTER_WAIT
+from src.game_path import resolve_game_exe_path, resolve_launcher_exe_path
 from src.task_guides import GUIDES
 from src.tasks.BaseBD2Task import task_info_snapshot
 from src.tasks.DailyBatchTask import RUN_MODE_ALL, RUN_MODE_INCOMPLETE, DailyBatchTask
@@ -28,6 +31,12 @@ from src.tasks.quick_hunt_plan import PLAN_KEY
 from src.tasks.run_history import default_store, run_state
 from src.tasks.today import find_batch, today_summary
 from src.ui.hide_config_rows import mark_hidden_config_keys
+from src.window_resolution import (
+    DEFAULT_MANUAL_RESOLUTION,
+    MANUAL_RESOLUTIONS,
+    ensure_resolution_change_safe,
+    resize_game_window,
+)
 
 UI_DIST = Path(__file__).with_name("ui_dist")
 # MiSans ships with the app for the Qt window too (src/ui/quest_theme.py).
@@ -36,6 +45,11 @@ HISTORY_LIMIT = 100
 # Settings that only a dedicated editor may change; the client shows them read-only until
 # it has that editor (the quick-hunt plan is JSON written by the Qt plan editor).
 DEDICATED_EDITORS = {PLAN_KEY: "hunt_plan"}
+# select_capture("auto") stores ok-script's default, which tries capture_method in order.
+AUTO_CAPTURE = "auto"
+AUTO_CAPTURE_CONFIG = "windows"
+TEST_TITLE = "ok-bd2 测试消息"
+TEST_MESSAGE = "这是一条测试消息。收到它说明通知设置正确。"
 
 
 class LegacyInstanceRunning(RuntimeError):
@@ -148,18 +162,20 @@ def hidden_config_count(task):
     )
 
 
-def adapt_runtime(runtime, legacy_check=None):
+def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
     """Wrap ok-script's runtime operations with BD2's start, stop and save rules.
 
     ``legacy_check`` returns a refusal message while an older ok-bd2 runs (see
     ``src.executor_guard``); start and resume requests are refused synchronously so the
-    client sees the reason instead of a silent no-op.
+    client sees the reason instead of a silent no-op.  ``starter_wait`` (a
+    ``src.desktop.starter_wait.StarterWait``) reports the Starter wait in ``capture_ui``.
     """
     for task in runtime.executor.get_all_tasks():
         mark_hidden_config_keys(task)
     original_setting = runtime.set_setting
     original_reset_settings = runtime.reset_settings
     original_about = runtime.about
+    original_settings = runtime.settings
     controller = runtime.ok.headless_app.start_controller
     original_start = controller.start
 
@@ -342,6 +358,85 @@ def adapt_runtime(runtime, legacy_check=None):
                 raise ValueError("任务未启动，请等待启动流程结束")
             return task_payload(batch)
 
+    def window_info():
+        """The game's client size and the sizes the client may resize it to."""
+        manager = runtime.device_manager
+        preferred = manager.get_preferred_device()
+        window = getattr(manager, "hwnd_window", None)
+        size = None
+        if preferred and preferred.get("connected") and window is not None:
+            width, height = int(window.width or 0), int(window.height or 0)
+            if width and height:
+                size = [width, height]
+        return {
+            "size": size,
+            "ratio_ok": bool(size) and size[0] * 9 == size[1] * 16,
+            "resolutions": [list(item) for item in MANUAL_RESOLUTIONS],
+            "default": list(DEFAULT_MANUAL_RESOLUTION),
+            "resizing": bool(getattr(runtime.ok.headless_app, "window_resize_in_progress", False)),
+        }
+
+    def resize_window(width, height):
+        """Resize the game's client area; refused while a task runs unpaused."""
+        app = runtime.ok.headless_app
+        with config_lock:
+            ensure_config_write()
+            if controller.starting:
+                raise ValueError("正在启动游戏，请等待或取消启动")
+            ensure_resolution_change_safe(runtime.executor)
+            app.window_resize_in_progress = True
+        try:
+            result = resize_game_window(
+                runtime.device_manager, (int(width), int(height)), executor=runtime.executor
+            )
+        finally:
+            app.window_resize_in_progress = False
+        return {"width": result.width, "height": result.height, "changed": result.changed}
+
+    def game_paths():
+        launcher = runtime.device_manager.config.get("pc_full_path") or ""
+        return {
+            "game": resolve_game_exe_path(),
+            "launcher": launcher or resolve_launcher_exe_path(),
+        }
+
+    def test_notification(channel):
+        """Send one message through one channel with its saved settings."""
+        if channel not in TEST_CHANNELS:
+            raise ValueError("未知的通知渠道")
+        from ok.notification import providers
+
+        _, keys = TEST_CHANNELS[channel]
+        config = runtime.executor.global_config.get_config("Notification")
+        values = [str(config.get(key) or "").strip() for key in keys]
+        missing = [FIELD_TEXT[key][0] for key, value in zip(keys, values) if not value]
+        if missing:
+            raise ValueError(f"请先填写：{'、'.join(missing)}")
+        provider = {
+            "discord": providers.DiscordProvider,
+            "telegram": providers.TelegramBotProvider,
+            "wecom": providers.WeComWebhookProvider,
+            "qqbot": providers.QQBotProvider,
+        }[channel]()
+        # The providers log the failure and return False.
+        if not provider.send(*values, TEST_TITLE, TEST_MESSAGE, []):
+            raise RuntimeError("发送失败，原因见日志")
+        return {"sent": True}
+
+    original_select_capture = runtime.select_capture
+
+    def select_capture(method):
+        if method == AUTO_CAPTURE:
+            runtime.device_manager.set_capture(AUTO_CAPTURE_CONFIG)
+            return runtime.capture_ui()
+        return original_select_capture(method)
+
+    runtime.select_capture = select_capture
+    runtime.window_info = window_info
+    runtime.resize_window = resize_window
+    runtime.game_paths = game_paths
+    runtime.test_notification = test_notification
+    runtime.settings = lambda: [describe_group(group) for group in original_settings()]
     runtime.start_daily = start_daily
     runtime.tasks = lambda: [task_payload(task) for task in runtime.executor.get_all_tasks()]
     runtime.set_task_config = task_config
@@ -382,6 +477,7 @@ def adapt_runtime(runtime, legacy_check=None):
         # None: no method chosen, the device manager tries capture_methods in order.
         ui["capture_preference"] = preference if preference in methods else None
         ui["capture_in_use"] = capture_in_use(manager)
+        ui["starter_wait"] = starter_wait.snapshot() if starter_wait is not None else None
         return ui
 
     # The routes, the select_* operations and the event stream all go through this.
@@ -418,7 +514,8 @@ def create_app(
     ui_dist = Path(ui_dist or UI_DIST)
     app = framework.create_web_app(config, ok_instance=ok_instance)
     runtime = app.state.runtime
-    adapt_runtime(runtime, legacy_check=legacy_check)
+    STARTER_WAIT.install()
+    adapt_runtime(runtime, legacy_check=legacy_check, starter_wait=STARTER_WAIT)
     install_events(app, runtime)
     app.add_middleware(LocalSession, token=token, origin=origin)
     frontend_once = threading.Event()
@@ -462,7 +559,17 @@ def create_app(
     @app.get("/api/desktop/info")
     def desktop_info():
         instances = legacy_instances() if legacy_instances is not None else []
+        launcher_version = getattr(runtime.pyappify_module, "pyappify_version", None)
         return {
+            "launcher": {
+                "version": launcher_version,
+                # None when the version is unknown (a source checkout) or not a version.
+                "outdated": (
+                    None
+                    if launcher_supports_update_check(launcher_version) is None
+                    else not launcher_supports_update_check(launcher_version)
+                ),
+            },
             "api": API_VERSION,
             "core_version": core_version or str(config.get("version") or ""),
             "pid": os.getpid(),
@@ -488,6 +595,32 @@ def create_app(
     @app.get("/api/bd2/history")
     def history(task: str | None = None, limit: int = 20):
         return default_store().recent_runs(task, min(max(limit, 1), HISTORY_LIMIT))
+
+    @app.get("/api/bd2/window")
+    def window():
+        return runtime.window_info()
+
+    @app.post("/api/bd2/window/resize")
+    def resize(body: dict):
+        try:
+            return runtime.resize_window(int(body.get("width", 0)), int(body.get("height", 0)))
+        except (ValueError, RuntimeError) as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.get("/api/bd2/game")
+    def game():
+        return runtime.game_paths()
+
+    @app.post("/api/bd2/starter/cancel")
+    def cancel_starter():
+        return {"cancelled": STARTER_WAIT.cancel()}
+
+    @app.post("/api/bd2/notify/test")
+    def notify_test(body: dict):
+        try:
+            return runtime.test_notification(str(body.get("channel", "")))
+        except (ValueError, RuntimeError) as error:
+            raise HTTPException(400, str(error)) from error
 
     @app.post("/api/desktop/shutdown")
     def desktop_shutdown():
