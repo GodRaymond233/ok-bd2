@@ -89,17 +89,22 @@ class DailyBatchTaskTest(unittest.TestCase):
         task = DailyBatchTask(executor, SimpleNamespace())
         expected = [
             "公会、小屋、酒馆",
-            "快速狩猎",
             "免费抽抽乐",
+            "快速狩猎",
             "广场女神像",
-            "跑商",
             "跑图",
+            "跑商",
             "自动PVP",
         ]
         self.assertEqual(expected, task.config_type["启用"]["sub_configs"][True])
         self.assertTrue(all(task.default_config[key] for key in expected))
         self.assertIn("跑图", task.description)
-        self.assertIs(MapCollectionTask, task.child_tasks[-2].task_class)
+        self.assertIs(MapCollectionTask, task.child_tasks[-3].task_class)
+        daily_classes = [child.task_class.__name__ for child in task.child_tasks]
+        self.assertEqual(daily_classes, [
+            class_name for _module, class_name in config["onetime_tasks"]
+            if class_name in daily_classes
+        ])
 
     def test_weekly_map_collection_card_is_visible_in_daily_group_in_both_modes(self):
         from qfluentwidgets import FluentIcon

@@ -68,11 +68,11 @@ class DailyBatchChild:
 
 DAILY_BATCH_CHILDREN = (
     DailyBatchChild("公会、小屋、酒馆", DailyTask),
-    DailyBatchChild("快速狩猎", QuickHuntTask),
     DailyBatchChild("免费抽抽乐", FreeGachaTask),
+    DailyBatchChild("快速狩猎", QuickHuntTask),
     DailyBatchChild("广场女神像", SquareGoddessTask),
-    DailyBatchChild("跑商", MapTradeTask),
     DailyBatchChild("跑图", MapCollectionTask),
+    DailyBatchChild("跑商", MapTradeTask),
     DailyBatchChild("自动PVP", PVPTask),
 )
 
@@ -98,8 +98,8 @@ class DailyBatchTask(BaseTask):
         super().__init__(*args, **kwargs)
         self.name = "一键完成日常"
         self.description = (
-            "按顺序执行已开启的公会、小屋、酒馆、快速狩猎、抽抽乐、"
-            "广场、跑商、跑图和PVP。"
+            "按顺序执行已开启的公会、小屋、酒馆、抽抽乐、快速狩猎、"
+            "广场、跑图、跑商和PVP。"
         )
         self.icon = FluentIcon.COMPLETED
         self.group_name = "日常/周常"
