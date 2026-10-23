@@ -74,6 +74,39 @@ from tests.helpers.map_trade import _seed_action_records, _seed_battle_supplemen
 
 
 class CollectionRunTest(unittest.TestCase):
+    def test_insufficient_historical_quota_is_refreshed_after_entry_before_skipping(self):
+        for limit in (40, 45, 75, 130):
+            with self.subTest(limit=limit), tempfile.TemporaryDirectory() as directory:
+                progress = ProgressStore(Path(directory) / "progress.json")
+                progress.load()
+                progress.reconcile_pending("压制", (40, 40))
+                entered = CollectionCardSelectionResult(
+                    CollectionCardSelectionOutcome.ENTERED,
+                    NavigationResult(True, ScreenState.SANDBOX),
+                )
+                collector = Collector(
+                    SimpleNamespace(config={}, sleep=Mock(), info_set=Mock()),
+                    SimpleNamespace(capture=lambda: None,
+                                    ocr_text=lambda *a, **k: f"40/{limit}"),
+                    SimpleNamespace(select_collection_card=Mock(return_value=entered)), progress,
+                )
+                collector._open_skill_menu = Mock(return_value=True)
+                collector._refresh_collection_quota = (
+                    self._quota_refresh.__get__(collector)
+                )
+                collector._collect_card_targets = Mock(return_value=(
+                    CollectionResult(False, message="target boundary"), False,
+                ))
+                result = collector.collect_card(CARD_BY_ID["Q_sp1"],
+                                                battle_actions=(SUPPRESS_ACTION,))
+                collector.navigator.select_collection_card.assert_called_once()
+                self.assertEqual((40, limit), progress.trusted_action_baseline("压制"))
+                self.assertEqual(int(limit > 40), collector._collect_card_targets.call_count)
+                self.assertEqual(limit == 40, result.depleted)
+                if limit > 40:
+                    self.assertFalse(collector._collect_card_targets.call_args.kwargs["recovery_only"])
+                self.assertEqual({}, progress.state.action_records)
+
     def test_card_recheck_recovers_observed_town_without_recasting_battles(self):
         for visual_state in (CardActionState.PENDING, CardActionState.UNKNOWN):
             with self.subTest(state=visual_state), tempfile.TemporaryDirectory() as directory:
@@ -178,12 +211,13 @@ class CollectionRunTest(unittest.TestCase):
             self.assertTrue(result.depleted)
             self.assertTrue(progress.state.card_verified(card.card_id))
             self.assertFalse(progress.state.card_verified("Q_sp1"))
-            navigator.select_collection_card.assert_called_once_with(
-                card.card_id, enter_visually_complete=False,
-            )
+            self.assertEqual(["Q_sp1", card.card_id], [
+                call.args[0] for call in navigator.select_collection_card.call_args_list
+            ])
             self.assertEqual(["召集", "压制", "召集", "压制"], performed)
 
     def setUp(self):
+        self._quota_refresh = Collector._refresh_collection_quota
         search = patch.object(
             Collector,
             "_ensure_search",
@@ -191,10 +225,16 @@ class CollectionRunTest(unittest.TestCase):
             side_effect=lambda collector, **kwargs: collector._start_search(**kwargs),
         )
         guard = patch.object(Collector, "_absorb_used_up", return_value=None)
+        quota = patch.object(Collector, "_refresh_collection_quota", autospec=True,
+                             side_effect=lambda collector, actions: collector._quota_checks.update(
+                                 action.name for action in actions
+                             ))
         search.start()
         guard.start()
+        quota.start()
         self.addCleanup(search.stop)
         self.addCleanup(guard.stop)
+        self.addCleanup(quota.stop)
 
     def test_last_quota_recovery_resumes_persisted_actions_without_casts(self):
         for phase in ("clicked", "observed", "local_done", "bright", "later_summon"):
@@ -261,8 +301,9 @@ class CollectionRunTest(unittest.TestCase):
                     result = collector.run()
                 collector._start_search.assert_not_called()
                 vision.click_client.assert_not_called()
-                navigator.select_collection_card.assert_called_once()
-                self.assertEqual(card.card_id, navigator.select_collection_card.call_args.args[0])
+                self.assertEqual(["Q_sp1", card.card_id], [
+                    call.args[0] for call in navigator.select_collection_card.call_args_list
+                ])
                 self.assertTrue(
                     navigator.select_collection_card.call_args.kwargs["enter_visually_complete"],
                 )
@@ -463,6 +504,7 @@ class CollectionRunTest(unittest.TestCase):
                 ("actions", tuple(action.name for action in BATTLE_ACTIONS)),
                 ("quick",),
                 ("inspect", "Q_sp1"),
+                ("select", "Q_sp2", True),
             ],
             events,
         )
@@ -471,7 +513,7 @@ class CollectionRunTest(unittest.TestCase):
         self.assertEqual(14, progress.state.daily_suppressions)
         self.assertTrue(progress.state.card_verified("Q_sp1"))
 
-    def test_collection_never_starts_a_card_that_cannot_fit_enabled_actions(self):
+    def test_collection_rechecks_quota_without_casts_when_card_cannot_fit_enabled_actions(self):
         for action, count, reserved in (
             ("吸收", (19, 21), False), ("压制", (74, 75), False), ("压制", (73, 75), True),
         ):
@@ -495,15 +537,16 @@ class CollectionRunTest(unittest.TestCase):
                     info_set=lambda *_args: None,
                 )
                 navigator = SimpleNamespace(
-                    select_collection_card=Mock(side_effect=AssertionError(
-                        "an incomplete card must not be started",
+                    select_collection_card=Mock(return_value=CollectionCardSelectionResult(
+                        CollectionCardSelectionOutcome.ENTERED,
+                        NavigationResult(True, ScreenState.SANDBOX),
                     )),
                 )
                 result = Collector(task, object(), navigator, progress).run((CARD_BY_ID["Q_sp1"],))
                 self.assertTrue(result.success)
                 self.assertTrue(result.depleted)
                 self.assertEqual(0, result.completed_submaps)
-                navigator.select_collection_card.assert_not_called()
+                navigator.select_collection_card.assert_called_once()
                 progress.load()
                 self.assertEqual(
                     {action: 3 if action == "吸收" else 2}, progress.state.depleted_requirements,
@@ -583,7 +626,7 @@ class CollectionRunTest(unittest.TestCase):
                 result = collector.run()
 
         self.assertTrue(result.success)
-        self.assertEqual([("Q_sp14", False)], selected)
+        self.assertEqual([("Q_sp14", False), ("Q_sp15", True)], selected)
         self.assertEqual(
             {target.key for target in CARD_BY_ID["Q_sp14"].targets},
             progress.state.completed_targets("Q_sp14"),
@@ -903,6 +946,72 @@ class CollectionRunTest(unittest.TestCase):
 
 
 class CollectorSkillTest(unittest.TestCase):
+    def test_dynamic_skill_capacity_updates_from_full_fractions_and_casts_once(self):
+        for action in BATTLE_ACTIONS:
+            for limit in (30, 45, 75, 130):
+                with self.subTest(action=action.name, limit=limit):
+                    collector, clicks, _, progress = self._skill_collector(
+                        {action.icon.name: ActionIconState.AVAILABLE}, {},
+                    )
+                    progress.reconcile_pending(action.name, (5, 40))
+                    collector.vision.ocr_text = lambda *a, **k: f"{5 + len(clicks)}/{limit}"
+                    collector._read_count_window = Collector._read_count_window.__get__(collector)
+                    first = collector._use_action(
+                        action, card_id="Q_sp1", map_role=CollectionMapRole.BATTLE_AREA_1,
+                    )
+                    self.assertTrue(first.completed, first.message)
+                    self.assertEqual(1, len(clicks))
+                    self.assertEqual((6, limit), progress.trusted_action_baseline(action.name))
+                    progress.load()
+                    self.assertEqual((6, limit), progress.trusted_action_baseline(action.name))
+                    self.assertTrue(collector._use_action(
+                        action, card_id="Q_sp1", map_role=CollectionMapRole.BATTLE_AREA_1,
+                    ).completed)
+                    self.assertEqual(1, len(clicks))
+
+    def test_capacity_change_rejects_conflict_regression_and_unresolved_consumption(self):
+        for mode in ("scale_conflict", "bare_new", "stale_used",
+                     "armed", "clicked", "pending", "pinned_post"):
+            with self.subTest(mode=mode):
+                collector, clicks, _, progress = self._skill_collector(
+                    {SUPPRESS_ACTION.icon.name: ActionIconState.AVAILABLE}, {},
+                )
+                progress.reconcile_pending("压制", (5, 40))
+                if mode in {"armed", "clicked", "pending"}:
+                    progress.arm_action("Q_sp2", "battle_area_1", "压制", baseline=(5, 40))
+                    if mode != "armed":
+                        progress.mark_action_clicked("Q_sp2", "battle_area_1", "压制")
+                    if mode == "pending":
+                        progress.mark_action_local_done("Q_sp2", "battle_area_1", "压制",
+                                                       pending=True)
+                def ocr(*args, **kwargs):
+                    if (
+                        mode == "scale_conflict"
+                        and kwargs["ocr_scale"] == SKILL_OCR_FALLBACK_UPSCALE
+                    ):
+                        return "5/80"
+                    if mode == "bare_new":
+                        return "575"
+                    return "4/75" if mode == "stale_used" else "5/75"
+                collector.vision.ocr_text = ocr
+                collector._read_count_window = Collector._read_count_window.__get__(collector)
+                if mode == "pinned_post":
+                    observed = collector._read_count_window(
+                        SUPPRESS_ACTION, expected_used=5, expected_limit=40,
+                    )
+                    self.assertIsNone(observed.count)
+                else:
+                    detection = collector.action_icons.detect(None, SUPPRESS_ACTION.icon)
+                    before, failure = collector._prepare_before_click(
+                        SUPPRESS_ACTION, detection,
+                        card_id="Q_sp1", map_role=CollectionMapRole.BATTLE_AREA_1,
+                    )
+                    self.assertIsNone(before)
+                    self.assertIsNotNone(failure)
+                self.assertEqual((5, 40), progress.trusted_action_baseline("压制"))
+                self.assertEqual([], clicks)
+                self.assertIsNone(progress.get_action_record("Q_sp1", "battle_area_1", "压制"))
+
     def test_summon_suppression_prepares_quotas_then_clicks_before_settlement(self):
         for scenario in ("normal", "encounter", "quota", "unresolved", "failed_feedback"):
             with self.subTest(scenario=scenario):
@@ -2501,6 +2610,7 @@ class CollectorSkillTest(unittest.TestCase):
         for scenario in (
             "ready", "known_quota", "used", "settled", "armed", "clicked_used",
             "exhausted", "count_changed", "wrong_map", "disabled", "town", "click_error",
+            "upgraded_quota",
         ):
             with self.subTest(scenario=scenario):
                 collector, clicks, _status, progress = self._skill_collector(
@@ -2514,8 +2624,10 @@ class CollectorSkillTest(unittest.TestCase):
                 role = target.role
                 if scenario == "settled":
                     progress.mark_action_preexisting_used(card.card_id, role, "压制")
-                if scenario in {"known_quota", "armed", "clicked_used"}:
-                    progress.reconcile_pending("压制", (0, 80))
+                if scenario in {"known_quota", "armed", "clicked_used", "upgraded_quota"}:
+                    progress.reconcile_pending(
+                        "压制", (0, 40 if scenario == "upgraded_quota" else 80),
+                    )
                 if scenario in {"armed", "clicked_used"}:
                     progress.arm_action(card.card_id, role, "压制", baseline=(0, 80))
                 if scenario == "clicked_used":
@@ -2571,7 +2683,7 @@ class CollectorSkillTest(unittest.TestCase):
                     frame, recovered = collector._capture_skill_field()
                     self.assertIs(field, frame)
                     self.assertTrue(recovered)
-                if scenario in {"ready", "known_quota"}:
+                if scenario in {"ready", "known_quota", "upgraded_quota"}:
                     self.assertEqual(["map", "suppress"], events)
                     self.assertEqual(1, len(clicks))
                     record = progress.get_action_record(card.card_id, role, "压制")

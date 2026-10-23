@@ -53,6 +53,7 @@ class Collector(SkillExecutionMixin):
         self._last_skill_observations: dict[str, dict[str, object]] = {}
         self._last_skill_geometry: dict[str, object] = {}
         self._count_actions_seen: set[str] = set()
+        self._quota_checks: set[str] = set()
         self._completed_this_run = 0
         self._collection_target = None
         self._skill_field_generation = 0
@@ -75,6 +76,7 @@ class Collector(SkillExecutionMixin):
         """按顺序采集 ``cards``（默认剧情与角色卡）；单章模式在新完成一张卡带后停止。"""
         self._completed_this_run = 0
         self._count_actions_seen.clear()
+        self._quota_checks.clear()
         self._scope_cards = tuple(COLLECTABLE_CARDS if cards is None else cards)
         self._scope_actions = collection_action_policy(battle_actions)
         self.missing_cards = []
@@ -260,7 +262,17 @@ class Collector(SkillExecutionMixin):
             completed = remaining_completed
 
         remaining, recovery_only = self._plan_collection_work(card, completed, required_actions)
-        if recovery_only and not remaining:
+        needed = self.progress.collection_plan_requirements(
+            [target for target in card.targets if target.key not in completed],
+            card_id=card.card_id, required_actions=required_actions,
+        )
+        refresh_quota = tuple(
+            action for action in BATTLE_ACTIONS
+            if action.name in required_actions and needed.get(action.name)
+            and action.name not in self._quota_checks
+            and not self.progress.can_reserve_action(action.name, needed[action.name])
+        )
+        if recovery_only and not remaining and not refresh_quota:
             return CollectionResult(
                 True,
                 depleted=True,
@@ -295,6 +307,14 @@ class Collector(SkillExecutionMixin):
         if selected.outcome == CollectionCardSelectionOutcome.VISUALLY_COMPLETE:
             return self._record_visual_completion(card, required_actions)
 
+        if refresh_quota:
+            self._refresh_collection_quota(refresh_quota)
+            remaining, recovery_only = self._plan_collection_work(card, completed, required_actions)
+            if recovery_only and not remaining:
+                return CollectionResult(
+                    True, depleted=True, completed_submaps=self._completed_this_run,
+                    message="当前技能额度不足，未完成地图留待次日",
+                )
         outcome, observed_depleted = self._collect_card_targets(
             card, completed, remaining, required_actions, battle_actions,
             recovery_only=recovery_only,

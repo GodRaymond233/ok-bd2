@@ -106,17 +106,18 @@ class SkillExecutionMixin:
             detection = self.action_icons.detect(frame, action.icon)
             detections.append(detection)
             if detection.state is ActionIconState.AVAILABLE and not unresolved:
-                # First-use capacity needs agreement at both OCR scales as well as two frames.
-                scales = (SKILL_OCR_UPSCALE,) if baseline else (
-                    SKILL_OCR_UPSCALE, SKILL_OCR_FALLBACK_UPSCALE,
+                count = self._read_count(
+                    action, detection, frame=frame, ocr_scale=SKILL_OCR_UPSCALE,
+                    known_limit=baseline[1] if baseline else None,
                 )
-                readings = [
-                    self._read_count(
-                        action, detection, frame=frame, ocr_scale=scale,
-                        known_limit=baseline[1] if baseline else None,
-                    ) for scale in scales
-                ]
-                counts.append(readings[0] if all(c == readings[0] for c in readings) else None)
+                # 新容量必须同时通过两个倍率；已确认容量保留快速双帧路径。
+                if baseline is None or (count is not None and count[1] != baseline[1]):
+                    confirmed = self._read_count(
+                        action, detection, frame=frame, ocr_scale=SKILL_OCR_FALLBACK_UPSCALE,
+                    )
+                    if confirmed != count:
+                        count = None
+                counts.append(count)
         first, last = detections
         if not self._action_detection_is_stable(first, last):
             raise RuntimeError("退战后压制图标未稳定确认，未点击")
@@ -565,16 +566,17 @@ class SkillExecutionMixin:
         expected_limit: int | None = None,
     ) -> CountWindowObservation:
         """Return a compatible count; single-frame evidence requires allow_single explicitly."""
-        if expected_limit is None:
+        known_limit = expected_limit
+        if known_limit is None:
             baseline = self.progress.trusted_action_baseline(action.name)
-            expected_limit = baseline[1] if baseline is not None else None
+            known_limit = baseline[1] if baseline is not None else None
         initial_count = None
-        for ocr_scale in (None, SKILL_OCR_FALLBACK_UPSCALE):
+        for ocr_scale in (SKILL_OCR_UPSCALE, SKILL_OCR_FALLBACK_UPSCALE):
             samples: list[tuple[int, int]] = []
             for attempt in range(ACTION_OCR_WINDOW_SAMPLES):
                 count = self._read_count(
                     action, detection, ocr_scale=ocr_scale,
-                    known_limit=expected_limit, expected_used=expected_used,
+                    known_limit=known_limit, expected_used=expected_used,
                 )
                 if count is not None:
                     samples.append(count)
@@ -587,24 +589,44 @@ class SkillExecutionMixin:
             self._status(
                 f"{action.name}次数窗口",
                 f"{'稳定' if occurrences >= 2 else '不稳定'}={count}；"
-                f"scale={ocr_scale or '2x→3x'}；samples={samples}；"
-                f"expected={expected_used}/{expected_limit}",
+                f"scale={ocr_scale}；samples={samples}；"
+                f"expected={expected_used}/{expected_limit}；上次容量={known_limit}",
             )
-            if compatible and (occurrences >= 2 or (ocr_scale is not None and allow_single)):
-                if expected_limit is None and ocr_scale is None:
+            if compatible and (
+                occurrences >= 2 or (ocr_scale == SKILL_OCR_FALLBACK_UPSCALE and allow_single)
+            ):
+                if ocr_scale == SKILL_OCR_UPSCALE and (
+                    known_limit is None or count[1] != known_limit
+                ):
                     initial_count = count
                     continue
-                if initial_count is not None and count != initial_count:
-                    self._status(f"{action.name}次数校验", "首次次数跨倍率读数冲突，暂不记账")
+                if initial_count is not None and count != initial_count and (
+                    known_limit is None or count[1] != known_limit
+                ):
+                    self._status(f"{action.name}次数校验", "容量确认跨倍率读数冲突，暂不记账")
+                    return CountWindowObservation(None, False)
+                if count[1] != known_limit and occurrences < 2:
                     return CountWindowObservation(None, False)
                 return CountWindowObservation(count, occurrences >= 2)
             self._status(
                 f"{action.name}次数校验",
                 f"候选={count}；稳定={occurrences >= 2}；"
                 f"预期={expected_used}/{expected_limit}；"
-                + ("以3x新帧复读" if ocr_scale is None else "未取得可信读数"),
+                + ("以3x新帧复读" if ocr_scale == SKILL_OCR_UPSCALE else "未取得可信读数"),
             )
         return CountWindowObservation(None, False)
+
+    def _refresh_collection_quota(self, actions: tuple[SkillAction, ...]) -> None:
+        """旧额度不足时，入场复读HUD，避免技能升级后仍按旧容量跳过。"""
+        self._quota_checks.update(action.name for action in actions)
+        if not self._open_skill_menu(
+            tuple(action.icon for action in actions), allow_group_one_recovery=True,
+        ):
+            return
+        for action in actions:
+            observation = self._read_count_window(action)
+            if observation.count is not None and observation.is_stable:
+                self.progress.reconcile_pending(action.name, observation.count)
 
     def _reuse_recent_search(
         self,
@@ -1068,16 +1090,13 @@ class SkillExecutionMixin:
             self.progress.effective_used(action.name)
             if action.name in self._count_actions_seen or remaining_pending else None
         )
-        baseline = self.progress.trusted_action_baseline(action.name)
         if observation is None:
             observation = self._read_count_window(
                 action, detection, expected_used=expected_used,
-                expected_limit=baseline[1] if baseline is not None else None,
             )
         elif (
             observation.count is None or not observation.is_stable
             or (expected_used is not None and observation.count[0] != expected_used)
-            or (baseline is not None and observation.count[1] != baseline[1])
         ):
             observation = CountWindowObservation(None, False)
         before = observation.count
@@ -1405,7 +1424,10 @@ class SkillExecutionMixin:
                 )
             else:
                 return None
-            count = parse_used_limit(text, known_limit, expected_used)
+            # 完整分数携带当前技能容量；旧容量只帮助恢复丢失的分隔符。
+            count = parse_used_limit(text, expected_used=expected_used)
+            if count is None:
+                count = parse_used_limit(text, known_limit, expected_used)
             if count is not None:
                 return count
             if index + 1 < len(scales):
