@@ -69,22 +69,21 @@ class SkillExecutionMixin:
                 if self.navigator.current_collection_target(card) != target.key:
                     raise RuntimeError("遭遇战恢复后目标地图未确认，停止采集技能操作")
                 captured = self.vision.capture()
-                frame = self.navigator.wait_for_collection_field(captured)
-                if frame is not captured:
-                    raise RuntimeError("地图复核后场景再次变化，停止采集技能操作")
                 if (
                     self._recovery_suppression_enabled
                     and target.role is not CollectionMapRole.MAIN_AREA
                 ):
-                    self._suppress_after_retreat(frame, card_id=card.card_id, map_role=target.role)
+                    self._suppress_after_retreat(
+                        captured, card_id=card.card_id, map_role=target.role,
+                    )
                     captured = self.vision.capture()
-                    frame = self.navigator.wait_for_collection_field(captured)
-                    if frame is not captured:
-                        raise RuntimeError("退战压制后场景再次变化，停止采集")
+                frame = self.navigator.wait_for_collection_field(captured)
+                if frame is not captured:
+                    raise RuntimeError("地图复核后场景再次变化，停止采集技能操作")
         return frame, recovered
 
     def _suppress_after_retreat(self, frame, *, card_id, map_role):
-        """Use the verified field frames for both icon and quota before an urgent cast."""
+        """Select group one after map confirmation, then verify an urgent cast locally."""
         action = SUPPRESS_ACTION
         existing = self.progress.get_action_record(card_id, map_role, action.name)
         early = self._existing_record_outcome(action, existing)
@@ -94,16 +93,23 @@ class SkillExecutionMixin:
             return
         if self.progress.weekly_action_complete(card_id, map_role, action.name):
             return
+        if self.navigator._black_frame(frame) or self.navigator._field_battle_visible(frame):
+            raise RuntimeError("退战压制准备期间场景再次变化，停止采集")
+        self._status("技能组切换", "目标地图已确认，切换第一组并优先压制")
+        self.task.operate_click(*SKILL_GROUP_RELATIVE_POINTS[1], after_sleep=0.0)
         detections = []
         counts = []
         baseline = self.progress.trusted_action_baseline(action.name)
         unresolved = self.progress.has_unresolved_action(card_id, map_role, action.name)
-        for sample in range(2):
-            if sample:
-                frame = self.vision.capture()
-                if self.navigator.wait_for_collection_field(frame) is not frame:
-                    raise RuntimeError("退战压制准备期间场景再次变化，停止采集")
+        for _sample in range(ACTION_ICON_DETECTION_SAMPLES):
+            frame = self.vision.capture()
+            if self.navigator._black_frame(frame) or self.navigator._field_battle_visible(frame):
+                raise RuntimeError("退战压制准备期间场景再次变化，停止采集")
             detection = self.action_icons.detect(frame, action.icon)
+            if detection.state not in {ActionIconState.AVAILABLE, ActionIconState.USED}:
+                detections.clear()
+                counts.clear()
+                continue
             detections.append(detection)
             if detection.state is ActionIconState.AVAILABLE and not unresolved:
                 count = self._read_count(
@@ -118,6 +124,10 @@ class SkillExecutionMixin:
                     if confirmed != count:
                         count = None
                 counts.append(count)
+            if len(detections) == 2:
+                break
+        if len(detections) != 2:
+            raise RuntimeError("退战后第一组压制图标未稳定确认，未点击")
         first, last = detections
         if not self._action_detection_is_stable(first, last):
             raise RuntimeError("退战后压制图标未稳定确认，未点击")

@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import numpy as np
+from ok.task.exceptions import FinishedException, TaskDisabledException
 
 from src.tasks.map_trade.action_icons import (
     ABSORB_ICON,
@@ -2610,7 +2611,9 @@ class CollectorSkillTest(unittest.TestCase):
         for scenario in (
             "ready", "known_quota", "used", "settled", "armed", "clicked_used",
             "exhausted", "count_changed", "wrong_map", "disabled", "town", "click_error",
-            "upgraded_quota",
+            "upgraded_quota", "second_group", "switch_delayed", "switch_missing",
+            "black_before_switch", "battle_after_switch", "group_click_error",
+            "stop_switch", "finish_switch", "stop_sample", "finish_sample",
         ):
             with self.subTest(scenario=scenario):
                 collector, clicks, _status, progress = self._skill_collector(
@@ -2636,8 +2639,15 @@ class CollectorSkillTest(unittest.TestCase):
                 field = np.full_like(battle, 140)
                 current = [battle]
                 events = []
+                field_checks = []
+                selected_group = [2 if scenario in {
+                    "second_group", "switch_delayed", "switch_missing",
+                } else 1]
+                group_clicks = []
+                icon_reads = []
 
                 def wait(frame):
+                    field_checks.append(tuple(events))
                     if frame is battle:
                         current[0] = field
                         return field
@@ -2647,10 +2657,36 @@ class CollectorSkillTest(unittest.TestCase):
                     events.append("map")
                     return None if scenario == "wrong_map" else target.key
 
+                def select_group(x, y, after_sleep):
+                    self.assertEqual(["map"], events)
+                    self.assertEqual([()], field_checks)
+                    self.assertEqual((*SKILL_GROUP_RELATIVE_POINTS[1], 0.0), (x, y, after_sleep))
+                    events.append("group1")
+                    group_clicks.append((x, y, after_sleep))
+                    if scenario == "group_click_error":
+                        raise RuntimeError("group click interrupted")
+                    if scenario in {"stop_switch", "finish_switch"}:
+                        raise (TaskDisabledException if scenario == "stop_switch"
+                               else FinishedException)()
+                    selected_group[0] = 1
+
+                initial_detect = collector.action_icons.detect
+                def detect_icon(frame, icon):
+                    icon_reads.append(frame)
+                    if scenario in {"stop_sample", "finish_sample"}:
+                        raise (TaskDisabledException if scenario == "stop_sample"
+                               else FinishedException)()
+                    result = initial_detect(frame, icon)
+                    if selected_group[0] == 2 or scenario == "switch_missing" or (
+                        scenario == "switch_delayed" and len(icon_reads) == 1
+                    ):
+                        return replace(result, state=ActionIconState.ABSENT)
+                    return result
+
                 reads = []
                 def read_count(_action, _detection, **kwargs):
                     self.assertIs(field, kwargs["frame"])
-                    self.assertEqual(["map"], events)
+                    self.assertEqual(["map", "group1"], events)
                     reads.append(kwargs["ocr_scale"])
                     if scenario == "count_changed" and len(reads) > 2:
                         return (1, 80)
@@ -2658,7 +2694,8 @@ class CollectorSkillTest(unittest.TestCase):
 
                 click = collector.vision.click_client
                 def click_client(*args, **kwargs):
-                    self.assertEqual(["map"], events)
+                    self.assertEqual(["map", "group1"], events)
+                    self.assertEqual([()], field_checks)
                     self.assertEqual("armed", progress.get_action_record(
                         card.card_id, role, "压制",
                     )["state"])
@@ -2672,24 +2709,44 @@ class CollectorSkillTest(unittest.TestCase):
                 collector.vision.capture = lambda: current[0]
                 collector.navigator.wait_for_collection_field = wait
                 collector.navigator.current_collection_target = map_key
+                collector.navigator._black_frame = lambda _frame: scenario == "black_before_switch"
+                collector.navigator._field_battle_visible = lambda _frame: (
+                    scenario == "battle_after_switch" and bool(group_clicks)
+                )
+                collector.task.operate_click = select_group
+                collector.action_icons.detect = detect_icon
                 collector.vision.click_client = click_client
                 collector._read_count = read_count
                 collector._read_count_window = Mock(side_effect=AssertionError("slow window"))
                 collector.task.sleep = Mock(side_effect=AssertionError("preclick sleep"))
-                if scenario in {"armed", "exhausted", "count_changed", "wrong_map", "click_error"}:
+                stop_error = {
+                    "stop_switch": TaskDisabledException, "finish_switch": FinishedException,
+                    "stop_sample": TaskDisabledException, "finish_sample": FinishedException,
+                }.get(scenario)
+                if stop_error is not None:
+                    with self.assertRaises(stop_error):
+                        collector._capture_skill_field()
+                elif scenario in {
+                    "armed", "exhausted", "count_changed", "wrong_map", "click_error",
+                    "switch_missing", "black_before_switch", "battle_after_switch",
+                    "group_click_error",
+                }:
                     with self.assertRaises(RuntimeError):
                         collector._capture_skill_field()
                 else:
                     frame, recovered = collector._capture_skill_field()
                     self.assertIs(field, frame)
                     self.assertTrue(recovered)
-                if scenario in {"ready", "known_quota", "upgraded_quota"}:
-                    self.assertEqual(["map", "suppress"], events)
+                if scenario in {
+                    "ready", "known_quota", "upgraded_quota", "second_group", "switch_delayed",
+                }:
+                    self.assertEqual(["map", "group1", "suppress"], events)
                     self.assertEqual(1, len(clicks))
                     record = progress.get_action_record(card.card_id, role, "压制")
                     self.assertEqual("clicked", record["state"])
                     self.assertEqual(2 if scenario == "known_quota" else 4, len(reads))
                     # Re-entering recovery with an unconfirmed intent never repeats the click.
+                    collector.task.operate_click = Mock()
                     with self.assertRaisesRegex(RuntimeError, "未决"):
                         collector._suppress_after_retreat(
                             field, card_id=card.card_id, map_role=role,
@@ -2713,6 +2770,13 @@ class CollectorSkillTest(unittest.TestCase):
                     )["state"])
                 if scenario in {"used", "clicked_used"}:
                     self.assertTrue(progress.weekly_action_complete(card.card_id, role, "压制"))
+                self.assertEqual(int(scenario not in {
+                    "settled", "wrong_map", "disabled", "town", "black_before_switch",
+                }), len(group_clicks))
+                if scenario == "switch_missing":
+                    self.assertEqual(3, len(icon_reads))
+                if scenario == "group_click_error" or stop_error is not None:
+                    self.assertIsNone(progress.get_action_record(card.card_id, role, "压制"))
 
     def test_preclick_encounter_retries_with_fresh_counts_before_reserving(self):
         for first_count in ((0, 21), None):
