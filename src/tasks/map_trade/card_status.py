@@ -89,6 +89,7 @@ SUPPRESS_COMPLETED_TEMPLATE = TemplateSpec(
     minimum_safe_threshold=0.98,
     min_pixel_score=0.95,
     min_zncc_score=0.95,
+    scale_ratios=(0.98, 0.99, 1.0, 1.01, 1.02),
 )
 
 
