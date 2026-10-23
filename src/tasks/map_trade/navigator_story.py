@@ -1919,7 +1919,7 @@ class StoryCardNavigationMixin:
                     "当前快速切换卡带页面未通过三项 OCR 确认",
                 )
             if not self._wait_for_cartridge_category(
-                category=category
+                category=category, warn=False,
             ) and not self._select_cartridge_category(category):
                 return NavigationResult(
                     False,
