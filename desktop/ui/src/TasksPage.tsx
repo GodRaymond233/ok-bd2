@@ -267,6 +267,9 @@ function TaskDetail({ core, task, onBack }: { core: Core; task: TaskPayload; onB
                       {run.ok ? t("成功") : t("未成功")}
                       {run.duration ? ` · ${durationText(run.duration)}` : ""}
                     </span>
+                    <button type="button" className="linkbtn" aria-label={`${t("查看这次的日志")} ${whenText(run.finished, core.now)}`} onClick={() => core.openLogs(run)}>
+                      {t("日志")}
+                    </button>
                   </div>
                 ))}
               </div>

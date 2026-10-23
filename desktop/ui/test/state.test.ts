@@ -1,22 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { appendLogs, captureSummary, levelName, logFromEvent, logsFromFile, noticeFromEvent, shortLogText } from "../src/state.ts";
-
-test("log lines from events and from the log file", () => {
-  const line = logFromEvent({ event: "log", args: [30, "旧版 ok-bd2 正在运行"] });
-  assert.equal(line?.level, 30);
-  assert.equal(levelName(line?.level ?? 0), "WARNING");
-  assert.equal(logFromEvent({ event: "task", args: [] }), null);
-  const lines = logsFromFile(
-    "2026-10-20 10:00:00,000 INFO MainThread a\n\n2026-10-20 10:00:01,000 ERROR MainThread b\n",
-  );
-  assert.deepEqual(
-    lines.map((item) => item.level),
-    [20, 40],
-  );
-  const capped = appendLogs(lines, lines, 3);
-  assert.equal(capped.length, 3);
-});
+import { captureSummary, noticeFromEvent } from "../src/state.ts";
 
 test("capture summary shows the method in use and how it was chosen", () => {
   const capture_methods = ["WGC", "BitBlt_RenderFull", "ForegroundBitBlt"].map((id) => ({
@@ -50,12 +34,4 @@ test("notifications and a failed game start become notices", () => {
     error: true,
   });
   assert.equal(noticeFromEvent({ event: "log", args: [20, "x"] }), null);
-});
-
-test("log tail lines drop the date, level, thread and logger", () => {
-  assert.equal(
-    shortLogText("2026-10-23 00:09:52,753 INFO MainThread AutoLoginTask:info_set 阶段 等待登录页"),
-    "00:09:52 阶段 等待登录页",
-  );
-  assert.equal(shortLogText("一键完成日常：开始 广场女神像。"), "一键完成日常：开始 广场女神像。");
 });

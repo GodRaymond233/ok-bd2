@@ -3,14 +3,28 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api.ts";
 import { connectEvents } from "./events.ts";
 import { t } from "./i18n.ts";
-import { DevicePage, LogsPage, RecordsPage, SettingsPage } from "./OtherPages.tsx";
+import { DevicePage } from "./DevicePage.tsx";
+import { appendRecords, type LogRecord, parseLog, recordsFromEvent } from "./logs.ts";
+import { LogsPage } from "./LogsPage.tsx";
+import { RecordsPage } from "./OtherPages.tsx";
 import { type DockRun, RunDock } from "./RunDock.tsx";
 import { childRuns, isActive, sealOf, shutdownSeconds } from "./run.ts";
-import { appendLogs, captureSummary, type LogLine, logFromEvent, logsFromFile, type Notice, noticeFromEvent } from "./state.ts";
+import { SettingsPage } from "./SettingsPage.tsx";
+import { captureSummary, type Notice, noticeFromEvent } from "./state.ts";
 import { TasksPage } from "./TasksPage.tsx";
 import { TodayPage } from "./TodayPage.tsx";
 import type { BatchRun } from "./today.ts";
-import type { CaptureUi, DesktopInfo, Device, HistoryRun, ShellBridge, TaskPayload, TodayItem, TodaySummary } from "./types.ts";
+import type {
+  CaptureUi,
+  DesktopInfo,
+  Device,
+  HistoryRun,
+  SettingsGroup,
+  ShellBridge,
+  TaskPayload,
+  TodayItem,
+  TodaySummary,
+} from "./types.ts";
 import { Icon, SharedDefs } from "./ui.tsx";
 
 declare global {
@@ -25,6 +39,11 @@ export interface Core {
   ui: CaptureUi | null;
   tasks: TaskPayload[];
   today: TodaySummary | null;
+  info: DesktopInfo | null;
+  /** ok-script's global settings; null until loaded. */
+  settings: SettingsGroup[] | null;
+  /** The last log records: the log file's tail at start, then the live ones. */
+  logs: LogRecord[];
   /** Seconds since the epoch; ticks every second while a run is active. */
   now: number;
   current: string | null;
@@ -39,6 +58,10 @@ export interface Core {
   captureText: string;
   /** Changes whenever a task finishes, so run lists refetch. */
   historyVersion: number;
+  /** The task waiting for the game while it starts. */
+  starterTask: string | null;
+  /** Why the last game start failed, until dismissed or the next start. */
+  startError: string | null;
   childStage: (item: TodayItem) => string;
   act: (action: () => Promise<unknown>) => Promise<boolean>;
   setConfig: (task: string, key: string, value: unknown) => Promise<TaskPayload>;
@@ -48,12 +71,26 @@ export interface Core {
   taskAction: (task: string, action: "pause" | "resume" | "stop" | "enable" | "disable") => Promise<TaskPayload>;
   history: (task: string, limit: number) => Promise<HistoryRun[]>;
   refreshDevices: () => Promise<unknown>;
+  selectDevice: (id: string) => Promise<unknown>;
+  selectCapture: (id: string) => Promise<unknown>;
+  cancelStarter: () => Promise<unknown>;
+  dismissStartError: () => void;
+  setSetting: (group: string, key: string, value: unknown) => Promise<void>;
+  resetSettings: (group: string) => Promise<void>;
+  tool: (action: "capture" | "export-logs" | "install-folder" | "log-folder" | "screenshot-folder") => Promise<unknown>;
   openLogsFolder: () => Promise<void>;
+  /** An information toast. */
+  notify: (text: string) => void;
   navigate: (page: Page) => void;
   openTask: (name: string) => void;
+  /** The logs page, showing only this run when given. */
+  openLogs: (run: HistoryRun | null) => void;
 }
 
 const REFRESH_EVENTS = new Set(["task", "task_done", "task_list_updated", "executor_paused"]);
+// Game start progress only changes the capture state (status.starting, starter_wait).
+const CAPTURE_EVENTS = new Set(["starting_emulator", "starter_wait", "adb_devices"]);
+const LIVE_LOG_LIMIT = 300;
 const DOCK_KEY = "okbd2.dockExpanded";
 
 const message = (reason: unknown) => (reason instanceof Error ? reason.message : String(reason));
@@ -84,7 +121,10 @@ export function App() {
   const [tasks, setTasks] = useState<TaskPayload[]>([]);
   const [today, setToday] = useState<TodaySummary | null>(null);
   const [info, setInfo] = useState<DesktopInfo | null>(null);
-  const [logs, setLogs] = useState<LogLine[]>([]);
+  const [logs, setLogs] = useState<LogRecord[]>([]);
+  const [settings, setSettings] = useState<SettingsGroup[] | null>(null);
+  const [startError, setStartError] = useState<string | null>(null);
+  const [logFocus, setLogFocus] = useState<HistoryRun | null>(null);
   const [coreError, setCoreError] = useState<string | null>(null);
   const [eventsConnected, setEventsConnected] = useState(false);
   const [everConnected, setEverConnected] = useState(false);
@@ -96,18 +136,25 @@ export function App() {
   const [historyVersion, setHistoryVersion] = useState(0);
   const [dockName, setDockName] = useState<string | null>(null);
   const [dockDismissed, setDockDismissed] = useState(false);
-  const [dockDuration, setDockDuration] = useState<number | null>(null);
+  const [dockRecord, setDockRecord] = useState<HistoryRun | null>(null);
   const [shutdownSeen, setShutdownSeen] = useState<number | null>(null);
   const [dockExpanded, setDockExpanded] = useState(storedDockExpanded);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const [capture, taskList, summary, desktop] = await Promise.all([api.capture(), api.tasks(), api.today(), api.info()]);
+      const [capture, taskList, summary, desktop, groups] = await Promise.all([
+        api.capture(),
+        api.tasks(),
+        api.today(),
+        api.info(),
+        api.settings(),
+      ]);
       setUi(capture);
       setTasks(taskList);
       setToday(summary);
       setInfo(desktop);
+      setSettings(groups);
       setCoreError(null);
     } catch (reason) {
       setCoreError(message(reason));
@@ -132,7 +179,7 @@ export function App() {
       try {
         const file = await api.logs();
         if (!cancelled) {
-          setLogs((current) => appendLogs(logsFromFile(file.text).slice(-200), current));
+          setLogs((current) => appendRecords(parseLog(file.text).slice(-200), current, LIVE_LOG_LIMIT));
         }
       } catch {
         // the log file is optional on a fresh install
@@ -144,9 +191,20 @@ export function App() {
       connection = connectEvents(
         capture.event_session_key,
         (payload) => {
-          const line = logFromEvent(payload);
-          if (line) {
-            setLogs((current) => appendLogs(current, [line]));
+          const records = recordsFromEvent(payload, Date.now() / 1000);
+          if (records.length) {
+            setLogs((current) => appendRecords(current, records, LIVE_LOG_LIMIT));
+          }
+          if (payload.event === "starting_emulator" && Array.isArray(payload.args)) {
+            const [done, error] = payload.args;
+            if (!done) {
+              setStartError(null);
+            } else if (typeof error === "string" && error) {
+              setStartError(error);
+            }
+          }
+          if (CAPTURE_EVENTS.has(payload.event)) {
+            void api.capture().then(setUi, () => undefined);
           }
           if (payload.ui) {
             setUi(payload.ui);
@@ -194,7 +252,7 @@ export function App() {
     if (current) {
       setDockName(current);
       setDockDismissed(false);
-      setDockDuration(null);
+      setDockRecord(null);
       setShutdownSeen(null);
     }
   }, [current]);
@@ -220,7 +278,7 @@ export function App() {
       (runs) => {
         const run = runs[0];
         if (!cancelled && run && run.finished >= dockStart - 1) {
-          setDockDuration(run.duration);
+          setDockRecord(run);
         }
       },
       () => undefined,
@@ -251,7 +309,7 @@ export function App() {
       ? {
           task: dockTask,
           seal: dockSeal,
-          duration: dockDuration,
+          record: dockRecord,
           shutdownLeft:
             shutdownTotal !== null && shutdownSeen !== null ? Math.max(0, shutdownTotal - (now - shutdownSeen)) : null,
         }
@@ -286,6 +344,10 @@ export function App() {
     [scheduleRefresh],
   );
 
+  const replaceGroup = useCallback((updated: SettingsGroup) => {
+    setSettings((groups) => groups?.map((group) => (group.name === updated.name ? updated : group)) ?? [updated]);
+  }, []);
+
   const replaceTask = useCallback((updated: TaskPayload) => {
     setTasks((list) => list.map((task) => (task.name === updated.name ? updated : task)));
     return updated;
@@ -295,6 +357,9 @@ export function App() {
     ui,
     tasks,
     today,
+    info,
+    settings,
+    logs,
     now,
     current,
     busy,
@@ -305,6 +370,8 @@ export function App() {
     deviceName: device ? device.label.split("：").slice(1).join("：") || device.label : "",
     captureText: ui ? captureSummary(ui) : "",
     historyVersion,
+    starterTask: starting ? (queued?.name ?? null) : startError ? (queued?.name ?? null) : null,
+    startError,
     childStage: (item) => {
       const child = tasks.find((task) => task.name === item.name);
       const stage = String(child?.info["当前子任务"] || child?.info["状态"] || "");
@@ -322,11 +389,26 @@ export function App() {
     taskAction: (task, action) => api.taskAction(task, action),
     history: api.history,
     refreshDevices: api.refreshDevices,
+    selectDevice: async (id) => setUi(await api.selectDevice(id)),
+    selectCapture: async (id) => setUi(await api.selectCapture(id)),
+    cancelStarter: api.cancelStarter,
+    dismissStartError: () => setStartError(null),
+    setSetting: async (group, key, value) => replaceGroup(await api.setSetting(group, key, value)),
+    resetSettings: async (group) => replaceGroup(await api.resetSettings(group)),
+    tool: api.tool,
     openLogsFolder: async () => {
       await window.okbd2Shell?.openLogsFolder();
     },
+    notify: (text) => setToast({ text, error: false }),
+    openLogs: (run) => {
+      setLogFocus(run);
+      setPage("logs");
+    },
     navigate: (target) => {
       setPage(target);
+      if (target === "logs") {
+        setLogFocus(null);
+      }
       if (target === "tasks") {
         setDetailOpen(false);
       }
@@ -368,13 +450,13 @@ export function App() {
       content = <RecordsPage />;
       break;
     case "logs":
-      content = <LogsPage core={core} logs={logs} />;
+      content = <LogsPage core={core} focus={logFocus} onFocus={setLogFocus} />;
       break;
     case "device":
       content = <DevicePage core={core} />;
       break;
     case "settings":
-      content = <SettingsPage />;
+      content = <SettingsPage core={core} />;
       break;
     default:
       content = <TodayPage core={core} />;
@@ -409,6 +491,16 @@ export function App() {
           <button type="button" className="btn sm" onClick={() => void refresh()}>
             {t("重新检查")}
           </button>
+        </div>
+      )}
+      {info?.launcher?.outdated && (
+        <div className="banner warning" role="alert">
+          <Icon name="alert" />
+          <b>{t("启动器版本过旧")}</b>
+          <span className="t">{t("当前启动器不支持检查更新，以后的版本也装不上。请从下载页重新下载安装（配置和记录会保留）。")}</span>
+          <a className="btn sm" href="https://github.com/GodRaymond233/ok-bd2/releases/latest" target="_blank" rel="noreferrer">
+            {t("打开下载页")}
+          </a>
         </div>
       )}
       {everConnected && !eventsConnected && !coreError && (

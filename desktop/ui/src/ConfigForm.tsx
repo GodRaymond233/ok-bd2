@@ -1,8 +1,8 @@
 // A task's settings, generated from the core's field descriptions. Switches, lists and
 // choices save at once; text and numbers save when the field loses focus or on Enter.
 // A refused value shows the core's reason under the field and the field shows the saved value.
-import { type KeyboardEvent, useEffect, useState } from "react";
-import { isModified, linesToList, numberStep, optionList, parseNumber, stepNumber, toggleChoice, valueText } from "./form.ts";
+import { type KeyboardEvent, type ReactNode, useEffect, useState } from "react";
+import { fieldLabel, isModified, linesToList, numberStep, optionList, optionText, parseNumber, stepNumber, toggleChoice, valueText } from "./form.ts";
 import { t } from "./i18n.ts";
 import type { ConfigField } from "./types.ts";
 import { Icon, Toggle } from "./ui.tsx";
@@ -22,7 +22,9 @@ function Control({
 }) {
   const textValue = field.kind === "list" && !field.options ? (Array.isArray(field.value) ? field.value.join("\n") : "") : String(field.value ?? "");
   const [draft, setDraft] = useState(textValue);
+  const [revealed, setRevealed] = useState(false);
   useEffect(() => setDraft(textValue), [textValue]);
+  const label = fieldLabel(field);
   const commitText = () => {
     if (draft === textValue) {
       return;
@@ -53,13 +55,13 @@ function Control({
   }
   switch (field.kind) {
     case "boolean":
-      return <Toggle checked={Boolean(field.value)} disabled={disabled} label={field.key} onChange={save} />;
+      return <Toggle checked={Boolean(field.value)} disabled={disabled} label={label} onChange={save} />;
     case "select":
       return (
-        <select className="select" value={String(field.value)} disabled={disabled} aria-label={field.key} onChange={(event) => save(event.target.value)}>
+        <select className="select" value={String(field.value)} disabled={disabled} aria-label={label} onChange={(event) => save(event.target.value)}>
           {optionList(field).map((option) => (
             <option key={option} value={option}>
-              {option}
+              {optionText(field, option)}
             </option>
           ))}
         </select>
@@ -69,7 +71,7 @@ function Control({
       if (field.options) {
         const chosen = Array.isArray(field.value) ? field.value.map(String) : [];
         return (
-          <span className="chips" role="group" aria-label={field.key}>
+          <span className="chips" role="group" aria-label={label}>
             {optionList(field).map((option) => (
               <button
                 key={option}
@@ -79,7 +81,7 @@ function Control({
                 onClick={() => save(toggleChoice(field.value, option))}
               >
                 {chosen.includes(option) && <Icon name="check" />}
-                {option}
+                {optionText(field, option)}
               </button>
             ))}
           </span>
@@ -90,7 +92,7 @@ function Control({
           className="input"
           value={draft}
           disabled={disabled}
-          aria-label={field.key}
+          aria-label={label}
           placeholder={t("每行一项")}
           onChange={(event) => setDraft(event.target.value)}
           onBlur={commitText}
@@ -104,7 +106,7 @@ function Control({
             <button
               type="button"
               disabled={disabled || (field.minimum !== null && Number(field.value) <= field.minimum)}
-              aria-label={`${field.key} ${t("减少")}`}
+              aria-label={`${label} ${t("减少")}`}
               onClick={() => save(stepNumber(field.value, field, -1))}
             >
               <Icon name="minus" />
@@ -113,7 +115,7 @@ function Control({
               inputMode="decimal"
               value={draft}
               disabled={disabled}
-              aria-label={field.key}
+              aria-label={label}
               step={numberStep(field)}
               onChange={(event) => setDraft(event.target.value)}
               onBlur={commitText}
@@ -122,7 +124,7 @@ function Control({
             <button
               type="button"
               disabled={disabled || (field.maximum !== null && Number(field.value) >= field.maximum)}
-              aria-label={`${field.key} ${t("增加")}`}
+              aria-label={`${label} ${t("增加")}`}
               onClick={() => save(stepNumber(field.value, field, 1))}
             >
               <Icon name="plus" />
@@ -141,18 +143,39 @@ function Control({
           className="input"
           value={draft}
           disabled={disabled}
-          aria-label={field.key}
+          aria-label={label}
           onChange={(event) => setDraft(event.target.value)}
           onBlur={commitText}
         />
       );
     default:
+      if (field.secret) {
+        return (
+          <span className="secret">
+            <input
+              className="input"
+              type={revealed ? "text" : "password"}
+              value={draft}
+              disabled={disabled}
+              aria-label={label}
+              autoComplete="off"
+              spellCheck={false}
+              onChange={(event) => setDraft(event.target.value)}
+              onBlur={commitText}
+              onKeyDown={onEnter}
+            />
+            <button type="button" className="linkbtn" onClick={() => setRevealed(!revealed)}>
+              {revealed ? t("隐藏") : t("显示")}
+            </button>
+          </span>
+        );
+      }
       return (
         <input
           className="input"
           value={draft}
           disabled={disabled}
-          aria-label={field.key}
+          aria-label={label}
           onChange={(event) => setDraft(event.target.value)}
           onBlur={commitText}
           onKeyDown={onEnter}
@@ -161,7 +184,19 @@ function Control({
   }
 }
 
-function Field({ field, disabled, saveField }: { field: ConfigField; disabled: boolean; saveField: SaveField }) {
+function Field({
+  field,
+  disabled,
+  saveField,
+  extra,
+  note,
+}: {
+  field: ConfigField;
+  disabled: boolean;
+  saveField: SaveField;
+  extra?: ReactNode;
+  note?: ReactNode;
+}) {
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(0);
   const save = (value: unknown) => {
@@ -175,12 +210,13 @@ function Field({ field, disabled, saveField }: { field: ConfigField; disabled: b
   return (
     <div className={field.sub_config ? "fld sub" : "fld"}>
       <div className="lb">
-        {field.key}
+        {fieldLabel(field)}
+        {note}
         {modified && !field.editor && (
           <>
             <span className="mod" title={t("与默认值不同")} />
             <button type="button" className="reset" disabled={disabled} onClick={() => save(field.default)}>
-              {t("恢复默认")}（{valueText(field.default)}）
+              {t("恢复默认")}（{field.secret ? t("空") : field.option_labels ? optionText(field, String(field.default)) : valueText(field.default)}）
             </button>
           </>
         )}
@@ -194,6 +230,7 @@ function Field({ field, disabled, saveField }: { field: ConfigField; disabled: b
       {field.description && <div className="dsc">{field.description}</div>}
       {field.editor && <div className="dsc">{t("方案编辑器在阶段 3 接入；现在请在 Qt 版编辑。")}</div>}
       <div className="ctrl">
+        {extra}
         <Control field={field} disabled={disabled} save={save} setError={setError} />
       </div>
       {error && (
@@ -208,21 +245,37 @@ function Field({ field, disabled, saveField }: { field: ConfigField; disabled: b
 
 export function ConfigForm({
   fields,
-  hidden,
+  hidden = 0,
   disabled,
   saveField,
+  extra,
+  note,
+  children,
 }: {
   fields: ConfigField[];
-  hidden: number;
+  hidden?: number;
   disabled: boolean;
   saveField: SaveField;
+  /** Something to put beside a field's control, such as a test button. */
+  extra?: (field: ConfigField) => ReactNode;
+  /** Something to put after a field's name, such as a stage tag. */
+  note?: (field: ConfigField) => ReactNode;
+  children?: ReactNode;
 }) {
   return (
     <div className="card form">
-      {fields.length === 0 && <div className="empty">{t("这个任务没有可修改的设置。")}</div>}
+      {fields.length === 0 && !children && <div className="empty">{t("这个任务没有可修改的设置。")}</div>}
       {fields.map((field) => (
-        <Field key={field.key} field={field} disabled={disabled} saveField={saveField} />
+        <Field
+          key={field.key}
+          field={field}
+          disabled={disabled}
+          saveField={saveField}
+          extra={extra?.(field)}
+          note={note?.(field)}
+        />
       ))}
+      {children}
       {hidden > 0 && (
         <div className="hidden-note">
           <Icon name="info" />

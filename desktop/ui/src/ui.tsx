@@ -81,6 +81,14 @@ const PATHS: Record<string, ReactNode> = {
   level: <path d="M3.5 17l6-6 4 4 7-7M15 8h5.5v5.5" />,
   folder: <path d="M3.5 6.5a1.5 1.5 0 0 1 1.5-1.5h4.2l2 2.2H19a1.5 1.5 0 0 1 1.5 1.5v9.3a1.5 1.5 0 0 1-1.5 1.5H5a1.5 1.5 0 0 1-1.5-1.5z" />,
   refresh: <path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4.5v4h-4" />,
+  download: <path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19.5h14" />,
+  camera: (
+    <>
+      <path d="M4 8.5A1.5 1.5 0 0 1 5.5 7h2.3l1.4-2h5.6l1.4 2h2.3A1.5 1.5 0 0 1 20 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5z" />
+      <circle cx="12" cy="13" r="3.5" />
+    </>
+  ),
+  send: <path d="M4.5 12 19.5 5l-4 14-3.5-5.5zM12 13.5l7.5-8.5" />,
 };
 
 const FILLED = new Set(["play", "pause", "stop"]);

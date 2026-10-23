@@ -1,11 +1,16 @@
 // Same-origin calls to the core. The launch cookie authenticates every request.
 import type {
+  AboutInfo,
   CaptureUi,
   DesktopInfo,
   ExecutorStatus,
+  GamePaths,
   HistoryRun,
+  SettingsGroup,
   TaskPayload,
   TodaySummary,
+  UpdateCheck,
+  WindowInfo,
 } from "./types.ts";
 
 export class ApiError extends Error {
@@ -40,6 +45,23 @@ export const api = {
   info: () => request<DesktopInfo>("/api/desktop/info"),
   tasks: () => request<TaskPayload[]>("/api/tasks"),
   logs: () => request<{ text: string }>("/api/logs?level=INFO"),
+  settings: () => request<SettingsGroup[]>("/api/settings"),
+  setSetting: (group: string, key: string, value: unknown) =>
+    request<SettingsGroup>(`/api/settings/${encodeURIComponent(group)}/config`, "POST", { key, value }),
+  resetSettings: (group: string) => request<SettingsGroup>(`/api/settings/${encodeURIComponent(group)}/reset`, "POST", {}),
+  selectDevice: (id: string) => request<CaptureUi>("/api/devices/select", "POST", { id }),
+  /** "auto" goes back to trying the capture methods in order. */
+  selectCapture: (id: string) => request<CaptureUi>("/api/capture-methods/select", "POST", { id }),
+  tool: (action: "capture" | "export-logs" | "install-folder" | "log-folder" | "screenshot-folder") =>
+    request<{ ok: boolean; message: string }>(`/api/tools/${action}`, "POST"),
+  window: () => request<WindowInfo>("/api/bd2/window"),
+  resizeWindow: (width: number, height: number) =>
+    request<{ width: number; height: number; changed: boolean }>("/api/bd2/window/resize", "POST", { width, height }),
+  game: () => request<GamePaths>("/api/bd2/game"),
+  cancelStarter: () => request<{ cancelled: boolean }>("/api/bd2/starter/cancel", "POST"),
+  testNotification: (channel: string) => request<{ sent: boolean }>("/api/bd2/notify/test", "POST", { channel }),
+  about: () => request<AboutInfo>("/api/about"),
+  updates: () => request<UpdateCheck>("/api/updates"),
   refreshDevices: () => request<{ accepted: boolean }>("/api/devices/refresh", "POST"),
   startTask: (name: string) => request<TaskPayload>(`/api/tasks/${encodeURIComponent(name)}/start`, "POST"),
   taskAction: (name: string, action: string) =>

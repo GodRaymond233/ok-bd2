@@ -82,3 +82,13 @@ export function linesToList(text: string): string[] {
     .map((line) => line.trim())
     .filter((line) => line !== "");
 }
+
+/** The field's display name: the core's label for settings, otherwise the key. */
+export function fieldLabel(field: ConfigField): string {
+  return field.label || field.key;
+}
+
+/** An option's display name; the stored value when the core names none. */
+export function optionText(field: ConfigField, option: string): string {
+  return field.option_labels?.[option] ?? option;
+}

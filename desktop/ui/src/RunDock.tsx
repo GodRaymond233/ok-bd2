@@ -1,18 +1,19 @@
 // The run panel at the bottom of every page: one line while idle, the current or last run
 // otherwise. Pause, resume and stop act at once; there is no confirmation.
 import type { Core } from "./App.tsx";
+import { starterProgress, starterText } from "./device.ts";
 import { durationText, elapsedText, refreshText } from "./format.ts";
 import { t } from "./i18n.ts";
 import { type Segment, SEAL_TEXT, type Seal, infoRows, isActive, segments } from "./run.ts";
-import { type LogLine, shortLogText } from "./state.ts";
-import type { TaskPayload } from "./types.ts";
+import type { LogRecord } from "./logs.ts";
+import type { HistoryRun, TaskPayload } from "./types.ts";
 import { Icon } from "./ui.tsx";
 
 export interface DockRun {
   task: TaskPayload;
   seal: Seal;
-  /** Seconds the finished run took, once known. */
-  duration: number | null;
+  /** The finished run's record, once the core wrote it. */
+  record: HistoryRun | null;
   /** Seconds left before the announced shutdown, if 一键完成日常 scheduled one. */
   shutdownLeft: number | null;
 }
@@ -66,12 +67,66 @@ export function RunDock({
 }: {
   core: Core;
   run: DockRun | null;
-  logs: LogLine[];
+  logs: LogRecord[];
   expanded: boolean;
   onExpand: (expanded: boolean) => void;
   onDismiss: () => void;
 }) {
   const connected = Boolean(core.device?.connected);
+  const status = core.ui?.status;
+  if (!run && status?.starting) {
+    const wait = core.ui?.starter_wait ?? null;
+    const progress = wait ? starterProgress(wait) : null;
+    return (
+      <section className="dock" aria-label={t("运行面板")}>
+        <div className="bar">
+          <span className="seal run">
+            <span className="d" />
+            {t("启动游戏")}
+          </span>
+          {core.starterTask && <span className="nm">{core.starterTask}</span>}
+          <span className="sub">{wait ? starterText(wait) : t("正在启动 Starter…")}</span>
+          <span className="grow" />
+          <button type="button" className="btn sm" onClick={() => core.navigate("device")}>
+            {t("详情")}
+          </button>
+          <button type="button" className="btn sm" disabled={!wait} onClick={() => void core.act(core.cancelStarter)}>
+            {t("取消等待")}
+          </button>
+        </div>
+        {progress !== null && (
+          <div className="thin">
+            <div className="bar-line">
+              <i style={{ width: `${Math.round(progress * 100)}%` }} />
+            </div>
+          </div>
+        )}
+      </section>
+    );
+  }
+  if (!run && core.startError) {
+    return (
+      <section className="dock" aria-label={t("运行面板")}>
+        <div className="bar">
+          <span className="seal issue">
+            <span className="d" />
+            {t("未开始")}
+          </span>
+          {core.starterTask && <span className="nm">{core.starterTask}</span>}
+          <span className="sub">
+            {t("启动游戏失败")}：{core.startError}
+          </span>
+          <span className="grow" />
+          <button type="button" className="btn sm" onClick={() => core.openLogs(null)}>
+            {t("查看日志")}
+          </button>
+          <button type="button" className="btn subtle sm icon" title={t("关闭")} aria-label={t("关闭")} onClick={core.dismissStartError}>
+            <Icon name="x" />
+          </button>
+        </div>
+      </section>
+    );
+  }
   if (!run) {
     return (
       <div className="dock-idle" role="status">
@@ -115,8 +170,8 @@ export function RunDock({
   const current = batchRun && active ? items.find((item) => batchRun.runs.get(item.key) === "doing") : undefined;
   const time = active
     ? `${t("已运行")} ${elapsedText(core.now - task.start_time)}`
-    : run.duration !== null
-      ? `${t("用时")} ${durationText(run.duration)}`
+    : run.record?.duration
+      ? `${t("用时")} ${durationText(run.record.duration)}`
       : "";
   const tail = logs.slice(-3);
 
@@ -220,16 +275,16 @@ export function RunDock({
           <div>
             <div className="loghd">
               <span>{t("最近日志")}</span>
-              <button type="button" className="linkbtn" onClick={() => core.navigate("logs")}>
+              <button type="button" className="linkbtn" onClick={() => core.openLogs(active ? null : run.record)}>
                 {t("查看全部")} <Icon name="chev-r" />
               </button>
             </div>
             <div className="logs" aria-live="polite">
               {tail.length === 0
                 ? t("暂无日志")
-                : tail.map((line) => (
-                    <div key={line.key} className={line.level >= 40 ? "bad" : undefined}>
-                      {shortLogText(line.text)}
+                : tail.map((record) => (
+                    <div key={record.key} className={record.level >= 40 ? "bad" : undefined}>
+                      {record.time} {record.text}
                     </div>
                   ))}
             </div>

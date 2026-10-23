@@ -13,6 +13,20 @@ export interface ConfigField {
   sub_config: boolean;
   /** Set when only a dedicated editor may change the value (the quick-hunt plan). */
   editor?: string;
+  /** Display name and option names for settings the core keys in English. */
+  label?: string;
+  option_labels?: Record<string, string>;
+  /** A token or webhook address: masked until asked. */
+  secret?: boolean;
+}
+
+/** A global settings group (/api/settings, named by src/desktop/settings_text.py). */
+export interface SettingsGroup {
+  name: string;
+  label: string;
+  description: string;
+  top_level: boolean;
+  fields: ConfigField[];
 }
 
 /** Result of a task's current or last run (src/tasks/run_history.py run_state). */
@@ -113,6 +127,40 @@ export interface CaptureUi {
   /** Capture method running for the connected game window, if any. */
   capture_in_use: string | null;
   interaction_methods: Choice[];
+  /** The Starter wait while the game starts (src/desktop/starter_wait.py). */
+  starter_wait?: StarterWait | null;
+}
+
+export interface StarterWait {
+  /** What the Starter is doing (updating, the install wizard); empty while just waiting. */
+  message: string;
+  /** Seconds before the wait gives up; 0 while the Starter is updating. */
+  seconds_left: number;
+  waited: number;
+}
+
+export interface WindowInfo {
+  size: [number, number] | null;
+  ratio_ok: boolean;
+  resolutions: [number, number][];
+  default: [number, number];
+  resizing: boolean;
+}
+
+export interface GamePaths {
+  game: string;
+  launcher: string;
+}
+
+export interface UpdateCheck {
+  current_version: string;
+  versions: { version: string; notes: string[] }[];
+  update_available: boolean;
+}
+
+export interface AboutInfo {
+  version: string;
+  links: Record<string, Record<string, string>>;
 }
 
 export interface DesktopInfo {
@@ -122,6 +170,8 @@ export interface DesktopInfo {
   mode: string;
   ui_built: boolean;
   legacy_instances: { pid: number; location: string; description: string }[];
+  /** PyAppify launcher; outdated is null when the version is unknown (a source checkout). */
+  launcher?: { version: string | null; outdated: boolean | null };
 }
 
 export interface EventPayload {
