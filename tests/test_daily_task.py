@@ -2005,6 +2005,53 @@ class DailyTaskHelperTest(StageHistoryTestCase):
                         (expected_point, frame.shape), vision.click_client.call_args.args,
                     )
 
+    def test_quick_hunt_dialog_label_omission_preserves_resource_and_switch_checks(self):
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        for resource in ("火把", "米饭"):
+            for labels, accepted in (
+                ((f"仅使用免费{resource}",), True),
+                ((f"仅使免费{resource}",), True),
+                ((f"仅使免费{resource}", f"仅使用免费{resource}"), False),
+                ((f"仅使用{resource}",), False),
+                ((f"使用免费{resource}",), False),
+                (("仅使免费" + ("米饭" if resource == "火把" else "火把"),), False),
+            ):
+                for state in ("on", "off", "unknown"):
+                    with self.subTest(resource=resource, labels=labels, state=state):
+                        task = object.__new__(QuickHuntTask)
+                        task.info_set = Mock()
+                        task._quick_hunt_free_resource = Mock(return_value=60)
+                        task._quick_hunt_box_enabled = Mock(return_value=True)
+                        boxes = [
+                            SimpleNamespace(name=text, x=700, y=195, width=105, height=18)
+                            for text in labels
+                        ] + [
+                            SimpleNamespace(
+                                name="风之洞穴极难", x=600, y=240, width=120, height=20,
+                            ),
+                            SimpleNamespace(name="狩猎1次", x=600, y=300, width=90, height=20),
+                            SimpleNamespace(
+                                name="MIN MAX 取消", x=600, y=400, width=180, height=20,
+                            ),
+                        ]
+                        start = SimpleNamespace(name="狩猎6", x=900, y=600, width=80, height=20)
+                        vision = Mock()
+                        vision.ocr_boxes.side_effect = [boxes, [start]]
+                        task._quick_vision = lambda: vision
+                        with patch("src.tasks.quick_hunt.read_free_switch",
+                                   return_value=(state, (830, 204))) as switch:
+                            snapshot = task._quick_hunt_dialog_snapshot(frame, "圣石", resource)
+                        if accepted:
+                            self.assertEqual((resource, state, 1, 6, 60), (
+                                snapshot.resource, snapshot.free_state, snapshot.count,
+                                snapshot.cost, snapshot.pool,
+                            ))
+                            switch.assert_called_once_with(frame, boxes[0])
+                            task._quick_hunt_free_resource.assert_called_once_with(resource, frame)
+                        else:
+                            self.assertIsNone(snapshot)
+                            switch.assert_not_called()
+
     def test_quick_hunt_submission_requires_free_switch_and_stable_affordable_cost(self):
         rice = hunt_dialog()
         torch = hunt_dialog(map_name="火之洞穴极难", pool=60, resource="火把")

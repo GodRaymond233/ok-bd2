@@ -1098,8 +1098,10 @@ class QuickHuntFeatureMixin:
         counts = [(box, re.fullmatch(r"狩猎(\d+)次", self._normalize_text(box.name)))
                   for box in boxes]
         counts = [(box, match) for box, match in counts if match]
-        labels = [box for box in boxes
-                  if f"仅使用免费{resource}" in self._normalize_text(box.name)]
+        # OCR may omit “用”; the switch pixels still determine the free-only state.
+        labels = [box for box in boxes if re.search(
+            rf"仅使用?免费{re.escape(resource)}", self._normalize_text(box.name),
+        )]
         if len(counts) != 1 or len(labels) != 1:
             return None
         count_box, match = counts[0]
