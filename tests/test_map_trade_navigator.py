@@ -759,7 +759,6 @@ class NavigatorTest(unittest.TestCase):
 
     def test_activity_exit_requires_unique_picker_and_confirmed_victory(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        battle = SimpleNamespace(name="战斗区", x=200, y=300, width=100, height=40)
         leave = SimpleNamespace(name="离开", x=900, y=900, width=100, height=40)
         for text, boxes, expected in (
             ("VICTORY", [leave], True), ("普通战斗", [leave], False),
@@ -773,14 +772,32 @@ class NavigatorTest(unittest.TestCase):
             with self.subTest(text=text, count=len(boxes)):
                 self.assertEqual(expected, navigator._leave_walk_battle_result(frame))
                 self.assertEqual(int(expected), navigator.vision.click_client.call_count)
-        for boxes, expected in (([battle], True), ([battle, battle], False), ([], False)):
+        for target_index, labels, expected in (
+            (1, ("战斗区",), True),
+            (1, ("x战斗区", "旅馆", "商店"), True),
+            (1, ("战斗区", "x战斗区"), False),
+            (1, ("旅馆",), False),
+            (1, (), False),
+            (0, ("安全区",), True),
+            (0, ("x安全区", "旅馆"), True),
+            (0, ("安全区", "x安全区"), False),
+            (0, ("x战斗区",), False),
+        ):
+            boxes = [
+                SimpleNamespace(name=label, x=200, y=300, width=100, height=40)
+                for label in labels
+            ]
             navigator.vision.capture = lambda: frame
             navigator.vision.ocr_boxes = lambda *_args, **_kwargs: boxes
             navigator.vision.click_client.reset_mock()
-            self.assertEqual(
-                expected, navigator._click_activity_exit_picker(CARD_BY_ID["Q_ep1"].targets[1]),
-            )
-            self.assertEqual(int(expected), navigator.vision.click_client.call_count)
+            with self.subTest(target_index=target_index, labels=labels):
+                self.assertEqual(
+                    expected,
+                    navigator._click_activity_exit_picker(CARD_BY_ID["Q_ep1"].targets[target_index]),
+                )
+                self.assertEqual(int(expected), navigator.vision.click_client.call_count)
+                if expected:
+                    self.assertEqual((250, 320), navigator.vision.click_client.call_args.args[0])
 
     def test_collection_field_retries_battle_result_until_idle_field(self):
         frame = np.full((8, 8, 3), 120, dtype=np.uint8)

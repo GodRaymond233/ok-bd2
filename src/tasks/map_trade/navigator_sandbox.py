@@ -2813,7 +2813,7 @@ class SandboxNavigationMixin:
         boxes = self.vision.ocr_boxes(
             frame, "活动出口列表", relative_roi=AREA_MAP_EXIT_LABEL_RELATIVE_ROI,
         )
-        rows = [box for box in boxes if normalize_text(str(box.name)) == wanted]
+        rows = [box for box in boxes if wanted in normalize_text(str(box.name))]
         if len(rows) != 1 or (point := self._ocr_box_center(rows[0])) is None:
             return False
         self.vision.click_client(point, frame.shape, after_sleep=WALK_CLICK_SETTLE_SECONDS)
