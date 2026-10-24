@@ -42,6 +42,7 @@ from weakref import ref
 from PySide6.QtCore import QAbstractAnimation, QObject, QPointF, Qt, QTimer
 from PySide6.QtGui import QBrush, QColor, QLinearGradient, QPainter
 from PySide6.QtWidgets import QLabel, QWidget
+from shiboken6 import isValid
 
 from src.tasks.BaseBD2Task import task_info_snapshot
 from src.tasks.run_history import BEIJING_TZ, configuration_scope, default_store
@@ -204,7 +205,7 @@ class _SealBreathDriver(QObject):
         running = False
         for seal_ref in self._seals:
             seal = seal_ref()
-            if seal is None:
+            if seal is None or not isValid(seal):
                 continue
             alive.append(seal_ref)
             running = running or seal._state == "run"
@@ -395,7 +396,7 @@ class _CardRefresher(QObject):
         alive = []
         for card_ref in self._cards:
             card = card_ref()
-            if card is None:
+            if card is None or not isValid(card):
                 continue
             alive.append(card_ref)
             if theme_flipped:
@@ -552,12 +553,19 @@ def _chain_config_card_methods() -> None:
 def install_quest_cards() -> bool:
     """Chain the quest chrome onto TaskCard after the responsive patch."""
     from ok.ui.qt.tasks.TaskCard import TaskCard
+    from ok.ui.qt.tasks.TaskTab import TaskTab
 
     if getattr(TaskCard, "_quest_cards_installed", False):
         return False
 
     _chain_config_card_methods()
     original_task_card_init = TaskCard.__init__
+    original_add_task_card = TaskTab.add_task_card
+
+    def quest_add_task_card(self, card):
+        original_add_task_card(self, card)
+        # The framework layout reparents cards without Qt's show-on-insert step.
+        card.show()
 
     def quest_task_card_init(self, task, onetime):
         original_task_card_init(self, task, onetime)
@@ -572,5 +580,6 @@ def install_quest_cards() -> bool:
         _get_refresher().register(self)
 
     TaskCard.__init__ = quest_task_card_init
+    TaskTab.add_task_card = quest_add_task_card
     TaskCard._quest_cards_installed = True
     return True
