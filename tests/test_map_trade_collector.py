@@ -3048,7 +3048,9 @@ class CollectorSkillTest(unittest.TestCase):
 
     def test_preclick_requires_stable_hud_count_and_persists_its_limit(self):
         for action, limit in zip(BATTLE_ACTIONS, (30, 28, 75), strict=True):
-            for scenario in ("stable", "unstable", "conflict", "cross_scale_conflict"):
+            for scenario in ("stable", "unstable", "conflict", "cross_scale_conflict",
+                             "separator_stable", "separator_unknown", "separator_single",
+                             "separator_limit_conflict"):
                 with (
                     self.subTest(action=action.name, scenario=scenario),
                     tempfile.TemporaryDirectory() as directory,
@@ -3060,10 +3062,18 @@ class CollectorSkillTest(unittest.TestCase):
                         progress.arm_action(
                             "Q_sp2", "battle_area_1", action.name, baseline=(0, limit - 5),
                         )
+                    elif scenario.startswith("separator_") and scenario != "separator_unknown":
+                        progress.reconcile_pending(action.name, (0, limit))
                     texts = cycle(
                         (f"0/{limit}",) * 3 if scenario != "unstable"
                         else (f"0/{limit}", f"0/{limit + 1}", f"0/{limit + 2}") * 2
                     )
+                    if scenario.startswith("separator_"):
+                        ocr_limit = limit + int(scenario == "separator_limit_conflict")
+                        texts = cycle(
+                            (f"0/{limit}", "?", "?") if scenario == "separator_single"
+                            else (f"0Y{ocr_limit}", f"0V{ocr_limit}", f"0y{ocr_limit}")
+                        )
                     collector = Collector(
                         SimpleNamespace(config={}, sleep=lambda *_: None, info_set=lambda *_: None),
                         SimpleNamespace(
@@ -3086,7 +3096,7 @@ class CollectorSkillTest(unittest.TestCase):
                     )
                     progress.load()
                     record = progress.get_action_record("Q_sp1", "battle_area_1", action.name)
-                    if scenario == "stable":
+                    if scenario in {"stable", "separator_stable"}:
                         self.assertIsNone(failure)
                         self.assertEqual((0, limit), before)
                         self.assertEqual((0, limit), progress.trusted_action_baseline(action.name))
@@ -3096,7 +3106,12 @@ class CollectorSkillTest(unittest.TestCase):
                         self.assertFalse(failure.completed)
                         self.assertIsNone(record)
                         self.assertEqual(
-                            limit - 5 if scenario == "conflict" else None,
+                            limit - 5 if scenario == "conflict" else (
+                                limit if scenario in {
+                                    "separator_single", "separator_limit_conflict",
+                                }
+                                else None
+                            ),
                             progress.action_limit(action.name),
                         )
 

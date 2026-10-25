@@ -30,6 +30,7 @@ from src.tasks.task_vision_mixin import (
 )
 from src.utils.home_confirmation import HOME_LEFT_COLUMN_REQUIRED_HITS
 from src.utils.image_utils import crop_relative
+from src.utils.ocr_utils import normalize_ocr_text
 
 QUICK_HUNT_CHILD_CONFIG_KEYS = (
     PLAN_KEY,
@@ -1113,7 +1114,7 @@ class QuickHuntFeatureMixin:
              if label_bottom < getattr(box, "y", 0) + getattr(box, "height", 0) / 2 < count_top),
             key=lambda box: (box.y, box.x),
         )
-        map_name = self._normalize_text(" ".join(box.name for box in maps))
+        map_name = normalize_ocr_text(" ".join(box.name for box in maps), alnum_only=True)
         if not map_name:
             return None
         starts = []

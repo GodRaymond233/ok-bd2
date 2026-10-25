@@ -99,6 +99,14 @@ def parse_used_limit(
         if expected_used is not None and used != expected_used:
             return None
         return used, limit
+    # Small HUD slashes can resemble Y/V; only restore a known capacity.
+    separator_match = re.fullmatch(r"\s*(\d+)\s*[YyVv]\s*(\d+)\s*", str(text))
+    if separator_match is not None and known_limit is not None:
+        used, limit = map(int, separator_match.groups())
+        if limit == known_limit and 0 <= used <= limit and limit > 0:
+            if expected_used is None or used == expected_used:
+                return used, limit
+        return None
     digits = "".join(str(text).split())
     tail = str(known_limit) if known_limit is not None and known_limit > 0 else ""
     if not tail or not re.fullmatch(r"[0-9]+", digits) or not digits.endswith(tail):
