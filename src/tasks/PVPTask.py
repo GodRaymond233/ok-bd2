@@ -199,7 +199,7 @@ class PVPTask(BaseBD2Task):
         self.config_description.update(
             {
                 "竞技场战斗倍数": (
-                    "目标鸡尾酒消耗倍率，支持 1、4、5、10、20、40。"
+                    "目标鸡尾酒消耗倍率，支持 1～40 的任意整数（含 2 倍）。"
                     "AP 不足时会临时降到 1。"
                 ),
                 "最多战斗轮次": "防止识别异常导致无限循环的最大战斗轮次。",
@@ -765,8 +765,7 @@ class PVPTask(BaseBD2Task):
         return False
 
     def _select_setting_multiplier(self, multiplier: int) -> bool:
-        # BUG-20260906-01：选项点击被吞时设置值不变，先重试点击同一选项直到
-        # 回读匹配（重复点击同一选项无副作用），再按原逻辑用加号步进到目标。
+        # MIN/MAX 可重复点击；加号按计划单向步进，避免误读导致来回调节。
         option_point = (
             PVP_MULTIPLIER_40_OPTION_SCREEN_POINT
             if multiplier == 40
@@ -783,23 +782,39 @@ class PVPTask(BaseBD2Task):
                 + ("，重试。" if attempt < PVP_CLICK_VERIFY_ATTEMPTS else "。")
             )
         else:
-            self.info_set("PVP 倍率 OCR", "未确认")
-            return False
+            self.log_info("镜中之战：设置值暂未读到，调节后再确认主弹窗倍率。")
 
-        for _ in range(10):
-            if self._setting_multiplier_matches(multiplier):
-                break
-            if multiplier == 1:
-                break
+        for _ in range(multiplier - option_value):
             self._click_screen_reference(
                 *PVP_MULTIPLIER_PLUS_SCREEN_POINT,
-                after_sleep=0.5,
+                after_sleep=0.4,
             )
 
-        if not self._setting_multiplier_matches(multiplier):
-            self.info_set("PVP 倍率 OCR", "未确认")
-            return False
+        for _ in range(PVP_CLICK_VERIFY_ATTEMPTS):
+            if self._setting_multiplier_matches(multiplier):
+                return True
+            current = self._setting_multiplier_value()
+            if current is None or not option_value <= current < multiplier:
+                break
+            for _ in range(multiplier - current):
+                self._click_screen_reference(
+                    *PVP_MULTIPLIER_PLUS_SCREEN_POINT,
+                    after_sleep=0.4,
+                )
+
+        # 设置框读空或读数矛盾时不继续调整，确认后仍须主弹窗回读通过。
+        self.info_set("PVP 倍率 OCR", "待主弹窗确认")
         return True
+
+    def _setting_multiplier_value(self) -> int | None:
+        found, text = self._wait_for_ocr_patterns(
+            [r"^(?:[1-9]|[1-3][0-9]|40)$"],
+            timeout=0.8,
+            name="PVP 倍率设置值",
+            roi=self._mf_roi(*PVP_MULTIPLIER_SETTING_VALUE_OCR_REFERENCE_ROI),
+            normalize_multiplier=True,
+        )
+        return int(text) if found else None
 
     def _confirm_setting_multiplier(self, multiplier: int) -> bool:
         # BUG-20260906-01：确认点击被吞时设置弹窗不关、主弹窗回读不变；仅在
@@ -1674,7 +1689,7 @@ class PVPTask(BaseBD2Task):
             multiplier = int(raw)
         except ValueError:
             multiplier = 1
-        return multiplier if multiplier in {1, 4, 5, 10, 20, 40} else 1
+        return multiplier if 1 <= multiplier <= 40 else 1
 
     @staticmethod
     def _roi_frame(

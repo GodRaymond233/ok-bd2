@@ -48,6 +48,7 @@ from src.tasks.PVPTask import (
     PVP_MULTIPLIER_BUTTON_SCREEN_POINT,
     PVP_MULTIPLIER_CONFIRM_SCREEN_POINT,
     PVP_MULTIPLIER_OCR_REFERENCE_ROI,
+    PVP_MULTIPLIER_PLUS_SCREEN_POINT,
     PVP_NO_FIND_TEMPLATES,
     PVP_RANK_CONFIRM_SETTLE_SECONDS,
     PVP_RANK_PAGE_AFTER_CLICK_SECONDS,
@@ -598,14 +599,15 @@ class PVPTaskHelperTest(unittest.TestCase):
     def test_target_multiplier_accepts_supported_values(self):
         task = object.__new__(PVPTask)
 
-        task.config = {"竞技场战斗倍数": "20倍"}
-        self.assertEqual(20, PVPTask._target_multiplier(task))
-
-        task.config = {"竞技场战斗倍数": "4倍"}
-        self.assertEqual(4, PVPTask._target_multiplier(task))
-
-        task.config = {"竞技场战斗倍数": "3倍"}
-        self.assertEqual(1, PVPTask._target_multiplier(task))
+        for value in range(1, 41):
+            for raw in (value, f"{value}倍"):
+                with self.subTest(raw=raw):
+                    task.config = {"竞技场战斗倍数": raw}
+                    self.assertEqual(value, PVPTask._target_multiplier(task))
+        for raw in (0, 41, -1, "无法识别"):
+            with self.subTest(raw=raw):
+                task.config = {"竞技场战斗倍数": raw}
+                self.assertEqual(1, PVPTask._target_multiplier(task))
 
     def test_multiplier_roi_covers_current_auto_battle_value(self):
         self.assertEqual((800, 213, 65, 33), PVP_MULTIPLIER_OCR_REFERENCE_ROI)
@@ -2849,7 +2851,9 @@ class PVPTaskHelperTest(unittest.TestCase):
         self.assertTrue(PVPTask._ensure_free_ap_enabled(task))
         self.assertEqual(PVP_CLICK_VERIFY_ATTEMPTS, switch["clicks"])
 
-    def _make_multiplier_harness(self, swallow_button=False, swallow_option=False):
+    def _make_multiplier_harness(
+        self, swallow_button=False, swallow_option=False, swallow_step=False
+    ):
         task = object.__new__(PVPTask)
         task.config = {}
         task.info_set = lambda *_args, **_kwargs: None
@@ -2865,8 +2869,14 @@ class PVPTaskHelperTest(unittest.TestCase):
                 needed = 2 if swallow_option else 1
                 if state["clicks"].count((x, y)) >= needed:
                     state["setting"] = 1
+            elif (x, y) == PVP_MULTIPLIER_40_OPTION_SCREEN_POINT:
+                state["setting"] = 40
+            elif (x, y) == PVP_MULTIPLIER_PLUS_SCREEN_POINT:
+                if not swallow_step or state["clicks"].count((x, y)) > 1:
+                    state["setting"] = min(40, state["setting"] + 1)
             elif (x, y) == PVP_MULTIPLIER_CONFIRM_SCREEN_POINT:
                 state["main"] = state["setting"]
+                state["dialog_open"] = False
 
         task._click_screen_reference = fake_click
         task._multiplier_matches = (
@@ -2875,11 +2885,60 @@ class PVPTaskHelperTest(unittest.TestCase):
         task._setting_multiplier_matches = (
             lambda multiplier: state["dialog_open"] and state["setting"] == multiplier
         )
+        task._setting_multiplier_value = lambda: state["setting"]
         task._wait_for_ocr_patterns = lambda *args, **kwargs: (
             state["dialog_open"],
             "设置鲜血鸡尾酒消耗量",
         )
         return task, state
+
+    def test_ensure_multiplier_sets_every_integer_before_confirmation(self):
+        for multiplier in range(1, 41):
+            with self.subTest(multiplier=multiplier):
+                task, state = self._make_multiplier_harness()
+                state["main"] = 0
+                self.assertTrue(PVPTask._ensure_multiplier(task, multiplier))
+                self.assertEqual(multiplier, state["main"])
+                self.assertEqual(
+                    0 if multiplier == 40 else multiplier - 1,
+                    state["clicks"].count(PVP_MULTIPLIER_PLUS_SCREEN_POINT),
+                )
+
+    def test_ensure_multiplier_two_retries_swallowed_step(self):
+        task, state = self._make_multiplier_harness(swallow_step=True)
+
+        self.assertTrue(PVPTask._ensure_multiplier(task, 2))
+        self.assertEqual(2, state["main"])
+        self.assertEqual(2, state["clicks"].count(PVP_MULTIPLIER_PLUS_SCREEN_POINT))
+
+    def test_ensure_multiplier_confirms_main_when_setting_is_unreadable(self):
+        for main_readable in (True, False):
+            with self.subTest(main_readable=main_readable):
+                task, state = self._make_multiplier_harness()
+                task._setting_multiplier_matches = lambda _value: False
+                task._setting_multiplier_value = lambda: None
+                if not main_readable:
+                    task._multiplier_matches = lambda *_args, **_kwargs: False
+
+                self.assertEqual(
+                    main_readable, PVPTask._ensure_multiplier(task, 2)
+                )
+                self.assertEqual(2, state["main"])
+                self.assertEqual(
+                    1, state["clicks"].count(PVP_MULTIPLIER_PLUS_SCREEN_POINT)
+                )
+                self.assertEqual(
+                    1, state["clicks"].count(PVP_MULTIPLIER_CONFIRM_SCREEN_POINT)
+                )
+
+    def test_select_multiplier_does_not_chase_a_reading_above_target(self):
+        task, state = self._make_multiplier_harness()
+        task._setting_multiplier_matches = lambda value: value == 1
+        task._setting_multiplier_value = lambda: 3
+
+        self.assertTrue(PVPTask._select_setting_multiplier(task, 2))
+        self.assertEqual(1, state["clicks"].count(PVP_MULTIPLIER_PLUS_SCREEN_POINT))
+        self.assertNotIn(PVP_MULTIPLIER_CONFIRM_SCREEN_POINT, state["clicks"])
 
     def test_ensure_multiplier_one_confirms_with_single_clicks_when_landing(self):
         task, state = self._make_multiplier_harness()
@@ -2962,7 +3021,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         self.assertTrue(PVPTask._select_setting_multiplier(task, 40))
         self.assertEqual([PVP_MULTIPLIER_40_OPTION_SCREEN_POINT], state["clicks"])
 
-    def test_select_setting_multiplier_fails_after_retry_budget(self):
+    def test_select_setting_multiplier_defers_unreadable_setting_to_confirmation(self):
         task = object.__new__(PVPTask)
         infos = {}
         task.info_set = lambda key, value: infos.__setitem__(key, value)
@@ -2970,13 +3029,14 @@ class PVPTaskHelperTest(unittest.TestCase):
         clicks = []
         task._click_screen_reference = lambda x, y, after_sleep=0.0: clicks.append((x, y))
         task._setting_multiplier_matches = lambda value: False
+        task._setting_multiplier_value = lambda: None
 
-        self.assertFalse(PVPTask._select_setting_multiplier(task, 1))
+        self.assertTrue(PVPTask._select_setting_multiplier(task, 1))
         self.assertEqual(
             [PVP_MULTIPLIER_1_OPTION_SCREEN_POINT] * PVP_CLICK_VERIFY_ATTEMPTS,
             clicks,
         )
-        self.assertEqual("未确认", infos["PVP 倍率 OCR"])
+        self.assertEqual("待主弹窗确认", infos["PVP 倍率 OCR"])
 
     def test_confirm_setting_multiplier_retries_while_dialog_open(self):
         task = object.__new__(PVPTask)
