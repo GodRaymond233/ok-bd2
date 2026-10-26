@@ -35,7 +35,7 @@ class Globals(QObject):
         if launch_path:
             logger.info(f"seed BD2 Starter path {launch_path}")
         install_live_screenshot(main_window.start_tab)
-        install_feedback_report(main_window.start_tab)
+        install_feedback_report(main_window.start_tab, evidence=self.diagnostic_evidence)
         # 响应式重排要在 live_screenshot/feedback_report 之后：前者移动
         # debug 卡片并创建实时截图行，后者往 debug 行追加按钮。
         install_responsive_start_tab(main_window.start_tab)

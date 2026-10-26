@@ -36,7 +36,7 @@ MAX_LOG_BYTES = 4 * 1024 * 1024
 SCREENSHOT_ENCODE_ATTEMPTS = ((2560, 82), (1920, 70), (1600, 58))
 MAX_SCREENSHOT_BYTES = 6 * 1024 * 1024
 MAX_ARCHIVE_BYTES = 15 * 1024 * 1024
-MAX_DIAGNOSTIC_FRAME_COUNT = 8
+MAX_DIAGNOSTIC_FRAME_COUNT = 10
 MAX_DIAGNOSTIC_FRAME_BYTES = 4 * 1024 * 1024
 MAX_SINGLE_DIAGNOSTIC_FRAME_BYTES = 700 * 1024
 MAX_DIAGNOSTIC_FRAME_LOOKBACK_SECONDS = 15 * 60
@@ -81,20 +81,29 @@ class ReportBundleBuilder:
             events, failures = snapshot.runtime_events, snapshot.failures
             if logs is None:
                 logs, events, failures = self.capture_logs(snapshot.captured_at)
+            report_context = self._redact_mapping(snapshot.report_context)
             summary = self._summary_text(report_id, snapshot, description)
+            source = report_context.get("source")
+            source_label = {
+                "failure_prompt": "任务失败后询问", "manual": "手动生成",
+            }.get(source, "未记录")
+            summary += f"\n报告入口：{source_label}\n"
+            focus_run = report_context.get("failure_run")
+            related = [f for f in failures if focus_run and (
+                f["run"] == focus_run or f.get("parent") == focus_run
+            )]
+            latest = (related or failures)[-1] if failures else None
             if failures:
-                latest = failures[-1]
                 summary += (
                     f"\n最近故障：{latest['task']}，发生时间：{latest['occurred_at']}\n"
                     "阅读入口：logs/recent-digest.json；故障任务详情：state/failures.json\n"
                 )
-            _write_text(stage / "summary.txt", summary)
-            files.append(_file_record(stage, "summary.txt"))
 
             task_payload = {
                 "captured_at": snapshot.captured_at,
                 "safe_point_reached": snapshot.safe_point_reached,
                 "task": self._redact_mapping(snapshot.task),
+                "report_context": report_context,
             }
             _write_json(stage / "state" / "task-summary.json", task_payload)
             files.append(_file_record(stage, "state/task-summary.json"))
@@ -140,23 +149,37 @@ class ReportBundleBuilder:
             else:
                 omissions.append("screenshot_declined")
 
-            if include_screenshot:
-                diagnostic_frames, diagnostic_omissions = self._diagnostic_frames(
-                    stage,
-                    snapshot,
-                    logs.get("failure_frames", ()),
-                )
-            else:
-                diagnostic_frames = {"files": [], "metadata": []}
-                diagnostic_omissions = ["diagnostic_frames_declined"]
+            diagnostic_frames, diagnostic_omissions = self._diagnostic_frames(
+                stage,
+                snapshot,
+                logs.get("failure_frames", ()),
+            )
             files.extend(diagnostic_frames["files"])
             omissions.extend(diagnostic_omissions)
+            primary_runs = {failure["run"] for failure in related}
+            if not primary_runs and latest:
+                primary_runs.add(latest["run"])
+            primary = [entry for entry in diagnostic_frames["metadata"]
+                       if entry.get("run") in primary_runs]
+            other = [entry for entry in diagnostic_frames["metadata"] if entry not in primary]
+            summary += f"\n故障截图：本次 {len(primary)} 张，历史/补充 {len(other)} 张\n"
+            for label, entries in (("本次", primary), ("历史/补充", other)):
+                for entry in entries:
+                    summary += (
+                        f"- {label} | {entry['captured_at']} | "
+                        f"{entry.get('task', 'unknown')} | "
+                        f"{entry.get('reason', entry.get('source', ''))}"
+                        f" | {entry['path']}\n"
+                    )
+            _write_text(stage / "summary.txt", summary)
+            files.append(_file_record(stage, "summary.txt"))
 
             manifest = {
                 "schema_version": SCHEMA_VERSION,
                 "report_id": report_id,
                 "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
                 "application": {"name": "ok-bd2", "version": self.app_version},
+                "report_context": report_context,
                 "system": {
                     "name": platform.system() or "unknown",
                     "release": platform.release() or "unknown",
@@ -383,7 +406,8 @@ class ReportBundleBuilder:
             f"任务状态：{task_state}\n"
             f"当前阶段：{phase}\n"
             f"安全暂停点：{'已确认' if snapshot.safe_point_reached else '未确认'}\n\n"
-            "隐私说明：本报告仅包含受限运行信息、脱敏后的最近日志，以及用户确认附带的游戏窗口截图；"
+            "隐私说明：本报告仅包含受限运行信息、脱敏后的最近日志、自动附带的故障现场截图，"
+            "以及用户选择附带的当前游戏窗口截图；"
             "不包含原始配置、环境变量、进程列表、用户名或机器名。\n"
         )
 
@@ -398,7 +422,8 @@ class ReportBundleBuilder:
         }
 
     def capture_logs(self, captured_at):
-        cutoff = timestamp(captured_at)
+        # Snapshot timestamps serialize microseconds; event clocks may retain finer fractions.
+        cutoff = timestamp(captured_at) + 1e-6
         evidence = evidence_for(self.project_root)
         frozen_frames = {}
         for failure in evidence["failures"]:
