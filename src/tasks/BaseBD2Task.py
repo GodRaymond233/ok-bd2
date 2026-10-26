@@ -27,6 +27,14 @@ from src.scene.ScreenPosition import ScreenPosition
 from src.tasks.task_notifications import log_task_completion
 from src.utils.home_confirmation import (
     HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT,
+    HOME_DIMMED_P95_THRESHOLD_DEFAULT,
+    HOME_GACHA_OCR_RELATIVE_ROI,
+    HOME_LEFT_COLUMN_OCR_RELATIVE_ROI,
+    HOME_LEFT_COLUMN_REQUIRED_HITS,
+    home_confirmation_passes,
+    home_gacha_ocr_with_fallback,
+    home_left_column_hits,
+    home_left_column_p95_brightness,
     home_temporary_announcement_detected,
 )
 from src.utils.image_utils import (
@@ -384,7 +392,7 @@ class BaseBD2Task(BaseTask):
         """自动返回主页面（仅主页明确 / 控件正面命中时才动作）。
 
         规则：
-        - 主页判定用 OCR 三要素（抽抽乐 + 左列任一入口）；已确认主页直接成功。
+        - 主页判定使用同帧左列关键词、亮度和抽抽乐；已确认主页直接成功。
         - 非主页时：优先用房子按钮图像识别，OCR ``H`` 仅作辅助；也可命中左上角
           “返回”模板。证据不足时安全停止，绝不盲点。
         - 重试过程只记普通日志；失败后进入冷却，避免连续弹系统提示。
@@ -420,6 +428,10 @@ class BaseBD2Task(BaseTask):
                 if acted:
                     self.log_info("自动返回主页：已回到主页。")
                 return True
+
+            if self._clear_dimmed_home_announcement(frame):
+                acted = True
+                continue
 
             if has_house_hint:
                 # 抽抽乐偶发漏识别会把“主页”误判成非主页；先多帧复核主页。
@@ -524,6 +536,7 @@ class BaseBD2Task(BaseTask):
                 return True
             if monotonic() >= deadline:
                 return False
+            self._clear_dimmed_home_announcement(frame)
             self.sleep(0.5)
 
     def _finish_auto_return_failure(self, reason: str, *, notify: bool) -> bool:
@@ -612,24 +625,17 @@ class BaseBD2Task(BaseTask):
             return []
 
     def _home_scan(self, frame) -> tuple[bool, bool]:
-        """OCR 判定主页，并用房子按钮图像识别非主页返回入口。"""
-        frame_h, frame_w = frame.shape[:2]
-        tokens: list[str] = []
-        boxes = self._ocr_boxes(frame, "自动返回主页")
-        for box in boxes:
-            name = str(getattr(box, "name", "") or "")
-            if name:
-                tokens.append(name)
-
-        joined = "".join(tokens)
-        left_hits = sum(
-            1
-            for keyword in ("我的小屋", "格鲁TALK", "街机游戏")
-            if keyword in joined
+        """Confirm the global home page before looking for return controls."""
+        confirmed, left_hits, brightness, gacha = self._read_home_confirmation_signals(
+            frame, "自动返回主页",
         )
-        is_home = "抽抽乐" in joined and left_hits >= 1
-        if is_home:
+        self.info_set("自动返回主页 左列关键词", f"{left_hits}/{HOME_LEFT_COLUMN_REQUIRED_HITS}")
+        self.info_set("自动返回主页 亮度p95", f"{brightness:.0f}/{self._home_p95_threshold():.0f}")
+        self.info_set("自动返回主页 抽抽乐 OCR", gacha or "-")
+        if confirmed:
             return True, False
+        frame_h, frame_w = frame.shape[:2]
+        boxes = self._ocr_boxes(frame, "自动返回主页")
 
         if self._match_house_button(frame) is not None:
             return False, True
@@ -654,6 +660,63 @@ class BaseBD2Task(BaseTask):
                 return False, True
 
         return False, False
+
+    def _clear_dimmed_home_announcement(self, frame) -> bool:
+        _, left_hits, brightness, gacha = self._read_home_confirmation_signals(
+            frame, "自动返回主页公告清理",
+        )
+        return self.clear_temporary_home_announcement_if_needed(
+            left_hits=left_hits,
+            required_left_hits=HOME_LEFT_COLUMN_REQUIRED_HITS,
+            brightness=brightness,
+            brightness_threshold=self._home_p95_threshold(),
+            gacha_ocr_text=gacha,
+            context="自动返回主页",
+        )
+
+    def _quick_vision(self):
+        from src.tasks.map_trade.vision import Vision
+
+        vision = getattr(self, "_quick_hunt_vision", None)
+        if vision is None:
+            vision = Vision(self)
+            self._quick_hunt_vision = vision
+        return vision
+
+    def _read_home_confirmation_signals(
+        self,
+        frame,
+        ocr_name: str,
+    ) -> tuple[bool, int, float, str]:
+        vision = self._quick_vision()
+        left_text = vision.ocr_text(
+            frame,
+            f"{ocr_name} 左列",
+            relative_roi=HOME_LEFT_COLUMN_OCR_RELATIVE_ROI,
+        )
+        left_hits = home_left_column_hits(left_text)
+        p95_brightness = home_left_column_p95_brightness(frame)
+        gacha_result = home_gacha_ocr_with_fallback(
+            lambda scale: vision.ocr_text(
+                frame,
+                f"{ocr_name} x{scale:g}",
+                relative_roi=HOME_GACHA_OCR_RELATIVE_ROI,
+                ocr_scale=scale,
+            )
+        )
+        gacha_text = gacha_result.text
+        self.info_set(f"{ocr_name} OCR 尝试", gacha_result.trace)
+        confirmed = home_confirmation_passes(
+            left_hits=left_hits,
+            required_left_hits=HOME_LEFT_COLUMN_REQUIRED_HITS,
+            brightness=p95_brightness,
+            brightness_threshold=self._home_p95_threshold(),
+            gacha_ocr_text=gacha_text,
+        )
+        return confirmed, left_hits, p95_brightness, gacha_text
+
+    def _home_p95_threshold(self) -> float:
+        return float(self.config.get("主页压暗阈值", HOME_DIMMED_P95_THRESHOLD_DEFAULT))
 
     def _click_top_left_back(self, frame, step: int) -> bool:
         """左上角 ROI + 统一模板匹配“返回”条；命中才点击。"""
