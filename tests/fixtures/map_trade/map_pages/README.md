@@ -11,3 +11,9 @@ signals needed by the map-page detector remain.
 
 Expected modes are mutually exclusive: `direct_teleport`,
 `generate_teleport`, and `sandbox_large_map` respectively.
+
+- `direct_soft_1161.png`: native 2064×1161 report frame from 2026-10-26,
+  retaining the direct header, arrows and map label after noninteger scaling.
+- `generate_beginner_811.png`: native 1442×811 report frame from 2026-10-25,
+  retaining the beginner talent header, arrows and map label. Unrelated regions
+  are blacked out in both report fixtures.

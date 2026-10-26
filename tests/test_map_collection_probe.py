@@ -4,7 +4,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -37,6 +37,7 @@ from src.tasks.map_trade.models import (
     MatchResult,
     NavigationResult,
     ScreenState,
+    TeleportScope,
 )
 from src.tasks.map_trade.navigator import (
     PROBE_QUICK_SWITCH_SCROLL_POINT,
@@ -124,7 +125,50 @@ def _observation(
 
 
 class MapCollectionProbeTaskTest(unittest.TestCase):
-
+    def test_page_scan_requires_cross_map_talent_or_a_confirmed_ground_page(self):
+        card = CARD_BY_ID["Q_sp1"]
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        for scope, recalled, can_scan in (
+            (TeleportScope.CURRENT_CARTRIDGE, False, True),
+            (TeleportScope.CURRENT_MAP, True, True),
+            (TeleportScope.CURRENT_MAP, False, False),
+            (TeleportScope.UNKNOWN, False, False),
+        ):
+            with self.subTest(scope=scope, recalled=recalled):
+                task = BD2MapCollectionProbeTask(SimpleNamespace(scene=None), SimpleNamespace())
+                task.config = {**task.default_config, "保存完成度截图": False}
+                task.info_set = Mock()
+                task._save_visual_progress = Mock()
+                task._scan_teleport_map_pages = Mock(return_value=TeleportMapScanResult(
+                    True, (), 0, 0, "done",
+                ))
+                navigator = SimpleNamespace(
+                    locate_probe_story_card=Mock(return_value=ProbedStoryCard(
+                        LocatedStoryCard(card, frame, _badge(card.number)), _completion(),
+                    )),
+                    enter_probe_story_card=Mock(return_value=NavigationResult(
+                        True, ScreenState.SANDBOX,
+                    )),
+                    _open_teleport_map_anywhere=Mock(return_value=NavigationResult(
+                        True, ScreenState.AREA_MAP, map_page_mode=MapPageMode.GENERATE_TELEPORT,
+                    )),
+                    _capture_area_map_context=Mock(return_value=SimpleNamespace(teleport_scope=scope)),
+                    _recall_current_circle=Mock(return_value=(
+                        SimpleNamespace(map_page_mode=MapPageMode.DIRECT_TELEPORT) if recalled
+                        else NavigationResult(False, ScreenState.AREA_MAP, "无可用阵")
+                    )),
+                    _restore_navigation_field=Mock(),
+                    return_teleport_map_to_sandbox=Mock(return_value=NavigationResult(
+                        True, ScreenState.SANDBOX,
+                    )),
+                )
+                result = task._probe_card(
+                    card, navigator, SimpleNamespace(), Mock(), {card.card_id: []}, "probe", 2, 30,
+                )
+                self.assertEqual(can_scan, result["status"] == "completed")
+                self.assertEqual(int(can_scan), task._scan_teleport_map_pages.call_count)
+                if not can_scan:
+                    navigator._restore_navigation_field.assert_called_once()
 
     def test_only_merged_probe_task_is_registered_in_debug_section(self):
         registration = [
@@ -520,7 +564,7 @@ class MapCollectionProbeTaskTest(unittest.TestCase):
                 return NavigationResult(True, ScreenState.SANDBOX, "entered")
 
             @staticmethod
-            def open_teleport_map_from_sandbox():
+            def _open_teleport_map_anywhere(_card):
                 return NavigationResult(
                     True,
                     ScreenState.AREA_MAP,
@@ -619,8 +663,8 @@ class MapCollectionProbeTaskTest(unittest.TestCase):
             enter_probe_story_card = staticmethod(
                 lambda _value: NavigationResult(True, ScreenState.SANDBOX, "entered")
             )
-            open_teleport_map_from_sandbox = staticmethod(
-                lambda: NavigationResult(
+            _open_teleport_map_anywhere = staticmethod(
+                lambda _card: NavigationResult(
                     True,
                     ScreenState.AREA_MAP,
                     "map",

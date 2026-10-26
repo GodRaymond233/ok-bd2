@@ -947,6 +947,49 @@ class CollectionRunTest(unittest.TestCase):
 
 
 class CollectorSkillTest(unittest.TestCase):
+    def test_fresh_run_reconciles_leading_hud_before_checking_pending_actions(self):
+        for scenario in (
+            "fresh", "fresh_separator", "continuous", "lower",
+            "capacity_conflict", "unstable", "bare",
+        ):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as directory:
+                progress = ProgressStore(Path(directory) / "progress.json")
+                progress.load()
+                progress.reconcile_pending("吸收", (8, 21))
+                progress.arm_action("Q_sp3", "battle_area_2", "吸收", baseline=(8, 21))
+                progress.mark_action_clicked("Q_sp3", "battle_area_2", "吸收")
+                progress.mark_action_local_done("Q_sp3", "battle_area_2", "吸收", pending=True)
+                texts = cycle(("10/21", "?", "?") if scenario == "unstable" else (
+                    "7/21" if scenario == "lower" else
+                    "10/30" if scenario == "capacity_conflict" else
+                    "10Y21" if scenario == "fresh_separator" else
+                    "1021" if scenario == "bare" else "10/21",
+                ))
+                collector = Collector(
+                    SimpleNamespace(config={}, sleep=Mock(), info_set=Mock()),
+                    SimpleNamespace(capture=lambda: None, ocr_text=lambda *a, **k: next(texts)),
+                    SimpleNamespace(), progress,
+                )
+                if scenario == "continuous":
+                    collector._count_actions_seen.add("吸收")
+                before, failure = collector._prepare_before_click(
+                    ABSORB_ACTION, SimpleNamespace(state=ActionIconState.AVAILABLE),
+                    card_id="Q_sp4", map_role=CollectionMapRole.MAIN_AREA,
+                )
+                progress.load()
+                if scenario.startswith("fresh"):
+                    self.assertIsNone(failure)
+                    self.assertEqual((10, 21), before)
+                    self.assertEqual((10, 21), progress.trusted_action_baseline("吸收"))
+                    self.assertEqual(0, progress.pending_count("吸收"))
+                else:
+                    self.assertIsNone(before)
+                    self.assertIsNotNone(failure)
+                    self.assertEqual((8, 21), progress.trusted_action_baseline("吸收"))
+                    self.assertEqual(1, progress.pending_count("吸收"))
+                self.assertIsNone(progress.get_action_record("Q_sp4", "main_area", "吸收"))
+                self.assertFalse(progress.state.completed_targets("Q_sp4"))
+
     def test_dynamic_skill_capacity_updates_from_full_fractions_and_casts_once(self):
         for action in BATTLE_ACTIONS:
             for limit in (30, 45, 75, 130):

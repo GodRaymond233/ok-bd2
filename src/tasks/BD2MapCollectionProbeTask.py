@@ -12,8 +12,11 @@ from src.tasks.map_trade.models import (
     CARD_BY_ID,
     COLLECTABLE_CARDS,
     CardSpec,
+    MapPageMode,
     MatchResult,
     NavigationResult,
+    ScreenState,
+    TeleportScope,
 )
 from src.tasks.map_trade.navigator import (
     PROBE_QUICK_SWITCH_SCROLL_STEPS,
@@ -658,7 +661,23 @@ class BD2MapCollectionProbeTask(MapAutomationTaskBase):
             value["error"] = entered.message
             return value
 
-        map_entry = navigator.open_teleport_map_from_sandbox()
+        map_entry = navigator._open_teleport_map_anywhere(card)
+        if map_entry.success and map_entry.map_page_mode == MapPageMode.GENERATE_TELEPORT:
+            context = navigator._capture_area_map_context(card)
+            if context.teleport_scope == TeleportScope.CURRENT_MAP:
+                recalled = navigator._recall_current_circle(card, context)
+                map_entry = (
+                    recalled if isinstance(recalled, NavigationResult)
+                    else NavigationResult(True, ScreenState.AREA_MAP,
+                                          map_page_mode=recalled.map_page_mode)
+                )
+                if not map_entry.success:
+                    navigator._restore_navigation_field()
+            elif context.teleport_scope != TeleportScope.CURRENT_CARTRIDGE:
+                navigator._restore_navigation_field()
+                map_entry = NavigationResult(
+                    False, ScreenState.UNKNOWN, "技能等级未知，未执行跨地图扫描",
+                )
         value["map_entry_message"] = map_entry.message
         if not map_entry.success or not map_entry.map_page_mode.is_teleport_map:
             value["status"] = "teleport_map_entry_failed"

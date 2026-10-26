@@ -589,6 +589,7 @@ class SkillExecutionMixin:
         allow_single: bool = False,
         expected_used: int | None = None,
         expected_limit: int | None = None,
+        require_fraction: bool = False,
     ) -> CountWindowObservation:
         """Return a compatible count; single-frame evidence requires allow_single explicitly."""
         known_limit = expected_limit
@@ -602,6 +603,7 @@ class SkillExecutionMixin:
                 count = self._read_count(
                     action, detection, ocr_scale=ocr_scale,
                     known_limit=known_limit, expected_used=expected_used,
+                    require_fraction=require_fraction,
                 )
                 if count is not None:
                     samples.append(count)
@@ -1108,16 +1110,20 @@ class SkillExecutionMixin:
         map_role: CollectionMapRole,
         observation: CountWindowObservation | None = None,
     ) -> tuple[tuple[int, int] | None, SkillExecutionResult | None]:
-        remaining_pending = self.progress.pending_count(action.name)
         # A fresh run may observe casts performed outside this task. During a
         # continuous run, changes must be covered by our recorded consumption.
         expected_used = (
             self.progress.effective_used(action.name)
-            if action.name in self._count_actions_seen or remaining_pending else None
+            if action.name in self._count_actions_seen else None
         )
-        if observation is None:
+        fresh_pending = (
+            action.name not in self._count_actions_seen
+            and self.progress.pending_count(action.name) > 0
+        )
+        if observation is None or fresh_pending:
             observation = self._read_count_window(
                 action, detection, expected_used=expected_used,
+                require_fraction=fresh_pending,
             )
         elif (
             observation.count is None or not observation.is_stable
@@ -1417,6 +1423,7 @@ class SkillExecutionMixin:
         known_limit: int | None = None,
         expected_used: int | None = None,
         frame=None,
+        require_fraction: bool = False,
     ) -> tuple[int, int] | None:
         # The calibrated fixed ROI is intentionally reused at 3x after a 2x
         # miss.  This catches the reproduced dark ``2`` without widening the
@@ -1449,6 +1456,8 @@ class SkillExecutionMixin:
                 )
             else:
                 return None
+            if require_fraction and not re.fullmatch(r"\s*\d+\s*[/YyVv]\s*\d+\s*", text):
+                continue
             # 完整分数携带当前技能容量；旧容量只帮助恢复丢失的分隔符。
             count = parse_used_limit(text, expected_used=expected_used)
             if count is None:

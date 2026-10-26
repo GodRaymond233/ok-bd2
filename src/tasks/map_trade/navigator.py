@@ -11,6 +11,7 @@ from src.tasks.map_trade.models import (
     REGISTERED_COLLECTION_CARDS,
     MapPageMode,
     ScreenState,
+    TeleportScope,
 )
 from src.tasks.map_trade.navigator_constants import (
     BARGAIN_CONFIRM_POINT,
@@ -99,7 +100,7 @@ from src.tasks.map_trade.navigator_constants import (
     STORY_SANDBOX_STABLE_HITS,
     STORY_SANDBOX_SWITCH_WINDOW,
     TELEPORT_MAP_BACKWARD_TEMPLATE,
-    TELEPORT_MAP_DIRECT_HEADER_TEMPLATE,
+    TELEPORT_MAP_DIRECT_HEADER_TEMPLATES,
     TELEPORT_MAP_FORWARD_TEMPLATE,
     TELEPORT_MAP_GENERATE_HEADER_TEMPLATE,
     TELEPORT_MAP_HEADER_OCR_RELATIVE_ROI,
@@ -210,6 +211,8 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
         self.vision = vision
         self.card_status = CardStatusDetector(vision)
         self._navigation_failure = ""
+        self._teleport_skill_origin = None
+        self._navigation_menu_open = False
 
     def _map_page_template_signal(
         self,
@@ -256,11 +259,13 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
         evidence: list[str] = []
         mode = MapPageMode.UNKNOWN
         footer_text = ""
+        scope = TeleportScope.UNKNOWN
         if normalize_text("移动魔法阵") in normalized_header:
-            direct, direct_evidence = self._map_page_template_signal(
-                frame,
-                TELEPORT_MAP_DIRECT_HEADER_TEMPLATE,
-            )
+            direct_signals = [
+                self._map_page_template_signal(frame, spec)
+                for spec in TELEPORT_MAP_DIRECT_HEADER_TEMPLATES
+            ]
+            direct = any(passed for passed, _ in direct_signals)
             generated, generated_evidence = self._map_page_template_signal(
                 frame,
                 TELEPORT_MAP_GENERATE_HEADER_TEMPLATE,
@@ -274,11 +279,16 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
                 TELEPORT_MAP_BACKWARD_TEMPLATE,
             )
             evidence.extend(
-                (direct_evidence, generated_evidence, left_evidence, right_evidence)
+                (*(detail for _, detail in direct_signals),
+                 generated_evidence, left_evidence, right_evidence)
             )
             has_legend = normalize_text("传说") in normalized_header
+            local_grade = any(grade in normalized_header for grade in (
+                "初级", "新手", "进阶", "高手", "达人",
+            ))
+            has_grade = has_legend or local_grade
             has_teleport_structure = left or right
-            if direct and not generated and not has_legend and not has_teleport_structure:
+            if (direct or generated) and not has_teleport_structure:
                 footer_text = self.vision.simplify(
                     self.vision.ocr_text(
                         frame,
@@ -292,10 +302,16 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
                     and self._known_story_map_title_in_text(label)
                 )
                 evidence.append(f"页面标签={footer_text or '-'}")
-            if direct and not generated and not has_legend and has_teleport_structure:
+            if direct and not generated and not has_grade and has_teleport_structure:
                 mode = MapPageMode.DIRECT_TELEPORT
-            elif generated and not direct and has_legend and has_teleport_structure:
+                scope = TeleportScope.CURRENT_CARTRIDGE
+            elif generated and not direct and has_teleport_structure:
                 mode = MapPageMode.GENERATE_TELEPORT
+                scope = (
+                    TeleportScope.CURRENT_CARTRIDGE if has_legend and not local_grade
+                    else TeleportScope.CURRENT_MAP if local_grade and not has_legend
+                    else TeleportScope.UNKNOWN
+                )
         elif (
             self._known_story_map_title_in_text(normalized_header)
             or normalized_header.startswith(("战斗", "安全"))
@@ -336,7 +352,7 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
         self._status(
             "地图页面模式",
             (
-                f"mode={mode.value}; header={header_text or '-'}; "
+                f"mode={mode.value}; scope={scope.value}; header={header_text or '-'}; "
                 f"footer={footer_text or '-'}; {'; '.join(evidence) or 'no-evidence'}"
             ),
         )
@@ -345,6 +361,7 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
             header_text=header_text,
             footer_text=footer_text,
             evidence=tuple(evidence),
+            teleport_scope=scope,
         )
 
     def classify(self, frame=None) -> ScreenState:

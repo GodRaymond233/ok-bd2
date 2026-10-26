@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -11,7 +11,13 @@ from src.tasks.map_trade.action_icons import (
     SKILL_GROUP_CENTERS_REFERENCE,
 )
 from src.tasks.map_trade.card_status import CardStructure, StoryCardCompletion, card_structure
-from src.tasks.map_trade.models import CardSpec, MapPageMode, MatchResult, TemplateSpec
+from src.tasks.map_trade.models import (
+    CardSpec,
+    MapPageMode,
+    MatchResult,
+    TeleportScope,
+    TemplateSpec,
+)
 from src.utils.calibration import FHD_1080, reference_rect_to_relative_roi
 from src.utils.cartridge_quick_switch import QUICK_SWITCH_PAGE_LABELS, QUICK_SWITCH_SEARCH_REGIONS
 
@@ -538,6 +544,7 @@ class AreaMapContext:
     overlap_arrow: MatchResult | None
     back_button: MatchResult | None
     confirmation_text: str = ""
+    teleport_scope: TeleportScope = TeleportScope.UNKNOWN
 
     @property
     def is_area_map(self) -> bool:
@@ -550,6 +557,7 @@ class MapPageDetection:
     header_text: str = ""
     footer_text: str = ""
     evidence: tuple[str, ...] = ()
+    teleport_scope: TeleportScope = TeleportScope.UNKNOWN
 
 
 HAND_TEMPLATE = TemplateSpec(
@@ -603,6 +611,14 @@ TELEPORT_MAP_DIRECT_HEADER_TEMPLATE = TemplateSpec(
     min_pixel_score=0.90,
     minimum_safe_threshold=0.95,
     min_zncc_score=0.90,
+)
+TELEPORT_MAP_DIRECT_HEADER_TEMPLATES = (
+    TELEPORT_MAP_DIRECT_HEADER_TEMPLATE,
+    replace(
+        TELEPORT_MAP_DIRECT_HEADER_TEMPLATE,
+        name="交互直传页图标柔化变体",
+        file_name="TeleportMapDirectHeaderSoft.png",
+    ),
 )
 TELEPORT_MAP_GENERATE_HEADER_TEMPLATE = TemplateSpec(
     "技能生成页图标",

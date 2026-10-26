@@ -1996,6 +1996,8 @@ class StoryCardNavigationMixin:
         if not located.structure.complete_region:
             return NavigationResult(False, ScreenState.CARD_MENU, "卡带结构不完整，停止点击")
         card, badge_frame, badge = located.card, located.frame, located.badge
+        self._entered_card_id = None
+        self._teleport_skill_origin = None
         self._status(
             f"剧情游戏卡{card.number}角标点击中心",
             (
@@ -2015,6 +2017,7 @@ class StoryCardNavigationMixin:
         )
         arrival = self._wait_for_story_sandbox(card.number)
         if arrival.success:
+            self._entered_card_id = card.card_id
             return NavigationResult(True, arrival.state, card.card_id)
         return arrival
 
