@@ -57,6 +57,7 @@ class Collector(SkillExecutionMixin):
         self._completed_this_run = 0
         self._collection_target = None
         self._skill_field_generation = 0
+        self._skill_layout_checked = False
         self._recovery_suppression_enabled = False
         # (card_id, map_role) -> 探查施放时刻（monotonic）：重进卡带时
         # 倒计时数字 OCR 不可靠，靠账本判定增益仍在进行并复用。
@@ -76,6 +77,7 @@ class Collector(SkillExecutionMixin):
         """按顺序采集 ``cards``（默认剧情与角色卡）；单章模式在新完成一张卡带后停止。"""
         self._completed_this_run = 0
         self._count_actions_seen.clear()
+        self._skill_layout_checked = False
         self._quota_checks.clear()
         self._scope_cards = tuple(COLLECTABLE_CARDS if cards is None else cards)
         self._scope_actions = collection_action_policy(battle_actions)

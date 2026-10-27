@@ -75,6 +75,9 @@ class NavigatorTest(unittest.TestCase):
         ))
         navigator.current_collection_target = Mock(return_value=current)
         navigator._wait_for_loading_screen = Mock(return_value=True)
+        navigator._capture_area_map_context = Mock(return_value=self._area_context(
+            "", None, page_mode=MapPageMode.UNKNOWN,
+        ))
         return navigator
 
 
@@ -840,7 +843,11 @@ class NavigatorTest(unittest.TestCase):
                 vision = SimpleNamespace(click_client=Mock())
                 navigator = Navigator(task, vision)
                 navigator._capture_area_map_context = Mock(
-                    side_effect=lambda _card: expanded if vision.click_client.called else initial,
+                    side_effect=lambda _card: (
+                        self._area_context("", None, page_mode=MapPageMode.UNKNOWN)
+                        if navigator._click_teleport_map_destination.called
+                        else expanded if vision.click_client.called else initial
+                    ),
                 )
                 navigator._click_teleport_map_destination = Mock(return_value=True)
                 arrived = NavigationResult(True, ScreenState.SANDBOX)
@@ -1009,7 +1016,8 @@ class NavigatorTest(unittest.TestCase):
         frame = np.full((1080, 1920, 3), 128, dtype=np.uint8)
         title = "安全泳池派对场"
         for outcome, expected, picker_clicks in (
-            ("first", True, 1), ("retry", True, 2), ("ignored", False, 2),
+            ("first", True, 1), ("retry", True, 2), ("last_retry", True, 4),
+            ("ignored", False, 4),
             ("idle_field", False, 1), ("ambiguous_retry", False, 1),
             ("missing_retry", False, 1),
         ):
@@ -1024,6 +1032,7 @@ class NavigatorTest(unittest.TestCase):
                     return (
                         count >= 1 and outcome in {"first", "idle_field"}
                         or count >= 2 and outcome == "retry"
+                        or count >= 4 and outcome == "last_retry"
                     )
 
                 def read_boxes(_frame, _name, **_kwargs):
@@ -1064,10 +1073,10 @@ class NavigatorTest(unittest.TestCase):
                     )
                 self.assertIs(expected, result)
                 self.assertEqual(
-                    [(682, 392), (450, 370), *([(450, 390)] if picker_clicks == 2 else [])],
+                    [(682, 392), *[(450, 370 + 20 * i) for i in range(picker_clicks)]],
                     clicks,
                 )
-                self.assertLessEqual(clock[0], 3 * 2.5)
+                self.assertLessEqual(clock[0], 5 * 2.5)
 
     def test_collection_field_retries_battle_result_until_idle_field(self):
         frame = np.full((8, 8, 3), 120, dtype=np.uint8)
@@ -1839,6 +1848,10 @@ class NavigatorTest(unittest.TestCase):
         text["箱庭大地图底部控件"] = "探索 世界地图"
         self.assertEqual(MapPageMode.UNKNOWN, navigator._detect_map_page_mode(frame).mode)
         for title, footer, arrow, expected in (
+            ("", "在战场中查看 探索 世界地图", True, MapPageMode.SANDBOX_LARGE_MAP),
+            ("普通", "在战场中查看 探索 世界地图", True, MapPageMode.SANDBOX_LARGE_MAP),
+            ("", "在战场中查看 探索 世界地图", False, MapPageMode.UNKNOWN),
+            ("", "探索 世界地图", True, MapPageMode.UNKNOWN),
             ("战斗 蜥蜴人祭坛", "探索 世界地图", True, MapPageMode.SANDBOX_LARGE_MAP),
             ("战斗 蜥蜴人祭坛", "探索", True, MapPageMode.UNKNOWN),
             ("战斗 蜥蜴人祭坛", "", False, MapPageMode.UNKNOWN),
@@ -2194,7 +2207,9 @@ class NavigatorTest(unittest.TestCase):
         )
         clock = [0.0]
         navigator.task.sleep = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
-        navigator._capture_area_map_context = Mock(return_value=hotel_initial)
+        navigator._capture_area_map_context = Mock(side_effect=lambda _card: (
+            self._area_context("", None, page_mode=MapPageMode.UNKNOWN) if clicks else hotel_initial
+        ))
         navigator._move_area_map = lambda _card, _context, direction: (
             moves.append(direction) or next(contexts)
         )
@@ -2211,7 +2226,7 @@ class NavigatorTest(unittest.TestCase):
             result = navigator.prepare_collection_main_area(card.card_id)
 
         self.assertTrue(result.success)
-        self.assertEqual(2, navigator._capture_area_map_context.call_count)
+        self.assertEqual(3, navigator._capture_area_map_context.call_count)
         self.assertEqual(["left", "left", "left"], moves)
         self.assertEqual(
             [(teleport.center, (1080, 1920, 3), 0.0)],
@@ -2333,7 +2348,10 @@ class NavigatorTest(unittest.TestCase):
                     navigator._walk_to_sandbox_teleport_interaction = Mock(
                         return_value=NavigationResult(False, ScreenState.SANDBOX),
                     )
-                    navigator._capture_area_map_context = lambda _card: pages[position[0]]
+                    navigator._capture_area_map_context = lambda _card: (
+                        self._area_context("", None, page_mode=MapPageMode.UNKNOWN)
+                        if destination_clicks else pages[position[0]]
+                    )
                     navigator._wait_for_loading_screen = Mock(return_value=True)
                     navigator._wait_for_story_sandbox = Mock(return_value=sandbox)
                     navigator._confirm_collection_arrival = Mock(return_value=sandbox)
@@ -2707,6 +2725,7 @@ class NavigatorTest(unittest.TestCase):
         navigator._open_field_map = lambda: "安全区域"
         navigator._click_sandbox_navigation_map = lambda: True
         navigator._sandbox_navigation_page_has_keyword = lambda _frame: True
+        navigator._sandbox_teleport_inner_score = Mock(return_value=0.95)
         navigator._close_confirmed_map_page = Mock(return_value=NavigationResult(
             True, ScreenState.SANDBOX,
         ))
@@ -2738,6 +2757,22 @@ class NavigatorTest(unittest.TestCase):
             ],
             clicks,
         )
+
+    def test_navigation_circle_requires_its_inner_glyph_at_client_scale(self):
+        source = load_bgr(ROOT / "tests/fixtures/map_trade/map_pages/sandbox_large.png")
+        for height in (720, 1080, 1440):
+            with self.subTest(height=height):
+                frame = cv2.resize(source, (height * 16 // 9, height))
+                task = SimpleNamespace(config={}, info_set=Mock())
+                navigator = Navigator(task, Vision(task))
+                circle = navigator._sandbox_navigation_teleport(frame)
+                self.assertIsNotNone(circle)
+                self.assertLess(abs(circle.center[0] / frame.shape[1] - 384 / 1920), .005)
+                self.assertLess(abs(circle.center[1] / height - 464 / 1080), .005)
+                x, y = circle.position
+                w, h = circle.size
+                frame[y + h // 4:y + h - h // 4, x + w // 4:x + w - w // 4] = 90
+                self.assertIsNone(navigator._sandbox_navigation_teleport(frame))
 
     def test_walk_fallback_destination_confirmation_clicks_ocr_center(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -2838,6 +2873,9 @@ class NavigatorTest(unittest.TestCase):
             card.targets[1].key,
             teleports=(weaker, stronger),
         )
+        navigator._capture_area_map_context = Mock(return_value=self._area_context(
+            "", None, page_mode=MapPageMode.UNKNOWN,
+        ))
         result = navigator._click_collection_destination(card, card.targets[1], multiple)
         self.assertTrue(result.success)
         self.assertEqual([stronger], selected)
@@ -2861,7 +2899,7 @@ class NavigatorTest(unittest.TestCase):
             target.key,
             teleports=(teleport,),
         )
-        captures = iter((refreshed,))
+        captures = iter((refreshed, self._area_context("", None, page_mode=MapPageMode.UNKNOWN)))
         sleeps = []
         selected = []
         navigator = Navigator(
@@ -2899,6 +2937,62 @@ class NavigatorTest(unittest.TestCase):
         self.assertEqual([AREA_MAP_CHANGE_INTERVAL], sleeps)
         self.assertEqual([(teleport, MapPageMode.DIRECT_TELEPORT)], selected)
         navigator._confirm_collection_arrival.assert_called_once_with(card, target)
+
+    def test_destination_retries_same_page_then_changes_candidate_with_bounded_budget(self):
+        card = CARD_BY_ID["Q_sp1"]
+        target = card.targets[1]
+        white = MatchResult(.98, (800, 400), (50, 50), .96, .94)
+        purple = MatchResult(.99, (1000, 600), (50, 50), .97, .96)
+        page = replace(
+            self._area_context(target.title, target.key, teleports=(white,)),
+            skill_teleports=(purple,),
+        )
+        field = self._area_context("", None, page_mode=MapPageMode.UNKNOWN)
+        for outcome, expected, clicks_expected in (
+            ("last_white", True, 4), ("purple", True, 5), ("ignored", False, 8),
+            ("different_page", False, 1), ("different_scope", False, 1),
+            ("before_first", False, 0),
+        ):
+            with self.subTest(outcome=outcome):
+                navigator = self._routing_navigator()
+                navigator.task.sleep = Mock()
+                clicked = []
+                navigator._click_teleport_map_destination = Mock(side_effect=lambda p, *a, **k: (
+                    clicked.append(p) or True
+                ))
+
+                def capture(_card):
+                    if outcome == "different_page":
+                        return replace(page, resolved_target_key=card.targets[2].key)
+                    if outcome in {"different_scope", "before_first"}:
+                        return replace(page, teleport_scope=TeleportScope.CURRENT_MAP)
+                    if (
+                        outcome == "last_white" and len(clicked) == 4
+                        or outcome == "purple" and clicked[-1] == purple
+                    ):
+                        return field
+                    # Small OCR/template shifts must not reset the attempt count.
+                    return replace(page, teleports=(replace(
+                        white, position=(800 + len(clicked) % 2, 400),
+                    ),))
+
+                navigator._capture_area_map_context = capture
+                navigator._wait_for_story_sandbox = Mock(return_value=NavigationResult(
+                    True, ScreenState.SANDBOX,
+                ))
+                navigator._confirm_collection_arrival = Mock(return_value=NavigationResult(
+                    True, ScreenState.SANDBOX,
+                ))
+                initial = (
+                    replace(page, teleports=(), skill_teleports=())
+                    if outcome == "before_first" else page
+                )
+                result = navigator._click_collection_destination(card, target, initial)
+                self.assertEqual(expected, result.success)
+                self.assertEqual(clicks_expected, len(clicked))
+                self.assertTrue(all(item.center[0] < 900 for item in clicked[:4]))
+                self.assertTrue(all(item == purple for item in clicked[4:]))
+                self.assertEqual(expected, navigator._confirm_collection_arrival.called)
 
     def test_collection_destination_requires_matching_arrival_map(self):
         card = CARD_BY_ID["Q_sp1"]
@@ -3382,6 +3476,30 @@ class NavigatorTest(unittest.TestCase):
         self.assertEqual("image/green/Skill3-4GE.png", sandbox_skill.file_name)
         self.assertNotIn(sandbox_skill, TELEPORT_MAP_TELEPORT_CIRCLE_TEMPLATES)
 
+    def test_skill_circle_requires_color_and_stays_separate_from_white_candidates(self):
+        path = ROOT / "recognition-assets/template-assets/image/green/TpSkillMapGE.png"
+        icon = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        for height in (720, 1080):
+            for gray in (False, True):
+                with self.subTest(height=height, gray=gray):
+                    frame = np.zeros((height, height * 16 // 9, 3), dtype=np.uint8)
+                    scale = 1.25 * height / 1080
+                    tile = cv2.resize(icon, None, fx=scale, fy=scale)
+                    if gray:
+                        tile = cv2.cvtColor(
+                            cv2.cvtColor(tile, cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR,
+                        )
+                    x, y = frame.shape[1] // 2, height // 2
+                    frame[y:y + tile.shape[0], x:x + tile.shape[1]] = tile
+                    task = SimpleNamespace(config={}, info_set=Mock())
+                    navigator = Navigator(task, Vision(task))
+                    found = navigator._map_teleports(
+                        frame, (TELEPORT_MAP_SKILL_TEMPLATE,),
+                        status_name="test", skill_circle=True,
+                    )
+                    self.assertEqual(0 if gray else 1, len(found))
+                    self.assertEqual((), navigator._teleport_map_teleports(frame))
+
     def test_teleport_map_teleports_reject_dim_candidate_before_click_context(self):
         frame = np.zeros((300, 500, 3), dtype=np.uint8)
         enabled = MatchResult(0.98, (80, 80), (52, 52), 0.94, 0.93)
@@ -3407,11 +3525,11 @@ class NavigatorTest(unittest.TestCase):
         navigator.vision = FakeVision()
 
         self.assertGreater(
-            navigator._area_map_teleport_bright_neutral_ratio(frame, enabled),
+            navigator._area_map_teleport_color_ratios(frame, enabled)[0],
             AREA_MAP_TELEPORT_BRIGHT_NEUTRAL_RATIO,
         )
         self.assertLess(
-            navigator._area_map_teleport_bright_neutral_ratio(frame, disabled),
+            navigator._area_map_teleport_color_ratios(frame, disabled)[0],
             AREA_MAP_TELEPORT_BRIGHT_NEUTRAL_RATIO,
         )
         self.assertEqual((enabled,), navigator._teleport_map_teleports(frame))

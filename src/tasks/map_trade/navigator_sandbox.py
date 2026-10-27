@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from time import monotonic
 
+import cv2
 import numpy as np
 from ok.task.exceptions import FinishedException, TaskDisabledException
 
@@ -49,6 +50,8 @@ from src.tasks.map_trade.navigator_constants import (
     AREA_MAP_TELEPORT_BRIGHT_NEUTRAL_RATIO,
     AREA_MAP_TELEPORT_BRIGHT_RADIUS_RATIO,
     AREA_MAP_TELEPORT_CLUSTER_RADIUS,
+    AREA_MAP_TELEPORT_PURPLE_MIN_CHANNEL_GAP,
+    AREA_MAP_TELEPORT_PURPLE_MIN_RATIO,
     AUTO_MOVE_CANCEL_ATTEMPTS,
     AUTO_MOVE_CANCEL_REFERENCE_POINT,
     AUTO_MOVE_IDLE_READS,
@@ -77,8 +80,7 @@ from src.tasks.map_trade.navigator_constants import (
     SANDBOX_LARGE_MAP_RETURN_REFERENCE_POINT,
     SANDBOX_LARGE_MAP_RETURN_RELATIVE_POINT,
     SANDBOX_MAP_SETTLE_SECONDS,
-    SANDBOX_MAP_TELEPORT_MIN_PIXEL,
-    SANDBOX_MAP_TELEPORT_PIXEL_MARGIN,
+    SANDBOX_MAP_TELEPORT_INNER_MIN_ZNCC,
     SANDBOX_MAP_TELEPORT_TEMPLATE,
     SANDBOX_NAVIGATION_CONFIRM_TIMEOUT,
     SANDBOX_NAVIGATION_MAP_TIMEOUT,
@@ -102,6 +104,8 @@ from src.tasks.map_trade.navigator_constants import (
     SANDBOX_TELEPORT_SKILL_POLL_INTERVAL,
     SANDBOX_TELEPORT_SKILL_TEMPLATE,
     SANDBOX_TELEPORT_SKILL_TIMEOUT,
+    TELEPORT_DESTINATION_ATTEMPTS,
+    TELEPORT_DESTINATION_CANDIDATES,
     TELEPORT_GENERATION_OCR_INTERVAL,
     TELEPORT_GENERATION_OCR_TIMEOUT,
     TELEPORT_INTERACTION_CLICK_DELAY,
@@ -113,6 +117,7 @@ from src.tasks.map_trade.navigator_constants import (
     TELEPORT_MAP_RETURN_REFERENCE_POINT,
     TELEPORT_MAP_RETURN_RELATIVE_POINT,
     TELEPORT_MAP_SEEK_LIMIT,
+    TELEPORT_MAP_SKILL_TEMPLATE,
     TELEPORT_MAP_TELEPORT_CIRCLE_TEMPLATES,
     TELEPORT_MAP_TITLE_OCR_RELATIVE_ROI,
     TELEPORT_MAP_TRAVEL_SETTLE_SECONDS,
@@ -128,9 +133,10 @@ from src.tasks.map_trade.navigator_constants import (
 )
 from src.tasks.map_trade.vision import normalize_text
 from src.utils.calibration import FHD_1080
+from src.utils.image_utils import masked_zncc
 
 FIELD_NAV_MENU_REFERENCE_POINT = (288, 112)
-ACTIVITY_EXIT_PICKER_ATTEMPTS = 2
+ACTIVITY_EXIT_PICKER_ATTEMPTS = 4
 PORTAL_INTERACTION_ATTEMPTS = 3
 NAV_MENU_OPEN_ATTEMPTS = 3
 NAV_DESTINATION_ATTEMPTS = 3
@@ -580,25 +586,43 @@ class SandboxNavigationMixin:
             key=lambda result: result.pixel_score,
             reverse=True,
         )
-        best = passed[0].pixel_score if passed else -1.0
-        second = passed[1].pixel_score if len(passed) > 1 else -1.0
+        scored = [(result, self._sandbox_teleport_inner_score(frame, result)) for result in passed]
         self._status(
             "箱庭徒步导航传送阵",
-            f"candidates={len(passed)}, pixel best={best:.3f} second={second:.3f}",
+            "; ".join(
+                f"center={result.center}, pixel={result.pixel_score:.3f}, inner={score:.3f}"
+                for result, score in scored
+            ) or "未找到候选",
         )
-        if not passed:
-            return None
-        if len(passed) == 1:
-            return passed[0]
-        if (
-            best >= SANDBOX_MAP_TELEPORT_MIN_PIXEL
-            and best - second >= SANDBOX_MAP_TELEPORT_PIXEL_MARGIN
-        ):
-            return passed[0]
-        if second >= SANDBOX_MAP_TELEPORT_MIN_PIXEL:
-            # 同图可能有多个真实传送阵，均通过像素门限时可选最高分候选。
-            return passed[0]
-        return None
+        return next((
+            result for result, score in scored if score >= SANDBOX_MAP_TELEPORT_INNER_MIN_ZNCC
+        ), None)
+
+    def _sandbox_teleport_inner_score(self, frame: np.ndarray, result: MatchResult) -> float:
+        """Compare the central glyph, excluding the round frame shared by map icons."""
+        template, mask = self.vision._load(SANDBOX_MAP_TELEPORT_TEMPLATE)
+        width, height = result.size
+        if min(width, height) < 4:
+            return -1.0
+        scaled = cv2.resize(template, (width, height), interpolation=cv2.INTER_AREA)
+        inset_x, inset_y = width // 4, height // 4
+        core = scaled[inset_y:height - inset_y, inset_x:width - inset_x]
+        core_mask = None
+        if mask is not None:
+            scaled_mask = cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
+            core_mask = scaled_mask[inset_y:height - inset_y, inset_x:width - inset_x]
+        gray = self.vision._gray(frame)
+        left, top = result.position
+        shift = max(1, round(min(width, height) / 40))
+        scores = []
+        for dx in (-shift, 0, shift):
+            for dy in (-shift, 0, shift):
+                x, y = left + inset_x + dx, top + inset_y + dy
+                if x < 0 or y < 0:
+                    continue
+                patch = gray[y:y + core.shape[0], x:x + core.shape[1]]
+                scores.append(masked_zncc(patch, core, core_mask))
+        return max(scores, default=-1.0)
 
     def _click_sandbox_navigation_menu_teleport(self, frame: np.ndarray) -> bool:
         """Select a stacked navigation-map teleport submenu by OCR center."""
@@ -1447,10 +1471,10 @@ class SandboxNavigationMixin:
         return result if self.vision.passes(result, spec) else None
 
     @staticmethod
-    def _area_map_teleport_bright_neutral_ratio(
+    def _area_map_teleport_color_ratios(
         frame: np.ndarray,
         result: MatchResult,
-    ) -> float:
+    ) -> tuple[float, float]:
         left, top = result.position
         width, height = result.size
         right = left + width
@@ -1463,7 +1487,7 @@ class SandboxNavigationMixin:
             or right > frame.shape[1]
             or bottom > frame.shape[0]
         ):
-            return 0.0
+            return 0.0, 0.0
         crop = frame[top:bottom, left:right]
         if crop.ndim == 2:
             color = np.repeat(crop[:, :, None], 3, axis=2)
@@ -1478,11 +1502,15 @@ class SandboxNavigationMixin:
         y, x = np.ogrid[:height, :width]
         circle = (x - center_x) ** 2 + (y - center_y) ** 2 < radius**2
         if not np.any(circle):
-            return 0.0
+            return 0.0, 0.0
         bright_neutral = (channel_min >= AREA_MAP_TELEPORT_BRIGHT_MINIMUM_GRAY) & (
             channel_spread <= AREA_MAP_TELEPORT_BRIGHT_MAXIMUM_SPREAD
         )
-        return float(np.mean(bright_neutral[circle]))
+        purple = (
+            np.minimum(pixels[..., 0], pixels[..., 2]) - pixels[..., 1]
+            >= AREA_MAP_TELEPORT_PURPLE_MIN_CHANNEL_GAP
+        )
+        return float(np.mean(bright_neutral[circle])), float(np.mean(purple[circle]))
 
     def _map_teleports(
         self,
@@ -1490,6 +1518,7 @@ class SandboxNavigationMixin:
         templates: tuple[TemplateSpec, ...],
         *,
         status_name: str,
+        skill_circle: bool = False,
     ) -> tuple[MatchResult, ...]:
         height, width = frame.shape[:2]
         cluster_radius = max(
@@ -1507,13 +1536,19 @@ class SandboxNavigationMixin:
                 minimum_score=self.vision.threshold_for(spec),
                 peak_radius=cluster_radius,
             ):
-                bright_ratio = self._area_map_teleport_bright_neutral_ratio(
+                bright_ratio, purple_ratio = self._area_map_teleport_color_ratios(
                     frame,
                     result,
                 )
                 accepted = (
                     self.vision.passes(result, spec)
-                    and bright_ratio >= AREA_MAP_TELEPORT_BRIGHT_NEUTRAL_RATIO
+                    and (
+                        purple_ratio >= AREA_MAP_TELEPORT_PURPLE_MIN_RATIO
+                        if skill_circle else (
+                            bright_ratio >= AREA_MAP_TELEPORT_BRIGHT_NEUTRAL_RATIO
+                            and purple_ratio < AREA_MAP_TELEPORT_PURPLE_MIN_RATIO
+                        )
+                    )
                 )
                 self._status(
                     status_name,
@@ -1521,7 +1556,7 @@ class SandboxNavigationMixin:
                         f"center={result.center}, match={result.score:.3f}, "
                         f"pixel={result.pixel_score:.3f}, "
                         f"zncc={result.zncc_score:.3f}, "
-                        f"bright={bright_ratio:.3f}, "
+                        f"bright={bright_ratio:.3f}, purple={purple_ratio:.3f}, "
                         f"accepted={accepted}"
                     ),
                 )
@@ -1623,6 +1658,12 @@ class SandboxNavigationMixin:
             back_button=self._optional_match(frame, AREA_MAP_BACK_TEMPLATE),
             confirmation_text=detection.header_text,
             teleport_scope=detection.teleport_scope,
+            skill_teleports=(
+                self._map_teleports(
+                    frame, (TELEPORT_MAP_SKILL_TEMPLATE,),
+                    status_name="传送阵地图技能阵候选", skill_circle=True,
+                ) if detection.mode == MapPageMode.DIRECT_TELEPORT else ()
+            ),
         )
         self._status(
             "区域地图",
@@ -1707,20 +1748,24 @@ class SandboxNavigationMixin:
                 ScreenState.AREA_MAP,
                 (f"传送前地图名不符：expected={target.title}, actual={context.raw_text or '-'}"),
             )
-        teleport = self._select_map_teleport(context.teleports)
+        teleport = self._select_map_teleport(context.teleports or context.skill_teleports)
         if teleport is None:
             end_at = monotonic() + 2.0
             while monotonic() <= end_at:
                 self.task.sleep(AREA_MAP_CHANGE_INTERVAL)
                 latest = self._capture_area_map_context(card)
                 if (
-                    latest.map_page_mode == context.map_page_mode
-                    and latest.resolved_target_key == target.key
+                    latest.map_page_mode != context.map_page_mode
+                    or latest.resolved_target_key != target.key
+                    or latest.teleport_scope != context.teleport_scope
                 ):
-                    context = latest
-                    teleport = self._select_map_teleport(context.teleports)
-                    if teleport is not None:
-                        break
+                    return NavigationResult(
+                        False, ScreenState.UNKNOWN, "等待传送阵时地图身份或技能范围变化",
+                    )
+                context = latest
+                teleport = self._select_map_teleport(context.teleports or context.skill_teleports)
+                if teleport is not None:
+                    break
         if teleport is None:
             overlap = context.overlap_arrow
             if overlap is not None:
@@ -1731,10 +1776,11 @@ class SandboxNavigationMixin:
                 if (
                     latest.map_page_mode != context.map_page_mode
                     or latest.resolved_target_key != target.key
+                    or latest.teleport_scope != context.teleport_scope
                 ):
                     return NavigationResult(False, ScreenState.UNKNOWN, "展开传送阵后地图身份不符")
                 context = latest
-                teleport = self._select_map_teleport(context.teleports)
+                teleport = self._select_map_teleport(context.teleports or context.skill_teleports)
         if teleport is None:
             return NavigationResult(
                 False,
@@ -1744,37 +1790,75 @@ class SandboxNavigationMixin:
                     "无法安全传送"
                 ),
             )
-        self._status(
-            "传送阵地图传送阵点击中心",
-            (
-                f"target={target.title}, candidates={len(context.teleports)}, "
-                f"selected=center={teleport.center}, "
-                f"match={teleport.score:.3f}, pixel={teleport.pixel_score:.3f}, "
-                f"zncc={teleport.zncc_score:.3f}"
-            ),
+        tried = []
+        for _click in range(TELEPORT_DESTINATION_ATTEMPTS * TELEPORT_DESTINATION_CANDIDATES):
+            eligible = []
+            for is_skill, kind in enumerate((context.teleports, context.skill_teleports)):
+                for candidate in sorted(kind, key=lambda value: value.score, reverse=True):
+                    point = (
+                        candidate.center[0] / context.frame_shape[1],
+                        candidate.center[1] / context.frame_shape[0],
+                    )
+                    previous = next((
+                        entry for entry in tried
+                        if abs(point[0] - entry[0][0])
+                        < AREA_MAP_TELEPORT_CLUSTER_RADIUS / FHD_1080.width
+                        and abs(point[1] - entry[0][1])
+                        < AREA_MAP_TELEPORT_CLUSTER_RADIUS / FHD_1080.height
+                    ), None)
+                    if previous is None:
+                        if (
+                            len(tried) >= TELEPORT_DESTINATION_CANDIDATES
+                            or (
+                                not is_skill and sum(not entry[2] for entry in tried)
+                                >= TELEPORT_DESTINATION_CANDIDATES - 1
+                            )
+                        ):
+                            continue
+                        previous = [point, 0, is_skill]
+                    if previous[1] < TELEPORT_DESTINATION_ATTEMPTS:
+                        eligible.append((candidate, previous))
+                if eligible:
+                    break
+            if not eligible:
+                break
+            teleport, entry = eligible[0]
+            if entry not in tried:
+                tried.append(entry)
+            entry[1] += 1
+            self._status(
+                "传送阵地图传送阵点击中心",
+                f"{target.title}：候选{tried.index(entry) + 1}，"
+                f"第{entry[1]}次点击 {teleport.center}",
+            )
+            sent = self._click_teleport_map_destination(
+                teleport, context.frame_shape, page_mode=context.map_page_mode,
+            )
+            latest = self._capture_area_map_context(card)
+            if not latest.is_area_map:
+                if not sent:
+                    return NavigationResult(
+                        False, ScreenState.UNKNOWN, "传送确认未完成，页面已变化",
+                    )
+                arrived = self._wait_for_story_sandbox(card.number)
+                if not arrived.success:
+                    return NavigationResult(
+                        False, arrived.state,
+                        f"传送到{target.title}后未确认剧情箱庭：{arrived.message}",
+                    )
+                return self._confirm_collection_arrival(card, target)
+            if (
+                latest.map_page_mode != context.map_page_mode
+                or latest.resolved_target_key != target.key
+                or latest.teleport_scope != context.teleport_scope
+            ):
+                return NavigationResult(
+                    False, ScreenState.AREA_MAP, "传送重试前地图身份或技能范围变化",
+                )
+            context = latest
+        return NavigationResult(
+            False, ScreenState.AREA_MAP, f"{target.title}可用传送阵均未响应，已达有限重试上限",
         )
-        if not self._click_teleport_map_destination(
-            teleport,
-            context.frame_shape,
-            page_mode=context.map_page_mode,
-        ):
-            return NavigationResult(
-                False,
-                ScreenState.AREA_MAP,
-                (
-                    f"传送到{target.title}前未可靠确认生成魔法阵弹窗"
-                    if context.map_page_mode == MapPageMode.GENERATE_TELEPORT
-                    else f"传送到{target.title}前未完成传送阵地图传送"
-                ),
-            )
-        arrived = self._wait_for_story_sandbox(card.number)
-        if not arrived.success:
-            return NavigationResult(
-                False,
-                arrived.state,
-                f"传送到{target.title}后未确认剧情箱庭：{arrived.message}",
-            )
-        return self._confirm_collection_arrival(card, target)
 
     def prepare_collection_main_area(
         self, card_id: str, *, via_hunting_ground: bool = False,
@@ -2633,7 +2717,11 @@ class SandboxNavigationMixin:
             if "战斗" in header or "安全" in header:
                 return header
             if monotonic() >= end_at:
-                return None
+                detection = self._detect_map_page_mode(self.vision.capture())
+                return (
+                    normalize_text(detection.header_text)
+                    if detection.mode == MapPageMode.SANDBOX_LARGE_MAP else None
+                )
             self.task.sleep(0.4)
 
     def _close_field_map(self) -> bool:
@@ -2766,10 +2854,13 @@ class SandboxNavigationMixin:
                     if started is not None:
                         return started
                     if attempt + 1 < ACTIVITY_EXIT_PICKER_ATTEMPTS:
-                        self._status("导航状态", "活动出口仍在原地图，重新识别菜单并重试一次")
+                        self._status(
+                            "导航状态",
+                            f"活动出口仍在原地图，重新识别菜单并补点（{attempt + 1}/3）",
+                        )
                         if not self._click_activity_exit_picker(target):
                             return False
-                self._status("导航状态", "活动出口两次点击后仍未确认自动移动")
+                self._status("导航状态", "活动出口补点3次后仍未确认自动移动")
                 return False
         return False
 

@@ -317,6 +317,41 @@ class ActionIconDetector:
     def __init__(self, vision: Vision) -> None:
         self.vision = vision
 
+    def layout_conflicts(
+        self, frame: np.ndarray, missing: tuple[ActionIconSpec, ...],
+    ) -> tuple[str, ...]:
+        """Report a slot only when exactly one different collection icon is identified."""
+        slots = (SEARCH_ICON, ABSORB_ICON, SUMMON_ICON, SUBDUE_ICON)
+        conflicts = []
+        for expected in missing:
+            if expected not in slots:
+                continue
+            found = []
+            for actual in slots:
+                if actual == expected:
+                    continue
+                bounds = dict(
+                    relative_roi=ACTION_SLOT_RELATIVE_ROIS[expected.slot_name],
+                    candidate_center_roi=ACTION_SLOT_CENTER_RELATIVE_ROIS[expected.slot_name],
+                )
+                relocated = replace(
+                    actual, slot_name=expected.slot_name,
+                    search_radius_reference=expected.search_radius_reference,
+                    template=replace(actual.template, **bounds),
+                    detection_template=(
+                        replace(actual.detection_template, **bounds)
+                        if actual.detection_template is not None else None
+                    ),
+                )
+                if self.detect(frame, relocated).state in {
+                    ActionIconState.AVAILABLE, ActionIconState.USED,
+                }:
+                    found.append(actual.name)
+            if len(found) == 1:
+                number = slots.index(expected) + 1
+                conflicts.append(f"第{number}号槽识别到{found[0]}，应放{expected.name}")
+        return tuple(conflicts)
+
     @staticmethod
     def _evidence_rank(value: MatchCandidateEvidence) -> tuple[float, ...]:
         result = value.result

@@ -10,6 +10,8 @@ from time import monotonic
 from src.tasks.map_trade.action_icons import (
     ABSORB_ICON,
     SEARCH_ICON,
+    SUBDUE_ICON,
+    SUMMON_ICON,
     ActionIconDetection,
     ActionIconSpec,
     ActionIconState,
@@ -337,6 +339,26 @@ class SkillExecutionMixin:
 
         self._last_skill_observations = {}
         self._last_skill_geometry = {}
+        self._skill_layout_checked = False
+
+    def _check_collection_skill_layout(self) -> None:
+        if self._skill_layout_checked:
+            return
+        expected = (SEARCH_ICON, ABSORB_ICON, SUMMON_ICON, SUBDUE_ICON)
+        previous = ()
+        for sample in range(2):
+            frame, recovered = self._capture_skill_field()
+            missing = tuple(
+                icon for icon in expected
+                if self.action_icons.detect(frame, icon).state is ActionIconState.ABSENT
+            )
+            conflicts = self.action_icons.layout_conflicts(frame, missing)
+            if conflicts and conflicts == previous and not recovered:
+                raise RuntimeError("采集技能栏位置不符：" + "；".join(conflicts))
+            previous = conflicts
+            if sample == 0:
+                self.task.sleep(ACTION_ICON_DETECTION_INTERVAL)
+        self._skill_layout_checked = True
 
     def _open_skill_menu(
         self,
@@ -390,6 +412,7 @@ class SkillExecutionMixin:
 
         detections, opened = inspect_window()
         if opened or self._counts_prove_menu(expected_icons):
+            self._check_collection_skill_layout()
             return True
 
         states = ", ".join(
@@ -418,6 +441,7 @@ class SkillExecutionMixin:
             frame, _recovered = self._capture_skill_field()
             detections, opened = inspect(frame)
             if opened:
+                self._check_collection_skill_layout()
                 return True
             if any(
                 value.state not in {ActionIconState.ABSENT, ActionIconState.UNKNOWN}
@@ -426,9 +450,11 @@ class SkillExecutionMixin:
                 self.task.log_warning("地图采集：技能栏部分识别，停止技能组切换。")
                 return False
             self._status("技能组切换", f"采集技能未显示，切换到技能组{group}")
+            self._forget_skill_evidence()
             self.task.operate_click(*point, after_sleep=SKILL_GROUP_SWITCH_SETTLE_SECONDS)
             detections, opened = inspect_window()
             if opened or self._counts_prove_menu(expected_icons):
+                self._check_collection_skill_layout()
                 return True
         states = ", ".join(
             f"{icon.name}={value.state.value}"
@@ -694,17 +720,18 @@ class SkillExecutionMixin:
         *,
         map_role: CollectionMapRole,
         card_id: str | None = None,
-        slot_fallback: bool = False,
     ) -> SearchCountdownSession | SkillExecutionResult:
         reused = self._reuse_recent_search(card_id, map_role)
         if reused is not None:
             return reused
         menu_confirmed = self._open_skill_menu(
-            (ABSORB_ICON,) if slot_fallback else (SEARCH_ICON, ABSORB_ICON),
+            (SEARCH_ICON, ABSORB_ICON),
             allow_group_one_recovery=True,
         )
         if not menu_confirmed:
-            return SkillExecutionResult(False, message="未确认安全区技能栏")
+            return SkillExecutionResult(
+                False, message="未确认采集技能栏，请检查1号探查、2号吸收及当前技能组",
+            )
         search_action = SEARCH_ACTION
         frame, detection = self._detect_action_icon(
             search_action.icon,
@@ -712,25 +739,17 @@ class SkillExecutionMixin:
         )
         self._report_icon_detection(search_action, detection)
         can_click_search = detection.state is ActionIconState.AVAILABLE and detection.stable
-        if not can_click_search and not slot_fallback:
+        if not can_click_search:
             if detection.state is ActionIconState.ABSENT:
-                message = "未识别到探查图标"
+                message = "未识别到1号槽探查，请配置探查后重新运行"
             elif not detection.stable:
                 message = "探查图标未达到跨帧稳定确认"
             else:
                 message = f"探查图标状态不可点击：{detection.state.value}"
             return SkillExecutionResult(False, message=message)
         countdown_roi = SEARCH_COUNTDOWN_RELATIVE_ROI
-        if can_click_search:
-            center = detection.match.center
-        else:
-            left, top, right, bottom = countdown_roi
-            center = (
-                round((left + right) / 2 * frame.shape[1]),
-                round((top + bottom) / 2 * frame.shape[0]),
-            )
         self.vision.click_client(
-            center,
+            detection.match.center,
             frame.shape,
             after_sleep=ACTION_AFTER_CLICK_SECONDS,
         )
@@ -1545,13 +1564,13 @@ class SkillExecutionMixin:
             return SkillExecutionResult(False, message="未确认采集技能栏")
         if self._search_running():
             return None
-        started = self._start_search(card_id=card_id, map_role=map_role, slot_fallback=True)
+        started = self._start_search(card_id=card_id, map_role=map_role)
         if not isinstance(started, SkillExecutionResult):
             return started
         self.task.sleep(1.0)
         if self._search_running():
             return None
-        return self._start_search(card_id=card_id, map_role=map_role, slot_fallback=True)
+        return self._start_search(card_id=card_id, map_role=map_role)
 
 COUNT_ACTIONS_BY_ICON = {
     action.icon.name: action for action in (ABSORB_ACTION, SUMMON_ACTION, SUPPRESS_ACTION)

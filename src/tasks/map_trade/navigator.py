@@ -14,6 +14,7 @@ from src.tasks.map_trade.models import (
     TeleportScope,
 )
 from src.tasks.map_trade.navigator_constants import (
+    AREA_MAP_BACK_TEMPLATE,
     BARGAIN_CONFIRM_POINT,
     BARGAIN_POINT,
     CHAPTER_HOME_POINT,
@@ -312,10 +313,11 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
                     else TeleportScope.CURRENT_MAP if local_grade and not has_legend
                     else TeleportScope.UNKNOWN
                 )
-        elif (
-            self._known_story_map_title_in_text(normalized_header)
-            or normalized_header.startswith(("战斗", "安全"))
-        ):
+        else:
+            known_header = (
+                self._known_story_map_title_in_text(normalized_header)
+                or normalized_header.startswith(("战斗", "安全"))
+            )
             try:
                 footer_text = self.vision.simplify(
                     self.vision.ocr_text(
@@ -335,7 +337,10 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
                 for keyword in SANDBOX_NAVIGATION_PAGE_KEYWORDS
             )
             evidence.append(f"箱庭大地图关键词={keyword_hits}/3")
-            if keyword_hits >= 2:
+            if keyword_hits >= 2 and (
+                known_header
+                or (normalized_header in {"", "普通", "困难", "极难"} and keyword_hits == 3)
+            ):
                 left, left_evidence = self._map_page_template_signal(
                     frame,
                     SANDBOX_LARGE_MAP_LEFT_TEMPLATE,
@@ -345,8 +350,14 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
                     SANDBOX_LARGE_MAP_RIGHT_TEMPLATE,
                 )
                 evidence.extend((left_evidence, right_evidence))
-                # 地图边界或浅色背景会使箭头缺失；完整底栏可独立确认已知地图。
-                if left or right or keyword_hits == len(SANDBOX_NAVIGATION_PAGE_KEYWORDS):
+                back = False
+                if not known_header and not (left or right):
+                    back, back_evidence = self._map_page_template_signal(
+                        frame, AREA_MAP_BACK_TEMPLATE,
+                    )
+                    evidence.append(back_evidence)
+                # 标题漏读时仍须完整底栏和地图控件，识别页面不代表确认了目标地图。
+                if left or right or back or (known_header and keyword_hits == 3):
                     mode = MapPageMode.SANDBOX_LARGE_MAP
 
         self._status(

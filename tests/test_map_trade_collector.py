@@ -9,11 +9,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import cv2
 import numpy as np
 from ok.task.exceptions import FinishedException, TaskDisabledException
 
 from src.tasks.map_trade.action_icons import (
     ABSORB_ICON,
+    ACTION_SLOT_CENTERS_REFERENCE,
     SEARCH_ICON,
     SUMMON_ICON,
     ActionIconDetection,
@@ -71,6 +73,7 @@ from src.tasks.map_trade.progress import (
     UTC_PLUS_8,
     ProgressStore,
 )
+from src.tasks.map_trade.vision import Vision
 from tests.helpers.map_trade import _seed_action_records, _seed_battle_supplements
 
 
@@ -219,6 +222,10 @@ class CollectionRunTest(unittest.TestCase):
 
     def setUp(self):
         self._quota_refresh = Collector._refresh_collection_quota
+        self._layout_check = Collector._check_collection_skill_layout
+        layout = patch.object(Collector, "_check_collection_skill_layout", return_value=None)
+        layout.start()
+        self.addCleanup(layout.stop)
         search = patch.object(
             Collector,
             "_ensure_search",
@@ -947,6 +954,72 @@ class CollectionRunTest(unittest.TestCase):
 
 
 class CollectorSkillTest(unittest.TestCase):
+    def setUp(self):
+        self._layout_check = Collector._check_collection_skill_layout
+        layout = patch.object(Collector, "_check_collection_skill_layout", return_value=None)
+        layout.start()
+        self.addCleanup(layout.stop)
+
+    def test_collection_layout_checks_all_slots_before_actions_and_requires_two_frames(self):
+        source = cv2.imread(str(
+            Path(__file__).resolve().parents[1]
+            / "tests/fixtures/map_trade/video_fhd/story_sandbox_ready.png"
+        ))
+        swapped = source.copy()
+        a, b = (ACTION_SLOT_CENTERS_REFERENCE[key] for key in ("summon", "subdue"))
+        radius = 40
+        first = source[a[1]-radius:a[1]+radius, a[0]-radius:a[0]+radius].copy()
+        second = source[b[1]-radius:b[1]+radius, b[0]-radius:b[0]+radius].copy()
+        swapped[a[1]-radius:a[1]+radius, a[0]-radius:a[0]+radius] = second
+        swapped[b[1]-radius:b[1]+radius, b[0]-radius:b[0]+radius] = first
+        for height in (720, 1080):
+            for scenario in ("normal", "swapped", "transient", "unknown"):
+                with self.subTest(height=height, scenario=scenario):
+                    base = np.zeros_like(source) if scenario == "unknown" else source
+                    frames = iter(cv2.resize(f, (height * 16 // 9, height)) for f in (
+                        swapped if scenario in {"swapped", "transient"} else base,
+                        swapped if scenario == "swapped" else base,
+                    ))
+                    task = SimpleNamespace(config={}, info_set=Mock(), sleep=Mock())
+                    vision = Vision(task)
+                    vision.capture = lambda: next(frames)
+                    vision.click_client = Mock()
+                    collector = Collector(task, vision, SimpleNamespace(
+                        wait_for_collection_field=lambda frame: frame,
+                    ), SimpleNamespace())
+                    if scenario == "swapped":
+                        with self.assertRaisesRegex(RuntimeError, "第3号槽"):
+                            self._layout_check(collector)
+                    else:
+                        self._layout_check(collector)
+                    vision.click_client.assert_not_called()
+
+    def test_missing_search_never_clicks_empty_slot_but_running_search_is_reused(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        for running in (False, True):
+            with self.subTest(running=running):
+                vision = SimpleNamespace(click_client=Mock())
+                collector = Collector(
+                    SimpleNamespace(config={}, sleep=Mock()), vision, SimpleNamespace(),
+                    SimpleNamespace(),
+                )
+                collector._reuse_recent_search = Mock(return_value=None)
+                collector._open_skill_menu = Mock(return_value=True)
+                collector._search_running = Mock(return_value=running)
+                collector._report_icon_detection = Mock()
+                collector._detect_action_icon = Mock(return_value=(frame, ActionIconDetection(
+                    ActionIconState.ABSENT, MatchResult(-1, (0, 0), (0, 0)),
+                )))
+                result = collector._ensure_search(
+                    card_id="Q_sp1", map_role=CollectionMapRole.MAIN_AREA,
+                )
+                if running:
+                    self.assertIsNone(result)
+                else:
+                    self.assertFalse(result.completed)
+                    self.assertIn("配置探查", result.message)
+                vision.click_client.assert_not_called()
+
     def test_fresh_run_reconciles_leading_hud_before_checking_pending_actions(self):
         for scenario in (
             "fresh", "fresh_separator", "continuous", "lower",
@@ -2080,7 +2153,7 @@ class CollectorSkillTest(unittest.TestCase):
         )
 
         self.assertIsInstance(result, SkillExecutionResult)
-        self.assertIn("未确认安全区技能栏", result.message)
+        self.assertIn("未确认采集技能栏", result.message)
 
     def test_search_waits_after_feedback_match_before_countdown(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -3020,7 +3093,7 @@ class CollectorSkillTest(unittest.TestCase):
 
         self.assertFalse(result.completed)
         self.assertEqual(3, len(clicks))
-        self.assertIn("未确认安全区技能栏", result.message)
+        self.assertIn("未确认采集技能栏", result.message)
 
     def test_missing_action_after_menu_confirmation_never_uses_fixed_action_point(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
