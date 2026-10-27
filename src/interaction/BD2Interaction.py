@@ -18,6 +18,8 @@ CLICK_MODE_BACKGROUND = "测试版方案（后台点击）"
 CLICK_MODE_OPTIONS = (CLICK_MODE_STANDARD, CLICK_MODE_BACKGROUND)
 INPUT_WAIT_TIMEOUT = 30.0
 INPUT_WAIT_INTERVAL = 0.25
+MOUSE_PRESS_MIN_SECONDS = 0.05
+MOUSE_RELEASE_SETTLE_SECONDS = 0.05
 
 
 class BD2Interaction(PostMessageInteraction):
@@ -120,8 +122,12 @@ class BD2Interaction(PostMessageInteraction):
                 btn_mk = win32con.MK_RBUTTON
                 btn_up = win32con.WM_RBUTTONUP
             self.post(btn_down, btn_mk, click_pos)
-            time.sleep(down_time)
-            self.post(btn_up, 0, click_pos)
+            try:
+                time.sleep(max(down_time, MOUSE_PRESS_MIN_SECONDS))
+            finally:
+                self.post(btn_up, 0, click_pos)
+                # 游戏按帧采样鼠标；松开后先留在目标上，再由外层操作恢复位置。
+                time.sleep(MOUSE_RELEASE_SETTLE_SECONDS)
 
             if should_restore:
                 self._restore_cursor()

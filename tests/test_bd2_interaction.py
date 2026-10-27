@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import win32api
+import win32con
 from ok.device.intercation import PostMessageInteraction
 from ok.task.exceptions import FinishedException, TaskDisabledException
 
@@ -162,6 +163,57 @@ class BD2InteractionOperateTest(unittest.TestCase):
 
 
 class BD2InteractionClickModeTest(unittest.TestCase):
+    def test_standard_click_keeps_target_through_release_before_restoring(self):
+        for wrapped, requested, interrupted in (
+            (False, .02, False), (True, .02, False),
+            (True, .2, False), (True, .02, True),
+        ):
+            with self.subTest(wrapped=wrapped, requested=requested, interrupted=interrupted):
+                interaction, calls = make_interaction()
+                now = [0.0]
+                pointer = [None]
+                events = []
+                pressed = [False]
+                interaction.capture = SimpleNamespace(get_abs_cords=lambda x, y: (x + 10, y + 20))
+                interaction.try_activate = lambda: None
+
+                def post(message, _key, _point):
+                    events.append((message, now[0], pointer[0]))
+                    pressed[0] = message == win32con.WM_LBUTTONDOWN
+
+                def sleep(seconds):
+                    now[0] += seconds
+                    if interrupted and pressed[0]:
+                        raise InterruptedError("interrupted while pressed")
+
+                interaction.post = post
+                interaction._restore_cursor = lambda: events.append(("restore", now[0], pointer[0]))
+                with (
+                    patch("src.interaction.BD2Interaction.GetCursorPos", return_value=(1, 2)),
+                    patch("src.interaction.BD2Interaction.SetCursorPos",
+                          side_effect=lambda point: pointer.__setitem__(0, point)),
+                    patch("src.interaction.BD2Interaction.time.sleep", side_effect=sleep),
+                ):
+                    def click():
+                        interaction.click(320, 540, move_back=True, down_time=requested)
+
+                    if interrupted:
+                        with self.assertRaises(InterruptedError):
+                            interaction.operate(click, block=True)
+                    elif wrapped:
+                        interaction.operate(click, block=True)
+                    else:
+                        click()
+                self.assertEqual([win32con.WM_LBUTTONDOWN, win32con.WM_LBUTTONUP, "restore"],
+                                 [event[0] for event in events])
+                self.assertTrue(all(event[2] == (330, 560) for event in events))
+                self.assertGreaterEqual(events[1][1] - events[0][1] + 1e-9, max(.05, requested))
+                self.assertGreaterEqual(events[2][1] - events[1][1] + 1e-9, .05)
+                self.assertFalse(pressed[0])
+                self.assertFalse(interaction._operating)
+                if wrapped:
+                    self.assertEqual(["block_input", "unblock_input"], calls)
+
     def test_background_mode_routes_click_through_post_message_without_cursor_move(self):
         interaction, _calls = make_interaction()
         interaction.set_click_mode_provider(lambda: CLICK_MODE_BACKGROUND)
