@@ -2018,6 +2018,7 @@ class StoryCardNavigationMixin:
         arrival = self._wait_for_story_sandbox(card.number)
         if arrival.success:
             self._entered_card_id = card.card_id
+            self._navigation_menu_open = False
             return NavigationResult(True, arrival.state, card.card_id)
         return arrival
 

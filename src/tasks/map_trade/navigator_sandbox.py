@@ -1177,19 +1177,24 @@ class SandboxNavigationMixin:
         """恢复可确认的地图页面，未知页面不执行返回或技能动作。"""
         frame = self.vision.capture()
         if getattr(self, "_navigation_menu_open", False):
-            _, texts = self._nav_menu_entries(
-                frame, (HUNTING_GROUND_NAV_ENTRY, TOWN_NPC_NAV_ENTRY),
-            )
-            if texts:
+            entries = (HUNTING_GROUND_NAV_ENTRY, TOWN_NPC_NAV_ENTRY, "旅馆", "商店", "魔法阵")
+            listed, _ = self._nav_menu_entries(frame, entries)
+            if listed:
                 guide = self.vision.match(frame, MERCHANT_NAV_GUIDE_TEMPLATE)
-                if not self.vision.passes(guide, MERCHANT_NAV_GUIDE_TEMPLATE):
+                if self.vision.passes(guide, MERCHANT_NAV_GUIDE_TEMPLATE):
+                    point = guide.center
+                elif len(listed) >= 2 and self.classify(frame) == ScreenState.SANDBOX:
+                    # 展开状态会改变按钮外观；已确认菜单和箱庭时复用本地开关位置。
+                    point = (
+                        round(FIELD_NAV_MENU_REFERENCE_POINT[0] * frame.shape[1] / FHD_1080.width),
+                        round(FIELD_NAV_MENU_REFERENCE_POINT[1] * frame.shape[0] / FHD_1080.height),
+                    )
+                else:
                     return NavigationResult(False, ScreenState.UNKNOWN, "导航菜单未确认关闭控件")
-                self.vision.click_client(guide.center, frame.shape, after_sleep=0.5)
+                self.vision.click_client(point, frame.shape, after_sleep=0.5)
             for _ in range(2):
                 frame = self.vision.capture()
-                _, remaining = self._nav_menu_entries(
-                    frame, (HUNTING_GROUND_NAV_ENTRY, TOWN_NPC_NAV_ENTRY),
-                )
+                remaining, _ = self._nav_menu_entries(frame, entries)
                 if remaining or self.classify(frame) != ScreenState.SANDBOX:
                     return NavigationResult(False, ScreenState.UNKNOWN, "导航菜单关闭未确认")
                 self.task.sleep(SANDBOX_NAVIGATION_OCR_INTERVAL)

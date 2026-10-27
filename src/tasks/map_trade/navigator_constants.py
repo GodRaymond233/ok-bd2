@@ -808,7 +808,9 @@ FIELD_EXTRA_KEYCAP_TEMPLATES = (
     ),
     TemplateSpec(
         "箱庭按键Q", "field/field_keycap_Q.png", 0.80,
-        relative_roi=(1053 / 1920, 1022 / 1080, 1115 / 1920, 1074 / 1080),
+        # 底栏临时入口增减会让Q横移，沿用底栏横向范围并保留按键高度约束。
+        relative_roi=(QUICK_SWITCH_SEARCH_REGIONS[0][0], 1022 / 1080,
+                      QUICK_SWITCH_SEARCH_REGIONS[0][2], 1074 / 1080),
         min_pixel_score=0.75, minimum_safe_threshold=0.80,
     ),
 )

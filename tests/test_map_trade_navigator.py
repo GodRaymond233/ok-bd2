@@ -32,6 +32,7 @@ from src.tasks.map_trade.navigator_constants import (
     AREA_MAP_CHANGE_INTERVAL,
     AREA_MAP_OPEN_RELATIVE_POINT,
     AREA_MAP_TELEPORT_BRIGHT_NEUTRAL_RATIO,
+    FIELD_EXTRA_KEYCAP_TEMPLATES,
     HAND_TEMPLATE,
     SANDBOX_LARGE_MAP_RETURN_RELATIVE_POINT,
     SANDBOX_MAP_SETTLE_SECONDS,
@@ -122,19 +123,23 @@ class NavigatorTest(unittest.TestCase):
 
     def test_navigation_recovery_confirms_closure_and_enforces_attempt_budgets(self):
         frame = np.full((90, 160, 3), 120, dtype=np.uint8)
-        for closes in (True, False):
-            with self.subTest(closes=closes):
-                menu = [True]
+        for initially_open, guide_present, closes in (
+            (True, True, True), (True, True, False),
+            (True, False, True), (True, False, False), (False, True, True),
+        ):
+            with self.subTest(open=initially_open, guide=guide_present, closes=closes):
+                menu = [initially_open]
                 guide = MatchResult(0.99, (20, 20), (20, 20), 0.99)
                 task = SimpleNamespace(info_set=Mock(), sleep=Mock())
                 navigator = Navigator(task, SimpleNamespace(
                     capture=lambda: frame, match=Mock(return_value=guide),
-                    passes=Mock(return_value=True),
+                    passes=Mock(return_value=guide_present),
                     click_client=Mock(side_effect=lambda *a, **k: menu.__setitem__(0, not closes)),
                 ))
                 navigator._navigation_menu_open = True
                 navigator._nav_menu_entries = Mock(side_effect=lambda *a, **k: (
-                    ({"艾琳": (30, 30)}, ["艾琳"]) if menu[0] else ({}, [])
+                    ({"艾琳": (30, 30), "旅馆": (30, 20)}, ["艾琳", "旅馆"])
+                    if menu[0] else ({}, ["20"])
                 ))
                 navigator.classify = Mock(return_value=ScreenState.SANDBOX)
                 navigator._detect_map_page_mode = Mock(return_value=SimpleNamespace(
@@ -147,7 +152,17 @@ class NavigatorTest(unittest.TestCase):
                 self.assertEqual(not closes, navigator._navigation_menu_open)
                 navigator._collection_navigation_entries = {"艾琳"}
                 self.assertIsNone(navigator._travel_via_nav_menu("艾琳"))
-                navigator.vision.click_client.assert_called_once()
+                self.assertEqual(int(initially_open), navigator.vision.click_client.call_count)
+                if initially_open and not guide_present:
+                    self.assertEqual((24, 9), navigator.vision.click_client.call_args.args[0])
+        navigator._navigation_menu_open = True
+        navigator._nav_menu_entries = Mock(return_value=(
+            {"艾琳": (30, 30), "旅馆": (30, 20)}, ["艾琳", "旅馆"],
+        ))
+        navigator.vision.passes.return_value = False
+        navigator.classify.return_value = ScreenState.UNKNOWN
+        self.assertFalse(navigator._restore_navigation_field().success)
+        navigator.vision.click_client.assert_not_called()
         card = CARD_BY_ID["Q_sp14"]
         navigator._collection_walk_edges = {(card.card_id, "battle_area_1", "battle_area_2")}
         navigator.ensure_small_minimap = Mock()
@@ -159,6 +174,39 @@ class NavigatorTest(unittest.TestCase):
             card, self._area_context(card.targets[1].title, left=True, right=True), "right",
         ))
         navigator.vision.click_client.assert_not_called()
+
+    def test_field_keycaps_confirm_shifted_bottom_controls_at_client_scale(self):
+        matcher = Vision(SimpleNamespace(config={}, info_set=Mock()))
+        matcher.ocr_text = Mock(return_value="")
+        navigator = Navigator(matcher.task, matcher)
+        navigator._home_confirmation_signals = Mock(return_value=(False,))
+        navigator._detect_map_page_mode = Mock(return_value=SimpleNamespace(
+            mode=MapPageMode.UNKNOWN,
+        ))
+        for q_x in (1026, 1084):
+            for height in (720, 1080):
+                for present in ("MQ", "M", "Q"):
+                    with self.subTest(q_x=q_x, height=height, present=present):
+                        frame = np.full((height, height * 16 // 9, 3), 120, np.uint8)
+                        for spec, key, point in zip(
+                            FIELD_EXTRA_KEYCAP_TEMPLATES, "MQ", ((207, 248), (q_x, 1048)),
+                            strict=True,
+                        ):
+                            if key not in present:
+                                continue
+                            tile, _ = matcher._load(spec)
+                            if tile.ndim == 2:
+                                tile = cv2.cvtColor(tile, cv2.COLOR_GRAY2BGR)
+                            scale = height / 1080
+                            tile = cv2.resize(tile, (
+                                round(tile.shape[1] * scale), round(tile.shape[0] * scale),
+                            ))
+                            h, w = tile.shape[:2]
+                            x = round(point[0] * scale) - w // 2
+                            y = round(point[1] * scale) - h // 2
+                            frame[y:y + h, x:x + w] = tile
+                        state = navigator.classify(frame)
+                        self.assertEqual(present == "MQ", state == ScreenState.SANDBOX)
 
     def test_nonlegendary_recall_uses_only_the_current_map_then_a_ground_circle(self):
         card = CARD_BY_ID["Q_sp1"]
