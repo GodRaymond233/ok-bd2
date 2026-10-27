@@ -840,6 +840,7 @@ class NavigatorTest(unittest.TestCase):
                 self.assertTrue(result.success)
                 if current is town:
                     navigator._walk_to_collection_map.assert_called_once_with(card, town, sanctuary)
+                    navigator.current_collection_target.assert_not_called()
                 else:
                     navigator._open_teleport_map_anywhere.assert_called_once_with(card, target=town)
                     navigator._walk_to_collection_map.assert_not_called()
@@ -974,6 +975,7 @@ class NavigatorTest(unittest.TestCase):
                     )
                 else:
                     navigator._open_teleport_map_anywhere.assert_not_called()
+                    navigator.current_collection_target.assert_not_called()
 
     def test_activity_entry_waits_through_color_loading_longer_than_three_seconds(self):
         clock = [0.0]
@@ -1044,6 +1046,7 @@ class NavigatorTest(unittest.TestCase):
             (0, ("安全区", "x安全区"), False),
             (0, ("x战斗区",), False),
         ):
+            navigator.task = SimpleNamespace(info_set=Mock())
             boxes = [
                 SimpleNamespace(name=label, x=200, y=300, width=100, height=40)
                 for label in labels
@@ -1059,6 +1062,9 @@ class NavigatorTest(unittest.TestCase):
                 self.assertEqual(int(expected), navigator.vision.click_client.call_count)
                 if expected:
                     self.assertEqual((250, 320), navigator.vision.click_client.call_args.args[0])
+                    self.assertEqual(
+                        .3, navigator.vision.click_client.call_args.kwargs["down_time"],
+                    )
 
     def test_activity_exit_retries_fresh_menu_until_movement_is_confirmed(self):
         frame = np.full((1080, 1920, 3), 128, dtype=np.uint8)
@@ -1096,8 +1102,9 @@ class NavigatorTest(unittest.TestCase):
                             return []
                     return [box]
 
-                def click(point, _shape, *, after_sleep=0):
+                def click(point, _shape, *, after_sleep=0, down_time=None):
                     self.assertFalse(departed())
+                    self.assertEqual(None if not clicks else .3, down_time)
                     clicks.append(point)
                     task.sleep(after_sleep)
 

@@ -21,6 +21,10 @@ ACTION_ICON_TEMPLATE_SCORE = 0.95
 ACTION_ICON_ZNCC_SCORE = 0.80
 ACTION_ICON_USED_ZNCC_SCORE = 0.64
 SEARCH_ICON_TEMPLATE_SCORE = 0.93
+SEARCH_ICON_SHAPE_MIN_SCORE = 0.90
+SEARCH_ICON_SHAPE_MIN_ZNCC = 0.90
+SEARCH_ICON_SHAPE_MIN_GRADIENT = 0.75
+SEARCH_ICON_SHAPE_MIN_EDGE = 0.90
 ACTION_ICON_SCALE_RATIOS = (1.10, 1.15, 1.20, 1.25, 1.30)
 COOKING_ICON_SCALE_RATIOS = (*ACTION_ICON_SCALE_RATIOS, 1.35, 1.40)
 ACTION_ICON_BRIGHT_CORE_GRAY = 180
@@ -651,7 +655,16 @@ class ActionIconDetector:
                 f"图标物理尺寸过小：{match.size[0]}x{match.size[1]}"
                 f"<{ACTION_ICON_MIN_PHYSICAL_SIZE}"
             )
-        if match.score < icon.identity_min_score:
+        # 半透明底色会压低探查模板分；仅在其槽位的多项结构证据同时很强时放行。
+        search_shape_confirmed = (
+            icon.name == SEARCH_ICON.name and icon.slot_name == "search"
+            and match.score >= SEARCH_ICON_SHAPE_MIN_SCORE
+            and match.zncc_score >= SEARCH_ICON_SHAPE_MIN_ZNCC
+            and match.gradient_zncc_score >= SEARCH_ICON_SHAPE_MIN_GRADIENT
+            and match.edge_score >= SEARCH_ICON_SHAPE_MIN_EDGE
+            and margin >= ACTION_ICON_EVIDENCE_MIN_MARGIN
+        )
+        if match.score < icon.identity_min_score and not search_shape_confirmed:
             return False, f"模板身份分过低：{match.score:.3f}<{icon.identity_min_score:.3f}"
         # Dimmed icons lose pixel intensity while retaining their shape. Only
         # confirmed dimming may use the low pixel floor; bright/unknown states

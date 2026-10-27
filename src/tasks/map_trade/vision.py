@@ -378,13 +378,16 @@ class Vision:
         )
 
     def click_client(
-        self, point: tuple[int, int], frame_shape: tuple[int, ...], after_sleep: float = 0.0
+        self, point: tuple[int, int], frame_shape: tuple[int, ...], after_sleep: float = 0.0,
+        *, down_time: float | None = None,
     ) -> None:
         height, width = frame_shape[:2]
+        options = {} if down_time is None else {"down_time": down_time}
         self.task.operate_click(
             max(0.0, min(1.0, point[0] / max(1, width))),
             max(0.0, min(1.0, point[1] / max(1, height))),
             after_sleep=after_sleep,
+            **options,
         )
 
     def drag_reference(

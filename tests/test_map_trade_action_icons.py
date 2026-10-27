@@ -1,6 +1,7 @@
 """Map-trade action_icons tests (split from test_map_trade.py)."""
 
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -156,6 +157,28 @@ class ActionIconTest(unittest.TestCase):
         )
         detector, _calls = self._detector(countdown, brightness=0.95)
         self.assertEqual(ActionIconState.ABSENT, detector.detect(frame, SEARCH_ICON).state)
+
+    def test_search_translucent_background_requires_strong_shape_and_margin(self):
+        observed = MatchResult(
+            .929, (1550, 970), (51, 50), pixel_score=.749, zncc_score=.946,
+            gradient_zncc_score=.816, edge_score=.962,
+        )
+        for changes, margin, expected in (
+            ({}, .37, True), ({"score": .89}, .37, False),
+            ({"zncc_score": .89}, .37, False),
+            ({"gradient_zncc_score": .70}, .37, False),
+            ({"edge_score": .85}, .37, False),
+            ({"pixel_score": .60}, .37, False), ({}, .01, False), ({}, -1, False),
+        ):
+            with self.subTest(changes=changes, margin=margin):
+                passed, _ = ActionIconDetector._evidence_identity_passes(
+                    replace(observed, **changes), SEARCH_ICON, margin,
+                )
+                self.assertEqual(expected, passed)
+        passed, _ = ActionIconDetector._evidence_identity_passes(
+            observed, replace(ABSORB_ICON, slot_name="search"), .37,
+        )
+        self.assertFalse(passed)
 
     def test_action_slot_geometry_scales_at_all_supported_resolutions(self):
         for width, height in ((1280, 720), (1920, 1080), (2560, 1440), (3840, 2160)):

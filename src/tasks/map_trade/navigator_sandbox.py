@@ -137,6 +137,7 @@ from src.utils.image_utils import masked_zncc
 
 FIELD_NAV_MENU_REFERENCE_POINT = (288, 112)
 ACTIVITY_EXIT_PICKER_ATTEMPTS = 4
+ACTIVITY_EXIT_PRESS_SECONDS = 0.3
 PORTAL_INTERACTION_ATTEMPTS = 3
 NAV_MENU_OPEN_ATTEMPTS = 3
 NAV_DESTINATION_ATTEMPTS = 3
@@ -1024,19 +1025,23 @@ class SandboxNavigationMixin:
 
 
     def _navigate_collection_target(
-        self, card: CardSpec, target: CollectionMapTarget,
+        self, card: CardSpec, target: CollectionMapTarget, *, current_target=None,
     ) -> NavigationResult:
         self._collection_navigation_entries = set()
         self._collection_walk_edges = set()
         self._collection_page_moves = TELEPORT_MAP_SEEK_LIMIT * 3
         try:
-            return self._navigate_collection_target_once(card, target)
+            return self._navigate_collection_target_once(
+                card, target, current_target=current_target,
+            )
         finally:
             self._collection_navigation_entries = None
             self._collection_walk_edges = None
             self._collection_page_moves = None
 
-    def _navigate_collection_target_once(self, card, target) -> NavigationResult:
+    def _navigate_collection_target_once(
+        self, card, target, *, current_target=None,
+    ) -> NavigationResult:
         entered = getattr(self, "_entered_card_id", None)
         if entered is not None and entered != card.card_id:
             return NavigationResult(
@@ -1048,13 +1053,18 @@ class SandboxNavigationMixin:
             ready = self._restore_navigation_field()
             if not ready.success:
                 return ready
-            current = self.current_collection_target(card)
+            returning_via_npc = target == card.targets[0] and card.card_id in TOWN_NAV_ENTRIES
+            known_walk = current_target in card.targets and not returning_via_npc and (
+                (card.card_id, current_target.key, target.key) in WALK_LABEL_EDGES
+                or (card.card_id, current_target.key, target.key) in EVENT_WALK_EDGES
+            )
+            # 徒步入口会在当前打开的地图上核对源标题，可直接复用采集器的路线起点。
+            current = current_target.key if known_walk else self.current_collection_target(card)
             if current == target.key:
                 return NavigationResult(True, ScreenState.SANDBOX, f"已核实位于{target.title}")
             edge = (card.card_id, current, target.key)
             if edge in WALK_LABEL_EDGES or edge in EVENT_WALK_EDGES:
                 origin = next((item for item in card.targets if item.key == current), None)
-                returning_via_npc = target == card.targets[0] and card.card_id in TOWN_NAV_ENTRIES
                 if not returning_via_npc and origin is not None and (
                     (card.card_id, origin.key, target.key) in WALK_LABEL_EDGES
                     or (card.card_id, origin.key, target.key) in EVENT_WALK_EDGES
@@ -1882,7 +1892,7 @@ class SandboxNavigationMixin:
         card = CARD_BY_ID.get(card_id)
         if card is None or not card.collectable or next_target not in card.targets:
             return NavigationResult(False, ScreenState.UNKNOWN, f"非跑图卡带或地图：{card_id}")
-        return self._navigate_collection_target(card, next_target)
+        return self._navigate_collection_target(card, next_target, current_target=current_target)
 
 
     def _wait_for_area_map_change(
@@ -2956,7 +2966,13 @@ class SandboxNavigationMixin:
         rows = [box for box in boxes if wanted in normalize_text(str(box.name))]
         if len(rows) != 1 or (point := self._ocr_box_center(rows[0])) is None:
             return False
-        self.vision.click_client(point, frame.shape, after_sleep=WALK_CLICK_SETTLE_SECONDS)
+        self._status(
+            "活动出口点击", f"{wanted}; center={point}; 按住{ACTIVITY_EXIT_PRESS_SECONDS:.3f}秒",
+        )
+        self.vision.click_client(
+            point, frame.shape, after_sleep=WALK_CLICK_SETTLE_SECONDS,
+            down_time=ACTIVITY_EXIT_PRESS_SECONDS,
+        )
         return True
 
     def _exit_label_points(self, frame, target: CollectionMapTarget) -> list[tuple[int, int]]:
