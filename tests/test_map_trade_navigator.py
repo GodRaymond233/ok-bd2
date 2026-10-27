@@ -1073,16 +1073,17 @@ class NavigatorTest(unittest.TestCase):
             ("first", True, 1), ("retry", True, 2), ("last_retry", True, 4),
             ("ignored", False, 4),
             ("idle_field", False, 1), ("ambiguous_retry", False, 1),
-            ("missing_retry", False, 1),
+            ("missing_retry", False, 1), ("close_failed", False, 1),
+            ("map_changed", False, 1),
         ):
             with self.subTest(outcome=outcome):
-                clock, clicks, reads = [0.0], [], []
+                clock, clicks, reads, menu_count = [0.0], [], [], [0]
                 task = SimpleNamespace(
                     info_set=Mock(), sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
                 )
 
                 def departed():
-                    count = max(0, len(clicks) - 1)
+                    count = menu_count[0]
                     return (
                         count >= 1 and outcome in {"first", "idle_field"}
                         or count >= 2 and outcome == "retry"
@@ -1104,7 +1105,11 @@ class NavigatorTest(unittest.TestCase):
 
                 def click(point, _shape, *, after_sleep=0, down_time=None):
                     self.assertFalse(departed())
-                    self.assertEqual(None if not clicks else .3, down_time)
+                    if point == (682, 392):
+                        self.assertIsNone(down_time)
+                    else:
+                        self.assertEqual(.3, down_time)
+                        menu_count[0] += 1
                     clicks.append(point)
                     task.sleep(after_sleep)
 
@@ -1113,6 +1118,10 @@ class NavigatorTest(unittest.TestCase):
                     ocr_boxes=read_boxes,
                 ))
                 navigator._exit_label_points = Mock(return_value=[(682, 392), (690, 400)])
+                navigator._close_field_map = Mock(return_value=outcome != "close_failed")
+                navigator._open_field_map = Mock(return_value=(
+                    "安全其他地图" if outcome == "map_changed" else title
+                ))
                 navigator._walk_text = lambda _frame: (
                     "自动移动中：战斗区" if departed() and outcome != "idle_field" else ""
                 )
@@ -1127,11 +1136,50 @@ class NavigatorTest(unittest.TestCase):
                         CARD_BY_ID["Q_ep1"].targets[1], title,
                     )
                 self.assertIs(expected, result)
-                self.assertEqual(
-                    [(682, 392), *[(450, 370 + 20 * i) for i in range(picker_clicks)]],
-                    clicks,
+                expected_points = []
+                for i in range(len(reads)):
+                    expected_points.append((682, 392))
+                    if i < picker_clicks:
+                        expected_points.append((450, 370 + 20 * i))
+                self.assertEqual(expected_points, clicks)
+                self.assertEqual(picker_clicks, menu_count[0])
+                self.assertLessEqual(clock[0], 8 * 2.5)
+
+    def test_coast_forest_exit_requires_two_rows_and_selects_the_upper_one(self):
+        frame = np.zeros((1080, 1920, 3), np.uint8)
+        upper = SimpleNamespace(name="战斗区", x=480, y=565, width=100, height=40)
+        lower = SimpleNamespace(name="战斗区", x=482, y=626, width=100, height=40)
+        partial = SimpleNamespace(name="战区", x=480, y=565, width=100, height=40)
+        third = SimpleNamespace(name="战斗区", x=480, y=687, width=100, height=40)
+        shifted = SimpleNamespace(name="战斗区", x=700, y=565, width=100, height=40)
+        for first, enlarged, expected in (
+            ([lower, upper], [lower], True),
+            ([partial, lower], [upper, lower], True),
+            ([lower], [lower], False),
+            ([lower], [upper, lower, third], False),
+            ([lower], [lower, shifted], False),
+        ):
+            with self.subTest(first=first, enlarged=enlarged):
+                task = SimpleNamespace(info_set=Mock())
+                vision = SimpleNamespace(
+                    capture=Mock(return_value=frame),
+                    ocr_boxes=Mock(side_effect=[first, enlarged]), click_client=Mock(),
                 )
-                self.assertLessEqual(clock[0], 5 * 2.5)
+                navigator = Navigator(task, vision)
+                accepted = navigator._click_activity_exit_picker(
+                    CARD_BY_ID["Q_ep3"].targets[1],
+                    edge=("Q_ep3", "main_area", "battle_area_1"),
+                )
+                self.assertEqual(expected, accepted)
+                vision.capture.assert_called_once()
+                self.assertTrue(all(
+                    call.args[0] is frame for call in vision.ocr_boxes.call_args_list
+                ))
+                if expected:
+                    self.assertEqual((530, 585), vision.click_client.call_args.args[0])
+                    self.assertEqual(.3, vision.click_client.call_args.kwargs["down_time"])
+                else:
+                    vision.click_client.assert_not_called()
 
     def test_collection_field_retries_battle_result_until_idle_field(self):
         frame = np.full((8, 8, 3), 120, dtype=np.uint8)

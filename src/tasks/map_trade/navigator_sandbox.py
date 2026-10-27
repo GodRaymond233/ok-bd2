@@ -138,6 +138,7 @@ from src.utils.image_utils import masked_zncc
 FIELD_NAV_MENU_REFERENCE_POINT = (288, 112)
 ACTIVITY_EXIT_PICKER_ATTEMPTS = 4
 ACTIVITY_EXIT_PRESS_SECONDS = 0.3
+ACTIVITY_UPPER_BATTLE_EXIT = ("Q_ep3", "main_area", "battle_area_1")
 PORTAL_INTERACTION_ATTEMPTS = 3
 NAV_MENU_OPEN_ATTEMPTS = 3
 NAV_DESTINATION_ATTEMPTS = 3
@@ -2863,7 +2864,7 @@ class SandboxNavigationMixin:
             )
             if started is not None:
                 return started
-            if edge in EVENT_WALK_EDGES and self._click_activity_exit_picker(target):
+            if edge in EVENT_WALK_EDGES and self._click_activity_exit_picker(target, edge=edge):
                 for attempt in range(ACTIVITY_EXIT_PICKER_ATTEMPTS):
                     started = self._exit_walk_started(current_title, require_movement=True)
                     if started is not None:
@@ -2871,9 +2872,25 @@ class SandboxNavigationMixin:
                     if attempt + 1 < ACTIVITY_EXIT_PICKER_ATTEMPTS:
                         self._status(
                             "导航状态",
-                            f"活动出口仍在原地图，重新识别菜单并补点（{attempt + 1}/3）",
+                            f"活动出口未响应，重新打开地图并识别入口（{attempt + 1}/3）",
                         )
-                        if not self._click_activity_exit_picker(target):
+                        if not self._close_field_map():
+                            return False
+                        header = self._open_field_map()
+                        if header is None or current_title not in header:
+                            return False
+                        fresh = self.vision.capture()
+                        refreshed_point = (
+                            round(point[0] * fresh.shape[1] / frame.shape[1]),
+                            round(point[1] * fresh.shape[0] / frame.shape[0]),
+                        )
+                        self.vision.click_client(
+                            refreshed_point, fresh.shape, after_sleep=WALK_CLICK_SETTLE_SECONDS,
+                        )
+                        started = self._exit_walk_started(current_title, require_movement=True)
+                        if started is not None:
+                            return started
+                        if not self._click_activity_exit_picker(target, edge=edge):
                             return False
                 self._status("导航状态", "活动出口补点3次后仍未确认自动移动")
                 return False
@@ -2957,17 +2974,47 @@ class SandboxNavigationMixin:
         self.vision.click_client(center, frame.shape, after_sleep=0.8)
         return True
 
-    def _click_activity_exit_picker(self, target: CollectionMapTarget) -> bool:
+    def _click_activity_exit_picker(self, target: CollectionMapTarget, *, edge=None) -> bool:
         frame = self.vision.capture()
         wanted = "安全区" if target.role is CollectionMapRole.MAIN_AREA else "战斗区"
         boxes = self.vision.ocr_boxes(
             frame, "活动出口列表", relative_roi=AREA_MAP_EXIT_LABEL_RELATIVE_ROI,
         )
         rows = [box for box in boxes if wanted in normalize_text(str(box.name))]
+        upper_exit = edge == ACTIVITY_UPPER_BATTLE_EXIT
+        if upper_exit:
+            # 海岸沙滩到海岸椰林已核验为上方入口，须先确认两个同名菜单行。
+            enlarged = self.vision.ocr_boxes(
+                frame, "活动出口列表复核", relative_roi=AREA_MAP_EXIT_LABEL_RELATIVE_ROI,
+                ocr_scale=2.0, target_height=0,
+            )
+            distinct = []
+            for box in [*rows, *enlarged]:
+                if wanted not in normalize_text(str(box.name)) or self._ocr_box_center(box) is None:
+                    continue
+                if not any(
+                    max(box.x, old.x) < min(box.x + box.width, old.x + old.width)
+                    and max(box.y, old.y) < min(box.y + box.height, old.y + old.height)
+                    for old in distinct
+                ):
+                    distinct.append(box)
+            distinct.sort(key=lambda box: box.y)
+            if (
+                len(distinct) != 2
+                or distinct[0].y + distinct[0].height > distinct[1].y
+                or max(distinct[0].x, distinct[1].x) >= min(
+                    distinct[0].x + distinct[0].width, distinct[1].x + distinct[1].width,
+                )
+            ):
+                self._status("活动出口点击", "海岸椰林双入口未完整确认，停止点击")
+                return False
+            rows = distinct[:1]
         if len(rows) != 1 or (point := self._ocr_box_center(rows[0])) is None:
             return False
         self._status(
-            "活动出口点击", f"{wanted}; center={point}; 按住{ACTIVITY_EXIT_PRESS_SECONDS:.3f}秒",
+            "活动出口点击",
+            f"{wanted}; center={point}; 按住{ACTIVITY_EXIT_PRESS_SECONDS:.3f}秒"
+            + ("；海岸椰林上方入口" if upper_exit else ""),
         )
         self.vision.click_client(
             point, frame.shape, after_sleep=WALK_CLICK_SETTLE_SECONDS,
