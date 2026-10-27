@@ -605,6 +605,7 @@ class NavigatorTest(unittest.TestCase):
             (lit, "", ScreenState.LOADING, True),
             (lit, "", ScreenState.UNKNOWN, False),
             (lit, "", ScreenState.SANDBOX_MAP, False),
+            (lit, "", ScreenState.SANDBOX, True),
         ):
             with self.subTest(text=text, state=state, black=not frame.any()):
                 navigator = Navigator(
@@ -615,6 +616,10 @@ class NavigatorTest(unittest.TestCase):
                 navigator._field_map_header = Mock(return_value="")
                 navigator.classify = Mock(return_value=state)
                 self.assertIs(expected, navigator._exit_walk_started("安全卢戈镇"))
+                self.assertIs(
+                    expected and state != ScreenState.SANDBOX,
+                    navigator._exit_walk_started("安全泳池派对场", require_movement=True),
+                )
                 navigator.vision.click_client.assert_not_called()
 
     def test_page_turn_retries_only_on_confirmed_same_page_and_respects_ends(self):
@@ -999,6 +1004,70 @@ class NavigatorTest(unittest.TestCase):
                 self.assertEqual(int(expected), navigator.vision.click_client.call_count)
                 if expected:
                     self.assertEqual((250, 320), navigator.vision.click_client.call_args.args[0])
+
+    def test_activity_exit_retries_fresh_menu_until_movement_is_confirmed(self):
+        frame = np.full((1080, 1920, 3), 128, dtype=np.uint8)
+        title = "安全泳池派对场"
+        for outcome, expected, picker_clicks in (
+            ("first", True, 1), ("retry", True, 2), ("ignored", False, 2),
+            ("idle_field", False, 1), ("ambiguous_retry", False, 1),
+            ("missing_retry", False, 1),
+        ):
+            with self.subTest(outcome=outcome):
+                clock, clicks, reads = [0.0], [], []
+                task = SimpleNamespace(
+                    info_set=Mock(), sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+                )
+
+                def departed():
+                    count = max(0, len(clicks) - 1)
+                    return (
+                        count >= 1 and outcome in {"first", "idle_field"}
+                        or count >= 2 and outcome == "retry"
+                    )
+
+                def read_boxes(_frame, _name, **_kwargs):
+                    self.assertFalse(departed())
+                    reads.append(len(reads))
+                    box = SimpleNamespace(
+                        name="战斗区", x=400, y=350 + reads[-1] * 20, width=100, height=40,
+                    )
+                    if len(reads) == 2:
+                        if outcome == "ambiguous_retry":
+                            return [box, box]
+                        if outcome == "missing_retry":
+                            return []
+                    return [box]
+
+                def click(point, _shape, *, after_sleep=0):
+                    self.assertFalse(departed())
+                    clicks.append(point)
+                    task.sleep(after_sleep)
+
+                navigator = Navigator(task, SimpleNamespace(
+                    capture=lambda: frame, click_client=Mock(side_effect=click),
+                    ocr_boxes=read_boxes,
+                ))
+                navigator._exit_label_points = Mock(return_value=[(682, 392), (690, 400)])
+                navigator._walk_text = lambda _frame: (
+                    "自动移动中：战斗区" if departed() and outcome != "idle_field" else ""
+                )
+                navigator._field_map_header = lambda _frame=None: "" if departed() else title
+                navigator.classify = lambda _frame=None: (
+                    ScreenState.SANDBOX if departed() else ScreenState.SANDBOX_MAP
+                )
+                with patch("src.tasks.map_trade.navigator_sandbox.monotonic",
+                           side_effect=lambda: clock[0]):
+                    result = navigator._click_walk_exit(
+                        ("Q_ep1", "main_area", "battle_area_1"),
+                        CARD_BY_ID["Q_ep1"].targets[1], title,
+                    )
+                self.assertIs(expected, result)
+                self.assertEqual(
+                    [(682, 392), (450, 370), *([(450, 390)] if picker_clicks == 2 else [])],
+                    clicks,
+                )
+                self.assertLessEqual(clock[0], 3 * 2.5)
 
     def test_collection_field_retries_battle_result_until_idle_field(self):
         frame = np.full((8, 8, 3), 120, dtype=np.uint8)

@@ -130,6 +130,7 @@ from src.tasks.map_trade.vision import normalize_text
 from src.utils.calibration import FHD_1080
 
 FIELD_NAV_MENU_REFERENCE_POINT = (288, 112)
+ACTIVITY_EXIT_PICKER_ATTEMPTS = 2
 PORTAL_INTERACTION_ATTEMPTS = 3
 NAV_MENU_OPEN_ATTEMPTS = 3
 NAV_DESTINATION_ATTEMPTS = 3
@@ -2730,8 +2731,7 @@ class SandboxNavigationMixin:
         )
 
     def _click_walk_exit(self, edge, target: CollectionMapTarget, current_title: str) -> bool:
-        """Click the open area map's exit to ``target`` (calibrated spots or its
-        OCR label) until the map closes; True once it did."""
+        """Click the area-map exit and confirm departure before waiting for arrival."""
 
         frame = self.vision.capture()
         end_at = monotonic() + WALK_LABEL_READ_TIMEOUT
@@ -2755,16 +2755,27 @@ class SandboxNavigationMixin:
         for point in points:
             self._status("导航状态", f"区域地图点击{target.title}出口 {point}")
             self.vision.click_client(point, frame.shape, after_sleep=WALK_CLICK_SETTLE_SECONDS)
-            started = self._exit_walk_started(current_title)
+            started = self._exit_walk_started(
+                current_title, require_movement=edge in EVENT_WALK_EDGES,
+            )
             if started is not None:
                 return started
             if edge in EVENT_WALK_EDGES and self._click_activity_exit_picker(target):
-                started = self._exit_walk_started(current_title)
-                if started is not None:
-                    return started
+                for attempt in range(ACTIVITY_EXIT_PICKER_ATTEMPTS):
+                    started = self._exit_walk_started(current_title, require_movement=True)
+                    if started is not None:
+                        return started
+                    if attempt + 1 < ACTIVITY_EXIT_PICKER_ATTEMPTS:
+                        self._status("导航状态", "活动出口仍在原地图，重新识别菜单并重试一次")
+                        if not self._click_activity_exit_picker(target):
+                            return False
+                self._status("导航状态", "活动出口两次点击后仍未确认自动移动")
+                return False
         return False
 
-    def _exit_walk_started(self, current_title: str) -> bool | None:
+    def _exit_walk_started(
+        self, current_title: str, *, require_movement: bool = False,
+    ) -> bool | None:
         """Return None only while the original map remains without a walk dialog."""
         frame = self.vision.capture()
         text = self._walk_text(frame)
@@ -2773,7 +2784,7 @@ class SandboxNavigationMixin:
         if not any(word in text for word in AUTO_MOVE_QUESTION_KEYWORDS):
             if current_title in self._field_map_header(frame):
                 return None
-            return self._exit_walk_departed(frame, text)
+            return self._exit_walk_departed(frame, text, require_movement=require_movement)
 
         # An exit may ask for confirmation while its map title remains visible.
         # Once the question appears, no later exit coordinate may hit the dialog.
@@ -2788,22 +2799,30 @@ class SandboxNavigationMixin:
                 word in text for word in AUTO_MOVE_QUESTION_KEYWORDS
             ):
                 if current_title in self._field_map_header(frame):
-                    return self._close_field_map()
-                if self._exit_walk_departed(frame, text):
+                    if not self._close_field_map():
+                        return False
+                    if not require_movement:
+                        return True
+                elif self._exit_walk_departed(frame, text, require_movement=require_movement):
                     return True
             if monotonic() >= end_at:
                 self._click_auto_move_dialog_button(self.vision.capture(), "取消")
                 return False
             self.task.sleep(SANDBOX_NAVIGATION_OCR_INTERVAL)
 
-    def _exit_walk_departed(self, frame: np.ndarray, text: str) -> bool:
+    def _exit_walk_departed(
+        self, frame: np.ndarray, text: str, *, require_movement: bool = False,
+    ) -> bool:
         """The map gave way to the walk: its banner, a patrol toast, a black
         transition, or a confirmed field/loading page.  Anything else stays unproven."""
         return (
             "移动中" in text
             or any(word in text for word in WALK_CAUGHT_KEYWORDS)
             or self._black_frame(frame)
-            or self.classify(frame) in {ScreenState.SANDBOX, ScreenState.LOADING}
+            or self.classify(frame) in (
+                {ScreenState.LOADING} if require_movement
+                else {ScreenState.SANDBOX, ScreenState.LOADING}
+            )
         )
 
     def _click_auto_move_dialog_button(self, frame: np.ndarray, label: str) -> bool:
