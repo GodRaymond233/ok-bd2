@@ -38,7 +38,8 @@ class MapTradeLegacyConfigTest(unittest.TestCase):
             "买": True,
             "卖": True,
         }
-        task.info_set = lambda *_args: None
+        info = {}
+        task.info_set = lambda key, value: info.update({key: value})
         task.log_info = lambda *_args, **_kwargs: None
         task.log_error = lambda *_args, **_kwargs: None
         task.log_warning = lambda *_args, **_kwargs: None
@@ -107,6 +108,14 @@ class MapTradeLegacyConfigTest(unittest.TestCase):
             with patch.object(FakeTrader, "run_buy", lambda _: False):
                 self.assertFalse(MapTradeTask.run(task))
             self.assertEqual(["home"], actions)
+            actions.clear()
+            from src.tasks.map_trade.trader_sell import SaleResult
+
+            with patch.object(FakeTrader, "run_sell", lambda _: SaleResult(True, skipped=True)):
+                self.assertTrue(MapTradeTask.run(task))
+            self.assertEqual("买、制作料理", info["完成"])
+            self.assertEqual("卖", info["跳过"])
+            self.assertEqual("-", info["失败"])
 
 
 class MapTradeConfigTest(unittest.TestCase):

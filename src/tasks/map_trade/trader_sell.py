@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from time import monotonic
 from types import SimpleNamespace
 
@@ -69,33 +70,104 @@ SALE_ITEM_CANDIDATES_WAIT_TIMEOUT = 8.0
 SALE_ITEM_CANDIDATES_POLL_INTERVAL = 0.5
 
 
+@dataclass(frozen=True)
+class SaleResult:
+    success: bool
+    skipped: bool = False
+
+    def __bool__(self) -> bool:
+        return self.success
+
+
 class SellFlowMixin:
-    def run_sell(self) -> bool:
+    @staticmethod
+    def _sale_item_label(entry: CalendarEntry) -> str:
+        try:
+            shop = shop_purchase_reference(entry.shop).label
+        except KeyError:
+            shop = entry.shop
+        return f"{shop}·{entry.item}"
+
+    def _reset_sale_results(self) -> None:
+        self._sale_sold.clear()
+        self._sale_recovered.clear()
+        self._sale_not_sold.clear()
+        self._sale_summary_reason = ""
+
+    def _publish_sale_results(self) -> None:
+        sold = []
+        for entry, quantity in self._sale_sold.items():
+            detail = f"{self._sale_item_label(entry)}：已出售 {quantity} 个"
+            recovered = self._sale_recovered.get(entry, 0)
+            if recovered:
+                detail += f"（其中 {recovered} 个为前次提交复核）"
+            sold.append(detail)
+        self._status("已出售商品", "\n".join(sold) or "无（本次未确认任何出售数量）")
+        not_sold = [
+            f"{self._sale_item_label(entry)}：{reason}"
+            for entry, reason in self._sale_not_sold.items()
+        ]
+        self._status("未出售商品", "\n".join(not_sold) or self._sale_summary_reason or "无")
+
+    def _record_not_sold(self, entry: CalendarEntry, reason: str) -> None:
+        self._sale_not_sold[entry] = reason
+        self.task.log_info(f"{self._sale_item_label(entry)}：{reason}")
+        self._publish_sale_results()
+
+    def _record_sale(self, entry: CalendarEntry, quantity: int, *, recovered: bool = False) -> None:
+        self._sale_sold[entry] = self._sale_sold.get(entry, 0) + quantity
+        self._sale_not_sold.pop(entry, None)
+        if recovered:
+            self._sale_recovered[entry] = self._sale_recovered.get(entry, 0) + quantity
+        self.task.log_info(
+            f"{self._sale_item_label(entry)}："
+            f"{'前次提交已核实出售' if recovered else '已确认出售'} {quantity} 个。"
+        )
+        self._publish_sale_results()
+
+    def run_sell(self) -> SaleResult:
+        self._reset_sale_results()
+        try:
+            success = self._run_sell()
+            return SaleResult(success, skipped=success and not self._sale_sold)
+        finally:
+            self._publish_sale_results()
+
+    def _run_sell(self) -> bool:
         entries = self._resolve_sale_entries()
         if entries is None:
             self._buy_completed_in_current_shop = False
             return False
         if not entries:
             self._buy_completed_in_current_shop = False
-            self._status("未出售商品", "无（当前价表没有可出售商品）")
+            if not self._sale_not_sold:
+                self._sale_summary_reason = "未出售：当前价表没有可出售商品"
             self.task.log_info("卖：当前价表没有可出售商品，跳过进入出售页面。")
             return True
 
         if self._buy_completed_in_current_shop:
             self.task.log_info("卖：买卖同时执行，继续使用当前商店并等待购买结果。")
             if not self._switch_from_completed_buy_to_sell():
+                for entry in entries:
+                    self._record_not_sold(entry, "未出售：购买页切换出售页未确认")
                 return False
         else:
             entered = self.navigator.enter_q_sp6_buy_flow()
             if not entered.success:
+                for entry in entries:
+                    self._record_not_sold(entry, f"未出售：进入商店失败（{entered.message}）")
                 self.task.log_warning(f"卖：{entered.message}")
                 return False
             if entered.state != ScreenState.SHOP:
+                for entry in entries:
+                    self._record_not_sold(entry, "未出售：未确认商店页面")
                 self.task.log_warning(
                     f"卖：进入商店后状态为{entered.state.value}，未确认商店页，停止出售。"
                 )
                 return False
             if not self._ensure_sell_page():
+                for entry in entries:
+                    self._record_not_sold(entry, "未出售：未确认出售页面")
                 return False
         self._buy_completed_in_current_shop = False
         self._sale_entries_override = entries
@@ -145,11 +217,15 @@ class SellFlowMixin:
     def sell_max_price_items(self) -> bool:
         entries = self._sale_entries_override
         if entries is None:
+            self._reset_sale_results()
             entries = self._resolve_sale_entries()
         if entries is None:
+            self._publish_sale_results()
             return False
         if not entries:
-            self._status("未出售商品", "无（当前价表没有可出售商品）")
+            if not self._sale_not_sold:
+                self._sale_summary_reason = "未出售：当前价表没有可出售商品"
+            self._publish_sale_results()
             self.task.log_info("卖：当前价表没有可出售商品，跳过出售。")
             return True
         return self._sell_resolved_entries(entries)
@@ -176,12 +252,14 @@ class SellFlowMixin:
             self._sale_title_entries = tuple(entries)
             self._sale_title_catalog_cache = None
         except Exception as exc:
+            self._sale_summary_reason = f"未出售：价表加载失败（{exc}）"
             self.task.log_warning(f"价表加载失败，为避免误卖已停止出售：{exc}")
             return None
 
         sellable = []
         for entry in entries:
             if not entry.sell:
+                self._record_not_sold(entry, "未出售：价表标记为不出售")
                 self.task.log_info(f"卖：{entry.item}标记为不出售，跳过。")
                 continue
             sellable.append(entry)
@@ -191,6 +269,9 @@ class SellFlowMixin:
         if use_whitelist:
             whitelist = self._sale_whitelist()
             entries = [entry for entry in sellable if self._entry_allowed(entry, whitelist)]
+            for entry in sellable:
+                if entry not in entries:
+                    self._record_not_sold(entry, "未出售：不在出售白名单")
         else:
             entries = sellable
             self.task.log_info("卖：出售白名单已关闭，执行价表中全部允许出售的商品。")
@@ -202,6 +283,7 @@ class SellFlowMixin:
             allowed_entries = []
             for entry in entries:
                 if self._entry_allowed(entry, blacklist):
+                    self._record_not_sold(entry, "未出售：命中出售黑名单")
                     self.task.log_info(f"卖：{entry.item}命中出售黑名单，跳过。")
                     continue
                 allowed_entries.append(entry)
@@ -264,44 +346,41 @@ class SellFlowMixin:
     def _sell_resolved_entries(self, entries: list[CalendarEntry]) -> bool:
 
         failed = []
-        unavailable: list[str] = []
-        not_sold_details: list[str] = []
         selected_shop = ""
         # 出售会话内卡带列表只向下滚：按卡带全局顺序排序，不依赖价表书写顺序。
         entries = sorted(entries, key=self._sell_entry_cartridge_order)
-        self._sell_cartridge_page = None
         for entry in entries:
+            self._sale_not_sold[entry] = "未出售：尚未执行"
+        self._sell_cartridge_page = None
+        for index, entry in enumerate(entries):
             if entry.shop != selected_shop:
                 if not self.select_shop_tab(entry.shop):
                     failed.append(entry)
-                    not_sold_details.append(f"{entry.item}（商店卡带选择失败）")
-                    self._status("未出售商品", "、".join(not_sold_details))
+                    self._record_not_sold(entry, "未出售：商店卡带选择失败")
                     selected_shop = ""
                     continue
                 if not self._ensure_cartridge_goods_loaded(entry.shop):
                     failed.append(entry)
-                    not_sold_details.append(f"{entry.item}（商店卡带刷新失败）")
-                    self._status("未出售商品", "、".join(not_sold_details))
+                    self._record_not_sold(entry, "未出售：商店卡带刷新失败")
+                    for remaining in entries[index + 1:]:
+                        self._record_not_sold(remaining, "未出售：前序卡带刷新失败，未执行")
                     break
                 selected_shop = entry.shop
             if not self._sell_selected_entry(entry):
                 if self._last_sale_unavailable:
-                    detail = f"{entry.item}（{self._last_sale_reason}）"
-                    unavailable.append(detail)
-                    not_sold_details.append(detail)
-                    self._status("未出售商品", "、".join(not_sold_details))
+                    self._record_not_sold(entry, f"未出售：{self._last_sale_reason}")
                     continue
                 failed.append(entry)
-                not_sold_details.append(f"{entry.item}（出售执行失败）")
-                self._status("未出售商品", "、".join(not_sold_details))
+                self._record_not_sold(
+                    entry, self._last_sale_reason or "剩余商品未出售：出售执行失败",
+                )
+                for remaining in entries[index + 1:]:
+                    self._record_not_sold(remaining, "未出售：前序商品出售失败，未执行")
                 self.task.log_warning(
                     f"卖：{entry.item}执行过程中断，停止继续处理后续价表商品。"
                 )
                 break
-        if unavailable:
-            self.task.log_warning("未出售商品：" + "、".join(unavailable))
-        if not not_sold_details:
-            self._status("未出售商品", "无")
+        self._publish_sale_results()
         if failed:
             self.task.log_warning("最高价出售失败：" + "、".join(entry.item for entry in failed))
         return not failed
@@ -321,6 +400,7 @@ class SellFlowMixin:
                 if self._last_sale_page_empty and pending:
                     run_history.save_stage(self.task, checkpoint, "done",
                                            evidence={"result": "已确认商品无剩余库存"})
+                    self._record_not_sold(entry, "前次提交后商品已无剩余库存，出售数量未确认")
                     return True
                 if sold_count and self._last_sale_page_empty:
                     self._last_sale_unavailable = False
@@ -335,6 +415,9 @@ class SellFlowMixin:
                     )
                     return True
                 if sold_count:
+                    self._last_sale_reason = (
+                        "剩余商品未出售：出售后商品仍可见，120%最高价标志未确认"
+                    )
                     self.task.log_warning(
                         f"卖：{entry.item}出售后仍可见商品名但120%标志未确认"
                         f"（{self._last_sale_reason or '未知原因'}），"
@@ -365,6 +448,8 @@ class SellFlowMixin:
                 self._status("出售完成确认", f"{entry.item}:已出售{sold_count}组，库存已全部卖出")
                 return True
             if entry.reserve <= 0 and bool(self.task.config.get("出售保险", False)):
+                if owned > 1:
+                    self._record_not_sold(entry, "剩余商品未出售：出售保险仅出售最小数量")
                 self.task.log_info(
                     f"卖：{entry.item}已按出售保险完成最小数量出售，停止继续出售该商品。"
                 )
@@ -399,6 +484,7 @@ class SellFlowMixin:
                 dialog_opened = True
                 break
             if self._sale_dialog_rejected:
+                self._last_sale_reason = "未出售：出售弹窗商品身份未确认"
                 return None
             if click_number < SALE_DIALOG_OPEN_MAX_CLICKS:
                 self.task.log_info(
@@ -406,25 +492,19 @@ class SellFlowMixin:
                     f"{SALE_DIALOG_TIMEOUT:g}秒仍未确认出售弹窗，补点重试。"
                 )
         if not dialog_opened:
+            self._last_sale_reason = "未出售：出售弹窗商品标题未确认"
             self.task.log_warning(f"卖：{entry.item}出售弹窗商品标题未确认。")
             return None
         owned = self._wait_owned_quantity()
         if owned is None:
+            self._last_sale_reason = "未出售：出售弹窗拥有数量未识别"
             self.task.log_warning(f"卖：{entry.item}出售弹窗未识别到拥有数量。")
             return None
         available = self._wait_available_quantity()
         if available is None:
+            self._last_sale_reason = "未出售：出售弹窗可出售数量未识别"
             self.task.log_warning(f"卖：{entry.item}出售弹窗未识别到可购买数量。")
             return None
-        if entry.reserve and owned <= entry.reserve:
-            run_history.save_stage(self.task, checkpoint, "done",
-                                   evidence={"result": "库存已达到保留量", "owned": owned})
-            self.task.log_info(
-                f"卖：{entry.item}弹窗库存{owned}已无需继续出售"
-                f"（目标保留约{entry.reserve}），关闭弹窗并跳过。"
-            )
-            self.task.operate_click(*SALE_CLOSE_POINT, after_sleep=0.5)
-            return owned, False
         if record.get("state") == "pending":
             evidence = record.get("evidence", {})
             before = evidence.get("owned")
@@ -434,13 +514,35 @@ class SellFlowMixin:
                 run_history.save_stage(self.task, checkpoint, "done",
                                        evidence={"result": "前次出售后库存已减少", "owned": owned})
                 self.task.operate_click(*SALE_CLOSE_POINT, after_sleep=0.5)
+                self._record_sale(entry, selected, recovered=True)
+                if entry.reserve and owned <= entry.reserve:
+                    self._record_not_sold(
+                        entry, f"剩余商品未出售：库存 {owned} 个，已达到保留量 {entry.reserve} 个",
+                    )
+                    return owned, False
                 if self._ensure_sell_page():
                     return before, True
+                self._last_sale_reason = "剩余商品未出售：前次提交已复核，但未确认返回出售页"
                 return None
+        if entry.reserve and owned <= entry.reserve:
+            run_history.save_stage(self.task, checkpoint, "done",
+                                   evidence={"result": "库存已达到保留量", "owned": owned})
+            self.task.log_info(
+                f"卖：{entry.item}弹窗库存{owned}已无需继续出售"
+                f"（目标保留约{entry.reserve}），关闭弹窗并跳过。"
+            )
+            self.task.operate_click(*SALE_CLOSE_POINT, after_sleep=0.5)
+            self._record_not_sold(
+                entry, f"剩余商品未出售：库存 {owned} 个，已达到保留量 {entry.reserve} 个",
+            )
+            return owned, False
+        if record.get("state") == "pending":
+            self._last_sale_reason = "前次提交结果未确认：库存变化未确认，未重复出售"
             self.task.log_warning(
                 f"卖：{entry.item} 前次提交结果未知，库存变化未确认，不再次出售。")
             return None
         if previous_owned is not None and owned >= previous_owned:
+            self._last_sale_reason = "剩余商品未出售：上次出售后库存未下降，停止重复出售"
             self.task.log_warning(
                 f"卖：{entry.item}出售后拥有数量未下降（当前{owned}，上次{previous_owned}），停止以避免重复出售。"
             )
@@ -452,6 +554,7 @@ class SellFlowMixin:
             f"卖：{entry.item}出售弹窗记录库存{owned}个，当前组可购买{available}个。"
         )
         if not self._choose_sale_quantity(entry, owned):
+            self._last_sale_reason = "未出售：安全出售数量无法选择"
             return None
         expected_selected = None
         maximum_selected = (
@@ -467,6 +570,7 @@ class SellFlowMixin:
             expected_selected, maximum=maximum_selected,
         )
         if selected is None:
+            self._last_sale_reason = "未出售：安全出售数量未确认"
             self.task.log_warning(
                 f"卖：{entry.item}出售数量未确认（期望{expected_selected or '正数'}，"
                 f"安全出售上限{maximum_selected}，当前组上限{available}），停止确认。"
@@ -486,9 +590,11 @@ class SellFlowMixin:
             owned=owned,
             selected=selected,
         ):
+            self._last_sale_reason = f"本组 {selected} 个出售结果未确认，未计入已出售数量"
             return None
         run_history.save_stage(self.task, checkpoint, "done",
-                               evidence={"result": "交易完成已确认"})
+                               evidence={"result": "交易完成已确认", "selected": selected})
+        self._record_sale(entry, selected)
         self._last_sale_cleared = (
             entry.reserve <= 0
             and not bool(self.task.config.get("出售保险", False))

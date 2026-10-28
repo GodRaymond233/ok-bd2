@@ -207,6 +207,8 @@ class SellFlowTest(StageHistoryTestCase):
         self.assertEqual((100, True),
                          trader._sell_one_candidate(entry, candidate, frame, previous_owned=None))
         self.assertEqual("done", run_history.read_stage(trader.task, "出售:1:苹果")["state"])
+        self.assertEqual(10, trader._sale_sold[entry])
+        self.assertEqual(10, trader._sale_recovered[entry])
 
         entry = CalendarEntry("苹果", "1", reserve=5500)
         trader._wait_owned_quantity.return_value = 8400
@@ -224,6 +226,7 @@ class SellFlowTest(StageHistoryTestCase):
         self.assertEqual((8400, True), trader._sell_one_candidate(
             entry, candidate, frame, previous_owned=None))
         self.assertEqual("done", run_history.read_stage(trader.task, "出售:1:苹果")["state"])
+        self.assertEqual(2850, trader._sale_sold[entry])
         trader.task.operate_click.assert_called_once_with(*SALE_CLOSE_POINT, after_sleep=0.5)
         entry = CalendarEntry("苹果", "1", reserve=90)
         trader._wait_owned_quantity.return_value = 90
@@ -232,6 +235,27 @@ class SellFlowTest(StageHistoryTestCase):
         self.assertEqual((90, False),
                          trader._sell_one_candidate(entry, candidate, frame, previous_owned=None))
         self.assertEqual("done", run_history.read_stage(trader.task, "出售:1:苹果")["state"])
+
+        trader._reset_sale_results()
+        run_history.save_stage(trader.task, "出售:1:苹果", "pending",
+                               evidence={"owned": 100, "selected": 10})
+        self.assertEqual((90, False), trader._sell_one_candidate(
+            entry, candidate, frame, previous_owned=None))
+        self.assertEqual(10, trader._sale_sold[entry])
+        self.assertIn("已达到保留量 90 个", trader._sale_not_sold[entry])
+
+        trader._reset_sale_results()
+        run_history.save_stage(trader.task, "出售:1:苹果", "pending",
+                               evidence={"owned": 100, "selected": 10})
+
+        def empty_page(_entry):
+            trader._last_sale_page_empty = True
+            return None
+
+        trader._wait_sale_item_candidates = empty_page
+        self.assertTrue(trader._sell_selected_entry(entry))
+        self.assertEqual({}, trader._sale_sold)
+        self.assertIn("出售数量未确认", trader._sale_not_sold[entry])
 
     @staticmethod
     def _sale_name_match(text, names):
@@ -475,7 +499,7 @@ class SellFlowTest(StageHistoryTestCase):
     def test_run_sell_only_stops_and_logs_when_shop_entry_fails(self):
         warnings = []
         trader = create_trader()
-        trader.task = SimpleNamespace(log_warning=warnings.append)
+        trader.task = SimpleNamespace(log_warning=warnings.append, log_info=Mock())
         trader._resolve_sale_entries = lambda: [
             CalendarEntry("水果罐头", "S2:苍蓝魔女")
         ]
@@ -495,7 +519,7 @@ class SellFlowTest(StageHistoryTestCase):
     def test_run_sell_only_stops_before_sell_page_when_entry_is_not_shop(self):
         warnings = []
         trader = create_trader()
-        trader.task = SimpleNamespace(log_warning=warnings.append)
+        trader.task = SimpleNamespace(log_warning=warnings.append, log_info=Mock())
         trader._resolve_sale_entries = lambda: [
             CalendarEntry("水果罐头", "S2:苍蓝魔女")
         ]
@@ -536,10 +560,8 @@ class SellFlowTest(StageHistoryTestCase):
 
         self.assertTrue(trader.run_sell())
         self.assertFalse(trader._buy_completed_in_current_shop)
-        self.assertEqual(
-            [("未出售商品", "无（当前价表没有可出售商品）")],
-            statuses,
-        )
+        self.assertEqual("未出售：当前价表没有可出售商品", dict(statuses)["未出售商品"])
+        self.assertEqual("无（本次未确认任何出售数量）", dict(statuses)["已出售商品"])
         self.assertEqual(
             ["卖：当前价表没有可出售商品，跳过进入出售页面。"],
             actions,
@@ -722,7 +744,7 @@ class SellFlowTest(StageHistoryTestCase):
 
     def test_run_sell_stops_before_calendar_when_sell_page_is_not_confirmed(self):
         trader = create_trader()
-        trader.task = SimpleNamespace(log_warning=lambda *_args: None)
+        trader.task = SimpleNamespace(log_warning=lambda *_args: None, log_info=Mock())
         trader._resolve_sale_entries = lambda: [
             CalendarEntry("水果罐头", "S2:苍蓝魔女")
         ]
@@ -1175,7 +1197,7 @@ class SellFlowTest(StageHistoryTestCase):
         ]))
         self.assertEqual(["S12"], selected)
         self.assertEqual(["S11", "S12"], refresh_selections)
-        self.assertIn(("未出售商品", "鱼子酱罐头（商店卡带刷新失败）"), statuses)
+        self.assertIn("鱼子酱罐头：未出售：商店卡带刷新失败", dict(statuses)["未出售商品"])
 
     def test_missing_120_percent_is_recognition_failure_before_any_sale(self):
         trader = create_trader()
@@ -1456,6 +1478,7 @@ class SellFlowTest(StageHistoryTestCase):
                     )
                 self.assertEqual((owned, True) if confirmed else None, result)
                 self.assertEqual(confirmed, SALE_CONFIRM_POINT in clicks)
+                self.assertEqual(selected if confirmed else 0, sum(trader._sale_sold.values()))
 
     def test_partial_sale_confirms_remaining_stock_without_resubmitting(self):
         for scenario in (
@@ -1549,6 +1572,10 @@ class SellFlowTest(StageHistoryTestCase):
                 )
                 self.assertEqual([32302, 99999], selected)
                 self.assertEqual(completed, trader._last_sale_cleared)
+                self.assertEqual(
+                    132301 if completed else 32302,
+                    sum(trader._sale_sold.values()),
+                )
 
     def test_uncertain_sale_signature_cannot_confirm_transaction(self):
         trader = create_trader()
@@ -2060,6 +2087,7 @@ class SellFlowTest(StageHistoryTestCase):
         self.assertEqual(["S10:霍尔蒙克斯"], selected)
         self.assertEqual(["甜辣酱", "藏红花"], sold)
         self.assertIn("卖：魅惑粉末标记为不出售，跳过。", logs)
+        self.assertEqual("未出售：价表标记为不出售", trader._sale_not_sold[entries[0]])
 
     def test_disabled_sale_whitelist_sells_all_allowed_calendar_entries(self):
         sold = []
@@ -2137,6 +2165,7 @@ class SellFlowTest(StageHistoryTestCase):
         self.assertEqual(["番茄"], sold)
         self.assertIn(("出售黑名单", "开启"), statuses)
         self.assertIn("卖：大麦命中出售黑名单，跳过。", logs)
+        self.assertIn("大麦：未出售：命中出售黑名单", dict(statuses)["未出售商品"])
 
     def test_missing_sale_item_is_reported_and_does_not_stop_next_item(self):
         statuses = []
@@ -2185,13 +2214,10 @@ class SellFlowTest(StageHistoryTestCase):
         self.assertTrue(trader.sell_max_price_items())
         self.assertEqual(["豆子", "小麦"], attempted)
         self.assertIn(
-            ("未出售商品", "豆子（未发现商品名，可能无货或已经售出）"),
-            statuses,
+            "剧情游戏卡12 黑羽毛·豆子：未出售：未发现商品名，可能无货或已经售出",
+            dict(statuses)["未出售商品"],
         )
-        self.assertIn(
-            "未出售商品：豆子（未发现商品名，可能无货或已经售出）",
-            warnings,
-        )
+        self.assertEqual([], warnings)
 
     def test_sale_execution_failure_stops_following_calendar_entry(self):
         attempted = []
@@ -2232,6 +2258,8 @@ class SellFlowTest(StageHistoryTestCase):
 
         self.assertFalse(trader.sell_max_price_items())
         self.assertEqual(["豆子"], attempted)
+        self.assertEqual("出售完成确认超时", trader._sale_not_sold[entries[0]])
+        self.assertEqual("未出售：前序商品出售失败，未执行", trader._sale_not_sold[entries[1]])
 
 
 class TradeAssetsTest(unittest.TestCase):

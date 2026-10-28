@@ -739,6 +739,31 @@ class RunPanelTest(QuestUiTestBase):
         self.assertEqual(panel.rows.count(), 2)  # 状态 / 最近日志
         panel.close()
 
+    def test_sale_details_remain_visible_after_navigation_finishes(self):
+        from PySide6.QtWidgets import QLabel
+
+        from src.ui.run_panel import RunPanel, run_state
+
+        self.fresh_store()
+        task = _TaskStub(name="每日跑商")
+        task.info = {
+            "状态": "跑商完成。",
+            "价表来源": "bundled",
+            "导航状态": "已返回主页",
+            "出售价表日期": "2026-10-28",
+            "已出售商品": "剧情游戏卡2 苍蓝魔女·苹果：已出售 123 个",
+            "未出售商品": "角色游戏卡1 杰登之门·松露油：未出售：不在出售白名单",
+        }
+        panel = RunPanel()
+        self.addCleanup(panel.close)
+        panel.render(task)
+        labels = [label.text() for label in panel.rows_container.findChildren(QLabel)]
+        for key in ("已出售商品", "未出售商品"):
+            self.assertIn(key, labels)
+            self.assertIn(task.info[key], labels)
+        self.assertEqual("done", run_state(task))
+        self.assertNotIn("Warning", labels)
+
     def test_run_state_mapping(self):
         from src.ui.run_panel import run_state
 

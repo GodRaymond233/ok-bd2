@@ -127,7 +127,10 @@ class MapAutomationTaskBase(BaseBD2Task):
                     message = str(getattr(result, "message", ""))
                     if message:
                         self.log_info(f"{name}：{message}")
-                    (completed if success else failed).append(name)
+                    if success and getattr(result, "skipped", False):
+                        skipped.append(name)
+                    else:
+                        (completed if success else failed).append(name)
                     if not success:
                         self._save_diagnostic(f"{self.diagnostic_prefix}_{name}_failed")
                         if getattr(result, "partial", False):
@@ -210,6 +213,8 @@ class MapTradeTask(MapAutomationTaskBase):
         "购买库存日期",
         "价表来源",
         "出售价表日期",
+        "已出售商品",
+        "未出售商品",
         "完成",
         "失败",
         "跳过",

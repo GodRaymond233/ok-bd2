@@ -443,8 +443,14 @@ class RunPanel(QFrame):
         error = info.get("Error")
         if error:
             rows.append(("Error", str(error), "warn"))
+        sale_keys = ("已出售商品", "未出售商品")
+        for key in sale_keys:
+            if info.get(key):
+                rows.append((key, str(info[key]), ""))
         extra_keys = [
-            key for key in info if key not in _STANDARD_KEYS and str(info[key]) not in ("", "-")
+            key for key in info
+            if key not in _STANDARD_KEYS and key not in sale_keys
+            and str(info[key]) not in ("", "-")
         ]
         for key in extra_keys[:2]:
             rows.append((str(key), str(info[key]), ""))

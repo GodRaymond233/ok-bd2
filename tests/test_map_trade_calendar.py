@@ -103,7 +103,7 @@ class CalendarTest(unittest.TestCase):
         )
 
     def test_run_sell_skips_empty_bundled_sale_days_before_navigation(self):
-        for day in (29, 30, 31):
+        for day in (28, 29, 30, 31):
             with self.subTest(day=day):
                 actions = []
                 warnings = []
@@ -136,12 +136,20 @@ class CalendarTest(unittest.TestCase):
                     "默认空价表不得切换出售页"
                 )
 
-                self.assertTrue(trader.run_sell())
+                result = trader.run_sell()
+                self.assertTrue(result)
+                self.assertTrue(result.skipped)
                 self.assertEqual([], warnings)
-                self.assertIn(
-                    ("未出售商品", "无（当前价表没有可出售商品）"),
-                    statuses,
-                )
+                summary = dict(statuses)
+                self.assertEqual("无（本次未确认任何出售数量）", summary["已出售商品"])
+                if day == 28:
+                    self.assertEqual(
+                        "剧情游戏卡9 铁假面·秃鹫羽毛：未出售：不在出售白名单\n"
+                        "角色游戏卡1 杰登之门·松露油：未出售：不在出售白名单",
+                        summary["未出售商品"],
+                    )
+                else:
+                    self.assertEqual("未出售：当前价表没有可出售商品", summary["未出售商品"])
                 self.assertIn(
                     "卖：当前价表没有可出售商品，跳过进入出售页面。",
                     actions,
