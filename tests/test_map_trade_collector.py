@@ -1294,12 +1294,51 @@ class CollectorSkillTest(unittest.TestCase):
         collector = Collector(SimpleNamespace(sleep=Mock()), object(), object(), object())
         collector._reuse_recent_search = Mock(return_value=None)
         collector._open_skill_menu = Mock(return_value=True)
-        collector._search_running = Mock(side_effect=[False, True])
+        collector._search_running = Mock(side_effect=[False, False, False, True])
         collector._start_search = Mock(return_value=SkillExecutionResult(False))
         self.assertIsNone(
             collector._ensure_search(card_id="Q_sp1", map_role=CollectionMapRole.MAIN_AREA)
         )
         collector._start_search.assert_called_once()
+
+    def test_search_countdown_misread_recovers_without_warning_or_skill_click(self):
+        for texts, recovered in (
+            (["TTO", "107"], True),
+            (["TTO", "", "TTO", "107"], True),
+            (["TTO", "", "TTO", ""], False),
+        ):
+            with self.subTest(texts=texts):
+                task = SimpleNamespace(
+                    config={}, sleep=Mock(), info_set=Mock(), log_info=Mock(),
+                    log_warning=Mock(), operate_click=Mock(),
+                )
+                frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+                vision = SimpleNamespace(
+                    capture=Mock(return_value=frame), ocr_text=Mock(side_effect=texts),
+                    click_client=Mock(),
+                )
+                collector = Collector(task, vision, SimpleNamespace(
+                    wait_for_collection_field=lambda frame: frame,
+                ), object())
+                collector._check_collection_skill_layout = Mock()
+                collector.action_icons = SimpleNamespace(detect=lambda _frame, icon:
+                    ActionIconDetection(
+                        ActionIconState.ABSENT if icon is SEARCH_ICON
+                        else ActionIconState.AVAILABLE,
+                        MatchResult(0.99, (100, 100), (40, 40)),
+                    ))
+                result = collector._ensure_search(
+                    card_id="Q_sp15", map_role=CollectionMapRole.BATTLE_AREA_2,
+                )
+                if recovered:
+                    self.assertIsNone(result)
+                else:
+                    self.assertFalse(result.completed)
+                    self.assertIn("未确认采集技能栏", result.message)
+                task.log_warning.assert_not_called()
+                task.operate_click.assert_not_called()
+                vision.click_client.assert_not_called()
+                self.assertEqual(len(texts), vision.ocr_text.call_count)
 
     def _skill_collector(self, states, counts):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -2622,6 +2661,7 @@ class CollectorSkillTest(unittest.TestCase):
             operate_click=lambda x, y, after_sleep=0: group_clicks.append((x, y, after_sleep)),
             sleep=lambda *_args: None,
             log_warning=lambda *_args: None,
+            log_info=lambda *_args: None,
             info_set=lambda *_args: None,
         )
         vision = SimpleNamespace(
@@ -3079,6 +3119,7 @@ class CollectorSkillTest(unittest.TestCase):
             operate_click=lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep)),
             sleep=lambda *_args: None,
             log_warning=lambda *_args: None,
+            log_info=lambda *_args: None,
             info_set=lambda *_args: None,
         )
         collector = Collector(

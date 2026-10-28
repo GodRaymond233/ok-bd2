@@ -365,6 +365,7 @@ class SkillExecutionMixin:
         expected_icons: tuple[ActionIconSpec, ...],
         *,
         allow_group_one_recovery: bool = False,
+        warn_on_failure: bool = True,
     ) -> bool:
         def inspect(frame):
             detections = tuple(self.action_icons.detect(frame, icon) for icon in expected_icons)
@@ -415,12 +416,13 @@ class SkillExecutionMixin:
             self._check_collection_skill_layout()
             return True
 
+        log_failure = self.task.log_warning if warn_on_failure else self.task.log_info
         states = ", ".join(
             f"{icon.name}={value.state.value}"
             for icon, value in zip(expected_icons, detections, strict=True)
         )
         if not allow_group_one_recovery:
-            self.task.log_warning(f"地图采集：技能栏未确认：{states}。")
+            log_failure(f"地图采集：技能栏未确认：{states}。")
             return False
 
         # A partial match is not evidence that the wrong group is selected.
@@ -431,7 +433,7 @@ class SkillExecutionMixin:
             value.state in {ActionIconState.ABSENT, ActionIconState.UNKNOWN}
             for value in detections
         ):
-            self.task.log_warning(
+            log_failure(
                 f"地图采集：技能栏部分识别但未确认，不执行技能组1回退：{states}。"
             )
             return False
@@ -447,7 +449,7 @@ class SkillExecutionMixin:
                 value.state not in {ActionIconState.ABSENT, ActionIconState.UNKNOWN}
                 for value in detections
             ):
-                self.task.log_warning("地图采集：技能栏部分识别，停止技能组切换。")
+                log_failure("地图采集：技能栏部分识别，停止技能组切换。")
                 return False
             self._status("技能组切换", f"采集技能未显示，切换到技能组{group}")
             self._forget_skill_evidence()
@@ -460,7 +462,7 @@ class SkillExecutionMixin:
             f"{icon.name}={value.state.value}"
             for icon, value in zip(expected_icons, detections, strict=True)
         )
-        self.task.log_warning(f"地图采集：三个技能组都没有找到采集技能：{states}。")
+        log_failure(f"地图采集：三个技能组都没有找到采集技能：{states}。")
         return False
 
     @staticmethod
@@ -727,6 +729,7 @@ class SkillExecutionMixin:
         menu_confirmed = self._open_skill_menu(
             (SEARCH_ICON, ABSORB_ICON),
             allow_group_one_recovery=True,
+            warn_on_failure=False,
         )
         if not menu_confirmed:
             return SkillExecutionResult(
@@ -1562,8 +1565,12 @@ class SkillExecutionMixin:
             return reused
         if not self._open_skill_menu((ABSORB_ICON,), allow_group_one_recovery=True):
             return SkillExecutionResult(False, message="未确认采集技能栏")
-        if self._search_running():
-            return None
+        # 倒计时会覆盖探查图标，短暂漏读须先复核，避免误进入补施探查流程。
+        for attempt in range(ACTION_OCR_WINDOW_SAMPLES):
+            if self._search_running():
+                return None
+            if attempt + 1 < ACTION_OCR_WINDOW_SAMPLES:
+                self.task.sleep(SEARCH_COUNTDOWN_INTERVAL)
         started = self._start_search(card_id=card_id, map_role=map_role)
         if not isinstance(started, SkillExecutionResult):
             return started
