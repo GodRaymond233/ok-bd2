@@ -171,7 +171,6 @@ class PVPTask(BaseBD2Task):
             {
                 "启用": True,
                 "竞技场战斗倍数": 1,
-                "最多战斗轮次": 12,
                 "加载页面阈值": 0.72,
                 "主页压暗阈值": HOME_DIMMED_P95_THRESHOLD_DEFAULT,
                 "PVP OCR 阈值": 0.2,
@@ -202,7 +201,6 @@ class PVPTask(BaseBD2Task):
                     "目标鸡尾酒消耗倍率，支持 1～40 的任意整数（含 2 倍）。"
                     "AP 不足时会临时降到 1。"
                 ),
-                "最多战斗轮次": "防止识别异常导致无限循环的最大战斗轮次。",
                 "PVP OCR 阈值": "镜中之战流程 OCR 使用的最低可信度。",
                 "PVP 结算基准等待分钟": "1 倍自动战斗结算最长等待时间，实际等待为该值除以倍率。",
                 "PVP 返回箱庭等待秒数": "离开结算后等待回到 PVP 箱庭的最长时间。",
@@ -236,37 +234,30 @@ class PVPTask(BaseBD2Task):
             return False
 
         current_multiplier = target_multiplier
-        max_rounds = max(1, int(self.config.get("最多战斗轮次", 12)))
-        for round_index in range(1, max_rounds + 1):
-            self.info_set("当前阶段", f"第 {round_index} 轮")
+        start_state = self._start_auto_battle(current_multiplier)
+        if start_state == "ap_shortage" and current_multiplier != 1:
+            self.log_info("镜中之战：当前倍率 AP 不足，降到 1 倍重试。")
+            current_multiplier = 1
+            self.info_set("目标倍率", current_multiplier)
             start_state = self._start_auto_battle(current_multiplier)
-            if start_state == "ap_shortage" and current_multiplier != 1:
-                self.log_info("镜中之战：当前倍率 AP 不足，降到 1 倍重试。")
-                current_multiplier = 1
-                self.info_set("目标倍率", current_multiplier)
-                start_state = self._start_auto_battle(current_multiplier)
-            if start_state == "ap_depleted":
-                self.info_set("状态", "免费 AP 已耗尽。")
-                self.log_completion("镜中之战：免费 AP 已耗尽，流程结束。")
-                return True
-            if start_state == "ap_shortage":
-                self.info_set("状态", "1 倍仍 AP 不足。")
-                self.log_completion("镜中之战：1 倍 AP 仍不足，流程结束。")
-                return True
-            if start_state != "started":
-                self.info_set("状态", "镜中之战失败：未能开始战斗。")
-                return False
-
-            if not self._wait_result_and_leave(current_multiplier):
-                self.info_set("状态", "战斗结算或离开失败。")
-                return False
-
-            self.info_set("状态", "镜中之战完成并返回主页。")
-            self.log_completion("镜中之战：自动战斗完成并返回主页。")
+        if start_state == "ap_depleted":
+            self.info_set("状态", "免费 AP 已耗尽。")
+            self.log_completion("镜中之战：免费 AP 已耗尽，流程结束。")
             return True
+        if start_state == "ap_shortage":
+            self.info_set("状态", "1 倍仍 AP 不足。")
+            self.log_completion("镜中之战：1 倍 AP 仍不足，流程结束。")
+            return True
+        if start_state != "started":
+            self.info_set("状态", "镜中之战失败：未能开始战斗。")
+            return False
 
-        self.info_set("状态", "达到最多战斗轮次。")
-        self.log_completion(f"镜中之战：达到最多战斗轮次 {max_rounds}，停止。")
+        if not self._wait_result_and_leave(current_multiplier):
+            self.info_set("状态", "战斗结算或离开失败。")
+            return False
+
+        self.info_set("状态", "镜中之战完成并返回主页。")
+        self.log_completion("镜中之战：自动战斗完成并返回主页。")
         return True
 
     def _ensure_pvp_hub(self) -> bool:

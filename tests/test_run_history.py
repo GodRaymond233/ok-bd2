@@ -230,14 +230,6 @@ class RunHistoryStoreTest(unittest.TestCase):
                 )
                 self.assertFalse(self.store.last_run(name)["ok"])
 
-    def test_bounded_round_limit_status_is_not_a_failure_marker(self):
-        task = _TaskStub(
-            "镜中之战",
-            info={"状态": "达到最多战斗轮次。", "失败": "-"},
-        )
-        self.store.record_task_done(task, finished=2000.0)
-        self.assertTrue(self.store.last_run("镜中之战")["ok"])
-
     def test_placeholder_failure_values_still_count_as_success(self):
         task = _TaskStub(
             "每日跑商",

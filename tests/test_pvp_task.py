@@ -1596,7 +1596,7 @@ class PVPTaskHelperTest(unittest.TestCase):
 
     def test_run_falls_back_to_one_multiplier_when_ap_shortage(self):
         task = object.__new__(PVPTask)
-        task.config = {"启用": True, "竞技场战斗倍数": 10, "最多战斗轮次": 1}
+        task.config = {"启用": True, "竞技场战斗倍数": 10}
         infos = {}
         task.info_set = lambda key, value: infos.__setitem__(key, value)
         notifications = []
