@@ -102,6 +102,12 @@ class NavigatorTest(unittest.TestCase):
                 navigator._restore_navigation_field = Mock(return_value=NavigationResult(
                     True, ScreenState.SANDBOX,
                 ))
+                navigator._walk_to_circle_neighbour = Mock(return_value=None)
+                navigator._walk_to_sandbox_teleport_interaction = Mock(side_effect=lambda: (
+                    events.append("local") or NavigationResult(
+                        False, ScreenState.SANDBOX, "本图回阵未确认",
+                    )
+                ))
                 answers = iter(responses)
                 navigator._travel_via_nav_menu = Mock(side_effect=lambda entry: (
                     events.append(entry) or next(answers)
@@ -118,7 +124,10 @@ class NavigatorTest(unittest.TestCase):
                 ))
                 result = navigator._open_teleport_map_anywhere(card, target=target)
                 self.assertTrue(result.success, result.message)
-                self.assertEqual([*wanted, *(["skill"] if uses_talent else [])], events)
+                self.assertEqual([
+                    *(["local"] if target != card.targets[0] else []),
+                    *wanted, *(["skill"] if uses_talent else []),
+                ], events)
                 self.assertEqual(int(uses_talent), navigator._open_teleport_skill.call_count)
 
     def test_navigation_recovery_confirms_closure_and_enforces_attempt_budgets(self):
@@ -878,6 +887,55 @@ class NavigatorTest(unittest.TestCase):
                 else:
                     self.assertIsNone(result)
                     navigator._walk_to_collection_map.assert_not_called()
+
+    def test_chapter_eighteen_recovers_the_circle_before_changing_maps(self):
+        card = CARD_BY_ID["Q_sp18"]
+        town, sanctuary, memory = card.targets
+        opened = NavigationResult(
+            True, ScreenState.AREA_MAP, map_page_mode=MapPageMode.DIRECT_TELEPORT,
+        )
+        missing = NavigationResult(False, ScreenState.SANDBOX, "未识别交互入口")
+        for local_ok, safe_after_walk in ((True, True), (False, True), (False, False)):
+            with self.subTest(local=local_ok, safe=safe_after_walk):
+                events = []
+                navigator = Navigator(SimpleNamespace(info_set=Mock()), SimpleNamespace())
+                navigator.open_teleport_map_from_sandbox = Mock(return_value=missing)
+                navigator._restore_navigation_field = Mock(side_effect=[
+                    NavigationResult(True, ScreenState.SANDBOX),
+                    NavigationResult(safe_after_walk, ScreenState.SANDBOX, "菜单未确认关闭"),
+                    *[NavigationResult(True, ScreenState.SANDBOX)] * 4,
+                ])
+                navigator.current_collection_target = Mock(side_effect=[sanctuary.key, town.key])
+                walk_results = iter([opened] if local_ok else [missing, opened])
+                navigator._walk_to_sandbox_teleport_interaction = Mock(side_effect=lambda: (
+                    events.append("walk-circle") or next(walk_results)
+                ))
+                navigator._travel_via_nav_menu = Mock(side_effect=lambda entry: (
+                    events.append(entry) or entry
+                ))
+                navigator._collection_field_title = Mock(return_value=town.title)
+                navigator._hunting_ground_field = Mock(return_value=False)
+                navigator._walk_to_collection_map = Mock(side_effect=lambda *args: (
+                    events.append("town-exit") or NavigationResult(True, ScreenState.SANDBOX)
+                ))
+                navigator._open_teleport_skill = Mock(return_value=missing)
+
+                result = navigator._open_teleport_map_anywhere(card, target=memory)
+
+                self.assertEqual(local_ok or safe_after_walk, result.success)
+                self.assertEqual(
+                    ["walk-circle", "艾琳", "town-exit", "walk-circle"]
+                    if not local_ok and safe_after_walk else ["walk-circle"], events,
+                )
+                navigator._open_teleport_skill.assert_not_called()
+                if local_ok:
+                    navigator._travel_via_nav_menu.assert_not_called()
+                elif safe_after_walk:
+                    navigator._walk_to_collection_map.assert_called_once_with(card, town, sanctuary)
+                else:
+                    self.assertIn("本图回阵", result.message)
+                    self.assertIn("菜单未确认关闭", result.message)
+                    navigator._travel_via_nav_menu.assert_not_called()
 
     def test_overlapping_circle_is_expanded_once_and_arrival_is_verified(self):
         card = CARD_BY_ID["Q_sp1"]
@@ -2167,7 +2225,7 @@ class NavigatorTest(unittest.TestCase):
 
     def test_recovery_propagates_stop_without_attempting_another_route(self):
         card = CARD_BY_ID["Q_sp1"]
-        for stage in ("field", "navigation", "talent"):
+        for stage in ("field", "walk", "navigation", "talent"):
             for signal in (TaskDisabledException, FinishedException):
                 with self.subTest(stage=stage, signal=signal):
                     events = []
@@ -2189,8 +2247,14 @@ class NavigatorTest(unittest.TestCase):
                     navigator._open_teleport_skill = Mock(side_effect=lambda _card: observe(
                         "talent", None,
                     ))
+                    navigator._walk_to_circle_neighbour = Mock(return_value=None)
+                    navigator._walk_to_sandbox_teleport_interaction = Mock(
+                        side_effect=lambda: observe(
+                            "walk", NavigationResult(False, ScreenState.SANDBOX),
+                        ),
+                    )
                     with self.assertRaises(signal):
-                        navigator._open_teleport_map_anywhere(card, target=card.targets[0])
+                        navigator._open_teleport_map_anywhere(card, target=card.targets[1])
                     self.assertEqual(stage, events[-1])
 
 

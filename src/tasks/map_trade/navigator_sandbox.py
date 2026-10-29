@@ -2481,7 +2481,7 @@ class SandboxNavigationMixin:
     def _open_teleport_map_anywhere(
         self, card: CardSpec | None = None, *, target: CollectionMapTarget | None = None,
     ) -> NavigationResult:
-        """Ground interaction, separate fast-travel attempts, then one talent fallback."""
+        """Return to the local circle before changing maps to recover a route."""
         entered = getattr(self, "_entered_card_id", None)
         if card is not None and entered is not None and entered != card.card_id:
             return NavigationResult(False, ScreenState.UNKNOWN, "实际入场卡带与传送请求不符")
@@ -2489,6 +2489,18 @@ class SandboxNavigationMixin:
         if opened.success:
             return opened
         failures = [opened.message]
+        # 返城有明确的NPC落点；去其他目标时先保留当前地图，避免绕回无阵安全区。
+        if card is None or target != card.targets[0]:
+            ready = self._restore_navigation_field()
+            if not ready.success:
+                return NavigationResult(False, ready.state, "；".join([*failures, ready.message]))
+            self._status("导航恢复", f"{card.card_id if card else '-'}；优先返回本图传送阵")
+            opened = self._walk_to_circle_neighbour(card)
+            if opened is None:
+                opened = self._walk_to_sandbox_teleport_interaction()
+            if opened.success:
+                return opened
+            failures.append(f"本图回阵：{opened.message}")
         town_first = card is not None and (
             target == card.targets[0] or card.card_id in RESTART_NAV_ENTRIES
         )
@@ -2513,7 +2525,9 @@ class SandboxNavigationMixin:
             if entry == HUNTING_GROUND_NAV_ENTRY and not self._hunting_ground_field():
                 failures.append(f"{entry}落点未通过狩猎场控件核验：{actual}")
                 continue
-            opened = self._open_hunting_ground_portal()
+            opened = self._walk_to_circle_neighbour(card)
+            if opened is None:
+                opened = self._open_hunting_ground_portal()
             if opened.success:
                 return opened
             failures.append(f"{entry}：{opened.message}")
@@ -2539,7 +2553,7 @@ class SandboxNavigationMixin:
         origin = next(item for item in card.targets if item.key == current)
         destination = next(item for item in card.targets if item.key == neighbour)
         moved = self._walk_to_collection_map(card, origin, destination)
-        return self.open_teleport_map_from_sandbox() if moved.success else moved
+        return self._open_hunting_ground_portal() if moved.success else moved
 
 
     def _open_hunting_ground_portal(self) -> NavigationResult:
