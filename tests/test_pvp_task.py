@@ -540,7 +540,7 @@ class PVPTaskHelperTest(unittest.TestCase):
             )
         )
         self.assertEqual([(852, 991, 1920, 1080, 0.0)], clicks)
-        self.assertEqual(10, len(sleeps))
+        self.assertEqual(2, len(sleeps))
         self.assertTrue(all(seconds == 0.1 for seconds in sleeps))
 
     def test_template_click_scales_reference_offset_with_client_resolution(self):
@@ -816,6 +816,32 @@ class PVPTaskHelperTest(unittest.TestCase):
             )
         )
         self.assertEqual([("missing recent PVP template", True)], warnings)
+
+    def test_common_cartridge_entry_rechecks_entry_before_one_page_retry(self):
+        for page_results, entry_results, expected in (
+            ([True], [True], True),
+            ([False, True], [True, True], True),
+            ([False, False], [True, True], False),
+            ([False], [True, False], False),
+        ):
+            with self.subTest(pages=page_results, entries=entry_results):
+                task = object.__new__(PVPTask)
+                task.operate_click = Mock()
+                task._sleep_after_recognition = Mock()
+                task._recent_cartridge_is_pvp = lambda: False
+                task._handle_recent_cartridge_special_pages = Mock(
+                    return_value=CartridgeSpecialPageResult.ABSENT,
+                )
+                task.info_set = Mock()
+                task._save_flow_diagnostic = Mock()
+                entry = Mock(side_effect=entry_results)
+                page = Mock(side_effect=page_results)
+                self.assertEqual(expected, task.open_cartridge_quick_switcher(
+                    lambda: True, entry, page,
+                ))
+                self.assertEqual(len(entry_results), entry.call_count)
+                self.assertEqual(len(page_results), page.call_count)
+                self.assertEqual(not expected, task._save_flow_diagnostic.called)
 
     def test_common_cartridge_entry_stops_when_home_is_not_confirmed(self):
         task = object.__new__(PVPTask)

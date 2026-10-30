@@ -3,6 +3,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import numpy as np
 import win32api
 import win32con
 from ok.device.intercation import PostMessageInteraction
@@ -30,6 +31,45 @@ def make_interaction():
 
 
 class BD2InteractionOperateTest(unittest.TestCase):
+    def test_capture_discards_frame_interrupted_by_input_desktop_switch(self):
+        for during_capture in (False, True):
+            with self.subTest(during_capture=during_capture):
+                interaction, calls = make_interaction()
+                task = object.__new__(BaseBD2Task)
+                task.info_set = lambda *_: None
+                now = [0.0]
+                frames = []
+
+                def wait(seconds):
+                    self.assertEqual([], calls)
+                    now[0] += seconds
+
+                def capture():
+                    frame = np.zeros((2, 2, 3), dtype=np.uint8)
+                    frames.append(frame)
+                    return frame
+
+                task.next_frame = capture
+                task._executor = SimpleNamespace(
+                    interaction=interaction, check_enabled=lambda: None,
+                    exit_event=SimpleNamespace(wait=wait), reset_scene=lambda **_: None,
+                    device_manager=SimpleNamespace(capture_method="test"),
+                )
+                denied = win32api.error(5, "GetCursorPos", "access denied")
+                positions = ([(1, 2), denied] if during_capture else [denied])
+                positions += [(1, 2)] * 4
+                with (
+                    patch("src.interaction.BD2Interaction.GetCursorPos", side_effect=positions),
+                    patch("src.tasks.BaseBD2Task.monotonic", side_effect=lambda: now[0]),
+                    patch("src.tasks.BaseBD2Task.observe_frame") as observe,
+                ):
+                    result = task.capture_frame()
+                self.assertEqual(2 if during_capture else 1, len(frames))
+                self.assertIs(frames[-1], result)
+                observe.assert_called_once_with(task, result)
+                self.assertEqual(.25, task._input_wait_seconds)
+                self.assertEqual(0.0, task._active_time(lambda: now[0]))
+
     def test_task_waits_for_cursor_access_before_dispatching_once(self):
         interaction, calls = make_interaction()
         task = object.__new__(BaseBD2Task)
@@ -272,6 +312,12 @@ class BD2InteractionActivationTest(unittest.TestCase):
             interaction.try_activate()
 
         self.assertFalse(interaction._activate_required)
+
+        interaction.hwnd_window.is_foreground = lambda: False
+        with patch.object(PostMessageInteraction, "try_activate") as parent_activate:
+            interaction.try_activate()
+        parent_activate.assert_called_once_with()
+        self.assertTrue(interaction._activate_required)
 
 
 if __name__ == "__main__":

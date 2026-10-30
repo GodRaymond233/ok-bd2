@@ -235,7 +235,15 @@ class BaseBD2Task(BaseTask):
         return str(capture_method) if capture_method is not None else "<none>"
 
     def capture_frame(self, screenshot_name: str | None = None):
-        frame = self.next_frame()
+        for _attempt in range(3):
+            self._ensure_input_desktop()
+            paused = getattr(self, "_input_wait_seconds", 0.0)
+            frame = self.next_frame()
+            self._ensure_input_desktop()
+            if paused == getattr(self, "_input_wait_seconds", 0.0):
+                break
+        else:
+            raise TimeoutError("输入桌面反复中断，未取得可用游戏画面。")
         if frame is None:
             raise RuntimeError("未能从 BD2 截取画面。")
 
@@ -343,10 +351,28 @@ class BaseBD2Task(BaseTask):
         # TaskExecutor.sleep also waits for capture readiness. Cursor access
         # needs its own bounded wait when Windows switches input desktops.
         self.executor.check_enabled()
-        if self.executor.exit_event.wait(seconds):
-            raise FinishedException()
+        started = monotonic()
+        try:
+            if self.executor.exit_event.wait(seconds):
+                raise FinishedException()
+        finally:
+            self._input_wait_seconds = (
+                getattr(self, "_input_wait_seconds", 0.0) + monotonic() - started
+            )
         self.executor.check_enabled()
         self.executor.reset_scene(check_enabled=False)
+
+    def _ensure_input_desktop(self) -> None:
+        interaction = getattr(self.executor, "interaction", None)
+        if interaction is not None and hasattr(interaction, "wait_for_input"):
+            interaction.wait_for_input(
+                self._wait_for_input,
+                lambda message: self.info_set("输入状态", message),
+            )
+
+    def _active_time(self, clock=monotonic) -> float:
+        """UI deadlines exclude bounded waits for the Windows input desktop."""
+        return clock() - getattr(self, "_input_wait_seconds", 0.0)
 
     def attempt_return_home(self, name: str = "自动返回主页") -> bool:
         """点右上角“房子”按钮一次（需调用方已确认不在主页）。正式路径会移动真实光标。"""
@@ -1038,6 +1064,11 @@ class BaseBD2Task(BaseTask):
             self._save_flow_diagnostic("cartridge_quick_switch_failed")
             return False
         confirmed = bool(confirm_quick_switch_page())
+        if not confirmed:
+            self.info_set("当前阶段", "重新识别快速切换入口并补点")
+            # The entry must still be visible; never replay the old coordinates.
+            if click_quick_switch():
+                confirmed = bool(confirm_quick_switch_page())
         if not confirmed:
             self._save_flow_diagnostic("cartridge_quick_switch_page_failed")
         return confirmed

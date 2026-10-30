@@ -1244,9 +1244,9 @@ class PVPTask(BaseBD2Task):
         interval: float = 0.35,
         stabilize: bool = False,
     ) -> bool:
-        end_at = monotonic() + max(0.0, timeout)
+        end_at = self._active_time(monotonic) + max(0.0, timeout)
         last_score = -1.0
-        while monotonic() <= end_at:
+        while self._active_time(monotonic) <= end_at:
             frame = self.capture_frame()
             frame_height, frame_width = frame.shape[:2]
             result = self._match(frame, spec)
@@ -1266,6 +1266,8 @@ class PVPTask(BaseBD2Task):
                         sample_match=sample_match,
                         passes=lambda candidate: self._passes(candidate, spec),
                         sleep=self.sleep,
+                        window_samples=3,
+                        minimum_hits=3,
                         on_sample=lambda candidate: self.info_set(
                             name,
                             f"{candidate.score:.3f}/{candidate.pixel_score:.3f}",
@@ -1273,7 +1275,7 @@ class PVPTask(BaseBD2Task):
                     )
                     if stabilized is None:
                         self.info_set(f"{name}稳定识别", "未形成稳定位置")
-                        return False
+                        continue
                     consensus, frame_shape = stabilized
                     frame_height, frame_width = frame_shape[:2]
                     stable_center = consensus.center

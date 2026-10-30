@@ -282,7 +282,7 @@ class SquareGoddessTask(BaseBD2Task):
             if timeout is None
             else max(0.0, float(timeout))
         )
-        end_at = monotonic() + wait_seconds
+        end_at = self._active_time(monotonic) + wait_seconds
         last_left_hits = 0
         last_p95 = 0.0
         last_gacha_text = ""
@@ -294,11 +294,11 @@ class SquareGoddessTask(BaseBD2Task):
         completed_home_clicks = total_home_clicks - remaining_home_clicks
         retry_interval = max(0.0, float(retry_interval))
         next_home_retry_at = (
-            monotonic() + retry_interval
+            self._active_time(monotonic) + retry_interval
             if remaining_home_clicks > 0
             else float("inf")
         )
-        while monotonic() <= end_at:
+        while self._active_time(monotonic) <= end_at:
             frame = self.capture_frame()
             left_text = self._ocr_text(
                 frame,
@@ -356,7 +356,7 @@ class SquareGoddessTask(BaseBD2Task):
             if (
                 remaining_home_clicks > 0
                 and still_in_square
-                and monotonic() >= next_home_retry_at
+                and self._active_time(monotonic) >= next_home_retry_at
             ):
                 completed_home_clicks += 1
                 remaining_home_clicks -= 1
@@ -369,7 +369,7 @@ class SquareGoddessTask(BaseBD2Task):
                     f"仍识别到快速切换卡带按钮，执行第{completed_home_clicks}次点击。"
                 )
                 self.operate_click(*SQUARE_HOME_POINT, after_sleep=1.0)
-                next_home_retry_at = monotonic() + retry_interval
+                next_home_retry_at = self._active_time(monotonic) + retry_interval
                 continue
             self.sleep(interval)
 
@@ -383,11 +383,11 @@ class SquareGoddessTask(BaseBD2Task):
     def _wait_for_quick_switch_page(self, interval: float = 0.5) -> bool:
         self.info_set("当前阶段", "确认卡带选择页")
         self.sleep(1.0)
-        end_at = monotonic() + float(
+        end_at = self._active_time(monotonic) + float(
             self.config.get("卡带选择页确认等待秒数", 10.0)
         )
         last_text = ""
-        while monotonic() <= end_at:
+        while self._active_time(monotonic) <= end_at:
             frame = self.capture_frame()
             text = self._ocr_text(frame, name="卡带选择页")
             last_text = text or last_text
@@ -410,10 +410,10 @@ class SquareGoddessTask(BaseBD2Task):
         return False
 
     def _wait_for_life_gameplay_category(self, interval: float = 0.5) -> bool:
-        end_at = monotonic() + float(self.config.get("玩法类别高亮确认秒数", 3.0))
+        end_at = self._active_time(monotonic) + float(self.config.get("玩法类别高亮确认秒数", 3.0))
         last_text = ""
         last_highlight_ratio = 0.0
-        while monotonic() <= end_at:
+        while self._active_time(monotonic) <= end_at:
             frame = self.capture_frame()
             text = self._ocr_text(
                 frame,
@@ -492,10 +492,10 @@ class SquareGoddessTask(BaseBD2Task):
         timeout: float = 3.0,
         interval: float = 0.35,
     ) -> bool:
-        end_at = monotonic() + max(0.0, timeout)
+        end_at = self._active_time(monotonic) + max(0.0, timeout)
         click_count = 0
         absent_hits = 0
-        while monotonic() <= end_at:
+        while self._active_time(monotonic) <= end_at:
             frame = self.capture_frame()
             frame_height, frame_width = frame.shape[:2]
             result = self._match(frame, SQUARE_NOTICE_TEMPLATE)
@@ -531,11 +531,11 @@ class SquareGoddessTask(BaseBD2Task):
         timeout: float,
         interval: float = 0.35,
     ) -> str | None:
-        end_at = monotonic() + max(0.0, timeout)
+        end_at = self._active_time(monotonic) + max(0.0, timeout)
         previous = None
         completion_hits = 0
         absent_since = None
-        while monotonic() <= end_at:
+        while self._active_time(monotonic) <= end_at:
             frame = self.capture_frame()
             point, prayer_visible, text = self._goddess_prayer_signals(frame)
             self.info_set("女神像许愿 OCR", text or "-")
@@ -564,7 +564,7 @@ class SquareGoddessTask(BaseBD2Task):
                     self._match(frame, FANTASIA_SQUARE_TEMPLATE), FANTASIA_SQUARE_TEMPLATE
                 )
             ):
-                now = monotonic()
+                now = self._active_time(monotonic)
                 if absent_since is not None and now - absent_since >= 2.0:
                     return GODDESS_ALREADY_COMPLETE
                 if absent_since is None:
@@ -586,11 +586,11 @@ class SquareGoddessTask(BaseBD2Task):
         timeout: float,
         interval: float = 0.5,
     ) -> bool:
-        end_at = monotonic() + max(0.0, timeout)
+        end_at = self._active_time(monotonic) + max(0.0, timeout)
         max_clicks = max(1, int(self.config.get("女神像许愿最多点击次数", 3)))
         click_count = 0
 
-        while monotonic() <= end_at:
+        while self._active_time(monotonic) <= end_at:
             frame = self.capture_frame()
             frame_height, frame_width = frame.shape[:2]
             point, _prayer_visible, text = self._goddess_prayer_signals(frame)
@@ -610,7 +610,7 @@ class SquareGoddessTask(BaseBD2Task):
             if click_count and self._wait_for_daily_navigation_to_disappear(
                 timeout=min(
                     max(0.0, float(self.config.get("女神像完成确认等待秒数", 8.0))),
-                    max(0.0, end_at - monotonic()),
+                    max(0.0, end_at - self._active_time(monotonic)),
                 )
             ):
                 return True
@@ -623,10 +623,10 @@ class SquareGoddessTask(BaseBD2Task):
         timeout: float,
         interval: float = 0.5,
     ) -> bool:
-        end_at = monotonic() + max(0.0, timeout)
+        end_at = self._active_time(monotonic) + max(0.0, timeout)
         absent_since = None
         completion_hits = 0
-        while monotonic() <= end_at:
+        while self._active_time(monotonic) <= end_at:
             frame = self.capture_frame()
             observation = self._observe_goddess_navigation(frame)
             _point, prayer_visible, prayer_text = self._goddess_prayer_signals(frame)
@@ -643,7 +643,7 @@ class SquareGoddessTask(BaseBD2Task):
                 observation.state == "absent" and observation.text.strip()
                 and prayer_text.strip() and not prayer_visible and square
             ):
-                now = monotonic()
+                now = self._active_time(monotonic)
                 if absent_since is not None and now - absent_since >= 2.0:
                     return True
                 if absent_since is None:
@@ -663,9 +663,9 @@ class SquareGoddessTask(BaseBD2Task):
         interval: float = 0.35,
         stabilize: bool = False,
     ) -> bool:
-        end_at = monotonic() + max(0.0, timeout)
+        end_at = self._active_time(monotonic) + max(0.0, timeout)
         last_score = -1.0
-        while monotonic() <= end_at:
+        while self._active_time(monotonic) <= end_at:
             frame = self.capture_frame()
             frame_height, frame_width = frame.shape[:2]
             result = self._match(frame, spec)
@@ -685,6 +685,8 @@ class SquareGoddessTask(BaseBD2Task):
                         sample_match=sample_match,
                         passes=lambda candidate: self._passes(candidate, spec),
                         sleep=self.sleep,
+                        window_samples=3,
+                        minimum_hits=3,
                         on_sample=lambda candidate: self.info_set(
                             name,
                             f"{candidate.score:.3f}/{candidate.pixel_score:.3f}",
@@ -692,7 +694,7 @@ class SquareGoddessTask(BaseBD2Task):
                     )
                     if stabilized is None:
                         self.info_set(f"{name}稳定识别", "未形成稳定位置")
-                        return False
+                        continue
                     consensus, frame_shape = stabilized
                     frame_height, frame_width = frame_shape[:2]
                     stable_center = consensus.center
@@ -781,9 +783,9 @@ class SquareGoddessTask(BaseBD2Task):
         name: str,
         interval: float = 0.35,
     ) -> bool:
-        end_at = monotonic() + max(0.0, timeout)
+        end_at = self._active_time(monotonic) + max(0.0, timeout)
         last_score = -1.0
-        while monotonic() <= end_at:
+        while self._active_time(monotonic) <= end_at:
             frame = self.capture_frame()
             result = self._match(frame, spec)
             last_score = result.score
@@ -797,7 +799,7 @@ class SquareGoddessTask(BaseBD2Task):
 
     def _match(self, frame, spec: TemplateSpec) -> MatchResult:
         empty = MatchResult(-1.0, (0, 0), (0, 0))
-        if monotonic() < self._match_pause_until:
+        if self._active_time(monotonic) < self._match_pause_until:
             return empty
 
         try:
@@ -816,7 +818,7 @@ class SquareGoddessTask(BaseBD2Task):
                 self.log_warning(str(exc), notify=True)
             return empty
         except (cv2.error, MemoryError) as exc:
-            self._match_pause_until = monotonic() + 2.0
+            self._match_pause_until = self._active_time(monotonic) + 2.0
             message = f"图像匹配内存不足，暂停识别2秒：{spec.name}"
             self.info_set("匹配错误", message)
             if spec.name not in self._match_error_names:

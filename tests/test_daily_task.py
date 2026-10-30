@@ -2108,6 +2108,49 @@ class DailyTaskHelperTest(StageHistoryTestCase):
                     self.assertEqual((10, 60, 60), (result.count, result.cost, result.pool))
                 vision.click_client.assert_not_called()
 
+    def test_quick_hunt_max_rechecks_after_input_wait_and_retries_only_with_safe_cost(self):
+        for lost_first, valid_cost in ((False, True), (True, True), (True, False)):
+            with self.subTest(lost_first=lost_first, valid_cost=valid_cost):
+                task = object.__new__(QuickHuntTask)
+                task.config = {"快速狩猎界面等待秒数": 5.0}
+                task.info_set = Mock()
+                task.log_info = Mock()
+                now = [0.0]
+                task.sleep = lambda seconds: now.__setitem__(0, now[0] + seconds)
+                task._executor = SimpleNamespace(
+                    check_enabled=lambda: None,
+                    exit_event=SimpleNamespace(wait=task.sleep),
+                    reset_scene=lambda **_: None,
+                )
+                initial = hunt_dialog(pool=60, resource="火把", map_name="黑暗洞穴极难")
+                selected = replace(initial, count=10, cost=60 if valid_cost else 66)
+                current = [initial]
+                task.capture_frame = Mock(return_value=None)
+                task._quick_hunt_dialog_snapshot = Mock(side_effect=lambda *_: current[0])
+                clicks = []
+
+                def click(*_args, **_kwargs):
+                    clicks.append(now[0])
+                    if len(clicks) == 1:
+                        task._wait_for_input(15.0)
+                    if not lost_first or len(clicks) > 1:
+                        current[0] = selected
+                    task.sleep(.8)
+                    return True
+
+                task._quick_hunt_click_ocr = click
+                with (
+                    patch("src.tasks.quick_hunt.monotonic", side_effect=lambda: now[0]),
+                    patch("src.tasks.BaseBD2Task.monotonic", side_effect=lambda: now[0]),
+                ):
+                    result = task._quick_hunt_prepare_dialog("MAX", "圣石", "黑暗", "火把", 60)
+                self.assertEqual(valid_cost, result is not None)
+                self.assertGreaterEqual(len(clicks), 2 if lost_first else 1)
+                self.assertLessEqual(len(clicks), 3)
+                if result is not None:
+                    self.assertEqual((10, 60, 60), (result.count, result.cost, result.pool))
+                self.assertLess(now[0], 22)
+
     def test_quick_hunt_submission_requires_free_switch_and_stable_affordable_cost(self):
         rice = hunt_dialog()
         torch = hunt_dialog(map_name="火之洞穴极难", pool=60, resource="火把")

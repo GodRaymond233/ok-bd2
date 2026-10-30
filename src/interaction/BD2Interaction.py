@@ -259,9 +259,8 @@ class BD2Interaction(PostMessageInteraction):
             SendInput(1, ctypes.pointer(i), ctypes.sizeof(INPUT))
 
     def try_activate(self):
-        if self._activate_required:
-            if self.hwnd_window.is_foreground():
-                self._activate_required = False
-                return
-            super().try_activate()
-            self._activate_required = not self.hwnd_window.is_foreground()
+        if self.hwnd_window.is_foreground():
+            self._activate_required = False
+            return
+        super().try_activate()
+        self._activate_required = not self.hwnd_window.is_foreground()
