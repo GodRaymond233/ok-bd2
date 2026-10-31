@@ -293,6 +293,17 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
             save_config(config, config.default, allow_private=True)
             return next(item for item in runtime.settings() if item["name"] == group)
 
+    def ensure_task_slot(resuming=None):
+        current = runtime.executor.current_task
+        if current is not None and current is not resuming:
+            raise ValueError("已有任务在运行或排队，请先停止")
+        if any(
+            task is not resuming
+            and (task.enabled or task.running or getattr(task, "_start_after_login", False))
+            for task in runtime.executor.onetime_tasks
+        ):
+            raise ValueError("已有任务在运行或排队，请先停止")
+
     def start(name):
         with config_lock:
             ensure_config_write()
@@ -302,6 +313,7 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
             if task.enabled and not task.paused:
                 raise ValueError("任务已在运行或排队")
             refuse_legacy()
+            ensure_task_slot(resuming=task if task is runtime.executor.current_task else None)
             if controller.start(task) is False:
                 raise ValueError("任务未启动，请等待启动流程结束")
             return task_payload(task)
@@ -346,12 +358,7 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
                 raise ValueError("没有一键完成日常任务")
             if controller.starting:
                 raise ValueError("正在启动游戏，请等待或取消启动")
-            if (
-                runtime.executor.current_task is not None
-                or batch.enabled
-                or getattr(batch, "_start_after_login", False)
-            ):
-                raise ValueError("已有任务在运行或排队，请先停止")
+            ensure_task_slot()
             refuse_legacy()
             batch.request_run_mode(mode)
             if controller.start(batch) is False:
@@ -394,10 +401,10 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
         return {"width": result.width, "height": result.height, "changed": result.changed}
 
     def game_paths():
-        launcher = runtime.device_manager.config.get("pc_full_path") or ""
+        recorded_path = runtime.device_manager.config.get("pc_full_path") or ""
         return {
-            "game": resolve_game_exe_path(),
-            "launcher": launcher or resolve_launcher_exe_path(),
+            "game": resolve_game_exe_path(running_path=recorded_path),
+            "launcher": resolve_launcher_exe_path(running_path=recorded_path),
         }
 
     def test_notification(channel):

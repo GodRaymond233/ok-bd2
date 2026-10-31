@@ -289,6 +289,9 @@ class Bd2RoutesTest(unittest.TestCase):
             "batch queued": (
                 lambda: setattr(self.batch, "_enabled", True), RUN_MODE_ALL, "已有任务",
             ),
+            "another task queued": (
+                lambda: setattr(self.hunt, "_enabled", True), RUN_MODE_ALL, "已有任务",
+            ),
             "waiting for login": (
                 lambda: setattr(self.batch, "_start_after_login", True), RUN_MODE_ALL, "已有任务"),
             "game starting": (
@@ -300,6 +303,7 @@ class Bd2RoutesTest(unittest.TestCase):
             with self.subTest(name):
                 self.executor.current_task = None
                 self.batch._enabled = False
+                self.hunt._enabled = False
                 self.batch._start_after_login = False
                 self.facade.start_controller.starting = False
                 self.legacy = None
@@ -311,6 +315,30 @@ class Bd2RoutesTest(unittest.TestCase):
                 self.assertIn(message, response.json()["detail"])
                 self.batch.request_run_mode.assert_not_called()
                 self.controller_start.assert_not_called()
+
+    def test_task_start_refuses_other_active_or_pending_tasks(self):
+        for phase in ("running", "paused", "queued", "login"):
+            with self.subTest(phase=phase):
+                self.executor.current_task = self.batch if phase in ("running", "paused") else None
+                self.executor.paused = phase == "paused"
+                self.batch._enabled = phase == "queued"
+                self.batch._start_after_login = phase == "login"
+                self.controller_start.reset_mock()
+                response = self.client.post(
+                    f"/api/tasks/{self.hunt.name}/start", headers=self.headers
+                )
+                self.assertEqual(400, response.status_code, response.text)
+                self.assertIn("已有任务", response.json()["detail"])
+                self.controller_start.assert_not_called()
+                self.assertFalse(self.hunt.enabled)
+
+    def test_task_start_can_resume_the_current_task(self):
+        self.executor.current_task = self.hunt
+        self.hunt._enabled = True
+        self.hunt._paused = True
+        response = self.client.post(f"/api/tasks/{self.hunt.name}/start", headers=self.headers)
+        self.assertEqual(200, response.status_code, response.text)
+        self.controller_start.assert_called_once_with(self.hunt, exit_after=False)
 
     def test_today_route(self):
         response = self.client.get("/api/bd2/today", headers=self.headers)

@@ -208,6 +208,64 @@ async function waitForClient(timeoutMs: number): Promise<Record<string, string> 
   return state;
 }
 
+async function checkPageInterfaces(): Promise<void> {
+  const required: Record<string, string[] | null> = {
+    "/api/bd2/today": ["items", "batch", "refresh"],
+    "/api/bd2/history": null,
+    "/api/bd2/window": ["size", "ratio_ok", "resolutions", "default", "resizing"],
+    "/api/bd2/game": ["game", "launcher"],
+    "/api/settings": null,
+    "/api/ui/capture": ["status", "devices", "capture_in_use", "capture_preference", "starter_wait"],
+    "/api/logs?level=ALL": ["text"],
+  };
+  const checks: { path: string; status: number | null; valid: boolean }[] = [];
+  smoke.pageInterfaces = checks;
+  for (const [pathname, fields] of Object.entries(required)) {
+    const response = (await apiGet(pathname)) as { status: number; body: unknown } | null;
+    const body = response?.body;
+    const valid = response?.status === 200 && (fields === null
+      ? Array.isArray(body)
+      : body !== null && typeof body === "object" && fields.every((field) => field in body));
+    // Keep credentials from /api/settings out of the smoke report.
+    checks.push({ path: pathname, status: response?.status ?? null, valid });
+    if (!valid) {
+      throw new Error(`Page API contract failed: ${pathname}`);
+    }
+  }
+}
+
+async function checkPageNavigation(): Promise<void> {
+  const pages: { page: string; heading: string | null; passed: boolean }[] = [];
+  smoke.pages = pages;
+  for (const label of ["任务", "日志", "设备", "设置", "今日"]) {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      throw new Error("Client window disappeared during page checks");
+    }
+    const clicked = await mainWindow.webContents.executeJavaScript(
+      `(() => { const button = document.querySelector('nav button.nav[title="${label}"]');` +
+        " if (!button) return false; button.click(); return true; })()",
+    );
+    const deadline = Date.now() + 5000;
+    let state: Record<string, string> | null = null;
+    let selected = false;
+    while (clicked && Date.now() < deadline) {
+      selected = await mainWindow.webContents.executeJavaScript(
+        `document.querySelector('nav button.nav[title="${label}"]')?.getAttribute('aria-current') === 'page'`,
+      );
+      state = await pageState();
+      if (selected && state?.heading && state.core === "ok" && state.events === "connected") {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const passed = Boolean(selected && state?.heading && state.core === "ok" && state.events === "connected");
+    pages.push({ page: label, heading: state?.heading ?? null, passed });
+    if (!passed) {
+      throw new Error(`Page navigation failed: ${label}`);
+    }
+  }
+}
+
 async function runSmokeCycle(file: string): Promise<void> {
   try {
     smoke.client = await waitForClient(15_000);
@@ -217,6 +275,8 @@ async function runSmokeCycle(file: string): Promise<void> {
     smoke.tasks = ((await apiGet("/api/tasks")) as { body?: { name: string }[] } | null)?.body?.map(
       (task) => task.name,
     );
+    await checkPageInterfaces();
+    await checkPageNavigation();
     smoke.title = mainWindow?.webContents.getTitle();
   } catch (error) {
     smoke.apiError = String(error);

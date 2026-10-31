@@ -44,7 +44,7 @@ export const api = {
   status: () => request<ExecutorStatus>("/api/status"),
   info: () => request<DesktopInfo>("/api/desktop/info"),
   tasks: () => request<TaskPayload[]>("/api/tasks"),
-  logs: () => request<{ text: string }>("/api/logs?level=INFO"),
+  logs: () => request<{ text: string }>("/api/logs?level=ALL"),
   settings: () => request<SettingsGroup[]>("/api/settings"),
   setSetting: (group: string, key: string, value: unknown) =>
     request<SettingsGroup>(`/api/settings/${encodeURIComponent(group)}/config`, "POST", { key, value }),

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  appendRecords,
+  LOG_LIMIT,
   levelCounts,
   logRows,
   mergeLogs,
@@ -39,7 +41,7 @@ test("log file records keep their time, level, source and continuation lines", (
       ["10:33:41", 20, "ok"],
     ],
   );
-  assert.equal(records[0].ts, local(10, 20, 41));
+  assert.equal(records[0].ts, local(10, 20, 41) + 0.001);
   assert.equal(records[2].text, "每日跑商：未找到商人，已返回主页。");
   assert.equal(records[2].more.length, 3);
   assert.equal(records[0].date, "2026-10-22");
@@ -73,6 +75,34 @@ test("live records follow the file without repeating it", () => {
   assert.deepEqual(recordsFromEvent({ event: "task", args: [] }, 0), []);
   const bare = recordsFromEvent({ event: "log", args: [40, "没有时间的一行\n第二行"] }, local(9, 0, 0));
   assert.deepEqual([bare[0].time, bare[0].level, bare[0].text, bare[0].more], ["09:00:00", 40, "没有时间的一行", ["第二行"]]);
+});
+
+test("same-second records keep distinct timestamps, sources and repeated occurrences", () => {
+  const lines = [
+    "2026-10-22 10:33:41,100 INFO MainThread first:完成",
+    "2026-10-22 10:33:41,101 INFO MainThread first:完成",
+    "2026-10-22 10:33:41,100 INFO MainThread second:完成",
+    "2026-10-22 10:33:41,100 ERROR MainThread first:完成",
+    "2026-10-22 10:33:41,100 INFO MainThread first:完成",
+  ];
+  const merged = mergeLogs(parseLog(lines[0]), parseLog(lines.join("\n")));
+  assert.equal(merged.length, 5);
+  assert.deepEqual(merged.map((record) => record.source), ["first", "first", "second", "first", "first"]);
+});
+
+test("live logs retain a continuous bounded history while the page stays open", () => {
+  const file = recordsFromEvent({ event: "log", args: [20, "initial"] }, local(10, 0, 0));
+  let live = file;
+  for (let index = 1; index <= LOG_LIMIT + 1; index++) {
+    live = appendRecords(live, recordsFromEvent({ event: "log", args: [20, `line ${index}`] }, local(10, 0, 0) + index));
+    if (index === 400) {
+      assert.equal(mergeLogs(file, live).length, 401);
+    }
+  }
+  assert.equal(live.length, LOG_LIMIT);
+  assert.equal(mergeLogs(file, live).length, LOG_LIMIT);
+  assert.equal(live[0].text, "line 2");
+  assert.equal(live.at(-1)?.text, `line ${LOG_LIMIT + 1}`);
 });
 
 function kinds(rows: ReturnType<typeof logRows>): string[] {

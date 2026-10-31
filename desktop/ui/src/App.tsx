@@ -4,7 +4,7 @@ import { api } from "./api.ts";
 import { connectEvents } from "./events.ts";
 import { t } from "./i18n.ts";
 import { DevicePage } from "./DevicePage.tsx";
-import { appendRecords, type LogRecord, parseLog, recordsFromEvent } from "./logs.ts";
+import { appendRecords, LOG_LIMIT, type LogRecord, parseLog, recordsFromEvent } from "./logs.ts";
 import { LogsPage } from "./LogsPage.tsx";
 import { RecordsPage } from "./OtherPages.tsx";
 import { type DockRun, RunDock } from "./RunDock.tsx";
@@ -90,7 +90,6 @@ export interface Core {
 const REFRESH_EVENTS = new Set(["task", "task_done", "task_list_updated", "executor_paused"]);
 // Game start progress only changes the capture state (status.starting, starter_wait).
 const CAPTURE_EVENTS = new Set(["starting_emulator", "starter_wait", "adb_devices"]);
-const LIVE_LOG_LIMIT = 300;
 const DOCK_KEY = "okbd2.dockExpanded";
 
 const message = (reason: unknown) => (reason instanceof Error ? reason.message : String(reason));
@@ -179,7 +178,7 @@ export function App() {
       try {
         const file = await api.logs();
         if (!cancelled) {
-          setLogs((current) => appendRecords(parseLog(file.text).slice(-200), current, LIVE_LOG_LIMIT));
+          setLogs((current) => appendRecords(parseLog(file.text).slice(-LOG_LIMIT), current));
         }
       } catch {
         // the log file is optional on a fresh install
@@ -193,7 +192,7 @@ export function App() {
         (payload) => {
           const records = recordsFromEvent(payload, Date.now() / 1000);
           if (records.length) {
-            setLogs((current) => appendRecords(current, records, LIVE_LOG_LIMIT));
+            setLogs((current) => appendRecords(current, records));
           }
           if (payload.event === "starting_emulator" && Array.isArray(payload.args)) {
             const [done, error] = payload.args;

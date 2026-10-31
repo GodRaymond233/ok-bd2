@@ -200,17 +200,30 @@ class WindowTest(unittest.TestCase):
 
 
 class GamePathTest(unittest.TestCase):
-    def test_game_route_prefers_the_launcher_ok_script_recorded(self):
-        client = make_client(self)
-        self.manager.config["pc_full_path"] = r"D:\Neowiz\Starter.exe"
-        with (
-            patch("src.desktop.app.resolve_game_exe_path", return_value=r"D:\BD2\BrownDust II.exe"),
-            patch("src.desktop.app.resolve_launcher_exe_path", return_value="unused") as launcher,
-        ):
-            paths = client.get("/api/bd2/game").json()
-        self.assertEqual({"game": r"D:\BD2\BrownDust II.exe", "launcher": r"D:\Neowiz\Starter.exe"},
-                         paths)
-        launcher.assert_not_called()
+    def test_game_route_resolves_game_and_starter_paths_separately(self):
+        game_path = r"D:\BD2\BrownDust II.exe"
+        starter_path = r"D:\Neowiz\Browndust2Starter.exe"
+        cases = (
+            (starter_path, starter_path),
+            (game_path, starter_path),
+            ("", starter_path),
+            (game_path, ""),
+        )
+        for recorded_path, detected_starter in cases:
+            with self.subTest(recorded=recorded_path, starter=detected_starter):
+                client = make_client(self)
+                self.manager.config["pc_full_path"] = recorded_path
+                with (
+                    patch("src.desktop.app.resolve_game_exe_path", return_value=game_path) as game,
+                    patch(
+                        "src.desktop.app.resolve_launcher_exe_path", return_value=detected_starter
+                    ) as launcher,
+                ):
+                    response = client.get("/api/bd2/game")
+                self.assertEqual(200, response.status_code, response.text)
+                self.assertEqual({"game": game_path, "launcher": detected_starter}, response.json())
+                game.assert_called_once_with(running_path=recorded_path)
+                launcher.assert_called_once_with(running_path=recorded_path)
 
 
 class TestNotificationTest(unittest.TestCase):

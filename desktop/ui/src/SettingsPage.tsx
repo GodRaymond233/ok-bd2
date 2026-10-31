@@ -146,7 +146,7 @@ function Notify({ core }: { core: Core }) {
     <>
       <Section title={t("系统通知")}>
         <ConfigForm fields={pickFields(group, [SYSTEM_NOTIFICATION_KEY])} disabled={false} saveField={save}>
-          <div className="hidden-note">{t("阶段 4 起由新客户端弹出（和托盘图标是同一个）；在此之前只在客户端窗口里显示提示条。")}</div>
+          <div className="hidden-note">{t("当前由自动化核心发送 Windows 通知，可能出现额外的托盘图标；阶段 4 将统一由新客户端发送。")}</div>
         </ConfigForm>
       </Section>
       <Section title={t("发到手机或群聊")}>

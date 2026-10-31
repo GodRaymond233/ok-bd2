@@ -37,18 +37,18 @@ const LEVELS: Record<string, number> = { DEBUG: 10, INFO: 20, WARNING: 30, ERROR
 
 // ok-script's format: "%(asctime)s %(levelname)s %(threadName)s %(message)s", where messages
 // from ok-script's Logger start with "name:" (ok/util/logger.py).
-const LINE = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2}),\d+ (DEBUG|INFO|WARNING|ERROR|CRITICAL) \S+ ?(.*)$/;
+const LINE = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2}),(\d+) (DEBUG|INFO|WARNING|ERROR|CRITICAL) \S+ ?(.*)$/;
 
 const SOURCE = /^([\w.-]{1,60}):(?!\/\/)(.*)$/s;
 
 let nextKey = 1;
 
 function startRecord(match: RegExpExecArray): LogRecord {
-  const [, y, mo, d, h, mi, s, level, rest] = match;
+  const [, y, mo, d, h, mi, s, fraction, level, rest] = match;
   const named = SOURCE.exec(rest);
   return {
     key: nextKey++,
-    ts: new Date(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s)).getTime() / 1000,
+    ts: new Date(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s)).getTime() / 1000 + Number(`0.${fraction}`),
     date: `${y}-${mo}-${d}`,
     time: `${h}:${mi}:${s}`,
     level: LEVELS[level],
@@ -75,8 +75,24 @@ export function parseLog(text: string): LogRecord[] {
 /** Log-file records followed by the live ones the file did not have yet. */
 export function mergeLogs(file: LogRecord[], live: LogRecord[], limit = LOG_LIMIT): LogRecord[] {
   const last = file.length ? file[file.length - 1].ts : -Infinity;
-  const tail = new Set(file.filter((record) => record.ts === last).map((record) => record.text));
-  const fresh = live.filter((record) => record.ts > last || (record.ts === last && !tail.has(record.text)));
+  const identity = (record: LogRecord) => JSON.stringify([record.level, record.source, record.text, record.more]);
+  const tail = new Map<string, number>();
+  for (const record of file.filter((record) => record.ts === last)) {
+    const key = identity(record);
+    tail.set(key, (tail.get(key) ?? 0) + 1);
+  }
+  const fresh = live.filter((record) => {
+    if (record.ts !== last) {
+      return record.ts > last;
+    }
+    const key = identity(record);
+    const copies = tail.get(key) ?? 0;
+    if (copies === 0) {
+      return true;
+    }
+    tail.set(key, copies - 1);
+    return false;
+  });
   const merged = file.concat(fresh);
   return merged.length > limit ? merged.slice(merged.length - limit) : merged;
 }
@@ -196,7 +212,7 @@ export function recordsFromEvent(payload: EventPayload, now: number): LogRecord[
   ];
 }
 
-export function appendRecords(records: LogRecord[], incoming: LogRecord[], limit: number): LogRecord[] {
+export function appendRecords(records: LogRecord[], incoming: LogRecord[], limit = LOG_LIMIT): LogRecord[] {
   const merged = records.concat(incoming);
   return merged.length > limit ? merged.slice(merged.length - limit) : merged;
 }
