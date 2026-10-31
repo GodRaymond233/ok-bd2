@@ -83,6 +83,37 @@ export interface TodaySummary {
   refresh: { daily: number; collection_quota: number; collection_week: number };
 }
 
+export interface HuntStep {
+  target: string;
+  mode: string;
+  count?: number;
+}
+
+export interface HuntPlan {
+  name: string;
+  reserve?: number;
+  rules: { condition: string; steps: HuntStep[] }[];
+  fallback: HuntStep[];
+}
+
+export interface HuntBook {
+  version: number;
+  active: number;
+  plans: HuntPlan[];
+}
+
+export interface HuntPlans {
+  book: HuntBook | null;
+  load_error: string | null;
+  inherited: boolean;
+  revision: string;
+  presets: HuntPlan[];
+  conditions: Record<string, string>;
+  targets: Record<string, string>;
+  modes: Record<string, string>;
+  busy: boolean;
+}
+
 export interface HistoryRun {
   task: string;
   started: number | null;

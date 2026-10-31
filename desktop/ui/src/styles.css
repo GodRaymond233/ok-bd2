@@ -2514,6 +2514,28 @@ mark {
 .report-image { display: block; max-width: 100%; max-height: 360px; object-fit: contain; }
 .report-actions { flex-wrap: wrap; margin-top: 18px; }
 
+.hunt-editor {
+  width: 980px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  color: var(--ink);
+  background: var(--surface);
+}
+.hunt-editor::backdrop { background: #0006; }
+.hunt-fields { padding: 0; border: 0; margin: 0; min-width: 0; }
+.hunt-toolbar, .hunt-step, .hunt-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.hunt-toolbar { margin: 12px 0; }
+.hunt-toolbar > label { display: grid; gap: 6px; }
+.hunt-toolbar .select { min-width: 140px; }
+.hunt-rule, .hunt-preview { margin: 14px 0; padding: 14px; border: 1px solid var(--line); border-radius: 10px; }
+.hunt-rule h3, .hunt-preview h3 { margin: 0 0 12px; font-size: 14px; }
+.hunt-step { margin-bottom: 8px; }
+.hunt-step .select { min-width: 130px; }
+.hunt-step .input, .hunt-toolbar input[type="number"] { min-width: 0; width: 96px; }
+.hunt-count { display: inline-flex; align-items: center; gap: 6px; }
+.hunt-actions { position: sticky; bottom: -20px; padding: 14px 0; background: var(--surface); border-top: 1px solid var(--line); }
+
 /* ================= window widths ================= */
 @media (max-width: 1199px) {
   .today {

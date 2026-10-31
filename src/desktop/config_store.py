@@ -11,6 +11,7 @@ import threading
 from pathlib import Path
 
 from src.tasks.DailyBatchTask import DailyBatchTask
+from src.tasks.quick_hunt_plan import PLAN_KEY, load_book
 
 config_lock = threading.RLock()
 
@@ -38,6 +39,8 @@ def save_config(config, changes: dict, *, allow_private=False, specifications=No
                 value = float(value)
             elif type(value) is not type(original):
                 raise ValueError(f"配置类型不正确：{key}")
+            if key == PLAN_KEY and value:
+                load_book({PLAN_KEY: value})
             if not config.validate(key, value):
                 raise ValueError(f"配置值不正确：{key}")
             specification = (specifications or {}).get(key, {})

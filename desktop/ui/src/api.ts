@@ -6,6 +6,8 @@ import type {
   ExecutorStatus,
   GamePaths,
   HistoryRun,
+  HuntBook,
+  HuntPlans,
   ReportState,
   SettingsGroup,
   TaskPayload,
@@ -23,8 +25,9 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, method: "GET" | "POST" = "GET", body?: unknown): Promise<T> {
+async function request<T>(path: string, method: "GET" | "POST" = "GET", body?: unknown, signal?: AbortSignal): Promise<T> {
   const response = await fetch(path, {
+    signal,
     method,
     credentials: "same-origin",
     headers: body === undefined ? undefined : { "Content-Type": "application/json" },
@@ -76,6 +79,11 @@ export const api = {
   resetTaskConfig: (name: string) =>
     request<TaskPayload>(`/api/tasks/${encodeURIComponent(name)}/config/reset`, "POST", {}),
   today: () => request<TodaySummary>("/api/bd2/today"),
+  huntPlans: (name: string) => request<HuntPlans>(`/api/bd2/hunt-plans/${encodeURIComponent(name)}`),
+  previewHuntPlan: (name: string, book: HuntBook, rice: number, states: Record<string, boolean | null>, signal: AbortSignal) =>
+    request<{ text: string; runnable: boolean }>(`/api/bd2/hunt-plans/${encodeURIComponent(name)}/preview`, "POST", { book, rice, states }, signal),
+  saveHuntPlans: (name: string, book: HuntBook, revision: string) =>
+    request<TaskPayload>(`/api/bd2/hunt-plans/${encodeURIComponent(name)}`, "POST", { book, revision }),
   startDaily: (mode: "all" | "incomplete") => request<TaskPayload>("/api/bd2/daily/start", "POST", { mode }),
   history: (task: string, limit: number) =>
     request<HistoryRun[]>(`/api/bd2/history?task=${encodeURIComponent(task)}&limit=${limit}`),

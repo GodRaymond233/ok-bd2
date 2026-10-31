@@ -19,6 +19,7 @@ from ok.ui.web import app as framework
 from src.compat.update_card_ui import launcher_supports_update_check
 from src.desktop.config_store import config_lock, save_config, task_config_busy
 from src.desktop.events import install_events
+from src.desktop.hunt_plans import install_hunt_plans
 from src.desktop.preview import LivePreview
 from src.desktop.protocol import API_VERSION
 from src.desktop.reports import ReportSession
@@ -44,8 +45,7 @@ UI_DIST = Path(__file__).with_name("ui_dist")
 # MiSans ships with the app for the Qt window too (src/ui/quest_theme.py).
 FONTS = Path(__file__).resolve().parents[2] / "assets" / "fonts"
 HISTORY_LIMIT = RECENT_LIMIT
-# Settings that only a dedicated editor may change; the client shows them read-only until
-# it has that editor (the quick-hunt plan is JSON written by the Qt plan editor).
+# Structured settings use the same stored format as their Qt editors.
 DEDICATED_EDITORS = {PLAN_KEY: "hunt_plan"}
 # select_capture("auto") stores ok-script's default, which tries capture_method in order.
 AUTO_CAPTURE = "auto"
@@ -531,6 +531,7 @@ def create_app(
     runtime = app.state.runtime
     STARTER_WAIT.install()
     adapt_runtime(runtime, legacy_check=legacy_check, starter_wait=STARTER_WAIT)
+    install_hunt_plans(app, runtime)
     preview = LivePreview(runtime)
     reports = ReportSession(runtime, preview, core_version or str(config.get("version") or ""),
                             legacy_check=legacy_check)

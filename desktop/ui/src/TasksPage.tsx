@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import type { Core } from "./App.tsx";
 import { ConfigForm } from "./ConfigForm.tsx";
+import { HuntPlanEditor } from "./HuntPlanEditor.tsx";
 import { modifiedFields, valueText } from "./form.ts";
 import { durationText, whenText } from "./format.ts";
 import { t } from "./i18n.ts";
@@ -99,6 +100,7 @@ export function TasksPage({
 function TaskDetail({ core, task, onBack }: { core: Core; task: TaskPayload; onBack: () => void }) {
   const [history, setHistory] = useState<HistoryRun[] | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [editingPlan, setEditingPlan] = useState(false);
   const summary = core.today;
   const isBatch = task.name === summary?.batch?.name;
   const item = summary?.items.find((candidate) => candidate.name === task.name);
@@ -244,7 +246,10 @@ function TaskDetail({ core, task, onBack }: { core: Core; task: TaskPayload; onB
                 ))}
             </div>
           ) : (
-            <ConfigForm fields={fields} hidden={task.hidden_config_count ?? 0} disabled={locked} saveField={saveField} />
+            <ConfigForm fields={fields} hidden={task.hidden_config_count ?? 0} disabled={locked} saveField={saveField}
+              extra={(field) => field.editor === "hunt_plan" ? (
+                <button className="btn sm" onClick={() => setEditingPlan(true)}>{t("编辑刷取方案")}</button>
+              ) : null} />
           )}
         </div>
         <div className="dside">
@@ -290,6 +295,7 @@ function TaskDetail({ core, task, onBack }: { core: Core; task: TaskPayload; onB
           )}
         </div>
       </div>
+      {editingPlan && <HuntPlanEditor core={core} task={task} onClose={() => setEditingPlan(false)} />}
       {confirming && (
         <ConfirmDialog
           title={`${t("把")}「${task.name}」${t("的设置全部恢复默认？")}`}

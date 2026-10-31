@@ -228,7 +228,7 @@ function Field({
         )}
       </div>
       {field.description && <div className="dsc">{field.description}</div>}
-      {field.editor && <div className="dsc">{t("方案编辑器在阶段 3 接入；现在请在 Qt 版编辑。")}</div>}
+      {field.editor && <div className="dsc">{t("方案在编辑器中确认保存后生效。")}</div>}
       <div className="ctrl">
         {extra}
         <Control field={field} disabled={disabled} save={save} setError={setError} />

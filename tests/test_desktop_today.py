@@ -4,6 +4,7 @@ import json
 import tempfile
 import threading
 import unittest
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,7 +22,7 @@ from src.tasks.DailyBatchTask import (
     DailyBatchChild,
     DailyBatchTask,
 )
-from src.tasks.quick_hunt_plan import PLAN_KEY
+from src.tasks.quick_hunt_plan import PLAN_KEY, load_book, preset_plans
 from src.tasks.QuickHuntTask import QuickHuntTask
 from src.tasks.run_history import (
     BEIJING_TZ,
@@ -402,6 +403,128 @@ class Bd2RoutesTest(unittest.TestCase):
                 self.assertEqual(403, self.client.get(path).status_code)
         response = self.client.post("/api/bd2/daily/start", json={"mode": "all"})
         self.assertEqual(403, response.status_code)
+
+    def plan_task(self):
+        task = self._task(QuickHuntTask, "方案任务", {
+            PLAN_KEY: "", "快速狩猎狩猎场": True, "快速狩猎冒险航线": True,
+            "快速狩猎双倍策略": "强制双倍", "快速狩猎资源倾向": "经验", "其他设置": 7,
+        })
+        self.batch.child_tasks = (DailyBatchChild("狩猎", QuickHuntTask),)
+        self.batch.lock = threading.RLock()
+        return task
+
+    def plan_read(self, task):
+        response = self.client.get(f"/api/bd2/hunt-plans/{task.name}", headers=self.headers)
+        self.assertEqual(200, response.status_code, response.text)
+        return response.json()
+
+    def plan_save(self, task, book, revision):
+        return self.client.post(f"/api/bd2/hunt-plans/{task.name}",
+                                json={"book": book, "revision": revision}, headers=self.headers)
+
+    def test_plan_read_and_preview_preserve_legacy_config_and_never_start_tasks(self):
+        task = self.plan_task()
+        before = Path(task.config.config_file).read_bytes()
+        data = self.plan_read(task)
+        self.assertTrue(data["inherited"])
+        self.assertEqual(load_book(task.config), data["book"])
+        self.assertEqual("exp", data["book"]["plans"][0]["rules"][0]["condition"])
+        body = {"book": data["book"], "rice": 90, "states": {"金币": False, "经验": True}}
+        path = f"/api/bd2/hunt-plans/{task.name}/preview"
+        response = self.client.post(path, json=body, headers=self.headers)
+        self.assertEqual(200, response.status_code, response.text)
+        self.assertIn("经验 / 史莱姆", response.json()["text"])
+        self.assertTrue(response.json()["runnable"])
+        body["states"]["经验"] = None
+        response = self.client.post(path, json=body, headers=self.headers)
+        self.assertEqual(200, response.status_code)
+        self.assertFalse(response.json()["runnable"])
+        for invalid in ({"rice": True}, {"rice": -1}, {"states": {"金币": "yes"}}):
+            response = self.client.post(path, json={**body, **invalid}, headers=self.headers)
+            self.assertEqual(400, response.status_code)
+        self.assertEqual(before, Path(task.config.config_file).read_bytes())
+        self.controller_start.assert_not_called()
+
+    def test_plan_save_round_trips_to_qt_format_and_write_failure_preserves_config(self):
+        task = self.plan_task()
+        data = self.plan_read(task)
+        book = {"version": 1, "active": 1, "plans": preset_plans()[:2]}
+        book["plans"][1]["reserve"] = 12
+        response = self.plan_save(task, book, data["revision"])
+        self.assertEqual(200, response.status_code, response.text)
+        self.assertEqual(task.name, response.json()["name"])
+        reloaded = Config(task.name, task.default_config, folder=self.folder)
+        self.assertEqual(book, load_book(reloaded))
+        self.assertEqual(7, reloaded["其他设置"])
+        before = Path(task.config.config_file).read_bytes()
+        data = self.plan_read(task)
+        book["plans"][1]["name"] = "尚未保存的改名"
+        with patch("src.desktop.config_store.os.replace", side_effect=OSError("disk full")):
+            response = self.plan_save(task, book, data["revision"])
+        self.assertEqual(400, response.status_code)
+        self.assertEqual(before, Path(task.config.config_file).read_bytes())
+        self.assertEqual(data["book"], load_book(task.config))
+
+    def test_invalid_plan_cannot_be_saved_through_either_config_endpoint(self):
+        task = self.plan_task()
+        data = self.plan_read(task)
+        before = Path(task.config.config_file).read_bytes()
+        for change in (
+            lambda b: b.update(version=2),
+            lambda b: b.update(active=99),
+            lambda b: b["plans"][0].update(name=" "),
+            lambda b: b["plans"][0].update(reserve=-1),
+            lambda b: b["plans"][0]["rules"][0].update(condition="always"),
+            lambda b: b["plans"][0]["fallback"].append(
+                {"target": "gold", "mode": "count", "count": 0}),
+            lambda b: b["plans"][0]["rules"][0]["steps"][0].update(target=[]),
+        ):
+            book = deepcopy(data["book"])
+            change(book)
+            self.assertEqual(400, self.plan_save(task, book, data["revision"]).status_code)
+        response = self.client.post(f"/api/tasks/{task.name}/config", headers=self.headers,
+                                    json={"key": PLAN_KEY, "value": '{"version":2}'})
+        self.assertEqual(400, response.status_code)
+        self.assertEqual(before, Path(task.config.config_file).read_bytes())
+
+    def test_plan_writes_obey_execution_and_diagnostic_guards(self):
+        task = self.plan_task()
+        data = self.plan_read(task)
+        before = Path(task.config.config_file).read_bytes()
+        for target, key in ((task, "_enabled"), (self.batch, "_enabled"),
+                            (self.batch, "_start_after_login"),
+                            (self.facade.start_controller, "starting"),
+                            (self.facade, "diagnostic_pause"),
+                            (self.facade, "window_resize_in_progress")):
+            with self.subTest(key=key), patch.object(target, key, True, create=True):
+                self.assertTrue(self.plan_read(task)["busy"])
+                response = self.plan_save(task, data["book"], data["revision"])
+                self.assertEqual(400, response.status_code)
+        self.assertEqual(before, Path(task.config.config_file).read_bytes())
+
+    def test_changed_or_corrupt_plan_requires_explicit_matching_revision(self):
+        task = self.plan_task()
+        data = self.plan_read(task)
+        task.config["快速狩猎资源倾向"] = "金币"
+        before = Path(task.config.config_file).read_bytes()
+        self.assertEqual(409, self.plan_save(task, data["book"], data["revision"]).status_code)
+        self.assertEqual(before, Path(task.config.config_file).read_bytes())
+        task.config[PLAN_KEY] = "{broken"
+        before = Path(task.config.config_file).read_bytes()
+        broken = self.plan_read(task)
+        self.assertIsNone(broken["book"])
+        self.assertTrue(broken["load_error"])
+        self.assertEqual(before, Path(task.config.config_file).read_bytes())
+        self.assertEqual(200, self.plan_save(task, data["book"], broken["revision"]).status_code)
+
+    def test_plan_routes_require_authentication_and_a_supported_task(self):
+        task = self.plan_task()
+        path = f"/api/bd2/hunt-plans/{task.name}"
+        self.assertEqual(403, self.client.get(path).status_code)
+        self.assertEqual(403, self.client.post(path, json={}).status_code)
+        for name, code in (("missing", 404), (self.hunt.name, 400)):
+            response = self.client.get(f"/api/bd2/hunt-plans/{name}", headers=self.headers)
+            self.assertEqual(code, response.status_code)
 
     def test_serves_the_bundled_font(self):
         response = self.client.get("/fonts/MiSans-Regular.otf", headers=self.headers)

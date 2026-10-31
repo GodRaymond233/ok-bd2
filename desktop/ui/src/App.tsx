@@ -20,6 +20,7 @@ import type {
   DesktopInfo,
   Device,
   HistoryRun,
+  HuntBook,
   SettingsGroup,
   ShellBridge,
   TaskPayload,
@@ -66,6 +67,7 @@ export interface Core {
   childStage: (item: TodayItem) => string;
   act: (action: () => Promise<unknown>) => Promise<boolean>;
   setConfig: (task: string, key: string, value: unknown) => Promise<TaskPayload>;
+  saveHuntPlans: (task: string, book: HuntBook, revision: string) => Promise<TaskPayload>;
   resetTask: (task: string) => Promise<TaskPayload>;
   startTask: (task: string) => Promise<TaskPayload>;
   startDaily: (mode: "all" | "incomplete") => Promise<TaskPayload>;
@@ -389,6 +391,11 @@ export function App() {
     act,
     setConfig: async (task, key, value) => {
       const updated = replaceTask(await api.setTaskConfig(task, key, value));
+      scheduleRefresh();
+      return updated;
+    },
+    saveHuntPlans: async (task, book, revision) => {
+      const updated = replaceTask(await api.saveHuntPlans(task, book, revision));
       scheduleRefresh();
       return updated;
     },

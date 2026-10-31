@@ -213,6 +213,7 @@ async function checkPageInterfaces(): Promise<void> {
     "/api/bd2/today": ["items", "batch", "refresh"],
     "/api/bd2/history": null,
     "/api/bd2/report": ["session_id", "snapshot", "can_resume", "result"],
+    ["/api/bd2/hunt-plans/" + encodeURIComponent("快速狩猎")]: ["book", "revision", "presets", "conditions", "targets", "modes"],
     "/api/bd2/window": ["size", "ratio_ok", "resolutions", "default", "resizing"],
     "/api/bd2/game": ["game", "launcher"],
     "/api/settings": null,
