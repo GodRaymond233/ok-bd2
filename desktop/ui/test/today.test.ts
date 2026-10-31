@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { childRuns } from "../src/run.ts";
-import { type BatchRun, checklistRows, hero, skipText } from "../src/today.ts";
+import { type BatchRun, checklistRows, hero, skipText, withBatchConfig } from "../src/today.ts";
 import { item, summary, task } from "./fixtures.ts";
 
 const NOW = Date.UTC(2026, 9, 22, 2, 0) / 1000; // 10:00 Beijing
@@ -18,6 +18,30 @@ function today() {
 }
 
 const names = (rows: ReturnType<typeof checklistRows>) => rows.map((row) => [row.icon, row.text, row.tone]);
+
+test("saved batch settings drive participation while the progress snapshot is still old", () => {
+  const snapshot = today();
+  const saved = task({
+    name: snapshot.batch!.name,
+    config: ["公会、小屋、酒馆", "启动自动执行日常", "完成日常后自动关机"].map((key) => ({
+      key, value: false, default: true, description: "", kind: "boolean",
+      options: null, allow_duplication: false, minimum: null, maximum: null, sub_config: false,
+    })),
+  });
+  snapshot.batch!.auto_start = snapshot.batch!.shutdown = true;
+  const updated = withBatchConfig(snapshot, [saved])!;
+  assert.equal(updated.items[0].enabled, false);
+  assert.equal(updated.batch!.auto_start, false);
+  assert.equal(updated.batch!.shutdown, false);
+  assert.equal(checklistRows(updated, null, () => "", NOW)[0].icon, "off");
+  assert.equal(hero(updated, null).total, hero(snapshot, null).total - 1);
+  assert.deepEqual(updated.items[0].last, snapshot.items[0].last);
+  assert.equal(snapshot.items[0].enabled, true);
+  assert.deepEqual(updated.items.slice(1), snapshot.items.slice(1));
+  saved.config![0].value = true;
+  assert.equal(withBatchConfig(snapshot, [saved])!.items[0].enabled, true);
+  assert.equal(withBatchConfig(snapshot, [task()]), snapshot);
+});
 
 test("before a run each row tells its last result", () => {
   assert.deepEqual(names(checklistRows(today(), null, () => "", NOW)), [

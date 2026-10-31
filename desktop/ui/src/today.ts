@@ -23,6 +23,29 @@ export interface BatchRun {
   runs: Map<string, ChildRun>;
 }
 
+/** Participation follows the editable task config, including a just-saved response. */
+export function withBatchConfig(summary: TodaySummary | null, tasks: TaskPayload[]): TodaySummary | null {
+  const batch = tasks.find((task) => task.name === summary?.batch?.name);
+  if (!summary?.batch || !batch?.config) {
+    return summary;
+  }
+  const values = new Map(batch.config.map((field) => [field.key, field.value]));
+  const enabled = (key: string, fallback: boolean) => {
+    const value = values.get(key);
+    return typeof value === "boolean" ? value : fallback;
+  };
+  return {
+    ...summary,
+    batch: {
+      ...summary.batch,
+      enabled: enabled("启用", summary.batch.enabled),
+      auto_start: enabled("启动自动执行日常", summary.batch.auto_start),
+      shutdown: enabled("完成日常后自动关机", summary.batch.shutdown),
+    },
+    items: summary.items.map((item) => ({ ...item, enabled: enabled(item.key, item.enabled) })),
+  };
+}
+
 function completedText(item: TodayItem, now: number): string {
   if (item.completion === "week") {
     return t("本周已完成");

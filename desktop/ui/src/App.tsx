@@ -13,7 +13,7 @@ import { SettingsPage } from "./SettingsPage.tsx";
 import { captureSummary, type Notice, noticeFromEvent } from "./state.ts";
 import { TasksPage } from "./TasksPage.tsx";
 import { TodayPage } from "./TodayPage.tsx";
-import type { BatchRun } from "./today.ts";
+import { type BatchRun, withBatchConfig } from "./today.ts";
 import type {
   CaptureUi,
   DesktopInfo,
@@ -118,7 +118,8 @@ const NAV: { page: Page; label: string; icon: string; later?: string }[] = [
 export function App() {
   const [ui, setUi] = useState<CaptureUi | null>(null);
   const [tasks, setTasks] = useState<TaskPayload[]>([]);
-  const [today, setToday] = useState<TodaySummary | null>(null);
+  const [todaySnapshot, setToday] = useState<TodaySummary | null>(null);
+  const today = useMemo(() => withBatchConfig(todaySnapshot, tasks), [todaySnapshot, tasks]);
   const [info, setInfo] = useState<DesktopInfo | null>(null);
   const [logs, setLogs] = useState<LogRecord[]>([]);
   const [settings, setSettings] = useState<SettingsGroup[] | null>(null);
@@ -139,8 +140,10 @@ export function App() {
   const [shutdownSeen, setShutdownSeen] = useState<number | null>(null);
   const [dockExpanded, setDockExpanded] = useState(storedDockExpanded);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const taskRevision = useRef(0);
 
   const refresh = useCallback(async () => {
+    const revision = taskRevision.current;
     try {
       const [capture, taskList, summary, desktop, groups] = await Promise.all([
         api.capture(),
@@ -150,7 +153,10 @@ export function App() {
         api.settings(),
       ]);
       setUi(capture);
-      setTasks(taskList);
+      // A refresh started before a save must not overwrite the saved task response.
+      if (revision === taskRevision.current) {
+        setTasks(taskList);
+      }
       setToday(summary);
       setInfo(desktop);
       setSettings(groups);
@@ -348,6 +354,7 @@ export function App() {
   }, []);
 
   const replaceTask = useCallback((updated: TaskPayload) => {
+    taskRevision.current += 1;
     setTasks((list) => list.map((task) => (task.name === updated.name ? updated : task)));
     return updated;
   }, []);
@@ -516,7 +523,7 @@ export function App() {
             </span>
             <span className="txt">
               <div className="nm">ok-bd2</div>
-              <div className="ver">{info ? `v${info.core_version}` : "…"}</div>
+              <div className="ver">{info ? `v${info.core_version.replace(/^v/i, "")}` : "…"}</div>
             </span>
           </div>
           {NAV.map((item) => (
