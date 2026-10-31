@@ -748,6 +748,7 @@ class SandboxNavigationMixin:
             after_sleep=SANDBOX_NAVIGATION_TELEPORT_SETTLE_SECONDS,
         )
         menu_end_at = monotonic() + SANDBOX_NAVIGATION_CONFIRM_TIMEOUT
+        walk_end_at = monotonic() + SANDBOX_NAVIGATION_WALK_TIMEOUT
         destination_confirmed = False
         while monotonic() <= menu_end_at:
             menu_frame = self.vision.capture()
@@ -756,13 +757,9 @@ class SandboxNavigationMixin:
                 self.task.sleep(SANDBOX_NAVIGATION_OCR_INTERVAL)
                 continue
             if self._walk_caught(walk_text):
-                # 巡逻驱逐可能先于自动移动横幅读出，须立即处理。
-                self._stop_caught_walk()
-                return NavigationResult(
-                    False,
-                    ScreenState.SANDBOX,
-                    "走向传送阵时被巡逻发现并驱逐，已停止自动移动",
-                )
+                # 驱逐说明已进入行走流程，等待游戏加载后沿原目标续走。
+                destination_confirmed = True
+                break
             if any(word in walk_text for word in AUTO_MOVE_QUESTION_KEYWORDS):
                 if self._click_sandbox_navigation_destination_confirmation(menu_frame):
                     destination_confirmed = True
@@ -810,15 +807,7 @@ class SandboxNavigationMixin:
             if not closed.success:
                 return closed
         # 交互按钮可能在行走结束前出现；先等移动停止，避免传送后仍沿旧路线行走。
-        walk_state = self._wait_auto_move_finished(SANDBOX_NAVIGATION_WALK_TIMEOUT)
-        if walk_state == "caught":
-            # 被驱逐后停止当前路线，让调用方改经狩猎场或艾琳，避免反复触发巡逻。
-            self._stop_caught_walk()
-            return NavigationResult(
-                False,
-                ScreenState.SANDBOX,
-                "走向传送阵时被巡逻发现并驱逐，已停止自动移动",
-            )
+        walk_state = self._wait_auto_move_finished(max(0.0, walk_end_at - monotonic()))
         if walk_state != "done":
             self._cancel_walk()
             return NavigationResult(False, ScreenState.UNKNOWN, "走向传送阵的自动移动超时")
@@ -2275,29 +2264,8 @@ class SandboxNavigationMixin:
         return self._walk_flags(frame)[0]
 
     def _wait_auto_move_finished(self, timeout: float) -> str:
-        """Wait while "自动移动中" shows: "done" once it is gone, "caught" as
-        soon as a patrol stops the walk, "timeout" when it never ends."""
-        end_at = monotonic() + max(0.0, timeout)
-        idle = 0
-        while monotonic() <= end_at:
-            frame = self.vision.capture()
-            state = self._walk_state(frame)
-            if state == "caught":
-                return state
-            if state == "idle":
-                idle += 1
-                if idle >= AUTO_MOVE_IDLE_READS:
-                    return "done"
-            else:
-                idle = 0
-                if state == "unknown":
-                    if self._field_battle_visible(frame):
-                        self._retreat_from_field_battle(frame, end_at=end_at)
-                    else:
-                        self._leave_walk_battle_result(frame)
-                self._status("导航状态", "自动移动中，等待走到传送阵")
-            self.task.sleep(0.5)
-        return "timeout"
+        """Wait through patrol reloads within the same movement deadline."""
+        return "done" if self._wait_resuming_walk(timeout) else "timeout"
 
     def _wait_resuming_walk(self, timeout: float) -> bool:
         """等待可自动续走的路线结束，期间不发送额外点击。
@@ -2365,29 +2333,6 @@ class SandboxNavigationMixin:
             )
             stopped = True
         return stopped
-
-    def _stop_caught_walk(self) -> None:
-        """取消被驱逐后恢复的自动移动，避免沿同一路线反复遭遇巡逻。
-
-        等待箱庭稳定且巡逻提示消失后，才允许调用方选择其他路线。
-        """
-
-        end_at = monotonic() + self._loading_timeout()
-        calm = 0
-        while monotonic() <= end_at:
-            frame = self.vision.capture()
-            walk_state = self._walk_state(frame)
-            if walk_state == "moving":
-                self._cancel_walk()
-                calm = 0
-                continue
-            if walk_state == "idle":
-                calm += 1
-                if calm >= AUTO_MOVE_IDLE_READS:
-                    return
-            else:
-                calm = 0
-            self.task.sleep(0.5)
 
     @staticmethod
     def _black_frame(frame) -> bool:
@@ -2660,8 +2605,6 @@ class SandboxNavigationMixin:
             return None
         # An NPC entry walks on to the NPC after the loading screen.
         walk_state = self._wait_auto_move_finished(SANDBOX_NAVIGATION_WALK_TIMEOUT)
-        if walk_state == "caught":
-            self._stop_caught_walk()
         if walk_state != "done":
             self._navigation_failure = f"前往{entry}的自动移动未完成：{walk_state}"
             return None

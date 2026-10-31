@@ -39,7 +39,6 @@ from src.tasks.map_trade.navigator_constants import (
     SANDBOX_MAP_TELEPORT_TEMPLATE,
     SANDBOX_TELEPORT_SKILL_POLL_INTERVAL,
     SANDBOX_TELEPORT_SKILL_TEMPLATE,
-    STORY_CATEGORY_POINT,
     TELEPORT_GENERATION_OCR_TIMEOUT,
     TELEPORT_INTERACTION_CLICK_DELAY,
     TELEPORT_MAP_BACKWARD_TEMPLATE,
@@ -811,6 +810,61 @@ class NavigatorTest(unittest.TestCase):
                            side_effect=lambda: clock[0]):
                     self.assertEqual(expected, navigator._wait_auto_move_finished(5))
                 self.assertEqual(int(leave_count == 1), len(clicks))
+
+    def test_portal_walk_resumes_patrol_and_keeps_one_timeout_budget(self):
+        frame = np.full((108, 192, 3), 120, dtype=np.uint8)
+        for phases, expected in (
+            (("caught", "unknown", "caught", "moving", "idle"), True),
+            (("moving", "caught", "unknown", "moving", "idle"), True),
+            (("caught",), False),
+            (("caught", "unknown"), False),
+        ):
+            with self.subTest(phases=phases):
+                clock, clicks = [0.0], []
+                def phase():
+                    return phases[min(int(clock[0] * 2), len(phases) - 1)]
+                task = SimpleNamespace(
+                    config={}, info_set=Mock(),
+                    sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+                )
+                vision = SimpleNamespace(
+                    capture=lambda: frame,
+                    click_client=lambda *args, **kwargs: clicks.append(args),
+                )
+                navigator = Navigator(task, vision)
+                navigator.wait_state = Mock(return_value=ScreenState.SANDBOX)
+                navigator._open_field_map = Mock(return_value="卡勒塔市")
+                navigator._sandbox_navigation_page_has_keyword = lambda _frame: not clicks
+                navigator._sandbox_navigation_teleport = Mock(return_value=MatchResult(
+                    .99, (40, 40), (4, 4), .99,
+                ))
+                navigator._walk_text = lambda _frame: {
+                    "caught": "被发现驱逐", "moving": "自动移动中",
+                }.get(phase(), "")
+                navigator.classify = lambda _frame: (
+                    ScreenState.SANDBOX if phase() == "idle" else ScreenState.UNKNOWN
+                )
+                navigator._field_battle_visible = Mock(return_value=False)
+                navigator._leave_walk_battle_result = Mock(return_value=False)
+                navigator._click_sandbox_teleport_interaction = Mock(
+                    side_effect=lambda **_kwargs: self.assertEqual("idle", phase()) or True,
+                )
+                navigator._confirm_portal_interaction = Mock(return_value=NavigationResult(
+                    True, ScreenState.AREA_MAP, map_page_mode=MapPageMode.DIRECT_TELEPORT,
+                ))
+                with (
+                    patch("src.tasks.map_trade.navigator_sandbox.monotonic",
+                          side_effect=lambda: clock[0]),
+                    patch("src.tasks.map_trade.navigator_sandbox.SANDBOX_NAVIGATION_WALK_TIMEOUT",
+                          4),
+                ):
+                    result = navigator._walk_to_sandbox_teleport_interaction()
+                    self.assertEqual(expected, result.success)
+                self.assertEqual(1, len(clicks), "巡逻/未知画面不能取消或重新发送导航点击")
+                self.assertEqual(
+                    int(expected), navigator._click_sandbox_teleport_interaction.call_count,
+                )
+                self.assertLessEqual(clock[0], 4.5)
 
     def test_navigation_menu_fallback_requires_field_and_reports_missing_entry(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -2844,7 +2898,7 @@ class NavigatorTest(unittest.TestCase):
 
 
     def test_walk_fallback_selects_unique_navigation_teleport_then_interacts(self):
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        frame = np.full((1080, 1920, 3), 120, dtype=np.uint8)
         teleport = MatchResult(
             0.96,
             (500, 300),
@@ -3419,14 +3473,14 @@ class NavigatorTest(unittest.TestCase):
             ScreenState.SANDBOX,
         )
         navigator._wait_for_quick_switch_page = lambda: True
-        navigator._wait_for_cartridge_category = lambda **_kwargs: True
+        navigator._select_cartridge_category = lambda _category: True
 
         result = navigator.open_cartridge_quick_switcher_from_sandbox()
 
         self.assertTrue(result.success)
         self.assertEqual(ScreenState.CARD_MENU, result.state)
         self.assertEqual([(10.0, 1.0)], template_clicks)
-        self.assertEqual([(*STORY_CATEGORY_POINT, 0.5)], fixed_clicks)
+        self.assertEqual([], fixed_clicks)
 
     def test_open_cartridge_quick_switcher_from_sandbox_stops_before_click_when_unconfirmed(self):
         task = SimpleNamespace(
@@ -3465,7 +3519,7 @@ class NavigatorTest(unittest.TestCase):
             "the caller already confirmed the same sandbox"
         )
         navigator._wait_for_quick_switch_page = lambda: True
-        navigator._wait_for_cartridge_category = lambda **_kwargs: True
+        navigator._select_cartridge_category = lambda _category: True
 
         result = navigator.open_cartridge_quick_switcher_from_sandbox(
             sandbox_already_confirmed=True,

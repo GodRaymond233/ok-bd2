@@ -47,7 +47,7 @@ from src.tasks.map_trade.navigator_constants import (
     CHARACTER_CATEGORY_HIGHLIGHT_REGION,
     CHARACTER_CATEGORY_POINT,
     EVENT_CATEGORY_HIGHLIGHT_REGION,
-    EVENT_CATEGORY_POINT,
+    QUICK_SWITCH_PAGE_KEYWORDS,
     STORY_CATEGORY_HIGHLIGHT_REGION,
 )
 from src.tasks.map_trade.progress import (
@@ -222,7 +222,7 @@ class CollectionCardTest(unittest.TestCase):
         navigator.return_home = lambda: NavigationResult(True, ScreenState.HOME)
         navigator._wait_for_cartridge_home = lambda: True
         navigator._wait_for_quick_switch_page = lambda: True
-        navigator._wait_for_cartridge_category = lambda **_kwargs: True
+        navigator._select_cartridge_category = lambda _category: True
         navigator._wait_for_story_badge_with_scroll = lambda number: (
             badge_targets.append(number) or (frame, badge)
         )
@@ -243,7 +243,7 @@ class CollectionCardTest(unittest.TestCase):
             opened_callbacks,
         )
         self.assertEqual([(45.0, 1.0)], template_clicks)
-        self.assertEqual([(*STORY_CATEGORY_POINT, 0.5)], clicks)
+        self.assertEqual([], clicks)
         self.assertEqual([(badge.best.result.center, frame.shape, 1.0)], client_clicks)
 
     def test_collection_card_visual_completion_is_checked_before_clicking(self):
@@ -1158,7 +1158,9 @@ class CharacterTabTest(unittest.TestCase):
         frame = np.zeros((1080, 1920, 3), np.uint8)
         vision = SimpleNamespace(
             capture=lambda: frame,
-            ocr_text=lambda _frame, _name: "最近 店长游戏卡 剧情游戏卡 角色游戏卡 活动游戏卡",
+            ocr_text=lambda _frame, _name: " ".join(QUICK_SWITCH_PAGE_KEYWORDS),
+            ocr_boxes=lambda _frame, _name: [SimpleNamespace(name=label)
+                                            for label in QUICK_SWITCH_PAGE_KEYWORDS],
             simplify=lambda text: text,
             bright_neutral_ratio=lambda _frame, region: highlight.get(region, 0.0),
         )
@@ -1169,14 +1171,14 @@ class CharacterTabTest(unittest.TestCase):
         )
         return Navigator(task, vision), clicks
 
-    def test_character_tab_is_clicked_and_confirmed_by_its_own_highlight(self):
+    def test_selected_category_is_confirmed_without_another_click(self):
         navigator, clicks = self._navigator({CHARACTER_CATEGORY_HIGHLIGHT_REGION: 0.084})
 
         self.assertTrue(navigator._select_cartridge_category("character"))
-        self.assertEqual([CHARACTER_CATEGORY_POINT], clicks)
+        self.assertEqual([], clicks)
         event, event_clicks = self._navigator({EVENT_CATEGORY_HIGHLIGHT_REGION: 0.084})
         self.assertTrue(event._select_cartridge_category("event"))
-        self.assertEqual([EVENT_CATEGORY_POINT], event_clicks)
+        self.assertEqual([], event_clicks)
         self.assertFalse(
             navigator._wait_for_cartridge_category(timeout=0.1, category="event", warn=False),
         )
@@ -1190,3 +1192,68 @@ class CharacterTabTest(unittest.TestCase):
         self.assertTrue(navigator._wait_for_cartridge_category(timeout=0.2))
         self.assertEqual((725 / 1920, 877 / 1080), CHARACTER_CATEGORY_POINT)
         self.assertNotEqual(STORY_CATEGORY_POINT, CHARACTER_CATEGORY_POINT)
+
+    def test_category_retries_use_fresh_menu_and_ocr_center(self):
+        for case, expected, count in (("lost_once", True, 2), ("lost_twice", False, 2),
+                                      ("late", True, 1), ("vanished", False, 1),
+                                      ("ambiguous", False, 0)):
+            with self.subTest(case=case):
+                self.clock = 0.0
+                highlight = {}
+                navigator, clicks = self._navigator(highlight)
+                label_box = SimpleNamespace(name="角色游戏卡", x=720, y=860, width=30, height=30)
+
+                def boxes(_frame, _name):
+                    if case == "vanished" and clicks:
+                        return []
+                    others = [SimpleNamespace(name=label) for label in QUICK_SWITCH_PAGE_KEYWORDS
+                              if label != "角色游戏卡"]
+                    return others + [label_box] * (2 if case == "ambiguous" else 1)
+
+                navigator.vision.ocr_boxes = boxes
+                navigator.vision.ocr_text = lambda frame, name: " ".join(
+                    box.name for box in boxes(frame, name)
+                )
+                navigator.vision.bright_neutral_ratio = lambda _frame, _region: (
+                    .084 if ((case == "lost_once" and len(clicks) == 2)
+                             or (case == "late" and self.clock >= 3.5)) else 0.0
+                )
+                self.assertEqual(expected, navigator._select_cartridge_category("character"))
+                self.assertEqual(count, len(clicks))
+                if clicks:
+                    self.assertEqual((735 / 1920, 875 / 1080), clicks[0])
+                self.assertLessEqual(self.clock, 7.0)
+
+    def test_category_page_loss_reopens_once_only_from_confirmed_field(self):
+        for field, page, success in ((True, True, True), (True, True, False),
+                                      (True, False, False), (False, False, False)):
+            with self.subTest(field=field, page=page, success=success):
+                self.clock = 0.0
+                navigator, clicks = self._navigator({})
+                state = {"menu": True, "reopened": False, "lit": False}
+                labels = " ".join(QUICK_SWITCH_PAGE_KEYWORDS)
+                navigator.vision.ocr_boxes = lambda *_args: (
+                    [SimpleNamespace(name=labels)] if state["menu"] else []
+                )
+                navigator.vision.ocr_text = lambda *_args: labels if state["menu"] else ""
+                navigator.vision.bright_neutral_ratio = lambda *_args: .084 if state["lit"] else 0.0
+
+                def click(x, y, after_sleep=0):
+                    clicks.append((x, y))
+                    state["menu"] = state["lit"] = state["reopened"] and success
+
+                def reopen(**_kwargs):
+                    state["reopened"] = True
+                    state["menu"] = page
+                    return True
+
+                navigator.task.operate_click = click
+                navigator._wait_for_current_sandbox = Mock(return_value=NavigationResult(
+                    field, ScreenState.SANDBOX if field else ScreenState.UNKNOWN,
+                ))
+                navigator._click_quick_switch = Mock(side_effect=reopen)
+                navigator._wait_for_quick_switch_page = Mock(return_value=page)
+                self.assertEqual(success, navigator._ensure_cartridge_category("story"))
+                self.assertEqual(int(field), navigator._click_quick_switch.call_count)
+                self.assertEqual(2 if field and page else 1, len(clicks))
+                navigator._wait_for_current_sandbox.assert_called_once()
