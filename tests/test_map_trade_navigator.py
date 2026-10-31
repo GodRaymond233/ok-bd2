@@ -13,6 +13,7 @@ from ok.task.exceptions import FinishedException, TaskDisabledException
 from src.tasks.map_trade.event_card_art import find_card
 from src.tasks.map_trade.models import (
     CARD_BY_ID,
+    COLLECTION_CIRCLE_APPROACHES,
     EVENT_CARDS,
     EVENT_WALK_EDGES,
     WALK_LABEL_EDGES,
@@ -21,6 +22,7 @@ from src.tasks.map_trade.models import (
     MatchResult,
     NavigationResult,
     ScreenState,
+    TeleportScope,
 )
 from src.tasks.map_trade.navigator import (
     Navigator,
@@ -30,6 +32,7 @@ from src.tasks.map_trade.navigator_constants import (
     AREA_MAP_CHANGE_INTERVAL,
     AREA_MAP_OPEN_RELATIVE_POINT,
     AREA_MAP_TELEPORT_BRIGHT_NEUTRAL_RATIO,
+    FIELD_EXTRA_KEYCAP_TEMPLATES,
     HAND_TEMPLATE,
     SANDBOX_LARGE_MAP_RETURN_RELATIVE_POINT,
     SANDBOX_MAP_SETTLE_SECONDS,
@@ -53,6 +56,7 @@ from src.tasks.map_trade.navigator_constants import (
     StoryBadgeCandidate,
     StoryBadgeDetection,
 )
+from src.tasks.map_trade.navigator_sandbox import TELEPORT_PAGE_ARROW_REFERENCE
 from src.tasks.map_trade.vision import Vision
 from src.utils.image_utils import read_template_image
 from tests.helpers import FakeClock
@@ -62,6 +66,464 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class NavigatorTest(unittest.TestCase):
+    def _routing_navigator(self, *, vision=None, mode=MapPageMode.DIRECT_TELEPORT, current=None):
+        vision = vision or SimpleNamespace()
+        vision.capture = Mock(return_value=np.full((90, 160, 3), 120, dtype=np.uint8))
+        navigator = Navigator(SimpleNamespace(info_set=Mock()), vision)
+        navigator._detect_map_page_mode = Mock(return_value=SimpleNamespace(mode=mode))
+        navigator._restore_navigation_field = Mock(return_value=NavigationResult(
+            True, ScreenState.SANDBOX,
+        ))
+        navigator.current_collection_target = Mock(return_value=current)
+        navigator._wait_for_loading_screen = Mock(return_value=True)
+        navigator._capture_area_map_context = Mock(return_value=self._area_context(
+            "", None, page_mode=MapPageMode.UNKNOWN,
+        ))
+        return navigator
+
+
+    def test_fast_travel_tries_each_entry_before_using_the_teleport_talent(self):
+        cases = [
+            ("Q_sp1", 1, ("狩猎场",), ("狩猎场",), False),
+            ("Q_sp1", 1, (None, "艾琳"), ("狩猎场", "艾琳"), False),
+            ("Q_sp1", 0, ("艾琳",), ("艾琳",), False),
+            *((card_id, 0, (None, None), ("艾琳", "狩猎场"), True)
+              for card_id in ("Q_cp3", "Q_ep1", "Q_ep3", "Q_ep5", "Q_ep7")),
+        ]
+        for card_id, index, responses, wanted, uses_talent in cases:
+            with self.subTest(card=card_id, responses=responses):
+                card = CARD_BY_ID[card_id]
+                target = card.targets[index]
+                events = []
+                navigator = Navigator(SimpleNamespace(info_set=Mock()), SimpleNamespace())
+                navigator.open_teleport_map_from_sandbox = Mock(return_value=NavigationResult(
+                    False, ScreenState.SANDBOX, "没有原地交互",
+                ))
+                navigator._restore_navigation_field = Mock(return_value=NavigationResult(
+                    True, ScreenState.SANDBOX,
+                ))
+                navigator._walk_to_circle_neighbour = Mock(return_value=None)
+                navigator._walk_to_sandbox_teleport_interaction = Mock(side_effect=lambda: (
+                    events.append("local") or NavigationResult(
+                        False, ScreenState.SANDBOX, "本图回阵未确认",
+                    )
+                ))
+                answers = iter(responses)
+                navigator._travel_via_nav_menu = Mock(side_effect=lambda entry: (
+                    events.append(entry) or next(answers)
+                ))
+                navigator._collection_field_title = Mock(return_value=card.targets[0].title)
+                navigator._hunting_ground_field = Mock(return_value=True)
+                navigator._open_hunting_ground_portal = Mock(return_value=NavigationResult(
+                    True, ScreenState.AREA_MAP, map_page_mode=MapPageMode.DIRECT_TELEPORT,
+                ))
+                navigator._open_teleport_skill = Mock(side_effect=lambda _card: (
+                    events.append("skill") or NavigationResult(
+                        True, ScreenState.AREA_MAP, map_page_mode=MapPageMode.GENERATE_TELEPORT,
+                    )
+                ))
+                result = navigator._open_teleport_map_anywhere(card, target=target)
+                self.assertTrue(result.success, result.message)
+                self.assertEqual([
+                    *(["local"] if target != card.targets[0] else []),
+                    *wanted, *(["skill"] if uses_talent else []),
+                ], events)
+                self.assertEqual(int(uses_talent), navigator._open_teleport_skill.call_count)
+
+    def test_navigation_recovery_confirms_closure_and_enforces_attempt_budgets(self):
+        frame = np.full((90, 160, 3), 120, dtype=np.uint8)
+        for initially_open, guide_present, closes in (
+            (True, True, True), (True, True, False),
+            (True, False, True), (True, False, False), (False, True, True),
+        ):
+            with self.subTest(open=initially_open, guide=guide_present, closes=closes):
+                menu = [initially_open]
+                guide = MatchResult(0.99, (20, 20), (20, 20), 0.99)
+                task = SimpleNamespace(info_set=Mock(), sleep=Mock())
+                navigator = Navigator(task, SimpleNamespace(
+                    capture=lambda: frame, match=Mock(return_value=guide),
+                    passes=Mock(return_value=guide_present),
+                    click_client=Mock(side_effect=lambda *a, **k: menu.__setitem__(0, not closes)),
+                ))
+                navigator._navigation_menu_open = True
+                navigator._nav_menu_entries = Mock(side_effect=lambda *a, **k: (
+                    ({"艾琳": (30, 30), "旅馆": (30, 20)}, ["艾琳", "旅馆"])
+                    if menu[0] else ({}, ["20"])
+                ))
+                navigator.classify = Mock(return_value=ScreenState.SANDBOX)
+                navigator._detect_map_page_mode = Mock(return_value=SimpleNamespace(
+                    mode=MapPageMode.UNKNOWN,
+                ))
+                navigator._wait_for_current_sandbox = Mock(return_value=NavigationResult(
+                    True, ScreenState.SANDBOX,
+                ))
+                self.assertEqual(closes, navigator._restore_navigation_field().success)
+                self.assertEqual(not closes, navigator._navigation_menu_open)
+                navigator._collection_navigation_entries = {"艾琳"}
+                self.assertIsNone(navigator._travel_via_nav_menu("艾琳"))
+                self.assertEqual(int(initially_open), navigator.vision.click_client.call_count)
+                if initially_open and not guide_present:
+                    self.assertEqual((24, 9), navigator.vision.click_client.call_args.args[0])
+        navigator._navigation_menu_open = True
+        navigator._nav_menu_entries = Mock(return_value=(
+            {"艾琳": (30, 30), "旅馆": (30, 20)}, ["艾琳", "旅馆"],
+        ))
+        navigator.vision.passes.return_value = False
+        navigator.classify.return_value = ScreenState.UNKNOWN
+        self.assertFalse(navigator._restore_navigation_field().success)
+        navigator.vision.click_client.assert_not_called()
+        card = CARD_BY_ID["Q_sp14"]
+        navigator._collection_walk_edges = {(card.card_id, "battle_area_1", "battle_area_2")}
+        navigator.ensure_small_minimap = Mock()
+        self.assertFalse(navigator._walk_to_collection_map(card, *card.targets[1:]).success)
+        navigator.ensure_small_minimap.assert_not_called()
+        navigator._collection_page_moves = 0
+        navigator.vision.click_client.reset_mock()
+        self.assertIsNone(navigator._move_area_map(
+            card, self._area_context(card.targets[1].title, left=True, right=True), "right",
+        ))
+        navigator.vision.click_client.assert_not_called()
+
+    def test_field_keycaps_confirm_shifted_bottom_controls_at_client_scale(self):
+        matcher = Vision(SimpleNamespace(config={}, info_set=Mock()))
+        matcher.ocr_text = Mock(return_value="")
+        navigator = Navigator(matcher.task, matcher)
+        navigator._home_confirmation_signals = Mock(return_value=(False,))
+        navigator._detect_map_page_mode = Mock(return_value=SimpleNamespace(
+            mode=MapPageMode.UNKNOWN,
+        ))
+        for q_x in (1026, 1084):
+            for height in (720, 1080):
+                for present in ("MQ", "M", "Q"):
+                    with self.subTest(q_x=q_x, height=height, present=present):
+                        frame = np.full((height, height * 16 // 9, 3), 120, np.uint8)
+                        for spec, key, point in zip(
+                            FIELD_EXTRA_KEYCAP_TEMPLATES, "MQ", ((207, 248), (q_x, 1048)),
+                            strict=True,
+                        ):
+                            if key not in present:
+                                continue
+                            tile, _ = matcher._load(spec)
+                            if tile.ndim == 2:
+                                tile = cv2.cvtColor(tile, cv2.COLOR_GRAY2BGR)
+                            scale = height / 1080
+                            tile = cv2.resize(tile, (
+                                round(tile.shape[1] * scale), round(tile.shape[0] * scale),
+                            ))
+                            h, w = tile.shape[:2]
+                            x = round(point[0] * scale) - w // 2
+                            y = round(point[1] * scale) - h // 2
+                            frame[y:y + h, x:x + w] = tile
+                        state = navigator.classify(frame)
+                        self.assertEqual(present == "MQ", state == ScreenState.SANDBOX)
+
+    def test_nonlegendary_recall_uses_only_the_current_map_then_a_ground_circle(self):
+        card = CARD_BY_ID["Q_sp1"]
+        circle = MatchResult(0.99, (800, 400), (50, 50), 0.98)
+        local = replace(self._area_context(
+            card.targets[0].title, card.targets[0].key, teleports=(circle,),
+            left=True, right=True, page_mode=MapPageMode.GENERATE_TELEPORT,
+        ), teleport_scope=TeleportScope.CURRENT_MAP)
+        direct = self._area_context(card.targets[1].title, card.targets[1].key)
+        opened = NavigationResult(
+            True, ScreenState.AREA_MAP, map_page_mode=MapPageMode.GENERATE_TELEPORT,
+        )
+        navigator = Navigator(
+            SimpleNamespace(info_set=Mock()), SimpleNamespace(click_client=Mock()),
+        )
+        navigator._teleport_skill_origin = (card.card_id, card.targets[0].title)
+        navigator._wait_for_collection_teleport_map = Mock(side_effect=[local, direct])
+        navigator._click_teleport_map_destination = Mock(return_value=True)
+        navigator._wait_for_current_sandbox = Mock(return_value=NavigationResult(
+            True, ScreenState.SANDBOX,
+        ))
+        navigator._collection_field_title = Mock(return_value=card.targets[0].title)
+        navigator.open_teleport_map_from_sandbox = Mock(return_value=NavigationResult(
+            True, ScreenState.AREA_MAP, map_page_mode=MapPageMode.DIRECT_TELEPORT,
+        ))
+        navigator._click_collection_destination = Mock(return_value=NavigationResult(
+            True, ScreenState.SANDBOX,
+        ))
+        result = navigator._teleport_collection_target(card, card.targets[1], opened)
+        self.assertTrue(result.success)
+        self.assertEqual(MapPageMode.GENERATE_TELEPORT,
+                         navigator._click_teleport_map_destination.call_args.kwargs["page_mode"])
+        navigator._click_collection_destination.assert_called_once_with(
+            card, card.targets[1], direct,
+        )
+        navigator.open_teleport_map_from_sandbox.assert_called_once()
+        for scope in (TeleportScope.CURRENT_MAP, TeleportScope.UNKNOWN):
+            blocked = replace(local, teleport_scope=scope)
+            for force in (True, False):
+                self.assertIsNone(navigator._move_area_map(card, blocked, "left", force=force))
+            result = navigator._seek_collection_page(card, blocked, card.targets[1])
+            self.assertFalse(result.success)
+        navigator.vision.click_client.assert_not_called()
+        navigator._teleport_skill_origin = (card.card_id, card.targets[2].title)
+        navigator._click_teleport_map_destination.reset_mock()
+        self.assertFalse(navigator._recall_current_circle(card, local).success)
+        navigator._click_teleport_map_destination.assert_not_called()
+
+    def test_talent_scope_and_cartridge_identity_gate_cross_map_routes(self):
+        card = CARD_BY_ID["Q_cp4"]
+        opened = NavigationResult(
+            True, ScreenState.AREA_MAP, map_page_mode=MapPageMode.GENERATE_TELEPORT,
+        )
+        for scope, allowed in ((TeleportScope.CURRENT_CARTRIDGE, True),
+                               (TeleportScope.UNKNOWN, False)):
+            navigator = Navigator(SimpleNamespace(info_set=Mock()), SimpleNamespace())
+            context = replace(self._area_context(
+                card.targets[1].title, card.targets[1].key,
+                page_mode=MapPageMode.GENERATE_TELEPORT,
+            ), teleport_scope=scope)
+            navigator._wait_for_collection_teleport_map = Mock(return_value=context)
+            navigator._seek_collection_page = Mock(return_value=context)
+            navigator._click_collection_destination = Mock(return_value=NavigationResult(
+                True, ScreenState.SANDBOX,
+            ))
+            result = navigator._teleport_collection_target(card, card.targets[1], opened)
+            self.assertEqual(allowed, result.success)
+            self.assertEqual(int(allowed), navigator._seek_collection_page.call_count)
+        navigator._entered_card_id = "Q_sp4"
+        self.assertFalse(navigator.advance_collection_map(
+            card.card_id, *card.targets[:2],
+        ).success)
+
+    def test_destinations_without_a_circle_approach_by_the_registered_walking_edge(self):
+        for (card_id, target_key), approach_key in COLLECTION_CIRCLE_APPROACHES.items():
+            with self.subTest(card=card_id, target=target_key):
+                card = CARD_BY_ID[card_id]
+                target = next(item for item in card.targets if item.key == target_key)
+                approach = next(item for item in card.targets if item.key == approach_key)
+                self.assertIn((card_id, approach_key, target_key), WALK_LABEL_EDGES)
+                navigator = Navigator(SimpleNamespace(info_set=Mock()), SimpleNamespace())
+                context = self._area_context(approach.title, approach.key)
+                navigator._wait_for_collection_teleport_map = Mock(return_value=context)
+                navigator._click_collection_destination = Mock(return_value=NavigationResult(
+                    True, ScreenState.SANDBOX,
+                ))
+                navigator._walk_to_collection_map = Mock(return_value=NavigationResult(
+                    True, ScreenState.SANDBOX,
+                ))
+                opened = NavigationResult(
+                    True, ScreenState.AREA_MAP, map_page_mode=MapPageMode.DIRECT_TELEPORT,
+                )
+                self.assertTrue(navigator._teleport_collection_target(card, target, opened).success)
+                navigator._click_collection_destination.assert_called_once_with(
+                    card, approach, context,
+                )
+                navigator._walk_to_collection_map.assert_called_once_with(card, approach, target)
+
+    def test_portal_entry_reuses_maps_and_restores_field_before_skill_actions(self):
+        frame = np.full((90, 160, 3), 120, dtype=np.uint8)
+        for initial in MapPageMode:
+            for can_close in (True, False):
+                with self.subTest(mode=initial, can_close=can_close):
+                    mode = [initial]
+                    events = []
+                    navigator = Navigator(SimpleNamespace(info_set=Mock()), SimpleNamespace(
+                        capture=lambda: frame,
+                    ))
+                    navigator._detect_map_page_mode = lambda _frame: SimpleNamespace(mode=mode[0])
+                    navigator.classify = Mock(return_value=ScreenState.UNKNOWN)
+                    navigator._wait_for_current_sandbox = Mock(return_value=NavigationResult(
+                        True, ScreenState.SANDBOX,
+                    ))
+                    def close(*_args, **_kwargs):
+                        events.append("close")
+                        if can_close:
+                            mode[0] = MapPageMode.UNKNOWN
+                            navigator.classify.return_value = ScreenState.SANDBOX
+                        return NavigationResult(can_close, ScreenState.UNKNOWN)
+                    navigator._close_confirmed_map_page = Mock(side_effect=close)
+                    navigator._click_sandbox_teleport_interaction = Mock(return_value=False)
+                    navigator._click_sandbox_teleport_skill = Mock(
+                        side_effect=lambda: events.append("skill") or True,
+                    )
+                    navigator._wait_for_sandbox_map_open = Mock(return_value=NavigationResult(
+                        True, ScreenState.AREA_MAP, map_page_mode=MapPageMode.GENERATE_TELEPORT,
+                    ))
+                    result = navigator.open_teleport_map_from_sandbox()
+                    if initial.is_teleport_map:
+                        self.assertTrue(result.success)
+                        self.assertEqual(initial, result.map_page_mode)
+                        self.assertEqual([], events)
+                    elif initial == MapPageMode.SANDBOX_LARGE_MAP and can_close:
+                        self.assertFalse(result.success)
+                        self.assertEqual(["close"], events)
+                        navigator._click_sandbox_teleport_skill.assert_not_called()
+                    else:
+                        self.assertFalse(result.success)
+                        navigator._click_sandbox_teleport_skill.assert_not_called()
+                        navigator._click_sandbox_teleport_interaction.assert_not_called()
+
+    def test_portal_interaction_retries_only_after_field_recovery_and_stops_at_limit(self):
+        failed = NavigationResult(False, ScreenState.UNKNOWN, "直传页未确认")
+        passed = NavigationResult(
+            True, ScreenState.AREA_MAP, map_page_mode=MapPageMode.DIRECT_TELEPORT,
+        )
+        for waits, recover, success, reclicks in (
+            ([passed], True, True, 0),
+            ([failed, passed], True, True, 1),
+            ([failed] * 3, True, False, 2),
+            ([failed], False, False, 0),
+        ):
+            with self.subTest(waits=waits, recover=recover):
+                events = []
+                navigator = Navigator(SimpleNamespace(info_set=Mock()), SimpleNamespace())
+                navigator._wait_for_sandbox_map_open = Mock(side_effect=waits)
+                navigator._restore_navigation_field = Mock(side_effect=lambda: (
+                    events.append("restore") or NavigationResult(recover, ScreenState.UNKNOWN)
+                ))
+                navigator._click_sandbox_teleport_interaction = Mock(side_effect=lambda: (
+                    events.append("click") or True
+                ))
+                result = navigator._confirm_portal_interaction("交互")
+                self.assertEqual(success, result.success)
+                self.assertEqual(reclicks, navigator._click_sandbox_teleport_interaction.call_count)
+                for index, event in enumerate(events):
+                    if event == "click":
+                        self.assertEqual("restore", events[index - 1])
+        navigator._wait_for_sandbox_map_open = Mock(side_effect=TaskDisabledException())
+        navigator._restore_navigation_field.reset_mock()
+        with self.assertRaises(TaskDisabledException):
+            navigator._confirm_portal_interaction("交互")
+        navigator._restore_navigation_field.assert_not_called()
+
+    def test_navigation_menu_upscale_requires_unique_stable_destination(self):
+        frame = np.full((720, 1280, 3), 120, dtype=np.uint8)
+        for labels, expected in (
+            (["狩猎扬", "快速狩猎", "艾琳"], "狩猎场"),
+            (["快速狩猎"], None),
+            (["狩猎场", "狩猎场"], None),
+            (["艾琳"], "艾琳"),
+        ):
+            with self.subTest(labels=labels):
+                clock = [0.0]
+                scales = []
+                def boxes(_frame, _label, _roi, *, ocr_scale=1.0):
+                    scales.append(ocr_scale)
+                    return [] if ocr_scale == 1.0 else [
+                        SimpleNamespace(name=text, x=300, y=100 + row * 40, width=80, height=20)
+                        for row, text in enumerate(labels)
+                    ]
+                navigator = Navigator(SimpleNamespace(
+                    info_set=Mock(),
+                    sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+                ), SimpleNamespace(capture=lambda: frame, ocr_boxes=boxes, simplify=str))
+                with patch("src.tasks.map_trade.navigator_sandbox.monotonic",
+                           side_effect=lambda: clock[0]):
+                    result = navigator._nav_menu_choice(("狩猎场", "艾琳"))
+                self.assertEqual(expected, None if result is None else result[0])
+                self.assertIn(2.0, scales)
+                if result is not None:
+                    self.assertEqual((720, 1280, 3), result[2])
+                    self.assertGreaterEqual(scales.count(2.0), 2)
+
+    def test_navigation_menu_open_retries_are_bounded_and_reset_each_trip(self):
+        frame = np.full((90, 160, 3), 120, dtype=np.uint8)
+        destination = ("艾琳", (100, 60), frame.shape)
+        for choices, button_closed, menu_text, expected, presses in (
+            ([None, destination], True, [], "艾琳", 2),
+            ([None] * 3, True, [], None, 3),
+            ([None], False, [], None, 1),
+            ([None], True, ["旅馆"], None, 1),
+        ):
+            with self.subTest(choices=choices, closed=button_closed):
+                vision = SimpleNamespace(
+                    capture=lambda: frame, click_template=Mock(return_value=True),
+                    match=Mock(), passes=Mock(return_value=button_closed), click_client=Mock(),
+                )
+                navigator = Navigator(SimpleNamespace(config={}, log_warning=Mock()), vision)
+                navigator._restore_navigation_field = Mock(return_value=NavigationResult(
+                    True, ScreenState.SANDBOX,
+                ))
+                navigator._nav_menu_choice = Mock(side_effect=choices)
+                navigator._nav_menu_entries = Mock(return_value=({}, menu_text))
+                navigator._confirm_travel = Mock(return_value="moving")
+                navigator._wait_for_field_hud = Mock(return_value=NavigationResult(
+                    True, ScreenState.SANDBOX,
+                ))
+                navigator._wait_auto_move_finished = Mock(return_value="done")
+                navigator._navigation_failure = "旧失败"
+                self.assertEqual(expected, navigator._travel_via_nav_menu("艾琳"))
+                self.assertEqual(presses, vision.click_template.call_count)
+                self.assertNotIn("旧失败", navigator._navigation_failure)
+                self.assertEqual(int(expected is not None), vision.click_client.call_count)
+
+    def test_navigation_destination_reclicks_fresh_menu_and_stops_on_unconfirmed_trip(self):
+        for outcomes, success, click_count in (
+            (["menu", "moving"], True, 2),
+            (["menu"] * 3, False, 3),
+            (["stuck"], False, 1),
+        ):
+            with self.subTest(outcomes=outcomes):
+                vision = SimpleNamespace(
+                    click_template=Mock(return_value=True), click_client=Mock(),
+                )
+                navigator = Navigator(SimpleNamespace(config={}), vision)
+                navigator._restore_navigation_field = Mock(return_value=NavigationResult(
+                    True, ScreenState.SANDBOX,
+                ))
+                navigator._nav_menu_choice = Mock(side_effect=[
+                    ("艾琳", (100 + i, 60), (900, 1600, 3)) for i in range(click_count)
+                ])
+                navigator._confirm_travel = Mock(side_effect=outcomes)
+                navigator._wait_for_field_hud = Mock(return_value=NavigationResult(
+                    True, ScreenState.SANDBOX,
+                ))
+                navigator._wait_auto_move_finished = Mock(return_value="done")
+                self.assertEqual("艾琳" if success else None,
+                                 navigator._travel_via_nav_menu("艾琳"))
+                self.assertEqual(click_count, vision.click_client.call_count)
+                self.assertEqual([(100 + i, 60) for i in range(click_count)], [
+                    call.args[0] for call in vision.click_client.call_args_list
+                ])
+                self.assertEqual(int(success), navigator._wait_for_field_hud.call_count)
+
+    def test_navigation_confirmation_requires_observed_transition_and_finite_clicks(self):
+        frame = np.full((90, 160, 3), 120, dtype=np.uint8)
+        for mode, expected, expected_clicks in (
+            ("accepted_second", "moving", 2),
+            ("stuck", "stuck", 3),
+            ("menu", "menu", 0),
+            ("other_menu_text", "stuck", 0),
+            ("unknown", "stuck", 0),
+        ):
+            with self.subTest(mode=mode):
+                clock = [0.0]
+                clicks = []
+                def title(*_args, **_kwargs):
+                    return "是否自动移动前往所选目的地" if mode == "stuck" or (
+                        mode == "accepted_second" and len(clicks) < 2
+                    ) else ""
+                def boxes(_frame, name, **_kwargs):
+                    return [SimpleNamespace(name="确认", x=80, y=50, width=20, height=10)]
+                def click(*args, after_sleep=0):
+                    clicks.append(args[0])
+                    clock[0] += after_sleep
+                navigator = Navigator(SimpleNamespace(
+                    log_warning=Mock(), info_set=Mock(),
+                    sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+                ), SimpleNamespace(
+                    capture=lambda: frame, simplify=str, ocr_boxes=boxes,
+                    ocr_text=lambda _frame, name, **kwargs: "" if name == "导航提示" else title(),
+                    click_client=click, match=Mock(), passes=Mock(return_value=True),
+                    click_ocr=Mock(),
+                ))
+                navigator._nav_menu_entries = Mock(return_value=(
+                    {"艾琳": (100, 60)} if mode == "menu" else {},
+                    ["旅馆"] if mode == "other_menu_text" else [],
+                ))
+                navigator.classify = Mock(return_value=(
+                    ScreenState.SANDBOX if mode in {"accepted_second", "other_menu_text"}
+                    else ScreenState.UNKNOWN
+                ))
+                with patch("src.tasks.map_trade.navigator_sandbox.monotonic",
+                           side_effect=lambda: clock[0]):
+                    self.assertEqual(expected, navigator._confirm_travel("艾琳"))
+                self.assertEqual(expected_clicks, len(clicks))
+
     def test_walk_question_is_confirmed_and_remaining_map_is_closed_before_waiting(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         clock = [0.0]
@@ -203,6 +665,7 @@ class NavigatorTest(unittest.TestCase):
             (lit, "", ScreenState.LOADING, True),
             (lit, "", ScreenState.UNKNOWN, False),
             (lit, "", ScreenState.SANDBOX_MAP, False),
+            (lit, "", ScreenState.SANDBOX, True),
         ):
             with self.subTest(text=text, state=state, black=not frame.any()):
                 navigator = Navigator(
@@ -213,6 +676,10 @@ class NavigatorTest(unittest.TestCase):
                 navigator._field_map_header = Mock(return_value="")
                 navigator.classify = Mock(return_value=state)
                 self.assertIs(expected, navigator._exit_walk_started("安全卢戈镇"))
+                self.assertIs(
+                    expected and state != ScreenState.SANDBOX,
+                    navigator._exit_walk_started("安全泳池派对场", require_movement=True),
+                )
                 navigator.vision.click_client.assert_not_called()
 
     def test_page_turn_retries_only_on_confirmed_same_page_and_respects_ends(self):
@@ -263,29 +730,31 @@ class NavigatorTest(unittest.TestCase):
 
     def test_field_map_close_requires_field_evidence_and_only_retries_visible_map(self):
         frame = np.full((8, 8, 3), 120, dtype=np.uint8)
-        for sequence, expected, clicks in (
-            (("field",), True, 1), (("unknown",), False, 1),
-            (("map",), False, 2), (("map", "map", "field"), True, 2),
-            (("map", "unknown", "map", "field"), True, 1),
+        for modes, waits, expected, clicks in (
+            ((MapPageMode.SANDBOX_LARGE_MAP,), (True,), True, 1),
+            ((MapPageMode.UNKNOWN,), (), False, 0),
+            ((MapPageMode.SANDBOX_LARGE_MAP,) * 2, (False, False), False, 2),
+            ((MapPageMode.SANDBOX_LARGE_MAP,) * 2, (False, True), True, 2),
+            ((MapPageMode.SANDBOX_LARGE_MAP, MapPageMode.UNKNOWN), (False, False), False, 1),
+            ((MapPageMode.SANDBOX_LARGE_MAP, MapPageMode.UNKNOWN), (False, True), True, 1),
         ):
-            with self.subTest(sequence=sequence):
+            with self.subTest(modes=modes, waits=waits):
                 clock = [0.0]
-                observations = iter(sequence)
-                phase = [sequence[0]]
                 task = SimpleNamespace(
                     config={}, info_set=Mock(), operate_click=Mock(), log_warning=Mock(),
                     sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
                 )
-                def capture():
-                    phase[0] = next(observations, sequence[-1])
-                    return frame
                 vision = SimpleNamespace(
-                    capture=capture, simplify=lambda text: text,
-                    ocr_text=lambda *_args, **_kwargs: "安全 学校" if phase[0] == "map" else "",
+                    capture=lambda: frame,
+                    match=Mock(), passes=Mock(return_value=False),
                 )
                 navigator = Navigator(task, vision)
-                navigator.classify = lambda _frame: (
-                    ScreenState.SANDBOX if phase[0] == "field" else ScreenState.UNKNOWN
+                navigator._detect_map_page_mode = Mock(
+                    side_effect=[SimpleNamespace(mode=mode) for mode in modes],
+                )
+                navigator.classify = Mock(return_value=ScreenState.UNKNOWN)
+                navigator._wait_for_current_sandbox = Mock(
+                    side_effect=[NavigationResult(value, ScreenState.UNKNOWN) for value in waits],
                 )
                 with patch(
                     "src.tasks.map_trade.navigator_sandbox.monotonic", side_effect=lambda: clock[0],
@@ -354,7 +823,11 @@ class NavigatorTest(unittest.TestCase):
                 )
                 navigator = Navigator(task, vision)
                 navigator.classify = Mock(return_value=state)
+                navigator._restore_navigation_field = Mock(return_value=NavigationResult(
+                    state == ScreenState.SANDBOX, state,
+                ))
                 navigator._nav_menu_choice = Mock(return_value=None)
+                navigator._nav_menu_entries = Mock(return_value=({}, []))
                 self.assertIsNone(navigator._travel_via_nav_menu("艾琳"))
                 self.assertEqual(int(state == ScreenState.SANDBOX), task.operate_click.call_count)
 
@@ -366,22 +839,25 @@ class NavigatorTest(unittest.TestCase):
         arrived = NavigationResult(True, ScreenState.SANDBOX)
         for current, target in ((town, sanctuary), (sanctuary, town)):
             with self.subTest(origin=current.title, target=target.title):
-                navigator = Navigator(SimpleNamespace(), SimpleNamespace())
+                navigator = self._routing_navigator(mode=MapPageMode.UNKNOWN)
                 navigator._walk_to_collection_map = Mock(return_value=arrived)
                 navigator._travel_via_nav_menu = Mock(return_value="艾琳")
-                navigator.current_collection_target = Mock(return_value=town.key)
+                navigator.current_collection_target = Mock(side_effect=[current.key, town.key])
+                navigator._open_teleport_map_anywhere = Mock(return_value=arrived)
+                navigator._confirm_collection_arrival = Mock(return_value=arrived)
                 result = navigator.advance_collection_map(card.card_id, current, target)
                 self.assertTrue(result.success)
                 if current is town:
                     navigator._walk_to_collection_map.assert_called_once_with(card, town, sanctuary)
+                    navigator.current_collection_target.assert_not_called()
                 else:
-                    navigator._travel_via_nav_menu.assert_called_once_with("艾琳")
+                    navigator._open_teleport_map_anywhere.assert_called_once_with(card, target=town)
                     navigator._walk_to_collection_map.assert_not_called()
         self.assertEqual("第一记忆空间", memory.title)
 
     def test_chapter_eighteen_reset_accepts_already_at_town_without_teleport(self):
         card = CARD_BY_ID["Q_sp18"]
-        navigator = Navigator(SimpleNamespace(), SimpleNamespace())
+        navigator = self._routing_navigator(mode=MapPageMode.UNKNOWN)
         navigator.ensure_small_minimap = Mock(return_value=True)
         navigator._travel_via_nav_menu = Mock(return_value=None)
         navigator.current_collection_target = Mock(return_value=card.targets[0].key)
@@ -412,6 +888,55 @@ class NavigatorTest(unittest.TestCase):
                     self.assertIsNone(result)
                     navigator._walk_to_collection_map.assert_not_called()
 
+    def test_chapter_eighteen_recovers_the_circle_before_changing_maps(self):
+        card = CARD_BY_ID["Q_sp18"]
+        town, sanctuary, memory = card.targets
+        opened = NavigationResult(
+            True, ScreenState.AREA_MAP, map_page_mode=MapPageMode.DIRECT_TELEPORT,
+        )
+        missing = NavigationResult(False, ScreenState.SANDBOX, "未识别交互入口")
+        for local_ok, safe_after_walk in ((True, True), (False, True), (False, False)):
+            with self.subTest(local=local_ok, safe=safe_after_walk):
+                events = []
+                navigator = Navigator(SimpleNamespace(info_set=Mock()), SimpleNamespace())
+                navigator.open_teleport_map_from_sandbox = Mock(return_value=missing)
+                navigator._restore_navigation_field = Mock(side_effect=[
+                    NavigationResult(True, ScreenState.SANDBOX),
+                    NavigationResult(safe_after_walk, ScreenState.SANDBOX, "菜单未确认关闭"),
+                    *[NavigationResult(True, ScreenState.SANDBOX)] * 4,
+                ])
+                navigator.current_collection_target = Mock(side_effect=[sanctuary.key, town.key])
+                walk_results = iter([opened] if local_ok else [missing, opened])
+                navigator._walk_to_sandbox_teleport_interaction = Mock(side_effect=lambda: (
+                    events.append("walk-circle") or next(walk_results)
+                ))
+                navigator._travel_via_nav_menu = Mock(side_effect=lambda entry: (
+                    events.append(entry) or entry
+                ))
+                navigator._collection_field_title = Mock(return_value=town.title)
+                navigator._hunting_ground_field = Mock(return_value=False)
+                navigator._walk_to_collection_map = Mock(side_effect=lambda *args: (
+                    events.append("town-exit") or NavigationResult(True, ScreenState.SANDBOX)
+                ))
+                navigator._open_teleport_skill = Mock(return_value=missing)
+
+                result = navigator._open_teleport_map_anywhere(card, target=memory)
+
+                self.assertEqual(local_ok or safe_after_walk, result.success)
+                self.assertEqual(
+                    ["walk-circle", "艾琳", "town-exit", "walk-circle"]
+                    if not local_ok and safe_after_walk else ["walk-circle"], events,
+                )
+                navigator._open_teleport_skill.assert_not_called()
+                if local_ok:
+                    navigator._travel_via_nav_menu.assert_not_called()
+                elif safe_after_walk:
+                    navigator._walk_to_collection_map.assert_called_once_with(card, town, sanctuary)
+                else:
+                    self.assertIn("本图回阵", result.message)
+                    self.assertIn("菜单未确认关闭", result.message)
+                    navigator._travel_via_nav_menu.assert_not_called()
+
     def test_overlapping_circle_is_expanded_once_and_arrival_is_verified(self):
         card = CARD_BY_ID["Q_sp1"]
         target = card.targets[1]
@@ -425,7 +950,11 @@ class NavigatorTest(unittest.TestCase):
                 vision = SimpleNamespace(click_client=Mock())
                 navigator = Navigator(task, vision)
                 navigator._capture_area_map_context = Mock(
-                    side_effect=lambda _card: expanded if vision.click_client.called else initial,
+                    side_effect=lambda _card: (
+                        self._area_context("", None, page_mode=MapPageMode.UNKNOWN)
+                        if navigator._click_teleport_map_destination.called
+                        else expanded if vision.click_client.called else initial
+                    ),
                 )
                 navigator._click_teleport_map_destination = Mock(return_value=True)
                 arrived = NavigationResult(True, ScreenState.SANDBOX)
@@ -445,6 +974,9 @@ class NavigatorTest(unittest.TestCase):
             click_template=Mock(return_value=True), click_client=Mock(),
         ))
         navigator._nav_menu_choice = Mock(return_value=("艾琳", (100, 100), (1080, 1920, 3)))
+        navigator._restore_navigation_field = Mock(return_value=NavigationResult(
+            True, ScreenState.SANDBOX,
+        ))
         navigator._confirm_travel = Mock(return_value="unreachable")
         navigator._wait_for_field_hud = Mock()
         self.assertIsNone(navigator._travel_via_nav_menu("艾琳"))
@@ -485,15 +1017,23 @@ class NavigatorTest(unittest.TestCase):
             card = CARD_BY_ID[card_id]
             current = next(t for t in card.targets if t.key == source)
             target = next(t for t in card.targets if t.key == destination)
-            navigator = object.__new__(Navigator)
+            navigator = self._routing_navigator(mode=MapPageMode.UNKNOWN, current=source)
             expected = NavigationResult(True, ScreenState.SANDBOX, target.title)
             navigator._walk_to_collection_map = Mock(return_value=expected)
             navigator._travel_via_nav_menu = Mock(return_value=None)
-            navigator._open_teleport_map_anywhere = Mock()
+            navigator._open_teleport_map_anywhere = Mock(return_value=NavigationResult(
+                False, ScreenState.SANDBOX, "快速移动和技能均未到达",
+            ))
             with self.subTest(card=card_id, destination=destination):
                 self.assertIs(expected, navigator.advance_collection_map(card_id, current, target))
                 navigator._walk_to_collection_map.assert_called_once_with(card, current, target)
-                navigator._open_teleport_map_anywhere.assert_not_called()
+                if target == card.targets[0]:
+                    navigator._open_teleport_map_anywhere.assert_called_once_with(
+                        card, target=target,
+                    )
+                else:
+                    navigator._open_teleport_map_anywhere.assert_not_called()
+                    navigator.current_collection_target.assert_not_called()
 
     def test_activity_entry_waits_through_color_loading_longer_than_three_seconds(self):
         clock = [0.0]
@@ -506,6 +1046,7 @@ class NavigatorTest(unittest.TestCase):
         )
         vision = SimpleNamespace(
             capture=lambda: frame,
+            ocr_text=Mock(return_value=""),
             click_client=lambda *_args, after_sleep=0: task.sleep(after_sleep),
         )
         navigator = Navigator(task, vision)
@@ -539,7 +1080,6 @@ class NavigatorTest(unittest.TestCase):
 
     def test_activity_exit_requires_unique_picker_and_confirmed_victory(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        battle = SimpleNamespace(name="战斗区", x=200, y=300, width=100, height=40)
         leave = SimpleNamespace(name="离开", x=900, y=900, width=100, height=40)
         for text, boxes, expected in (
             ("VICTORY", [leave], True), ("普通战斗", [leave], False),
@@ -553,16 +1093,153 @@ class NavigatorTest(unittest.TestCase):
             with self.subTest(text=text, count=len(boxes)):
                 self.assertEqual(expected, navigator._leave_walk_battle_result(frame))
                 self.assertEqual(int(expected), navigator.vision.click_client.call_count)
-        for boxes, expected in (([battle], True), ([battle, battle], False), ([], False)):
+        for target_index, labels, expected in (
+            (1, ("战斗区",), True),
+            (1, ("x战斗区", "旅馆", "商店"), True),
+            (1, ("战斗区", "x战斗区"), False),
+            (1, ("旅馆",), False),
+            (1, (), False),
+            (0, ("安全区",), True),
+            (0, ("x安全区", "旅馆"), True),
+            (0, ("安全区", "x安全区"), False),
+            (0, ("x战斗区",), False),
+        ):
+            navigator.task = SimpleNamespace(info_set=Mock())
+            boxes = [
+                SimpleNamespace(name=label, x=200, y=300, width=100, height=40)
+                for label in labels
+            ]
             navigator.vision.capture = lambda: frame
             navigator.vision.ocr_boxes = lambda *_args, **_kwargs: boxes
             navigator.vision.click_client.reset_mock()
-            self.assertEqual(
-                expected, navigator._click_activity_exit_picker(CARD_BY_ID["Q_ep1"].targets[1]),
-            )
-            self.assertEqual(int(expected), navigator.vision.click_client.call_count)
+            with self.subTest(target_index=target_index, labels=labels):
+                self.assertEqual(
+                    expected,
+                    navigator._click_activity_exit_picker(CARD_BY_ID["Q_ep1"].targets[target_index]),
+                )
+                self.assertEqual(int(expected), navigator.vision.click_client.call_count)
+                if expected:
+                    self.assertEqual((250, 320), navigator.vision.click_client.call_args.args[0])
+                    self.assertEqual(
+                        .3, navigator.vision.click_client.call_args.kwargs["down_time"],
+                    )
 
-    def test_collection_field_waits_through_auto_battle_until_idle_field(self):
+    def test_activity_exit_retries_fresh_menu_until_movement_is_confirmed(self):
+        frame = np.full((1080, 1920, 3), 128, dtype=np.uint8)
+        title = "安全泳池派对场"
+        for outcome, expected, picker_clicks in (
+            ("first", True, 1), ("retry", True, 2), ("last_retry", True, 4),
+            ("ignored", False, 4),
+            ("idle_field", False, 1), ("ambiguous_retry", False, 1),
+            ("missing_retry", False, 1), ("close_failed", False, 1),
+            ("map_changed", False, 1),
+        ):
+            with self.subTest(outcome=outcome):
+                clock, clicks, reads, menu_count = [0.0], [], [], [0]
+                task = SimpleNamespace(
+                    info_set=Mock(), sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+                )
+
+                def departed():
+                    count = menu_count[0]
+                    return (
+                        count >= 1 and outcome in {"first", "idle_field"}
+                        or count >= 2 and outcome == "retry"
+                        or count >= 4 and outcome == "last_retry"
+                    )
+
+                def read_boxes(_frame, _name, **_kwargs):
+                    self.assertFalse(departed())
+                    reads.append(len(reads))
+                    box = SimpleNamespace(
+                        name="战斗区", x=400, y=350 + reads[-1] * 20, width=100, height=40,
+                    )
+                    if len(reads) == 2:
+                        if outcome == "ambiguous_retry":
+                            return [box, box]
+                        if outcome == "missing_retry":
+                            return []
+                    return [box]
+
+                def click(point, _shape, *, after_sleep=0, down_time=None):
+                    self.assertFalse(departed())
+                    if point == (682, 392):
+                        self.assertIsNone(down_time)
+                    else:
+                        self.assertEqual(.3, down_time)
+                        menu_count[0] += 1
+                    clicks.append(point)
+                    task.sleep(after_sleep)
+
+                navigator = Navigator(task, SimpleNamespace(
+                    capture=lambda: frame, click_client=Mock(side_effect=click),
+                    ocr_boxes=read_boxes,
+                ))
+                navigator._exit_label_points = Mock(return_value=[(682, 392), (690, 400)])
+                navigator._close_field_map = Mock(return_value=outcome != "close_failed")
+                navigator._open_field_map = Mock(return_value=(
+                    "安全其他地图" if outcome == "map_changed" else title
+                ))
+                navigator._walk_text = lambda _frame: (
+                    "自动移动中：战斗区" if departed() and outcome != "idle_field" else ""
+                )
+                navigator._field_map_header = lambda _frame=None: "" if departed() else title
+                navigator.classify = lambda _frame=None: (
+                    ScreenState.SANDBOX if departed() else ScreenState.SANDBOX_MAP
+                )
+                with patch("src.tasks.map_trade.navigator_sandbox.monotonic",
+                           side_effect=lambda: clock[0]):
+                    result = navigator._click_walk_exit(
+                        ("Q_ep1", "main_area", "battle_area_1"),
+                        CARD_BY_ID["Q_ep1"].targets[1], title,
+                    )
+                self.assertIs(expected, result)
+                expected_points = []
+                for i in range(len(reads)):
+                    expected_points.append((682, 392))
+                    if i < picker_clicks:
+                        expected_points.append((450, 370 + 20 * i))
+                self.assertEqual(expected_points, clicks)
+                self.assertEqual(picker_clicks, menu_count[0])
+                self.assertLessEqual(clock[0], 8 * 2.5)
+
+    def test_coast_forest_exit_requires_two_rows_and_selects_the_upper_one(self):
+        frame = np.zeros((1080, 1920, 3), np.uint8)
+        upper = SimpleNamespace(name="战斗区", x=480, y=565, width=100, height=40)
+        lower = SimpleNamespace(name="战斗区", x=482, y=626, width=100, height=40)
+        partial = SimpleNamespace(name="战区", x=480, y=565, width=100, height=40)
+        third = SimpleNamespace(name="战斗区", x=480, y=687, width=100, height=40)
+        shifted = SimpleNamespace(name="战斗区", x=700, y=565, width=100, height=40)
+        for first, enlarged, expected in (
+            ([lower, upper], [lower], True),
+            ([partial, lower], [upper, lower], True),
+            ([lower], [lower], False),
+            ([lower], [upper, lower, third], False),
+            ([lower], [lower, shifted], False),
+        ):
+            with self.subTest(first=first, enlarged=enlarged):
+                task = SimpleNamespace(info_set=Mock())
+                vision = SimpleNamespace(
+                    capture=Mock(return_value=frame),
+                    ocr_boxes=Mock(side_effect=[first, enlarged]), click_client=Mock(),
+                )
+                navigator = Navigator(task, vision)
+                accepted = navigator._click_activity_exit_picker(
+                    CARD_BY_ID["Q_ep3"].targets[1],
+                    edge=("Q_ep3", "main_area", "battle_area_1"),
+                )
+                self.assertEqual(expected, accepted)
+                vision.capture.assert_called_once()
+                self.assertTrue(all(
+                    call.args[0] is frame for call in vision.ocr_boxes.call_args_list
+                ))
+                if expected:
+                    self.assertEqual((530, 585), vision.click_client.call_args.args[0])
+                    self.assertEqual(.3, vision.click_client.call_args.kwargs["down_time"])
+                else:
+                    vision.click_client.assert_not_called()
+
+    def test_collection_field_retries_battle_result_until_idle_field(self):
         frame = np.full((8, 8, 3), 120, dtype=np.uint8)
         leave = SimpleNamespace(name="离开", x=900, y=900, width=100, height=40)
         for accepted_click in (1, 2, None):
@@ -576,10 +1253,6 @@ class NavigatorTest(unittest.TestCase):
                 )
 
                 def phase():
-                    if clock[0] < 1:
-                        return "battle"
-                    if clock[0] < 12:
-                        return "animation"
                     if field_at[0] is None or clock[0] < field_at[0]:
                         return "victory"
                     return "field"
@@ -632,9 +1305,9 @@ class NavigatorTest(unittest.TestCase):
                     self.assertEqual(((950, 920), frame.shape), call.args)
                     self.assertEqual({"after_sleep": 1.0}, call.kwargs)
 
-    def test_collection_field_timeout_only_extends_for_a_turn_counter(self):
+    def test_collection_field_does_not_retreat_without_a_turn_counter(self):
         frame = np.full((8, 8, 3), 120, dtype=np.uint8)
-        for text, timeout in (("TURN 1", 180), ("RETURN 1", 10), ("TURN", 10)):
+        for text, timeout in (("RETURN 1", 10), ("TURN", 10), ("", 10)):
             with self.subTest(text=text):
                 clock = [0.0]
                 task = SimpleNamespace(
@@ -656,6 +1329,240 @@ class NavigatorTest(unittest.TestCase):
                 self.assertLess(clock[0], timeout + 1)
                 task.operate_click.assert_not_called()
                 vision.click_client.assert_not_called()
+
+    def test_collection_retreat_confirms_each_transition_and_bounds_retries(self):
+        for width, height, entry in (
+            (1920, 1080, False), (1280, 720, False),
+            (1920, 1080, True), (1280, 720, True),
+            (1920, 1080, "recent"), (1280, 720, "recent"),
+        ):
+            for blocked in (
+                None, "pause", "escape", "confirm", "ambiguous", "loading", "stop",
+                "dialog_ambiguous", "missing_cancel", "missing_question", "title_only", "wrong_row",
+                "field_moving", "field_unreadable",
+            ):
+                with self.subTest(size=(width, height), entry=entry, blocked=blocked):
+                    clock = [0.0]
+                    state = ["battle"]
+                    clicks = []
+                    attempts = {"pause": 0, "escape": 0, "confirm": 0}
+                    field_observations = []
+                    cancelled = []
+                    frame = np.full((height, width, 3), 120, dtype=np.uint8)
+
+                    def box(name, x, y):
+                        return SimpleNamespace(
+                            name=name, x=x * width, y=y * height,
+                            width=width * 0.05, height=height * 0.03,
+                        )
+
+                    menu = box("逃跑", 0.26, 0.90)
+                    dialog = box("逃跑", 0.58, 0.55)
+                    pause = box("暂停", 0.47, 0.18)
+                    restart = box("重新挑战", 0.46, 0.90)
+                    resume = box("点击继续", 0.66, 0.90)
+                    title = box("逃跑", 0.47, 0.39)
+                    question = box("是否放弃战斗逃跑？", 0.39, 0.49)
+                    cancel = box("取消", 0.42, 0.70 if blocked == "wrong_row" else 0.55)
+
+                    def ocr_boxes(*_args, **_kwargs):
+                        self.assertNotEqual("field", state[0])
+                        if state[0] == "menu":
+                            return [pause, restart, resume, menu] + (
+                                [menu] if blocked == "ambiguous" else []
+                            )
+                        if state[0] == "dialog":
+                            return (
+                                [pause, restart, resume, menu, title]
+                                + ([] if blocked == "missing_question" else [question])
+                                + ([] if blocked == "missing_cancel" else [cancel])
+                                + ([] if blocked == "title_only" else [dialog])
+                                + ([dialog] if blocked == "dialog_ambiguous" else [])
+                            )
+                        return []
+
+                    def click(point, _shape, *, after_sleep=0):
+                        stage = {"battle": "pause", "menu": "escape", "dialog": "confirm"}[state[0]]
+                        expected = {
+                            "pause": (round(width * 1792 / 1920), round(height * 52 / 1080)),
+                            "escape": Navigator._ocr_box_center(menu),
+                            "confirm": Navigator._ocr_box_center(dialog),
+                        }[stage]
+                        self.assertEqual(expected, point)
+                        clicks.append(stage)
+                        attempts[stage] += 1
+                        # Exercise a dropped first click at every stage.
+                        if stage != blocked and attempts[stage] >= 2:
+                            state[0] = {
+                                "pause": "menu", "escape": "dialog", "confirm": "loading",
+                            }[stage]
+                        clock[0] += after_sleep
+
+                    def capture():
+                        if state[0] == "loading" and blocked != "loading":
+                            state[0] = "field"
+                        return frame
+
+                    def sleep(seconds):
+                        if blocked == "stop":
+                            raise TaskDisabledException()
+                        clock[0] += seconds
+
+                    task = SimpleNamespace(
+                        config={"加载页面等待秒数": 10}, info_set=Mock(),
+                        sleep=sleep,
+                        _handle_recent_cartridge_special_pages=Mock(return_value=None),
+                    )
+                    vision = SimpleNamespace(
+                        capture=capture, ocr_boxes=ocr_boxes, click_client=click,
+                        ocr_text=lambda *_a, **_k: "TURN.1" if state[0] == "battle" else "",
+                    )
+                    navigator = Navigator(task, vision)
+                    navigator._black_frame = lambda _frame: state[0] == "loading"
+                    def classify(_frame):
+                        if state[0] == "field":
+                            field_observations.append(clock[0])
+                            return ScreenState.SANDBOX
+                        return ScreenState.UNKNOWN
+                    navigator.classify = classify
+                    navigator._walk_text = lambda _frame: (
+                        None if blocked == "field_unreadable" else
+                        "自动移动中" if blocked == "field_moving" and not cancelled else ""
+                    )
+                    navigator._cancel_walk = lambda: cancelled.append(True)
+                    navigator._leave_walk_battle_result = Mock(return_value=False)
+                    navigator._handle_story_card_intermediate = Mock(return_value=False)
+                    navigator._auto_moving = Mock(return_value=False)
+                    with patch(
+                        "src.tasks.map_trade.navigator_sandbox.monotonic",
+                        side_effect=lambda: clock[0],
+                    ):
+                        def recover():
+                            if entry == "recent":
+                                return navigator._recent_field_ready()
+                            return (
+                                navigator._wait_for_story_sandbox(14)
+                                if entry else navigator.wait_for_collection_field(frame)
+                            )
+
+                        if blocked in (None, "field_moving"):
+                            result = recover()
+                            if entry == "recent":
+                                self.assertTrue(result)
+                            elif entry:
+                                self.assertTrue(result.success)
+                                self.assertEqual(ScreenState.SANDBOX, result.state)
+                            else:
+                                self.assertIs(frame, result)
+                            self.assertEqual(
+                                ["pause"] * 2 + ["escape"] * 2 + ["confirm"] * 2, clicks,
+                            )
+                            self.assertEqual("field", state[0])
+                            self.assertEqual(3 if cancelled else 2, len(field_observations))
+                            self.assertLessEqual(clock[0] - field_observations[0], 0.31)
+                            self.assertEqual(int(blocked == "field_moving"), len(cancelled))
+                        elif blocked == "stop":
+                            with self.assertRaises(TaskDisabledException):
+                                recover()
+                            self.assertEqual(["pause"], clicks)
+                        else:
+                            if entry is True:
+                                result = recover()
+                                self.assertFalse(result.success)
+                                self.assertIn("遭遇战退出", result.message)
+                            else:
+                                with self.assertRaisesRegex(RuntimeError, "遭遇战退出"):
+                                    recover()
+                            self.assertLessEqual(clock[0], 31)
+                            self.assertLessEqual(max(attempts.values()), 3)
+                            if blocked in attempts:
+                                self.assertEqual(3, attempts[blocked])
+                            if blocked == "ambiguous":
+                                self.assertEqual(0, attempts["escape"])
+                            if blocked in {
+                                "dialog_ambiguous", "missing_cancel", "missing_question",
+                                "title_only", "wrong_row",
+                            }:
+                                self.assertEqual(0, attempts["confirm"])
+
+    def test_story_entry_limits_battle_recovery_to_confirmed_encounters(self):
+        for text, black, entry, field in (
+            ("TURN.1", False, True, False), ("RETURN.1", False, True, False),
+            ("TURN", False, True, False), ("", False, True, True),
+            ("TURN.1", True, True, False), ("TURN.1", False, False, False),
+        ):
+            with self.subTest(text=text, black=black, entry=entry, field=field):
+                frame = np.full((8, 8, 3), 0 if black else 120, dtype=np.uint8)
+                clock = [0.0]
+                task = SimpleNamespace(
+                    config={"加载页面等待秒数": 1}, info_set=Mock(),
+                    sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+                    _handle_recent_cartridge_special_pages=Mock(return_value=None),
+                )
+                vision = SimpleNamespace(
+                    capture=lambda: frame, ocr_text=Mock(return_value=text), click_client=Mock(),
+                )
+                navigator = Navigator(task, vision)
+                navigator.classify = Mock(return_value=(
+                    ScreenState.SANDBOX if field else ScreenState.UNKNOWN
+                ))
+                navigator._auto_moving = Mock(return_value=False)
+                navigator._handle_story_card_intermediate = Mock(return_value=False)
+                navigator._retreat_from_field_battle = Mock(return_value=frame)
+                with patch("src.tasks.map_trade.navigator_sandbox.monotonic", lambda: clock[0]):
+                    result = (
+                        navigator._wait_for_story_sandbox(14)
+                        if entry else navigator._wait_for_current_sandbox(timeout=1)
+                    )
+                should_retreat = entry and not black and text == "TURN.1"
+                self.assertEqual(field or should_retreat, result.success)
+                self.assertEqual(
+                    int(should_retreat), navigator._retreat_from_field_battle.call_count,
+                )
+                if should_retreat:
+                    navigator.classify.assert_not_called()
+                    task._handle_recent_cartridge_special_pages.assert_not_called()
+                    self.assertTrue(navigator._retreat_from_field_battle.call_args.kwargs["stop_walk"])
+                if black or not entry:
+                    vision.ocr_text.assert_not_called()
+                vision.click_client.assert_not_called()
+        for signal in (TaskDisabledException, FinishedException):
+            with self.subTest(signal=signal):
+                navigator.vision.capture = lambda: np.full((8, 8, 3), 120, dtype=np.uint8)
+                navigator._retreat_from_field_battle = Mock(side_effect=signal)
+                with self.assertRaises(signal):
+                    navigator._wait_for_story_sandbox(14)
+
+    def test_retreat_dialog_ocr_separates_title_from_confirm_button(self):
+        from onnxocr.onnx_paddleocr import ONNXPaddleOcr
+
+        from src.tasks.BaseBD2Task import BaseBD2Task
+
+        engine = ONNXPaddleOcr(use_angle_cls=False, use_npu=False, use_openvino=True)
+        task = object.__new__(BaseBD2Task)
+        task._executor = SimpleNamespace(
+            paused=False, debug=False, config={"ocr": {"default": {"lib": "onnxocr"}}},
+            ocr_lib=lambda _: engine, ocr_po_translation=None, text_fix={},
+        )
+        task.config = {}
+        task.info_set = Mock()
+        task.log_info = task.log_warning = Mock()
+        task.log_debug = None
+        task.ocr_default_threshold = 0.2
+        task.ocr_target_height = 0
+        vision = Vision(task)
+        navigator = Navigator(task, vision)
+        source = load_bgr(
+            Path(__file__).parent / "fixtures/map_trade/video_fhd/field_retreat_confirm.png",
+        )
+        for width, height in ((1280, 720), (1920, 1080), (2560, 1440)):
+            with self.subTest(size=(width, height)):
+                boxes = vision.ocr_boxes(cv2.resize(source, (width, height)), "采集战斗逃跑")
+                self.assertEqual(3, sum(box.name == "逃跑" for box in boxes))
+                stage, point = navigator._field_retreat_action(boxes)
+                self.assertEqual("confirm", stage)
+                self.assertAlmostEqual(1060 / 1920, point[0] / width, delta=0.006)
+                self.assertAlmostEqual(635 / 1080, point[1] / height, delta=0.006)
 
     def test_activity_walk_accepts_alias_and_rechecks_arrival_map(self):
         card = CARD_BY_ID["Q_ep7"]
@@ -682,6 +1589,7 @@ class NavigatorTest(unittest.TestCase):
             ("moving", ("moving",) * 6 + ("idle",)),
             ("expelled", ("moving", "caught", "loading", "moving", "idle")),
             ("battle", ("moving", "battle", "moving", "idle")),
+            ("encounter", ("moving", "encounter", "moving", "idle")),
             ("timeout", ("moving",)),
         )
         for card_id, source, destination in (*WALK_LABEL_EDGES, *EVENT_WALK_EDGES):
@@ -704,16 +1612,19 @@ class NavigatorTest(unittest.TestCase):
                         simplify=lambda text: text,
                         ocr_text=lambda *_args, **_kwargs: {
                             "moving": "自动移动中", "caught": "被发现驱逐",
+                            "encounter": "TURN.1",
                         }.get(phase(), ""),
                     )
                     navigator = Navigator(task, vision)
                     navigator.ensure_small_minimap = lambda: True
                     navigator.classify = lambda _frame=None: (
-                        ScreenState.UNKNOWN if phase() == "battle" else ScreenState.SANDBOX
+                        ScreenState.UNKNOWN
+                        if phase() in {"battle", "encounter"} else ScreenState.SANDBOX
                     )
                     navigator._click_walk_exit = Mock(return_value=True)
                     navigator._close_field_map = Mock(return_value=True)
                     navigator._leave_walk_battle_result = Mock(return_value=True)
+                    navigator._retreat_from_field_battle = Mock(return_value=frame)
                     opened = []
 
                     def open_map():
@@ -740,6 +1651,8 @@ class NavigatorTest(unittest.TestCase):
                         navigator._close_field_map.assert_not_called()
                     if name == "battle":
                         navigator._leave_walk_battle_result.assert_called_once()
+                    if name == "encounter":
+                        navigator._retreat_from_field_battle.assert_called_once()
 
 
     def test_quick_switch_identity_survives_brightness_and_client_scaling(self):
@@ -834,6 +1747,7 @@ class NavigatorTest(unittest.TestCase):
                 if page_mode == MapPageMode.GENERATE_TELEPORT
                 else "移动魔法阵"
             ),
+            teleport_scope=TeleportScope.CURRENT_CARTRIDGE,
         )
 
     def test_ensure_card_menu_home_fallback_uses_shared_recent_cartridge_guard(self):
@@ -880,64 +1794,59 @@ class NavigatorTest(unittest.TestCase):
     def test_real_map_page_fixtures_are_mutually_exclusive_across_resolutions(self):
         fixtures = ROOT / "tests/fixtures/map_trade/map_pages"
         cases = {
-            "direct_snow": (
-                "移动魔法阵",
-                "战斗Ⅰ 华特波尔雪山",
-                MapPageMode.DIRECT_TELEPORT,
-            ),
-            "direct": (
-                "移动魔法阵",
-                "",
-                MapPageMode.DIRECT_TELEPORT,
-            ),
-            "generate": (
-                "移动魔法阵 传说",
-                "",
-                MapPageMode.GENERATE_TELEPORT,
-            ),
-            "sandbox_large": (
-                "战斗Ⅱ 卢戈森林深处",
-                "在战场中查看 探索 0 世界地图",
-                MapPageMode.SANDBOX_LARGE_MAP,
-            ),
+            "direct_snow": ("移动魔法阵", "战斗Ⅰ 华特波尔雪山", MapPageMode.DIRECT_TELEPORT),
+            "direct": ("移动魔法阵", "", MapPageMode.DIRECT_TELEPORT),
+            "generate": ("移动魔法阵 传说", "", MapPageMode.GENERATE_TELEPORT),
+            "sandbox_large": ("战斗Ⅱ 卢戈森林深处", "在战场中查看 探索 0 世界地图",
+                              MapPageMode.SANDBOX_LARGE_MAP),
+            "direct_900": ("移动魔法阵", "", MapPageMode.DIRECT_TELEPORT),
+            "direct_soft_1161": ("移动魔法阵", "安全 达雷普镇", MapPageMode.DIRECT_TELEPORT),
+            "generate_beginner_811": ("移动魔法阵 初级", "安全 卢戈镇",
+                                      MapPageMode.GENERATE_TELEPORT),
         }
-        for height in (720, 1080, 1440, 2160):
-            width = height * 16 // 9
-            for name, (header, footer, expected) in cases.items():
-                with self.subTest(height=height, page=name):
-                    suffix = "webp" if name == "direct_snow" else "png"
-                    source = load_bgr(fixtures / f"{name}.{suffix}")
-                    self.assertIsNotNone(source)
-                    interpolation = cv2.INTER_AREA if height < 1080 else cv2.INTER_CUBIC
-                    frame = cv2.resize(source, (width, height), interpolation=interpolation)
-                    matcher = Vision(SimpleNamespace(config={}))
-                    vision = SimpleNamespace(
-                        match=matcher.match,
-                        passes=matcher.passes,
-                        simplify=lambda value: value,
-                        ocr_text=lambda _frame, label, **_kwargs: (
-                            header if label == "地图页面左上标题" else footer
-                        ),
-                    )
-                    navigator = Navigator(
-                        SimpleNamespace(info_set=lambda *_args: None),
-                        vision,
-                    )
-
-                    detection = navigator._detect_map_page_mode(frame)
-
-                    self.assertEqual(expected, detection.mode)
-                    if name == "direct_snow":
-                        for spec, expected_x in (
-                            (TELEPORT_MAP_FORWARD_TEMPLATE, 380),
-                            (TELEPORT_MAP_BACKWARD_TEMPLATE, 1540),
-                        ):
-                            match = matcher.match(frame, spec)
-                            self.assertTrue(matcher.passes(match, spec))
-                            self.assertAlmostEqual(
-                                expected_x, match.center[0] * 1920 / width, delta=4,
+        for name, (header, footer, expected) in cases.items():
+            suffix = "webp" if name == "direct_snow" else "png"
+            source = load_bgr(fixtures / f"{name}.{suffix}")
+            sizes = [(source.shape[1], source.shape[0])] if name in (
+                "direct_soft_1161", "generate_beginner_811",
+            ) else [(height * 16 // 9, height) for height in (720, 900, 1080, 1440, 2160)]
+            for width, height in sizes:
+                grades = ("初级", "新手", "进阶", "高手", "达人", "传说", "", "传说初级") if (
+                    name == "generate_beginner_811"
+                ) else (None,)
+                for grade in grades:
+                    with self.subTest(page=name, size=(width, height), grade=grade):
+                        label_text = header if grade is None else f"移动魔法阵 {grade}"
+                        frame = cv2.resize(source, (width, height), interpolation=(
+                            cv2.INTER_AREA if height < source.shape[0] else cv2.INTER_CUBIC
+                        ))
+                        matcher = Vision(SimpleNamespace(config={}))
+                        navigator = Navigator(SimpleNamespace(info_set=Mock()), SimpleNamespace(
+                            match=matcher.match, passes=matcher.passes, simplify=str,
+                            ocr_text=lambda _frame, label, **_kwargs: (
+                                label_text if label == "地图页面左上标题" else footer
+                            ),
+                        ))
+                        detection = navigator._detect_map_page_mode(frame)
+                        self.assertEqual(expected, detection.mode)
+                        if grade is not None:
+                            scope = (
+                                TeleportScope.CURRENT_CARTRIDGE if grade == "传说"
+                                else TeleportScope.UNKNOWN if grade in ("", "传说初级")
+                                else TeleportScope.CURRENT_MAP
                             )
-                            self.assertAlmostEqual(520, match.center[1] * 1080 / height, delta=4)
+                            self.assertEqual(scope, detection.teleport_scope)
+                        if name == "direct_snow":
+                            for spec, expected_x in ((TELEPORT_MAP_FORWARD_TEMPLATE, 380),
+                                                     (TELEPORT_MAP_BACKWARD_TEMPLATE, 1540)):
+                                match = matcher.match(frame, spec)
+                                self.assertTrue(matcher.passes(match, spec))
+                                self.assertAlmostEqual(expected_x, match.center[0] * 1920 / width,
+                                                       delta=4)
+                                self.assertAlmostEqual(
+                                    520, match.center[1] * 1080 / height, delta=4,
+                                )
+
 
     def test_teleport_arrows_reject_blank_and_wrong_side(self):
         source = load_bgr(ROOT / "tests/fixtures/map_trade/map_pages/direct_snow.webp")
@@ -1044,7 +1953,7 @@ class NavigatorTest(unittest.TestCase):
         self.assertEqual(2, len(captures))
         self.assertEqual([0.15], sleeps)
 
-    def test_sandbox_large_map_requires_two_footer_keywords_and_known_title(self):
+    def test_sandbox_large_map_requires_map_header_and_footer_structure(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         text = {
             "地图页面左上标题": "战斗Ⅱ 卢戈森林深处",
@@ -1079,6 +1988,8 @@ class NavigatorTest(unittest.TestCase):
         )
         for title in (
             "安全 科库托斯暗黑神殿", "安全 记忆岔路口", "安全 学校2楼", "安全 埃兰旅馆",
+            "战斗 蜥蜴人祭坛 出现水属性怪物", "战斗 君主之墓", "战斗 守山人休息处",
+            "战斗 伯爵家宝库",
         ):
             with self.subTest(title=title):
                 text["地图页面左上标题"] = title
@@ -1091,10 +2002,126 @@ class NavigatorTest(unittest.TestCase):
                     left if "左箭头" in spec.name else right, spec.name,
                 )
                 self.assertEqual(
-                    MapPageMode.SANDBOX_LARGE_MAP if left or right else MapPageMode.UNKNOWN,
+                    MapPageMode.SANDBOX_LARGE_MAP,
                     navigator._detect_map_page_mode(frame).mode,
                 )
+        navigator._map_page_template_signal = lambda *_: (False, "miss")
+        text["箱庭大地图底部控件"] = "探索 世界地图"
+        self.assertEqual(MapPageMode.UNKNOWN, navigator._detect_map_page_mode(frame).mode)
+        for title, footer, arrow, expected in (
+            ("", "在战场中查看 探索 世界地图", True, MapPageMode.SANDBOX_LARGE_MAP),
+            ("普通", "在战场中查看 探索 世界地图", True, MapPageMode.SANDBOX_LARGE_MAP),
+            ("", "在战场中查看 探索 世界地图", False, MapPageMode.UNKNOWN),
+            ("", "探索 世界地图", True, MapPageMode.UNKNOWN),
+            ("战斗 蜥蜴人祭坛", "探索 世界地图", True, MapPageMode.SANDBOX_LARGE_MAP),
+            ("战斗 蜥蜴人祭坛", "探索", True, MapPageMode.UNKNOWN),
+            ("战斗 蜥蜴人祭坛", "", False, MapPageMode.UNKNOWN),
+            ("蜥蜴人祭坛", "在战场中查看 探索 世界地图", True, MapPageMode.UNKNOWN),
+            ("商店战斗用品", "在战场中查看 探索 世界地图", True, MapPageMode.UNKNOWN),
+        ):
+            with self.subTest(title=title, footer=footer, arrow=arrow):
+                text["地图页面左上标题"] = title
+                text["箱庭大地图底部控件"] = footer
+                navigator._map_page_template_signal = lambda *_: (arrow, "signal")
+                self.assertEqual(expected, navigator._detect_map_page_mode(frame).mode)
+        for card_id, title in (("Q_sp5", "君主之墓"), ("Q_sp7", "蜥蜴人祭坛")):
+            self.assertEqual((), navigator._target_keys_in_text(CARD_BY_ID[card_id], title))
         self.assertEqual((), navigator._target_keys_in_text(CARD_BY_ID["Q_sp18"], "安全记忆岔路口"))
+
+    def test_existing_hunting_ground_requires_closed_map_and_same_frame_field_controls(self):
+        for height in (720, 1080):
+            frame = np.full((height, height * 16 // 9, 3), 120, dtype=np.uint8)
+            for closed in (True, False):
+                with self.subTest(height=height, closed=closed):
+                    state = [MapPageMode.SANDBOX_LARGE_MAP]
+                    events = []
+                    task = SimpleNamespace(config={}, info_set=Mock(), operate_click=Mock())
+                    vision = SimpleNamespace(
+                        capture=lambda: frame, simplify=str, click_template=Mock(),
+                        ocr_text=Mock(return_value="自动狩猎 M 离开"),
+                    )
+                    navigator = Navigator(task, vision)
+                    navigator._detect_map_page_mode = lambda _frame: SimpleNamespace(mode=state[0])
+                    navigator.classify = lambda _frame: (
+                        ScreenState.SANDBOX
+                        if state[0] == MapPageMode.UNKNOWN else ScreenState.UNKNOWN
+                    )
+                    def close(_frame, _mode):
+                        events.append("close")
+                        if closed:
+                            state[0] = MapPageMode.UNKNOWN
+                    navigator._click_map_return = close
+                    navigator._wait_for_current_sandbox = Mock(side_effect=lambda **_: (
+                        NavigationResult(
+                            closed, ScreenState.SANDBOX if closed else ScreenState.UNKNOWN,
+                        )
+                    ))
+                    entry = navigator._travel_via_nav_menu("狩猎场", "艾琳")
+                    self.assertEqual("狩猎场" if closed else None, entry)
+                    self.assertEqual(["close"] * (1 if closed else 2), events)
+                    vision.click_template.assert_not_called()
+                    task.operate_click.assert_not_called()
+                    if closed:
+                        self.assertIs(frame, vision.ocr_text.call_args.args[0])
+                    else:
+                        vision.ocr_text.assert_not_called()
+            for field, text, expected in (
+                (True, "自动狩猎 M 离开", True), (True, "极难 更改 离开", True),
+                (True, "自动狩猎", False), (True, "离开", False),
+                (True, "旅馆 商店 快速狩猎", False), (False, "自动狩猎 离开", False),
+            ):
+                with self.subTest(height=height, field=field, text=text):
+                    vision = SimpleNamespace(capture=lambda: frame, simplify=str,
+                        ocr_text=Mock(return_value=text))
+                    navigator = Navigator(SimpleNamespace(), vision)
+                    navigator.classify = Mock(return_value=(
+                        ScreenState.SANDBOX if field else ScreenState.UNKNOWN
+                    ))
+                    self.assertEqual(expected, navigator._hunting_ground_field())
+                    navigator.classify.assert_called_once_with(frame)
+                    if not field:
+                        vision.ocr_text.assert_not_called()
+
+    def test_hunting_ground_portal_walks_only_after_confirmed_field_and_preserves_failure(self):
+        passed = NavigationResult(
+            True, ScreenState.AREA_MAP, map_page_mode=MapPageMode.DIRECT_TELEPORT,
+        )
+        for opened, restored, walked, expected, walk_count in (
+            (passed, True, passed, True, 0),
+            (NavigationResult(False, ScreenState.UNKNOWN, "页面未知"), True, passed, False, 0),
+            (NavigationResult(False, ScreenState.SANDBOX, "交互未确认"), False, passed, False, 0),
+            (NavigationResult(False, ScreenState.SANDBOX, "交互未确认"), True, passed, True, 1),
+            (NavigationResult(False, ScreenState.SANDBOX, "交互未确认"), True,
+             NavigationResult(False, ScreenState.UNKNOWN, "目的地未确认"), False, 1),
+        ):
+            with self.subTest(opened=opened, restored=restored, walked=walked):
+                events = []
+                navigator = Navigator(SimpleNamespace(), SimpleNamespace())
+                navigator.open_teleport_map_from_sandbox = Mock(return_value=opened)
+                navigator._restore_navigation_field = Mock(side_effect=lambda: (
+                    events.append("restore") or NavigationResult(restored, ScreenState.UNKNOWN)
+                ))
+                navigator._walk_to_sandbox_teleport_interaction = Mock(side_effect=lambda: (
+                    events.append("walk") or walked
+                ))
+                result = navigator._open_hunting_ground_portal()
+                self.assertEqual(expected, result.success)
+                self.assertEqual(
+                    walk_count, navigator._walk_to_sandbox_teleport_interaction.call_count,
+                )
+                if walk_count:
+                    self.assertEqual(["restore", "walk"], events)
+                    if not walked.success:
+                        self.assertIn("交互未确认", result.message)
+                        self.assertIn("目的地未确认", result.message)
+                if opened.success or opened.state == ScreenState.UNKNOWN:
+                    navigator._restore_navigation_field.assert_not_called()
+        for signal in (TaskDisabledException, FinishedException):
+            navigator.open_teleport_map_from_sandbox = Mock(side_effect=signal)
+            navigator._walk_to_sandbox_teleport_interaction.reset_mock()
+            with self.assertRaises(signal):
+                navigator._open_hunting_ground_portal()
+            navigator._walk_to_sandbox_teleport_interaction.assert_not_called()
 
     def test_ensure_area_map_recovers_existing_generate_mode(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -1169,32 +2196,67 @@ class NavigatorTest(unittest.TestCase):
         )
         self.assertEqual((136 / 1920, 52 / 1080), TELEPORT_MAP_RETURN_RELATIVE_POINT)
 
-    def test_prepare_collection_main_closes_map_when_initial_title_is_main(self):
+    def test_prepare_collection_main_verifies_actual_arrival_when_page_shows_town(self):
         card = CARD_BY_ID["Q_sp1"]
-        events = []
-        navigator = Navigator(SimpleNamespace(), SimpleNamespace())
-        navigator.ensure_small_minimap = lambda: True
-        navigator.open_teleport_map_from_sandbox = lambda: NavigationResult(
-            True,
-            ScreenState.AREA_MAP,
-            map_page_mode=MapPageMode.DIRECT_TELEPORT,
-        )
-        navigator._wait_for_collection_teleport_map = lambda _card, **_kwargs: self._area_context(
-            card.targets[0].title,
-            card.targets[0].key,
-            right=True,
-        )
-        navigator.return_teleport_map_to_sandbox = lambda number: (
-            events.append(("return", number)) or NavigationResult(True, ScreenState.SANDBOX)
-        )
-        navigator._seek_collection_page = lambda *_args: self.fail(
-            "already-main title must not be paged"
-        )
+        circle = MatchResult(0.99, (800, 400), (60, 60), 0.95, 0.93)
+        for actual, expected in ((card.targets[0].title, True), (card.targets[2].title, False)):
+            with self.subTest(actual=actual):
+                navigator = self._routing_navigator()
+                navigator._open_teleport_map_anywhere = Mock(return_value=NavigationResult(
+                    True, ScreenState.AREA_MAP, map_page_mode=MapPageMode.DIRECT_TELEPORT,
+                ))
+                navigator._wait_for_collection_teleport_map = Mock(return_value=self._area_context(
+                    card.targets[0].title, card.targets[0].key, teleports=(circle,),
+                ))
+                navigator._click_teleport_map_destination = Mock(return_value=True)
+                navigator._wait_for_story_sandbox = Mock(return_value=NavigationResult(
+                    True, ScreenState.SANDBOX,
+                ))
+                navigator._collection_field_title = Mock(return_value=actual)
+                navigator._walk_to_circle_neighbour = Mock(return_value=None)
+                navigator._walk_to_sandbox_teleport_interaction = Mock(
+                    return_value=NavigationResult(False, ScreenState.SANDBOX, "未找到地面阵"),
+                )
+                result = navigator.prepare_collection_main_area(card.card_id)
+                self.assertEqual(expected, result.success)
+                navigator._click_teleport_map_destination.assert_called_once()
+                navigator._collection_field_title.assert_called_once()
 
-        result = navigator.prepare_collection_main_area(card.card_id)
 
-        self.assertTrue(result.success)
-        self.assertEqual([("return", 1)], events)
+    def test_recovery_propagates_stop_without_attempting_another_route(self):
+        card = CARD_BY_ID["Q_sp1"]
+        for stage in ("field", "walk", "navigation", "talent"):
+            for signal in (TaskDisabledException, FinishedException):
+                with self.subTest(stage=stage, signal=signal):
+                    events = []
+                    navigator = self._routing_navigator()
+                    navigator.open_teleport_map_from_sandbox = Mock(return_value=NavigationResult(
+                        False, ScreenState.SANDBOX,
+                    ))
+                    def observe(name, result):
+                        events.append(name)
+                        if name == stage:
+                            raise signal()
+                        return result
+                    navigator._restore_navigation_field = Mock(side_effect=lambda: observe(
+                        "field", NavigationResult(True, ScreenState.SANDBOX),
+                    ))
+                    navigator._travel_via_nav_menu = Mock(side_effect=lambda _entry: observe(
+                        "navigation", None,
+                    ))
+                    navigator._open_teleport_skill = Mock(side_effect=lambda _card: observe(
+                        "talent", None,
+                    ))
+                    navigator._walk_to_circle_neighbour = Mock(return_value=None)
+                    navigator._walk_to_sandbox_teleport_interaction = Mock(
+                        side_effect=lambda: observe(
+                            "walk", NavigationResult(False, ScreenState.SANDBOX),
+                        ),
+                    )
+                    with self.assertRaises(signal):
+                        navigator._open_teleport_map_anywhere(card, target=card.targets[1])
+                    self.assertEqual(stage, events[-1])
+
 
     def test_prepare_collection_main_pages_to_first_title_then_teleports(self):
         card = CARD_BY_ID["Q_sp1"]
@@ -1223,7 +2285,7 @@ class NavigatorTest(unittest.TestCase):
                 (point, shape, after_sleep)
             )
         )
-        navigator = Navigator(SimpleNamespace(), vision)
+        navigator = self._routing_navigator(vision=vision)
         navigator.ensure_small_minimap = lambda: True
         navigator.open_teleport_map_from_sandbox = lambda: NavigationResult(
             True,
@@ -1297,7 +2359,7 @@ class NavigatorTest(unittest.TestCase):
                 (point, shape, after_sleep)
             )
         )
-        navigator = Navigator(SimpleNamespace(), vision)
+        navigator = self._routing_navigator(vision=vision)
         navigator.ensure_small_minimap = lambda: True
         navigator.open_teleport_map_from_sandbox = lambda: NavigationResult(
             True,
@@ -1310,13 +2372,11 @@ class NavigatorTest(unittest.TestCase):
             left=True,
             right=True,
         )
-        wait_modes = []
-
-        def wait_for_map(_card, **kwargs):
-            wait_modes.append(kwargs.get("allow_unresolved"))
-            return hotel_initial
-
-        navigator._wait_for_collection_teleport_map = wait_for_map
+        clock = [0.0]
+        navigator.task.sleep = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+        navigator._capture_area_map_context = Mock(side_effect=lambda _card: (
+            self._area_context("", None, page_mode=MapPageMode.UNKNOWN) if clicks else hotel_initial
+        ))
         navigator._move_area_map = lambda _card, _context, direction: (
             moves.append(direction) or next(contexts)
         )
@@ -1329,10 +2389,11 @@ class NavigatorTest(unittest.TestCase):
             return_value=NavigationResult(True, ScreenState.SANDBOX)
         )
 
-        result = navigator.prepare_collection_main_area(card.card_id)
+        with patch("src.tasks.map_trade.navigator_sandbox.monotonic", lambda: clock[0]):
+            result = navigator.prepare_collection_main_area(card.card_id)
 
         self.assertTrue(result.success)
-        self.assertEqual([True], wait_modes)
+        self.assertEqual(3, navigator._capture_area_map_context.call_count)
         self.assertEqual(["left", "left", "left"], moves)
         self.assertEqual(
             [(teleport.center, (1080, 1920, 3), 0.0)],
@@ -1340,77 +2401,146 @@ class NavigatorTest(unittest.TestCase):
         )
         navigator._confirm_collection_arrival.assert_called_once_with(card, card.targets[0])
 
-    def test_wait_for_collection_teleport_map_accepts_unresolved_submap(self):
+    def test_wait_for_collection_teleport_map_confirms_stable_transit_titles(self):
         card = CARD_BY_ID["Q_sp10"]
-        hotel_context = self._area_context(
-            "安全 埃兰旅馆",
-            target_key=None,
-            left=True,
-            right=True,
-        )
-        navigator = Navigator(SimpleNamespace(), SimpleNamespace())
-        navigator._capture_area_map_context = lambda _card: hotel_context
+        for mode in (MapPageMode.DIRECT_TELEPORT, MapPageMode.GENERATE_TELEPORT):
+            for title in ("安全 埃兰旅馆", "战斗 君主之墓", "战斗 蜥蜴人祭坛"):
+                with self.subTest(mode=mode, title=title):
+                    observed = self._area_context(title, page_mode=mode)
+                    clock = [0.0]
+                    navigator = Navigator(SimpleNamespace(
+                        sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+                    ), SimpleNamespace())
+                    navigator._capture_area_map_context = Mock(return_value=observed)
+                    with patch("src.tasks.map_trade.navigator_sandbox.monotonic", lambda: clock[0]):
+                        context = navigator._wait_for_collection_teleport_map(card, timeout=1)
+                    self.assertIs(context, observed)
+                    self.assertEqual(2, navigator._capture_area_map_context.call_count)
+                    self.assertIsNone(context.resolved_target_key)
 
-        context = navigator._wait_for_collection_teleport_map(
-            card,
-            timeout=0.1,
-            allow_unresolved=True,
-        )
-
-        self.assertIsInstance(context, AreaMapContext)
-        self.assertEqual("安全 埃兰旅馆", context.raw_text)
-        self.assertIsNone(context.resolved_target_key)
-        self.assertTrue(context.left_arrow is not None)
-
-    def test_wait_for_collection_teleport_map_strict_mode_rejects_unresolved_submap(self):
+    def test_wait_for_collection_teleport_map_requires_consecutive_page_evidence(self):
         card = CARD_BY_ID["Q_sp10"]
-        hotel_context = self._area_context(
-            "安全 埃兰旅馆",
-            target_key=None,
-            left=True,
-            right=True,
+        transit = self._area_context("安全 埃兰旅馆", left=True, right=True)
+        unknown = replace(transit, map_page_mode=MapPageMode.UNKNOWN)
+        large_map = replace(transit, map_page_mode=MapPageMode.SANDBOX_LARGE_MAP)
+        generated = replace(transit, map_page_mode=MapPageMode.GENERATE_TELEPORT)
+        ambiguous = replace(transit, candidate_target_keys=("main_area", "battle_area_1"))
+        cases = (
+            ("changing title", [transit, replace(transit, normalized_text="其他旅馆")] * 2, False),
+            ("blank title", [replace(transit, normalized_text="")] * 4, False),
+            ("large map", [large_map] * 4, False),
+            ("unknown", [unknown] * 4, False),
+            ("ambiguous targets", [ambiguous], False),
+            ("changing mode", [transit, generated] * 2, False),
+            ("interrupted", [transit, unknown] * 2, False),
+            ("fresh confirmation after interruption", [transit, unknown, transit, transit], True),
         )
-        navigator = Navigator(
-            SimpleNamespace(sleep=lambda _seconds: None),
-            SimpleNamespace(),
-        )
-        navigator._capture_area_map_context = lambda _card: hotel_context
+        for name, observations, accepted in cases:
+            with self.subTest(case=name):
+                samples = iter(observations)
+                clock = [0.0]
+                navigator = Navigator(SimpleNamespace(
+                    sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+                ), SimpleNamespace(click_client=Mock()))
+                navigator._capture_area_map_context = Mock(
+                    side_effect=lambda _card: next(samples, observations[-1]),
+                )
+                with patch("src.tasks.map_trade.navigator_sandbox.monotonic", lambda: clock[0]):
+                    result = navigator._wait_for_collection_teleport_map(
+                        card, timeout=AREA_MAP_CHANGE_INTERVAL * 3.5,
+                    )
+                if accepted:
+                    self.assertIs(result, transit)
+                    self.assertEqual(4, navigator._capture_area_map_context.call_count)
+                else:
+                    self.assertFalse(result.success)
+                navigator.vision.click_client.assert_not_called()
+        for signal in (TaskDisabledException, FinishedException):
+            with self.subTest(signal=signal):
+                navigator._capture_area_map_context = Mock(side_effect=signal)
+                with self.assertRaises(signal):
+                    navigator._wait_for_collection_teleport_map(card)
 
-        with patch(
-            "src.tasks.map_trade.navigator_sandbox.monotonic",
-            side_effect=(100.0, 100.0, 101.0),
+    def test_collection_routes_seek_named_targets_after_hunting_ground_transit(self):
+        left = MatchResult(0.99, (100, 500), (30, 30), pixel_score=0.98)
+        right = MatchResult(0.99, (1500, 500), (30, 30), pixel_score=0.98)
+        teleport = MatchResult(0.99, (880, 450), (60, 60), 0.95, 0.93)
+        for card_id, transit_title in (
+            ("Q_sp5", "战斗 君主之墓"), ("Q_sp7", "战斗 蜥蜴人祭坛"),
+            ("Q_sp10", "安全 埃兰旅馆"),
         ):
-            result = navigator._wait_for_collection_teleport_map(card, timeout=0.1)
+            for operation in ("initialize", "advance", "target absent"):
+                with self.subTest(card=card_id, operation=operation):
+                    card = CARD_BY_ID[card_id]
+                    target = card.targets[0 if operation == "initialize" else 1]
+                    pages = [self._area_context(
+                        item.title, item.key, teleports=(teleport,),
+                    ) for item in card.targets if operation != "target absent" or item != target]
+                    pages.append(self._area_context(transit_title))
+                    pages = [replace(page,
+                        left_arrow=left if index else None,
+                        right_arrow=right if index < len(pages) - 1 else None,
+                    ) for index, page in enumerate(pages)]
+                    position = [len(pages) - 1]
+                    clock = [0.0]
+                    destination_clicks = []
 
-        self.assertFalse(result.success)
-        self.assertIn("未在限定时间内", result.message)
+                    def click(point, _shape, **_kwargs):
+                        if point in (left.center, TELEPORT_PAGE_ARROW_REFERENCE["left"]):
+                            position[0] = max(0, position[0] - 1)
+                        elif point in (right.center, TELEPORT_PAGE_ARROW_REFERENCE["right"]):
+                            position[0] = min(len(pages) - 1, position[0] + 1)
+                        else:
+                            self.assertEqual(teleport.center, point)
+                            self.assertEqual(target.key, pages[position[0]].resolved_target_key)
+                            destination_clicks.append(point)
 
-    def test_advance_collection_map_rejects_unresolved_initial_map(self):
-        card = CARD_BY_ID["Q_sp10"]
-        current, target = card.targets[1:]
-        hotel_context = self._area_context(
-            "安全 埃兰旅馆",
-            target_key=None,
-            left=True,
-            right=True,
-        )
-        clock = [0.0]
-        navigator = Navigator(
-            SimpleNamespace(sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds)),
-            SimpleNamespace(click_client=Mock()),
-        )
-        navigator.open_teleport_map_from_sandbox = lambda: NavigationResult(
-            True,
-            ScreenState.AREA_MAP,
-            map_page_mode=MapPageMode.DIRECT_TELEPORT,
-        )
-        navigator._capture_area_map_context = lambda _card: hotel_context
-        with patch("src.tasks.map_trade.navigator_sandbox.monotonic", lambda: clock[0]):
-            result = navigator.advance_collection_map(card.card_id, current, target)
-
-        self.assertFalse(result.success)
-        self.assertIn("未在限定时间内", result.message)
-        navigator.vision.click_client.assert_not_called()
+                    navigator = Navigator(SimpleNamespace(
+                        info_set=Mock(),
+                        sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+                    ), SimpleNamespace(click_client=click, capture=Mock()))
+                    navigator._detect_map_page_mode = Mock(return_value=SimpleNamespace(
+                        mode=MapPageMode.DIRECT_TELEPORT,
+                    ))
+                    navigator.current_collection_target = Mock(return_value=None)
+                    sandbox = NavigationResult(True, ScreenState.SANDBOX)
+                    opened = NavigationResult(
+                        True, ScreenState.AREA_MAP, map_page_mode=MapPageMode.DIRECT_TELEPORT,
+                    )
+                    navigator.ensure_small_minimap = Mock(return_value=True)
+                    navigator._click_sandbox_teleport_interaction = Mock(return_value=False)
+                    navigator._open_teleport_map_anywhere = Mock(return_value=opened)
+                    navigator._restore_navigation_field = Mock(return_value=sandbox)
+                    navigator._walk_to_circle_neighbour = Mock(return_value=None)
+                    navigator._walk_to_sandbox_teleport_interaction = Mock(
+                        return_value=NavigationResult(False, ScreenState.SANDBOX),
+                    )
+                    navigator._capture_area_map_context = lambda _card: (
+                        self._area_context("", None, page_mode=MapPageMode.UNKNOWN)
+                        if destination_clicks else pages[position[0]]
+                    )
+                    navigator._wait_for_loading_screen = Mock(return_value=True)
+                    navigator._wait_for_story_sandbox = Mock(return_value=sandbox)
+                    navigator._confirm_collection_arrival = Mock(return_value=sandbox)
+                    with patch("src.tasks.map_trade.navigator_sandbox.monotonic", lambda: clock[0]):
+                        result = (
+                            navigator.prepare_collection_main_area(card_id, via_hunting_ground=True)
+                            if operation == "initialize" else
+                            navigator.advance_collection_map(card_id, card.targets[0], target)
+                        )
+                    navigator._open_teleport_map_anywhere.assert_called_once_with(
+                        card, target=target,
+                    )
+                    if operation == "target absent":
+                        self.assertFalse(result.success)
+                        self.assertIn("左右翻页都未找到", result.message)
+                        self.assertEqual([], destination_clicks)
+                        navigator._confirm_collection_arrival.assert_not_called()
+                        self.assertLess(clock[0], 60)
+                    else:
+                        self.assertTrue(result.success)
+                        self.assertEqual([teleport.center], destination_clicks)
+                        navigator._confirm_collection_arrival.assert_called_once_with(card, target)
 
     def test_advance_collection_map_moves_back_exactly_one_confirmed_page(self):
         card = CARD_BY_ID["Q_sp1"]
@@ -1423,7 +2553,7 @@ class NavigatorTest(unittest.TestCase):
                 (point, shape, after_sleep)
             ),
         )
-        navigator = Navigator(SimpleNamespace(), vision)
+        navigator = self._routing_navigator(vision=vision)
         navigator.open_teleport_map_from_sandbox = lambda: NavigationResult(
             True,
             ScreenState.AREA_MAP,
@@ -1539,6 +2669,12 @@ class NavigatorTest(unittest.TestCase):
             ),
         )
         navigator = Navigator(task, vision)
+        navigator._detect_map_page_mode = Mock(
+            return_value=SimpleNamespace(mode=MapPageMode.UNKNOWN),
+        )
+        navigator._restore_navigation_field = Mock(return_value=NavigationResult(
+            True, ScreenState.SANDBOX,
+        ))
         navigator._wait_for_sandbox_map_open = lambda *_args, **_kwargs: NavigationResult(
             True,
             ScreenState.AREA_MAP,
@@ -1591,7 +2727,14 @@ class NavigatorTest(unittest.TestCase):
             ),
         )
         navigator = Navigator(task, vision)
+        navigator._collection_field_title = Mock(return_value="卢戈森林")
         navigator._click_sandbox_teleport_interaction = lambda: False
+        navigator._detect_map_page_mode = Mock(
+            return_value=SimpleNamespace(mode=MapPageMode.UNKNOWN),
+        )
+        navigator._restore_navigation_field = Mock(return_value=NavigationResult(
+            True, ScreenState.SANDBOX,
+        ))
         navigator._wait_for_sandbox_map_open = lambda *_args, **_kwargs: NavigationResult(
             True,
             ScreenState.AREA_MAP,
@@ -1599,7 +2742,7 @@ class NavigatorTest(unittest.TestCase):
             map_page_mode=MapPageMode.GENERATE_TELEPORT,
         )
 
-        result = navigator.open_teleport_map_from_sandbox()
+        result = navigator._open_teleport_skill(CARD_BY_ID["Q_sp1"])
 
         self.assertTrue(result.success)
         self.assertEqual(ScreenState.AREA_MAP, result.state)
@@ -1629,7 +2772,14 @@ class NavigatorTest(unittest.TestCase):
             click_client=lambda *args, **kwargs: clicks.append((args, kwargs)),
         )
         navigator = Navigator(task, vision)
+        navigator._collection_field_title = Mock(return_value="卢戈森林")
         navigator._click_sandbox_teleport_interaction = lambda: False
+        navigator._detect_map_page_mode = Mock(
+            return_value=SimpleNamespace(mode=MapPageMode.UNKNOWN),
+        )
+        navigator._restore_navigation_field = Mock(return_value=NavigationResult(
+            True, ScreenState.SANDBOX,
+        ))
         navigator._wait_for_sandbox_map_open = lambda *_args, **_kwargs: NavigationResult(
             False,
             ScreenState.SANDBOX,
@@ -1640,10 +2790,10 @@ class NavigatorTest(unittest.TestCase):
             "src.tasks.map_trade.navigator_sandbox.monotonic",
             side_effect=(100.0, 100.0, 106.0),
         ):
-            result = navigator.open_teleport_map_from_sandbox()
+            result = navigator._open_teleport_skill(CARD_BY_ID["Q_sp1"])
 
         self.assertFalse(result.success)
-        self.assertEqual("未可靠识别箱庭5号传送阵技能，已停止打开传送阵地图", result.message)
+        self.assertEqual("未可靠识别可施放的5号传送技能", result.message)
         self.assertEqual([], clicks)
         self.assertEqual([], fixed_clicks)
         self.assertEqual([SANDBOX_TELEPORT_SKILL_POLL_INTERVAL], sleeps)
@@ -1675,35 +2825,23 @@ class NavigatorTest(unittest.TestCase):
         self.assertTrue(navigator._sandbox_teleport_skill_failure_matches(result.message))
 
     def test_teleport_skill_failure_routes_to_walk_fallback_result(self):
-        task = SimpleNamespace(info_set=lambda *_args: None)
-        navigator = Navigator(task, SimpleNamespace())
-        navigator._click_sandbox_teleport_interaction = lambda: False
-        navigator._click_sandbox_teleport_skill = lambda: True
-        navigator._wait_for_sandbox_map_open = lambda *_args, **_kwargs: NavigationResult(
-            False,
-            ScreenState.SANDBOX,
-            "箱庭5号传送阵技能失败 OCR命中：无法在魔法阵附近使用天赋技能",
-        )
-        fallback_calls = []
-
-        def walk_fallback():
-            fallback_calls.append(True)
-            return NavigationResult(
-                True,
-                ScreenState.AREA_MAP,
-                "已通过徒步回退",
-                map_page_mode=MapPageMode.DIRECT_TELEPORT,
-            )
-
-        navigator._walk_to_sandbox_teleport_interaction = walk_fallback
-
-        result = navigator.open_teleport_map_from_sandbox()
-
+        card = CARD_BY_ID["Q_sp1"]
+        navigator = self._routing_navigator(mode=MapPageMode.UNKNOWN, current=card.targets[1].key)
+        navigator._open_teleport_map_anywhere = Mock(return_value=NavigationResult(
+            False, ScreenState.SANDBOX, "无法在魔法阵附近使用天赋技能",
+        ))
+        navigator._walk_to_circle_neighbour = Mock(return_value=None)
+        opened = NavigationResult(True, ScreenState.AREA_MAP,
+                                  map_page_mode=MapPageMode.DIRECT_TELEPORT)
+        navigator._walk_to_sandbox_teleport_interaction = Mock(return_value=opened)
+        navigator._teleport_collection_target = Mock(return_value=NavigationResult(
+            True, ScreenState.SANDBOX, card.targets[0].title,
+        ))
+        result = navigator.prepare_collection_main_area(card.card_id)
         self.assertTrue(result.success)
-        self.assertEqual(ScreenState.AREA_MAP, result.state)
-        self.assertEqual([True], fallback_calls)
-        self.assertEqual(MapPageMode.DIRECT_TELEPORT, result.map_page_mode)
-        self.assertIn("徒步回退", result.message)
+        navigator._walk_to_sandbox_teleport_interaction.assert_called_once()
+        navigator._teleport_collection_target.assert_called_once_with(card, card.targets[0], opened)
+
 
     def test_walk_fallback_selects_unique_navigation_teleport_then_interacts(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -1754,6 +2892,7 @@ class NavigatorTest(unittest.TestCase):
         navigator._open_field_map = lambda: "安全区域"
         navigator._click_sandbox_navigation_map = lambda: True
         navigator._sandbox_navigation_page_has_keyword = lambda _frame: True
+        navigator._sandbox_teleport_inner_score = Mock(return_value=0.95)
         navigator._close_confirmed_map_page = Mock(return_value=NavigationResult(
             True, ScreenState.SANDBOX,
         ))
@@ -1785,6 +2924,22 @@ class NavigatorTest(unittest.TestCase):
             ],
             clicks,
         )
+
+    def test_navigation_circle_requires_its_inner_glyph_at_client_scale(self):
+        source = load_bgr(ROOT / "tests/fixtures/map_trade/map_pages/sandbox_large.png")
+        for height in (720, 1080, 1440):
+            with self.subTest(height=height):
+                frame = cv2.resize(source, (height * 16 // 9, height))
+                task = SimpleNamespace(config={}, info_set=Mock())
+                navigator = Navigator(task, Vision(task))
+                circle = navigator._sandbox_navigation_teleport(frame)
+                self.assertIsNotNone(circle)
+                self.assertLess(abs(circle.center[0] / frame.shape[1] - 384 / 1920), .005)
+                self.assertLess(abs(circle.center[1] / height - 464 / 1080), .005)
+                x, y = circle.position
+                w, h = circle.size
+                frame[y + h // 4:y + h - h // 4, x + w // 4:x + w - w // 4] = 90
+                self.assertIsNone(navigator._sandbox_navigation_teleport(frame))
 
     def test_walk_fallback_destination_confirmation_clicks_ocr_center(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -1885,6 +3040,9 @@ class NavigatorTest(unittest.TestCase):
             card.targets[1].key,
             teleports=(weaker, stronger),
         )
+        navigator._capture_area_map_context = Mock(return_value=self._area_context(
+            "", None, page_mode=MapPageMode.UNKNOWN,
+        ))
         result = navigator._click_collection_destination(card, card.targets[1], multiple)
         self.assertTrue(result.success)
         self.assertEqual([stronger], selected)
@@ -1908,7 +3066,7 @@ class NavigatorTest(unittest.TestCase):
             target.key,
             teleports=(teleport,),
         )
-        captures = iter((refreshed,))
+        captures = iter((refreshed, self._area_context("", None, page_mode=MapPageMode.UNKNOWN)))
         sleeps = []
         selected = []
         navigator = Navigator(
@@ -1947,78 +3105,109 @@ class NavigatorTest(unittest.TestCase):
         self.assertEqual([(teleport, MapPageMode.DIRECT_TELEPORT)], selected)
         navigator._confirm_collection_arrival.assert_called_once_with(card, target)
 
+    def test_destination_retries_same_page_then_changes_candidate_with_bounded_budget(self):
+        card = CARD_BY_ID["Q_sp1"]
+        target = card.targets[1]
+        white = MatchResult(.98, (800, 400), (50, 50), .96, .94)
+        purple = MatchResult(.99, (1000, 600), (50, 50), .97, .96)
+        page = replace(
+            self._area_context(target.title, target.key, teleports=(white,)),
+            skill_teleports=(purple,),
+        )
+        field = self._area_context("", None, page_mode=MapPageMode.UNKNOWN)
+        for outcome, expected, clicks_expected in (
+            ("last_white", True, 4), ("purple", True, 5), ("ignored", False, 8),
+            ("different_page", False, 1), ("different_scope", False, 1),
+            ("before_first", False, 0),
+        ):
+            with self.subTest(outcome=outcome):
+                navigator = self._routing_navigator()
+                navigator.task.sleep = Mock()
+                clicked = []
+                navigator._click_teleport_map_destination = Mock(side_effect=lambda p, *a, **k: (
+                    clicked.append(p) or True
+                ))
+
+                def capture(_card):
+                    if outcome == "different_page":
+                        return replace(page, resolved_target_key=card.targets[2].key)
+                    if outcome in {"different_scope", "before_first"}:
+                        return replace(page, teleport_scope=TeleportScope.CURRENT_MAP)
+                    if (
+                        outcome == "last_white" and len(clicked) == 4
+                        or outcome == "purple" and clicked[-1] == purple
+                    ):
+                        return field
+                    # Small OCR/template shifts must not reset the attempt count.
+                    return replace(page, teleports=(replace(
+                        white, position=(800 + len(clicked) % 2, 400),
+                    ),))
+
+                navigator._capture_area_map_context = capture
+                navigator._wait_for_story_sandbox = Mock(return_value=NavigationResult(
+                    True, ScreenState.SANDBOX,
+                ))
+                navigator._confirm_collection_arrival = Mock(return_value=NavigationResult(
+                    True, ScreenState.SANDBOX,
+                ))
+                initial = (
+                    replace(page, teleports=(), skill_teleports=())
+                    if outcome == "before_first" else page
+                )
+                result = navigator._click_collection_destination(card, target, initial)
+                self.assertEqual(expected, result.success)
+                self.assertEqual(clicks_expected, len(clicked))
+                self.assertTrue(all(item.center[0] < 900 for item in clicked[:4]))
+                self.assertTrue(all(item == purple for item in clicked[4:]))
+                self.assertEqual(expected, navigator._confirm_collection_arrival.called)
+
     def test_collection_destination_requires_matching_arrival_map(self):
         card = CARD_BY_ID["Q_sp1"]
         target = card.targets[1]
         teleport = MatchResult(0.99, (800, 400), (60, 60), 0.95, 0.93)
-        navigator = Navigator(
-            SimpleNamespace(info_set=lambda *_args: None),
-            SimpleNamespace(click_client=lambda *_args, **_kwargs: None),
-        )
-        navigator._click_teleport_map_destination = lambda *_args, **_kwargs: True
-        navigator.ensure_small_minimap = Mock(return_value=False)
-        navigator._wait_for_story_sandbox = lambda _number: NavigationResult(
-            True,
-            ScreenState.SANDBOX,
-        )
         for mode in (MapPageMode.DIRECT_TELEPORT, MapPageMode.GENERATE_TELEPORT):
             for actual in (target, card.targets[2], None):
-                with self.subTest(mode=mode, actual=actual.key if actual else None):
-                    arrived = self._area_context(
-                        actual.title if actual else "",
-                        actual.key if actual else None,
-                        page_mode=mode,
-                    )
-                    navigator.ensure_area_map = Mock(return_value=NavigationResult(
-                        True, ScreenState.AREA_MAP, map_page_mode=mode,
-                    ))
-                    navigator._capture_area_map_context = Mock(return_value=arrived)
-                    navigator._close_area_map = Mock(return_value=NavigationResult(
+                with self.subTest(mode=mode, actual=actual):
+                    navigator = self._routing_navigator()
+                    navigator._click_teleport_map_destination = Mock(return_value=True)
+                    navigator._wait_for_story_sandbox = Mock(return_value=NavigationResult(
                         True, ScreenState.SANDBOX,
                     ))
-
+                    navigator._collection_field_title = Mock(return_value=(
+                        actual.title if actual else None
+                    ))
+                    navigator.ensure_area_map = Mock()
                     result = navigator._click_collection_destination(
                         card, target, self._area_context(
                             target.title, target.key, teleports=(teleport,), page_mode=mode,
                         ),
                     )
-
-                    navigator.ensure_area_map.assert_called_once_with()
-                    navigator._capture_area_map_context.assert_called_once_with(card)
-                    if actual == target:
-                        self.assertTrue(result.success)
-                        self.assertEqual(ScreenState.SANDBOX, result.state)
-                        navigator._close_area_map.assert_called_once_with(arrived)
-                    else:
-                        self.assertFalse(result.success)
-                        self.assertEqual(ScreenState.AREA_MAP, result.state)
-                        self.assertIn("到达后地图不符", result.message)
+                    self.assertEqual(actual == target, result.success)
+                    navigator._collection_field_title.assert_called_once()
+                    navigator.ensure_area_map.assert_not_called()
+                    if actual != target:
+                        self.assertIn("实际落点未确认", result.message)
                         self.assertIn(target.title, result.message)
-                        self.assertIn(actual.key if actual else "未知", result.message)
-                        navigator._close_area_map.assert_not_called()
+
 
     def test_collection_arrival_propagates_stop_signals(self):
         card = CARD_BY_ID["Q_sp1"]
         target = card.targets[1]
         teleport = MatchResult(0.99, (800, 400), (60, 60), 0.95, 0.93)
-        navigator = Navigator(SimpleNamespace(info_set=Mock()), SimpleNamespace())
-        navigator._click_teleport_map_destination = Mock(return_value=True)
-        navigator._wait_for_story_sandbox = Mock(return_value=NavigationResult(
-            True, ScreenState.SANDBOX,
-        ))
-        navigator._capture_area_map_context = Mock()
-        navigator.ensure_small_minimap = Mock(return_value=False)
         for mode in (MapPageMode.DIRECT_TELEPORT, MapPageMode.GENERATE_TELEPORT):
             for signal in (TaskDisabledException, FinishedException):
                 with self.subTest(mode=mode, signal=signal):
-                    navigator.ensure_area_map = Mock(side_effect=signal)
+                    navigator = self._routing_navigator()
+                    navigator._click_teleport_map_destination = Mock(return_value=True)
+                    navigator._wait_for_story_sandbox = Mock(return_value=NavigationResult(
+                        True, ScreenState.SANDBOX,
+                    ))
+                    navigator._collection_field_title = Mock(side_effect=signal)
                     with self.assertRaises(signal):
-                        navigator._click_collection_destination(
-                            card, target, self._area_context(
-                                target.title, target.key, teleports=(teleport,), page_mode=mode,
-                            ),
-                        )
-                    navigator._capture_area_map_context.assert_not_called()
+                        navigator._click_collection_destination(card, target, self._area_context(
+                            target.title, target.key, teleports=(teleport,), page_mode=mode,
+                        ))
+
 
     def test_teleport_generation_rejects_missing_keyword_without_generate_click(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -2088,6 +3277,7 @@ class NavigatorTest(unittest.TestCase):
         clicks = []
         confirmed_numbers = []
         task = SimpleNamespace(
+            config={},
             operate_click=lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep)),
         )
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -2120,6 +3310,7 @@ class NavigatorTest(unittest.TestCase):
         back = MatchResult(0.98, (110, 35), (40, 40), 0.95, 0.92)
         clicks = []
         task = SimpleNamespace(
+            config={},
             operate_click=lambda *_args, **_kwargs: self.fail(
                 "recognized back button must win over the fallback point"
             )
@@ -2194,6 +3385,7 @@ class NavigatorTest(unittest.TestCase):
             ),
         )
         navigator = Navigator(task, SimpleNamespace(capture=lambda: frame))
+        navigator.classify = Mock(return_value=ScreenState.UNKNOWN)
         navigator._detect_map_page_mode = lambda _frame: SimpleNamespace(
             mode=MapPageMode.UNKNOWN
         )
@@ -2312,7 +3504,7 @@ class NavigatorTest(unittest.TestCase):
         self.assertEqual(0.85, HAND_TEMPLATE.min_zncc_score)
         self.assertEqual(0.95, HAND_TEMPLATE.minimum_safe_threshold)
 
-    def test_area_map_entry_uses_skill_center_and_no_fixed_point(self):
+    def test_area_map_entry_does_not_cast_talent_without_a_recovery_route(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         skill = MatchResult(0.97, (1760, 790), (44, 43), 0.88, 0.90)
         clicks = []
@@ -2337,6 +3529,9 @@ class NavigatorTest(unittest.TestCase):
             mode=MapPageMode.UNKNOWN
         )
         navigator.classify = lambda _frame=None: ScreenState.SANDBOX
+        navigator._wait_for_current_sandbox = Mock(return_value=NavigationResult(
+            True, ScreenState.SANDBOX,
+        ))
         navigator._click_sandbox_teleport_interaction = lambda: False
         navigator._wait_for_sandbox_map_open = lambda *_args, **_kwargs: NavigationResult(
             True,
@@ -2347,10 +3542,10 @@ class NavigatorTest(unittest.TestCase):
 
         result = navigator.ensure_area_map()
 
-        self.assertTrue(result.success)
-        self.assertEqual(ScreenState.AREA_MAP, result.state)
+        self.assertFalse(result.success)
+        self.assertEqual(ScreenState.SANDBOX, result.state)
         self.assertEqual(
-            [(skill.center, frame.shape, SANDBOX_MAP_SETTLE_SECONDS)],
+            [],
             clicks,
         )
 
@@ -2389,7 +3584,7 @@ class NavigatorTest(unittest.TestCase):
             self.assertIs(received, frame)
             or SimpleNamespace(
                 mode=MapPageMode.DIRECT_TELEPORT,
-                header_text="移动魔法阵",
+                header_text="移动魔法阵", teleport_scope=TeleportScope.CURRENT_CARTRIDGE,
             )
         )
         context = navigator._area_map_context(frame, CARD_BY_ID["Q_sp1"])
@@ -2448,6 +3643,30 @@ class NavigatorTest(unittest.TestCase):
         self.assertEqual("image/green/Skill3-4GE.png", sandbox_skill.file_name)
         self.assertNotIn(sandbox_skill, TELEPORT_MAP_TELEPORT_CIRCLE_TEMPLATES)
 
+    def test_skill_circle_requires_color_and_stays_separate_from_white_candidates(self):
+        path = ROOT / "recognition-assets/template-assets/image/green/TpSkillMapGE.png"
+        icon = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        for height in (720, 1080):
+            for gray in (False, True):
+                with self.subTest(height=height, gray=gray):
+                    frame = np.zeros((height, height * 16 // 9, 3), dtype=np.uint8)
+                    scale = 1.25 * height / 1080
+                    tile = cv2.resize(icon, None, fx=scale, fy=scale)
+                    if gray:
+                        tile = cv2.cvtColor(
+                            cv2.cvtColor(tile, cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR,
+                        )
+                    x, y = frame.shape[1] // 2, height // 2
+                    frame[y:y + tile.shape[0], x:x + tile.shape[1]] = tile
+                    task = SimpleNamespace(config={}, info_set=Mock())
+                    navigator = Navigator(task, Vision(task))
+                    found = navigator._map_teleports(
+                        frame, (TELEPORT_MAP_SKILL_TEMPLATE,),
+                        status_name="test", skill_circle=True,
+                    )
+                    self.assertEqual(0 if gray else 1, len(found))
+                    self.assertEqual((), navigator._teleport_map_teleports(frame))
+
     def test_teleport_map_teleports_reject_dim_candidate_before_click_context(self):
         frame = np.zeros((300, 500, 3), dtype=np.uint8)
         enabled = MatchResult(0.98, (80, 80), (52, 52), 0.94, 0.93)
@@ -2473,11 +3692,11 @@ class NavigatorTest(unittest.TestCase):
         navigator.vision = FakeVision()
 
         self.assertGreater(
-            navigator._area_map_teleport_bright_neutral_ratio(frame, enabled),
+            navigator._area_map_teleport_color_ratios(frame, enabled)[0],
             AREA_MAP_TELEPORT_BRIGHT_NEUTRAL_RATIO,
         )
         self.assertLess(
-            navigator._area_map_teleport_bright_neutral_ratio(frame, disabled),
+            navigator._area_map_teleport_color_ratios(frame, disabled)[0],
             AREA_MAP_TELEPORT_BRIGHT_NEUTRAL_RATIO,
         )
         self.assertEqual((enabled,), navigator._teleport_map_teleports(frame))

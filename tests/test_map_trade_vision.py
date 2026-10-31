@@ -496,6 +496,19 @@ class VisionTest(unittest.TestCase):
             ("7/21 8/21", 21, 7, None),
             ("提示7121", 21, 7, None),
             ("2121", None, None, None),
+            ("1Y21", 21, 1, (1, 21)),
+            ("1V21", 21, None, (1, 21)),
+            (" 1 y 21 ", 21, 1, (1, 21)),
+            ("1v21", 21, 1, (1, 21)),
+            ("1Y21", None, None, None),
+            ("1Y21", 70, 1, None),
+            ("1Y21", 21, 2, None),
+            ("22Y21", 21, None, None),
+            ("0Y0", 0, None, None),
+            ("提示1Y21", 21, 1, None),
+            ("1V21 extra", 21, 1, None),
+            ("1Y21 2V21", 21, None, None),
+            ("1X21", 21, 1, None),
         ):
             with self.subTest(text=text, limit=limit, used=used):
                 self.assertEqual(expected, parse_used_limit(text, limit, used))

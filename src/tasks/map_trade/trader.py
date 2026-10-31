@@ -71,6 +71,10 @@ class Trader(
         self._sale_dialog_rejected = False
         self._last_sale_cleared = False
         self._sell_cartridge_page: int | None = None
+        self._sale_sold: dict[CalendarEntry, int] = {}
+        self._sale_recovered: dict[CalendarEntry, int] = {}
+        self._sale_not_sold: dict[CalendarEntry, str] = {}
+        self._sale_summary_reason = ""
         self.calendar_client = PriceCalendarClient(
             bundled_path=CALENDAR_DIR / "price_calendar.v1.json",
             sources_path=CALENDAR_DIR / "calendar_sources.json",

@@ -171,7 +171,6 @@ class PVPTask(BaseBD2Task):
             {
                 "启用": True,
                 "竞技场战斗倍数": 1,
-                "最多战斗轮次": 12,
                 "加载页面阈值": 0.72,
                 "主页压暗阈值": HOME_DIMMED_P95_THRESHOLD_DEFAULT,
                 "PVP OCR 阈值": 0.2,
@@ -199,10 +198,9 @@ class PVPTask(BaseBD2Task):
         self.config_description.update(
             {
                 "竞技场战斗倍数": (
-                    "目标鸡尾酒消耗倍率，支持 1、4、5、10、20、40。"
+                    "目标鸡尾酒消耗倍率，支持 1～40 的任意整数（含 2 倍）。"
                     "AP 不足时会临时降到 1。"
                 ),
-                "最多战斗轮次": "防止识别异常导致无限循环的最大战斗轮次。",
                 "PVP OCR 阈值": "镜中之战流程 OCR 使用的最低可信度。",
                 "PVP 结算基准等待分钟": "1 倍自动战斗结算最长等待时间，实际等待为该值除以倍率。",
                 "PVP 返回箱庭等待秒数": "离开结算后等待回到 PVP 箱庭的最长时间。",
@@ -236,37 +234,30 @@ class PVPTask(BaseBD2Task):
             return False
 
         current_multiplier = target_multiplier
-        max_rounds = max(1, int(self.config.get("最多战斗轮次", 12)))
-        for round_index in range(1, max_rounds + 1):
-            self.info_set("当前阶段", f"第 {round_index} 轮")
+        start_state = self._start_auto_battle(current_multiplier)
+        if start_state == "ap_shortage" and current_multiplier != 1:
+            self.log_info("镜中之战：当前倍率 AP 不足，降到 1 倍重试。")
+            current_multiplier = 1
+            self.info_set("目标倍率", current_multiplier)
             start_state = self._start_auto_battle(current_multiplier)
-            if start_state == "ap_shortage" and current_multiplier != 1:
-                self.log_info("镜中之战：当前倍率 AP 不足，降到 1 倍重试。")
-                current_multiplier = 1
-                self.info_set("目标倍率", current_multiplier)
-                start_state = self._start_auto_battle(current_multiplier)
-            if start_state == "ap_depleted":
-                self.info_set("状态", "免费 AP 已耗尽。")
-                self.log_completion("镜中之战：免费 AP 已耗尽，流程结束。")
-                return True
-            if start_state == "ap_shortage":
-                self.info_set("状态", "1 倍仍 AP 不足。")
-                self.log_completion("镜中之战：1 倍 AP 仍不足，流程结束。")
-                return True
-            if start_state != "started":
-                self.info_set("状态", "镜中之战失败：未能开始战斗。")
-                return False
-
-            if not self._wait_result_and_leave(current_multiplier):
-                self.info_set("状态", "战斗结算或离开失败。")
-                return False
-
-            self.info_set("状态", "镜中之战完成并返回主页。")
-            self.log_completion("镜中之战：自动战斗完成并返回主页。")
+        if start_state == "ap_depleted":
+            self.info_set("状态", "免费 AP 已耗尽。")
+            self.log_completion("镜中之战：免费 AP 已耗尽，流程结束。")
             return True
+        if start_state == "ap_shortage":
+            self.info_set("状态", "1 倍仍 AP 不足。")
+            self.log_completion("镜中之战：1 倍 AP 仍不足，流程结束。")
+            return True
+        if start_state != "started":
+            self.info_set("状态", "镜中之战失败：未能开始战斗。")
+            return False
 
-        self.info_set("状态", "达到最多战斗轮次。")
-        self.log_completion(f"镜中之战：达到最多战斗轮次 {max_rounds}，停止。")
+        if not self._wait_result_and_leave(current_multiplier):
+            self.info_set("状态", "战斗结算或离开失败。")
+            return False
+
+        self.info_set("状态", "镜中之战完成并返回主页。")
+        self.log_completion("镜中之战：自动战斗完成并返回主页。")
         return True
 
     def _ensure_pvp_hub(self) -> bool:
@@ -765,8 +756,7 @@ class PVPTask(BaseBD2Task):
         return False
 
     def _select_setting_multiplier(self, multiplier: int) -> bool:
-        # BUG-20260906-01：选项点击被吞时设置值不变，先重试点击同一选项直到
-        # 回读匹配（重复点击同一选项无副作用），再按原逻辑用加号步进到目标。
+        # MIN/MAX 可重复点击；加号按计划单向步进，避免误读导致来回调节。
         option_point = (
             PVP_MULTIPLIER_40_OPTION_SCREEN_POINT
             if multiplier == 40
@@ -783,23 +773,39 @@ class PVPTask(BaseBD2Task):
                 + ("，重试。" if attempt < PVP_CLICK_VERIFY_ATTEMPTS else "。")
             )
         else:
-            self.info_set("PVP 倍率 OCR", "未确认")
-            return False
+            self.log_info("镜中之战：设置值暂未读到，调节后再确认主弹窗倍率。")
 
-        for _ in range(10):
-            if self._setting_multiplier_matches(multiplier):
-                break
-            if multiplier == 1:
-                break
+        for _ in range(multiplier - option_value):
             self._click_screen_reference(
                 *PVP_MULTIPLIER_PLUS_SCREEN_POINT,
-                after_sleep=0.5,
+                after_sleep=0.4,
             )
 
-        if not self._setting_multiplier_matches(multiplier):
-            self.info_set("PVP 倍率 OCR", "未确认")
-            return False
+        for _ in range(PVP_CLICK_VERIFY_ATTEMPTS):
+            if self._setting_multiplier_matches(multiplier):
+                return True
+            current = self._setting_multiplier_value()
+            if current is None or not option_value <= current < multiplier:
+                break
+            for _ in range(multiplier - current):
+                self._click_screen_reference(
+                    *PVP_MULTIPLIER_PLUS_SCREEN_POINT,
+                    after_sleep=0.4,
+                )
+
+        # 设置框读空或读数矛盾时不继续调整，确认后仍须主弹窗回读通过。
+        self.info_set("PVP 倍率 OCR", "待主弹窗确认")
         return True
+
+    def _setting_multiplier_value(self) -> int | None:
+        found, text = self._wait_for_ocr_patterns(
+            [r"^(?:[1-9]|[1-3][0-9]|40)$"],
+            timeout=0.8,
+            name="PVP 倍率设置值",
+            roi=self._mf_roi(*PVP_MULTIPLIER_SETTING_VALUE_OCR_REFERENCE_ROI),
+            normalize_multiplier=True,
+        )
+        return int(text) if found else None
 
     def _confirm_setting_multiplier(self, multiplier: int) -> bool:
         # BUG-20260906-01：确认点击被吞时设置弹窗不关、主弹窗回读不变；仅在
@@ -1238,9 +1244,9 @@ class PVPTask(BaseBD2Task):
         interval: float = 0.35,
         stabilize: bool = False,
     ) -> bool:
-        end_at = monotonic() + max(0.0, timeout)
+        end_at = self._active_time(monotonic) + max(0.0, timeout)
         last_score = -1.0
-        while monotonic() <= end_at:
+        while self._active_time(monotonic) <= end_at:
             frame = self.capture_frame()
             frame_height, frame_width = frame.shape[:2]
             result = self._match(frame, spec)
@@ -1260,6 +1266,8 @@ class PVPTask(BaseBD2Task):
                         sample_match=sample_match,
                         passes=lambda candidate: self._passes(candidate, spec),
                         sleep=self.sleep,
+                        window_samples=3,
+                        minimum_hits=3,
                         on_sample=lambda candidate: self.info_set(
                             name,
                             f"{candidate.score:.3f}/{candidate.pixel_score:.3f}",
@@ -1267,7 +1275,7 @@ class PVPTask(BaseBD2Task):
                     )
                     if stabilized is None:
                         self.info_set(f"{name}稳定识别", "未形成稳定位置")
-                        return False
+                        continue
                     consensus, frame_shape = stabilized
                     frame_height, frame_width = frame_shape[:2]
                     stable_center = consensus.center
@@ -1674,7 +1682,7 @@ class PVPTask(BaseBD2Task):
             multiplier = int(raw)
         except ValueError:
             multiplier = 1
-        return multiplier if multiplier in {1, 4, 5, 10, 20, 40} else 1
+        return multiplier if 1 <= multiplier <= 40 else 1
 
     @staticmethod
     def _roi_frame(

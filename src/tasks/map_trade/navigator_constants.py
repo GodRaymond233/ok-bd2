@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -10,8 +10,14 @@ from src.tasks.map_trade.action_icons import (
     ACTION_SLOT_RELATIVE_ROIS,
     SKILL_GROUP_CENTERS_REFERENCE,
 )
-from src.tasks.map_trade.card_status import StoryCardCompletion
-from src.tasks.map_trade.models import CardSpec, MapPageMode, MatchResult, TemplateSpec
+from src.tasks.map_trade.card_status import CardStructure, StoryCardCompletion, card_structure
+from src.tasks.map_trade.models import (
+    CardSpec,
+    MapPageMode,
+    MatchResult,
+    TeleportScope,
+    TemplateSpec,
+)
 from src.utils.calibration import FHD_1080, reference_rect_to_relative_roi
 from src.utils.cartridge_quick_switch import QUICK_SWITCH_PAGE_LABELS, QUICK_SWITCH_SEARCH_REGIONS
 
@@ -510,6 +516,13 @@ class LocatedStoryCard:
     frame: np.ndarray
     badge: StoryBadgeDetection
 
+    @property
+    def structure(self) -> CardStructure:
+        return card_structure(
+            self.badge.best.result.center, self.frame.shape,
+            short_resource_row=self.card.card_id == "Q_sp20",
+        )
+
 
 @dataclass(frozen=True)
 class ProbedStoryCard:
@@ -531,6 +544,8 @@ class AreaMapContext:
     overlap_arrow: MatchResult | None
     back_button: MatchResult | None
     confirmation_text: str = ""
+    teleport_scope: TeleportScope = TeleportScope.UNKNOWN
+    skill_teleports: tuple[MatchResult, ...] = ()
 
     @property
     def is_area_map(self) -> bool:
@@ -543,6 +558,7 @@ class MapPageDetection:
     header_text: str = ""
     footer_text: str = ""
     evidence: tuple[str, ...] = ()
+    teleport_scope: TeleportScope = TeleportScope.UNKNOWN
 
 
 HAND_TEMPLATE = TemplateSpec(
@@ -592,10 +608,18 @@ TELEPORT_MAP_DIRECT_HEADER_TEMPLATE = TemplateSpec(
     "TeleportMapDirectHeader.png",
     0.95,
     relative_roi=(0.09, 0.01, 0.15, 0.10),
-    scale_ratios=(0.95, 1.0, 1.05),
+    scale_ratios=(0.95, 0.975, 1.0, 1.025, 1.05),
     min_pixel_score=0.90,
     minimum_safe_threshold=0.95,
     min_zncc_score=0.90,
+)
+TELEPORT_MAP_DIRECT_HEADER_TEMPLATES = (
+    TELEPORT_MAP_DIRECT_HEADER_TEMPLATE,
+    replace(
+        TELEPORT_MAP_DIRECT_HEADER_TEMPLATE,
+        name="交互直传页图标柔化变体",
+        file_name="TeleportMapDirectHeaderSoft.png",
+    ),
 )
 TELEPORT_MAP_GENERATE_HEADER_TEMPLATE = TemplateSpec(
     "技能生成页图标",
@@ -728,6 +752,10 @@ AREA_MAP_TELEPORT_BRIGHT_RADIUS_RATIO = 24 / 52
 AREA_MAP_TELEPORT_BRIGHT_MINIMUM_GRAY = 200
 AREA_MAP_TELEPORT_BRIGHT_MAXIMUM_SPREAD = 35
 AREA_MAP_TELEPORT_BRIGHT_NEUTRAL_RATIO = 0.10
+AREA_MAP_TELEPORT_PURPLE_MIN_CHANNEL_GAP = 35
+AREA_MAP_TELEPORT_PURPLE_MIN_RATIO = 0.10
+TELEPORT_DESTINATION_ATTEMPTS = 4
+TELEPORT_DESTINATION_CANDIDATES = 4
 FIRST_CARD_INSERT_REGION = (620, 722, 660, 198)
 FIRST_CARD_SKIP_TEMPLATE = TemplateSpec(
     "首次卡带跳过",
@@ -780,7 +808,9 @@ FIELD_EXTRA_KEYCAP_TEMPLATES = (
     ),
     TemplateSpec(
         "箱庭按键Q", "field/field_keycap_Q.png", 0.80,
-        relative_roi=(1053 / 1920, 1022 / 1080, 1115 / 1920, 1074 / 1080),
+        # 底栏临时入口增减会让Q横移，沿用底栏横向范围并保留按键高度约束。
+        relative_roi=(QUICK_SWITCH_SEARCH_REGIONS[0][0], 1022 / 1080,
+                      QUICK_SWITCH_SEARCH_REGIONS[0][2], 1074 / 1080),
         min_pixel_score=0.75, minimum_safe_threshold=0.80,
     ),
 )
@@ -821,9 +851,7 @@ HUNTING_GROUND_NAV_ENTRY = "狩猎场"
 
 TOWN_NPC_NAV_ENTRY = "艾琳"
 
-SANDBOX_MAP_TELEPORT_MIN_PIXEL = 0.90
-
-SANDBOX_MAP_TELEPORT_PIXEL_MARGIN = 0.07
+SANDBOX_MAP_TELEPORT_INNER_MIN_ZNCC = 0.75
 
 AREA_MAP_EXIT_LABEL_RELATIVE_ROI = (0.10, 0.10, 0.90, 0.86)
 

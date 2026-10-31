@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal, Slot
+from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -191,7 +192,7 @@ class FeedbackReportDialog(QDialog):
             placeholder_icon.setPixmap(
                 FluentIcon.PHOTO.icon(color=QColor(255, 255, 255, 110)).pixmap(30, 30)
             )
-            placeholder_text = QLabel("当前没有可用的游戏窗口截图，仍可生成日志报告")
+            placeholder_text = QLabel("当前没有可用的游戏窗口截图，已保存的故障截图仍会自动附带")
             placeholder_text.setObjectName("bd2ReportPreviewText")
             placeholder_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
             preview_layout.addStretch(1)
@@ -199,14 +200,15 @@ class FeedbackReportDialog(QDialog):
             preview_layout.addWidget(placeholder_text)
             preview_layout.addStretch(1)
 
-        self.include_screenshot = QCheckBox("附带上方游戏窗口截图（建议）")
-        self.include_screenshot.setChecked(snapshot.frame is not None)
+        self.include_screenshot = QCheckBox("额外附带上方当前页面截图（可选）")
+        self.include_screenshot.setChecked(False)
         self.include_screenshot.setEnabled(snapshot.frame is not None)
 
         self.privacy_icon = QLabel()
         self.privacy_icon.setFixedSize(12, 12)
         privacy = QLabel(
-            "隐私范围：只导出受限运行信息、脱敏后的最近日志和你确认的游戏截图；"
+            "报错时自动保存的故障现场截图会随报告附带，当前页面截图可额外勾选。\n"
+            "隐私范围：只导出受限运行信息、脱敏后的最近日志和上述游戏截图；"
             "不导出原始配置、环境变量、进程列表、用户名或机器名。"
         )
         privacy.setObjectName("bd2ReportPrivacy")
@@ -403,7 +405,9 @@ class _ReportBuildJob(QRunnable):
 
 
 class FeedbackReportController(QObject):
-    def __init__(self, start_tab, manager: DiagnosticsManager):
+    failure_requested = Signal(object)
+
+    def __init__(self, start_tab, manager: DiagnosticsManager, *, evidence=None):
         super().__init__(start_tab)
         self.start_tab = start_tab
         self.manager = manager
@@ -412,12 +416,65 @@ class FeedbackReportController(QObject):
         self._executor = None
         self._progress_dialog: QProgressDialog | None = None
         self._build_job: _ReportBuildJob | None = None
+        self._pending_failure = None
+        self._failure_prompt_open = False
+        self._evidence = evidence
+        self.failure_requested.connect(self._failure_received, Qt.ConnectionType.QueuedConnection)
+        if evidence is not None:
+            evidence.failure_notifier = self.failure_requested.emit
+            self.destroyed.connect(lambda: setattr(evidence, "failure_notifier", None))
+
+    @Slot(object)
+    def _failure_received(self, failure) -> None:
+        # Failures arriving during a dialog share the next report prompt.
+        self._pending_failure = failure
+        self._offer_pending_failure()
 
     @Slot()
-    def create_report(self) -> None:
+    def _offer_pending_failure(self) -> None:
+        if self._busy or self._failure_prompt_open or self._pending_failure is None:
+            return
+        failure = self._pending_failure
+        self._pending_failure = None
+        self._failure_prompt_open = True
+        self._record_report_action("prompt_offered", failure["run"])
+        prompt = QMessageBox(self.start_tab.window())
+        prompt.setWindowTitle("任务执行失败")
+        prompt.setIcon(QMessageBox.Icon.Question)
+        prompt.setText(f"{failure['task_name']}执行结束，存在失败。是否生成问题报告？")
+        failed_tasks = failure["info"].get("失败")
+        if failed_tasks and failed_tasks != "-":
+            prompt.setInformativeText(f"失败项目：{failed_tasks}\n报告会自动附带已保存的故障截图。")
+        else:
+            prompt.setInformativeText("报告会自动附带已保存的故障截图。")
+        create_button = prompt.addButton("生成问题报告", QMessageBox.ButtonRole.AcceptRole)
+        later_button = prompt.addButton("暂不生成", QMessageBox.ButtonRole.RejectRole)
+        prompt.setDefaultButton(later_button)
+        _apply_report_dialog_theme(prompt)
+        try:
+            prompt.exec()
+            create_requested = prompt.clickedButton() is create_button
+        finally:
+            self._failure_prompt_open = False
+            prompt.deleteLater()
+        if create_requested:
+            self._record_report_action("prompt_accepted", failure["run"])
+            self.create_report(report_context={
+                "source": "failure_prompt", "failure_run": failure["run"],
+            })
+        else:
+            self._record_report_action("prompt_declined", failure["run"])
+        if self._pending_failure is not None:
+            QTimer.singleShot(0, self._offer_pending_failure)
+
+    @Slot()
+    def create_report(self, *, report_context=None) -> None:
         if self._busy:
             return
         self._busy = True
+        context = report_context or {"source": "manual"}
+        if context["source"] == "manual":
+            self._record_report_action("manual_opened")
         try:
             from ok import og
 
@@ -433,12 +490,14 @@ class FeedbackReportController(QObject):
                     preferred_frame=preferred_frame,
                     preferred_frame_age_seconds=preferred_age,
                 )
+                self._snapshot = replace(self._snapshot, report_context=context)
             finally:
                 QApplication.restoreOverrideCursor()
 
             dialog = FeedbackReportDialog(self._snapshot, self.start_tab.window())
             try:
                 if dialog.exec() != QDialog.DialogCode.Accepted:
+                    self._record_report_action("form_cancelled", context.get("failure_run"))
                     self.manager.resume(self._snapshot, self._executor)
                     self._reset_state()
                     return
@@ -457,6 +516,13 @@ class FeedbackReportController(QObject):
             self._show_error(str(exc))
             self._reset_state()
 
+    def _record_report_action(self, action: str, run: str | None = None) -> None:
+        if self._evidence is not None:
+            try:
+                self._evidence.report_action(action, run)
+            except Exception:
+                pass
+
     def _latest_preview_frame(self):
         widget = getattr(self.start_tab, "live_screenshot_widget", None)
         latest_frame = getattr(widget, "latest_frame", None)
@@ -470,6 +536,9 @@ class FeedbackReportController(QObject):
     def _start_build(self, description: str, *, include_screenshot: bool) -> None:
         if self._snapshot is None:
             raise RuntimeError("诊断现场尚未准备完成")
+        self._record_report_action(
+            "build_started", self._snapshot.report_context.get("failure_run"),
+        )
 
         progress = QProgressDialog(self.start_tab.window())
         progress.setWindowTitle("生成问题报告")
@@ -495,6 +564,10 @@ class FeedbackReportController(QObject):
 
     @Slot(object)
     def _build_succeeded(self, result: ReportResult) -> None:
+        self._record_report_action(
+            "build_succeeded",
+            self._snapshot.report_context.get("failure_run") if self._snapshot else None,
+        )
         self._close_progress()
         try:
             QApplication.clipboard().setText(result.group_message)
@@ -518,6 +591,10 @@ class FeedbackReportController(QObject):
 
     @Slot(str)
     def _build_failed(self, error: str) -> None:
+        self._record_report_action(
+            "build_failed",
+            self._snapshot.report_context.get("failure_run") if self._snapshot else None,
+        )
         self._close_progress()
         self._resume_after_failure()
         self._show_error(error)
@@ -548,9 +625,11 @@ class FeedbackReportController(QObject):
         self._snapshot = None
         self._executor = None
         self._build_job = None
+        if self._pending_failure is not None:
+            QTimer.singleShot(0, self._offer_pending_failure)
 
 
-def install_feedback_report(start_tab) -> None:
+def install_feedback_report(start_tab, *, evidence=None) -> None:
     if getattr(start_tab, "_bd2_feedback_report_installed", False):
         return
     debug_layout = getattr(start_tab, "debug_layout", None)
@@ -567,7 +646,7 @@ def install_feedback_report(start_tab) -> None:
         output_dir=Path(get_downloads_folder()),
         app_version=app_version,
     )
-    controller = FeedbackReportController(start_tab, manager)
+    controller = FeedbackReportController(start_tab, manager, evidence=evidence)
     button = PrimaryPushButton(FluentIcon.FEEDBACK, "生成问题报告")
     button.setToolTip("生成可直接发送到群聊的隐私化诊断 ZIP")
     button.clicked.connect(controller.create_report)

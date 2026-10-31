@@ -10,18 +10,10 @@ import numpy as np
 from ok.task.exceptions import FinishedException, TaskDisabledException
 
 from src.tasks.map_trade.models import MatchResult, TemplateSpec
-from src.tasks.map_trade.vision import Vision
 from src.utils import task_vision
 from src.utils.calibration import FHD_1080
 from src.utils.home_confirmation import (
-    HOME_DIMMED_P95_THRESHOLD_DEFAULT,
-    HOME_GACHA_OCR_RELATIVE_ROI,
-    HOME_LEFT_COLUMN_OCR_RELATIVE_ROI,
     HOME_LEFT_COLUMN_REQUIRED_HITS,
-    home_confirmation_passes,
-    home_gacha_ocr_with_fallback,
-    home_left_column_hits,
-    home_left_column_p95_brightness,
 )
 from src.utils.image_utils import to_gray
 from src.utils.ocr_utils import keyword_match_count, normalize_ocr_text
@@ -50,13 +42,6 @@ class TaskVisionMixin:
         self._match_error_names: set[str] = set()
         self._match_pause_until = 0.0
 
-    def _quick_vision(self) -> Vision:
-        vision = getattr(self, "_quick_hunt_vision", None)
-        if vision is None:
-            vision = Vision(self)
-            self._quick_hunt_vision = vision
-        return vision
-
     _normalize_text = staticmethod(normalize_ocr_text)
 
     _to_gray = staticmethod(to_gray)
@@ -68,36 +53,9 @@ class TaskVisionMixin:
             pass
 
     def _home_confirmation_signals(
-        self,
-        frame,
-        ocr_name: str,
+        self, frame, ocr_name: str,
     ) -> tuple[bool, int, float, str]:
-        vision = self._quick_vision()
-        left_text = vision.ocr_text(
-            frame,
-            f"{ocr_name} 左列",
-            relative_roi=HOME_LEFT_COLUMN_OCR_RELATIVE_ROI,
-        )
-        left_hits = home_left_column_hits(left_text)
-        p95_brightness = home_left_column_p95_brightness(frame)
-        gacha_result = home_gacha_ocr_with_fallback(
-            lambda scale: vision.ocr_text(
-                frame,
-                f"{ocr_name} x{scale:g}",
-                relative_roi=HOME_GACHA_OCR_RELATIVE_ROI,
-                ocr_scale=scale,
-            )
-        )
-        gacha_text = gacha_result.text
-        self._status_set(f"{ocr_name} OCR 尝试", gacha_result.trace)
-        confirmed = home_confirmation_passes(
-            left_hits=left_hits,
-            required_left_hits=HOME_LEFT_COLUMN_REQUIRED_HITS,
-            brightness=p95_brightness,
-            brightness_threshold=self._home_p95_threshold(),
-            gacha_ocr_text=gacha_text,
-        )
-        return confirmed, left_hits, p95_brightness, gacha_text
+        return self._read_home_confirmation_signals(frame, ocr_name)
 
     def _click_reference(self, x: int, y: int, after_sleep: float = 0.0):
         self.operate_click(
@@ -490,6 +448,3 @@ class TaskVisionMixin:
     @staticmethod
     def _keyword_match_count(text: str, keywords: list[str]) -> int:
         return keyword_match_count(text, keywords)
-
-    def _home_p95_threshold(self) -> float:
-        return float(self.config.get("主页压暗阈值", HOME_DIMMED_P95_THRESHOLD_DEFAULT))

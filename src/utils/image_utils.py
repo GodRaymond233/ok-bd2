@@ -184,8 +184,10 @@ def stabilize_template_match(
     sample_interval: float = STABLE_MATCH_SAMPLE_INTERVAL,
     window_samples: int = STABLE_MATCH_WINDOW_SAMPLES,
     maximum_samples: int = STABLE_MATCH_MAX_SAMPLES,
+    minimum_hits: int = STABLE_MATCH_MINIMUM_HITS,
+    required_trailing_hits: int = STABLE_MATCH_TRAILING_HITS,
 ) -> tuple[StableMatchConsensus, tuple[int, ...]] | None:
-    """Observe a first valid match until a stable rolling one-second window exists."""
+    """Observe stable positions in a bounded rolling sample window."""
 
     wanted_window = max(2, int(window_samples))
     wanted_maximum = max(wanted_window, int(maximum_samples))
@@ -235,8 +237,8 @@ def stabilize_template_match(
                 1.0,
                 STABLE_MATCH_MAXIMUM_SPREAD_REFERENCE * client_scale,
             ),
-            minimum_hits=STABLE_MATCH_MINIMUM_HITS,
-            required_trailing_hits=STABLE_MATCH_TRAILING_HITS,
+            minimum_hits=minimum_hits,
+            required_trailing_hits=required_trailing_hits,
         )
         if consensus is not None:
             return consensus, last_shape

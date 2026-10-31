@@ -1,8 +1,10 @@
 """Map-trade card_status tests (split from test_map_trade.py)."""
 
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 
+import cv2
 import numpy as np
 
 from src.tasks.map_trade.card_status import (
@@ -15,11 +17,80 @@ from src.tasks.map_trade.card_status import (
     CardStatusDetector,
     StoryCardCompletion,
     card_icon_region,
+    card_structure,
 )
 from src.tasks.map_trade.models import MatchResult
+from src.tasks.map_trade.vision import Vision
+from src.utils.image_utils import read_template_image
+from src.utils.template_resolution import offline_template_scale
 
 
 class CardStatusTest(unittest.TestCase):
+    def test_suppression_completion_tolerates_small_scale_changes_without_confusing_icons(self):
+        vision = Vision(SimpleNamespace(config={}))
+        detector = CardStatusDetector(vision)
+        template_root = Path(__file__).resolve().parents[1] / "recognition-assets/template-assets"
+
+        for height in (720, 900, 1080, 1440):
+            width = height * 16 // 9
+            center = (round(width * 0.35), round(height * 0.75))
+            bounds, _complete = card_icon_region(center, (height, width, 3))
+            left = bounds[0] + round(width * 0.025)
+            top = bounds[1] + round(height * 0.007)
+
+            def render(spec, ratio=1.0, *, duplicate=False):
+                frame = np.full((height, width, 3), 80, dtype=np.uint8)
+                asset = read_template_image(template_root / spec.file_name)
+                scale = round(offline_template_scale(spec.file_name, width, height) * ratio, 3)
+                icon = cv2.resize(
+                    asset[:, :, :3], None, fx=scale, fy=scale,
+                    interpolation=cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC,
+                )
+                active = cv2.resize(
+                    asset[:, :, 3], None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST,
+                ) > 0
+                icon_height, icon_width = icon.shape[:2]
+                for x in (left, left + round(width * 0.04)) if duplicate else (left,):
+                    region = frame[top:top + icon_height, x:x + icon_width]
+                    region[active] = icon[active]
+                return frame
+
+            for ratio in (0.98, 1.0, 1.02):
+                with self.subTest(height=height, ratio=ratio):
+                    result = detector.detect(render(SUPPRESS_COMPLETED_TEMPLATE, ratio), center)
+                    self.assertEqual(CardActionState.COMPLETED, result.suppress.state)
+                    self.assertEqual(1, len(result.suppress.completed))
+
+            for name, frame, expected in (
+                ("absorb", render(ABSORB_COMPLETED_TEMPLATE), CardActionState.UNKNOWN),
+                ("pending", render(SUPPRESS_PENDING_TEMPLATE), CardActionState.PENDING),
+                ("duplicate", render(SUPPRESS_COMPLETED_TEMPLATE, duplicate=True),
+                 CardActionState.UNKNOWN),
+                ("empty", np.full((height, width, 3), 80, dtype=np.uint8),
+                 CardActionState.UNKNOWN),
+            ):
+                with self.subTest(height=height, case=name):
+                    self.assertEqual(expected, detector.detect(frame, center).suppress.state)
+
+    def test_whole_card_bounds_include_resources_and_preserve_short_rows(self):
+        for width, height in ((1280, 720), (1920, 1080), (2560, 1440)):
+            for center, complete in (
+                ((1773, 936), False), ((1756, 936), False), ((1754, 936), True),
+                ((13, 936), False), ((200, 936), True), ((200, 1000), False),
+                ((200, 10), False),
+            ):
+                scaled = (round(center[0] * width / 1920), round(center[1] * height / 1080))
+                with self.subTest(size=(width, height), center=center):
+                    structure = card_structure(scaled, (height, width, 3))
+                    self.assertEqual(complete, structure.complete_region)
+                    self.assertEqual(structure.resource_bounds[2], structure.bounds[2])
+                    if center == (1773, 936):
+                        self.assertLessEqual(structure.body_bounds[2], width)
+                        self.assertGreater(structure.resource_bounds[2], width)
+                        short = card_structure(scaled, (height, width, 3), short_resource_row=True)
+                        self.assertTrue(short.complete_region)
+                        self.assertGreater(short.bounds[3], short.body_bounds[3])
+
     @staticmethod
     def _detection(state):
         return CardActionDetection(state)

@@ -217,19 +217,22 @@ class SquareGoddessEntryTest(StageHistoryTestCase):
         )
         self.assertIsNone(QUICK_SWITCH_TEMPLATE.candidate_center_roi)
 
-    def test_quick_switch_click_uses_one_second_stable_center(self):
+    def test_quick_switch_click_uses_three_consecutive_stable_frames(self):
         task = object.__new__(SquareGoddessTask)
         task.config = {}
         task.info_set = lambda *_args, **_kwargs: None
         task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        task._match = lambda _frame, _spec: MatchResult(
+        match = MatchResult(
             score=0.95,
             pixel_score=0.90,
             position=(760, 960),
             size=(64, 60),
             zncc_score=0.90,
         )
-        task._passes = lambda *_args, **_kwargs: True
+        # Six clear frames preceded the desktop interruption in the report.
+        matches = iter([match] * 6)
+        task._match = lambda *_: next(matches, MatchResult(-1.0, (0, 0), (0, 0)))
+        task._passes = lambda candidate, _spec: candidate.score > 0.9
         task._mf_offset_for_frame = lambda *_args: (0, 0)
         sleeps = []
         task.sleep = sleeps.append
@@ -248,7 +251,7 @@ class SquareGoddessEntryTest(StageHistoryTestCase):
             )
         )
         self.assertEqual([(792, 990, 1920, 1080, 0.0)], clicks)
-        self.assertEqual(10, len(sleeps))
+        self.assertEqual(2, len(sleeps))
         self.assertTrue(all(seconds == 0.1 for seconds in sleeps))
 
     def test_masked_match_ignores_non_finite_scores_from_black_regions(self):

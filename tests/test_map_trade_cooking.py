@@ -1,4 +1,4 @@
-"""Regression coverage for the Q_sp6 cooking-before-trade flow."""
+"""Regression coverage for the Q_sp6 cooking flow."""
 
 import inspect
 import unittest
@@ -9,6 +9,7 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
+from src.tasks import run_history
 from src.tasks.map_trade.action_icons import COOKING_ICON
 from src.tasks.map_trade.models import (
     DEFAULT_COOKING_RECIPES,
@@ -220,10 +221,15 @@ class CookingFlowTest(StageHistoryTestCase):
     def test_entry_uses_relative_skill_group_two_and_detected_cooking_icon(self):
         task = CookingTask()
         stable_calls = []
+        entries = []
         navigator = SimpleNamespace(
-            select_trade_card=lambda card_id: NavigationResult(
-                card_id == MERCHANT_CARD_ID,
-                ScreenState.SANDBOX,
+            select_trade_card=lambda card_id: (
+                entries.append("select") or NavigationResult(
+                    card_id == MERCHANT_CARD_ID, ScreenState.SANDBOX,
+                )
+            ),
+            leave_discount_shop=lambda: (
+                entries.append("close-shop") or NavigationResult(True, ScreenState.SANDBOX)
             ),
             wait_for_q_sp6_sandbox=lambda timeout: timeout > 0,
         )
@@ -237,12 +243,26 @@ class CookingFlowTest(StageHistoryTestCase):
         trader.navigator = navigator
         trader.vision = vision
         trader._cooking_opened = False
+        trader._buy_completed_in_current_shop = False
         trader._wait_for_cooking_list = lambda _timeout: object()
 
         self.assertTrue(trader._enter_cooking_list())
         self.assertEqual([(*COOKING_SKILL_GROUP_POINT, 0.0)], task.clicks)
         self.assertIs(COOKING_ICON.template, stable_calls[0][0])
         self.assertTrue(trader._cooking_opened)
+        self.assertFalse(trader._buy_completed_in_current_shop)
+        self.assertEqual(["select"], entries)
+
+        trader._buy_completed_in_current_shop = True
+        self.assertTrue(trader._enter_cooking_list())
+        self.assertEqual(["select", "close-shop"], entries)
+        self.assertFalse(trader._buy_completed_in_current_shop)
+
+        task.clicks.clear()
+        trader._buy_completed_in_current_shop = True
+        navigator.leave_discount_shop = lambda: NavigationResult(False, ScreenState.UNKNOWN)
+        self.assertFalse(trader._enter_cooking_list())
+        self.assertEqual([], task.clicks)
 
     def test_recipe_state_machine_requires_result_and_list_restoration(self):
         recipe = DEFAULT_RECIPES[0]
@@ -285,13 +305,24 @@ class CookingFlowTest(StageHistoryTestCase):
             events.append("list restored") or True
         )
 
-        self.assertIs(
-            CookingRecipeOutcome.COOKED,
-            trader._cook_one_recipe(recipe),
-        )
-        self.assertLess(events.index("quantity MAX"), events.index("MAX confirmed"))
-        self.assertLess(events.index("button turned gray"), events.index("result confirmed"))
-        self.assertLess(events.index("result confirmed"), events.index("list restored"))
+        for previous_state in (None, "pending", "done"):
+            with self.subTest(previous_state=previous_state):
+                self.reset_stage_history()
+                if previous_state is not None:
+                    run_history.save_stage(
+                        task, f"料理:{recipe}", previous_state,
+                        evidence={"recipe": recipe, "quantity": "MAX"},
+                    )
+                for _round in range(2):
+                    events.clear()
+                    self.assertIs(CookingRecipeOutcome.COOKED, trader._cook_one_recipe(recipe))
+                    self.assertEqual(1, events.count(("click", start_match.center, 0.0)))
+                    self.assertLess(events.index("quantity MAX"), events.index("MAX confirmed"))
+                    self.assertLess(events.index("MAX confirmed"),
+                                    events.index(("click", start_match.center, 0.0)))
+                    self.assertLess(events.index("button turned gray"),
+                                    events.index("result confirmed"))
+                    self.assertLess(events.index("result confirmed"), events.index("list restored"))
 
     def test_disabled_recipe_is_nonfatal_and_never_starts(self):
         recipe = DEFAULT_RECIPES[0]
@@ -326,19 +357,20 @@ class CookingFlowTest(StageHistoryTestCase):
             trader._cook_one_recipe(recipe),
         )
 
-    def test_result_timeout_is_failure_not_success(self):
+    def test_failed_cooking_round_stops_and_next_round_can_start(self):
         recipe = DEFAULT_RECIPES[0]
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         match = MatchResult(0.97, (1000, 650), (80, 80), pixel_score=0.94)
         detail = CookingDetailSnapshot(frame, match, True, 0.72)
         recovered = []
+        clicks = []
         trader = create_trader()
         trader.task = CookingTask()
         trader._cooking_card_enabled = lambda *_args: True
         trader.vision = SimpleNamespace(
             match=lambda *_args: match,
             passes=lambda *_args: True,
-            click_client=lambda *_args, **_kwargs: None,
+            click_client=lambda point, *_args, **_kwargs: clicks.append(point),
         )
         trader._wait_for_cooking_list = lambda _timeout: CookingListSnapshot(frame, match)
         trader._wait_for_cooking_detail = lambda *_args: detail
@@ -347,20 +379,30 @@ class CookingFlowTest(StageHistoryTestCase):
         trader._wait_for_cooking_result = lambda *_args: None
         trader._recover_cooking_list = lambda: recovered.append(True) or True
 
-        self.assertIs(
-            CookingRecipeOutcome.FAILED,
-            trader._cook_one_recipe(recipe),
-        )
-        self.assertEqual([True], recovered)
-        from src.tasks import run_history
-        self.assertEqual("pending", run_history.read_stage(trader.task, f"料理:{recipe}")["state"])
-        # A restart can open the known recipe to inspect results, but cannot press MAX/start.
-        trader._select_max_cooking_quantity = lambda *_: self.fail("must not resubmit cooking")
-        self.assertIs(CookingRecipeOutcome.FAILED, trader._cook_one_recipe(recipe))
-        trader._wait_for_cooking_detail = lambda *_: CookingDetailSnapshot(frame, match, False, 0.0)
+        trader._selected_cooking_recipes = lambda: (recipe,)
+
+        def enter():
+            trader._cooking_opened = True
+            return True
+
+        trader._enter_cooking_list = enter
+        trader._leave_cooking_to_q_sp6 = lambda: True
         trader._return_from_detail_to_list = lambda *_: True
-        self.assertIs(CookingRecipeOutcome.UNAVAILABLE, trader._cook_one_recipe(recipe))
-        self.assertEqual("done", run_history.read_stage(trader.task, f"料理:{recipe}")["state"])
+        for started in (False, True):
+            with self.subTest(started=started):
+                self.reset_stage_history()
+                recovered.clear()
+                clicks.clear()
+                trader._wait_for_cooking_started = lambda *_args: started
+                trader._wait_for_cooking_result = lambda *_args: None
+                self.assertFalse(trader.run_cooking())
+                self.assertEqual([True], recovered)
+                self.assertEqual(2, len(clicks))  # Recipe selection and one submission.
+
+                trader._wait_for_cooking_started = lambda *_args: True
+                trader._wait_for_cooking_result = lambda *_args: frame
+                self.assertTrue(trader.run_cooking())
+                self.assertEqual(4, len(clicks))
 
     def test_lost_max_click_retries_and_never_starts_without_confirmation(self):
         recipe = DEFAULT_COOKING_RECIPES[0]
@@ -690,7 +732,10 @@ class CookingSandboxConfirmationTest(unittest.TestCase):
         self.assertEqual([MERCHANT_CLICK_LOCATION_TEMPLATE], matched_specs)
 
         navigator._classify_trade_frame = lambda _frame: ScreenState.HOME
+        self.assertFalse(navigator.wait_for_q_sp6_sandbox(0.0, log_timeout=False))
+        self.assertEqual([], task.logs)
         self.assertFalse(navigator.wait_for_q_sp6_sandbox(0.0))
+        self.assertEqual("warning", task.logs[-1][0])
 
 
 if __name__ == "__main__":

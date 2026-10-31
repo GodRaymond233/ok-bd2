@@ -9,12 +9,17 @@ import win32gui
 from ok.device.intercation import INPUT, MOUSEINPUT, PostMessageInteraction, SendInput
 from ok.util.logger import Logger
 from win32api import GetCursorPos, SetCursorPos
+from winerror import ERROR_ACCESS_DENIED
 
 logger = Logger.get_logger(__name__)
 
 CLICK_MODE_STANDARD = "正式版方案（点击时会占用鼠标）"
 CLICK_MODE_BACKGROUND = "测试版方案（后台点击）"
 CLICK_MODE_OPTIONS = (CLICK_MODE_STANDARD, CLICK_MODE_BACKGROUND)
+INPUT_WAIT_TIMEOUT = 30.0
+INPUT_WAIT_INTERVAL = 0.25
+MOUSE_PRESS_MIN_SECONDS = 0.05
+MOUSE_RELEASE_SETTLE_SECONDS = 0.05
 
 
 class BD2Interaction(PostMessageInteraction):
@@ -117,8 +122,12 @@ class BD2Interaction(PostMessageInteraction):
                 btn_mk = win32con.MK_RBUTTON
                 btn_up = win32con.WM_RBUTTONUP
             self.post(btn_down, btn_mk, click_pos)
-            time.sleep(down_time)
-            self.post(btn_up, 0, click_pos)
+            try:
+                time.sleep(max(down_time, MOUSE_PRESS_MIN_SECONDS))
+            finally:
+                self.post(btn_up, 0, click_pos)
+                # 游戏按帧采样鼠标；松开后先留在目标上，再由外层操作恢复位置。
+                time.sleep(MOUSE_RELEASE_SETTLE_SECONDS)
 
             if should_restore:
                 self._restore_cursor()
@@ -137,18 +146,48 @@ class BD2Interaction(PostMessageInteraction):
             logger.error("read click mode exception", error)
             return False
 
-    def operate(self, fun: Callable, block=False, restore_cursor=True):
+    def wait_for_input(self, wait=time.sleep, status=None):
+        """Wait for cursor access before any callback or input blocking starts."""
+        deadline = time.monotonic() + INPUT_WAIT_TIMEOUT
+        interrupted = False
+        while True:
+            try:
+                position = GetCursorPos()
+            except win32api.error as error:
+                if error.winerror != ERROR_ACCESS_DENIED:
+                    raise
+                if not interrupted:
+                    interrupted = True
+                    message = "输入桌面暂不可用（可能为UAC），等待恢复，最长30秒"
+                    logger.warning(message)
+                    if status is not None:
+                        status(message)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("等待输入桌面恢复超时，本次操作尚未执行") from error
+                wait(min(INPUT_WAIT_INTERVAL, remaining))
+            else:
+                if interrupted:
+                    self._activate_required = True
+                    if status is not None:
+                        status("输入桌面已恢复，继续尚未执行的操作")
+                return position
+
+    def operate(
+        self, fun: Callable, block=False, restore_cursor=True, *,
+        input_wait=time.sleep, input_status=None,
+    ):
         with self._input_lock:
             result = None
             is_outer_operate = False
             if not self._operating:
-                self.cursor_position = GetCursorPos()
+                self.cursor_position = self.wait_for_input(input_wait, input_status)
                 self._operating = True
                 is_outer_operate = True
 
-            if block:
-                self.block_input()
             try:
+                if block:
+                    self.block_input()
                 result = fun()
             except Exception as e:
                 logger.error("operate exception", e)
@@ -220,9 +259,8 @@ class BD2Interaction(PostMessageInteraction):
             SendInput(1, ctypes.pointer(i), ctypes.sizeof(INPUT))
 
     def try_activate(self):
-        if self._activate_required:
-            if self.hwnd_window.is_foreground():
-                self._activate_required = False
-                return
-            super().try_activate()
-            self._activate_required = not self.hwnd_window.is_foreground()
+        if self.hwnd_window.is_foreground():
+            self._activate_required = False
+            return
+        super().try_activate()
+        self._activate_required = not self.hwnd_window.is_foreground()

@@ -66,6 +66,12 @@ class MapPageMode(str, Enum):
         }
 
 
+class TeleportScope(str, Enum):
+    UNKNOWN = "unknown"
+    CURRENT_MAP = "current_map"
+    CURRENT_CARTRIDGE = "current_cartridge"
+
+
 class CollectionMapRole(str, Enum):
     MAIN_AREA = "main_area"
     BATTLE_AREA_1 = "battle_area_1"
@@ -237,8 +243,14 @@ WALK_LABEL_EDGES = {
     ("Q_cp3", "battle_area_1", "battle_area_2"): (631, 333),
     ("Q_cp3", "battle_area_2", "battle_area_1"): (739, 563),
     ("Q_sp18", "main_area", "battle_area_1"): None,
+    ("Q_sp18", "battle_area_1", "main_area"): None,
 }
-CIRCLE_EXIT_WALKS = {"Q_sp18": ("科库托斯暗黑神殿", "科库托斯圣域")}
+# These destinations have no active circle; approach through the registered walking edge.
+COLLECTION_CIRCLE_APPROACHES = {
+    ("Q_sp14", "battle_area_2"): "battle_area_1",
+    ("Q_cp3", "battle_area_2"): "battle_area_1",
+    ("Q_sp18", "main_area"): "battle_area_1",
+}
 # 返城优先使用导航菜单中的艾琳，避开回传送阵途中可能出现的巡逻怪。
 WALKED_EVENT_CARD_IDS = frozenset({"Q_ep1", "Q_ep3", "Q_ep5", "Q_ep7"})
 TOWN_NAV_ENTRIES = {
@@ -264,6 +276,8 @@ def _story_collection_targets(number: int) -> tuple[CollectionMapTarget, ...]:
     return tuple(
         CollectionMapTarget(
             role, title, aliases=("科库托斯圣城",) if title == "科库托斯圣域" else (),
+            excludes=("雷瓦汀基地救护站",)
+            if number == 9 and role is CollectionMapRole.MAIN_AREA else (),
         )
         for role, title in zip(CollectionMapRole, titles, strict=True)
     )

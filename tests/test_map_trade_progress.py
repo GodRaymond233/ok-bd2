@@ -28,6 +28,50 @@ from tests.helpers.map_trade import _seed_action_records
 
 
 class ProgressTest(unittest.TestCase):
+    def test_pending_badges_reopen_only_unclicked_observations(self):
+        for phase in ("observed", "next_day", "armed", "clicked", "settled", "history"):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as directory:
+                now = datetime(2026, 10, 21, 12, tzinfo=UTC_PLUS_8)
+                store = ProgressStore(Path(directory) / "progress.json", lambda: now)
+                store.load()
+                card = CARD_BY_ID["Q_sp9"]
+                for target in card.targets[1:]:
+                    _seed_action_records(store, card.card_id, target.key)
+                    store.mark_target(card.card_id, target.key)
+                store.mark_action_preexisting_used(card.card_id, "main_area", "吸收")
+                store.mark_target(card.card_id, "main_area")
+                key = store.action_key(card.card_id, "main_area", "吸收")
+                if phase in {"armed", "clicked", "settled"}:
+                    store.state.action_records[key].update(state=phase, attempts=1)
+                if phase == "history":
+                    store.state.archived_action_records["prior"] = dict(
+                        store.state.action_records[key], state="settled", source="click",
+                        attempts=1, daily_key="2026-10-20",
+                    )
+                if phase == "next_day":
+                    store.save()
+                    now += timedelta(days=1)
+                    store.load()
+                before = store.effective_daily_counts()
+                reopened = store.invalidate_observed_completion(card.card_id, {"吸收"})
+                expected = phase in {"observed", "next_day"}
+                self.assertEqual({"main_area"} if expected else set(), reopened)
+                self.assertEqual(before, store.effective_daily_counts())
+                self.assertTrue(store.weekly_action_complete(card.card_id, "battle_area_1", "吸收"))
+                self.assertTrue(store.weekly_action_complete(card.card_id, "battle_area_2", "压制"))
+                self.assertEqual(
+                    not expected, store.weekly_action_complete(card.card_id, "main_area", "吸收"),
+                )
+                if expected:
+                    store.load()
+                    self.assertEqual(
+                        {"battle_area_1", "battle_area_2"},
+                        store.state.completed_targets(card.card_id),
+                    )
+                    self.assertEqual(
+                        set(), store.invalidate_observed_completion(card.card_id, {"吸收"}),
+                    )
+
     def test_chapter_eighteen_schema_nine_progress_keeps_battles_and_requires_town(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "progress.json"

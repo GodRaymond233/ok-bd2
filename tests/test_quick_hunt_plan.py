@@ -358,6 +358,7 @@ class HuntPlanTest(StageHistoryTestCase):
             ("米饭", ["0 9 0"], None),
             ("米饭", ["0/90 3.39K"], None),
             ("米饭", ["0/90", "84/90"], None),
+            ("米饭", ["0/90", "0/90"], None),
             ("米饭", ["0/90", "0/60"], None),
             ("米饭", ["91/90"], None),
             ("米饭", ["0/60"], None),
@@ -376,10 +377,17 @@ class HuntPlanTest(StageHistoryTestCase):
     def test_free_resource_reader_preserves_full_balance_and_filters_yellow_before_ocr(self):
         for resource, capacity, left, right, yellow_left in (
             ("米饭", 90, 1621, 1689, 1726),
-            ("火把", 60, 1720, 1785, 1680),
+            ("米饭", 90, 1734, 1787, None),
+            ("火把", 60, 1622, 1689, 1705),
+            ("火把", 60, 1642, 1707, 1728),
+            ("火把", 60, 1720, 1787, None),
         ):
-            for height, width in ((720, 1280), (1080, 1920), (1081, 1920)):
-                with self.subTest(resource=resource, resolution=(width, height)):
+            for height, width, crop_x, crop_y, crop_w, crop_h in (
+                (720, 1280, 1053, 25, 147, 28),
+                (1080, 1920, 1580, 38, 220, 42),
+                (1081, 1920, 1580, 38, 220, 42),
+            ):
+                with self.subTest(resource=resource, left=left, resolution=(width, height)):
                     task = object.__new__(QuickHuntTask)
                     task._info_lock = RLock()
                     task.info = {}
@@ -390,14 +398,21 @@ class HuntPlanTest(StageHistoryTestCase):
                     )
                     reference = np.zeros((1080, 1920, 3), dtype=np.uint8)
                     reference[43:70, left:right] = (245, 245, 245)
-                    reference[50:60, yellow_left:yellow_left + 10] = (0, 200, 255)
+                    if yellow_left is not None:
+                        reference[50:60, yellow_left:yellow_left + 10] = (0, 200, 255)
                     frame = cv2.resize(reference, (width, height), interpolation=cv2.INTER_NEAREST)
                     task.capture_frame = Mock(return_value=frame)
                     expected_pixels = np.count_nonzero(np.all(frame == 245, axis=2))
 
                     def read_resource(image, _roi, name):
                         self.assertEqual(f"免费{resource}数量", name)
+                        self.assertEqual((crop_h, crop_w, 3), image.shape)
                         self.assertEqual(expected_pixels * 3, np.count_nonzero(image))
+                        if expected_pixels:
+                            full_y, full_x = np.nonzero(np.all(frame == 245, axis=2))
+                            local_y, local_x = np.nonzero(np.all(image == 245, axis=2))
+                            np.testing.assert_array_equal(full_x, local_x + crop_x)
+                            np.testing.assert_array_equal(full_y, local_y + crop_y)
                         return f"{capacity}/{capacity}" if image.any() else ""
 
                     task._quick_hunt_ocr_text = Mock(side_effect=read_resource)

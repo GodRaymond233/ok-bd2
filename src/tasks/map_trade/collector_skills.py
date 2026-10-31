@@ -3,11 +3,15 @@ from __future__ import annotations
 import re
 from collections import Counter
 from dataclasses import replace
+from difflib import SequenceMatcher
+from functools import partial
 from time import monotonic
 
 from src.tasks.map_trade.action_icons import (
     ABSORB_ICON,
     SEARCH_ICON,
+    SUBDUE_ICON,
+    SUMMON_ICON,
     ActionIconDetection,
     ActionIconSpec,
     ActionIconState,
@@ -56,6 +60,109 @@ from src.tasks.map_trade.vision import parse_used_limit
 
 
 class SkillExecutionMixin:
+    def _capture_skill_field(self):
+        captured = self.vision.capture()
+        frame = self.navigator.wait_for_collection_field(captured)
+        recovered = frame is not captured
+        if recovered:
+            self._skill_field_generation += 1
+            self._forget_skill_evidence()
+            if self._collection_target is not None:
+                card, target = self._collection_target
+                if self.navigator.current_collection_target(card) != target.key:
+                    raise RuntimeError("遭遇战恢复后目标地图未确认，停止采集技能操作")
+                captured = self.vision.capture()
+                if (
+                    self._recovery_suppression_enabled
+                    and target.role is not CollectionMapRole.MAIN_AREA
+                ):
+                    self._suppress_after_retreat(
+                        captured, card_id=card.card_id, map_role=target.role,
+                    )
+                    captured = self.vision.capture()
+                frame = self.navigator.wait_for_collection_field(captured)
+                if frame is not captured:
+                    raise RuntimeError("地图复核后场景再次变化，停止采集技能操作")
+        return frame, recovered
+
+    def _suppress_after_retreat(self, frame, *, card_id, map_role):
+        """Select group one after map confirmation, then verify an urgent cast locally."""
+        action = SUPPRESS_ACTION
+        existing = self.progress.get_action_record(card_id, map_role, action.name)
+        early = self._existing_record_outcome(action, existing)
+        if early is not None:
+            if not early.completed:
+                raise RuntimeError(early.message)
+            return
+        if self.progress.weekly_action_complete(card_id, map_role, action.name):
+            return
+        if self.navigator._black_frame(frame) or self.navigator._field_battle_visible(frame):
+            raise RuntimeError("退战压制准备期间场景再次变化，停止采集")
+        self._status("技能组切换", "目标地图已确认，切换第一组并优先压制")
+        self.task.operate_click(*SKILL_GROUP_RELATIVE_POINTS[1], after_sleep=0.0)
+        detections = []
+        counts = []
+        baseline = self.progress.trusted_action_baseline(action.name)
+        unresolved = self.progress.has_unresolved_action(card_id, map_role, action.name)
+        for _sample in range(ACTION_ICON_DETECTION_SAMPLES):
+            frame = self.vision.capture()
+            if self.navigator._black_frame(frame) or self.navigator._field_battle_visible(frame):
+                raise RuntimeError("退战压制准备期间场景再次变化，停止采集")
+            detection = self.action_icons.detect(frame, action.icon)
+            if detection.state not in {ActionIconState.AVAILABLE, ActionIconState.USED}:
+                detections.clear()
+                counts.clear()
+                continue
+            detections.append(detection)
+            if detection.state is ActionIconState.AVAILABLE and not unresolved:
+                count = self._read_count(
+                    action, detection, frame=frame, ocr_scale=SKILL_OCR_UPSCALE,
+                    known_limit=baseline[1] if baseline else None,
+                )
+                # 新容量必须同时通过两个倍率；已确认容量保留快速双帧路径。
+                if baseline is None or (count is not None and count[1] != baseline[1]):
+                    confirmed = self._read_count(
+                        action, detection, frame=frame, ocr_scale=SKILL_OCR_FALLBACK_UPSCALE,
+                    )
+                    if confirmed != count:
+                        count = None
+                counts.append(count)
+            if len(detections) == 2:
+                break
+        if len(detections) != 2:
+            raise RuntimeError("退战后第一组压制图标未稳定确认，未点击")
+        first, last = detections
+        if not self._action_detection_is_stable(first, last):
+            raise RuntimeError("退战后压制图标未稳定确认，未点击")
+        detection = self._stable_detection(last, 2)
+        self._report_icon_detection(action, detection)
+        result = self._resume_pending_intent(
+            action, existing, detection, card_id=card_id, map_role=map_role,
+        )
+        if result is None and detection.state is ActionIconState.USED:
+            result = self._resolve_preexisting_used(
+                action, detection, card_id=card_id, map_role=map_role,
+            )
+        if result is not None:
+            if not result.completed:
+                raise RuntimeError(result.message)
+            return
+        count = counts[0] if len(counts) == 2 and counts[0] == counts[1] else None
+        before, failure = self._prepare_before_click(
+            action, detection, card_id=card_id, map_role=map_role,
+            observation=CountWindowObservation(count, count is not None),
+        )
+        if failure is not None:
+            raise RuntimeError(failure.message)
+        if not self.progress.arm_action(card_id, map_role, action.name, baseline=before):
+            raise RuntimeError("退战压制已被每日额度或未决动作阻止")
+        self._status("导航状态", "目标地图已确认，优先压制")
+        self.vision.click_client(
+            detection.match.center, frame.shape, after_sleep=ACTION_AFTER_CLICK_SECONDS,
+        )
+        # The ordinary action loop settles this durable intent; recovery never replays it.
+        self.progress.mark_action_clicked(card_id, map_role, action.name)
+
     @staticmethod
     def _action_detection_is_stable(
         previous: ActionIconDetection,
@@ -155,10 +262,18 @@ class SkillExecutionMixin:
         best_detection = None
         previous_detection = None
         observed_samples = 0
-        for attempt in range(ACTION_ICON_DETECTION_SAMPLES):
-            frame = self.vision.capture()
+        attempt = recoveries = 0
+        while attempt < ACTION_ICON_DETECTION_SAMPLES:
+            frame, recovered = self._capture_skill_field()
+            if recovered:
+                recoveries += 1
+                if recoveries > 2:
+                    raise RuntimeError("技能采样期间反复发生场景切换，停止采集")
+                best_frame = best_detection = previous_detection = None
+                observed_samples = attempt = 0
             detection = self.action_icons.detect(frame, icon)
             observed_samples += 1
+            attempt += 1
             if (
                 best_detection is None
                 or self._action_detection_rank(detection)
@@ -193,7 +308,7 @@ class SkillExecutionMixin:
                     previous_detection = detection
                 else:
                     previous_detection = None
-                if attempt + 1 < ACTION_ICON_DETECTION_SAMPLES:
+                if attempt < ACTION_ICON_DETECTION_SAMPLES:
                     self.task.sleep(ACTION_ICON_DETECTION_INTERVAL)
                 continue
             if detection.state not in {
@@ -201,7 +316,7 @@ class SkillExecutionMixin:
                 ActionIconState.UNKNOWN,
             }:
                 return frame, detection
-            if attempt + 1 < ACTION_ICON_DETECTION_SAMPLES:
+            if attempt < ACTION_ICON_DETECTION_SAMPLES:
                 self.task.sleep(ACTION_ICON_DETECTION_INTERVAL)
         if best_detection is None:
             best_detection = ActionIconDetection(
@@ -224,12 +339,33 @@ class SkillExecutionMixin:
 
         self._last_skill_observations = {}
         self._last_skill_geometry = {}
+        self._skill_layout_checked = False
+
+    def _check_collection_skill_layout(self) -> None:
+        if self._skill_layout_checked:
+            return
+        expected = (SEARCH_ICON, ABSORB_ICON, SUMMON_ICON, SUBDUE_ICON)
+        previous = ()
+        for sample in range(2):
+            frame, recovered = self._capture_skill_field()
+            missing = tuple(
+                icon for icon in expected
+                if self.action_icons.detect(frame, icon).state is ActionIconState.ABSENT
+            )
+            conflicts = self.action_icons.layout_conflicts(frame, missing)
+            if conflicts and conflicts == previous and not recovered:
+                raise RuntimeError("采集技能栏位置不符：" + "；".join(conflicts))
+            previous = conflicts
+            if sample == 0:
+                self.task.sleep(ACTION_ICON_DETECTION_INTERVAL)
+        self._skill_layout_checked = True
 
     def _open_skill_menu(
         self,
         expected_icons: tuple[ActionIconSpec, ...],
         *,
         allow_group_one_recovery: bool = False,
+        warn_on_failure: bool = True,
     ) -> bool:
         def inspect(frame):
             detections = tuple(self.action_icons.detect(frame, icon) for icon in expected_icons)
@@ -240,14 +376,15 @@ class SkillExecutionMixin:
 
         def inspect_window():
             best_detections = None
-            attempt = 0
+            attempt = recoveries = 0
             while attempt < ACTION_ICON_DETECTION_SAMPLES:
-                captured = self.vision.capture()
-                frame = self.navigator.wait_for_collection_field(captured)
-                if frame is not captured:
+                frame, recovered = self._capture_skill_field()
+                if recovered:
+                    recoveries += 1
+                    if recoveries > 2:
+                        raise RuntimeError("技能栏确认期间反复发生场景切换，停止采集")
                     best_detections = None
                     attempt = 0
-                    self._forget_skill_evidence()
                 current, opened = inspect(frame)
                 if opened:
                     return current, True
@@ -276,14 +413,16 @@ class SkillExecutionMixin:
 
         detections, opened = inspect_window()
         if opened or self._counts_prove_menu(expected_icons):
+            self._check_collection_skill_layout()
             return True
 
+        log_failure = self.task.log_warning if warn_on_failure else self.task.log_info
         states = ", ".join(
             f"{icon.name}={value.state.value}"
             for icon, value in zip(expected_icons, detections, strict=True)
         )
         if not allow_group_one_recovery:
-            self.task.log_warning(f"地图采集：技能栏未确认：{states}。")
+            log_failure(f"地图采集：技能栏未确认：{states}。")
             return False
 
         # A partial match is not evidence that the wrong group is selected.
@@ -294,36 +433,36 @@ class SkillExecutionMixin:
             value.state in {ActionIconState.ABSENT, ActionIconState.UNKNOWN}
             for value in detections
         ):
-            self.task.log_warning(
+            log_failure(
                 f"地图采集：技能栏部分识别但未确认，不执行技能组1回退：{states}。"
             )
             return False
 
         # 采集技能可能配置在任意技能组，逐组识别并停留在包含目标技能的一组。
         for group, point in sorted(SKILL_GROUP_RELATIVE_POINTS.items()):
-            captured = self.vision.capture()
-            frame = self.navigator.wait_for_collection_field(captured)
-            if frame is not captured:
-                self._forget_skill_evidence()
+            frame, _recovered = self._capture_skill_field()
             detections, opened = inspect(frame)
             if opened:
+                self._check_collection_skill_layout()
                 return True
             if any(
                 value.state not in {ActionIconState.ABSENT, ActionIconState.UNKNOWN}
                 for value in detections
             ):
-                self.task.log_warning("地图采集：技能栏部分识别，停止技能组切换。")
+                log_failure("地图采集：技能栏部分识别，停止技能组切换。")
                 return False
             self._status("技能组切换", f"采集技能未显示，切换到技能组{group}")
+            self._forget_skill_evidence()
             self.task.operate_click(*point, after_sleep=SKILL_GROUP_SWITCH_SETTLE_SECONDS)
             detections, opened = inspect_window()
             if opened or self._counts_prove_menu(expected_icons):
+                self._check_collection_skill_layout()
                 return True
         states = ", ".join(
             f"{icon.name}={value.state.value}"
             for icon, value in zip(expected_icons, detections, strict=True)
         )
-        self.task.log_warning(f"地图采集：三个技能组都没有找到采集技能：{states}。")
+        log_failure(f"地图采集：三个技能组都没有找到采集技能：{states}。")
         return False
 
     @staticmethod
@@ -350,6 +489,22 @@ class SkillExecutionMixin:
             return 0.0
         return sum((actual & expected).values()) / expected_count
 
+    @staticmethod
+    def _feedback_failure_ratio(text: str, keyword: str) -> float:
+        negative = re.search(r"没有|无可", keyword)
+        if negative is None:
+            return 0.0
+        best = 0.0
+        for sentence in re.split(r"[。.!！？?；;\r\n]+", text):
+            compact = "".join(character for character in sentence if character.isalnum())
+            for match in re.finditer(negative.group(), compact):
+                start = max(0, match.start() - negative.start())
+                end = match.start() + len(keyword) - negative.start() + 1
+                best = max(best, SequenceMatcher(
+                    None, keyword, compact[start:end], autojunk=False,
+                ).ratio())
+        return best
+
     def _read_action_feedback(self, action: SkillAction) -> SkillFeedbackObservation:
         best = SkillFeedbackObservation("", None)
         keywords = (
@@ -364,15 +519,13 @@ class SkillExecutionMixin:
                 relative_roi=ACTION_FEEDBACK_RELATIVE_ROI,
                 target_height=1080,
             )
-            # OCR 只输出简体中文（繁体转换已取消）；引擎可能粘连相邻文本，
-            # 先归一再打分，并让显式失败关键字在平分（或更强正向词）时获胜，
-            # 确保 ``没有可以吸收`` 不会被当成成功。
+            # 失败需在同一语句中匹配否定短语和词序，避免横幅堆叠时跨句凑字。
             try:
                 normalized = self.vision.simplify(text)
             except AttributeError:
                 normalized = str(text)
             failure_matches = [
-                (self._feedback_character_ratio(normalized, keyword), keyword)
+                (self._feedback_failure_ratio(normalized, keyword), keyword)
                 for outcome, keyword in keywords
                 if outcome == "failure"
             ]
@@ -464,18 +617,21 @@ class SkillExecutionMixin:
         allow_single: bool = False,
         expected_used: int | None = None,
         expected_limit: int | None = None,
+        require_fraction: bool = False,
     ) -> CountWindowObservation:
         """Return a compatible count; single-frame evidence requires allow_single explicitly."""
-        if expected_limit is None:
+        known_limit = expected_limit
+        if known_limit is None:
             baseline = self.progress.trusted_action_baseline(action.name)
-            expected_limit = baseline[1] if baseline is not None else None
+            known_limit = baseline[1] if baseline is not None else None
         initial_count = None
-        for ocr_scale in (None, SKILL_OCR_FALLBACK_UPSCALE):
+        for ocr_scale in (SKILL_OCR_UPSCALE, SKILL_OCR_FALLBACK_UPSCALE):
             samples: list[tuple[int, int]] = []
             for attempt in range(ACTION_OCR_WINDOW_SAMPLES):
                 count = self._read_count(
                     action, detection, ocr_scale=ocr_scale,
-                    known_limit=expected_limit, expected_used=expected_used,
+                    known_limit=known_limit, expected_used=expected_used,
+                    require_fraction=require_fraction,
                 )
                 if count is not None:
                     samples.append(count)
@@ -488,24 +644,44 @@ class SkillExecutionMixin:
             self._status(
                 f"{action.name}次数窗口",
                 f"{'稳定' if occurrences >= 2 else '不稳定'}={count}；"
-                f"scale={ocr_scale or '2x→3x'}；samples={samples}；"
-                f"expected={expected_used}/{expected_limit}",
+                f"scale={ocr_scale}；samples={samples}；"
+                f"expected={expected_used}/{expected_limit}；上次容量={known_limit}",
             )
-            if compatible and (occurrences >= 2 or (ocr_scale is not None and allow_single)):
-                if expected_limit is None and ocr_scale is None:
+            if compatible and (
+                occurrences >= 2 or (ocr_scale == SKILL_OCR_FALLBACK_UPSCALE and allow_single)
+            ):
+                if ocr_scale == SKILL_OCR_UPSCALE and (
+                    known_limit is None or count[1] != known_limit
+                ):
                     initial_count = count
                     continue
-                if initial_count is not None and count != initial_count:
-                    self._status(f"{action.name}次数校验", "首次次数跨倍率读数冲突，暂不记账")
+                if initial_count is not None and count != initial_count and (
+                    known_limit is None or count[1] != known_limit
+                ):
+                    self._status(f"{action.name}次数校验", "容量确认跨倍率读数冲突，暂不记账")
+                    return CountWindowObservation(None, False)
+                if count[1] != known_limit and occurrences < 2:
                     return CountWindowObservation(None, False)
                 return CountWindowObservation(count, occurrences >= 2)
             self._status(
                 f"{action.name}次数校验",
                 f"候选={count}；稳定={occurrences >= 2}；"
                 f"预期={expected_used}/{expected_limit}；"
-                + ("以3x新帧复读" if ocr_scale is None else "未取得可信读数"),
+                + ("以3x新帧复读" if ocr_scale == SKILL_OCR_UPSCALE else "未取得可信读数"),
             )
         return CountWindowObservation(None, False)
+
+    def _refresh_collection_quota(self, actions: tuple[SkillAction, ...]) -> None:
+        """旧额度不足时，入场复读HUD，避免技能升级后仍按旧容量跳过。"""
+        self._quota_checks.update(action.name for action in actions)
+        if not self._open_skill_menu(
+            tuple(action.icon for action in actions), allow_group_one_recovery=True,
+        ):
+            return
+        for action in actions:
+            observation = self._read_count_window(action)
+            if observation.count is not None and observation.is_stable:
+                self.progress.reconcile_pending(action.name, observation.count)
 
     def _reuse_recent_search(
         self,
@@ -546,17 +722,19 @@ class SkillExecutionMixin:
         *,
         map_role: CollectionMapRole,
         card_id: str | None = None,
-        slot_fallback: bool = False,
     ) -> SearchCountdownSession | SkillExecutionResult:
         reused = self._reuse_recent_search(card_id, map_role)
         if reused is not None:
             return reused
         menu_confirmed = self._open_skill_menu(
-            (ABSORB_ICON,) if slot_fallback else (SEARCH_ICON, ABSORB_ICON),
+            (SEARCH_ICON, ABSORB_ICON),
             allow_group_one_recovery=True,
+            warn_on_failure=False,
         )
         if not menu_confirmed:
-            return SkillExecutionResult(False, message="未确认安全区技能栏")
+            return SkillExecutionResult(
+                False, message="未确认采集技能栏，请检查1号探查、2号吸收及当前技能组",
+            )
         search_action = SEARCH_ACTION
         frame, detection = self._detect_action_icon(
             search_action.icon,
@@ -564,25 +742,17 @@ class SkillExecutionMixin:
         )
         self._report_icon_detection(search_action, detection)
         can_click_search = detection.state is ActionIconState.AVAILABLE and detection.stable
-        if not can_click_search and not slot_fallback:
+        if not can_click_search:
             if detection.state is ActionIconState.ABSENT:
-                message = "未识别到探查图标"
+                message = "未识别到1号槽探查，请配置探查后重新运行"
             elif not detection.stable:
                 message = "探查图标未达到跨帧稳定确认"
             else:
                 message = f"探查图标状态不可点击：{detection.state.value}"
             return SkillExecutionResult(False, message=message)
         countdown_roi = SEARCH_COUNTDOWN_RELATIVE_ROI
-        if can_click_search:
-            center = detection.match.center
-        else:
-            left, top, right, bottom = countdown_roi
-            center = (
-                round((left + right) / 2 * frame.shape[1]),
-                round((top + bottom) / 2 * frame.shape[0]),
-            )
         self.vision.click_client(
-            center,
+            detection.match.center,
             frame.shape,
             after_sleep=ACTION_AFTER_CLICK_SECONDS,
         )
@@ -657,11 +827,17 @@ class SkillExecutionMixin:
 
         depleted = False
         pending_actions: list[str] = []
-        for action in actions:
-            result = self._use_action(action, card_id=card_id, map_role=map_role)
+        index = 0
+        while index < len(actions):
+            action = actions[index]
+            paired = (
+                not recovery_only and actions[index:index + 2] == (SUMMON_ACTION, SUPPRESS_ACTION)
+            )
+            execute = self._use_summon_and_suppress if paired else partial(self._use_action, action)
+            result = execute(card_id=card_id, map_role=map_role)
             if result.press_again and not recovery_only:
                 self.task.sleep(PRESS_AGAIN_PAUSE_SECONDS)
-                result = self._use_action(action, card_id=card_id, map_role=map_role)
+                result = execute(card_id=card_id, map_role=map_role)
             if not result.completed:
                 return SkillExecutionResult(
                     False,
@@ -671,6 +847,7 @@ class SkillExecutionMixin:
                 )
             depleted = depleted or result.depleted
             pending_actions.extend(result.pending_actions)
+            index += 2 if paired else 1
         message = ""
         if pending_actions:
             message = "动作已完成；次数待后续明亮帧对账：" + "、".join(pending_actions)
@@ -688,6 +865,70 @@ class SkillExecutionMixin:
         card_id: str,
         map_role: CollectionMapRole,
     ) -> SkillExecutionResult:
+        prepared = self._prepare_action(action, card_id=card_id, map_role=map_role)
+        if isinstance(prepared, SkillExecutionResult):
+            return prepared
+        failure = self._click_prepared_action(action, prepared, card_id=card_id, map_role=map_role)
+        if failure is not None:
+            return failure
+        feedback = self._read_action_feedback(action)
+        self._wait_after_feedback_match(action, feedback)
+        return self._verify_clicked_action(
+            action, prepared, feedback, card_id=card_id, map_role=map_role,
+        )
+
+    def _use_summon_and_suppress(self, *, card_id, map_role) -> SkillExecutionResult:
+        """Prepare both quotas before attracting enemies; verify after suppression."""
+        kwargs = {"card_id": card_id, "map_role": map_role}
+        summon = self._prepare_action(SUMMON_ACTION, **kwargs)
+        if isinstance(summon, SkillExecutionResult):
+            if not summon.completed:
+                return summon
+            suppress_result = self._use_action(SUPPRESS_ACTION, **kwargs)
+            summon_result = summon
+        else:
+            suppress = self._prepare_action(SUPPRESS_ACTION, **kwargs)
+            if isinstance(suppress, SkillExecutionResult) and not suppress.completed:
+                return suppress
+            failure = self._click_prepared_action(SUMMON_ACTION, summon, **kwargs)
+            if failure is not None:
+                return failure
+            feedback = self._read_action_feedback(SUMMON_ACTION)
+            if feedback.outcome != "success":
+                summon_result = self._verify_clicked_action(
+                    SUMMON_ACTION, summon, feedback, **kwargs,
+                )
+                if not summon_result.completed:
+                    return summon_result
+            if isinstance(suppress, SkillExecutionResult):
+                suppress_result = suppress
+            else:
+                failure = self._click_prepared_action(SUPPRESS_ACTION, suppress, **kwargs)
+                if failure is not None:
+                    # A changed scene invalidates preparation, but has not armed this action.
+                    suppress_result = (
+                        self._use_action(SUPPRESS_ACTION, **kwargs)
+                        if failure.press_again else failure
+                    )
+                else:
+                    suppress_feedback = self._read_action_feedback(SUPPRESS_ACTION)
+                    self._wait_after_feedback_match(SUPPRESS_ACTION, suppress_feedback)
+                    suppress_result = self._verify_clicked_action(
+                        SUPPRESS_ACTION, suppress, suppress_feedback, **kwargs,
+                    )
+            if feedback.outcome == "success":
+                summon_result = self._verify_clicked_action(
+                    SUMMON_ACTION, summon, feedback, **kwargs,
+                )
+        return SkillExecutionResult(
+            summon_result.completed and suppress_result.completed,
+            summon_result.depleted or suppress_result.depleted,
+            "; ".join(r.message for r in (summon_result, suppress_result) if r.message),
+            summon_result.pending_actions + suppress_result.pending_actions,
+            press_again=summon_result.press_again or suppress_result.press_again,
+        )
+
+    def _prepare_action(self, action, *, card_id, map_role):
         existing = self.progress.get_action_record(card_id, map_role, action.name)
         # A process restart may leave an ARMED/CLICKED intent.  Even when the
         # icon is bright again we must not click a second time; a later USED
@@ -704,6 +945,10 @@ class SkillExecutionMixin:
             action.icon,
             require_stable=True,
         )
+        existing = self.progress.get_action_record(card_id, map_role, action.name)
+        early = self._existing_record_outcome(action, existing)
+        if early is not None:
+            return early
         self._report_icon_detection(action, detection)
         if (
             detection.state in {ActionIconState.AVAILABLE, ActionIconState.USED}
@@ -743,10 +988,36 @@ class SkillExecutionMixin:
             map_role=map_role,
         )
         if failure is not None:
+            _frame, recovered = self._capture_skill_field()
+            if recovered:
+                return SkillExecutionResult(
+                    False, message="次数读取期间场景变化，恢复后重新准备技能", press_again=True,
+                )
             return failure
         assert before is not None
+        return detection, before, self._skill_field_generation
+
+    def _click_prepared_action(self, action, prepared, *, card_id, map_role):
+        detection, before, generation = prepared
+        frame, recovered = self._capture_skill_field()
+        existing = self.progress.get_action_record(card_id, map_role, action.name)
+        early = self._existing_record_outcome(action, existing)
+        if early is not None:
+            return early
+        fresh = self.action_icons.detect(frame, action.icon)
+        if (
+            recovered or generation != self._skill_field_generation
+            or not self._action_detection_is_stable(detection, fresh)
+        ):
+            return SkillExecutionResult(
+                False, message="消费前场景或技能状态变化，重新读取次数和图标", press_again=True,
+            )
+        if not self.progress.arm_action(card_id, map_role, action.name, baseline=before):
+            return SkillExecutionResult(
+                False, True, f"{action.name}每日额度或未决动作已阻止新点击",
+            )
         self.vision.click_client(
-            detection.match.center,
+            fresh.match.center,
             frame.shape,
             after_sleep=ACTION_AFTER_CLICK_SECONDS,
         )
@@ -754,8 +1025,10 @@ class SkillExecutionMixin:
         # returns successfully.  A crash/exception during the click
         # therefore leaves the pre-click ARMED intent for safe recovery.
         self.progress.mark_action_clicked(card_id, map_role, action.name)
-        feedback = self._read_action_feedback(action)
-        self._wait_after_feedback_match(action, feedback)
+        return None
+
+    def _verify_clicked_action(self, action, prepared, feedback, *, card_id, map_role):
+        detection, before, _generation = prepared
         post_frame, post_detection = self._detect_action_icon(
             action.icon,
             require_stable=True,
@@ -857,19 +1130,28 @@ class SkillExecutionMixin:
         *,
         card_id: str,
         map_role: CollectionMapRole,
+        observation: CountWindowObservation | None = None,
     ) -> tuple[tuple[int, int] | None, SkillExecutionResult | None]:
-        remaining_pending = self.progress.pending_count(action.name)
         # A fresh run may observe casts performed outside this task. During a
         # continuous run, changes must be covered by our recorded consumption.
         expected_used = (
             self.progress.effective_used(action.name)
-            if action.name in self._count_actions_seen or remaining_pending else None
+            if action.name in self._count_actions_seen else None
         )
-        baseline = self.progress.trusted_action_baseline(action.name)
-        observation = self._read_count_window(
-            action, detection, expected_used=expected_used,
-            expected_limit=baseline[1] if baseline is not None else None,
+        fresh_pending = (
+            action.name not in self._count_actions_seen
+            and self.progress.pending_count(action.name) > 0
         )
+        if observation is None or fresh_pending:
+            observation = self._read_count_window(
+                action, detection, expected_used=expected_used,
+                require_fraction=fresh_pending,
+            )
+        elif (
+            observation.count is None or not observation.is_stable
+            or (expected_used is not None and observation.count[0] != expected_used)
+        ):
+            observation = CountWindowObservation(None, False)
         before = observation.count
         if before is None:
             return None, SkillExecutionResult(
@@ -904,17 +1186,6 @@ class SkillExecutionMixin:
                 f"{action.name}次数已达到 {before[0]}/{before[1]}，当前地图未完成",
             )
         self._count_actions_seen.add(action.name)
-        if not self.progress.arm_action(
-            card_id,
-            map_role,
-            action.name,
-            baseline=before,
-        ):
-            return None, SkillExecutionResult(
-                False,
-                True,
-                f"{action.name}每日额度或未决动作已阻止新点击",
-            )
         return before, None
 
     def _finish_after_click(
@@ -1173,6 +1444,8 @@ class SkillExecutionMixin:
         ocr_scale: float | None = None,
         known_limit: int | None = None,
         expected_used: int | None = None,
+        frame=None,
+        require_fraction: bool = False,
     ) -> tuple[int, int] | None:
         # The calibrated fixed ROI is intentionally reused at 3x after a 2x
         # miss.  This catches the reproduced dark ``2`` without widening the
@@ -1183,10 +1456,10 @@ class SkillExecutionMixin:
             else (SKILL_OCR_UPSCALE,)
         )
         for index, scale in enumerate(scales):
-            frame = self.vision.capture()
+            count_frame = self.vision.capture() if frame is None else frame
             if action.fixed_count_relative_roi is not None:
                 text = self.vision.ocr_text(
-                    frame,
+                    count_frame,
                     f"{action.name}次数",
                     relative_roi=action.fixed_count_relative_roi,
                     target_height=1080,
@@ -1194,18 +1467,23 @@ class SkillExecutionMixin:
                 )
             elif detection is not None:
                 text = self.vision.ocr_text(
-                    frame,
+                    count_frame,
                     f"{action.name}次数",
                     relative_roi=self._action_text_relative_roi(
                         detection,
-                        frame.shape,
+                        count_frame.shape,
                     ),
                     target_height=1080,
                     ocr_scale=scale,
                 )
             else:
                 return None
-            count = parse_used_limit(text, known_limit, expected_used)
+            if require_fraction and not re.fullmatch(r"\s*\d+\s*[/YyVv]\s*\d+\s*", text):
+                continue
+            # 完整分数携带当前技能容量；旧容量只帮助恢复丢失的分隔符。
+            count = parse_used_limit(text, expected_used=expected_used)
+            if count is None:
+                count = parse_used_limit(text, known_limit, expected_used)
             if count is not None:
                 return count
             if index + 1 < len(scales):
@@ -1287,15 +1565,19 @@ class SkillExecutionMixin:
             return reused
         if not self._open_skill_menu((ABSORB_ICON,), allow_group_one_recovery=True):
             return SkillExecutionResult(False, message="未确认采集技能栏")
-        if self._search_running():
-            return None
-        started = self._start_search(card_id=card_id, map_role=map_role, slot_fallback=True)
+        # 倒计时会覆盖探查图标，短暂漏读须先复核，避免误进入补施探查流程。
+        for attempt in range(ACTION_OCR_WINDOW_SAMPLES):
+            if self._search_running():
+                return None
+            if attempt + 1 < ACTION_OCR_WINDOW_SAMPLES:
+                self.task.sleep(SEARCH_COUNTDOWN_INTERVAL)
+        started = self._start_search(card_id=card_id, map_role=map_role)
         if not isinstance(started, SkillExecutionResult):
             return started
         self.task.sleep(1.0)
         if self._search_running():
             return None
-        return self._start_search(card_id=card_id, map_role=map_role, slot_fallback=True)
+        return self._start_search(card_id=card_id, map_role=map_role)
 
 COUNT_ACTIONS_BY_ICON = {
     action.icon.name: action for action in (ABSORB_ACTION, SUMMON_ACTION, SUPPRESS_ACTION)

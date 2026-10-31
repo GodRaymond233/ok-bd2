@@ -1,8 +1,10 @@
 import os
+import threading
 import time
 import unittest
 from concurrent.futures import Future
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, call, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -14,6 +16,7 @@ from qfluentwidgets import PushButton, Theme, qconfig
 
 from src.diagnostics.models import DiagnosticSnapshot
 from src.ui.feedback_report import (
+    FeedbackReportController,
     FeedbackReportDialog,
     _ReportBuildJob,
     install_feedback_report,
@@ -94,14 +97,84 @@ class FeedbackReportUiTest(unittest.TestCase):
         self.assertEqual(2, tab.debug_layout.count())
         tab.close()
 
-    def test_dialog_disables_screenshot_consent_when_no_frame_exists(self):
-        dialog = FeedbackReportDialog(
-            DiagnosticSnapshot(captured_at="2026-08-14T13:00:00+08:00")
-        )
+    def test_dialog_makes_current_screenshot_optional(self):
+        for frame in (None, np.zeros((20, 20, 3), dtype=np.uint8)):
+            with self.subTest(has_frame=frame is not None):
+                dialog = FeedbackReportDialog(
+                    DiagnosticSnapshot(captured_at="2026-08-14T13:00:00+08:00", frame=frame)
+                )
 
-        self.assertFalse(dialog.include_screenshot.isChecked())
-        self.assertFalse(dialog.include_screenshot.isEnabled())
-        dialog.close()
+                self.assertFalse(dialog.include_screenshot.isChecked())
+                self.assertEqual(frame is not None, dialog.include_screenshot.isEnabled())
+                if frame is not None:
+                    dialog.include_screenshot.setChecked(True)
+                    self.assertTrue(dialog.include_screenshot.isChecked())
+                dialog.close()
+
+    def test_failure_prompt_uses_ui_thread_and_opens_report_on_accept(self):
+        tab = _StartTabStub()
+        evidence = SimpleNamespace(failure_notifier=None, report_action=Mock())
+        controller = FeedbackReportController(tab, _ReportManagerStub(), evidence=evidence)
+        failure = {"run": "standalone", "task_name": "广场女神像", "info": {}}
+        create_button, later_button = object(), object()
+        ui_threads = []
+        with patch("src.ui.feedback_report.QMessageBox") as message_box, patch(
+            "src.ui.feedback_report._apply_report_dialog_theme"
+        ), patch.object(controller, "create_report") as create_report:
+            prompt = message_box.return_value
+            prompt.addButton.side_effect = [create_button, later_button]
+            prompt.clickedButton.return_value = create_button
+            prompt.exec.side_effect = lambda: ui_threads.append(threading.get_ident())
+            worker = threading.Thread(target=evidence.failure_notifier, args=(failure,))
+            worker.start()
+            worker.join(timeout=2)
+            self.assertFalse(worker.is_alive())
+            prompt.exec.assert_not_called()
+            self.app.processEvents()
+            self.assertEqual([threading.get_ident()], ui_threads)
+            create_report.assert_called_once_with(
+                report_context={"source": "failure_prompt", "failure_run": "standalone"},
+            )
+            self.assertEqual([
+                call("prompt_offered", "standalone"), call("prompt_accepted", "standalone"),
+            ], evidence.report_action.call_args_list)
+            prompt.setDefaultButton.assert_called_once_with(later_button)
+            prompt.deleteLater.assert_called_once_with()
+        tab.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        self.assertIsNone(evidence.failure_notifier)
+
+    def test_failure_prompt_waits_for_current_report_and_can_be_declined(self):
+        tab = _StartTabStub()
+        manager = _ReportManagerStub()
+        evidence = SimpleNamespace(failure_notifier=None, report_action=Mock())
+        controller = FeedbackReportController(tab, manager, evidence=evidence)
+        controller._busy = True
+        create_button, later_button = object(), object()
+        with patch("src.ui.feedback_report.QMessageBox") as message_box, patch(
+            "src.ui.feedback_report._apply_report_dialog_theme"
+        ), patch.object(controller, "create_report") as create_report:
+            prompt = message_box.return_value
+            prompt.addButton.side_effect = [create_button, later_button]
+            prompt.clickedButton.return_value = later_button
+            controller.failure_requested.emit({"run": "first", "task_name": "跑图", "info": {}})
+            controller.failure_requested.emit({
+                "run": "batch", "task_name": "一键完成日常", "info": {"失败": "广场女神像、跑图"},
+            })
+            self.app.processEvents()
+            prompt.exec.assert_not_called()
+            controller._reset_state()
+            self.app.processEvents()
+            prompt.exec.assert_called_once_with()
+            self.assertIn("一键完成日常", prompt.setText.call_args.args[0])
+            self.assertIn("广场女神像、跑图", prompt.setInformativeText.call_args.args[0])
+            create_report.assert_not_called()
+            self.assertEqual([], manager.calls)
+            self.assertIsNone(controller._pending_failure)
+            self.assertEqual([
+                call("prompt_offered", "batch"), call("prompt_declined", "batch"),
+            ], evidence.report_action.call_args_list)
+        tab.close()
 
     def test_create_button_stays_disabled_until_description_entered(self):
         dialog = FeedbackReportDialog(

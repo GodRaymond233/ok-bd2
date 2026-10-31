@@ -13,6 +13,7 @@ import threading
 import time
 import traceback
 import uuid
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 
@@ -163,6 +164,8 @@ class RuntimeEvidence(logging.Filter):
         self.events, self.failures, self.omissions = [], [], []
         self.dropped = 0
         self.observed_exceptions = {}
+        self.failure_notifier = None
+        self._notified_runs = deque(maxlen=32)
         self.guard = threading.RLock()
         self.pending = queue.Queue(maxsize=128)
         self._load()
@@ -231,6 +234,7 @@ class RuntimeEvidence(logging.Filter):
             "parent": run.get("parent"),
             "parent_task": run.get("parent_task"),
             "task": run["task"],
+            "task_name": self.redactor.redact(getattr(run["object"], "name", run["task"])),
             "started": run["started"],
             "time": now,
             "occurred_at": datetime.fromtimestamp(now)
@@ -361,6 +365,8 @@ class RuntimeEvidence(logging.Filter):
                     self.omissions.append(f"evidence_write_failed:{type(exc).__name__}")
                     self.omissions = self.omissions[-20:]
             finally:
+                if isinstance(item, dict):
+                    self._notify_failure(item)
                 self.pending.task_done()
 
     def _accept(self, item):
@@ -437,6 +443,31 @@ class RuntimeEvidence(logging.Filter):
             with self.guard:
                 saved["logs"] = logs
         self._persist()
+
+    def _notify_failure(self, item):
+        if (
+            item["event"] in ("failed", "exception")
+            and item.get("parent") is None
+            and item["run"] not in self._notified_runs
+            and self.failure_notifier is not None
+        ):
+            self._notified_runs.append(item["run"])
+            try:
+                self.failure_notifier({
+                    "run": item["run"],
+                    "task_name": item["task_name"],
+                    "info": dict(item["info"]),
+                })
+            except Exception as exc:
+                with self.guard:
+                    self.omissions.append(f"failure_notification_failed:{type(exc).__name__}")
+
+    def report_action(self, action: str, run: str | None = None):
+        self.event(
+            {"id": run or uuid.uuid4().hex, "task": "FeedbackReport",
+             "object": None, "started": time.time()},
+            f"report_{action}",
+        )
 
     def _persist(self):
         with self.guard:

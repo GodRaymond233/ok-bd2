@@ -21,6 +21,10 @@ ACTION_ICON_TEMPLATE_SCORE = 0.95
 ACTION_ICON_ZNCC_SCORE = 0.80
 ACTION_ICON_USED_ZNCC_SCORE = 0.64
 SEARCH_ICON_TEMPLATE_SCORE = 0.93
+SEARCH_ICON_SHAPE_MIN_SCORE = 0.90
+SEARCH_ICON_SHAPE_MIN_ZNCC = 0.90
+SEARCH_ICON_SHAPE_MIN_GRADIENT = 0.75
+SEARCH_ICON_SHAPE_MIN_EDGE = 0.90
 ACTION_ICON_SCALE_RATIOS = (1.10, 1.15, 1.20, 1.25, 1.30)
 COOKING_ICON_SCALE_RATIOS = (*ACTION_ICON_SCALE_RATIOS, 1.35, 1.40)
 ACTION_ICON_BRIGHT_CORE_GRAY = 180
@@ -106,6 +110,9 @@ LIMITED_ACTION_EVIDENCE_MIN_GRADIENT = 0.30
 LIMITED_ACTION_EVIDENCE_MIN_EDGE = 0.82
 LIMITED_ACTION_USED_MAX_CONTRAST = 0.65
 LIMITED_ACTION_AVAILABLE_MIN_CONTRAST = 0.80
+ABSORB_USED_MIN_ZNCC = 0.55
+ABSORB_USED_MIN_PIXEL = 0.75
+ABSORB_USED_MIN_GRADIENT = 0.50
 SEARCH_ICON_EVIDENCE_MIN_PIXEL = 0.68
 SEARCH_ICON_EVIDENCE_MIN_ZNCC = 0.55
 SEARCH_ICON_EVIDENCE_MIN_GRADIENT = 0.30
@@ -313,6 +320,41 @@ class ActionIconDetector:
 
     def __init__(self, vision: Vision) -> None:
         self.vision = vision
+
+    def layout_conflicts(
+        self, frame: np.ndarray, missing: tuple[ActionIconSpec, ...],
+    ) -> tuple[str, ...]:
+        """Report a slot only when exactly one different collection icon is identified."""
+        slots = (SEARCH_ICON, ABSORB_ICON, SUMMON_ICON, SUBDUE_ICON)
+        conflicts = []
+        for expected in missing:
+            if expected not in slots:
+                continue
+            found = []
+            for actual in slots:
+                if actual == expected:
+                    continue
+                bounds = dict(
+                    relative_roi=ACTION_SLOT_RELATIVE_ROIS[expected.slot_name],
+                    candidate_center_roi=ACTION_SLOT_CENTER_RELATIVE_ROIS[expected.slot_name],
+                )
+                relocated = replace(
+                    actual, slot_name=expected.slot_name,
+                    search_radius_reference=expected.search_radius_reference,
+                    template=replace(actual.template, **bounds),
+                    detection_template=(
+                        replace(actual.detection_template, **bounds)
+                        if actual.detection_template is not None else None
+                    ),
+                )
+                if self.detect(frame, relocated).state in {
+                    ActionIconState.AVAILABLE, ActionIconState.USED,
+                }:
+                    found.append(actual.name)
+            if len(found) == 1:
+                number = slots.index(expected) + 1
+                conflicts.append(f"第{number}号槽识别到{found[0]}，应放{expected.name}")
+        return tuple(conflicts)
 
     @staticmethod
     def _evidence_rank(value: MatchCandidateEvidence) -> tuple[float, ...]:
@@ -613,11 +655,17 @@ class ActionIconDetector:
                 f"图标物理尺寸过小：{match.size[0]}x{match.size[1]}"
                 f"<{ACTION_ICON_MIN_PHYSICAL_SIZE}"
             )
-        if match.score < icon.identity_min_score:
+        # 半透明底色会压低探查模板分；仅在其槽位的多项结构证据同时很强时放行。
+        search_shape_confirmed = (
+            icon.name == SEARCH_ICON.name and icon.slot_name == "search"
+            and match.score >= SEARCH_ICON_SHAPE_MIN_SCORE
+            and match.zncc_score >= SEARCH_ICON_SHAPE_MIN_ZNCC
+            and match.gradient_zncc_score >= SEARCH_ICON_SHAPE_MIN_GRADIENT
+            and match.edge_score >= SEARCH_ICON_SHAPE_MIN_EDGE
+            and margin >= ACTION_ICON_EVIDENCE_MIN_MARGIN
+        )
+        if match.score < icon.identity_min_score and not search_shape_confirmed:
             return False, f"模板身份分过低：{match.score:.3f}<{icon.identity_min_score:.3f}"
-        if match.zncc_score < icon.evidence_min_zncc:
-            return False, f"原始ZNCC过低：{match.zncc_score:.3f}<{icon.evidence_min_zncc:.3f}"
-
         # Dimmed icons lose pixel intensity while retaining their shape. Only
         # confirmed dimming may use the low pixel floor; bright/unknown states
         # keep the stricter pixel gate before becoming clickable.
@@ -626,6 +674,17 @@ class ActionIconDetector:
             and relative_contrast is not None
             and relative_contrast <= LIMITED_ACTION_USED_MAX_CONTRAST
         )
+        # The translucent used absorb glyph needs stronger gradient/pixel evidence
+        # when the scene beneath it reduces raw correlation. This cannot admit a cast.
+        used_absorb_shape = (
+            icon.slot_name == "absorb" and is_dimmed
+            and match.zncc_score >= ABSORB_USED_MIN_ZNCC
+            and match.pixel_score >= ABSORB_USED_MIN_PIXEL
+            and match.gradient_zncc_score >= ABSORB_USED_MIN_GRADIENT
+            and match.edge_score >= LIMITED_ACTION_EVIDENCE_MIN_EDGE
+        )
+        if match.zncc_score < icon.evidence_min_zncc and not used_absorb_shape:
+            return False, f"原始ZNCC过低：{match.zncc_score:.3f}<{icon.evidence_min_zncc:.3f}"
         if is_dimmed:
             if match.pixel_score < ACTION_ICON_CONSENSUS_PIXEL_FLOOR:
                 return False, (

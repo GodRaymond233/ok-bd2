@@ -21,6 +21,7 @@ class DiagnosticSnapshot:
     logs: dict[str, Any] | None = field(default=None, repr=False, compare=False)
     runtime_events: tuple[dict[str, Any], ...] = ()
     failures: tuple[dict[str, Any], ...] = ()
+    report_context: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

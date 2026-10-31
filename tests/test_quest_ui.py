@@ -739,6 +739,31 @@ class RunPanelTest(QuestUiTestBase):
         self.assertEqual(panel.rows.count(), 2)  # 状态 / 最近日志
         panel.close()
 
+    def test_sale_details_remain_visible_after_navigation_finishes(self):
+        from PySide6.QtWidgets import QLabel
+
+        from src.ui.run_panel import RunPanel, run_state
+
+        self.fresh_store()
+        task = _TaskStub(name="每日跑商")
+        task.info = {
+            "状态": "跑商完成。",
+            "价表来源": "bundled",
+            "导航状态": "已返回主页",
+            "出售价表日期": "2026-10-28",
+            "已出售商品": "剧情游戏卡2 苍蓝魔女·苹果：已出售 123 个",
+            "未出售商品": "角色游戏卡1 杰登之门·松露油：未出售：不在出售白名单",
+        }
+        panel = RunPanel()
+        self.addCleanup(panel.close)
+        panel.render(task)
+        labels = [label.text() for label in panel.rows_container.findChildren(QLabel)]
+        for key in ("已出售商品", "未出售商品"):
+            self.assertIn(key, labels)
+            self.assertIn(task.info[key], labels)
+        self.assertEqual("done", run_state(task))
+        self.assertNotIn("Warning", labels)
+
     def test_run_state_mapping(self):
         from src.ui.run_panel import run_state
 
@@ -791,6 +816,49 @@ class RunPanelTest(QuestUiTestBase):
 
 
 class TaskTabIntegrationTest(QuestUiTestBase):
+    def test_task_cards_stay_visible_after_refresh_during_and_after_run(self):
+        import time
+
+        from ok.ui.qt.Communicate import communicate
+        from ok.ui.qt.tasks.OneTimeTaskTab import OneTimeTaskTab
+        from PySide6.QtTest import QTest
+
+        from src.ui.quest_cards import _get_breath_driver, _get_refresher
+
+        self.fresh_store()
+        batch = _make_batch_stub()
+        tasks = [batch, _TaskStub(name="公会、小屋、酒馆"), _TaskStub(name="自动PVP")]
+        og.executor = _ExecutorStub(onetime_tasks=tasks)
+        tab = OneTimeTaskTab(is_standalone=False, group_name="日常/周常")
+        tab.resize(1080, 760)
+        tab.show()
+        try:
+            for phase in ("idle", "running", "stopped"):
+                with self.subTest(phase=phase):
+                    batch.enabled = batch.running = phase == "running"
+                    batch.start_time = time.time() if batch.enabled else batch.start_time
+                    og.executor.current_task = batch if batch.enabled else None
+                    tab.update_info_table()
+                    previous_card = tab.card_widgets[0]
+                    communicate.task_list_updated.emit()
+                    QTest.qWait(50)
+                    self.assertIsNot(previous_card, tab.card_widgets[0])
+                    _get_refresher().refresh_all()
+                    _get_breath_driver()._tick()
+                    self.assertEqual(len(tab.card_widgets), len(tasks))
+                    for card in tab.card_widgets:
+                        self.assertTrue(card.isVisible())
+                        self.assertGreater(card.height(), 0)
+                        self.assertTrue(tab.task_cards_view.rect().contains(card.geometry()))
+
+                    tab.hide()
+                    tab.show()
+                    QTest.qWait(50)
+                    self.assertTrue(all(card.isVisible() for card in tab.card_widgets))
+        finally:
+            tab.close()
+            og.executor = _ExecutorStub()
+
     def test_daily_group_tab_gets_run_panel_banner_and_status_bar(self):
         from ok.ui.qt.tasks.OneTimeTaskTab import OneTimeTaskTab
 

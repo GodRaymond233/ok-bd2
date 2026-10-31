@@ -2,24 +2,31 @@
 
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import datetime
 from itertools import cycle
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import cv2
 import numpy as np
+from ok.task.exceptions import FinishedException, TaskDisabledException
 
 from src.tasks.map_trade.action_icons import (
     ABSORB_ICON,
+    ACTION_SLOT_CENTERS_REFERENCE,
     SEARCH_ICON,
     SUMMON_ICON,
     ActionIconDetection,
     ActionIconState,
 )
 from src.tasks.map_trade.card_status import (
+    CardActionDetection,
+    CardActionState,
     CollectionCardSelectionOutcome,
     CollectionCardSelectionResult,
+    StoryCardCompletion,
 )
 from src.tasks.map_trade.collector import (
     Collector,
@@ -66,10 +73,103 @@ from src.tasks.map_trade.progress import (
     UTC_PLUS_8,
     ProgressStore,
 )
+from src.tasks.map_trade.vision import Vision
 from tests.helpers.map_trade import _seed_action_records, _seed_battle_supplements
 
 
 class CollectionRunTest(unittest.TestCase):
+    def test_insufficient_historical_quota_is_refreshed_after_entry_before_skipping(self):
+        for limit in (40, 45, 75, 130):
+            with self.subTest(limit=limit), tempfile.TemporaryDirectory() as directory:
+                progress = ProgressStore(Path(directory) / "progress.json")
+                progress.load()
+                progress.reconcile_pending("压制", (40, 40))
+                entered = CollectionCardSelectionResult(
+                    CollectionCardSelectionOutcome.ENTERED,
+                    NavigationResult(True, ScreenState.SANDBOX),
+                )
+                collector = Collector(
+                    SimpleNamespace(config={}, sleep=Mock(), info_set=Mock()),
+                    SimpleNamespace(capture=lambda: None,
+                                    ocr_text=lambda *a, **k: f"40/{limit}"),
+                    SimpleNamespace(select_collection_card=Mock(return_value=entered)), progress,
+                )
+                collector._open_skill_menu = Mock(return_value=True)
+                collector._refresh_collection_quota = (
+                    self._quota_refresh.__get__(collector)
+                )
+                collector._collect_card_targets = Mock(return_value=(
+                    CollectionResult(False, message="target boundary"), False,
+                ))
+                result = collector.collect_card(CARD_BY_ID["Q_sp1"],
+                                                battle_actions=(SUPPRESS_ACTION,))
+                collector.navigator.select_collection_card.assert_called_once()
+                self.assertEqual((40, limit), progress.trusted_action_baseline("压制"))
+                self.assertEqual(int(limit > 40), collector._collect_card_targets.call_count)
+                self.assertEqual(limit == 40, result.depleted)
+                if limit > 40:
+                    self.assertFalse(collector._collect_card_targets.call_args.kwargs["recovery_only"])
+                self.assertEqual({}, progress.state.action_records)
+
+    def test_card_recheck_recovers_observed_town_without_recasting_battles(self):
+        for visual_state in (CardActionState.PENDING, CardActionState.UNKNOWN):
+            with self.subTest(state=visual_state), tempfile.TemporaryDirectory() as directory:
+                progress = ProgressStore(
+                    Path(directory) / "progress.json",
+                    lambda: datetime(2026, 10, 21, 12, tzinfo=UTC_PLUS_8),
+                )
+                progress.load()
+                card = CARD_BY_ID["Q_sp9"]
+                for target in card.targets[1:]:
+                    _seed_action_records(progress, card.card_id, target.key)
+                    progress.mark_target(card.card_id, target.key)
+                progress.mark_action_preexisting_used(card.card_id, "main_area", "吸收")
+                progress.mark_target(card.card_id, "main_area")
+                sandbox = NavigationResult(True, ScreenState.SANDBOX)
+                menu = NavigationResult(True, ScreenState.CARD_MENU)
+                initial = CollectionCardSelectionResult(
+                    CollectionCardSelectionOutcome.FAILED,
+                    NavigationResult(False, ScreenState.CARD_MENU, "卡带未完成"),
+                    StoryCardCompletion(
+                        CardActionDetection(visual_state),
+                        CardActionDetection(CardActionState.COMPLETED), (0, 0, 1, 1), True,
+                    ),
+                )
+                navigator = SimpleNamespace(
+                    inspect_collection_card_completion=Mock(side_effect=[initial, menu]),
+                    select_collection_card=Mock(return_value=CollectionCardSelectionResult(
+                        CollectionCardSelectionOutcome.ENTERED, sandbox,
+                    )),
+                    current_collection_target=lambda _card: "battle_area_2",
+                    advance_collection_map=Mock(return_value=sandbox),
+                    open_cartridge_quick_switcher_from_sandbox=Mock(return_value=menu),
+                )
+                collector = Collector(
+                    SimpleNamespace(config={}, info_set=Mock(), log_warning=Mock()),
+                    SimpleNamespace(), navigator, progress,
+                )
+                collector._start_search = Mock()
+                performed = []
+
+                def use(actions, *, card_id, map_role):
+                    performed.append((map_role.value, tuple(a.name for a in actions)))
+                    _seed_action_records(progress, card_id, map_role.value, ("吸收",))
+                    return SkillExecutionResult(True)
+
+                collector._use_actions = use
+                result = collector.collect_card(card)
+                if visual_state is CardActionState.PENDING:
+                    self.assertIsNone(result)
+                    self.assertEqual([("main_area", ("吸收",))], performed)
+                    self.assertTrue(progress.state.card_verified(card.card_id))
+                else:
+                    self.assertFalse(result.success)
+                    self.assertEqual([], performed)
+                    navigator.select_collection_card.assert_not_called()
+                    self.assertTrue(
+                        progress.weekly_action_complete(card.card_id, "main_area", "吸收"),
+                    )
+
     def test_exhausted_absorb_does_not_block_other_cards_remaining_actions(self):
         with tempfile.TemporaryDirectory() as directory:
             progress = ProgressStore(
@@ -109,17 +209,23 @@ class CollectionRunTest(unittest.TestCase):
                 return SkillExecutionResult(True)
 
             collector._use_action = use
+            collector._prepare_action = use
             result = collector.run((CARD_BY_ID["Q_sp1"], card))
             self.assertTrue(result.success)
             self.assertTrue(result.depleted)
             self.assertTrue(progress.state.card_verified(card.card_id))
             self.assertFalse(progress.state.card_verified("Q_sp1"))
-            navigator.select_collection_card.assert_called_once_with(
-                card.card_id, enter_visually_complete=False,
-            )
+            self.assertEqual(["Q_sp1", card.card_id], [
+                call.args[0] for call in navigator.select_collection_card.call_args_list
+            ])
             self.assertEqual(["召集", "压制", "召集", "压制"], performed)
 
     def setUp(self):
+        self._quota_refresh = Collector._refresh_collection_quota
+        self._layout_check = Collector._check_collection_skill_layout
+        layout = patch.object(Collector, "_check_collection_skill_layout", return_value=None)
+        layout.start()
+        self.addCleanup(layout.stop)
         search = patch.object(
             Collector,
             "_ensure_search",
@@ -127,10 +233,16 @@ class CollectionRunTest(unittest.TestCase):
             side_effect=lambda collector, **kwargs: collector._start_search(**kwargs),
         )
         guard = patch.object(Collector, "_absorb_used_up", return_value=None)
+        quota = patch.object(Collector, "_refresh_collection_quota", autospec=True,
+                             side_effect=lambda collector, actions: collector._quota_checks.update(
+                                 action.name for action in actions
+                             ))
         search.start()
         guard.start()
+        quota.start()
         self.addCleanup(search.stop)
         self.addCleanup(guard.stop)
+        self.addCleanup(quota.stop)
 
     def test_last_quota_recovery_resumes_persisted_actions_without_casts(self):
         for phase in ("clicked", "observed", "local_done", "bright", "later_summon"):
@@ -166,6 +278,7 @@ class CollectionRunTest(unittest.TestCase):
                 sandbox = NavigationResult(True, ScreenState.SANDBOX)
                 card_menu = NavigationResult(True, ScreenState.CARD_MENU)
                 navigator = SimpleNamespace(
+                    wait_for_collection_field=lambda frame: frame,
                     select_collection_card=Mock(return_value=CollectionCardSelectionResult(
                         CollectionCardSelectionOutcome.ENTERED, sandbox,
                     )),
@@ -196,8 +309,9 @@ class CollectionRunTest(unittest.TestCase):
                     result = collector.run()
                 collector._start_search.assert_not_called()
                 vision.click_client.assert_not_called()
-                navigator.select_collection_card.assert_called_once()
-                self.assertEqual(card.card_id, navigator.select_collection_card.call_args.args[0])
+                self.assertEqual(["Q_sp1", card.card_id], [
+                    call.args[0] for call in navigator.select_collection_card.call_args_list
+                ])
                 self.assertTrue(
                     navigator.select_collection_card.call_args.kwargs["enter_visually_complete"],
                 )
@@ -236,7 +350,9 @@ class CollectionRunTest(unittest.TestCase):
                 attempts.append((card_id, enter_visually_complete))
                 return CollectionCardSelectionResult(
                     CollectionCardSelectionOutcome.FAILED,
-                    NavigationResult(False, ScreenState.UNKNOWN, "failed"),
+                    NavigationResult(False, ScreenState.UNKNOWN, (
+                        "入场遭遇战退出超时" if len(attempts) == 1 else "未确认安全返回路径"
+                    )),
                 )
 
             navigator = SimpleNamespace(
@@ -249,7 +365,8 @@ class CollectionRunTest(unittest.TestCase):
 
         self.assertFalse(result.success)
         self.assertFalse(result.partial)
-        self.assertIn("未能进入卡带 Q_sp1：failed", result.message)
+        self.assertIn("未能进入卡带 Q_sp1：入场遭遇战退出超时", result.message)
+        self.assertEqual(1, result.message.count("未确认安全返回路径"))
         self.assertIn("返回主页失败", result.message)
         self.assertEqual([("Q_sp1", False)] * 3, attempts)
 
@@ -395,6 +512,7 @@ class CollectionRunTest(unittest.TestCase):
                 ("actions", tuple(action.name for action in BATTLE_ACTIONS)),
                 ("quick",),
                 ("inspect", "Q_sp1"),
+                ("select", "Q_sp2", True),
             ],
             events,
         )
@@ -403,7 +521,7 @@ class CollectionRunTest(unittest.TestCase):
         self.assertEqual(14, progress.state.daily_suppressions)
         self.assertTrue(progress.state.card_verified("Q_sp1"))
 
-    def test_collection_never_starts_a_card_that_cannot_fit_enabled_actions(self):
+    def test_collection_rechecks_quota_without_casts_when_card_cannot_fit_enabled_actions(self):
         for action, count, reserved in (
             ("吸收", (19, 21), False), ("压制", (74, 75), False), ("压制", (73, 75), True),
         ):
@@ -427,15 +545,16 @@ class CollectionRunTest(unittest.TestCase):
                     info_set=lambda *_args: None,
                 )
                 navigator = SimpleNamespace(
-                    select_collection_card=Mock(side_effect=AssertionError(
-                        "an incomplete card must not be started",
+                    select_collection_card=Mock(return_value=CollectionCardSelectionResult(
+                        CollectionCardSelectionOutcome.ENTERED,
+                        NavigationResult(True, ScreenState.SANDBOX),
                     )),
                 )
                 result = Collector(task, object(), navigator, progress).run((CARD_BY_ID["Q_sp1"],))
                 self.assertTrue(result.success)
                 self.assertTrue(result.depleted)
                 self.assertEqual(0, result.completed_submaps)
-                navigator.select_collection_card.assert_not_called()
+                navigator.select_collection_card.assert_called_once()
                 progress.load()
                 self.assertEqual(
                     {action: 3 if action == "吸收" else 2}, progress.state.depleted_requirements,
@@ -515,7 +634,7 @@ class CollectionRunTest(unittest.TestCase):
                 result = collector.run()
 
         self.assertTrue(result.success)
-        self.assertEqual([("Q_sp14", False)], selected)
+        self.assertEqual([("Q_sp14", False), ("Q_sp15", True)], selected)
         self.assertEqual(
             {target.key for target in CARD_BY_ID["Q_sp14"].targets},
             progress.state.completed_targets("Q_sp14"),
@@ -792,6 +911,31 @@ class CollectionRunTest(unittest.TestCase):
                     )
                     self.assertTrue(progress.state.card_verified(card_id))
 
+    def test_route_failure_preserves_destination_and_recovery_errors(self):
+        card = CARD_BY_ID["Q_sp5"]
+        navigator = SimpleNamespace(
+            current_collection_target=lambda _: card.targets[0].key,
+            prepare_collection_main_area=Mock(return_value=NavigationResult(
+                False, ScreenState.AREA_MAP, "箱庭恢复未确认",
+            )),
+        )
+        collector = Collector(
+            SimpleNamespace(info_set=Mock()), object(), navigator, SimpleNamespace(),
+        )
+        collector._go_to_collection_target = Mock(return_value=NavigationResult(
+            False, ScreenState.AREA_MAP, "传送页目标未找到",
+        ))
+        result, depleted = collector._collect_card_targets(
+            card, set(), {card.targets[1].key}, ("吸收",), (), recovery_only=True,
+        )
+        self.assertFalse(result.success)
+        self.assertFalse(depleted)
+        self.assertIn(f"前往{card.targets[1].title}失败：传送页目标未找到", result.message)
+        self.assertIn("回起点失败：箱庭恢复未确认", result.message)
+        navigator.prepare_collection_main_area.assert_called_once_with(
+            card.card_id, via_hunting_ground=True,
+        )
+
     def test_resumed_route_passes_through_the_completed_middle_map(self):
         card = CARD_BY_ID["Q_sp14"]
         navigator = SimpleNamespace(
@@ -810,6 +954,270 @@ class CollectionRunTest(unittest.TestCase):
 
 
 class CollectorSkillTest(unittest.TestCase):
+    def setUp(self):
+        self._layout_check = Collector._check_collection_skill_layout
+        layout = patch.object(Collector, "_check_collection_skill_layout", return_value=None)
+        layout.start()
+        self.addCleanup(layout.stop)
+
+    def test_collection_layout_checks_all_slots_before_actions_and_requires_two_frames(self):
+        source = cv2.imread(str(
+            Path(__file__).resolve().parents[1]
+            / "tests/fixtures/map_trade/video_fhd/story_sandbox_ready.png"
+        ))
+        swapped = source.copy()
+        a, b = (ACTION_SLOT_CENTERS_REFERENCE[key] for key in ("summon", "subdue"))
+        radius = 40
+        first = source[a[1]-radius:a[1]+radius, a[0]-radius:a[0]+radius].copy()
+        second = source[b[1]-radius:b[1]+radius, b[0]-radius:b[0]+radius].copy()
+        swapped[a[1]-radius:a[1]+radius, a[0]-radius:a[0]+radius] = second
+        swapped[b[1]-radius:b[1]+radius, b[0]-radius:b[0]+radius] = first
+        for height in (720, 1080):
+            for scenario in ("normal", "swapped", "transient", "unknown"):
+                with self.subTest(height=height, scenario=scenario):
+                    base = np.zeros_like(source) if scenario == "unknown" else source
+                    frames = iter(cv2.resize(f, (height * 16 // 9, height)) for f in (
+                        swapped if scenario in {"swapped", "transient"} else base,
+                        swapped if scenario == "swapped" else base,
+                    ))
+                    task = SimpleNamespace(config={}, info_set=Mock(), sleep=Mock())
+                    vision = Vision(task)
+                    vision.capture = lambda: next(frames)
+                    vision.click_client = Mock()
+                    collector = Collector(task, vision, SimpleNamespace(
+                        wait_for_collection_field=lambda frame: frame,
+                    ), SimpleNamespace())
+                    if scenario == "swapped":
+                        with self.assertRaisesRegex(RuntimeError, "第3号槽"):
+                            self._layout_check(collector)
+                    else:
+                        self._layout_check(collector)
+                    vision.click_client.assert_not_called()
+
+    def test_missing_search_never_clicks_empty_slot_but_running_search_is_reused(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        for running in (False, True):
+            with self.subTest(running=running):
+                vision = SimpleNamespace(click_client=Mock())
+                collector = Collector(
+                    SimpleNamespace(config={}, sleep=Mock()), vision, SimpleNamespace(),
+                    SimpleNamespace(),
+                )
+                collector._reuse_recent_search = Mock(return_value=None)
+                collector._open_skill_menu = Mock(return_value=True)
+                collector._search_running = Mock(return_value=running)
+                collector._report_icon_detection = Mock()
+                collector._detect_action_icon = Mock(return_value=(frame, ActionIconDetection(
+                    ActionIconState.ABSENT, MatchResult(-1, (0, 0), (0, 0)),
+                )))
+                result = collector._ensure_search(
+                    card_id="Q_sp1", map_role=CollectionMapRole.MAIN_AREA,
+                )
+                if running:
+                    self.assertIsNone(result)
+                else:
+                    self.assertFalse(result.completed)
+                    self.assertIn("配置探查", result.message)
+                vision.click_client.assert_not_called()
+
+    def test_fresh_run_reconciles_leading_hud_before_checking_pending_actions(self):
+        for scenario in (
+            "fresh", "fresh_separator", "continuous", "lower",
+            "capacity_conflict", "unstable", "bare",
+        ):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as directory:
+                progress = ProgressStore(Path(directory) / "progress.json")
+                progress.load()
+                progress.reconcile_pending("吸收", (8, 21))
+                progress.arm_action("Q_sp3", "battle_area_2", "吸收", baseline=(8, 21))
+                progress.mark_action_clicked("Q_sp3", "battle_area_2", "吸收")
+                progress.mark_action_local_done("Q_sp3", "battle_area_2", "吸收", pending=True)
+                texts = cycle(("10/21", "?", "?") if scenario == "unstable" else (
+                    "7/21" if scenario == "lower" else
+                    "10/30" if scenario == "capacity_conflict" else
+                    "10Y21" if scenario == "fresh_separator" else
+                    "1021" if scenario == "bare" else "10/21",
+                ))
+                collector = Collector(
+                    SimpleNamespace(config={}, sleep=Mock(), info_set=Mock()),
+                    SimpleNamespace(capture=lambda: None, ocr_text=lambda *a, **k: next(texts)),
+                    SimpleNamespace(), progress,
+                )
+                if scenario == "continuous":
+                    collector._count_actions_seen.add("吸收")
+                before, failure = collector._prepare_before_click(
+                    ABSORB_ACTION, SimpleNamespace(state=ActionIconState.AVAILABLE),
+                    card_id="Q_sp4", map_role=CollectionMapRole.MAIN_AREA,
+                )
+                progress.load()
+                if scenario.startswith("fresh"):
+                    self.assertIsNone(failure)
+                    self.assertEqual((10, 21), before)
+                    self.assertEqual((10, 21), progress.trusted_action_baseline("吸收"))
+                    self.assertEqual(0, progress.pending_count("吸收"))
+                else:
+                    self.assertIsNone(before)
+                    self.assertIsNotNone(failure)
+                    self.assertEqual((8, 21), progress.trusted_action_baseline("吸收"))
+                    self.assertEqual(1, progress.pending_count("吸收"))
+                self.assertIsNone(progress.get_action_record("Q_sp4", "main_area", "吸收"))
+                self.assertFalse(progress.state.completed_targets("Q_sp4"))
+
+    def test_dynamic_skill_capacity_updates_from_full_fractions_and_casts_once(self):
+        for action in BATTLE_ACTIONS:
+            for limit in (30, 45, 75, 130):
+                with self.subTest(action=action.name, limit=limit):
+                    collector, clicks, _, progress = self._skill_collector(
+                        {action.icon.name: ActionIconState.AVAILABLE}, {},
+                    )
+                    progress.reconcile_pending(action.name, (5, 40))
+                    collector.vision.ocr_text = lambda *a, **k: f"{5 + len(clicks)}/{limit}"
+                    collector._read_count_window = Collector._read_count_window.__get__(collector)
+                    first = collector._use_action(
+                        action, card_id="Q_sp1", map_role=CollectionMapRole.BATTLE_AREA_1,
+                    )
+                    self.assertTrue(first.completed, first.message)
+                    self.assertEqual(1, len(clicks))
+                    self.assertEqual((6, limit), progress.trusted_action_baseline(action.name))
+                    progress.load()
+                    self.assertEqual((6, limit), progress.trusted_action_baseline(action.name))
+                    self.assertTrue(collector._use_action(
+                        action, card_id="Q_sp1", map_role=CollectionMapRole.BATTLE_AREA_1,
+                    ).completed)
+                    self.assertEqual(1, len(clicks))
+
+    def test_capacity_change_rejects_conflict_regression_and_unresolved_consumption(self):
+        for mode in ("scale_conflict", "bare_new", "stale_used",
+                     "armed", "clicked", "pending", "pinned_post"):
+            with self.subTest(mode=mode):
+                collector, clicks, _, progress = self._skill_collector(
+                    {SUPPRESS_ACTION.icon.name: ActionIconState.AVAILABLE}, {},
+                )
+                progress.reconcile_pending("压制", (5, 40))
+                if mode in {"armed", "clicked", "pending"}:
+                    progress.arm_action("Q_sp2", "battle_area_1", "压制", baseline=(5, 40))
+                    if mode != "armed":
+                        progress.mark_action_clicked("Q_sp2", "battle_area_1", "压制")
+                    if mode == "pending":
+                        progress.mark_action_local_done("Q_sp2", "battle_area_1", "压制",
+                                                       pending=True)
+                def ocr(*args, **kwargs):
+                    if (
+                        mode == "scale_conflict"
+                        and kwargs["ocr_scale"] == SKILL_OCR_FALLBACK_UPSCALE
+                    ):
+                        return "5/80"
+                    if mode == "bare_new":
+                        return "575"
+                    return "4/75" if mode == "stale_used" else "5/75"
+                collector.vision.ocr_text = ocr
+                collector._read_count_window = Collector._read_count_window.__get__(collector)
+                if mode == "pinned_post":
+                    observed = collector._read_count_window(
+                        SUPPRESS_ACTION, expected_used=5, expected_limit=40,
+                    )
+                    self.assertIsNone(observed.count)
+                else:
+                    detection = collector.action_icons.detect(None, SUPPRESS_ACTION.icon)
+                    before, failure = collector._prepare_before_click(
+                        SUPPRESS_ACTION, detection,
+                        card_id="Q_sp1", map_role=CollectionMapRole.BATTLE_AREA_1,
+                    )
+                    self.assertIsNone(before)
+                    self.assertIsNotNone(failure)
+                self.assertEqual((5, 40), progress.trusted_action_baseline("压制"))
+                self.assertEqual([], clicks)
+                self.assertIsNone(progress.get_action_record("Q_sp1", "battle_area_1", "压制"))
+
+    def test_summon_suppression_prepares_quotas_then_clicks_before_settlement(self):
+        for scenario in ("normal", "encounter", "quota", "unresolved", "failed_feedback"):
+            with self.subTest(scenario=scenario):
+                collector, clicks, _statuses, progress = self._skill_collector(
+                    {action.icon.name: ActionIconState.AVAILABLE for action in BATTLE_ACTIONS},
+                    {
+                        "召集": ((0, 21), (1, 21)),
+                        "压制": ((21, 21),) if scenario == "quota" else ((0, 21), (1, 21)),
+                    },
+                )
+                role = CollectionMapRole.BATTLE_AREA_1
+                if scenario == "unresolved":
+                    progress.reconcile_pending("压制", (0, 21))
+                    progress.arm_action("Q_sp1", role, "压制", baseline=(0, 21))
+                events = []
+                count = collector._read_count_window
+                feedback = collector._read_action_feedback
+                capture = collector._capture_skill_field
+                click = collector.vision.click_client
+
+                def read_count(action, *args, **kwargs):
+                    stage = "post" if kwargs.get("allow_single") else "prepare"
+                    events.append((stage, action.name))
+                    return count(action, *args, **kwargs)
+
+                def read_feedback(action):
+                    events.append(("feedback", action.name))
+                    result = feedback(action)
+                    if scenario == "failed_feedback" and action is SUMMON_ACTION:
+                        return SkillFeedbackObservation("无可召集的战场怪物", "failure")
+                    return result
+
+                def click_client(*args, **kwargs):
+                    self.assertIn(("prepare", "召集"), events)
+                    self.assertIn(("prepare", "压制"), events)
+                    if len(clicks) == 1:
+                        self.assertNotIn(("post", "召集"), events)
+                        record = progress.get_action_record("Q_sp1", role, "召集")
+                        self.assertEqual("clicked", record["state"])
+                    return click(*args, **kwargs)
+
+                recovered = []
+                def capture_field():
+                    if scenario == "encounter" and len(clicks) == 1 and not recovered:
+                        recovered.append(True)
+                        collector._skill_field_generation += 1
+                        # Recovery must invalidate both icon evidence and the prepared quota.
+                        frame, _ = capture()
+                        return frame, True
+                    return capture()
+
+                collector._open_skill_menu = Mock(return_value=True)
+                collector._read_count_window = read_count
+                collector._read_action_feedback = read_feedback
+                collector._capture_skill_field = capture_field
+                collector.vision.click_client = click_client
+                if scenario == "encounter":
+                    # Suppression must obtain a new baseline after returning from battle.
+                    count_calls = [0]
+                    original_count = collector._read_count_window
+                    def repeated_suppress_count(action, *args, **kwargs):
+                        if action is SUPPRESS_ACTION and not kwargs.get("allow_single"):
+                            count_calls[0] += 1
+                            if count_calls[0] == 2:
+                                events.append(("prepare", action.name))
+                                return CountWindowObservation((0, 21), True)
+                        return original_count(action, *args, **kwargs)
+                    collector._read_count_window = repeated_suppress_count
+                result = collector._use_actions(
+                    (SUMMON_ACTION, SUPPRESS_ACTION), card_id="Q_sp1", map_role=role,
+                )
+                self.assertEqual(scenario in {"normal", "encounter"}, result.completed)
+                self.assertEqual(
+                    2 if result.completed else int(scenario == "failed_feedback"), len(clicks),
+                )
+                if result.completed:
+                    self.assertLess(
+                        events.index(("feedback", "压制")), events.index(("post", "召集")),
+                    )
+                    again = collector._use_actions(
+                        (SUMMON_ACTION, SUPPRESS_ACTION), card_id="Q_sp1", map_role=role,
+                    )
+                    self.assertTrue(again.completed)
+                    self.assertEqual(2, len(clicks))
+                    self.assertEqual(1, progress.effective_used("召集"))
+                    self.assertEqual(1, progress.effective_used("压制"))
+                if scenario == "encounter":
+                    self.assertEqual(2, count_calls[0])
+
     def test_missed_press_retries_only_with_a_stable_available_icon_and_unchanged_count(self):
         cases = (
             (None, True, True, True),
@@ -835,7 +1243,10 @@ class CollectorSkillTest(unittest.TestCase):
                 used = ActionIconDetection(ActionIconState.USED, match, stable=True, sample_count=2)
                 task = SimpleNamespace(config={}, sleep=Mock(), info_set=Mock())
                 vision = SimpleNamespace(capture=lambda: frame, click_client=Mock())
-                collector = Collector(task, vision, SimpleNamespace(), progress)
+                collector = Collector(
+                    task, vision, SimpleNamespace(wait_for_collection_field=lambda frame: frame),
+                    progress,
+                )
                 collector._open_skill_menu = Mock(return_value=True)
                 collector._detect_action_icon = Mock(
                     side_effect=[
@@ -845,6 +1256,7 @@ class CollectorSkillTest(unittest.TestCase):
                         (frame, used),
                     ]
                 )
+                collector.action_icons = SimpleNamespace(detect=Mock(return_value=available))
                 windows = iter(
                     [
                         ((0, 21), True),
@@ -882,12 +1294,51 @@ class CollectorSkillTest(unittest.TestCase):
         collector = Collector(SimpleNamespace(sleep=Mock()), object(), object(), object())
         collector._reuse_recent_search = Mock(return_value=None)
         collector._open_skill_menu = Mock(return_value=True)
-        collector._search_running = Mock(side_effect=[False, True])
+        collector._search_running = Mock(side_effect=[False, False, False, True])
         collector._start_search = Mock(return_value=SkillExecutionResult(False))
         self.assertIsNone(
             collector._ensure_search(card_id="Q_sp1", map_role=CollectionMapRole.MAIN_AREA)
         )
         collector._start_search.assert_called_once()
+
+    def test_search_countdown_misread_recovers_without_warning_or_skill_click(self):
+        for texts, recovered in (
+            (["TTO", "107"], True),
+            (["TTO", "", "TTO", "107"], True),
+            (["TTO", "", "TTO", ""], False),
+        ):
+            with self.subTest(texts=texts):
+                task = SimpleNamespace(
+                    config={}, sleep=Mock(), info_set=Mock(), log_info=Mock(),
+                    log_warning=Mock(), operate_click=Mock(),
+                )
+                frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+                vision = SimpleNamespace(
+                    capture=Mock(return_value=frame), ocr_text=Mock(side_effect=texts),
+                    click_client=Mock(),
+                )
+                collector = Collector(task, vision, SimpleNamespace(
+                    wait_for_collection_field=lambda frame: frame,
+                ), object())
+                collector._check_collection_skill_layout = Mock()
+                collector.action_icons = SimpleNamespace(detect=lambda _frame, icon:
+                    ActionIconDetection(
+                        ActionIconState.ABSENT if icon is SEARCH_ICON
+                        else ActionIconState.AVAILABLE,
+                        MatchResult(0.99, (100, 100), (40, 40)),
+                    ))
+                result = collector._ensure_search(
+                    card_id="Q_sp15", map_role=CollectionMapRole.BATTLE_AREA_2,
+                )
+                if recovered:
+                    self.assertIsNone(result)
+                else:
+                    self.assertFalse(result.completed)
+                    self.assertIn("未确认采集技能栏", result.message)
+                task.log_warning.assert_not_called()
+                task.operate_click.assert_not_called()
+                vision.click_client.assert_not_called()
+                self.assertEqual(len(texts), vision.ocr_text.call_count)
 
     def _skill_collector(self, states, counts):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -967,7 +1418,7 @@ class CollectorSkillTest(unittest.TestCase):
         collector._read_action_feedback = feedback
         return collector, clicks, statuses, progress
 
-    def test_summon_missing_post_icon_requires_stable_increment_and_success_to_continue(self):
+    def test_summon_missing_post_icon_requires_stable_increment_and_success_to_settle(self):
         cases = (
             ((2, 21), True, "success", True),
             ((2, 21), False, "success", False),
@@ -1021,13 +1472,16 @@ class CollectorSkillTest(unittest.TestCase):
                     map_role=CollectionMapRole.BATTLE_AREA_2,
                 )
                 self.assertEqual(expected, result.completed)
-                self.assertEqual(3 if expected else 2, len(clicks))
+                self.assertEqual(3 if outcome == "success" else 2, len(clicks))
                 self.assertIn(("压制执行反馈", "-"), statuses)
                 record = progress.get_action_record(
                     "Q_sp1", CollectionMapRole.BATTLE_AREA_2, "压制"
                 )
-                if expected:
+                if outcome == "success":
                     self.assertEqual(CollectionActionState.SETTLED.value, record["state"])
+                else:
+                    self.assertIsNone(record)
+                if expected:
                     for action in BATTLE_ACTIONS:
                         resumed = collector._use_action(
                             action,
@@ -1037,8 +1491,10 @@ class CollectorSkillTest(unittest.TestCase):
                         self.assertTrue(resumed.completed)
                     self.assertEqual(3, len(clicks))
                 else:
-                    self.assertIsNone(record)
-                    self.assertNotIn("压制", collector._last_skill_observations)
+                    summon_record = progress.get_action_record(
+                        "Q_sp1", CollectionMapRole.BATTLE_AREA_2, "召集",
+                    )
+                    self.assertNotEqual(CollectionActionState.SETTLED.value, summon_record["state"])
                     if outcome == "failure":
                         self.assertEqual((1, 21), progress.trusted_action_baseline("召集"))
                         self.assertFalse(result.depleted)
@@ -1115,7 +1571,10 @@ class CollectorSkillTest(unittest.TestCase):
             info_set=lambda *_args: None,
         )
         vision = SimpleNamespace(capture=lambda: frame)
-        collector = Collector(task, vision, SimpleNamespace(), SimpleNamespace())
+        collector = Collector(
+            task, vision, SimpleNamespace(wait_for_collection_field=lambda frame: frame),
+            SimpleNamespace(),
+        )
         collector.action_icons = SimpleNamespace(
             detect=lambda *_args: next(detections),
         )
@@ -1259,13 +1718,24 @@ class CollectorSkillTest(unittest.TestCase):
             )
         )
 
-    def test_suppress_feedback_accepts_video_wording_with_or_without_de(self):
+    def test_action_feedback_distinguishes_stacked_success_and_continuous_failure(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        for text in (
-            "已制伏地图内所有怪物。",
-            "已制伏地图内所有的怪物。",
+        for action, text, expected in (
+            (SUPPRESS_ACTION, "已制伏地图内所有怪物。", "success"),
+            (SUPPRESS_ACTION, "已制伏地图内所有的怪物。", "success"),
+            (SUPPRESS_ACTION, "已制伏地图内所有怪物 升星天赋技能后，可获得经验值。", "success"),
+            (SUPPRESS_ACTION, "召集带奖励的战场怪物。 已制伏地图内所有怪物 "
+             "升星天赋技能后，可获得经验值。", "success"),
+            (SUMMON_ACTION, "召集带奖励的战场怪物。升星天赋技能后，可获得经验值。", "success"),
+            (SUPPRESS_ACTION, "没有可制伏的怪物。", "failure"),
+            (SUPPRESS_ACTION, "已制伏地图内所有怪物。没有可制伏的怪物。", "failure"),
+            (SUPPRESS_ACTION, "没有可制服的怪物。", "failure"),
+            (SUMMON_ACTION, "无可召集的战场怪物。", "failure"),
+            (SUMMON_ACTION, "无 可召集的战场怪物。", "failure"),
+            (ABSORB_ACTION, "周围没有可以吸收的拾取勿。", "failure"),
+            (ABSORB_ACTION, "周围没有可以吸收拾取物。", "failure"),
         ):
-            with self.subTest(text=text):
+            with self.subTest(action=action.name, text=text):
                 collector = Collector(
                     SimpleNamespace(
                         config={},
@@ -1281,9 +1751,50 @@ class CollectorSkillTest(unittest.TestCase):
                     SimpleNamespace(),
                 )
 
-                feedback = collector._read_action_feedback(SUPPRESS_ACTION)
+                feedback = collector._read_action_feedback(action)
 
-                self.assertEqual("success", feedback.outcome)
+                self.assertEqual(expected, feedback.outcome)
+
+    def test_stacked_feedback_settles_consumption_and_resumes_blocked_used_without_recast(self):
+        role = CollectionMapRole.BATTLE_AREA_2
+        for action, before, text in (
+            (SUPPRESS_ACTION, (9, 80), "召集带奖励的战场怪物。已制伏地图内所有怪物。"
+             "升星天赋技能后，可获得经验值。"),
+            (SUMMON_ACTION, (1, 18), "召集带奖励的战场怪物。升星天赋技能后，可获得经验值。"),
+        ):
+            for blocked in (False, True):
+                with self.subTest(action=action.name, blocked=blocked):
+                    collector, clicks, _statuses, progress = self._skill_collector(
+                        {action.icon.name: ActionIconState.USED}, {},
+                    )
+                    progress.arm_action("Q_sp19", role, action.name, baseline=before)
+                    progress.mark_action_clicked("Q_sp19", role, action.name)
+                    if blocked:
+                        progress.mark_action_blocked("Q_sp19", role, action.name, text)
+                        result = collector._use_action(action, card_id="Q_sp19", map_role=role)
+                    else:
+                        collector.vision.ocr_text = lambda *_args, **_kwargs: text
+                        feedback = Collector._read_action_feedback(collector, action)
+                        self.assertEqual("success", feedback.outcome)
+                        after = (before[0] + 1, before[1])
+                        collector._read_count_window = Mock(return_value=CountWindowObservation(
+                            after, True,
+                        ))
+                        used = collector.action_icons.detect(
+                            collector.vision.capture(), action.icon,
+                        )
+                        result = collector._finish_after_click(
+                            action, card_id="Q_sp19", map_role=role, before=before,
+                            detection=replace(used, state=ActionIconState.AVAILABLE),
+                            post_detection=used, feedback=feedback,
+                        )
+                        self.assertEqual(after, progress.trusted_action_baseline(action.name))
+                    self.assertTrue(result.completed, result.message)
+                    self.assertTrue(progress.weekly_action_complete("Q_sp19", role, action.name))
+                    self.assertEqual([], clicks)
+                    self.assertEqual(1, progress.get_action_record("Q_sp19", role, action.name)[
+                        "attempts"
+                    ])
 
     def test_absorb_failure_feedback_has_precedence_over_positive_text(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -1425,7 +1936,7 @@ class CollectorSkillTest(unittest.TestCase):
             stable=True,
             sample_count=2,
         )
-        detections = iter((available, used))
+        detections = iter((available, available, used))
         count_values = iter(((0, 21), (1, 21)))
         task = SimpleNamespace(
             config={},
@@ -1443,7 +1954,10 @@ class CollectorSkillTest(unittest.TestCase):
             lambda: datetime(2026, 8, 11, 12, tzinfo=UTC_PLUS_8),
         )
         progress.load()
-        collector = Collector(task, vision, SimpleNamespace(), progress)
+        collector = Collector(
+            task, vision, SimpleNamespace(wait_for_collection_field=lambda frame: frame),
+            progress,
+        )
         collector.action_icons = SimpleNamespace(detect=lambda _frame, _icon: next(detections))
 
         def read_count(action, _detection=None, **_kwargs):
@@ -1579,7 +2093,7 @@ class CollectorSkillTest(unittest.TestCase):
                 capture=lambda: frame,
                 click_client=lambda center, shape, after_sleep=0: clicks.append(center),
             ),
-            SimpleNamespace(),
+            SimpleNamespace(wait_for_collection_field=lambda frame: frame),
             SimpleNamespace(),
         )
         unknown = ActionIconDetection(
@@ -1637,7 +2151,10 @@ class CollectorSkillTest(unittest.TestCase):
             match=lambda *_args: MatchResult(-1.0, (0, 0), (0, 0)),
             passes=lambda *_args: False,
         )
-        collector = Collector(task, vision, SimpleNamespace(), SimpleNamespace())
+        collector = Collector(
+            task, vision, SimpleNamespace(wait_for_collection_field=lambda frame: frame),
+            SimpleNamespace(),
+        )
         collector._open_skill_menu = lambda *_args, **_kwargs: True
         collector.action_icons = SimpleNamespace(detect=lambda *_args: available)
 
@@ -1664,7 +2181,7 @@ class CollectorSkillTest(unittest.TestCase):
                 info_set=lambda *_args: None,
             ),
             SimpleNamespace(),
-            SimpleNamespace(),
+            SimpleNamespace(wait_for_collection_field=lambda frame: frame),
             SimpleNamespace(),
         )
         collector._open_skill_menu = lambda *_args, **_kwargs: False
@@ -1675,7 +2192,7 @@ class CollectorSkillTest(unittest.TestCase):
         )
 
         self.assertIsInstance(result, SkillExecutionResult)
-        self.assertIn("未确认安全区技能栏", result.message)
+        self.assertIn("未确认采集技能栏", result.message)
 
     def test_search_waits_after_feedback_match_before_countdown(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -1706,7 +2223,10 @@ class CollectorSkillTest(unittest.TestCase):
             match=lambda *_args: MatchResult(-1.0, (0, 0), (0, 0)),
             passes=lambda *_args: False,
         )
-        collector = Collector(task, vision, SimpleNamespace(), SimpleNamespace())
+        collector = Collector(
+            task, vision, SimpleNamespace(wait_for_collection_field=lambda frame: frame),
+            SimpleNamespace(),
+        )
         collector._open_skill_menu = lambda *_args, **_kwargs: True
         collector.action_icons = SimpleNamespace(detect=lambda *_args: next(detections))
 
@@ -1746,7 +2266,7 @@ class CollectorSkillTest(unittest.TestCase):
                     or ("在48秒内确认隐藏物品的位置。" if name == "探查执行反馈" else "48")
                 ),
             ),
-            SimpleNamespace(),
+            SimpleNamespace(wait_for_collection_field=lambda frame: frame),
             SimpleNamespace(),
         )
         collector._open_skill_menu = lambda *_args, **_kwargs: True
@@ -1981,8 +2501,8 @@ class CollectorSkillTest(unittest.TestCase):
             MatchResult(0.98, (960, 420), (52, 48), 0.95, 0.92),
             0.65,
         )
-        frames = iter((before_frame, before_frame, after_frame, after_frame))
-        detections = iter((before, before, after, after))
+        frames = iter((before_frame, before_frame, before_frame, after_frame, after_frame))
+        detections = iter((before, before, before, after, after))
         count_detections = []
         clicks = []
         progress = ProgressStore(
@@ -2000,7 +2520,7 @@ class CollectorSkillTest(unittest.TestCase):
                 capture=lambda: next(frames),
                 click_client=lambda *args, **kwargs: clicks.append((args, kwargs)),
             ),
-            SimpleNamespace(),
+            SimpleNamespace(wait_for_collection_field=lambda frame: frame),
             progress,
         )
         collector.action_icons = SimpleNamespace(detect=lambda *_args: next(detections))
@@ -2091,7 +2611,7 @@ class CollectorSkillTest(unittest.TestCase):
                 log_warning=lambda *_args: None,
             ),
             vision,
-            SimpleNamespace(),
+            SimpleNamespace(wait_for_collection_field=lambda frame: frame),
             SimpleNamespace(),
         )
         collector._open_skill_menu = Mock(return_value=True)
@@ -2141,6 +2661,7 @@ class CollectorSkillTest(unittest.TestCase):
             operate_click=lambda x, y, after_sleep=0: group_clicks.append((x, y, after_sleep)),
             sleep=lambda *_args: None,
             log_warning=lambda *_args: None,
+            log_info=lambda *_args: None,
             info_set=lambda *_args: None,
         )
         vision = SimpleNamespace(
@@ -2241,6 +2762,272 @@ class CollectorSkillTest(unittest.TestCase):
         vision.click_client.assert_not_called()
         collector.action_icons.detect.assert_not_called()
 
+    def test_action_sampling_discards_pre_encounter_evidence_and_rechecks_map(self):
+        card = CARD_BY_ID["Q_sp1"]
+        target = card.targets[1]
+        for correct_map in (True, False):
+            with self.subTest(correct_map=correct_map):
+                field = np.full((8, 8, 3), 100, dtype=np.uint8)
+                battle = np.zeros_like(field)
+                restored = np.full_like(field, 140)
+                current = [field]
+                seen = []
+
+                def wait(frame):
+                    if frame is battle:
+                        current[0] = restored
+                        return restored
+                    return frame
+
+                def detect(frame, _icon):
+                    self.assertIsNot(frame, battle)
+                    seen.append(frame)
+                    return ActionIconDetection(
+                        ActionIconState.AVAILABLE,
+                        MatchResult(0.99, (100 if frame is field else 200, 100), (40, 40)),
+                    )
+
+                collector = Collector(
+                    SimpleNamespace(config={}, info_set=Mock(), sleep=lambda _s: (
+                        current.__setitem__(0, battle) if current[0] is field else None
+                    )),
+                    SimpleNamespace(capture=lambda: current[0], click_client=Mock()),
+                    SimpleNamespace(
+                        wait_for_collection_field=wait,
+                        current_collection_target=Mock(
+                            return_value=target.key if correct_map else None,
+                        ),
+                    ),
+                    SimpleNamespace(),
+                )
+                collector._collection_target = (card, target)
+                collector.action_icons = SimpleNamespace(detect=detect)
+                if correct_map:
+                    frame, detection = collector._detect_action_icon(
+                        ABSORB_ICON, require_stable=True,
+                    )
+                    self.assertIs(restored, frame)
+                    self.assertTrue(detection.stable)
+                    self.assertEqual(2, sum(frame is restored for frame in seen))
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "目标地图未确认"):
+                        collector._detect_action_icon(ABSORB_ICON, require_stable=True)
+                collector.navigator.current_collection_target.assert_called_once_with(card)
+                collector.vision.click_client.assert_not_called()
+
+    def test_retreat_confirms_map_then_suppresses_before_resuming_skills(self):
+        for scenario in (
+            "ready", "known_quota", "used", "settled", "armed", "clicked_used",
+            "exhausted", "count_changed", "wrong_map", "disabled", "town", "click_error",
+            "upgraded_quota", "second_group", "switch_delayed", "switch_missing",
+            "black_before_switch", "battle_after_switch", "group_click_error",
+            "stop_switch", "finish_switch", "stop_sample", "finish_sample",
+        ):
+            with self.subTest(scenario=scenario):
+                collector, clicks, _status, progress = self._skill_collector(
+                    {SUPPRESS_ACTION.icon.name: (
+                        ActionIconState.USED if scenario in {"used", "clicked_used"}
+                        else ActionIconState.AVAILABLE
+                    )}, {},
+                )
+                card = CARD_BY_ID["Q_sp1"]
+                target = card.targets[0 if scenario == "town" else 1]
+                role = target.role
+                if scenario == "settled":
+                    progress.mark_action_preexisting_used(card.card_id, role, "压制")
+                if scenario in {"known_quota", "armed", "clicked_used", "upgraded_quota"}:
+                    progress.reconcile_pending(
+                        "压制", (0, 40 if scenario == "upgraded_quota" else 80),
+                    )
+                if scenario in {"armed", "clicked_used"}:
+                    progress.arm_action(card.card_id, role, "压制", baseline=(0, 80))
+                if scenario == "clicked_used":
+                    progress.mark_action_clicked(card.card_id, role, "压制")
+                battle = collector.vision.capture()
+                field = np.full_like(battle, 140)
+                current = [battle]
+                events = []
+                field_checks = []
+                selected_group = [2 if scenario in {
+                    "second_group", "switch_delayed", "switch_missing",
+                } else 1]
+                group_clicks = []
+                icon_reads = []
+
+                def wait(frame):
+                    field_checks.append(tuple(events))
+                    if frame is battle:
+                        current[0] = field
+                        return field
+                    return frame
+
+                def map_key(_card):
+                    events.append("map")
+                    return None if scenario == "wrong_map" else target.key
+
+                def select_group(x, y, after_sleep):
+                    self.assertEqual(["map"], events)
+                    self.assertEqual([()], field_checks)
+                    self.assertEqual((*SKILL_GROUP_RELATIVE_POINTS[1], 0.0), (x, y, after_sleep))
+                    events.append("group1")
+                    group_clicks.append((x, y, after_sleep))
+                    if scenario == "group_click_error":
+                        raise RuntimeError("group click interrupted")
+                    if scenario in {"stop_switch", "finish_switch"}:
+                        raise (TaskDisabledException if scenario == "stop_switch"
+                               else FinishedException)()
+                    selected_group[0] = 1
+
+                initial_detect = collector.action_icons.detect
+                def detect_icon(frame, icon):
+                    icon_reads.append(frame)
+                    if scenario in {"stop_sample", "finish_sample"}:
+                        raise (TaskDisabledException if scenario == "stop_sample"
+                               else FinishedException)()
+                    result = initial_detect(frame, icon)
+                    if selected_group[0] == 2 or scenario == "switch_missing" or (
+                        scenario == "switch_delayed" and len(icon_reads) == 1
+                    ):
+                        return replace(result, state=ActionIconState.ABSENT)
+                    return result
+
+                reads = []
+                def read_count(_action, _detection, **kwargs):
+                    self.assertIs(field, kwargs["frame"])
+                    self.assertEqual(["map", "group1"], events)
+                    reads.append(kwargs["ocr_scale"])
+                    if scenario == "count_changed" and len(reads) > 2:
+                        return (1, 80)
+                    return (80 if scenario == "exhausted" else 0, 80)
+
+                click = collector.vision.click_client
+                def click_client(*args, **kwargs):
+                    self.assertEqual(["map", "group1"], events)
+                    self.assertEqual([()], field_checks)
+                    self.assertEqual("armed", progress.get_action_record(
+                        card.card_id, role, "压制",
+                    )["state"])
+                    events.append("suppress")
+                    if scenario == "click_error":
+                        raise RuntimeError("click interrupted")
+                    click(*args, **kwargs)
+
+                collector._collection_target = (card, target)
+                collector._recovery_suppression_enabled = scenario != "disabled"
+                collector.vision.capture = lambda: current[0]
+                collector.navigator.wait_for_collection_field = wait
+                collector.navigator.current_collection_target = map_key
+                collector.navigator._black_frame = lambda _frame: scenario == "black_before_switch"
+                collector.navigator._field_battle_visible = lambda _frame: (
+                    scenario == "battle_after_switch" and bool(group_clicks)
+                )
+                collector.task.operate_click = select_group
+                collector.action_icons.detect = detect_icon
+                collector.vision.click_client = click_client
+                collector._read_count = read_count
+                collector._read_count_window = Mock(side_effect=AssertionError("slow window"))
+                collector.task.sleep = Mock(side_effect=AssertionError("preclick sleep"))
+                stop_error = {
+                    "stop_switch": TaskDisabledException, "finish_switch": FinishedException,
+                    "stop_sample": TaskDisabledException, "finish_sample": FinishedException,
+                }.get(scenario)
+                if stop_error is not None:
+                    with self.assertRaises(stop_error):
+                        collector._capture_skill_field()
+                elif scenario in {
+                    "armed", "exhausted", "count_changed", "wrong_map", "click_error",
+                    "switch_missing", "black_before_switch", "battle_after_switch",
+                    "group_click_error",
+                }:
+                    with self.assertRaises(RuntimeError):
+                        collector._capture_skill_field()
+                else:
+                    frame, recovered = collector._capture_skill_field()
+                    self.assertIs(field, frame)
+                    self.assertTrue(recovered)
+                if scenario in {
+                    "ready", "known_quota", "upgraded_quota", "second_group", "switch_delayed",
+                }:
+                    self.assertEqual(["map", "group1", "suppress"], events)
+                    self.assertEqual(1, len(clicks))
+                    record = progress.get_action_record(card.card_id, role, "压制")
+                    self.assertEqual("clicked", record["state"])
+                    self.assertEqual(2 if scenario == "known_quota" else 4, len(reads))
+                    # Re-entering recovery with an unconfirmed intent never repeats the click.
+                    collector.task.operate_click = Mock()
+                    with self.assertRaisesRegex(RuntimeError, "未决"):
+                        collector._suppress_after_retreat(
+                            field, card_id=card.card_id, map_role=role,
+                        )
+                    self.assertEqual(1, len(clicks))
+                    detect = collector.action_icons.detect
+                    collector.action_icons.detect = lambda frame, icon: replace(
+                        detect(frame, icon), state=ActionIconState.USED,
+                    )
+                    result = collector._use_action(
+                        SUPPRESS_ACTION, card_id=card.card_id, map_role=role,
+                    )
+                    self.assertTrue(result.completed)
+                    self.assertTrue(progress.weekly_action_complete(card.card_id, role, "压制"))
+                    self.assertEqual(1, len(clicks))
+                else:
+                    self.assertEqual([], clicks)
+                if scenario == "click_error":
+                    self.assertEqual("armed", progress.get_action_record(
+                        card.card_id, role, "压制",
+                    )["state"])
+                if scenario in {"used", "clicked_used"}:
+                    self.assertTrue(progress.weekly_action_complete(card.card_id, role, "压制"))
+                self.assertEqual(int(scenario not in {
+                    "settled", "wrong_map", "disabled", "town", "black_before_switch",
+                }), len(group_clicks))
+                if scenario == "switch_missing":
+                    self.assertEqual(3, len(icon_reads))
+                if scenario == "group_click_error" or stop_error is not None:
+                    self.assertIsNone(progress.get_action_record(card.card_id, role, "压制"))
+
+    def test_preclick_encounter_retries_with_fresh_counts_before_reserving(self):
+        for first_count in ((0, 21), None):
+            with self.subTest(first_count=first_count):
+                collector, clicks, _status, progress = self._skill_collector(
+                    {ABSORB_ICON.name: ActionIconState.AVAILABLE},
+                    {"吸收": (first_count, (0, 21), (1, 21))},
+                )
+                field = collector.vision.capture()
+                battle = np.ones_like(field)
+                restored = np.full_like(field, 120)
+                current = [field]
+                collector.vision.capture = lambda: current[0]
+                collector._open_skill_menu = Mock(return_value=True)
+                read_count = collector._read_count_window
+                reads = []
+
+                def count(*args, **kwargs):
+                    result = read_count(*args, **kwargs)
+                    reads.append(result)
+                    if len(reads) == 1:
+                        current[0] = battle
+                    return result
+
+                def wait(frame):
+                    if frame is battle:
+                        self.assertIsNone(progress.get_action_record("Q_sp1", "main_area", "吸收"))
+                        self.assertEqual([], clicks)
+                        current[0] = restored
+                        return restored
+                    return frame
+
+                collector._read_count_window = count
+                collector.navigator.wait_for_collection_field = wait
+                result = collector._use_actions(
+                    (ABSORB_ACTION,), card_id="Q_sp1", map_role=CollectionMapRole.MAIN_AREA,
+                )
+                self.assertTrue(result.completed, result.message)
+                self.assertEqual(1, len(clicks))
+                record = progress.get_action_record("Q_sp1", "main_area", "吸收")
+                self.assertEqual("settled", record["state"])
+                self.assertEqual(1, record["attempts"])
+
     def test_skill_menu_recovery_stops_after_all_three_groups(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         clicks = []
@@ -2332,6 +3119,7 @@ class CollectorSkillTest(unittest.TestCase):
             operate_click=lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep)),
             sleep=lambda *_args: None,
             log_warning=lambda *_args: None,
+            log_info=lambda *_args: None,
             info_set=lambda *_args: None,
         )
         collector = Collector(
@@ -2346,7 +3134,7 @@ class CollectorSkillTest(unittest.TestCase):
 
         self.assertFalse(result.completed)
         self.assertEqual(3, len(clicks))
-        self.assertIn("未确认安全区技能栏", result.message)
+        self.assertIn("未确认采集技能栏", result.message)
 
     def test_missing_action_after_menu_confirmation_never_uses_fixed_action_point(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -2370,7 +3158,7 @@ class CollectorSkillTest(unittest.TestCase):
         collector = Collector(
             task,
             SimpleNamespace(capture=lambda: frame),
-            SimpleNamespace(),
+            SimpleNamespace(wait_for_collection_field=lambda frame: frame),
             progress,
         )
         collector._open_skill_menu = lambda *_args, **_kwargs: True
@@ -2417,7 +3205,9 @@ class CollectorSkillTest(unittest.TestCase):
 
     def test_preclick_requires_stable_hud_count_and_persists_its_limit(self):
         for action, limit in zip(BATTLE_ACTIONS, (30, 28, 75), strict=True):
-            for scenario in ("stable", "unstable", "conflict", "cross_scale_conflict"):
+            for scenario in ("stable", "unstable", "conflict", "cross_scale_conflict",
+                             "separator_stable", "separator_unknown", "separator_single",
+                             "separator_limit_conflict"):
                 with (
                     self.subTest(action=action.name, scenario=scenario),
                     tempfile.TemporaryDirectory() as directory,
@@ -2429,10 +3219,18 @@ class CollectorSkillTest(unittest.TestCase):
                         progress.arm_action(
                             "Q_sp2", "battle_area_1", action.name, baseline=(0, limit - 5),
                         )
+                    elif scenario.startswith("separator_") and scenario != "separator_unknown":
+                        progress.reconcile_pending(action.name, (0, limit))
                     texts = cycle(
                         (f"0/{limit}",) * 3 if scenario != "unstable"
                         else (f"0/{limit}", f"0/{limit + 1}", f"0/{limit + 2}") * 2
                     )
+                    if scenario.startswith("separator_"):
+                        ocr_limit = limit + int(scenario == "separator_limit_conflict")
+                        texts = cycle(
+                            (f"0/{limit}", "?", "?") if scenario == "separator_single"
+                            else (f"0Y{ocr_limit}", f"0V{ocr_limit}", f"0y{ocr_limit}")
+                        )
                     collector = Collector(
                         SimpleNamespace(config={}, sleep=lambda *_: None, info_set=lambda *_: None),
                         SimpleNamespace(
@@ -2455,18 +3253,22 @@ class CollectorSkillTest(unittest.TestCase):
                     )
                     progress.load()
                     record = progress.get_action_record("Q_sp1", "battle_area_1", action.name)
-                    if scenario == "stable":
+                    if scenario in {"stable", "separator_stable"}:
                         self.assertIsNone(failure)
                         self.assertEqual((0, limit), before)
                         self.assertEqual((0, limit), progress.trusted_action_baseline(action.name))
-                        self.assertEqual([0, limit], record["baseline"])
-                        self.assertEqual(CollectionActionState.ARMED.value, record["state"])
+                        self.assertIsNone(record, "次数准备不能在最后一次场景检查前预占动作")
                     else:
                         self.assertIsNone(before)
                         self.assertFalse(failure.completed)
                         self.assertIsNone(record)
                         self.assertEqual(
-                            limit - 5 if scenario == "conflict" else None,
+                            limit - 5 if scenario == "conflict" else (
+                                limit if scenario in {
+                                    "separator_single", "separator_limit_conflict",
+                                }
+                                else None
+                            ),
                             progress.action_limit(action.name),
                         )
 
@@ -2495,7 +3297,7 @@ class CollectorSkillTest(unittest.TestCase):
             self.assertEqual((7, 21), before)
             self.assertIn(SKILL_OCR_FALLBACK_UPSCALE, scales)
             record = progress.get_action_record("Q_cp5", "main_area", "吸收")
-            self.assertEqual([7, 21], record["baseline"])
+            self.assertIsNone(record)
             self.assertEqual((7, 21), progress.trusted_action_baseline("吸收"))
 
     def test_transient_used_after_click_keeps_intent_unresolved(self):
@@ -2507,7 +3309,7 @@ class CollectorSkillTest(unittest.TestCase):
         available = collector.action_icons.detect(frame, ABSORB_ACTION.icon)
         used = ActionIconDetection(ActionIconState.USED, available.match)
         missing = ActionIconDetection(ActionIconState.ABSENT, available.match)
-        detections = iter((available, used, missing, used))
+        detections = iter((available, available, used, missing, used))
         collector.action_icons.detect = lambda *_args: next(detections)
         collector._read_action_feedback = lambda _action: SkillFeedbackObservation("", None)
 
@@ -2553,6 +3355,11 @@ class CollectorSkillTest(unittest.TestCase):
                         0.95,
                     ),
                     ActionIconDetection(
+                        ActionIconState.AVAILABLE,
+                        MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
+                        0.95,
+                    ),
+                    ActionIconDetection(
                         ActionIconState.USED,
                         MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
                         0.65,
@@ -2579,7 +3386,10 @@ class CollectorSkillTest(unittest.TestCase):
                 capture=lambda: frame,
                 click_client=lambda center, _shape, after_sleep=0: clicks.append(center),
             )
-            collector = Collector(task, vision, SimpleNamespace(), progress)
+            collector = Collector(
+                task, vision, SimpleNamespace(wait_for_collection_field=lambda frame: frame),
+                progress,
+            )
             collector.action_icons = SimpleNamespace(detect=lambda *_args: next(detections))
             count_values = iter(((0, 21), None))
             def read_count_window(action, detection, **_kwargs):
@@ -2625,6 +3435,11 @@ class CollectorSkillTest(unittest.TestCase):
                         0.95,
                     ),
                     ActionIconDetection(
+                        ActionIconState.AVAILABLE,
+                        MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
+                        0.95,
+                    ),
+                    ActionIconDetection(
                         ActionIconState.USED,
                         MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
                         0.65,
@@ -2651,7 +3466,7 @@ class CollectorSkillTest(unittest.TestCase):
                     capture=lambda: frame,
                     click_client=lambda center, _shape, after_sleep=0: clicks.append(center),
                 ),
-                SimpleNamespace(),
+                SimpleNamespace(wait_for_collection_field=lambda frame: frame),
                 progress,
             )
             collector.action_icons = SimpleNamespace(detect=lambda *_args: next(detections))
@@ -2703,7 +3518,7 @@ class CollectorSkillTest(unittest.TestCase):
                     capture=lambda: frame,
                     click_client=lambda *args, **kwargs: clicks.append((args, kwargs)),
                 ),
-                SimpleNamespace(),
+                SimpleNamespace(wait_for_collection_field=lambda frame: frame),
                 progress,
             )
             collector.action_icons = SimpleNamespace(detect=lambda *_args: used)
@@ -2744,7 +3559,7 @@ class CollectorSkillTest(unittest.TestCase):
                     sleep=lambda *_args: None,
                 ),
                 SimpleNamespace(capture=lambda: frame),
-                SimpleNamespace(),
+                SimpleNamespace(wait_for_collection_field=lambda frame: frame),
                 progress,
             )
             first.action_icons = SimpleNamespace(detect=lambda *_args: used)
@@ -2772,7 +3587,7 @@ class CollectorSkillTest(unittest.TestCase):
                 MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
                 0.95,
             )
-            detections = iter((available, available, used, used))
+            detections = iter((available, available, available, used, used))
             clicks = []
             second = Collector(
                 SimpleNamespace(
@@ -2784,7 +3599,7 @@ class CollectorSkillTest(unittest.TestCase):
                     capture=lambda: frame,
                     click_client=lambda center, _shape, after_sleep=0: clicks.append(center),
                 ),
-                SimpleNamespace(),
+                SimpleNamespace(wait_for_collection_field=lambda frame: frame),
                 progress,
             )
             second.action_icons = SimpleNamespace(detect=lambda *_args: next(detections))
@@ -2848,7 +3663,7 @@ class CollectorSkillTest(unittest.TestCase):
                     sleep=lambda *_args: None,
                 ),
                 SimpleNamespace(capture=lambda: frame),
-                SimpleNamespace(),
+                SimpleNamespace(wait_for_collection_field=lambda frame: frame),
                 progress,
             )
             collector.action_icons = SimpleNamespace(detect=lambda *_args: used)
@@ -2924,7 +3739,11 @@ class CollectorSkillTest(unittest.TestCase):
                     )
 
                     def collector_for(store):
-                        collector = Collector(task, vision, SimpleNamespace(), store)
+                        collector = Collector(
+                            task, vision,
+                            SimpleNamespace(wait_for_collection_field=lambda frame: frame),
+                            store,
+                        )
                         collector._detect_action_icon = lambda *_a, **_k: (
                             frame,
                             ActionIconDetection(
@@ -2932,6 +3751,9 @@ class CollectorSkillTest(unittest.TestCase):
                                 MatchResult(0.99, (900, 420), (44, 43), 0.95, 0.92),
                                 stable=True, sample_count=2,
                             ),
+                        )
+                        collector.action_icons = SimpleNamespace(
+                            detect=lambda *_a: collector._detect_action_icon()[1],
                         )
                         collector._read_action_feedback = lambda _a: SkillFeedbackObservation(
                             "成功反馈", "success", 1.0,
@@ -3002,7 +3824,7 @@ class CollectorSkillTest(unittest.TestCase):
                     capture=lambda: frame,
                     click_client=lambda *args, **kwargs: clicks.append((args, kwargs)),
                 ),
-                SimpleNamespace(),
+                SimpleNamespace(wait_for_collection_field=lambda frame: frame),
                 progress,
             )
             collector.action_icons = SimpleNamespace(detect=lambda *_args: available)
@@ -3064,7 +3886,7 @@ class CollectorSkillTest(unittest.TestCase):
                 MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
                 0.65,
             )
-            detections = iter((available, available, used, used))
+            detections = iter((available, available, available, used, used))
             clicks = []
             collector = Collector(
                 SimpleNamespace(
@@ -3076,7 +3898,7 @@ class CollectorSkillTest(unittest.TestCase):
                     capture=lambda: frame,
                     click_client=lambda center, _shape, after_sleep=0: clicks.append(center),
                 ),
-                SimpleNamespace(),
+                SimpleNamespace(wait_for_collection_field=lambda frame: frame),
                 progress,
             )
             collector.action_icons = SimpleNamespace(detect=lambda *_args: next(detections))
@@ -3148,7 +3970,7 @@ class CollectorSkillTest(unittest.TestCase):
                 MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
                 0.65,
             )
-            detections = iter((available, available, used, used))
+            detections = iter((available, available, available, used, used))
             clicks = []
             collector = Collector(
                 SimpleNamespace(
@@ -3160,7 +3982,7 @@ class CollectorSkillTest(unittest.TestCase):
                     capture=lambda: frame,
                     click_client=lambda center, _shape, after_sleep=0: clicks.append(center),
                 ),
-                SimpleNamespace(),
+                SimpleNamespace(wait_for_collection_field=lambda frame: frame),
                 progress,
             )
             collector.action_icons = SimpleNamespace(detect=lambda *_args: next(detections))
@@ -3235,7 +4057,7 @@ class CollectorSkillTest(unittest.TestCase):
                     capture=lambda: frame,
                     click_client=lambda *args, **kwargs: clicks.append((args, kwargs)),
                 ),
-                SimpleNamespace(),
+                SimpleNamespace(wait_for_collection_field=lambda frame: frame),
                 progress,
             )
             collector.action_icons = SimpleNamespace(detect=lambda *_args: available)
@@ -3291,7 +4113,7 @@ class CollectorSkillTest(unittest.TestCase):
                     capture=lambda: frame,
                     click_client=lambda *args, **kwargs: clicks.append((args, kwargs)),
                 ),
-                SimpleNamespace(),
+                SimpleNamespace(wait_for_collection_field=lambda frame: frame),
                 progress,
             )
             collector.action_icons = SimpleNamespace(detect=lambda *_args: used)
@@ -3350,7 +4172,7 @@ class CollectorSkillTest(unittest.TestCase):
                     capture=lambda: frame,
                     click_client=lambda *args, **kwargs: clicks.append((args, kwargs)),
                 ),
-                SimpleNamespace(),
+                SimpleNamespace(wait_for_collection_field=lambda frame: frame),
                 progress,
             )
             collector.action_icons = SimpleNamespace(detect=lambda *_args: available)
@@ -3428,7 +4250,7 @@ class CollectorSkillTest(unittest.TestCase):
                         RuntimeError("click interrupted")
                     ),
                 ),
-                SimpleNamespace(),
+                SimpleNamespace(wait_for_collection_field=lambda frame: frame),
                 progress,
             )
             collector.action_icons = SimpleNamespace(detect=lambda *_args: available)

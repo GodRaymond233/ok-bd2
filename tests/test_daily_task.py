@@ -1248,7 +1248,7 @@ class DailyTaskHelperTest(StageHistoryTestCase):
     def test_quick_hunt_regions_preserve_all_supplied_1920_calibrations(self):
         self.assertEqual({"米饭": 90, "火把": 60}, QUICK_HUNT_RESOURCE_CAPACITIES)
         self.assertEqual(
-            (1585 / 1920, 38 / 1080, 1740 / 1920, 80 / 1080),
+            (1580 / 1920, 38 / 1080, 1800 / 1920, 80 / 1080),
             QUICK_HUNT_RESOURCE_ROI,
         )
         self.assertEqual(
@@ -2004,6 +2004,152 @@ class DailyTaskHelperTest(StageHistoryTestCase):
                     self.assertEqual(
                         (expected_point, frame.shape), vision.click_client.call_args.args,
                     )
+
+    def test_quick_hunt_dialog_label_omission_preserves_resource_and_switch_checks(self):
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        for resource in ("火把", "米饭"):
+            for labels, accepted in (
+                ((f"仅使用免费{resource}",), True),
+                ((f"仅使免费{resource}",), True),
+                ((f"仅使免费{resource}", f"仅使用免费{resource}"), False),
+                ((f"仅使用{resource}",), False),
+                ((f"使用免费{resource}",), False),
+                (("仅使免费" + ("米饭" if resource == "火把" else "火把"),), False),
+            ):
+                for state in ("on", "off", "unknown"):
+                    with self.subTest(resource=resource, labels=labels, state=state):
+                        task = object.__new__(QuickHuntTask)
+                        task.info_set = Mock()
+                        task._quick_hunt_free_resource = Mock(return_value=60)
+                        task._quick_hunt_box_enabled = Mock(return_value=True)
+                        boxes = [
+                            SimpleNamespace(name=text, x=700, y=195, width=105, height=18)
+                            for text in labels
+                        ] + [
+                            SimpleNamespace(
+                                name="风之洞穴极难", x=600, y=240, width=120, height=20,
+                            ),
+                            SimpleNamespace(name="狩猎1次", x=600, y=300, width=90, height=20),
+                            SimpleNamespace(
+                                name="MIN MAX 取消", x=600, y=400, width=180, height=20,
+                            ),
+                        ]
+                        start = SimpleNamespace(name="狩猎6", x=900, y=600, width=80, height=20)
+                        vision = Mock()
+                        vision.ocr_boxes.side_effect = [boxes, [start]]
+                        task._quick_vision = lambda: vision
+                        with patch("src.tasks.quick_hunt.read_free_switch",
+                                   return_value=(state, (830, 204))) as switch:
+                            snapshot = task._quick_hunt_dialog_snapshot(frame, "圣石", resource)
+                        if accepted:
+                            self.assertEqual((resource, state, 1, 6, 60), (
+                                snapshot.resource, snapshot.free_state, snapshot.count,
+                                snapshot.cost, snapshot.pool,
+                            ))
+                            switch.assert_called_once_with(frame, boxes[0])
+                            task._quick_hunt_free_resource.assert_called_once_with(resource, frame)
+                        else:
+                            self.assertIsNone(snapshot)
+                            switch.assert_not_called()
+
+    def test_quick_hunt_map_identity_preserves_cave_and_difficulty_across_count_modes(self):
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        for after, accepted in (
+            ("黑暗洞穴·极难", True),
+            (" 黑暗洞穴 · 极难 ", True),
+            ("火之洞穴·极难", False),
+            ("黑暗洞穴·普通", False),
+            ("黑暗洞穴·极难2", False),
+            ("· ，", False),
+        ):
+            with self.subTest(after=after):
+                task = object.__new__(QuickHuntTask)
+                task.config = {"快速狩猎界面等待秒数": 2.5}
+                task.info_set = Mock()
+                task.log_info = Mock()
+                task._quick_hunt_free_resource = Mock(return_value=60)
+                task._quick_hunt_box_enabled = Mock(return_value=True)
+                vision = Mock()
+                task._quick_vision = lambda: vision
+                snapshots = []
+                for text, count in (("黑暗洞穴，极难", 1), (after, 10)):
+                    boxes = [
+                        SimpleNamespace(name="仅使用免费火把", x=700, y=195,
+                                        width=105, height=18),
+                        SimpleNamespace(name=text, x=600, y=240, width=120, height=20),
+                        SimpleNamespace(name=f"狩猎{count}次", x=600, y=300,
+                                        width=90, height=20),
+                        SimpleNamespace(name="MIN MAX 取消", x=600, y=400,
+                                        width=180, height=20),
+                    ]
+                    start = SimpleNamespace(name=f"狩猎{count * 6}", x=900, y=600,
+                                            width=80, height=20)
+                    vision.ocr_boxes.side_effect = [boxes, [start]]
+                    with patch("src.tasks.quick_hunt.read_free_switch",
+                               return_value=("on", (830, 204))):
+                        snapshots.append(task._quick_hunt_dialog_snapshot(frame, "圣石", "火把"))
+                self.assertEqual("黑暗洞穴极难", snapshots[0].map_name)
+                if accepted:
+                    self.assertEqual(snapshots[0].map_name, snapshots[1].map_name)
+                sequence = iter([snapshots[0]] * 4 + [snapshots[1]] * 2)
+                task._quick_hunt_dialog_snapshot = Mock(
+                    side_effect=lambda *_: next(sequence, snapshots[1]),
+                )
+                task.capture_frame = Mock(return_value=frame)
+                task._quick_hunt_click_ocr = Mock(return_value=True)
+                clock = {"now": 0.0}
+                task.sleep = lambda seconds: clock.update(now=clock["now"] + seconds)
+                with patch("src.tasks.quick_hunt.monotonic", side_effect=lambda: clock["now"]):
+                    result = task._quick_hunt_prepare_dialog(
+                        "MAX", "圣石", r"暗.?之?.?洞穴", "火把", 60,
+                    )
+                self.assertEqual(accepted, result is not None)
+                if accepted:
+                    self.assertEqual((10, 60, 60), (result.count, result.cost, result.pool))
+                vision.click_client.assert_not_called()
+
+    def test_quick_hunt_max_rechecks_after_input_wait_and_retries_only_with_safe_cost(self):
+        for lost_first, valid_cost in ((False, True), (True, True), (True, False)):
+            with self.subTest(lost_first=lost_first, valid_cost=valid_cost):
+                task = object.__new__(QuickHuntTask)
+                task.config = {"快速狩猎界面等待秒数": 5.0}
+                task.info_set = Mock()
+                task.log_info = Mock()
+                now = [0.0]
+                task.sleep = lambda seconds: now.__setitem__(0, now[0] + seconds)
+                task._executor = SimpleNamespace(
+                    check_enabled=lambda: None,
+                    exit_event=SimpleNamespace(wait=task.sleep),
+                    reset_scene=lambda **_: None,
+                )
+                initial = hunt_dialog(pool=60, resource="火把", map_name="黑暗洞穴极难")
+                selected = replace(initial, count=10, cost=60 if valid_cost else 66)
+                current = [initial]
+                task.capture_frame = Mock(return_value=None)
+                task._quick_hunt_dialog_snapshot = Mock(side_effect=lambda *_: current[0])
+                clicks = []
+
+                def click(*_args, **_kwargs):
+                    clicks.append(now[0])
+                    if len(clicks) == 1:
+                        task._wait_for_input(15.0)
+                    if not lost_first or len(clicks) > 1:
+                        current[0] = selected
+                    task.sleep(.8)
+                    return True
+
+                task._quick_hunt_click_ocr = click
+                with (
+                    patch("src.tasks.quick_hunt.monotonic", side_effect=lambda: now[0]),
+                    patch("src.tasks.BaseBD2Task.monotonic", side_effect=lambda: now[0]),
+                ):
+                    result = task._quick_hunt_prepare_dialog("MAX", "圣石", "黑暗", "火把", 60)
+                self.assertEqual(valid_cost, result is not None)
+                self.assertGreaterEqual(len(clicks), 2 if lost_first else 1)
+                self.assertLessEqual(len(clicks), 3)
+                if result is not None:
+                    self.assertEqual((10, 60, 60), (result.count, result.cost, result.pool))
+                self.assertLess(now[0], 22)
 
     def test_quick_hunt_submission_requires_free_switch_and_stable_affordable_cost(self):
         rice = hunt_dialog()

@@ -30,6 +30,7 @@ from src.tasks.task_vision_mixin import (
 )
 from src.utils.home_confirmation import HOME_LEFT_COLUMN_REQUIRED_HITS
 from src.utils.image_utils import crop_relative
+from src.utils.ocr_utils import normalize_ocr_text
 
 QUICK_HUNT_CHILD_CONFIG_KEYS = (
     PLAN_KEY,
@@ -80,11 +81,9 @@ BUTTON_ENABLED_BRIGHT_MIN_RATIO = 0.02
 
 QUICK_HUNT_RESOURCE_CAPACITIES = {"米饭": 90, "火把": 60}
 
-# The client renders the leading rice digit after the icon (x>=1585).
-QUICK_HUNT_RESOURCE_ROI = _quick_hunt_relative_roi(1740, 80, 1585, 38)
-
-# The crystal cave's torch balance sits farther right than the rice balance.
-QUICK_HUNT_TORCH_RESOURCE_ROI = _quick_hunt_relative_roi(1680, 38, 1800, 80)
+# Both free counters shift right when the yellow stored balance is absent.
+# Cover both layouts; color filtering and fraction validation exclude reserves.
+QUICK_HUNT_RESOURCE_ROI = _quick_hunt_relative_roi(1580, 38, 1800, 80)
 
 QUICK_HUNT_BUTTON_ROI = _quick_hunt_relative_roi(1720, 1018, 1599, 963)
 
@@ -538,11 +537,11 @@ class QuickHuntFeatureMixin:
         return self._home_confirmation_signals(frame, "快速狩猎主页抽抽乐")
 
     def _wait_for_quick_hunt_home(self, interval: float = 0.35) -> bool:
-        end_at = monotonic() + float(self.config.get("主页确认等待秒数", 10.0))
+        end_at = self._active_time(monotonic) + float(self.config.get("主页确认等待秒数", 10.0))
         last_left_hits = 0
         last_p95 = 0.0
         last_gacha_text = ""
-        while monotonic() <= end_at:
+        while self._active_time(monotonic) <= end_at:
             frame = self.capture_frame()
             home_ok, last_left_hits, last_p95, last_gacha_text = (
                 self._quick_hunt_home_signals(frame)
@@ -793,8 +792,7 @@ class QuickHuntFeatureMixin:
 
     def _quick_hunt_free_resource(self, resource: str, frame=None) -> int | None:
         if frame is not None:
-            roi = QUICK_HUNT_TORCH_RESOURCE_ROI if resource == "火把" else QUICK_HUNT_RESOURCE_ROI
-            crop = crop_relative(frame, roi)
+            crop = crop_relative(frame, QUICK_HUNT_RESOURCE_ROI)
             if crop.size == 0 or crop.ndim != 3 or crop.shape[2] < 3:
                 return None
             crop = crop[:, :, :3]
@@ -1059,9 +1057,9 @@ class QuickHuntFeatureMixin:
         return count_open or start_open, count_text, start_text
 
     def _quick_hunt_wait_confirmation_dialog(self, timeout: float, name: str) -> bool:
-        end_at = monotonic() + max(0.0, timeout)
+        end_at = self._active_time(monotonic) + max(0.0, timeout)
         last_text = ""
-        while monotonic() <= end_at:
+        while self._active_time(monotonic) <= end_at:
             frame = self.capture_frame()
             opened, count_text, start_text = self._quick_hunt_dialog_ocr(frame, name)
             last_text = " ".join(
@@ -1101,8 +1099,10 @@ class QuickHuntFeatureMixin:
         counts = [(box, re.fullmatch(r"狩猎(\d+)次", self._normalize_text(box.name)))
                   for box in boxes]
         counts = [(box, match) for box, match in counts if match]
-        labels = [box for box in boxes
-                  if f"仅使用免费{resource}" in self._normalize_text(box.name)]
+        # OCR may omit “用”; the switch pixels still determine the free-only state.
+        labels = [box for box in boxes if re.search(
+            rf"仅使用?免费{re.escape(resource)}", self._normalize_text(box.name),
+        )]
         if len(counts) != 1 or len(labels) != 1:
             return None
         count_box, match = counts[0]
@@ -1114,7 +1114,7 @@ class QuickHuntFeatureMixin:
              if label_bottom < getattr(box, "y", 0) + getattr(box, "height", 0) / 2 < count_top),
             key=lambda box: (box.y, box.x),
         )
-        map_name = self._normalize_text(" ".join(box.name for box in maps))
+        map_name = normalize_ocr_text(" ".join(box.name for box in maps), alnum_only=True)
         if not map_name:
             return None
         starts = []
@@ -1133,12 +1133,12 @@ class QuickHuntFeatureMixin:
                           free_state, switch_point, starts[0][1], frame.shape)
 
     def _quick_hunt_ensure_free_only(self, stage: str, resource: str) -> bool:
-        end_at = monotonic() + self._quick_hunt_ui_timeout()
+        end_at = self._active_time(monotonic) + self._quick_hunt_ui_timeout()
         previous = None
         hits = clicks = 0
         saw_on = False
         next_click = 0.0
-        while monotonic() <= end_at:
+        while self._active_time(monotonic) <= end_at:
             snapshot = self._quick_hunt_dialog_snapshot(self.capture_frame(), stage, resource)
             state = snapshot.free_state if snapshot else "unknown"
             hits = hits + 1 if state == previous and state != "unknown" else 1
@@ -1149,13 +1149,13 @@ class QuickHuntFeatureMixin:
                 if hits >= 2:
                     return True
             elif (state == "off" and hits >= 2 and not saw_on and snapshot.switch_point
-                  and clicks < 2 and monotonic() >= next_click):
+                  and clicks < 2 and self._active_time(monotonic) >= next_click):
                 self._quick_vision().click_client(
                     snapshot.switch_point, snapshot.frame_shape, after_sleep=0.5,
                 )
                 clicks += 1
                 hits = 0
-                next_click = monotonic() + QUICK_HUNT_RETRY_INTERVAL
+                next_click = self._active_time(monotonic) + QUICK_HUNT_RETRY_INTERVAL
             self.sleep(0.3)
         self.log_info(f"快速狩猎：{stage}未能确认仅使用免费{resource}，停止提交。")
         return False
@@ -1171,12 +1171,12 @@ class QuickHuntFeatureMixin:
         unit_cost = None
         map_name = None
         for mode in modes:
-            end_at = monotonic() + self._quick_hunt_ui_timeout()
+            end_at = self._active_time(monotonic) + self._quick_hunt_ui_timeout()
             previous = None
             next_click = 0.0
             clicks = 0
             confirmed = None
-            while monotonic() <= end_at:
+            while self._active_time(monotonic) <= end_at:
                 snapshot = self._quick_hunt_dialog_snapshot(self.capture_frame(), stage, resource)
                 if snapshot is None or snapshot.free_state != "on":
                     previous = None
@@ -1203,14 +1203,16 @@ class QuickHuntFeatureMixin:
                     confirmed = snapshot
                     break
                 previous = snapshot.signature if valid else None
-                if not valid and clicks < QUICK_HUNT_ACTION_ATTEMPTS and monotonic() >= next_click:
+                if (not valid and clicks < QUICK_HUNT_ACTION_ATTEMPTS
+                        and self._active_time(monotonic) >= next_click):
                     if not self._quick_hunt_click_ocr(
                         [rf"^{mode}$"], QUICK_HUNT_COUNT_ROI,
-                        min(1.0, max(0.0, end_at - monotonic())), name=f"{stage}-{mode}",
+                        min(1.0, max(0.0, end_at - self._active_time(monotonic))),
+                        name=f"{stage}-{mode}",
                     ):
                         return None
                     clicks += 1
-                    next_click = monotonic() + QUICK_HUNT_RETRY_INTERVAL
+                    next_click = self._active_time(monotonic) + QUICK_HUNT_RETRY_INTERVAL
                 self.sleep(0.3)
             if confirmed is None:
                 self.log_info(f"快速狩猎：{stage}未确认{mode}次数、免费余额与消耗稳定一致。")
@@ -1223,12 +1225,12 @@ class QuickHuntFeatureMixin:
         return confirmed
 
     def _quick_hunt_cancel_dialog(self, stage: str, timeout: float | None = None) -> bool:
-        end_at = monotonic() + (
+        end_at = self._active_time(monotonic) + (
             self._quick_hunt_ui_timeout() if timeout is None else max(0.0, timeout)
         )
         clicks = menu_hits = 0
         next_click = 0.0
-        while monotonic() <= end_at:
+        while self._active_time(monotonic) <= end_at:
             frame = self.capture_frame()
             if self._quick_hunt_menu_still_open(frame):
                 menu_hits += 1
@@ -1237,7 +1239,8 @@ class QuickHuntFeatureMixin:
             else:
                 menu_hits = 0
                 opened, _count, _start = self._quick_hunt_dialog_ocr(frame, stage)
-                if opened and clicks < QUICK_HUNT_ACTION_ATTEMPTS and monotonic() >= next_click:
+                if (opened and clicks < QUICK_HUNT_ACTION_ATTEMPTS
+                        and self._active_time(monotonic) >= next_click):
                     boxes = self._quick_vision().ocr_boxes(
                         frame, f"{stage}-取消", relative_roi=QUICK_HUNT_COUNT_ROI,
                     )
@@ -1246,7 +1249,7 @@ class QuickHuntFeatureMixin:
                     if point:
                         self._quick_vision().click_client(point, frame.shape, after_sleep=0.5)
                         clicks += 1
-                        next_click = monotonic() + QUICK_HUNT_RETRY_INTERVAL
+                        next_click = self._active_time(monotonic) + QUICK_HUNT_RETRY_INTERVAL
             self.sleep(0.3)
         self._save_flow_diagnostic("quick_hunt_cancel_failed")
         return False
@@ -1396,17 +1399,18 @@ class QuickHuntFeatureMixin:
         self, stage: str, submission: HuntDialog | None = None, resource: str = "米饭",
         timeout: float | None = None,
     ) -> str:
-        end_at = monotonic() + (float(self.config.get("快速狩猎结算等待秒数", 15.0))
-                               if timeout is None else timeout)
+        end_at = self._active_time(monotonic) + (
+            float(self.config.get("快速狩猎结算等待秒数", 15.0)) if timeout is None else timeout
+        )
         pending_result = None
         close_clicks = 0
         menu_hits = 0
         last_state = "等待结算"
         start_clicks = 1 if submission else 0
-        next_start = monotonic() + QUICK_HUNT_RETRY_INTERVAL
+        next_start = self._active_time(monotonic) + QUICK_HUNT_RETRY_INTERVAL
         same_dialog_hits = 0
         may_have_started = False
-        while monotonic() <= end_at:
+        while self._active_time(monotonic) <= end_at:
             frame = self.capture_frame()
             is_reward_open, is_depleted_open = self._quick_hunt_settlement_signals(
                 frame, stage, resource,
@@ -1420,7 +1424,7 @@ class QuickHuntFeatureMixin:
                         run_history.save_stage(self, key, "done", scope=scope,
                                                evidence={**evidence, "result": pending_result})
                     # Start the close deadline once, even when settlement used its entire allowance.
-                    end_at = monotonic() + self._quick_hunt_ui_timeout()
+                    end_at = self._active_time(monotonic) + self._quick_hunt_ui_timeout()
                 menu_hits = 0
                 last_state = "奖励页未关闭" if is_reward_open else "资源不足弹窗未关闭"
                 if close_clicks < 3:
@@ -1450,14 +1454,14 @@ class QuickHuntFeatureMixin:
                 elif not may_have_started:
                     same_dialog_hits += 1
                     last_state = "次数弹窗仍在，尚未确认开始"
-                    if (same_dialog_hits >= 2 and monotonic() >= next_start
+                    if (same_dialog_hits >= 2 and self._active_time(monotonic) >= next_start
                             and start_clicks < QUICK_HUNT_ACTION_ATTEMPTS):
                         self._quick_vision().click_client(
                             current.start_point, current.frame_shape, after_sleep=0.3,
                         )
                         start_clicks += 1
                         same_dialog_hits = 0
-                        next_start = monotonic() + QUICK_HUNT_RETRY_INTERVAL
+                        next_start = self._active_time(monotonic) + QUICK_HUNT_RETRY_INTERVAL
                 self._status_set("快速狩猎提交", f"{last_state}；开始点击={start_clicks}/3")
             self._status_set(f"{stage}-结算退出状态", f"{last_state}；关闭点击={close_clicks}/3")
             self.sleep(0.3)
@@ -1482,9 +1486,9 @@ class QuickHuntFeatureMixin:
         return True
 
     def _quick_hunt_stone_counts(self) -> dict[str, int] | None:
-        end_at = monotonic() + self._quick_hunt_ui_timeout()
+        end_at = self._active_time(monotonic) + self._quick_hunt_ui_timeout()
         previous = None
-        while monotonic() <= end_at:
+        while self._active_time(monotonic) <= end_at:
             frame = self.capture_frame()
             values = None
             for scale in (1.0, 2.0):
@@ -1512,9 +1516,9 @@ class QuickHuntFeatureMixin:
         name: str,
     ) -> tuple[str, object | None]:
         compiled = [re.compile(pattern, re.IGNORECASE) for pattern in patterns]
-        end_at = monotonic() + max(0.0, timeout)
+        end_at = self._active_time(monotonic) + max(0.0, timeout)
         last_text = ""
-        while monotonic() <= end_at:
+        while self._active_time(monotonic) <= end_at:
             frame = self.capture_frame()
             boxes = self._quick_vision().ocr_boxes(frame, name, relative_roi=roi)
             text = " ".join(str(getattr(box, "name", "")) for box in boxes)
@@ -1539,9 +1543,9 @@ class QuickHuntFeatureMixin:
         name: str,
     ) -> tuple[str, str, str | None]:
         expected = re.compile(expected_pattern, re.IGNORECASE)
-        end_at = monotonic() + self._quick_hunt_ui_timeout()
+        end_at = self._active_time(monotonic) + self._quick_hunt_ui_timeout()
         last_text = ""
-        while monotonic() <= end_at:
+        while self._active_time(monotonic) <= end_at:
             frame = self.capture_frame()
             is_dialog_open, count_text, start_text = self._quick_hunt_dialog_ocr(
                 frame,
@@ -1586,10 +1590,10 @@ class QuickHuntFeatureMixin:
         name: str,
         require_enabled: bool = False,
     ) -> bool:
-        end_at = monotonic() + max(0.0, timeout)
+        end_at = self._active_time(monotonic) + max(0.0, timeout)
         compiled = [re.compile(pattern, re.IGNORECASE) for pattern in patterns]
         vision = self._quick_vision()
-        while monotonic() <= end_at:
+        while self._active_time(monotonic) <= end_at:
             frame = self.capture_frame()
             for box in vision.ocr_boxes(frame, name, relative_roi=roi):
                 value = self._normalize_text(getattr(box, "name", ""))
@@ -1641,11 +1645,11 @@ class QuickHuntFeatureMixin:
 
     def _quick_hunt_return_home(self) -> bool:
         self._status_set("快速狩猎当前阶段", "返回主页")
-        end_at = monotonic() + max(
+        end_at = self._active_time(monotonic) + max(
             self._quick_hunt_ui_timeout(), float(self.config.get("主页确认等待秒数", 10.0)),
         )
         back_clicks = reward_clicks = shortage_clicks = 0
-        while monotonic() <= end_at:
+        while self._active_time(monotonic) <= end_at:
             frame = self.capture_frame()
             self._status_set(
                 "快速狩猎返回位置 OCR",
@@ -1708,7 +1712,7 @@ class QuickHuntFeatureMixin:
                 back_clicks += 1
             elif self._quick_hunt_dialog_ocr(frame, "快速狩猎退出次数窗")[0]:
                 if not self._quick_hunt_cancel_dialog(
-                    "快速狩猎退出次数窗", timeout=end_at - monotonic(),
+                    "快速狩猎退出次数窗", timeout=end_at - self._active_time(monotonic),
                 ):
                     return False
             else:

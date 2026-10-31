@@ -1,7 +1,9 @@
 """回归：自动返回主页的房子图像识别、多帧复核与通知降噪。"""
 
 import unittest
+from itertools import product
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import cv2
@@ -9,6 +11,13 @@ import numpy as np
 from ok.task.exceptions import FinishedException, TaskDisabledException
 
 from src.tasks.BaseBD2Task import TEMPLATE_DIR, BaseBD2Task
+from src.tasks.PVPTask import PVPTask
+from src.tasks.trigger.AutoLoginTask import AutoLoginTask
+from src.utils.home_confirmation import (
+    HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT,
+    HOME_GACHA_OCR_RELATIVE_ROI,
+    HOME_LEFT_COLUMN_OCR_RELATIVE_ROI,
+)
 from src.utils.vision_models import MatchResult
 
 
@@ -28,8 +37,8 @@ class AutoReturnMainHomeTest(unittest.TestCase):
                     task.recover_daily_home()
                 self.assertEqual([], clicks)
 
-    def _task(self, home_results, *, house_match=None):
-        task = object.__new__(BaseBD2Task)
+    def _task(self, home_results, *, house_match=None, task_type=BaseBD2Task):
+        task = object.__new__(task_type)
         task.config = {
             "自动返回主页最大步数": 1,
             "自动返回主页失败冷却秒数": 30.0,
@@ -56,6 +65,7 @@ class AutoReturnMainHomeTest(unittest.TestCase):
         task._home_scan = lambda _frame: next(results)
         task._match_house_button = lambda _frame: house_match
         task._click_top_left_back = lambda *_args, **_kwargs: False
+        task._clear_dimmed_home_announcement = lambda _frame: False
         task.operate_click = lambda x, y, **kwargs: task._test_clicks.append((x, y))
         task._test_clicks = []
         task._auto_return_home_cooldown_until = 0.0
@@ -130,7 +140,10 @@ class AutoReturnMainHomeTest(unittest.TestCase):
 
     def test_h_ocr_missing_but_house_image_match_is_positive_signal(self):
         task = object.__new__(BaseBD2Task)
+        task.config = {}
+        task.info_set = lambda *_args: None
         task._ocr_boxes = lambda *_args, **_kwargs: []
+        task._read_home_confirmation_signals = lambda *_args: (False, 0, 0.0, "")
         house = MatchResult(0.95, (40, 20), (20, 20))
         task._match_house_button = lambda _frame: house
         self.assertEqual(
@@ -139,26 +152,59 @@ class AutoReturnMainHomeTest(unittest.TestCase):
         )
 
     def test_home_signal_skips_house_matching(self):
-        class Box:
-            def __init__(self, name):
-                self.name = name
-                self.x = 1
-                self.y = 1
-                self.width = 2
-                self.height = 2
+        for task_type, (width, height) in product(
+            (BaseBD2Task, PVPTask, AutoLoginTask), ((1920, 1080), (1280, 720)),
+        ):
+            for brightness, left, gacha, expected in (
+                (255, "我的小屋 格鲁TALK 街机游戏", "抽抽乐", True),
+                (80, "我的小屋 格鲁TALK 街机游戏", "抽抽乐", False),
+                (255, "我的小屋", "抽抽乐", False),
+                (255, "我的小屋 格鲁TALK", "", False),
+                (255, "", "", False),
+            ):
+                with self.subTest(
+                    task=task_type.__name__, size=(width, height),
+                    brightness=brightness, left=left, gacha=gacha,
+                ):
+                    task, clicks = self._task([], task_type=task_type)
+                    del task._home_scan
+                    frame = np.full((height, width, 3), brightness, dtype=np.uint8)
+                    reads = []
 
-        task = object.__new__(BaseBD2Task)
-        task._ocr_boxes = lambda *_args, **_kwargs: [
-            Box("抽抽乐"),
-            Box("我的小屋"),
-        ]
-        task._match_house_button = lambda _frame: self.fail(
-            "home frame must not run house matching"
-        )
-        self.assertEqual(
-            (True, False),
-            BaseBD2Task._home_scan(task, np.zeros((100, 100, 3), dtype=np.uint8)),
-        )
+                    def read_text(input_frame, _name, *, relative_roi, **_kwargs):
+                        self.assertIs(frame, input_frame)
+                        reads.append(relative_roi)
+                        return left if relative_roi == HOME_LEFT_COLUMN_OCR_RELATIVE_ROI else gacha
+
+                    task._quick_vision = lambda: SimpleNamespace(ocr_text=read_text)
+                    task._ocr_boxes = Mock(return_value=[SimpleNamespace(name="抽抽乐 我的小屋")])
+                    task._match_house_button = Mock(return_value=None)
+                    self.assertEqual((expected, False), task._home_scan(frame))
+                    self.assertEqual(HOME_LEFT_COLUMN_OCR_RELATIVE_ROI, reads[0])
+                    self.assertTrue(all(roi == HOME_GACHA_OCR_RELATIVE_ROI for roi in reads[1:]))
+                    self.assertEqual([], clicks)
+                    self.assertEqual(0 if expected else 1, task._match_house_button.call_count)
+
+    def test_dimmed_home_cleanup_requires_fresh_bright_confirmation(self):
+        for clears in (True, False):
+            with self.subTest(clears=clears):
+                task, clicks = self._task([])
+                del task._home_scan
+                del task._clear_dimmed_home_announcement
+                dark = np.full((1080, 1920, 3), 80, dtype=np.uint8)
+                bright = np.full_like(dark, 255)
+                task.capture_frame = Mock(side_effect=[dark, bright if clears else dark])
+                def read_text(_frame, _name, *, relative_roi, **_kwargs):
+                    if relative_roi == HOME_LEFT_COLUMN_OCR_RELATIVE_ROI:
+                        return "我的小屋 格鲁TALK"
+                    return "抽抽乐"
+
+                task._quick_vision = lambda: SimpleNamespace(ocr_text=read_text)
+                task._ocr_boxes = lambda *_args, **_kwargs: []
+                task._sleep_after_recognition = lambda: None
+                self.assertEqual(clears, task.auto_return_main_home())
+                self.assertEqual([HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT], clicks)
+                self.assertEqual(2, task.capture_frame.call_count)
 
 
 class ReturnHomeHouseTemplateTest(unittest.TestCase):

@@ -30,7 +30,7 @@ from src.tasks.run_history import is_successful_run
 
 
 class MapTradeLegacyConfigTest(unittest.TestCase):
-    def test_daily_trade_cooks_before_buy_sell_and_respects_switch(self):
+    def test_daily_trade_buys_cooks_sells_and_respects_switches(self):
         actions = []
         task = object.__new__(MapTradeTask)
         task.config = {
@@ -38,7 +38,8 @@ class MapTradeLegacyConfigTest(unittest.TestCase):
             "买": True,
             "卖": True,
         }
-        task.info_set = lambda *_args: None
+        info = {}
+        task.info_set = lambda key, value: info.update({key: value})
         task.log_info = lambda *_args, **_kwargs: None
         task.log_error = lambda *_args, **_kwargs: None
         task.log_warning = lambda *_args, **_kwargs: None
@@ -88,7 +89,7 @@ class MapTradeLegacyConfigTest(unittest.TestCase):
             patch.object(map_trade_task_module, "Trader", FakeTrader),
         ):
             self.assertTrue(MapTradeTask.run(task))
-            self.assertEqual(["cook", "buy", "sell", "home"], actions)
+            self.assertEqual(["buy", "cook", "sell", "home"], actions)
             actions.clear()
             task.config["制作料理"] = False
             self.assertTrue(MapTradeTask.run(task))
@@ -97,7 +98,24 @@ class MapTradeLegacyConfigTest(unittest.TestCase):
             task.config["制作料理"] = True
             with patch.object(FakeTrader, "run_cooking", lambda _: False):
                 self.assertFalse(MapTradeTask.run(task))
+            self.assertEqual(["buy", "home"], actions)
+            actions.clear()
+            task.config["买"] = False
+            self.assertTrue(MapTradeTask.run(task))
+            self.assertEqual(["cook", "sell", "home"], actions)
+            actions.clear()
+            task.config["买"] = True
+            with patch.object(FakeTrader, "run_buy", lambda _: False):
+                self.assertFalse(MapTradeTask.run(task))
             self.assertEqual(["home"], actions)
+            actions.clear()
+            from src.tasks.map_trade.trader_sell import SaleResult
+
+            with patch.object(FakeTrader, "run_sell", lambda _: SaleResult(True, skipped=True)):
+                self.assertTrue(MapTradeTask.run(task))
+            self.assertEqual("买、制作料理", info["完成"])
+            self.assertEqual("卖", info["跳过"])
+            self.assertEqual("-", info["失败"])
 
 
 class MapTradeConfigTest(unittest.TestCase):
@@ -209,8 +227,8 @@ class MapTradeConfigTest(unittest.TestCase):
         self.assertEqual(["5星料理"], trade.config_type["制作料理"]["sub_configs"][True])
         self.assertEqual("multi_selection", trade.config_type["5星料理"]["type"])
         keys = list(trade.default_config)
-        self.assertLess(keys.index("制作料理"), keys.index("买"))
-        self.assertLess(keys.index("买"), keys.index("卖"))
+        self.assertLess(keys.index("买"), keys.index("制作料理"))
+        self.assertLess(keys.index("制作料理"), keys.index("卖"))
         self.assertNotIn("执行跑商", trade.default_config)
         self.assertNotIn("执行地图采集", trade.default_config)
         self.assertIn("执行地图采集", collection.default_config)

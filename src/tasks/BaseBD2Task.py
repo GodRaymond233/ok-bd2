@@ -27,6 +27,14 @@ from src.scene.ScreenPosition import ScreenPosition
 from src.tasks.task_notifications import log_task_completion
 from src.utils.home_confirmation import (
     HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT,
+    HOME_DIMMED_P95_THRESHOLD_DEFAULT,
+    HOME_GACHA_OCR_RELATIVE_ROI,
+    HOME_LEFT_COLUMN_OCR_RELATIVE_ROI,
+    HOME_LEFT_COLUMN_REQUIRED_HITS,
+    home_confirmation_passes,
+    home_gacha_ocr_with_fallback,
+    home_left_column_hits,
+    home_left_column_p95_brightness,
     home_temporary_announcement_detected,
 )
 from src.utils.image_utils import (
@@ -227,7 +235,15 @@ class BaseBD2Task(BaseTask):
         return str(capture_method) if capture_method is not None else "<none>"
 
     def capture_frame(self, screenshot_name: str | None = None):
-        frame = self.next_frame()
+        for _attempt in range(3):
+            self._ensure_input_desktop()
+            paused = getattr(self, "_input_wait_seconds", 0.0)
+            frame = self.next_frame()
+            self._ensure_input_desktop()
+            if paused == getattr(self, "_input_wait_seconds", 0.0):
+                break
+        else:
+            raise TimeoutError("输入桌面反复中断，未取得可用游戏画面。")
         if frame is None:
             raise RuntimeError("未能从 BD2 截取画面。")
 
@@ -322,8 +338,41 @@ class BaseBD2Task(BaseTask):
     def operate(self, func: Callable, block: bool = True, restore_cursor: bool = True):
         interaction = getattr(self.executor, "interaction", None)
         if interaction is not None and hasattr(interaction, "operate"):
+            if hasattr(interaction, "wait_for_input"):
+                return interaction.operate(
+                    func, block=block, restore_cursor=restore_cursor,
+                    input_wait=self._wait_for_input,
+                    input_status=lambda message: self.info_set("输入状态", message),
+                )
             return interaction.operate(func, block=block, restore_cursor=restore_cursor)
         return func()
+
+    def _wait_for_input(self, seconds: float) -> None:
+        # TaskExecutor.sleep also waits for capture readiness. Cursor access
+        # needs its own bounded wait when Windows switches input desktops.
+        self.executor.check_enabled()
+        started = monotonic()
+        try:
+            if self.executor.exit_event.wait(seconds):
+                raise FinishedException()
+        finally:
+            self._input_wait_seconds = (
+                getattr(self, "_input_wait_seconds", 0.0) + monotonic() - started
+            )
+        self.executor.check_enabled()
+        self.executor.reset_scene(check_enabled=False)
+
+    def _ensure_input_desktop(self) -> None:
+        interaction = getattr(self.executor, "interaction", None)
+        if interaction is not None and hasattr(interaction, "wait_for_input"):
+            interaction.wait_for_input(
+                self._wait_for_input,
+                lambda message: self.info_set("输入状态", message),
+            )
+
+    def _active_time(self, clock=monotonic) -> float:
+        """UI deadlines exclude bounded waits for the Windows input desktop."""
+        return clock() - getattr(self, "_input_wait_seconds", 0.0)
 
     def attempt_return_home(self, name: str = "自动返回主页") -> bool:
         """点右上角“房子”按钮一次（需调用方已确认不在主页）。正式路径会移动真实光标。"""
@@ -369,7 +418,7 @@ class BaseBD2Task(BaseTask):
         """自动返回主页面（仅主页明确 / 控件正面命中时才动作）。
 
         规则：
-        - 主页判定用 OCR 三要素（抽抽乐 + 左列任一入口）；已确认主页直接成功。
+        - 主页判定使用同帧左列关键词、亮度和抽抽乐；已确认主页直接成功。
         - 非主页时：优先用房子按钮图像识别，OCR ``H`` 仅作辅助；也可命中左上角
           “返回”模板。证据不足时安全停止，绝不盲点。
         - 重试过程只记普通日志；失败后进入冷却，避免连续弹系统提示。
@@ -405,6 +454,10 @@ class BaseBD2Task(BaseTask):
                 if acted:
                     self.log_info("自动返回主页：已回到主页。")
                 return True
+
+            if self._clear_dimmed_home_announcement(frame):
+                acted = True
+                continue
 
             if has_house_hint:
                 # 抽抽乐偶发漏识别会把“主页”误判成非主页；先多帧复核主页。
@@ -509,6 +562,7 @@ class BaseBD2Task(BaseTask):
                 return True
             if monotonic() >= deadline:
                 return False
+            self._clear_dimmed_home_announcement(frame)
             self.sleep(0.5)
 
     def _finish_auto_return_failure(self, reason: str, *, notify: bool) -> bool:
@@ -597,24 +651,17 @@ class BaseBD2Task(BaseTask):
             return []
 
     def _home_scan(self, frame) -> tuple[bool, bool]:
-        """OCR 判定主页，并用房子按钮图像识别非主页返回入口。"""
-        frame_h, frame_w = frame.shape[:2]
-        tokens: list[str] = []
-        boxes = self._ocr_boxes(frame, "自动返回主页")
-        for box in boxes:
-            name = str(getattr(box, "name", "") or "")
-            if name:
-                tokens.append(name)
-
-        joined = "".join(tokens)
-        left_hits = sum(
-            1
-            for keyword in ("我的小屋", "格鲁TALK", "街机游戏")
-            if keyword in joined
+        """Confirm the global home page before looking for return controls."""
+        confirmed, left_hits, brightness, gacha = self._read_home_confirmation_signals(
+            frame, "自动返回主页",
         )
-        is_home = "抽抽乐" in joined and left_hits >= 1
-        if is_home:
+        self.info_set("自动返回主页 左列关键词", f"{left_hits}/{HOME_LEFT_COLUMN_REQUIRED_HITS}")
+        self.info_set("自动返回主页 亮度p95", f"{brightness:.0f}/{self._home_p95_threshold():.0f}")
+        self.info_set("自动返回主页 抽抽乐 OCR", gacha or "-")
+        if confirmed:
             return True, False
+        frame_h, frame_w = frame.shape[:2]
+        boxes = self._ocr_boxes(frame, "自动返回主页")
 
         if self._match_house_button(frame) is not None:
             return False, True
@@ -639,6 +686,63 @@ class BaseBD2Task(BaseTask):
                 return False, True
 
         return False, False
+
+    def _clear_dimmed_home_announcement(self, frame) -> bool:
+        _, left_hits, brightness, gacha = self._read_home_confirmation_signals(
+            frame, "自动返回主页公告清理",
+        )
+        return self.clear_temporary_home_announcement_if_needed(
+            left_hits=left_hits,
+            required_left_hits=HOME_LEFT_COLUMN_REQUIRED_HITS,
+            brightness=brightness,
+            brightness_threshold=self._home_p95_threshold(),
+            gacha_ocr_text=gacha,
+            context="自动返回主页",
+        )
+
+    def _quick_vision(self):
+        from src.tasks.map_trade.vision import Vision
+
+        vision = getattr(self, "_quick_hunt_vision", None)
+        if vision is None:
+            vision = Vision(self)
+            self._quick_hunt_vision = vision
+        return vision
+
+    def _read_home_confirmation_signals(
+        self,
+        frame,
+        ocr_name: str,
+    ) -> tuple[bool, int, float, str]:
+        vision = self._quick_vision()
+        left_text = vision.ocr_text(
+            frame,
+            f"{ocr_name} 左列",
+            relative_roi=HOME_LEFT_COLUMN_OCR_RELATIVE_ROI,
+        )
+        left_hits = home_left_column_hits(left_text)
+        p95_brightness = home_left_column_p95_brightness(frame)
+        gacha_result = home_gacha_ocr_with_fallback(
+            lambda scale: vision.ocr_text(
+                frame,
+                f"{ocr_name} x{scale:g}",
+                relative_roi=HOME_GACHA_OCR_RELATIVE_ROI,
+                ocr_scale=scale,
+            )
+        )
+        gacha_text = gacha_result.text
+        self.info_set(f"{ocr_name} OCR 尝试", gacha_result.trace)
+        confirmed = home_confirmation_passes(
+            left_hits=left_hits,
+            required_left_hits=HOME_LEFT_COLUMN_REQUIRED_HITS,
+            brightness=p95_brightness,
+            brightness_threshold=self._home_p95_threshold(),
+            gacha_ocr_text=gacha_text,
+        )
+        return confirmed, left_hits, p95_brightness, gacha_text
+
+    def _home_p95_threshold(self) -> float:
+        return float(self.config.get("主页压暗阈值", HOME_DIMMED_P95_THRESHOLD_DEFAULT))
 
     def _click_top_left_back(self, frame, step: int) -> bool:
         """左上角 ROI + 统一模板匹配“返回”条；命中才点击。"""
@@ -909,6 +1013,8 @@ class BaseBD2Task(BaseTask):
         ensure_home: Callable[[], bool],
         click_quick_switch: Callable[[], bool],
         confirm_quick_switch_page: Callable[[], bool],
+        *,
+        entry_ready: Callable[[], bool] | None = None,
     ) -> bool:
         """Open the recent cartridge, click quick-switch, and confirm its page."""
         if not ensure_home():
@@ -924,8 +1030,13 @@ class BaseBD2Task(BaseTask):
         self._sleep_after_recognition()
         self.info_set("当前阶段", "点击最近卡带")
         self.operate_click(*CARTRIDGE_RECENT_ENTRY_POINT, after_sleep=0.0)
+        entry_options = (
+            {"entry_ready": entry_ready}
+            if entry_ready is not None and not recent_cartridge_is_pvp else {}
+        )
         special_pages = self._handle_recent_cartridge_special_pages(
             allow_pvp_pages=recent_cartridge_is_pvp,
+            **entry_options,
         )
         if special_pages is CartridgeSpecialPageResult.BLOCKED:
             self._save_flow_diagnostic("cartridge_quick_switch_failed")
@@ -935,22 +1046,29 @@ class BaseBD2Task(BaseTask):
         if not quick_switch_opened:
             special_pages = self._handle_recent_cartridge_special_pages(
                 allow_pvp_pages=recent_cartridge_is_pvp,
+                **entry_options,
             )
             if special_pages is CartridgeSpecialPageResult.BLOCKED:
                 self._save_flow_diagnostic("cartridge_quick_switch_failed")
                 return False
             if special_pages is CartridgeSpecialPageResult.HANDLED:
-                self.info_set("当前阶段", "特殊页面后重试快速切换按钮")
+                self.info_set("当前阶段", "入场恢复后重试快速切换按钮")
                 quick_switch_opened = click_quick_switch()
             elif not recent_cartridge_is_pvp:
                 quick_switch_opened = self._retry_recent_cartridge_entry(
                     ensure_home=ensure_home,
                     click_quick_switch=click_quick_switch,
+                    **entry_options,
                 )
         if not quick_switch_opened:
             self._save_flow_diagnostic("cartridge_quick_switch_failed")
             return False
         confirmed = bool(confirm_quick_switch_page())
+        if not confirmed:
+            self.info_set("当前阶段", "重新识别快速切换入口并补点")
+            # The entry must still be visible; never replay the old coordinates.
+            if click_quick_switch():
+                confirmed = bool(confirm_quick_switch_page())
         if not confirmed:
             self._save_flow_diagnostic("cartridge_quick_switch_page_failed")
         return confirmed
@@ -959,6 +1077,8 @@ class BaseBD2Task(BaseTask):
         self,
         ensure_home: Callable[[], bool],
         click_quick_switch: Callable[[], bool],
+        *,
+        entry_ready: Callable[[], bool] | None = None,
     ) -> bool:
         """Re-click the recent cartridge once after a lost confirmed-home click.
 
@@ -975,6 +1095,7 @@ class BaseBD2Task(BaseTask):
         self.operate_click(*CARTRIDGE_RECENT_ENTRY_POINT, after_sleep=0.0)
         if self._handle_recent_cartridge_special_pages(
             allow_pvp_pages=False,
+            **({"entry_ready": entry_ready} if entry_ready is not None else {}),
         ) is CartridgeSpecialPageResult.BLOCKED:
             return False
         return click_quick_switch()
@@ -1095,8 +1216,9 @@ class BaseBD2Task(BaseTask):
         allow_season_reward: bool | None = None,
         *,
         allow_pvp_pages: bool = True,
+        entry_ready: Callable[[], bool] | None = None,
     ) -> CartridgeSpecialPageResult:
-        """Dismiss shared reward pages and PVP pages when enabled."""
+        """Dismiss overlays and accept a caller-confirmed field when requested."""
         if allow_season_reward is None:
             allow_season_reward = self._is_beijing_monday()
         end_at = monotonic() + max(0.0, float(timeout))
@@ -1105,6 +1227,7 @@ class BaseBD2Task(BaseTask):
         reads_after_action = OVERLAY_CLEAR_FRAMES
         reward = _PendingOverlay()
         rank = _PendingOverlay()
+        field_ready = False
 
         while True:
             boxes = self._recent_cartridge_ocr_boxes()
@@ -1134,6 +1257,13 @@ class BaseBD2Task(BaseTask):
                 reads_after_action = 0
 
             if (
+                entry_ready is not None and reward.title is None and rank.title is None
+                and reads_after_action >= OVERLAY_CLEAR_FRAMES and entry_ready()
+            ):
+                field_ready = True
+                break
+
+            if (
                 (monotonic() >= end_at and reads_after_action >= OVERLAY_CLEAR_FRAMES)
                 or (
                     action_count >= RECENT_CARTRIDGE_SPECIAL_PAGE_MAX_ACTIONS
@@ -1150,7 +1280,7 @@ class BaseBD2Task(BaseTask):
             return CartridgeSpecialPageResult.BLOCKED
         return (
             CartridgeSpecialPageResult.HANDLED
-            if handled else CartridgeSpecialPageResult.ABSENT
+            if handled or field_ready else CartridgeSpecialPageResult.ABSENT
         )
 
     @classmethod

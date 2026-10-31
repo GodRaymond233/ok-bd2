@@ -115,7 +115,7 @@ class _DeviceManagerStub:
 
 
 class DiagnosticLogEvidenceTest(unittest.TestCase):
-    def test_failure_frames_survive_recovery_restart_delay_and_consent(self):
+    def test_failure_frames_survive_recovery_restart_and_current_screenshot_option(self):
         from src.tasks.BaseBD2Task import BaseBD2Task
 
         class FailedTask(BaseBD2Task):
@@ -155,34 +155,48 @@ class DiagnosticLogEvidenceTest(unittest.TestCase):
             manager = DiagnosticsManager(
                 project_root=root, output_dir=root / "out", app_version="test",
             )
-            snapshot = replace(manager.prepare(), task_started_at=time.time() - 1)
-            result = manager.build_report(snapshot, "两小时后重启上报", include_screenshot=True)
-            with zipfile.ZipFile(result.archive_path) as archive:
-                self.assertIsNone(archive.testzip())
-                manifest = json.loads(archive.read("manifest.json"))
-                frames = manifest["capture"]["diagnostic_frames"]
-                self.assertEqual(2, len(frames))
-                for entry, expected in zip(frames, (20, 220)):
-                    image = cv2.imdecode(np.frombuffer(archive.read(entry["path"]), np.uint8), 1)
-                    self.assertAlmostEqual(expected, float(image.mean()), delta=2)
-                    self.assertEqual(snapshot.failures[0]["run"], entry["run"])
-                self.assertEqual("按钮确认", frames[0]["info"]["当前阶段"])
-                self.assertEqual("返回主页", frames[1]["info"]["当前阶段"])
-                state = archive.read("state/failures.json").decode()
-                self.assertNotIn('"data"', state)
-                self.assertNotIn("secret-example", state)
-                for line in archive.read("checksums.sha256").decode().splitlines():
-                    digest, name = line.split("  ", 1)
-                    self.assertEqual(digest, hashlib.sha256(archive.read(name)).hexdigest())
-            result = manager.build_report(snapshot, "不附图片", include_screenshot=False)
-            with zipfile.ZipFile(result.archive_path) as archive:
-                self.assertFalse(any(
-                    name.startswith("screenshots/") for name in archive.namelist()
-                ))
-                self.assertNotIn(
-                    stored["failures"][0]["frames"][0]["data"],
-                    b"".join(archive.read(name) for name in archive.namelist()).decode(),
-                )
+            snapshot = replace(
+                manager.prepare(), task_started_at=time.time() - 1,
+                frame=np.full((48, 64, 3), 250, np.uint8),
+                report_context={
+                    "source": "failure_prompt", "failure_run": stored["failures"][0]["run"],
+                },
+            )
+            for include_current in (True, False):
+                with self.subTest(include_current=include_current):
+                    result = manager.build_report(
+                        snapshot, "两小时后重启上报", include_screenshot=include_current,
+                    )
+                    with zipfile.ZipFile(result.archive_path) as archive:
+                        self.assertIsNone(archive.testzip())
+                        self.assertEqual(
+                            include_current, "screenshots/current.webp" in archive.namelist(),
+                        )
+                        manifest = json.loads(archive.read("manifest.json"))
+                        self.assertEqual(include_current, manifest["capture"]["included"])
+                        self.assertEqual(snapshot.report_context, manifest["report_context"])
+                        frames = manifest["capture"]["diagnostic_frames"]
+                        self.assertEqual(2, len(frames))
+                        for entry, expected in zip(frames, (20, 220)):
+                            image = cv2.imdecode(
+                                np.frombuffer(archive.read(entry["path"]), np.uint8), 1,
+                            )
+                            self.assertAlmostEqual(expected, float(image.mean()), delta=2)
+                            self.assertEqual(snapshot.failures[0]["run"], entry["run"])
+                        self.assertEqual("按钮确认", frames[0]["info"]["当前阶段"])
+                        self.assertEqual("返回主页", frames[1]["info"]["当前阶段"])
+                        state = archive.read("state/failures.json").decode()
+                        self.assertNotIn('"data"', state)
+                        self.assertNotIn("secret-example", state)
+                        self.assertNotIn(stored["failures"][0]["frames"][0]["data"], state)
+                        self.assertNotIn("diagnostic_frames_declined", manifest["omissions"])
+                        summary = archive.read("summary.txt").decode()
+                        self.assertIn("报告入口：任务失败后询问", summary)
+                        self.assertIn("本次 2 张，历史/补充 0 张", summary)
+                        self.assertTrue(all(entry["path"] in summary for entry in frames))
+                        for line in archive.read("checksums.sha256").decode().splitlines():
+                            digest, name = line.split("  ", 1)
+                            self.assertEqual(digest, hashlib.sha256(archive.read(name)).hexdigest())
             store = root / "logs" / "diagnostic-evidence.json"
             corrupted = json.loads(store.read_bytes())
             corrupted["failures"][0]["frames"][0]["data"] = "not-base64"
@@ -237,10 +251,40 @@ class DiagnosticLogEvidenceTest(unittest.TestCase):
                     manager = DiagnosticsManager(
                         project_root=root, output_dir=root / "out", app_version="test",
                     )
-                    snapshot = manager.prepare()
-                    result = manager.build_report(snapshot, "多次失败", include_screenshot=True)
-                    self.assertEqual(8, len(result.manifest["capture"]["diagnostic_frames"]))
-                    self.assertIn("diagnostic_frames_count_limit", result.manifest["omissions"])
+                    snapshot = replace(manager.prepare(), report_context={
+                        "source": "failure_prompt", "failure_run": evidence["failures"][-2]["run"],
+                    })
+                    result = manager.build_report(snapshot, "多次失败", include_screenshot=False)
+                    self.assertEqual(10, len(result.manifest["capture"]["diagnostic_frames"]))
+                    self.assertNotIn("diagnostic_frames_count_limit", result.manifest["omissions"])
+                    with zipfile.ZipFile(result.archive_path) as archive:
+                        summary = archive.read("summary.txt").decode()
+                        self.assertIn("本次 2 张，历史/补充 8 张", summary)
+                        for frame in result.manifest["capture"]["diagnostic_frames"]:
+                            label = (
+                                "本次" if frame["run"] == snapshot.report_context["failure_run"]
+                                else "历史/补充"
+                            )
+                            self.assertTrue(any(
+                                line.startswith(f"- {label} |") and frame["path"] in line
+                                for line in summary.splitlines()
+                            ))
+                    batch_runs = {failure["run"] for failure in snapshot.failures[-2:]}
+                    batch_snapshot = replace(
+                        snapshot,
+                        failures=tuple(
+                            {**failure, "parent": "batch"} if failure["run"] in batch_runs
+                            else failure for failure in snapshot.failures
+                        ),
+                        report_context={"source": "failure_prompt", "failure_run": "batch"},
+                    )
+                    batch_result = manager.build_report(
+                        batch_snapshot, "批次多项失败", include_screenshot=False,
+                    )
+                    with zipfile.ZipFile(batch_result.archive_path) as archive:
+                        self.assertIn(
+                            "本次 4 张，历史/补充 6 张", archive.read("summary.txt").decode(),
+                        )
                     with patch("src.diagnostics.bundle._encode_frame", side_effect=OSError("disk")):
                         with self.assertRaisesRegex(ValueError, "original failure"):
                             task.run()
@@ -255,6 +299,63 @@ class DiagnosticLogEvidenceTest(unittest.TestCase):
                     ))
             finally:
                 recorder.stop()
+
+    def test_failure_notification_survives_evidence_write_errors(self):
+        from unittest.mock import Mock
+
+        from src.tasks.BaseBD2Task import BaseBD2Task
+
+        class Crash(BaseBD2Task):
+            def run(self):
+                raise ValueError("original task error")
+
+        for failed_write in (1, 2):
+            with (
+                self.subTest(failed_write=failed_write),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                recorder = RuntimeEvidence(Path(directory))
+                task = object.__new__(Crash)
+                task.info = {}
+                task._executor = SimpleNamespace(trigger_tasks=[], nullable_frame=lambda: None)
+                notify = Mock()
+                recorder.failure_notifier = notify
+                persist = recorder._persist
+                writes = []
+
+                def write():
+                    writes.append(True)
+                    if len(writes) == failed_write:
+                        raise OSError("evidence directory unavailable")
+                    return persist()
+
+                try:
+                    with patch("src.diagnostics.runtime._recorder", recorder), patch.object(
+                        recorder, "_persist", side_effect=write,
+                    ):
+                        with self.assertRaisesRegex(ValueError, "original task error"):
+                            task.run()
+                        state = recorder.snapshot()
+                    notify.assert_called_once()
+                    self.assertEqual(1, len(state["failures"]))
+                    self.assertIn("evidence_write_failed:OSError", state["omissions"])
+                    action_at = round(time.time()) + 0.1234563
+                    with patch("src.diagnostics.runtime.time.time", return_value=action_at):
+                        recorder.report_action("prompt_accepted", notify.call_args.args[0]["run"])
+                    state = recorder.snapshot()
+                    self.assertEqual("report_prompt_accepted", state["events"][-1]["event"])
+                    self.assertEqual(notify.call_args.args[0]["run"], state["events"][-1]["run"])
+                    self.assertEqual(1, len(state["failures"]))
+                    builder = ReportBundleBuilder(
+                        project_root=Path(directory), output_dir=Path(directory)/"out",
+                        app_version="test",
+                    )
+                    _, events, _ = builder.capture_logs(
+                        datetime.fromtimestamp(action_at).astimezone().isoformat(timespec="microseconds"),
+                    )
+                    self.assertTrue(any(e["event"] == "report_prompt_accepted" for e in events))
+                finally:
+                    recorder.stop()
 
     def test_pvp_page_failure_and_quick_hunt_cleanup_keep_original_scene(self):
         from src.tasks.BaseBD2Task import BaseBD2Task, CartridgeSpecialPageResult
@@ -627,12 +728,16 @@ class DiagnosticLogEvidenceTest(unittest.TestCase):
             def run(self):
                 if self.stop_requested:
                     raise TaskDisabledException()
-                return False
+                return self.result
 
         class Batch(BaseBD2Task):
             def run(self):
                 try:
-                    return self.child.run()
+                    result = self.child.run()
+                    recorder.snapshot()
+                    self.test_case.assertEqual([], notifications)
+                    continued.append("remaining tasks finished")
+                    return result
                 except TaskDisabledException:
                     return False
 
@@ -640,6 +745,12 @@ class DiagnosticLogEvidenceTest(unittest.TestCase):
             recorder = RuntimeEvidence(Path(directory))
             child, batch = object.__new__(Child), object.__new__(Batch)
             captures = []
+            notifications = []
+            continued = []
+            recorder.failure_notifier = lambda failure: notifications.append(
+                (failure, list(continued)),
+            )
+            batch.test_case = self
 
             def frame():
                 captures.append(True)
@@ -650,6 +761,7 @@ class DiagnosticLogEvidenceTest(unittest.TestCase):
                 task._executor = SimpleNamespace(trigger_tasks=[], nullable_frame=frame)
             batch.child = child
             child.stop_requested = False
+            child.result = False
             try:
                 with patch("src.diagnostics.runtime._recorder", recorder):
                     batch.run()
@@ -666,6 +778,20 @@ class DiagnosticLogEvidenceTest(unittest.TestCase):
                 self.assertEqual(2, outcomes.count("failed"))
                 self.assertEqual(1, len(captures))
                 self.assertEqual(1, len(evidence["failures"][0]["frames"]))
+                self.assertEqual(1, len(notifications))
+                self.assertEqual("Batch", notifications[0][0]["task_name"])
+                self.assertEqual(["remaining tasks finished"], notifications[0][1])
+                child._executor.trigger_tasks = []
+                with patch("src.diagnostics.runtime._recorder", recorder):
+                    child.run()
+                recorder.snapshot()
+                self.assertEqual(2, len(notifications))
+                self.assertEqual("Child", notifications[1][0]["task_name"])
+                child.result = True
+                with patch("src.diagnostics.runtime._recorder", recorder):
+                    child.run()
+                recorder.snapshot()
+                self.assertEqual(2, len(notifications))
             finally:
                 recorder.stop()
 
@@ -683,6 +809,13 @@ class DiagnosticLogEvidenceTest(unittest.TestCase):
             recorder = RuntimeEvidence(
                 Path(directory), executor_getter=lambda: SimpleNamespace(current_task=task)
             )
+            notifications = []
+
+            def notify(failure):
+                notifications.append(failure)
+                raise RuntimeError("report UI unavailable")
+
+            recorder.failure_notifier = notify
             try:
                 with patch("src.diagnostics.runtime._recorder", recorder):
                     with self.assertRaises(ValueError):
@@ -695,6 +828,8 @@ class DiagnosticLogEvidenceTest(unittest.TestCase):
                 self.assertEqual(1, len(evidence["failures"]))
                 self.assertIn("Traceback", evidence["failures"][0]["detail"])
                 self.assertIn("second line", evidence["failures"][0]["detail"])
+                self.assertEqual(1, len(notifications))
+                self.assertIn("failure_notification_failed:RuntimeError", evidence["omissions"])
                 run = {
                     "id": evidence["failures"][0]["run"],
                     "task": "Crash",
@@ -708,6 +843,7 @@ class DiagnosticLogEvidenceTest(unittest.TestCase):
                     recorder.event(run, "failed")
                     evidence = recorder.snapshot()
                 self.assertEqual(2, evidence["failures"][0]["count"])
+                self.assertEqual(1, len(notifications))
             finally:
                 recorder.stop()
 
@@ -1026,6 +1162,7 @@ class ReportBundleBuilderTest(unittest.TestCase):
                 capture_method="WGC",
                 task={"class": "MapTradeTask", "当前阶段": "购买", "状态": "失败"},
                 executor_was_running=True,
+                report_context={"source": "manual"},
             )
             builder = ReportBundleBuilder(
                 project_root=root,
@@ -1065,6 +1202,8 @@ class ReportBundleBuilderTest(unittest.TestCase):
                 self.assertTrue(manifest["privacy"]["redacted"])
                 self.assertFalse(manifest["privacy"]["raw_config_included"])
                 self.assertTrue(manifest["capture"]["included"])
+                self.assertEqual({"source": "manual"}, manifest["report_context"])
+                self.assertIn("报告入口：手动生成", archive.read("summary.txt").decode())
 
                 combined_text = "\n".join(
                     archive.read(name).decode("utf-8")
@@ -1081,7 +1220,7 @@ class ReportBundleBuilderTest(unittest.TestCase):
                         hashlib.sha256(archive.read(relative_path)).hexdigest(),
                     )
 
-    def test_declined_screenshot_is_recorded_without_image(self):
+    def test_declined_current_screenshot_keeps_failure_image(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             probe_outputs = root / "probe_outputs"
@@ -1096,7 +1235,7 @@ class ReportBundleBuilderTest(unittest.TestCase):
                 app_version="0.1.23",
             )
             snapshot = DiagnosticSnapshot(
-                captured_at="2026-08-14T13:00:00+08:00",
+                captured_at=datetime.now().astimezone().isoformat(timespec="seconds"),
                 frame=np.zeros((20, 20, 3), dtype=np.uint8),
             )
 
@@ -1105,15 +1244,15 @@ class ReportBundleBuilderTest(unittest.TestCase):
             with zipfile.ZipFile(result.archive_path) as archive:
                 manifest = json.loads(archive.read("manifest.json"))
                 self.assertNotIn("screenshots/current.webp", archive.namelist())
-                self.assertNotIn(
+                self.assertIn(
                     "screenshots/diagnostic/pvp_auto_battle_failed.webp",
                     archive.namelist(),
                 )
-                self.assertEqual([], manifest["capture"]["diagnostic_frames"])
+                self.assertEqual(1, len(manifest["capture"]["diagnostic_frames"]))
                 self.assertIn("screenshot_declined", manifest["omissions"])
-                self.assertIn("diagnostic_frames_declined", manifest["omissions"])
+                self.assertNotIn("diagnostic_frames_declined", manifest["omissions"])
 
-    def test_packages_recent_failure_frames_with_consent_but_not_regular_probe_images(self):
+    def test_packages_recent_failure_frames_but_not_regular_probe_images(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             probe_outputs = root / "probe_outputs"

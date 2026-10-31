@@ -21,6 +21,8 @@ from src.tasks.BaseBD2Task import (
 )
 from src.tasks.BaseBD2Task import TEMPLATE_DIR as RECENT_CARTRIDGE_TEMPLATE_DIR
 from src.tasks.BD2MapCollectionProbeTask import BD2MapCollectionProbeTask
+from src.tasks.map_trade.models import MatchResult, ScreenState
+from src.tasks.map_trade.navigator import Navigator
 from src.tasks.map_trade.navigator_constants import CHAPTER_HOME_POINT
 from src.tasks.MapCollectionTask import MapCollectionTask
 from src.tasks.MapTradeTask import MapTradeTask
@@ -46,6 +48,7 @@ from src.tasks.PVPTask import (
     PVP_MULTIPLIER_BUTTON_SCREEN_POINT,
     PVP_MULTIPLIER_CONFIRM_SCREEN_POINT,
     PVP_MULTIPLIER_OCR_REFERENCE_ROI,
+    PVP_MULTIPLIER_PLUS_SCREEN_POINT,
     PVP_NO_FIND_TEMPLATES,
     PVP_RANK_CONFIRM_SETTLE_SECONDS,
     PVP_RANK_PAGE_AFTER_CLICK_SECONDS,
@@ -200,11 +203,92 @@ class FiendRewardEntryTest(unittest.TestCase):
                 task = self.make_task(screens)
                 quick = Mock(return_value=True)
                 confirm = Mock(return_value=True)
-                self.assertFalse(task.open_cartridge_quick_switcher(lambda: True, quick, confirm))
+                ready = Mock(return_value=True)
+                self.assertFalse(task.open_cartridge_quick_switcher(
+                    lambda: True, quick, confirm, entry_ready=ready,
+                ))
                 self.assertEqual(2, len(self.clicks))
                 quick.assert_not_called()
                 confirm.assert_not_called()
+                ready.assert_not_called()
                 task._save_flow_diagnostic.assert_called_once_with("cartridge_quick_switch_failed")
+
+    def test_story_recent_entry_confirms_field_and_recovers_before_quick_switch(self):
+        from ok.task.exceptions import FinishedException, TaskDisabledException
+
+        for scenario in (
+            "field", "battle", "battle_during_window", "unknown", "black", "pvp",
+            "retreat_timeout", "stop", "finished",
+        ):
+            with self.subTest(scenario=scenario):
+                task = self.make_task([self.normal_boxes()], recent_pvp=scenario == "pvp")
+                state = [
+                    "battle" if scenario in {"battle", "pvp", "retreat_timeout", "stop", "finished"}
+                    else scenario if scenario in {"unknown", "black"} else "field"
+                ]
+                frame = np.full((90, 160, 3), 120, dtype=np.uint8)
+                events = []
+                matches = []
+                quick_times = []
+
+                def click(_point, _shape, after_sleep=0):
+                    self.assertEqual("field", state[0])
+                    events.append("quick")
+                    quick_times.append(self.now)
+                    self.now += after_sleep
+
+                def find(_frame):
+                    matches.append(state[0])
+                    if scenario == "battle_during_window" and len(matches) == 2:
+                        state[0] = "battle"
+                    return MatchResult(.98, (60, 70), (10, 10)) if state[0] == "field" else None
+
+                def retreat(_frame, *, stop_walk):
+                    self.assertTrue(stop_walk)
+                    events.append("retreat")
+                    if scenario == "retreat_timeout":
+                        raise RuntimeError("遭遇战退出超时")
+                    if scenario in {"stop", "finished"}:
+                        raise (TaskDisabledException if scenario == "stop" else FinishedException)()
+                    state[0] = "field"
+                    return frame
+
+                nav = Navigator(task, SimpleNamespace(capture=lambda: frame, click_client=click))
+                nav._loading_timeout = lambda: 1
+                nav._black_frame = lambda _frame: state[0] == "black"
+                nav._field_battle_visible = lambda _frame: state[0] == "battle"
+                nav.classify = lambda *_args: (
+                    ScreenState.SANDBOX if state[0] == "field" else ScreenState.UNKNOWN
+                )
+                nav._find_quick_switch_button = find
+                nav._retreat_from_field_battle = retreat
+                nav._wait_for_cartridge_home = Mock(side_effect=[True, False])
+                nav._wait_for_quick_switch_page = Mock(return_value=True)
+                nav._select_cartridge_category = Mock(return_value=True)
+                expected_error = {
+                    "retreat_timeout": RuntimeError, "stop": TaskDisabledException,
+                    "finished": FinishedException,
+                }.get(scenario)
+                with patch("src.tasks.map_trade.navigator_story.monotonic", lambda: self.now):
+                    if expected_error is not None:
+                        with self.assertRaises(expected_error):
+                            nav._open_cartridge_quick_switcher()
+                    else:
+                        result = nav._open_cartridge_quick_switcher()
+                        self.assertEqual(scenario in {"field", "battle", "battle_during_window"},
+                                         result.success)
+                self.assertEqual(1, len(self.clicks))
+                if scenario in {"field", "battle", "battle_during_window"}:
+                    self.assertEqual(["quick"] if scenario == "field" else ["retreat", "quick"],
+                                     events)
+                    nav._wait_for_cartridge_home.assert_called_once()
+                    nav._wait_for_quick_switch_page.assert_called_once()
+                    self.assertLess(quick_times[0], .5)
+                else:
+                    self.assertNotIn("quick", events)
+                    nav._wait_for_quick_switch_page.assert_not_called()
+                if scenario in {"unknown", "black", "pvp"}:
+                    self.assertNotIn("retreat", events)
 
     def test_partial_or_cross_frame_reward_words_never_trigger_click(self):
         title, action = self.reward_boxes()
@@ -456,7 +540,7 @@ class PVPTaskHelperTest(unittest.TestCase):
             )
         )
         self.assertEqual([(852, 991, 1920, 1080, 0.0)], clicks)
-        self.assertEqual(10, len(sleeps))
+        self.assertEqual(2, len(sleeps))
         self.assertTrue(all(seconds == 0.1 for seconds in sleeps))
 
     def test_template_click_scales_reference_offset_with_client_resolution(self):
@@ -515,14 +599,15 @@ class PVPTaskHelperTest(unittest.TestCase):
     def test_target_multiplier_accepts_supported_values(self):
         task = object.__new__(PVPTask)
 
-        task.config = {"竞技场战斗倍数": "20倍"}
-        self.assertEqual(20, PVPTask._target_multiplier(task))
-
-        task.config = {"竞技场战斗倍数": "4倍"}
-        self.assertEqual(4, PVPTask._target_multiplier(task))
-
-        task.config = {"竞技场战斗倍数": "3倍"}
-        self.assertEqual(1, PVPTask._target_multiplier(task))
+        for value in range(1, 41):
+            for raw in (value, f"{value}倍"):
+                with self.subTest(raw=raw):
+                    task.config = {"竞技场战斗倍数": raw}
+                    self.assertEqual(value, PVPTask._target_multiplier(task))
+        for raw in (0, 41, -1, "无法识别"):
+            with self.subTest(raw=raw):
+                task.config = {"竞技场战斗倍数": raw}
+                self.assertEqual(1, PVPTask._target_multiplier(task))
 
     def test_multiplier_roi_covers_current_auto_battle_value(self):
         self.assertEqual((800, 213, 65, 33), PVP_MULTIPLIER_OCR_REFERENCE_ROI)
@@ -631,6 +716,7 @@ class PVPTaskHelperTest(unittest.TestCase):
                         confirm_quick_switch_page=lambda: (
                             calls.append("confirm") or True
                         ),
+                        entry_ready=lambda: self.fail("PVP entry must not recover a story battle"),
                     )
                 )
                 self.assertEqual(
@@ -730,6 +816,32 @@ class PVPTaskHelperTest(unittest.TestCase):
             )
         )
         self.assertEqual([("missing recent PVP template", True)], warnings)
+
+    def test_common_cartridge_entry_rechecks_entry_before_one_page_retry(self):
+        for page_results, entry_results, expected in (
+            ([True], [True], True),
+            ([False, True], [True, True], True),
+            ([False, False], [True, True], False),
+            ([False], [True, False], False),
+        ):
+            with self.subTest(pages=page_results, entries=entry_results):
+                task = object.__new__(PVPTask)
+                task.operate_click = Mock()
+                task._sleep_after_recognition = Mock()
+                task._recent_cartridge_is_pvp = lambda: False
+                task._handle_recent_cartridge_special_pages = Mock(
+                    return_value=CartridgeSpecialPageResult.ABSENT,
+                )
+                task.info_set = Mock()
+                task._save_flow_diagnostic = Mock()
+                entry = Mock(side_effect=entry_results)
+                page = Mock(side_effect=page_results)
+                self.assertEqual(expected, task.open_cartridge_quick_switcher(
+                    lambda: True, entry, page,
+                ))
+                self.assertEqual(len(entry_results), entry.call_count)
+                self.assertEqual(len(page_results), page.call_count)
+                self.assertEqual(not expected, task._save_flow_diagnostic.called)
 
     def test_common_cartridge_entry_stops_when_home_is_not_confirmed(self):
         task = object.__new__(PVPTask)
@@ -1510,7 +1622,7 @@ class PVPTaskHelperTest(unittest.TestCase):
 
     def test_run_falls_back_to_one_multiplier_when_ap_shortage(self):
         task = object.__new__(PVPTask)
-        task.config = {"启用": True, "竞技场战斗倍数": 10, "最多战斗轮次": 1}
+        task.config = {"启用": True, "竞技场战斗倍数": 10}
         infos = {}
         task.info_set = lambda key, value: infos.__setitem__(key, value)
         notifications = []
@@ -2765,7 +2877,9 @@ class PVPTaskHelperTest(unittest.TestCase):
         self.assertTrue(PVPTask._ensure_free_ap_enabled(task))
         self.assertEqual(PVP_CLICK_VERIFY_ATTEMPTS, switch["clicks"])
 
-    def _make_multiplier_harness(self, swallow_button=False, swallow_option=False):
+    def _make_multiplier_harness(
+        self, swallow_button=False, swallow_option=False, swallow_step=False
+    ):
         task = object.__new__(PVPTask)
         task.config = {}
         task.info_set = lambda *_args, **_kwargs: None
@@ -2781,8 +2895,14 @@ class PVPTaskHelperTest(unittest.TestCase):
                 needed = 2 if swallow_option else 1
                 if state["clicks"].count((x, y)) >= needed:
                     state["setting"] = 1
+            elif (x, y) == PVP_MULTIPLIER_40_OPTION_SCREEN_POINT:
+                state["setting"] = 40
+            elif (x, y) == PVP_MULTIPLIER_PLUS_SCREEN_POINT:
+                if not swallow_step or state["clicks"].count((x, y)) > 1:
+                    state["setting"] = min(40, state["setting"] + 1)
             elif (x, y) == PVP_MULTIPLIER_CONFIRM_SCREEN_POINT:
                 state["main"] = state["setting"]
+                state["dialog_open"] = False
 
         task._click_screen_reference = fake_click
         task._multiplier_matches = (
@@ -2791,11 +2911,60 @@ class PVPTaskHelperTest(unittest.TestCase):
         task._setting_multiplier_matches = (
             lambda multiplier: state["dialog_open"] and state["setting"] == multiplier
         )
+        task._setting_multiplier_value = lambda: state["setting"]
         task._wait_for_ocr_patterns = lambda *args, **kwargs: (
             state["dialog_open"],
             "设置鲜血鸡尾酒消耗量",
         )
         return task, state
+
+    def test_ensure_multiplier_sets_every_integer_before_confirmation(self):
+        for multiplier in range(1, 41):
+            with self.subTest(multiplier=multiplier):
+                task, state = self._make_multiplier_harness()
+                state["main"] = 0
+                self.assertTrue(PVPTask._ensure_multiplier(task, multiplier))
+                self.assertEqual(multiplier, state["main"])
+                self.assertEqual(
+                    0 if multiplier == 40 else multiplier - 1,
+                    state["clicks"].count(PVP_MULTIPLIER_PLUS_SCREEN_POINT),
+                )
+
+    def test_ensure_multiplier_two_retries_swallowed_step(self):
+        task, state = self._make_multiplier_harness(swallow_step=True)
+
+        self.assertTrue(PVPTask._ensure_multiplier(task, 2))
+        self.assertEqual(2, state["main"])
+        self.assertEqual(2, state["clicks"].count(PVP_MULTIPLIER_PLUS_SCREEN_POINT))
+
+    def test_ensure_multiplier_confirms_main_when_setting_is_unreadable(self):
+        for main_readable in (True, False):
+            with self.subTest(main_readable=main_readable):
+                task, state = self._make_multiplier_harness()
+                task._setting_multiplier_matches = lambda _value: False
+                task._setting_multiplier_value = lambda: None
+                if not main_readable:
+                    task._multiplier_matches = lambda *_args, **_kwargs: False
+
+                self.assertEqual(
+                    main_readable, PVPTask._ensure_multiplier(task, 2)
+                )
+                self.assertEqual(2, state["main"])
+                self.assertEqual(
+                    1, state["clicks"].count(PVP_MULTIPLIER_PLUS_SCREEN_POINT)
+                )
+                self.assertEqual(
+                    1, state["clicks"].count(PVP_MULTIPLIER_CONFIRM_SCREEN_POINT)
+                )
+
+    def test_select_multiplier_does_not_chase_a_reading_above_target(self):
+        task, state = self._make_multiplier_harness()
+        task._setting_multiplier_matches = lambda value: value == 1
+        task._setting_multiplier_value = lambda: 3
+
+        self.assertTrue(PVPTask._select_setting_multiplier(task, 2))
+        self.assertEqual(1, state["clicks"].count(PVP_MULTIPLIER_PLUS_SCREEN_POINT))
+        self.assertNotIn(PVP_MULTIPLIER_CONFIRM_SCREEN_POINT, state["clicks"])
 
     def test_ensure_multiplier_one_confirms_with_single_clicks_when_landing(self):
         task, state = self._make_multiplier_harness()
@@ -2878,7 +3047,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         self.assertTrue(PVPTask._select_setting_multiplier(task, 40))
         self.assertEqual([PVP_MULTIPLIER_40_OPTION_SCREEN_POINT], state["clicks"])
 
-    def test_select_setting_multiplier_fails_after_retry_budget(self):
+    def test_select_setting_multiplier_defers_unreadable_setting_to_confirmation(self):
         task = object.__new__(PVPTask)
         infos = {}
         task.info_set = lambda key, value: infos.__setitem__(key, value)
@@ -2886,13 +3055,14 @@ class PVPTaskHelperTest(unittest.TestCase):
         clicks = []
         task._click_screen_reference = lambda x, y, after_sleep=0.0: clicks.append((x, y))
         task._setting_multiplier_matches = lambda value: False
+        task._setting_multiplier_value = lambda: None
 
-        self.assertFalse(PVPTask._select_setting_multiplier(task, 1))
+        self.assertTrue(PVPTask._select_setting_multiplier(task, 1))
         self.assertEqual(
             [PVP_MULTIPLIER_1_OPTION_SCREEN_POINT] * PVP_CLICK_VERIFY_ATTEMPTS,
             clicks,
         )
-        self.assertEqual("未确认", infos["PVP 倍率 OCR"])
+        self.assertEqual("待主弹窗确认", infos["PVP 倍率 OCR"])
 
     def test_confirm_setting_multiplier_retries_while_dialog_open(self):
         task = object.__new__(PVPTask)
