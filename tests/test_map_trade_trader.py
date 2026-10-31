@@ -2440,7 +2440,7 @@ class BuyEntryTest(unittest.TestCase):
         navigator._click_quick_switch = click_template
         navigator._wait_for_cartridge_home = lambda: True
         navigator._wait_for_quick_switch_page = lambda: True
-        navigator._wait_for_cartridge_category = lambda **_kwargs: True
+        navigator._select_cartridge_category = lambda _category: True
         navigator._wait_for_story_badge_with_scroll = lambda _number: (badge_frame, badge_detection)
         navigator.vision.capture = lambda: badge_frame
         navigator._cartridge_category_confirmed = lambda *_args: True
@@ -2483,7 +2483,6 @@ class BuyEntryTest(unittest.TestCase):
         )
         self.assertEqual(
             [
-                (*STORY_CATEGORY_POINT, 0.5),
                 (*BARGAIN_POINT, 0.0),
                 (*BARGAIN_CONFIRM_POINT, 0.0),
             ],
@@ -3175,7 +3174,7 @@ class MerchantNavigationTest(unittest.TestCase):
         navigator._click_quick_switch = lambda **_kwargs: True
         navigator._wait_for_cartridge_home = lambda: True
         navigator._wait_for_quick_switch_page = lambda: True
-        navigator._wait_for_cartridge_category = lambda **_kwargs: True
+        navigator._select_cartridge_category = lambda _category: True
         navigator._wait_for_story_badge_with_scroll = lambda _number: (badge_frame, badge_detection)
         navigator.vision.capture = lambda: badge_frame
         navigator._cartridge_category_confirmed = lambda *_args: True
@@ -3203,7 +3202,7 @@ class MerchantNavigationTest(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertEqual(ScreenState.UNKNOWN, result.state)
         self.assertEqual(MERCHANT_CLICK_LOCATION_FAILURE_MESSAGE, result.message)
-        self.assertEqual([(*STORY_CATEGORY_POINT, 0.5)], clicks)
+        self.assertEqual([], clicks)
         self.assertEqual(
             [(badge_detection.best.result.center, badge_frame.shape, 0.0)],
             client_clicks,
@@ -3248,7 +3247,7 @@ class MerchantNavigationTest(unittest.TestCase):
         navigator._click_quick_switch = lambda **_kwargs: True
         navigator._wait_for_cartridge_home = lambda: True
         navigator._wait_for_quick_switch_page = lambda: True
-        navigator._wait_for_cartridge_category = lambda **_kwargs: True
+        navigator._select_cartridge_category = lambda _category: True
         navigator._wait_for_story_badge_with_scroll = lambda _number: (badge_frame, badge_detection)
         navigator.vision.capture = lambda: badge_frame
         navigator._cartridge_category_confirmed = lambda *_args: True

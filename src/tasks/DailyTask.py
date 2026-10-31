@@ -96,6 +96,7 @@ BUSINESS_COLLECT_CLOSE_REFERENCE_POINT = (832, 814)
 BUSINESS_COLLECT_TIMEOUT = 20.0
 BUSINESS_COLLECT_CLAIM_RETRY_SECONDS = 4.0
 BUSINESS_COLLECT_MAX_CLOSE_CLICKS = 8
+BUSINESS_GUEST_RELATIVE_ROI = (0.08, 0.19, 0.23, 0.35)
 
 
 class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
@@ -612,16 +613,32 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
                 self.info_set("常客圣石奖励", "、".join(rewards))
                 self.log_info(f"常客圣石：已领取，{'、'.join(rewards)}。")
                 return True
-            guest = next((box for box in boxes if normalize_ocr_text(box.name) == "常客"), None)
-            if (self._find_ocr_box(boxes, "格鲁菲餐厅") is None or guest is None
-                    or monotonic() < confirm_until):
+            restaurant = self._find_ocr_box(boxes, "格鲁菲餐厅") is not None
+            guests = [box for box in boxes if normalize_ocr_text(box.name) == "常客"]
+            scale = "全图720"
+            if restaurant and not guests and monotonic() >= confirm_until:
+                # 小字号在整帧缩图中可能消失；保留同帧餐厅身份，局部复核独立按钮。
+                boxes = vision.ocr_boxes(
+                    frame, "常客按钮复核", relative_roi=BUSINESS_GUEST_RELATIVE_ROI,
+                    target_height=0, ocr_scale=2.0,
+                )
+                guests = [box for box in boxes if normalize_ocr_text(box.name) == "常客"]
+                scale = "局部2倍"
+            candidates = "/".join(str(box.name) for box in boxes if "常客" in str(box.name))[:120]
+            self.info_set(
+                "常客圣石识别",
+                f"餐厅={restaurant}; 按钮={len(guests)}; {scale}; 点击={clicks}; "
+                f"候选={candidates or '-'}",
+            )
+            if (not restaurant or len(guests) != 1
+                    or monotonic() < confirm_until or monotonic() >= deadline):
                 self.sleep(0.25)
                 continue
             if clicks >= 2:
                 self.info_set("常客圣石结果", "无待领取圣石")
                 self.log_info("常客圣石：点击两次均未出现奖励提示，当前无待领取圣石。")
                 return True
-            self._click_business_bounds(frame, self._business_bounds(guest), after_sleep=0.8)
+            self._click_business_bounds(frame, self._business_bounds(guests[0]), after_sleep=0.8)
             clicks += 1
             # 每次等待奖励 3 秒；首次额外留 1.5 秒缓冲，期间继续读取迟到的提示。
             confirm_until = monotonic() + 3.0 + (1.5 if clicks == 1 else 0.0)

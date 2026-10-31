@@ -278,7 +278,7 @@ class StoryCardNavigationMixin:
                 "无法从主页打开快速切换卡带页面",
             )
 
-        if not self._select_cartridge_category(category):
+        if not self._ensure_cartridge_category(category):
             return NavigationResult(
                 False,
                 self.classify(),
@@ -319,12 +319,53 @@ class StoryCardNavigationMixin:
         )
 
     def _select_cartridge_category(self, category: str = "story") -> bool:
-        """Click and confirm the category before any quick-bar focus or scroll."""
-
-        label, point, _region = self._card_category(category)
+        """Select on a fresh menu frame; retry once only while that menu remains."""
+        label, point, region = self._card_category(category)
+        self._menu_confirmed = None
         self._status("导航状态", f"选择{label}")
-        self.task.operate_click(*point, after_sleep=0.5)
-        return self._wait_for_cartridge_category(category=category)
+        for _attempt in range(2):
+            frame = self.vision.capture()
+            boxes = self.vision.ocr_boxes(frame, f"{label}类别")
+            text = normalize_text(self.vision.simplify(" ".join(str(box.name) for box in boxes)))
+            if not all(normalize_text(word) in text for word in QUICK_SWITCH_PAGE_KEYWORDS):
+                self._status("卡带类别选择", "卡带页标签不完整，未点击类别")
+                return False
+            ratio = self.vision.bright_neutral_ratio(frame, region)
+            if ratio >= STORY_CATEGORY_HIGHLIGHT_MIN_RATIO:
+                self._menu_confirmed = (monotonic(), category)
+                return True
+            height, width = frame.shape[:2]
+            targets = [
+                center for box in boxes
+                if normalize_text(self.vision.simplify(str(box.name))) == normalize_text(label)
+                and (center := self._ocr_box_center(box)) is not None
+                and region[0] <= center[0] / width <= region[2]
+                and region[1] <= center[1] / height <= region[3]
+            ]
+            if len(targets) > 1:
+                self._status("卡带类别选择", "类别文字位置不唯一，未执行点击")
+                return False
+            # 合并OCR框不能定位单个标签；已确认完整菜单时使用本项目标定点。
+            target = (targets[0][0] / width, targets[0][1] / height) if targets else point
+            self.task.operate_click(*target, after_sleep=0.5)
+            if self._wait_for_cartridge_category(category=category, warn=False):
+                return True
+        self._status("卡带类别选择", f"两次点击后仍未确认{label}")
+        return False
+
+    def _ensure_cartridge_category(self, category: str) -> bool:
+        if self._select_cartridge_category(category):
+            return True
+        self._menu_confirmed = None
+        # 类别页消失后只在连续确认箱庭时重开一次，不递归进入分类恢复。
+        if not self._wait_for_current_sandbox().success:
+            return False
+        self._status("卡带类别选择", "已返回箱庭，重新打开快速切换页一次")
+        if not self._click_quick_switch(
+            timeout=QUICK_SWITCH_CLICK_TIMEOUT, after_sleep=QUICK_SWITCH_CLICK_AFTER_SLEEP,
+        ) or not self._wait_for_quick_switch_page():
+            return False
+        return self._select_cartridge_category(category)
 
     def _scroll_cartridge_bar(
         self, point, amount, *, count, interval, after_sleep, require_movement=True,
@@ -2349,7 +2390,7 @@ class StoryCardNavigationMixin:
                 "点击快速切换按钮后未确认卡带选择页",
             )
 
-        if not self._select_cartridge_category(category):
+        if not self._ensure_cartridge_category(category):
             return NavigationResult(
                 False,
                 self.classify(),

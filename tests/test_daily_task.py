@@ -10,6 +10,7 @@ from ok.util.config import Config
 
 from src.tasks.DailyTask import (
     BUSINESS_COLLECT_KEYWORDS,
+    BUSINESS_GUEST_RELATIVE_ROI,
     GUILD_FINISHED_TEMPLATE,
     GUILD_MAIN_ACTIVE_TEMPLATE,
     GUILD_MAIN_FINISHED_TEMPLATE,
@@ -2862,7 +2863,7 @@ class DailyTaskHelperTest(StageHistoryTestCase):
                 task, statuses, clicks, _, _ = self._business_flow_task(screen)
                 del task._collect_business_guest_stones
                 task._quick_vision = Mock(return_value=SimpleNamespace(
-                    ocr_boxes=lambda *_args: task.ocr(),
+                    ocr_boxes=lambda *_args, **_kwargs: task.ocr(),
                 ))
                 task.recover_daily_home.return_value = home_ok
                 self.assertEqual(expected, task.run_business_collect())
@@ -2877,6 +2878,56 @@ class DailyTaskHelperTest(StageHistoryTestCase):
                 else:
                     task._save_flow_diagnostic.assert_called_with("business_collect_failed")
 
+
+    def test_guest_recheck_scales_crop_and_click_bounds_and_rejects_ambiguity(self):
+        for height, width, roi in ((1080, 1920, (154, 205, 288, 173)),
+                                   (720, 1280, (102, 137, 192, 115))):
+            for ambiguous in (False, True):
+                with self.subTest(size=(width, height), ambiguous=ambiguous):
+                    frame = np.full((height, width, 3), 120, dtype=np.uint8)
+                    clock, clicks, crops = [0.0], [], []
+                    task = object.__new__(DailyTask)
+                    task.config = {}
+                    task.capture_frame = lambda: frame
+                    task.info_set = Mock()
+                    task.log_info = Mock()
+                    task.sleep = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+                    task._save_flow_diagnostic = Mock()
+                    task._wait_for_ocr_keywords = Mock(return_value=(True, "格鲁菲餐厅"))
+                    task._click_business_bounds = lambda image, bounds, after_sleep: (
+                        self.assertIs(image, frame), clicks.append(bounds), task.sleep(after_sleep),
+                    )
+
+                    def box(name, x=0, y=0, w=40, h=20):
+                        return SimpleNamespace(name=name, x=x, y=y, width=w, height=h)
+
+                    def ocr(*, frame, name, **kwargs):
+                        if name == "餐馆入口":
+                            return [box("餐馆营业额", 10, 10), box("立刻前往", 100, 10)]
+                        if len(clicks) == 2:
+                            return [box("火圣石×10")]
+                        if name == "常客圣石":
+                            return [box("格鲁菲餐厅"), box("常客笔记")]
+                        self.assertEqual("常客按钮复核", name)
+                        self.assertEqual(0, kwargs["target_height"])
+                        left, top, crop_width, crop_height = roi
+                        self.assertEqual((crop_height * 2, crop_width * 2, 3), frame.shape)
+                        crops.append(frame.shape)
+                        guest = box("常客", (width * .15 - left) * 2 - 20,
+                                    (height * .3 - top) * 2 - 10)
+                        return [guest] * (2 if ambiguous else 1)
+
+                    task.ocr = ocr
+                    task._quick_vision = lambda: Vision(task)
+                    with patch("src.tasks.DailyTask.monotonic", side_effect=lambda: clock[0]):
+                        self.assertEqual(not ambiguous, task._collect_business_guest_stones())
+                    self.assertTrue(crops)
+                    self.assertEqual(1 if ambiguous else 2, len(clicks))
+                    if not ambiguous:
+                        x, y, w, h = clicks[-1]
+                        self.assertAlmostEqual(.15, (x + w / 2) / width)
+                        self.assertAlmostEqual(.3, (y + h / 2) / height)
+        self.assertEqual((.08, .19, .23, .35), BUSINESS_GUEST_RELATIVE_ROI)
 
     def test_business_collect_requires_restaurant_entry_and_arrival(self):
         for has_restaurant_go, arrived in ((False, True), (True, False)):
