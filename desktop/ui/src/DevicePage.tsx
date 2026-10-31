@@ -9,6 +9,7 @@ import { t } from "./i18n.ts";
 import { AUTO_RESIZE_KEY, BASIC, DEVICE_KEYS, findGroup, pickFields } from "./settings.ts";
 import type { GamePaths, WindowInfo } from "./types.ts";
 import { Icon } from "./ui.tsx";
+import { Preview } from "./Preview.tsx";
 
 const message = (reason: unknown) => (reason instanceof Error ? reason.message : String(reason));
 
@@ -16,17 +17,6 @@ function Connection({ core }: { core: Core }) {
   const ui = core.ui;
   const device = core.device;
   const wait = ui?.starter_wait ?? null;
-  const [shot, setShot] = useState<string | null>(null);
-  const [shotError, setShotError] = useState<string | null>(null);
-  const [shooting, setShooting] = useState(false);
-  const takeShot = () => {
-    setShooting(true);
-    setShotError(null);
-    api.tool("capture").then(
-      () => setShot(`/api/capture/image?at=${Date.now()}`),
-      (reason: unknown) => setShotError(`${t("截图失败")}：${message(reason)}`),
-    ).finally(() => setShooting(false));
-  };
 
   let title;
   let detail;
@@ -87,28 +77,7 @@ function Connection({ core }: { core: Core }) {
         <div className="dsc">{detail}</div>
         {extra}
       </div>
-      <div className="shot-col">
-        {device?.connected ? (
-          shot ? (
-            <a href={shot} target="_blank" rel="noreferrer" className="shot" title={t("在新窗口中打开")}>
-              <img src={shot} alt={t("刚截的游戏画面")} />
-            </a>
-          ) : (
-            <div className="shot empty-shot">{t("截一张图，确认截图方式能看到游戏画面")}</div>
-          )
-        ) : (
-          <div className="shot empty-shot">{t("连接游戏后可以截图")}</div>
-        )}
-        <div className="row">
-          <button type="button" className="btn sm" disabled={!device?.connected || shooting} onClick={takeShot}>
-            <Icon name="camera" />
-            {shot ? t("再截一张") : t("截一张图")}
-          </button>
-          <span className="grow" />
-          <span className="why">{t("实时预览 阶段 3a")}</span>
-        </div>
-        {shotError && <div className="ferr">{shotError}</div>}
-      </div>
+      <Preview core={core} />
     </div>
   );
 }

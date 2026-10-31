@@ -7,6 +7,7 @@ import { DevicePage } from "./DevicePage.tsx";
 import { appendRecords, LOG_LIMIT, type LogRecord, parseLog, recordsFromEvent } from "./logs.ts";
 import { LogsPage } from "./LogsPage.tsx";
 import { RecordsPage } from "./OtherPages.tsx";
+import { ReportPage } from "./ReportPage.tsx";
 import { type DockRun, RunDock } from "./RunDock.tsx";
 import { childRuns, isActive, sealOf, shutdownSeconds } from "./run.ts";
 import { SettingsPage } from "./SettingsPage.tsx";
@@ -33,7 +34,7 @@ declare global {
   }
 }
 
-export type Page = "today" | "tasks" | "records" | "logs" | "device" | "settings";
+export type Page = "today" | "tasks" | "records" | "logs" | "device" | "settings" | "report";
 
 export interface Core {
   ui: CaptureUi | null;
@@ -109,7 +110,7 @@ function storedDockExpanded(): boolean {
 const NAV: { page: Page; label: string; icon: string; later?: string }[] = [
   { page: "today", label: "今日", icon: "today" },
   { page: "tasks", label: "任务", icon: "tasks" },
-  { page: "records", label: "记录", icon: "history", later: "阶段 3" },
+  { page: "records", label: "记录", icon: "history" },
   { page: "logs", label: "日志", icon: "logs" },
   { page: "device", label: "设备", icon: "device" },
   { page: "settings", label: "设置", icon: "settings" },
@@ -321,9 +322,11 @@ export function App() {
       : null;
 
   const queued = tasks.find((task) => !task.trigger && task.enabled && task.name !== current);
-  const busy = Boolean(current) || Boolean(queued) || starting;
+  const busy = Boolean(current) || Boolean(queued) || starting || Boolean(ui?.diagnostic_pause);
   const legacy = info && info.legacy_instances.length > 0 ? info.legacy_instances : null;
-  const startBlocked = legacy
+  const startBlocked = ui?.diagnostic_pause
+    ? t("请先完成或取消问题报告")
+    : legacy
     ? t("旧版 ok-bd2 正在运行，请先关闭它")
     : starting
       ? t("正在启动游戏")
@@ -453,7 +456,10 @@ export function App() {
       );
       break;
     case "records":
-      content = <RecordsPage />;
+      content = <RecordsPage core={core} />;
+      break;
+    case "report":
+      content = <ReportPage core={core} />;
       break;
     case "logs":
       content = <LogsPage core={core} focus={logFocus} onFocus={setLogFocus} />;
@@ -499,6 +505,10 @@ export function App() {
           </button>
         </div>
       )}
+      {ui?.diagnostic_pause && page !== "report" && <div className="banner info" role="status">
+        <span className="t">{t("问题报告正在保留现场，执行器保持暂停。")}</span>
+        <button className="btn sm" onClick={() => core.navigate("report")}>{t("返回问题报告")}</button>
+      </div>}
       {info?.launcher?.outdated && (
         <div className="banner warning" role="alert">
           <Icon name="alert" />
@@ -553,10 +563,9 @@ export function App() {
                 <small>{connected ? core.captureText : t("点此查看")}</small>
               </span>
             </button>
-            <button type="button" className="nav" disabled title={t("问题报告（阶段 3）")}>
+            <button type="button" className="nav" title={t("问题报告")} aria-current={page === "report" ? "page" : undefined} onClick={() => core.navigate("report")}>
               <Icon name="report" />
               <span className="tx">{t("问题报告")}</span>
-              <span className="later">{t("阶段 3")}</span>
             </button>
           </div>
         </nav>

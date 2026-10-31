@@ -90,6 +90,21 @@ export interface HistoryRun {
   duration: number | null;
   ok: boolean;
   status: string;
+  details?: Record<string, string>;
+}
+
+export interface ReportState {
+  session_id: string | null;
+  snapshot: {
+    captured_at: string;
+    task: Record<string, unknown>;
+    warnings: string[];
+    has_screenshot: boolean;
+    frame_age_seconds: number | null;
+    was_running: boolean;
+  } | null;
+  can_resume: boolean;
+  result: { id: string; path: string; message: string } | null;
 }
 
 export interface ExecutorStatus {
@@ -129,6 +144,7 @@ export interface CaptureUi {
   interaction_methods: Choice[];
   /** The Starter wait while the game starts (src/desktop/starter_wait.py). */
   starter_wait?: StarterWait | null;
+  diagnostic_pause?: boolean;
 }
 
 export interface StarterWait {

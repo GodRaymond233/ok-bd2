@@ -218,12 +218,14 @@ export function ConfirmDialog({
   title,
   children,
   confirm,
+  cancel,
   onConfirm,
   onCancel,
 }: {
   title: string;
   children: ReactNode;
   confirm: string;
+  cancel?: string;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -241,7 +243,7 @@ export function ConfirmDialog({
         {children}
         <div className="acts">
           <button type="button" className="btn" onClick={onCancel}>
-            {t("取消")}
+            {cancel ?? t("取消")}
           </button>
           <button type="button" className="btn primary" ref={confirmButton} onClick={onConfirm}>
             {confirm}

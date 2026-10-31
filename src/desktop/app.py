@@ -10,7 +10,7 @@ import threading
 from pathlib import Path
 
 from fastapi import HTTPException
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from ok.core.config_schema import build_config_fields
 from ok.core.events import communicate
@@ -19,7 +19,9 @@ from ok.ui.web import app as framework
 from src.compat.update_card_ui import launcher_supports_update_check
 from src.desktop.config_store import config_lock, save_config, task_config_busy
 from src.desktop.events import install_events
+from src.desktop.preview import LivePreview
 from src.desktop.protocol import API_VERSION
+from src.desktop.reports import ReportSession
 from src.desktop.security import LocalSession
 from src.desktop.settings_text import FIELD_TEXT, TEST_CHANNELS, describe_group
 from src.desktop.starter_wait import STARTER_WAIT
@@ -28,7 +30,7 @@ from src.task_guides import GUIDES
 from src.tasks.BaseBD2Task import task_info_snapshot
 from src.tasks.DailyBatchTask import RUN_MODE_ALL, RUN_MODE_INCOMPLETE, DailyBatchTask
 from src.tasks.quick_hunt_plan import PLAN_KEY
-from src.tasks.run_history import default_store, run_state
+from src.tasks.run_history import RECENT_LIMIT, default_store, run_state
 from src.tasks.today import find_batch, today_summary
 from src.ui.hide_config_rows import mark_hidden_config_keys
 from src.window_resolution import (
@@ -41,7 +43,7 @@ from src.window_resolution import (
 UI_DIST = Path(__file__).with_name("ui_dist")
 # MiSans ships with the app for the Qt window too (src/ui/quest_theme.py).
 FONTS = Path(__file__).resolve().parents[2] / "assets" / "fonts"
-HISTORY_LIMIT = 100
+HISTORY_LIMIT = RECENT_LIMIT
 # Settings that only a dedicated editor may change; the client shows them read-only until
 # it has that editor (the quick-hunt plan is JSON written by the Qt plan editor).
 DEDICATED_EDITORS = {PLAN_KEY: "hunt_plan"}
@@ -195,10 +197,13 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
             return original_start(task, exit_after=exit_after)
 
     controller.start = start_controller
+    runtime.prevent_report_resume = lambda: None
 
     def pause():
-        runtime.executor.pause()
-        return runtime.status()
+        with config_lock:
+            runtime.prevent_report_resume()
+            runtime.executor.pause()
+            return runtime.status()
 
     def stop_task():
         with config_lock:
@@ -207,6 +212,7 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
             return runtime.status()
 
     def stop(task):
+        runtime.prevent_report_resume()
         task._bd2_stopped_run = (id(task), getattr(task, "start_time", 0))
         if isinstance(task, DailyBatchTask):
             with task.lock:
@@ -338,6 +344,7 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
             elif operation == "pause" and not trigger:
                 if runtime.executor.current_task is not task:
                     raise ValueError("任务尚未开始，排队中的任务可以停止但不能暂停")
+                runtime.prevent_report_resume()
                 task.pause()
             elif operation == "resume" and not trigger and task.enabled and task.paused:
                 task.unpause()
@@ -485,6 +492,7 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
         ui["capture_preference"] = preference if preference in methods else None
         ui["capture_in_use"] = capture_in_use(manager)
         ui["starter_wait"] = starter_wait.snapshot() if starter_wait is not None else None
+        ui["diagnostic_pause"] = bool(getattr(runtime.ok.headless_app, "diagnostic_pause", False))
         return ui
 
     # The routes, the select_* operations and the event stream all go through this.
@@ -523,6 +531,11 @@ def create_app(
     runtime = app.state.runtime
     STARTER_WAIT.install()
     adapt_runtime(runtime, legacy_check=legacy_check, starter_wait=STARTER_WAIT)
+    preview = LivePreview(runtime)
+    reports = ReportSession(runtime, preview, core_version or str(config.get("version") or ""),
+                            legacy_check=legacy_check)
+    app.state.reports = reports
+    runtime.prevent_report_resume = reports.prevent_resume
     install_events(app, runtime)
     app.add_middleware(LocalSession, token=token, origin=origin)
     frontend_once = threading.Event()
@@ -601,7 +614,42 @@ def create_app(
 
     @app.get("/api/bd2/history")
     def history(task: str | None = None, limit: int = 20):
-        return default_store().recent_runs(task, min(max(limit, 1), HISTORY_LIMIT))
+        return default_store().recent_runs(task or None, min(max(limit, 1), HISTORY_LIMIT))
+
+    def report_call(action, *args):
+        try:
+            return action(*args)
+        except (ValueError, RuntimeError, OSError) as error:
+            raise HTTPException(400, str(error)) from error
+
+    @app.get("/api/bd2/preview")
+    def live_preview():
+        return Response(report_call(preview.image), media_type="image/jpeg")
+
+    @app.get("/api/bd2/report")
+    def report_state():
+        return reports.state()
+
+    @app.post("/api/bd2/report/prepare")
+    def prepare_report():
+        return report_call(reports.prepare)
+
+    @app.post("/api/bd2/report/build")
+    def build_report(body: dict):
+        return report_call(reports.build, body.get("session_id"), body.get("description"),
+                           body.get("include_screenshot", False))
+
+    @app.post("/api/bd2/report/finish")
+    def finish_report(body: dict):
+        return report_call(reports.finish, body.get("session_id"), body.get("resume", False))
+
+    @app.get("/api/bd2/report/image")
+    def report_image(session: str):
+        return Response(report_call(reports.image, session), media_type="image/jpeg")
+
+    @app.post("/api/bd2/reports/{report_id}/reveal")
+    def reveal_report(report_id: str):
+        return report_call(reports.reveal, report_id)
 
     @app.get("/api/bd2/window")
     def window():

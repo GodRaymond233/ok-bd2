@@ -198,7 +198,7 @@ function TaskDetail({ core, task, onBack }: { core: Core; task: TaskPayload; onB
       {locked && (
         <div className="lockbar" role="status">
           <Icon name="lock" />
-          <b>{t("运行中，设置已锁定")}</b>
+          <b>{core.ui?.diagnostic_pause ? t("问题报告期间，设置已锁定") : t("运行中，设置已锁定")}</b>
           <span>{core.current ? `${core.current} ${t("结束后可以修改。")}` : t("任务结束后可以修改。")}</span>
         </div>
       )}
@@ -273,7 +273,7 @@ function TaskDetail({ core, task, onBack }: { core: Core; task: TaskPayload; onB
                   </div>
                 ))}
               </div>
-              <div className="more">{t("完整列表在「记录」页（阶段 3）")}</div>
+              <button className="linkbtn more" onClick={() => core.navigate("records")}>{t("查看全部运行记录")}</button>
             </div>
           )}
           {(task.guide || task.instructions) && (

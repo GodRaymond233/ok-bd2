@@ -2470,6 +2470,50 @@ mark {
   color: var(--ink-dim);
 }
 
+.record-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 18px;
+  margin: 18px 0;
+}
+
+.record-filters label {
+  display: grid;
+  gap: 6px;
+  min-width: 120px;
+}
+
+.record-filters .select { min-width: 0; }
+.records-page .ds,
+.report-page > .ds,
+.shot-col > .ds { color: var(--ink-dim); font-size: var(--fs-small); }
+
+.record-heading,
+.record-row {
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.record-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.record-row > div:first-child { flex: 1 1 210px; }
+.record-status { flex: 1 1 160px; overflow-wrap: anywhere; }
+.record-row:last-child { border-bottom: 0; }
+.record-text { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+.record-detail { max-height: 55vh; overflow: auto; }
+.report-section { padding: 22px; margin: 18px 0; max-width: 960px; }
+.report-section h2 { margin: 0 0 12px; font-size: 18px; }
+.report-section textarea { display: block; width: 100%; margin: 10px 0 16px; }
+.report-include { display: flex; align-items: center; gap: 8px; }
+.report-image { display: block; max-width: 100%; max-height: 360px; object-fit: contain; }
+.report-actions { flex-wrap: wrap; margin-top: 18px; }
+
 /* ================= window widths ================= */
 @media (max-width: 1199px) {
   .today {

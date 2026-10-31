@@ -170,7 +170,7 @@ class RecentRunsTest(unittest.TestCase):
         hunt, gacha = _child("快速狩猎"), _child("白嫖抽抽乐")
         _record(store, hunt, NOW - 300)
         _record(store, gacha, NOW - 200)
-        _record(store, hunt, NOW - 100, status="快速狩猎中止。")
+        _record(store, hunt, NOW - 100, status="快速狩猎中止。", Error="未找到目标", 失败="狩猎")
 
         runs = store.recent_runs("快速狩猎")
         self.assertEqual([NOW - 100, NOW - 300], [run["finished"] for run in runs])
@@ -178,6 +178,9 @@ class RecentRunsTest(unittest.TestCase):
         self.assertEqual("快速狩猎中止。", runs[0]["status"])
         self.assertEqual(NOW - 160, runs[0]["started"])
         self.assertEqual(60, runs[0]["duration"])
+        self.assertEqual({"Error": "未找到目标", "失败": "狩猎"}, runs[0]["details"])
+        self.assertEqual(
+            runs[0]["details"], RunHistoryStore(str(self.path)).recent_runs()[0]["details"])
         newest = store.recent_runs(limit=2)
         self.assertEqual(["快速狩猎", "白嫖抽抽乐"], [run["task"] for run in newest])
         runs[0]["status"] = "changed"
@@ -358,6 +361,8 @@ class Bd2RoutesTest(unittest.TestCase):
             response = self.client.get("/api/bd2/history", params=params, headers=self.headers)
             self.assertEqual(200, response.status_code, response.text)
             return response.json()
+
+        self.assertEqual(4, len(get(task="", limit=300)))
 
         hunts = get(task="快速狩猎", limit=2)
         self.assertEqual([NOW + 2, NOW + 1], [run["finished"] for run in hunts])

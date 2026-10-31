@@ -278,7 +278,7 @@ export function LogsPage({
         })}
         {file !== null && lines === 0 && (
           <div className="empty">
-            {t("没有符合条件的日志。")}{" "}
+            {focus ? t("当前读取的日志中没有这段记录。较早日志可能已轮转，请打开日志文件夹查看。") : t("没有符合条件的日志。")}{" "}
             <button
               type="button"
               className="linkbtn"

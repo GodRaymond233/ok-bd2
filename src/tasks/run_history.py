@@ -360,6 +360,9 @@ class RunHistoryStore:
                     "duration": duration,
                     "ok": successful,
                     "status": str(info.get("状态", "")),
+                    "details": {key: str(info[key])[:4000]
+                                for key in ("Error", "结果", "失败", "当前阶段")
+                                if info.get(key) not in (None, "", "-")},
                 }
             )
             del self._recent[:-RECENT_LIMIT]

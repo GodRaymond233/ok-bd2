@@ -6,6 +6,7 @@ import type {
   ExecutorStatus,
   GamePaths,
   HistoryRun,
+  ReportState,
   SettingsGroup,
   TaskPayload,
   TodaySummary,
@@ -78,4 +79,19 @@ export const api = {
   startDaily: (mode: "all" | "incomplete") => request<TaskPayload>("/api/bd2/daily/start", "POST", { mode }),
   history: (task: string, limit: number) =>
     request<HistoryRun[]>(`/api/bd2/history?task=${encodeURIComponent(task)}&limit=${limit}`),
+  preview: async (signal: AbortSignal) => {
+    const response = await fetch("/api/bd2/preview", { signal, credentials: "same-origin" });
+    if (!response.ok) {
+      const error = await response.json() as { detail?: string };
+      throw new ApiError(response.status, error.detail ?? "无法读取游戏画面");
+    }
+    return response.blob();
+  },
+  reportState: () => request<ReportState>("/api/bd2/report"),
+  prepareReport: () => request<ReportState>("/api/bd2/report/prepare", "POST", {}),
+  buildReport: (session_id: string, description: string, include_screenshot: boolean) =>
+    request<ReportState>("/api/bd2/report/build", "POST", { session_id, description, include_screenshot }),
+  finishReport: (session_id: string, resume: boolean) =>
+    request<ReportState>("/api/bd2/report/finish", "POST", { session_id, resume }),
+  revealReport: (id: string) => request<{ ok: boolean }>(`/api/bd2/reports/${encodeURIComponent(id)}/reveal`, "POST", {}),
 };

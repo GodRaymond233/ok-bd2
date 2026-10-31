@@ -212,6 +212,7 @@ async function checkPageInterfaces(): Promise<void> {
   const required: Record<string, string[] | null> = {
     "/api/bd2/today": ["items", "batch", "refresh"],
     "/api/bd2/history": null,
+    "/api/bd2/report": ["session_id", "snapshot", "can_resume", "result"],
     "/api/bd2/window": ["size", "ratio_ok", "resolutions", "default", "resizing"],
     "/api/bd2/game": ["game", "launcher"],
     "/api/settings": null,
@@ -237,7 +238,7 @@ async function checkPageInterfaces(): Promise<void> {
 async function checkPageNavigation(): Promise<void> {
   const pages: { page: string; heading: string | null; passed: boolean }[] = [];
   smoke.pages = pages;
-  for (const label of ["任务", "日志", "设备", "设置", "今日"]) {
+  for (const label of ["任务", "记录", "日志", "设备", "设置", "问题报告", "今日"]) {
     if (!mainWindow || mainWindow.isDestroyed()) {
       throw new Error("Client window disappeared during page checks");
     }
