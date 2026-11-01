@@ -237,7 +237,7 @@ class PVPTask(BaseBD2Task):
 
         if not self._ensure_pvp_hub():
             if self._skip_weekly_settlement():
-                return True
+                return self._return_home_after_settlement()
             self.info_set("状态", "镜中之战失败：未能进入 PVP 箱庭。")
             return False
 
@@ -249,8 +249,7 @@ class PVPTask(BaseBD2Task):
             self.info_set("目标倍率", current_multiplier)
             start_state = self._start_auto_battle(current_multiplier)
         if start_state == "settlement":
-            self.auto_return_main_home(notify_failure=False)
-            return True
+            return self._return_home_after_settlement()
         if start_state == "ap_depleted":
             self.info_set("状态", "免费 AP 已耗尽。")
             self.log_completion("镜中之战：免费 AP 已耗尽，流程结束。")
@@ -285,6 +284,14 @@ class PVPTask(BaseBD2Task):
         self.info_set("状态", message)
         self.log_info(message)
         return True
+
+    def _return_home_after_settlement(self) -> bool:
+        if self.auto_return_main_home(notify_failure=False):
+            return True
+        # 恢复失败必须走失败记账，不能当作正常跳过。
+        self.info_set("PVP 结算休战", False)
+        self.info_set("状态", "镜中之战结算期间返回主页失败。")
+        return False
 
     def _ensure_pvp_hub(self) -> bool:
         self.info_set("当前阶段", "确认镜中之战")

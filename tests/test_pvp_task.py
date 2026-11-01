@@ -454,15 +454,21 @@ class PVPTaskHelperTest(unittest.TestCase):
                          task._click_screen_reference.call_args_list)
 
     def test_run_crossing_settlement_handles_entry_and_ap_retry(self):
+        from src.tasks.run_history import is_successful_run
+
         opens = datetime(2026, 11, 2, 0, tzinfo=timezone.utc).timestamp()
-        for entry_failed, ap_retry in ((True, False), (False, False), (False, True)):
-            with self.subTest(entry_failed=entry_failed, ap_retry=ap_retry):
+        cases = [(entry_failed, ap_retry, recovered)
+                 for entry_failed, ap_retry in ((True, False), (False, False), (False, True))
+                 for recovered in (True, False)]
+        for entry_failed, ap_retry, recovered in cases:
+            with self.subTest(entry_failed=entry_failed, ap_retry=ap_retry, recovered=recovered):
                 task = object.__new__(PVPTask)
                 task.config = {"竞技场战斗倍数": 40}
-                task.info_set = Mock()
+                task.info = {}
+                task.info_set = task.info.__setitem__
                 task.log_info = Mock()
                 task._ensure_pvp_hub = Mock(return_value=not entry_failed)
-                task.auto_return_main_home = Mock(return_value=True)
+                task.auto_return_main_home = Mock(return_value=recovered)
                 task._wait_result_and_leave = Mock()
                 if ap_retry:
                     def start(multiplier):
@@ -471,10 +477,12 @@ class PVPTaskHelperTest(unittest.TestCase):
                         return PVPTask._start_auto_battle(task, 1)
                     task._start_auto_battle = start
                 with patch("src.tasks.PVPTask.pvp_settlement_end_ts", side_effect=[None, opens]):
-                    self.assertTrue(task.run())
+                    self.assertEqual(recovered, task.run())
+                self.assertEqual(recovered, task.info["PVP 结算休战"])
+                if not recovered:
+                    self.assertFalse(is_successful_run(task.info))
                 task._wait_result_and_leave.assert_not_called()
-                if not entry_failed:
-                    task.auto_return_main_home.assert_called_once_with(notify_failure=False)
+                task.auto_return_main_home.assert_called_once_with(notify_failure=False)
 
     def test_quick_switch_searches_both_regions_and_rejects_middle(self):
         template = np.random.default_rng(42).integers(30, 240, (24, 24), dtype=np.uint8)
