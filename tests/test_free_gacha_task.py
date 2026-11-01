@@ -1,5 +1,7 @@
 import importlib
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -10,6 +12,7 @@ from src.tasks.FreeGachaTask import (
     FREE_ENTRY_RETRY_LOADING,
     FREE_ENTRY_RETRY_READY,
     LOADING_TEMPLATE,
+    FreeDrawConfirmation,
     FreeGachaTask,
 )
 from src.tasks.map_trade.models import MatchResult
@@ -19,26 +22,92 @@ from tests.helpers import StageHistoryTestCase
 free_gacha_module = importlib.import_module("src.tasks.FreeGachaTask")
 
 
-class FreeGachaTaskHelperTest(StageHistoryTestCase):
-    def test_uncertain_previous_free_draw_is_not_submitted_again(self):
-        from unittest.mock import Mock
+def confirmation_boxes(pool="装备", count=3, cost=None, scale=1):
+    rows = [
+        ("确认抽抽乐", 420, 200, 160, 30),
+        (f"目前有{count}次免费{pool}抽抽乐可以抽取。", 300, 270, 550, 30),
+        ("是否全部进行？", 410, 330, 220, 30),
+        (cost or f"免费{count}次", 550, 380, 90, 30),
+        ("取消", 400, 430, 90, 30),
+        ("确认", 650, 430, 90, 30),
+        ("付费0 免费587143", 700, 20, 200, 30),
+        ("付费抽抽乐90", 700, 700, 200, 30),
+    ]
+    return [SimpleNamespace(name=name, x=x * scale, y=y * scale,
+                            width=w * scale, height=h * scale) for name, x, y, w, h in rows]
 
+
+class FreeGachaTaskHelperTest(StageHistoryTestCase):
+    def test_pending_free_draw_recovers_only_after_current_free_confirmation(self):
         from src.tasks import run_history
 
-        task = object.__new__(FreeGachaTask)
-        task.config = {}
-        task.info_set = Mock()
-        task.log_info = Mock()
-        task._wait_for_free_gacha = Mock(return_value=(True, "免费", True))
-        task._open_confirm_dialog_with_retry = Mock()
-        task._confirm_dialog_submission = Mock()
-        run_history.save_stage(task, "免费抽:服装抽抽乐", "pending")
-        self.assertFalse(task._run_free_section("服装抽抽乐", True))
-        task._open_confirm_dialog_with_retry.assert_not_called()
-        task._confirm_dialog_submission.assert_not_called()
-        task._wait_for_free_gacha.return_value = (False, "下次免费", True)
-        self.assertTrue(task._run_free_section("服装抽抽乐", True))
-        self.assertEqual("done", run_history.read_stage(task, "免费抽:服装抽抽乐")["state"])
+        for pool in ("服装抽抽乐", "装备抽抽乐"):
+            for days in (0, 1, 7):
+                with self.subTest(pool=pool, days=days):
+                    self.reset_stage_history()
+                    task = object.__new__(FreeGachaTask)
+                    task.config = {}
+                    task.info_set = Mock()
+                    task.log_info = Mock()
+                    task._wait_for_free_gacha = Mock(return_value=(True, "所有免费抽抽乐", True))
+                    task._open_confirm_dialog_with_retry = Mock(return_value=True)
+                    task._wait_for_free_confirmation = Mock(return_value=None)
+                    task._confirm_dialog_submission = Mock(return_value=True)
+                    task._handle_result_until_back = Mock(return_value=True)
+                    checkpoint = f"免费抽:{pool}"
+                    run_history.save_stage(task, checkpoint, "pending", scope="old-cycle")
+                    self.history_mock.return_value = run_history.RunHistoryStore(self.history.path)
+                    with patch.object(run_history, "day_start_ts", return_value=days * 86400):
+                        self.assertFalse(task._run_free_section(pool, True))
+                        task._confirm_dialog_submission.assert_not_called()
+                        self.assertEqual(
+                            "old-cycle", run_history.read_stage(task, checkpoint)["scope"]
+                        )
+                        task._wait_for_free_confirmation.return_value = FreeDrawConfirmation(
+                            3, (.7, .6)
+                        )
+                        task._wait_for_free_gacha.side_effect = [
+                            (True, "所有免费抽抽乐", True), (False, "单抽消耗已确认", True)]
+
+                        def submit(name, count):
+                            record = run_history.read_stage(task, checkpoint)
+                            self.assertEqual((pool, 3, "pending"), (name, count, record["state"]))
+                            self.assertEqual(3, record["evidence"]["count"])
+                            return True
+
+                        task._confirm_dialog_submission.side_effect = submit
+                        self.assertTrue(task._run_free_section(pool, True))
+                        self.assertEqual("done", run_history.read_stage(task, checkpoint)["state"])
+
+    def test_free_submission_waits_for_durable_history_and_result_confirmation(self):
+        from src.tasks import run_history
+
+        for failure in ("save", "submission", "result"):
+            with self.subTest(failure=failure):
+                self.reset_stage_history()
+                task = object.__new__(FreeGachaTask)
+                task.config = {}
+                task.info_set = Mock()
+                task.log_info = Mock()
+                task._wait_for_free_gacha = Mock(return_value=(True, "所有免费抽抽乐", True))
+                task._open_confirm_dialog_with_retry = Mock(return_value=True)
+                task._wait_for_free_confirmation = Mock(
+                    return_value=FreeDrawConfirmation(3, (.7, .6))
+                )
+                task._confirm_dialog_submission = Mock(return_value=failure != "submission")
+                task._handle_result_until_back = Mock(return_value=failure != "result")
+                if failure == "save":
+                    with patch.object(self.history, "_save", return_value=False):
+                        with self.assertRaises(RuntimeError):
+                            task._run_free_section("装备抽抽乐", True)
+                    task._confirm_dialog_submission.assert_not_called()
+                else:
+                    self.assertFalse(task._run_free_section("装备抽抽乐", True))
+                    self.assertEqual(1, task._confirm_dialog_submission.call_count)
+                    record = run_history.read_stage(task, "免费抽:装备抽抽乐")
+                    self.assertEqual("pending", record["state"])
+                    if failure == "submission":
+                        task._handle_result_until_back.assert_not_called()
 
     def test_successful_run_emits_standalone_completion_notification(self):
         task = object.__new__(FreeGachaTask)
@@ -284,58 +353,30 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
         self.assertFalse(task._home_confirmation_signals(bright_frame, "返回主页")[0])
         self.assertIsNotNone(vision.last_relative_roi)
 
-    def test_result_skip_clicks_for_duration_then_polls_ocr_until_ticket_page(self):
-        task = object.__new__(FreeGachaTask)
-        task.config = {
-            "跳过点击间隔秒数": 0.2,
-            "结果跳过连续点击秒数": 3.0,
-            "结果页 OCR 等待秒数": 1.0,
-            "结果页 OCR 间隔秒数": 0.1,
-            "结果页关键词最低命中数": 1,
-        }
-        clicks = []
-        sleeps = []
-        ocr_calls = []
-        captures = []
-        now = {"value": 0.0}
+    def test_result_wait_handles_late_results_without_pressing_unknown_screens(self):
+        result = "抽抽乐券 可免费抽1次的抽抽乐券 查看获取途径"
+        for screen in ("跳过", "", "确认抽抽乐", "购买", "装备抽抽乐"):
+            with self.subTest(screen=screen):
+                task = object.__new__(FreeGachaTask)
+                task.config = {"跳过点击间隔秒数": .2}
+                task.info_set = Mock()
+                now, clicks = [0.0], []
+                task.sleep = lambda seconds: now.__setitem__(0, now[0] + seconds)
+                task.capture_frame = lambda: np.zeros((800, 1000, 3), dtype=np.uint8)
+                task._match = lambda *_args: None
+                task._passes = lambda *_args: False
+                task.operate_click = lambda *point, **kwargs: clicks.append(point)
 
-        def fake_click(x, y, after_sleep=0):
-            clicks.append((x, y, after_sleep))
+                def boxes(*_args):
+                    text = result if now[0] >= 10 else screen
+                    return [SimpleNamespace(name=text, x=850, y=20, width=80, height=30)]
 
-        def fake_capture():
-            captures.append(len(clicks))
-            return np.zeros((10, 10, 3), dtype=np.uint8)
-
-        def fake_ocr(_frame, keywords, minimum_matches, name):
-            ocr_calls.append((keywords, minimum_matches, name))
-            if len(ocr_calls) == 1:
-                return False, "试玩抽抽乐1/1完成"
-            return True, "抽抽乐券 可免费抽1次的抽抽乐券 查看获取途径"
-
-        task._click_reference = fake_click
-        task.capture_frame = fake_capture
-        task._ocr_keywords_in_frame = fake_ocr
-        task.sleep = lambda seconds: (
-            sleeps.append(seconds),
-            now.__setitem__("value", now["value"] + seconds),
-        )
-
-        old_monotonic = free_gacha_module.monotonic
-        try:
-            free_gacha_module.monotonic = lambda: now["value"]
-            found, text = FreeGachaTask._click_skip_until_back_page(task, "服装抽抽乐")
-        finally:
-            free_gacha_module.monotonic = old_monotonic
-
-        self.assertTrue(found)
-        self.assertEqual("抽抽乐券 可免费抽1次的抽抽乐券 查看获取途径", text)
-        self.assertEqual([(1770, 60, 0.0)] * 15, clicks)
-        self.assertEqual([15, 15], captures)
-        self.assertEqual(2, len(ocr_calls))
-        self.assertAlmostEqual(3.1, sum(sleeps), places=6)
-        self.assertTrue(all(seconds <= 0.2 for seconds in sleeps))
-        self.assertEqual(BACK_PAGE_KEYWORDS, ocr_calls[0][0])
-        self.assertEqual(1, ocr_calls[0][1])
+                task._gacha_ocr_boxes = boxes
+                with patch.object(free_gacha_module, "monotonic", lambda: now[0]):
+                    found, _ = task._click_skip_until_back_page("装备抽抽乐")
+                self.assertEqual(screen in ("跳过", ""), found)
+                self.assertEqual(screen == "跳过", bool(clicks))
+                self.assertTrue(all(0 < x < 1 and 0 < y < 1 for x, y in clicks))
 
     def test_result_handler_clicks_ticket_detail_then_backs_and_verifies_gacha_page(self):
         task = object.__new__(FreeGachaTask)
@@ -509,6 +550,7 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
             else (True, "所有免费抽抽乐", True)
         )
         task._open_confirm_dialog_with_retry = lambda *_args, **_kwargs: True
+        task._wait_for_free_confirmation = lambda *_args: FreeDrawConfirmation(3, (.7, .6))
         task._confirm_dialog_submission = lambda *_args, **_kwargs: True
         task._handle_result_until_back = lambda *_args, **_kwargs: True
 
@@ -533,31 +575,71 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
 
     def test_wait_for_free_gacha_distinguishes_empty_ocr_from_no_free(self):
         task = object.__new__(FreeGachaTask)
-        task.config = {"免费抽按钮等待秒数": 0.0}
+        task.config = {"免费抽按钮等待秒数": 0.6}
         task.info_set = lambda *_args, **_kwargs: None
-        task.capture_frame = lambda: np.zeros((10, 10, 3), dtype=np.uint8)
+        task.capture_frame = lambda: np.zeros((800, 1000, 3), dtype=np.uint8)
+        task._match = lambda *_args: None
+        task._passes = lambda *_args: False
         task.sleep = lambda seconds: now.__setitem__("value", now["value"] + seconds)
-        responses = iter([(False, ""), (True, "所有免费抽抽乐")])
-
-        def fake_ocr_in_frame(_frame, _keywords, _minimum, _name):
-            return next(responses)
-
-        task._ocr_keywords_in_frame = fake_ocr_in_frame
         now = {"value": 0.0}
+        controls = [SimpleNamespace(name=name, x=x, y=y, width=w, height=h)
+                    for name, x, y, w, h in [
+                        ("装备抽抽乐 服装 装备 角色和装备在未来可能会通过其他方式重新贩售或发放",
+                         30, 20, 200, 30),
+                        ("抽1次", 760, 700, 60, 20), ("抽10次", 900, 700, 60, 20),
+                        ("1", 775, 730, 30, 20)]]
+        for boxes, expected in [([], (False, False)),
+                                ([SimpleNamespace(name="正在加载")], (False, False)),
+                                (controls, (False, True)),
+                                (controls + [SimpleNamespace(name="免费", x=760, y=730,
+                                                            width=30, height=20)], (False, False)),
+                                (controls + [SimpleNamespace(name="所有免费抽抽乐", x=100, y=720,
+                                                            width=200, height=30)], (True, True))]:
+            with self.subTest(text=[b.name for b in boxes]):
+                now["value"] = 0
+                task._gacha_ocr_boxes = Mock(return_value=boxes)
+                with patch.object(free_gacha_module, "monotonic", lambda: now["value"]):
+                    available, _, judged = task._wait_for_free_gacha("装备抽抽乐")
+                self.assertEqual(expected, (available, judged))
+                if expected == (False, True):
+                    self.assertEqual(2, task._gacha_ocr_boxes.call_count)
 
-        old_monotonic = free_gacha_module.monotonic
-        try:
-            free_gacha_module.monotonic = lambda: now["value"]
-            self.assertEqual(
-                (False, "", False),
-                FreeGachaTask._wait_for_free_gacha(task, "装备抽抽乐"),
-            )
-            self.assertEqual(
-                (True, "所有免费抽抽乐", True),
-                FreeGachaTask._wait_for_free_gacha(task, "装备抽抽乐"),
-            )
-        finally:
-            free_gacha_module.monotonic = old_monotonic
+    def test_free_confirmation_requires_matching_pool_count_and_modal_controls(self):
+        task = object.__new__(FreeGachaTask)
+        task.config = {}
+        task.info_set = Mock()
+        task._match = lambda *_args: None
+        task._passes = lambda *_args: False
+        for scale in (1, .72, 2):
+            frame = np.zeros((round(800 * scale), round(1000 * scale), 3), dtype=np.uint8)
+            for pool in ("服装", "装备"):
+                task._gacha_ocr_boxes = Mock(return_value=confirmation_boxes(pool, scale=scale))
+                observed = task._free_confirmation_in_frame(frame, pool + "抽抽乐")
+                self.assertEqual(3, observed.count)
+                self.assertAlmostEqual(.695, observed.point[0])
+                self.assertAlmostEqual(.55625, observed.point[1])
+        frame = np.zeros((800, 1000, 3), dtype=np.uint8)
+        for boxes in (confirmation_boxes("服装"), confirmation_boxes(count=0),
+                      confirmation_boxes(cost="免费2次"), confirmation_boxes(cost="消耗钻石90"),
+                      confirmation_boxes()[:-4],
+                      confirmation_boxes() + [SimpleNamespace(name="确认", x=50, y=50,
+                                                               width=30, height=20)]):
+            task._gacha_ocr_boxes = Mock(return_value=boxes)
+            self.assertIsNone(task._free_confirmation_in_frame(frame, "装备抽抽乐"))
+
+    def test_free_confirmation_requires_consecutive_new_observations(self):
+        task = object.__new__(FreeGachaTask)
+        task.config = {"确认弹窗等待秒数": 1}
+        task.info_set = Mock()
+        now = [0.0]
+        task.sleep = lambda seconds: now.__setitem__(0, now[0] + seconds)
+        task.capture_frame = Mock()
+        three = FreeDrawConfirmation(3, (.7, .6))
+        two = FreeDrawConfirmation(2, (.7, .6))
+        task._free_confirmation_in_frame = Mock(side_effect=[three, None, two, three, three])
+        with patch.object(free_gacha_module, "monotonic", lambda: now[0]):
+            self.assertEqual(three, task._wait_for_free_confirmation("装备抽抽乐", 3))
+        self.assertEqual(5, task.capture_frame.call_count)
 
     def test_wait_for_equipment_pool_page_requires_equipment_title(self):
         task = object.__new__(FreeGachaTask)
@@ -635,11 +717,11 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
         task.log_info = lambda *_args, **_kwargs: None
         task._sleep_after_recognition = lambda: None
         clicks = []
-        task._click_reference = lambda *_args, **_kwargs: clicks.append(1)
-
+        task.operate_click = lambda *_args, **_kwargs: clicks.append(1)
+        task._wait_for_free_confirmation = lambda *_args: FreeDrawConfirmation(3, (.7, .6))
         task._confirm_dialog_still_open = lambda _section_name: False
 
-        self.assertTrue(FreeGachaTask._confirm_dialog_submission(task, "服装抽抽乐"))
+        self.assertTrue(FreeGachaTask._confirm_dialog_submission(task, "服装抽抽乐", 3))
         self.assertEqual(1, len(clicks))
 
     def test_confirm_submission_retries_until_dialog_closes(self):
@@ -649,17 +731,19 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
         task.log_info = lambda *_args, **_kwargs: None
         task._sleep_after_recognition = lambda: None
         clicks = []
-        task._click_reference = lambda *_args, **_kwargs: clicks.append(1)
+        task.operate_click = lambda *_args, **_kwargs: clicks.append(1)
+        task._wait_for_free_confirmation = lambda *_args: FreeDrawConfirmation(3, (.7, .6))
         checks = iter([True, True, False])
 
         def open_then_submitted(_section_name):
-            result = next(checks)
-            task._last_confirm_dialog_state = "open" if result else "submitted"
-            return result
+            return next(checks)
 
         task._confirm_dialog_still_open = open_then_submitted
 
-        self.assertTrue(FreeGachaTask._confirm_dialog_submission(task, "服装抽抽乐"))
+        self.assertTrue(FreeGachaTask._confirm_dialog_submission(task, "服装抽抽乐", 3))
+        self.assertEqual(3, len(clicks))
+        task._wait_for_free_confirmation = lambda *_args: None
+        self.assertFalse(FreeGachaTask._confirm_dialog_submission(task, "服装抽抽乐", 3))
         self.assertEqual(3, len(clicks))
 
     def test_confirm_submission_exhausts_retries_and_fails(self):
@@ -669,14 +753,11 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
         task.log_info = lambda *_args, **_kwargs: None
         task._sleep_after_recognition = lambda: None
         clicks = []
-        task._click_reference = lambda *_args, **_kwargs: clicks.append(1)
-        task._confirm_dialog_still_open = (
-            lambda *_args, **_kwargs: (
-                setattr(task, "_last_confirm_dialog_state", "open") or True
-            )
-        )
+        task.operate_click = lambda *_args, **_kwargs: clicks.append(1)
+        task._wait_for_free_confirmation = lambda *_args: FreeDrawConfirmation(3, (.7, .6))
+        task._confirm_dialog_still_open = lambda *_args, **_kwargs: True
 
-        self.assertFalse(FreeGachaTask._confirm_dialog_submission(task, "服装抽抽乐"))
+        self.assertFalse(FreeGachaTask._confirm_dialog_submission(task, "服装抽抽乐", 3))
         self.assertEqual(2, len(clicks))
 
     def test_confirm_dialog_still_open_reads_loading_and_dialog_keywords(self):
@@ -712,6 +793,8 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
         self.assertFalse(
             FreeGachaTask._confirm_dialog_still_open(task, "服装抽抽乐")
         )
+        task._ocr_text = lambda _frame, name: "抽抽乐券 可免费抽1次的抽抽乐券 查看获取途径"
+        self.assertFalse(task._confirm_dialog_still_open("服装抽抽乐"))
 
     def test_run_free_section_fails_when_confirm_submission_exhausted(self):
         task = object.__new__(FreeGachaTask)
@@ -725,6 +808,7 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
             True,
         )
         task._open_confirm_dialog_with_retry = lambda *_args, **_kwargs: True
+        task._wait_for_free_confirmation = lambda *_args: FreeDrawConfirmation(3, (.7, .6))
         task._confirm_dialog_submission = lambda *_args, **_kwargs: False
         task._handle_result_until_back = lambda *_args, **_kwargs: self.fail(
             "确认提交失败时不得进入结果处理"

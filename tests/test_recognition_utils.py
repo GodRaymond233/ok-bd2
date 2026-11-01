@@ -258,7 +258,7 @@ class OcrUtilsTest(unittest.TestCase):
         frame = np.zeros((720, 1280, 3), dtype=np.uint8)
         boundaries = (
             (BargainLevelTask._ocr_text, {"name": "取消"}),
-            (FreeGachaTask._ocr_text, {"name": "取消"}),
+            (FreeGachaTask._gacha_ocr_boxes, {"name": "取消"}),
             (PVPTask._ocr_boxes, {"name": "取消"}),
             (QuickSuppressionTask._ocr_text, {"name": "取消"}),
             (SquareGoddessTask._ocr_boxes, {"name": "取消"}),
