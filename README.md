@@ -84,6 +84,11 @@ BrownDust II.
 
 请下载 `setup.exe` 安装包，不要下载 GitHub 自动生成的 `Source code` 压缩包。
 
+如果 GitHub 下载较慢，可以使用以下网盘：
+
+- [夸克网盘](https://pan.quark.cn/s/418018ddf7a0)：免费下载。
+- [百度网盘](https://pan.baidu.com/s/102Mh1djq2B1T-cIJhct9Gg?pwd=okww)：免费下载，提取码：`okww`。
+
 ### 方式二：从源码运行
 
 适合开发、调试或二次适配。
