@@ -23,7 +23,7 @@ EQUIPMENT_TAB_REFERENCE_POINT = (175, 432)
 BACK_BUTTON_REFERENCE_POINT = (105, 51)
 FREE_GACHA_BUTTON_REFERENCE_POINT = (347, 973)
 RESULT_PAGE_CLOSE_REFERENCE_POINT = (1420, 326)
-RESULT_OBSERVE_SECONDS = 30.0
+SKIP_BUTTON_REFERENCE_POINT = (1770, 60)
 
 
 @dataclass(frozen=True)
@@ -597,28 +597,29 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
     def _click_skip_until_back_page(self, section_name: str) -> tuple[bool, str]:
         duration = max(0.0, float(self.config.get("结果跳过连续点击秒数", 3.0)))
         interval = max(0.05, float(self.config.get("跳过点击间隔秒数", 0.2)))
-        minimum_matches = len(BACK_PAGE_KEYWORDS)
-        observation = max(0.0, float(self.config.get("结果页 OCR 等待秒数", 5.0)))
-        end_at = monotonic() + max(RESULT_OBSERVE_SECONDS, duration + observation)
-        text = ""
-        while monotonic() <= end_at:
-            frame = self.capture_frame()
-            if not self._passes(self._match(frame, LOADING_TEMPLATE), LOADING_TEMPLATE):
-                boxes = self._gacha_ocr_boxes(frame, f"{section_name}_result")
-                text = " ".join(box.name for box in boxes)
-                if self._keyword_match_count(text, BACK_PAGE_KEYWORDS) >= minimum_matches:
-                    return True, text
-                if self._keyword_match_count(text, ("确认抽抽乐", section_name, "购买", "充值")):
-                    return False, text
-                skips = [box for box in boxes if normalize_ocr_text(box.name) == "跳过"]
-                if len(skips) == 1:
-                    box = skips[0]
-                    point = ((box.x + box.width / 2) / frame.shape[1],
-                             (box.y + box.height / 2) / frame.shape[0])
-                    if all(0 < value < 1 for value in point):
-                        self.operate_click(*point, after_sleep=0.0)
-            self.sleep(interval)
-        return False, text
+        minimum_matches = max(
+            1,
+            min(
+                len(BACK_PAGE_KEYWORDS),
+                int(self.config.get("结果页关键词最低命中数", len(BACK_PAGE_KEYWORDS))),
+            ),
+        )
+        end_at = monotonic() + duration
+
+        while monotonic() < end_at:
+            self._click_reference(*SKIP_BUTTON_REFERENCE_POINT, after_sleep=0.0)
+            remaining = end_at - monotonic()
+            if remaining <= 0:
+                break
+            self.sleep(min(interval, remaining))
+
+        return self._wait_for_ocr_keywords(
+            BACK_PAGE_KEYWORDS,
+            timeout=max(0.0, float(self.config.get("结果页 OCR 等待秒数", 5.0))),
+            minimum_matches=minimum_matches,
+            name=f"{section_name}_result",
+            interval=max(0.05, float(self.config.get("结果页 OCR 间隔秒数", 0.1))),
+        )
 
     def _wait_for_ocr_keywords(
         self,
