@@ -11,6 +11,7 @@ from ok.task.exceptions import FinishedException, TaskDisabledException
 from qfluentwidgets import FluentIcon
 
 from src.diagnostics.runtime import observe_run, task_error
+from src.tasks.BaseBD2Task import task_info_snapshot
 from src.tasks.DailyTask import DailyTask
 from src.tasks.FreeGachaTask import FreeGachaTask
 from src.tasks.MapCollectionTask import MapCollectionTask
@@ -286,6 +287,12 @@ class DailyBatchTask(BaseTask):
                 self.log_error(f"一键完成日常：未找到子任务 {child.config_key}。")
                 continue
 
+            if child.task_class is PVPTask and task._skip_weekly_settlement():
+                skipped.append(child.config_key)
+                publish_outcome()
+                self.log_info(f"一键完成日常：{child.config_key} 赛季结算，本次跳过。")
+                continue
+
             if only_incomplete and history.is_completed(
                 str(task.name), scope=configuration_scope(task),
             ):
@@ -339,7 +346,12 @@ class DailyBatchTask(BaseTask):
                 with suppress_task_completion_notifications(task):
                     child_result = bool(task.run())
                     child_finished = time.time()
-                    if child_result:
+                    if task_info_snapshot(task).get("PVP 结算休战"):
+                        child_result = None
+                        skipped.append(child.config_key)
+                        publish_outcome()
+                        self.log_info(f"一键完成日常：{child.config_key} 赛季结算，本次跳过。")
+                    elif child_result:
                         completed.append(child.config_key)
                         publish_outcome()
                         self.log_info(f"一键完成日常：{child.config_key} 完成。")

@@ -13,6 +13,7 @@ from src.tasks.run_history import (
     BEIJING_TZ,
     RunHistoryStore,
     configuration_scope,
+    pvp_settlement_end_ts,
     set_default_store,
 )
 
@@ -22,6 +23,19 @@ def _beijing_ts(year, month, day, hour, minute=0) -> float:
 
 
 class NextAnchorTest(unittest.TestCase):
+    def test_pvp_settlement_beijing_boundaries_and_calendar_rollover(self):
+        for sunday, monday in (((2026, 11, 1), (2026, 11, 2)),
+                               ((2027, 1, 31), (2027, 2, 1)),
+                               ((2028, 12, 31), (2029, 1, 1))):
+            closes = _beijing_ts(*sunday, 23)
+            opens = _beijing_ts(*monday, 8)
+            for moment, expected in ((closes - 0.001, None), (closes, opens),
+                                     (closes + 3600, opens), (opens - 0.001, opens),
+                                     (opens, None), (opens + 3600, None),
+                                     (closes - 86400, None)):
+                with self.subTest(moment=moment):
+                    self.assertEqual(expected, pvp_settlement_end_ts(moment))
+
     def test_next_daily_anchor(self):
         # 周三 09:00 -> 周四 04:00
         self.assertEqual(
@@ -58,6 +72,34 @@ class NextAnchorTest(unittest.TestCase):
 
 
 class TaskScheduleStoreTest(unittest.TestCase):
+    def test_pvp_settlement_skips_without_completion_and_reopens_after_restart(self):
+        closes = _beijing_ts(2026, 11, 1, 23)
+        opens = _beijing_ts(2026, 11, 2, 8)
+        history = RunHistoryStore(os.path.join(self.dir, "history.json"))
+        task = SimpleNamespace(name="镜中之战", config={}, info={"状态": "完成。"})
+        history.record_task_done(task, finished=closes - 3600, ok=True)
+        previous = dict(history.last_run(task.name))
+        self.store.delay_after_run(task.name, True, now=closes - 3600, scope="old")
+        self.assertFalse(self.store.is_due(task.name, now=closes, scope="changed"))
+        self.assertFalse(scheduler.TaskScheduleStore(self.path).is_due(
+            task.name, now=opens - 0.001))
+        self.assertFalse(self.store.is_due(task.name, now=closes - 0.001))
+
+        task.info = {"状态": "赛季结算，PVP未执行，本次跳过。", "PVP 结算休战": True}
+        history.record_task_done(task, finished=opens - 60, ok=True)
+        self.assertEqual(previous, history.last_run(task.name))
+        self.assertFalse(history.is_completed(task.name, now=opens))
+        empty_history = RunHistoryStore(os.path.join(self.dir, "empty-history.json"))
+        empty_history.record_task_done(task, finished=opens - 60)
+        self.assertIsNone(empty_history.last_run(task.name))
+        self.assertFalse(scheduler.TaskScheduleStore(os.path.join(self.dir, "empty.json"))
+                         .is_due(task.name, now=closes))
+        self.assertEqual(opens, self.store.delay_after_record(
+            task.name, False, history, now=opens - 60))
+        reloaded = scheduler.TaskScheduleStore(self.path)
+        self.assertTrue(reloaded.is_due(task.name, now=opens))
+        self.assertTrue(reloaded.is_due("快速狩猎", now=closes))
+
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)

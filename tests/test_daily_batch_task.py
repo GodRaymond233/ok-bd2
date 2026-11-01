@@ -17,6 +17,7 @@ from src.tasks.DailyBatchTask import (
     DailyBatchTask,
 )
 from src.tasks.MapCollectionTask import MapCollectionTask
+from src.tasks.PVPTask import PVPTask
 from src.tasks.run_history import BEIJING_TZ, RunHistoryStore, set_default_store
 from src.tasks.task_notifications import log_task_completion
 
@@ -37,6 +38,46 @@ class _ChildTask:
 
 
 class DailyBatchTaskTest(unittest.TestCase):
+    def test_pvp_settlement_skips_in_both_modes_without_home_or_completion(self):
+        for mode in (RUN_MODE_ALL, RUN_MODE_INCOMPLETE):
+            for crosses_during_run in (False, True):
+                with self.subTest(mode=mode, crosses=crosses_during_run):
+                    pvp = object.__new__(PVPTask)
+                    pvp.name = "镜中之战"
+                    pvp.config = {}
+                    pvp.info = {}
+                    pvp.info_set = lambda key, value: pvp.info.__setitem__(key, value)
+                    pvp.info_clear = pvp.info.clear
+                    pvp.log_info = mock.Mock()
+                    pvp.auto_return_main_home = mock.Mock(return_value=True)
+                    opens = datetime(2026, 11, 2, 8, tzinfo=BEIJING_TZ).timestamp()
+
+                    def run():
+                        pvp.info.update({"状态": "PVP未执行", "PVP 结算休战": True})
+                        return True
+
+                    pvp.run = mock.Mock(side_effect=run)
+                    later = _ChildTask(f"later-{mode}-{crosses_during_run}", [])
+                    specs = (DailyBatchChild("自动PVP", PVPTask),
+                             DailyBatchChild("later", _ChildTask))
+                    task, _ = self.make_task({PVPTask: pvp, _ChildTask: later}, specs,
+                                            {"启用": True})
+                    with mock.patch("src.tasks.PVPTask.pvp_settlement_end_ts",
+                                    return_value=None if crosses_during_run else opens), \
+                            mock.patch.object(scheduler, "default_store") as schedule:
+                        schedule.return_value.is_due.return_value = True
+                        self.assertTrue(task.run(run_mode=mode))
+                    if crosses_during_run:
+                        pvp.run.assert_called_once()
+                    else:
+                        pvp.auto_return_main_home.assert_not_called()
+                        pvp.run.assert_not_called()
+                    self.assertEqual("自动PVP", task.info["跳过"])
+                    self.assertEqual("later", task.info["完成"])
+                    self.assertEqual("-", task.info["失败"])
+                    from src.tasks.run_history import default_store
+                    self.assertIsNone(default_store().last_run(pvp.name))
+
     def test_failed_child_recovers_and_later_child_runs_without_successful_batch(self):
         class First:
             pass

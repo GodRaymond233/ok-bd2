@@ -267,6 +267,7 @@ class RunHistoryStoreTest(unittest.TestCase):
                         _status_set=lambda key, value: info.__setitem__(key, value),
                         log_info=lambda *args, **kwargs: None,
                         _target_multiplier=lambda: 4,
+                        _skip_weekly_settlement=lambda: False,
                     )
                     for method in methods:
                         value = False if method == failed_method else True

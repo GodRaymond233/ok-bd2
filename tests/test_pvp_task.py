@@ -405,6 +405,77 @@ class FiendRewardEntryTest(unittest.TestCase):
 
 
 class PVPTaskHelperTest(unittest.TestCase):
+    def setUp(self):
+        clock = patch("src.tasks.PVPTask.pvp_settlement_end_ts", return_value=None)
+        clock.start()
+        self.addCleanup(clock.stop)
+
+    def test_weekly_settlement_skips_entry_and_opening_clears_skip_state(self):
+        task = object.__new__(PVPTask)
+        task.config = {"启用": True}
+        task.info = {}
+        task.info_set = lambda key, value: task.info.__setitem__(key, value)
+        task.log_info = Mock()
+        task.log_completion = Mock()
+        task._ensure_pvp_hub = Mock(return_value=True)
+        task._start_auto_battle = Mock(return_value="started")
+        task._wait_result_and_leave = Mock(return_value=True)
+        opens = datetime(2026, 11, 2, 0, tzinfo=timezone.utc).timestamp()
+        with patch("src.tasks.PVPTask.pvp_settlement_end_ts", return_value=opens):
+            self.assertTrue(task.run())
+        task._ensure_pvp_hub.assert_not_called()
+        task._start_auto_battle.assert_not_called()
+        self.assertTrue(task.info["PVP 结算休战"])
+        self.assertIn("2026-11-02 08:00", task.info["状态"])
+        self.assertTrue(task.run())
+        self.assertFalse(task.info["PVP 结算休战"])
+        task._start_auto_battle.assert_called_once_with(1)
+        task._wait_result_and_leave.assert_called_once_with(1)
+
+    def test_settlement_during_preparation_blocks_battle_start(self):
+        task = object.__new__(PVPTask)
+        task.config = {}
+        task.info = {}
+        task.info_set = lambda key, value: task.info.__setitem__(key, value)
+        task.log_info = Mock()
+        task._click_pvp_stage_once = Mock(return_value=True)
+        task._wait_for_ocr_patterns = Mock(return_value=(True, "鲜血鸡尾酒 自动战斗"))
+        task._ensure_free_ap_enabled = Mock(return_value=True)
+        task._ensure_multiplier = Mock(return_value=True)
+        task._select_max_battle_count = Mock()
+        task._click_screen_reference = Mock()
+        task._wait_battle_start_or_ap_shortage = Mock()
+        opens = datetime(2026, 11, 2, 0, tzinfo=timezone.utc).timestamp()
+        with patch("src.tasks.PVPTask.pvp_settlement_end_ts", side_effect=[None, opens]):
+            self.assertEqual("settlement", task._start_auto_battle(40))
+        self.assertTrue(task.info["PVP 结算休战"])
+        task._wait_battle_start_or_ap_shortage.assert_not_called()
+        self.assertNotIn(call(*PVP_BATTLE_START_SCREEN_POINT, after_sleep=2.0),
+                         task._click_screen_reference.call_args_list)
+
+    def test_run_crossing_settlement_handles_entry_and_ap_retry(self):
+        opens = datetime(2026, 11, 2, 0, tzinfo=timezone.utc).timestamp()
+        for entry_failed, ap_retry in ((True, False), (False, False), (False, True)):
+            with self.subTest(entry_failed=entry_failed, ap_retry=ap_retry):
+                task = object.__new__(PVPTask)
+                task.config = {"竞技场战斗倍数": 40}
+                task.info_set = Mock()
+                task.log_info = Mock()
+                task._ensure_pvp_hub = Mock(return_value=not entry_failed)
+                task.auto_return_main_home = Mock(return_value=True)
+                task._wait_result_and_leave = Mock()
+                if ap_retry:
+                    def start(multiplier):
+                        if multiplier == 40:
+                            return "ap_shortage"
+                        return PVPTask._start_auto_battle(task, 1)
+                    task._start_auto_battle = start
+                with patch("src.tasks.PVPTask.pvp_settlement_end_ts", side_effect=[None, opens]):
+                    self.assertTrue(task.run())
+                task._wait_result_and_leave.assert_not_called()
+                if not entry_failed:
+                    task.auto_return_main_home.assert_called_once_with(notify_failure=False)
+
     def test_quick_switch_searches_both_regions_and_rejects_middle(self):
         template = np.random.default_rng(42).integers(30, 240, (24, 24), dtype=np.uint8)
         spec = replace(QUICK_PACK_TEMPLATE, scale_ratios=(1.0,))
