@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import numpy as np
 from ok import og
 from PySide6.QtCore import QCoreApplication, QEvent
-from PySide6.QtWidgets import QApplication, QHBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QCheckBox, QHBoxLayout, QWidget
 from qfluentwidgets import PushButton, Theme, qconfig
 
 from src.diagnostics.models import DiagnosticSnapshot
@@ -97,19 +97,31 @@ class FeedbackReportUiTest(unittest.TestCase):
         self.assertEqual(2, tab.debug_layout.count())
         tab.close()
 
-    def test_dialog_makes_current_screenshot_optional(self):
+    def test_dialog_generates_report_with_automatic_failure_screenshots(self):
         for frame in (None, np.zeros((20, 20, 3), dtype=np.uint8)):
             with self.subTest(has_frame=frame is not None):
                 dialog = FeedbackReportDialog(
                     DiagnosticSnapshot(captured_at="2026-08-14T13:00:00+08:00", frame=frame)
                 )
 
-                self.assertFalse(dialog.include_screenshot.isChecked())
-                self.assertEqual(frame is not None, dialog.include_screenshot.isEnabled())
-                if frame is not None:
-                    dialog.include_screenshot.setChecked(True)
-                    self.assertTrue(dialog.include_screenshot.isChecked())
+                self.assertEqual([], dialog.findChildren(QCheckBox))
+                dialog.description_edit.setPlainText("服装已抽完，装备已领取")
+                self.assertTrue(dialog.create_button.isEnabled())
                 dialog.close()
+
+                tab = _StartTabStub()
+                snapshot = DiagnosticSnapshot(captured_at="2026-11-02T02:07:00+09:00", frame=frame)
+                manager = _ReportManagerStub()
+                manager.prepare = Mock(return_value=snapshot)
+                controller = FeedbackReportController(tab, manager)
+                with patch("src.ui.feedback_report.FeedbackReportDialog") as form, \
+                        patch.object(controller, "_start_build") as build:
+                    form.return_value.exec.return_value = FeedbackReportDialog.DialogCode.Accepted
+                    form.return_value.description = "服装已抽完，装备已领取"
+                    controller.create_report()
+                build.assert_called_once_with("服装已抽完，装备已领取", include_screenshot=False)
+                tab.deleteLater()
+                QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
     def test_failure_prompt_uses_ui_thread_and_opens_report_on_accept(self):
         tab = _StartTabStub()

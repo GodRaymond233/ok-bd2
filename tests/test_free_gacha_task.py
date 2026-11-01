@@ -655,8 +655,9 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
                                 ([SimpleNamespace(name="正在加载")], (False, False)),
                                 (controls, (False, True)),
                                 (pool_boxes("服装"), (False, False)),
-                                (controls[:-1], (False, False)),
-                                (controls + [controls[-1]], (False, False)),
+                                (controls[:-1], (False, True)),
+                                (controls[:3], (False, False)),
+                                (controls + [controls[-2]], (False, False)),
                                 (controls + confirmation_boxes(), (False, False)),
                                 ([SimpleNamespace(name="查看获取途径")], (False, False)),
                                 (controls + [SimpleNamespace(name="免费", x=760, y=730,
@@ -693,6 +694,7 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
         for frames, loading, expected in [
             ([ready, ready, ready, pool_boxes(free=True)], [False] * 4, (True, True)),
             ([ready, ready, [], ready], [False] * 4, (False, False)),
+            ([ready, ready, ready[:-1], ready], [False] * 4, (False, True)),
             ([ready, ready, hint, ready], [False] * 4, (False, False)),
             ([ready] * 4, [False, False, True, False], (False, False)),
         ]:

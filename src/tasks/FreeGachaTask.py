@@ -380,16 +380,14 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
         if other_pool in labels:
             return None
         controls = [[box for box, label in zip(boxes, labels) if label == word]
-                    for word in (section_name, "抽抽乐记录", "抽1次", "抽10次")]
+                    for word in (section_name, "抽抽乐记录", "抽1次")]
         if any(len(group) != 1 for group in controls):
             return None
-        title, record, single, ten = (group[0] for group in controls)
-        if not (all(box.width > 0 and box.height > 0 for box in (title, record, single, ten))
+        title, record, single = (group[0] for group in controls)
+        if not (all(box.width > 0 and box.height > 0 for box in (title, record, single))
                 and title.x + title.width <= record.x
                 and abs(title.y - record.y) <= max(title.height, record.height)
-                and max(title.y + title.height, record.y + record.height) < min(single.y, ten.y)
-                and single.x + single.width < ten.x
-                and abs(single.y - ten.y) <= max(single.height, ten.height)):
+                and max(title.y + title.height, record.y + record.height) < single.y):
             return None
         return single
 

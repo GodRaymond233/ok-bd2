@@ -7,7 +7,6 @@ from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal, 
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication,
-    QCheckBox,
     QDialog,
     QFrame,
     QHBoxLayout,
@@ -156,14 +155,10 @@ class FeedbackReportDialog(QDialog):
         self.description_edit.setAcceptRichText(False)
         self.description_edit.setMaximumHeight(110)
 
-        self.include_screenshot = QCheckBox("额外附带当前页面截图（可选）")
-        self.include_screenshot.setChecked(False)
-        self.include_screenshot.setEnabled(snapshot.frame is not None)
-
         self.privacy_icon = QLabel()
         self.privacy_icon.setFixedSize(12, 12)
         privacy = QLabel(
-            "报错时自动保存的故障现场截图会随报告附带，当前页面截图可额外勾选。\n"
+            "报错时自动保存的故障现场截图会随报告附带。\n"
             "隐私范围：只导出受限运行信息、脱敏后的最近日志和上述游戏截图；"
             "不导出原始配置、环境变量、进程列表、用户名或机器名。"
         )
@@ -202,8 +197,6 @@ class FeedbackReportDialog(QDialog):
         layout.addWidget(_section_caption("问题描述"))
         layout.addWidget(self.description_edit)
         layout.addSpacing(4)
-        layout.addWidget(self.include_screenshot)
-        layout.addSpacing(2)
         layout.addLayout(privacy_row)
         layout.addSpacing(6)
         layout.addLayout(button_row)
@@ -458,7 +451,7 @@ class FeedbackReportController(QObject):
 
                 self._start_build(
                     dialog.description,
-                    include_screenshot=dialog.include_screenshot.isChecked(),
+                    include_screenshot=False,
                 )
             finally:
                 # 对话框归父窗口所有，exec 结束后不释放会连同其主题回调
