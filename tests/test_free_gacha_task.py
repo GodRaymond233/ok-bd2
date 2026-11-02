@@ -22,7 +22,7 @@ from tests.helpers import StageHistoryTestCase
 free_gacha_module = importlib.import_module("src.tasks.FreeGachaTask")
 
 
-def pool_boxes(pool="装备", free=False, scale=1):
+def pool_boxes(pool="装备", free=False, scale=1, merged_header=False):
     rows = [
         (pool + "抽抽乐", 120, 20, 110, 30),
         ("抽抽乐记录", 240, 22, 100, 25),
@@ -30,6 +30,8 @@ def pool_boxes(pool="装备", free=False, scale=1):
         ("抽1次", 760, 700, 60, 20),
         ("抽10次.", 900, 700, 70, 20),
     ]
+    if merged_header:
+        rows[:2] = [(pool + "抽抽乐 抽抽乐记录", 120, 20, 220, 30)]
     if free:
         rows.extend([("所有免费抽抽乐", 100, 720, 200, 30),
                      ("免费1次", 760, 730, 70, 20)])
@@ -543,19 +545,30 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
         task = object.__new__(FreeGachaTask)
         task.config = {}
         task.info_set = lambda *_args, **_kwargs: None
-        task.capture_frame = lambda: np.zeros((800, 1000, 3), dtype=np.uint8)
         task._match = lambda _frame, _spec: MatchResult(-1.0, (0, 0), (0, 0))
         task._passes = lambda _result, _spec: False
-        task._gacha_ocr_boxes = Mock(return_value=pool_boxes(free=True))
-
-        self.assertEqual(
-            (FREE_ENTRY_RETRY_READY, (.2, .91875)),
-            FreeGachaTask._free_entry_retry_state(task, "装备抽抽乐"),
-        )
-        task._gacha_ocr_boxes.return_value = pool_boxes(pool="服装", free=True)
         task._sleep_after_recognition = Mock()
         task.log_info = Mock()
         task.operate_click = Mock()
+        task._wait_for_confirm_dialog = Mock(return_value=True)
+        for pool in ("服装", "装备"):
+            for merged in (False, True):
+                for scale in (1, .72, 2):
+                    with self.subTest(pool=pool, merged=merged, scale=scale):
+                        task.capture_frame = lambda: np.zeros(
+                            (round(800 * scale), round(1000 * scale), 3), dtype=np.uint8)
+                        task._gacha_ocr_boxes = Mock(return_value=pool_boxes(
+                            pool, free=True, scale=scale, merged_header=merged))
+                        task.operate_click.reset_mock()
+                        self.assertTrue(task._open_confirm_dialog_with_retry(pool + "抽抽乐"))
+                        task.operate_click.assert_called_once()
+                        x, y = task.operate_click.call_args.args
+                        self.assertAlmostEqual(.2, x)
+                        self.assertAlmostEqual(.91875, y)
+                        self.assertEqual({"after_sleep": 0.5}, task.operate_click.call_args.kwargs)
+        task._gacha_ocr_boxes.return_value = pool_boxes(
+            pool="服装", free=True, merged_header=True)
+        task.operate_click.reset_mock()
         self.assertFalse(task._open_confirm_dialog_with_retry("装备抽抽乐"))
         task.operate_click.assert_not_called()
 
@@ -654,6 +667,7 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
         for boxes, expected in [([], (False, False)),
                                 ([SimpleNamespace(name="正在加载")], (False, False)),
                                 (controls, (False, True)),
+                                (pool_boxes(merged_header=True), (False, True)),
                                 (pool_boxes("服装"), (False, False)),
                                 (controls[:-1], (False, True)),
                                 (controls[:3], (False, False)),
@@ -756,8 +770,22 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
             other = "装备" if pool == "服装" else "服装"
             wrong_layout = pool_boxes(pool)
             wrong_layout[1].y = 400
+            merged = pool_boxes(pool, merged_header=True)
+            low_header = pool_boxes(pool, merged_header=True)
+            low_header[0].y = 700
+            reversed_header = pool_boxes(pool, merged_header=True)
+            reversed_header[0].name = "抽抽乐记录 " + pool + "抽抽乐"
             for boxes, loading, expected in [
                 (pool_boxes(pool), False, True),
+                (merged, False, True),
+                (pool_boxes(other, merged_header=True), False, False),
+                (merged + [pool_boxes(other, merged_header=True)[0]], False, False),
+                (merged + [pool_boxes(pool)[0]], False, False),
+                (merged + [merged[0]], False, False),
+                (merged + confirmation_boxes(pool), False, False),
+                (merged, True, False),
+                (low_header, False, False),
+                (reversed_header, False, False),
                 (pool_boxes(other), False, False),
                 (pool_boxes(pool)[:1], False, False),
                 (pool_boxes(pool) + confirmation_boxes(pool), False, False),

@@ -377,15 +377,17 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
                for word in ("确认", "取消", "抽抽乐券", "查看获取途径")):
             return None
         other_pool = "装备抽抽乐" if section_name == "服装抽抽乐" else "服装抽抽乐"
-        if other_pool in labels:
+        if any(label in (other_pool, other_pool + "抽抽乐记录") for label in labels):
             return None
-        controls = [[box for box, label in zip(boxes, labels) if label == word]
-                    for word in (section_name, "抽抽乐记录", "抽1次")]
+        # OCR may combine the adjacent pool title and record label into one header box.
+        header = section_name + "抽抽乐记录"
+        controls = [[box for box, label in zip(boxes, labels) if label in accepted]
+                    for accepted in ((section_name, header), ("抽抽乐记录", header), ("抽1次",))]
         if any(len(group) != 1 for group in controls):
             return None
         title, record, single = (group[0] for group in controls)
         if not (all(box.width > 0 and box.height > 0 for box in (title, record, single))
-                and title.x + title.width <= record.x
+                and (title is record or title.x + title.width <= record.x)
                 and abs(title.y - record.y) <= max(title.height, record.height)
                 and max(title.y + title.height, record.y + record.height) < single.y):
             return None
