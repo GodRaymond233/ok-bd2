@@ -2,8 +2,9 @@
 #
 # Steps: Python gate (run_checks Final) -> UI tests and build -> shell tests (lifecycle tests
 # with the venv interpreter) and package -> lifecycle tests with the packaged Electron and the
-# standalone interpreter -> lifecycle probe with the real service layer -> shell smoke with
-# the real core (no game needed) -> bootstrap smoke -> process cleanup.
+# standalone interpreter -> lifecycle probe with the real service layer -> desktop probe (hotkey,
+# tray, close, quit, zoom, notifications) -> shell smoke with the real core (no game needed) ->
+# bootstrap smoke -> process cleanup.
 # Every native step runs as its own process with stdout/stderr written to files under the
 # output directory (PowerShell never wraps native stderr), and summary.json lists them all.
 # Nothing here starts the game or sends input to it.
@@ -193,6 +194,12 @@ if (Test-Path $exe) {
     $probe = Join-Path $root 'desktop\scripts\lifecycle_probe.py'
     $probeOut = Join-Path $OutDir 'lifecycle-probe'
     $passed = (Invoke-NativeStep -Name 'lifecycle-probe' -File $python -Arguments @("`"$probe`"", '--out', "`"$probeOut`"", '--host', "`"$exe`"")) -and $passed
+
+    # Desktop behaviour on real Electron and the real service layer, with a stand-in game start
+    # and throwaway configs (desktop-probe.json). It needs two free keys among F9-F12.
+    $desktopProbe = Join-Path $root 'desktop\scripts\desktop_probe.cjs'
+    $desktopProbeOut = Join-Path $OutDir 'desktop-probe'
+    $passed = (Invoke-NativeStep -Name 'desktop-probe' -File 'cmd.exe' -Arguments @('/d', '/c', 'node', "`"$desktopProbe`"", '--python', "`"$python`"", '--out', "`"$desktopProbeOut`"")) -and $passed
 
     $smoke = Join-Path $OutDir 'shell-smoke.json'
     $arguments = @(
