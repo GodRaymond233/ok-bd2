@@ -2,12 +2,15 @@
 import {
   BrowserWindow,
   Menu,
+  Notification,
   Tray,
   app,
   dialog,
+  globalShortcut,
   ipcMain,
   nativeImage,
   session,
+  screen,
   shell,
   type IpcMainInvokeEvent,
 } from "electron";
@@ -15,8 +18,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { CoreError, CoreProcess, type CoreExit } from "./core-process";
 import { isAllowedExternal, isStatusPage, navigationAllowed, sameOrigin } from "./navigation";
-import { SUPPORTED_API } from "./protocol";
-import { parseShellArgs, type ShellOptions } from "./shell-config";
+import { SUPPORTED_API, type CoreMessage } from "./protocol";
+import { fitBounds, parseShellArgs, readDesktopState, ZOOM_LEVELS, type ShellOptions } from "./shell-config";
 import { ShellLog } from "./shell-log";
 
 type StatusKind = "starting" | "error" | "crashed" | "exiting";
@@ -50,6 +53,17 @@ let tray: Tray | null = null;
 let core: CoreProcess | null = null;
 let quitting = false;
 let quitStarted = false;
+let quitPrompt = false;
+const desktopFile = path.join(app.getPath("userData"), "desktop-state.json");
+const desktopState = readDesktopState(desktopFile);
+let closeToTray = false;
+let requestedHotkey = "None";
+let registeredHotkey: string | null = null;
+let hotkeyError: string | null = null;
+let desktopSync: Promise<void> | null = null;
+let desktopTimer: ReturnType<typeof setInterval> | null = null;
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let toggling = false;
 const startedAt = Date.now();
 const smoke: Record<string, unknown> = { shellPid: process.pid };
 let status: ShellStatus = {
@@ -66,6 +80,108 @@ function coreOrigin(): string | null {
 
 function logsDirectory(): string {
   return path.dirname(log.file);
+}
+
+function showWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function saveDesktopState(): void {
+  fs.mkdirSync(path.dirname(desktopFile), { recursive: true });
+  fs.writeFileSync(`${desktopFile}.tmp`, JSON.stringify(desktopState), "utf8");
+  fs.renameSync(`${desktopFile}.tmp`, desktopFile);
+}
+
+function rememberWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isMinimized()) return;
+  desktopState.bounds = mainWindow.getNormalBounds();
+  desktopState.maximized = mainWindow.isMaximized();
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    try { saveDesktopState(); } catch (error) { log.warn(`window state: ${String(error)}`); }
+  }, 300);
+}
+
+function clearHotkey(): void {
+  if (registeredHotkey) globalShortcut.unregister(registeredHotkey);
+  registeredHotkey = null;
+}
+
+async function toggleExecution(): Promise<void> {
+  const process_ = core;
+  if (toggling || quitStarted || process_?.state !== "ready" || !process_.ready) return;
+  toggling = true;
+  try {
+    const response = await fetch(`${process_.ready.origin}/api/desktop/toggle-execution`, {
+      method: "POST", headers: { Authorization: `Bearer ${process_.token}` },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok) {
+      const body = await response.json() as { detail?: string };
+      throw new Error(body.detail ?? "任务控制失败");
+    }
+  } catch (error) {
+    log.warn(`desktop control: ${String(error)}`);
+    showWindow();
+    if (mainWindow && !quitStarted) await dialog.showMessageBox(mainWindow, {
+      type: "warning", title: "ok-bd2", message: "无法启动或暂停", detail: String(error),
+    });
+  } finally {
+    toggling = false;
+  }
+}
+
+async function syncDesktop(): Promise<void> {
+  if (desktopSync) return desktopSync;
+  const process_ = core;
+  if (quitStarted || process_?.state !== "ready") return;
+  desktopSync = (async () => {
+    try {
+      const result = await apiGet("/api/desktop/preferences") as {
+        status: number; body: { closeToTray: boolean; hotkey: string };
+      } | null;
+      if (process_ !== core || quitStarted || process_.state !== "ready") return;
+      if (!result || result.status !== 200) throw new Error("无法读取桌面设置");
+      closeToTray = result.body.closeToTray === true;
+      const key = result.body.hotkey;
+      if (key !== requestedHotkey || hotkeyError !== null) {
+        clearHotkey();
+        requestedHotkey = key;
+        hotkeyError = null;
+        if (key !== "None") {
+          if (!["F9", "F10", "F11", "F12"].includes(key)) hotkeyError = "快捷键设置不受支持";
+          else if (globalShortcut.register(key, () => void toggleExecution())) registeredHotkey = key;
+          else hotkeyError = `${key} 已被其他程序占用，快捷键未启用；请更换按键。`;
+        }
+      }
+    } catch (error) {
+      if (process_ === core) {
+        clearHotkey();
+        hotkeyError = `桌面设置暂不可用：${String(error)}`;
+      }
+    }
+  })().finally(() => { desktopSync = null; });
+  return desktopSync;
+}
+
+function desktopInfo() {
+  return { zoom: desktopState.zoom, zoomLevels: ZOOM_LEVELS, closeToTray,
+    hotkey: requestedHotkey, registeredHotkey, hotkeyError, trayAvailable: tray !== null };
+}
+
+function showNotification(message: CoreMessage): void {
+  if (message.type !== "notification" || quitStarted) return;
+  if (process.platform === "win32" && tray) {
+    tray.displayBalloon({ title: message.title || "ok-bd2", content: message.message,
+      iconType: message.error ? "error" : "info" });
+  } else if (Notification.isSupported()) {
+    const notification = new Notification({ title: message.title || "ok-bd2", body: message.message });
+    notification.on("click", showWindow);
+    notification.show();
+  }
 }
 
 function showStatus(next: ShellStatus): void {
@@ -129,7 +245,15 @@ async function startCore(): Promise<void> {
     canRestart: false,
   });
   const process_ = new CoreProcess(options.core);
+  clearHotkey();
+  requestedHotkey = "None";
   core = process_;
+  process_.on("message", (message: CoreMessage) => {
+    if (core === process_) {
+      try { showNotification(message); }
+      catch (error) { log.warn(`notification unavailable: ${String(error)}`); }
+    }
+  });
   process_.on("exit", (exit: CoreExit) => onCoreExit(process_, exit));
   log.info(`starting core: ${options.core.python} ${options.core.script} (cwd ${options.core.cwd})`);
   try {
@@ -142,6 +266,8 @@ async function startCore(): Promise<void> {
     if (core !== process_ || !mainWindow || mainWindow.isDestroyed()) {
       return;
     }
+    await syncDesktop();
+    if (quitStarted) return;
     await mainWindow.loadURL(`${ready.origin}/launch/${process_.token}`);
     smoke.pageLoadedMs = Date.now() - startedAt;
     smoke.pageUrl = mainWindow.webContents.getURL().replace(process_.token, "<token>");
@@ -152,6 +278,7 @@ async function startCore(): Promise<void> {
     log.error(`core start failed: ${error instanceof Error ? error.message : String(error)}`);
     if (core === process_ && !quitStarted) {
       showStatus(describeFailure(error));
+      showWindow();
     }
     if (options.smokeTest) {
       smoke.ok = false;
@@ -210,6 +337,7 @@ async function waitForClient(timeoutMs: number): Promise<Record<string, string> 
 
 async function checkPageInterfaces(): Promise<void> {
   const required: Record<string, string[] | null> = {
+    "/api/desktop/preferences": ["closeToTray", "hotkey"],
     "/api/bd2/today": ["items", "batch", "refresh"],
     "/api/bd2/history": null,
     "/api/bd2/report": ["session_id", "snapshot", "can_resume", "result"],
@@ -280,6 +408,7 @@ async function runSmokeCycle(file: string): Promise<void> {
     await checkPageInterfaces();
     await checkPageNavigation();
     smoke.title = mainWindow?.webContents.getTitle();
+    smoke.desktop = desktopInfo();
   } catch (error) {
     smoke.apiError = String(error);
   }
@@ -310,6 +439,7 @@ function onCoreExit(process_: CoreProcess, exit: CoreExit): void {
   if (core !== process_ || exit.requested || quitStarted) {
     return;
   }
+  clearHotkey();
   if (process_.ready === null) {
     return; // start() reports failures before ready
   }
@@ -332,6 +462,7 @@ function onCoreExit(process_: CoreProcess, exit: CoreExit): void {
     ],
     canRestart: true,
   });
+  showWindow();
 }
 
 async function restartCore(): Promise<void> {
@@ -366,12 +497,14 @@ async function currentTask(): Promise<string | null> {
 }
 
 async function beginQuit(reason: string): Promise<void> {
-  if (quitStarted) {
+  if (quitStarted || quitPrompt) {
     return;
   }
+  quitPrompt = true;
   if (reason !== "session-end") {
     const running = await currentTask();
     if (running && mainWindow && !mainWindow.isDestroyed()) {
+      showWindow();
       const choice = await dialog.showMessageBox(mainWindow, {
         type: "warning",
         buttons: ["退出并停止任务", "取消"],
@@ -382,11 +515,17 @@ async function beginQuit(reason: string): Promise<void> {
         detail: "退出会停止当前任务。",
       });
       if (choice.response !== 0) {
+        quitPrompt = false;
         return;
       }
     }
   }
   quitStarted = true;
+  quitPrompt = false;
+  clearHotkey();
+  if (desktopTimer) clearInterval(desktopTimer);
+  if (saveTimer) clearTimeout(saveTimer);
+  try { saveDesktopState(); } catch (error) { log.warn(`desktop state: ${String(error)}`); }
   log.info(`quit requested: ${reason}`);
   showStatus({
     kind: "exiting",
@@ -408,10 +547,26 @@ async function beginQuit(reason: string): Promise<void> {
 
 function trustedSender(event: IpcMainInvokeEvent): boolean {
   const url = event.senderFrame?.url ?? "";
-  return isStatusPage(url, STATUS_PAGE) || sameOrigin(url, coreOrigin());
+  return event.sender === mainWindow?.webContents && event.senderFrame === event.sender.mainFrame &&
+    (isStatusPage(url, STATUS_PAGE) || sameOrigin(url, coreOrigin()));
 }
 
 function registerIpc(): void {
+  ipcMain.handle("shell:desktop", async (event) => {
+    if (!trustedSender(event)) throw new Error("页面无权访问桌面设置");
+    await syncDesktop();
+    return desktopInfo();
+  });
+  ipcMain.handle("shell:zoom", (event, zoom: unknown) => {
+    if (!trustedSender(event) || typeof zoom !== "number" || !ZOOM_LEVELS.includes(zoom)) {
+      throw new Error("无效的界面缩放");
+    }
+    const previous = desktopState.zoom;
+    desktopState.zoom = zoom;
+    try { saveDesktopState(); } catch (error) { desktopState.zoom = previous; throw error; }
+    mainWindow?.webContents.setZoomFactor(zoom / 100);
+    return desktopInfo();
+  });
   ipcMain.handle("shell:get-status", (event) => (trustedSender(event) ? status : null));
   ipcMain.handle("shell:info", (event) =>
     trustedSender(event)
@@ -445,11 +600,13 @@ function iconImage(): Electron.NativeImage {
 }
 
 function createWindow(): BrowserWindow {
+  const primary = screen.getPrimaryDisplay().workArea;
+  const areas = [primary, ...screen.getAllDisplays().map((display) => display.workArea)];
+  const bounds = fitBounds(desktopState.bounds, areas);
   const window = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    minWidth: 600,
-    minHeight: 450,
+    ...bounds,
+    minWidth: Math.min(600, bounds.width),
+    minHeight: Math.min(450, bounds.height),
     show: false,
     title: "ok-bd2",
     icon: iconImage(),
@@ -465,7 +622,14 @@ function createWindow(): BrowserWindow {
       devTools: options?.devTools ?? false,
     },
   });
-  window.once("ready-to-show", () => window.show());
+  window.once("ready-to-show", () => {
+    if (desktopState.maximized) window.maximize();
+    window.show();
+  });
+  window.on("resize", rememberWindow);
+  window.on("move", rememberWindow);
+  window.on("maximize", rememberWindow);
+  window.on("unmaximize", rememberWindow);
   const contents = window.webContents;
   const guard = (event: Electron.Event, url: string) => {
     if (!navigationAllowed(url, coreOrigin(), STATUS_PAGE)) {
@@ -485,6 +649,7 @@ function createWindow(): BrowserWindow {
     return { action: "deny" };
   });
   contents.on("did-finish-load", () => {
+    contents.setZoomFactor(desktopState.zoom / 100);
     if (isStatusPage(contents.getURL(), STATUS_PAGE)) {
       contents.send("shell:status", status);
     }
@@ -499,7 +664,10 @@ function createWindow(): BrowserWindow {
   window.on("close", (event) => {
     if (!quitting) {
       event.preventDefault();
-      void beginQuit("window-closed");
+      if (!quitStarted && closeToTray && tray) {
+        rememberWindow();
+        window.hide();
+      } else void beginQuit("window-closed");
     }
   });
   window.on("session-end", () => {
@@ -514,25 +682,22 @@ function createTray(): void {
     log.warn("no desktop session; tray icon disabled");
     return;
   }
-  tray = new Tray(iconImage());
+  try { tray = new Tray(iconImage()); }
+  catch (error) { log.warn(`tray unavailable: ${String(error)}`); return; }
   tray.setToolTip("ok-bd2");
   tray.setContextMenu(
     Menu.buildFromTemplate([
       {
         label: "显示窗口",
-        click: () => {
-          mainWindow?.show();
-          mainWindow?.focus();
-        },
+        click: showWindow,
       },
+      { label: "启动 / 暂停", click: () => void toggleExecution() },
       { type: "separator" },
       { label: "退出", click: () => void beginQuit("tray-exit") },
     ]),
   );
-  tray.on("click", () => {
-    mainWindow?.show();
-    mainWindow?.focus();
-  });
+  tray.on("click", showWindow);
+  tray.on("balloon-click", showWindow);
 }
 
 if (!app.requestSingleInstanceLock()) {
@@ -540,15 +705,8 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   app.setAppUserModelId(APP_ID);
   Menu.setApplicationMenu(null);
-  app.on("second-instance", () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) {
-        mainWindow.restore();
-      }
-      mainWindow.show();
-      mainWindow.focus();
-    }
-  });
+  app.on("second-instance", showWindow);
+  app.on("will-quit", clearHotkey);
   app.on("before-quit", (event) => {
     if (!quitting) {
       event.preventDefault();
@@ -565,6 +723,7 @@ if (!app.requestSingleInstanceLock()) {
     registerIpc();
     mainWindow = createWindow();
     createTray();
+    desktopTimer = setInterval(() => void syncDesktop(), 2000);
     void mainWindow.loadFile(STATUS_PAGE);
     if (!options) {
       const message = "error" in parsed ? parsed.error : "参数无效";

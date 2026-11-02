@@ -34,7 +34,8 @@ export type FatalMessage = {
   holder_pid?: number | null;
 };
 export type ExitingMessage = { type: "exiting"; reason: string };
-export type CoreMessage = ReadyMessage | FatalMessage | ExitingMessage;
+export type NotificationMessage = { type: "notification"; title: string; message: string; error: boolean };
+export type CoreMessage = ReadyMessage | FatalMessage | ExitingMessage | NotificationMessage;
 
 export function parseCoreLine(line: string): CoreMessage | null {
   if (!line.startsWith(LINE_PREFIX)) {
@@ -77,6 +78,11 @@ export function parseCoreLine(line: string): CoreMessage | null {
       };
     case "exiting":
       return { type: "exiting", reason: String(message.reason ?? "") };
+    case "notification":
+      if (typeof message.title !== "string" || typeof message.message !== "string" ||
+          typeof message.error !== "boolean") return null;
+      return { type: "notification", title: message.title.slice(0, 256),
+        message: message.message.slice(0, 4096), error: message.error };
     default:
       return null;
   }

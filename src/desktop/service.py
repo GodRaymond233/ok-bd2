@@ -108,6 +108,25 @@ class StartupCancelled(Exception):
     """An exit was requested before the core became ready."""
 
 
+class ShellNotifier:
+    """Deliver translated system notifications over the supervised shell pipe."""
+
+    def __init__(self, channel):
+        self.channel = channel
+
+    def show(self, title, message, error=False):
+        self.channel.send(
+            "notification",
+            title=str(title or "ok-bd2")[:256],
+            message=str(message)[:4096],
+            error=bool(error),
+        )
+        return True
+
+    def close(self):
+        pass
+
+
 class ShutdownController:
     """Starts the safe exit exactly once, whatever asked for it first.
 
@@ -527,6 +546,11 @@ def _start_and_serve(
             request_shutdown=controller.request,
         )
         runtime = app.state.runtime
+        manager = getattr(getattr(runtime.ok, "headless_app", None), "notification_manager", None)
+        if manager is not None:
+            if manager.system_notifier is not None:
+                manager.system_notifier.close()
+            manager.system_notifier = ShellNotifier(channel)
         controller.attach_runtime(runtime.ok.quit)
         # The runtime starts in the server's lifespan: never start it after an exit request.
         controller.checkpoint()

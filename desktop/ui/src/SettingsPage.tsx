@@ -20,7 +20,7 @@ import {
   applyTheme,
   storedTheme,
 } from "./settings.ts";
-import type { AboutInfo, UpdateCheck } from "./types.ts";
+import type { AboutInfo, DesktopInfo, UpdateCheck } from "./types.ts";
 import { ConfirmDialog, Icon, Menu, Toggle } from "./ui.tsx";
 
 type Tab = "general" | "notify" | "about";
@@ -38,10 +38,29 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 
 function General({ core }: { core: Core }) {
   const [theme, setTheme] = useState<Theme>(storedTheme);
+  const [desktop, setDesktop] = useState<DesktopInfo | null>(null);
+  const [desktopError, setDesktopError] = useState<string | null>(null);
+  const [zoomSaving, setZoomSaving] = useState(false);
+  const shell = window.okbd2Shell;
+  useEffect(() => {
+    let active = true;
+    const refresh = () => {
+      if (!shell?.desktop) return;
+      shell.desktop().then((value) => {
+        if (active) { setDesktop(value); setDesktopError(null); }
+      }, (reason) => { if (active) setDesktopError(message(reason)); });
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 2000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [shell, core.settings]);
   const basic = findGroup(core.settings ?? [], BASIC);
   const batch = core.today?.batch;
   const locked = core.busy;
-  const save = (key: string, value: unknown) => core.setSetting(BASIC, key, value);
+  const save = async (key: string, value: unknown) => {
+    await core.setSetting(BASIC, key, value);
+    if (shell?.desktop) setDesktop(await shell.desktop());
+  };
   const themes: [Theme, string][] = [
     ["system", t("跟随系统")],
     ["light", t("浅色")],
@@ -74,9 +93,21 @@ function General({ core }: { core: Core }) {
           </div>
           <div className="fld">
             <div className="lb">
-              {t("界面缩放")} <span className="chip">{t("阶段 4")}</span>
+              {t("界面缩放")}
             </div>
-            <div className="dsc">{t("现在跟随 Windows 的缩放设置；单独调整和高 DPI 一起在阶段 4 做。")}</div>
+            <div className="dsc">{t("在 Windows 缩放基础上调整客户端文字与控件大小，重启后保留。")}</div>
+            <div className="ctrl">
+              <select className="select" aria-label={t("界面缩放")} value={desktop?.zoom ?? 100} disabled={!desktop || zoomSaving}
+                onChange={(event) => {
+                  const zoom = Number(event.target.value);
+                  if (!shell?.setZoom) return;
+                  setZoomSaving(true);
+                  void core.act(async () => setDesktop(await shell.setZoom(zoom)))
+                    .finally(() => setZoomSaving(false));
+                }}>
+                {(desktop?.zoomLevels ?? [100]).map((zoom) => <option key={zoom} value={zoom}>{zoom}%</option>)}
+              </select>
+            </div>
           </div>
         </div>
       </Section>
@@ -114,11 +145,17 @@ function General({ core }: { core: Core }) {
       <Section title={t("窗口与快捷键")}>
         <ConfigForm
           fields={pickFields(basic, SHELL_KEYS)}
-          disabled
+          disabled={!desktop || core.busy}
           saveField={save}
-          note={() => <span className="chip">{t("阶段 4")}</span>}
         >
-          <div className="hidden-note">{t("托盘和全局快捷键由新客户端的外壳实现，阶段 4 接上；在此之前关闭窗口就是退出客户端。")}</div>
+          <div className="hidden-note">{t("关闭到托盘时任务继续运行；从托盘菜单选择退出才会停止任务。快捷键在其他窗口中也可启动或暂停执行器。")}</div>
+          {!shell?.desktop && <div className="ferr">{t("请使用新版 Electron 外壳启用桌面设置。")}</div>}
+          {desktopError && <div className="ferr" role="alert">{desktopError}</div>}
+          {desktop?.hotkeyError && <div className="ferr" role="alert">{desktop.hotkeyError}</div>}
+          {desktop && !desktop.hotkeyError && <div className="hidden-note">
+            {desktop.registeredHotkey ? `${t("快捷键已启用")}：${desktop.registeredHotkey}` : t("全局快捷键已关闭")}
+          </div>}
+          {desktop && !desktop.trayAvailable && <div className="ferr">{t("系统托盘不可用，关闭窗口将退出客户端。")}</div>}
         </ConfigForm>
       </Section>
       <Section title={t("识别与性能")}>
@@ -146,7 +183,11 @@ function Notify({ core }: { core: Core }) {
     <>
       <Section title={t("系统通知")}>
         <ConfigForm fields={pickFields(group, [SYSTEM_NOTIFICATION_KEY])} disabled={false} saveField={save}>
-          <div className="hidden-note">{t("当前由自动化核心发送 Windows 通知，可能出现额外的托盘图标；阶段 4 将统一由新客户端发送。")}</div>
+          <div className="hidden-note">{t("系统通知由客户端托盘发送；点击通知可恢复窗口。显示效果遵循 Windows 通知设置。")}</div>
+          <button type="button" className="btn sm" disabled={sending !== null || !window.okbd2Shell?.desktop}
+            onClick={() => test("system")}>
+            {sending === "system" ? t("正在发送…") : t("测试系统通知")}
+          </button>
         </ConfigForm>
       </Section>
       <Section title={t("发到手机或群聊")}>

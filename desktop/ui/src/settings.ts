@@ -13,7 +13,7 @@ export const DEVICE_KEYS = [
   "Mute Game while in Background",
 ];
 export const AUTO_RESIZE_KEY = "Auto Resize Game Window";
-/** Tray and global hotkey belong to the shell (decision D1, stage 4). */
+/** Tray and global hotkey belong to the shell. */
 export const SHELL_KEYS = ["Minimize Window to System Tray when Closing", "Start/Stop"];
 export const SYSTEM_NOTIFICATION_KEY = "System Notification";
 

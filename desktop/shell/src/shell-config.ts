@@ -1,7 +1,39 @@
 // Command line of the shell. The bootstrap (main_desktop.py) passes these; during development
 // they can also come from environment variables.
 import * as path from "node:path";
+import * as fs from "node:fs";
 import type { CoreCommand } from "./core-process";
+
+export const ZOOM_LEVELS = [80, 90, 100, 110, 125, 150];
+export interface Bounds { x: number; y: number; width: number; height: number }
+export interface DesktopState { zoom: number; bounds?: Bounds; maximized: boolean }
+
+export function readDesktopState(file: string): DesktopState {
+  try {
+    const data = JSON.parse(fs.readFileSync(file, "utf8"));
+    const b = data.bounds;
+    return {
+      zoom: ZOOM_LEVELS.includes(data.zoom) ? data.zoom : 100,
+      maximized: data.maximized === true,
+      bounds: b && [b.x, b.y, b.width, b.height].every(Number.isInteger) && b.width > 0 && b.height > 0
+        ? { x: b.x, y: b.y, width: b.width, height: b.height } : undefined,
+    };
+  } catch {
+    return { zoom: 100, maximized: false };
+  }
+}
+
+export function fitBounds(saved: Bounds | undefined, areas: Bounds[]): Bounds {
+  const area = areas.find((a) => saved && saved.x < a.x + a.width && saved.x + saved.width > a.x &&
+    saved.y < a.y + a.height && saved.y + saved.height > a.y) ?? areas[0];
+  const width = Math.min(area.width, Math.max(600, saved?.width ?? 1200));
+  const height = Math.min(area.height, Math.max(450, saved?.height ?? 800));
+  return {
+    x: Math.max(area.x, Math.min(saved?.x ?? area.x + Math.round((area.width - width) / 2), area.x + area.width - width)),
+    y: Math.max(area.y, Math.min(saved?.y ?? area.y + Math.round((area.height - height) / 2), area.y + area.height - height)),
+    width, height,
+  };
+}
 
 export interface ShellOptions {
   core: CoreCommand;

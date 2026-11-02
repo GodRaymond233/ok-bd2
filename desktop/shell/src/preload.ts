@@ -9,6 +9,8 @@ contextBridge.exposeInMainWorld("okbd2Shell", {
     return () => ipcRenderer.removeListener("shell:status", listener);
   },
   info: () => ipcRenderer.invoke("shell:info"),
+  desktop: () => ipcRenderer.invoke("shell:desktop"),
+  setZoom: (zoom: number) => ipcRenderer.invoke("shell:zoom", zoom),
   restartCore: () => ipcRenderer.invoke("shell:restart-core"),
   openLogsFolder: () => ipcRenderer.invoke("shell:open-logs"),
   quit: () => ipcRenderer.invoke("shell:quit"),

@@ -233,6 +233,19 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
                 raise RuntimeError("正在启动游戏，请等待或取消启动")
             return runtime.status()
 
+    def toggle_execution():
+        with config_lock:
+            if controller.starting:
+                raise ValueError("正在启动游戏，请等待或取消启动")
+            current = runtime.executor.current_task
+            if current is not None and current.paused:
+                task_action(current.name, "resume")
+            elif runtime.executor.paused or not runtime.status()["running"]:
+                resume()
+            else:
+                pause()
+            return runtime.status()
+
     def ensure_config_write():
         if getattr(runtime.ok.headless_app, "diagnostic_pause", False):
             raise RuntimeError("请先完成或取消问题报告，再修改配置或启动任务")
@@ -416,6 +429,11 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
 
     def test_notification(channel):
         """Send one message through one channel with its saved settings."""
+        if channel == "system":
+            manager = getattr(runtime.ok.headless_app, "notification_manager", None)
+            if manager is None or not manager.notify_system(TEST_TITLE, TEST_MESSAGE, tray=True):
+                raise ValueError("请先开启系统通知，并通过 Electron 客户端启动")
+            return {"sent": True}
         if channel not in TEST_CHANNELS:
             raise ValueError("未知的通知渠道")
         from ok.notification import providers
@@ -462,6 +480,7 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
     runtime.about = about
     runtime.pause = pause
     runtime.resume = resume
+    runtime.toggle_execution = toggle_execution
     runtime.stop_task = stop_task
 
     def device_command(operation):
@@ -540,6 +559,22 @@ def create_app(
     install_events(app, runtime)
     app.add_middleware(LocalSession, token=token, origin=origin)
     frontend_once = threading.Event()
+
+    @app.get("/api/desktop/preferences")
+    def desktop_preferences():
+        with config_lock:
+            basic = runtime.executor.global_config.get_config("Basic Options")
+            return {
+                "closeToTray": bool(basic.get("Minimize Window to System Tray when Closing")),
+                "hotkey": basic.get("Start/Stop", "None"),
+            }
+
+    @app.post("/api/desktop/toggle-execution")
+    def toggle_execution():
+        try:
+            return runtime.toggle_execution()
+        except (ValueError, RuntimeError) as error:
+            raise HTTPException(400, str(error)) from error
 
     # ok-script registers its own page at "/" and a ready hook at "/api/ui/ready".
     app.router.routes = [

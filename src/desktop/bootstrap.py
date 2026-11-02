@@ -24,7 +24,7 @@ from pathlib import Path
 from src.desktop import protocol
 
 # The shell build this core expects; bumped together with desktop/shell/package.json.
-REQUIRED_SHELL_VERSION = "0.1.0"
+REQUIRED_SHELL_VERSION = "0.2.0"
 MANIFEST_NAME = "shell-manifest.json"
 SHELL_EXECUTABLE = "ok-bd2-desktop.exe" if os.name == "nt" else "ok-bd2-desktop"
 SHELL_DIR_ENV = "OK_BD2_SHELL_DIR"

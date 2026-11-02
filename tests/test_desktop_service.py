@@ -75,6 +75,14 @@ class ProtocolPiecesTest(unittest.TestCase):
         self.assertTrue(line.isascii())
         payload = json.loads(line[len(protocol.LINE_PREFIX) :])
         self.assertEqual(payload, {"type": "ready", "port": 5, "core_version": "版本"})
+        notifier = service.ShellNotifier(channel)
+        self.assertTrue(notifier.show("标题", "内容", error=True))
+        notification = json.loads(stream.getvalue().splitlines()[-1][len(protocol.LINE_PREFIX) :])
+        self.assertEqual(
+            notification,
+            {"type": "notification", "title": "标题", "message": "内容", "error": True},
+        )
+        notifier.close()
         stream.close()
         channel.fatal("startup", "after close")
 

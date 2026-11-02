@@ -205,6 +205,37 @@ class RuntimeControlTest(unittest.TestCase):
                             self.assertTrue(current.enabled)
                             self.assertEqual(executor.onetime_task_queue, [])
 
+    def test_desktop_toggle_uses_current_state_and_resume_guards(self):
+        blocked = [None]
+        app, executor, facade = self.make_runtime([BaseTask], legacy_check=lambda: blocked[0])
+        runtime = app.state.runtime
+        runtime.toggle_execution()
+        self.controller_start.assert_called_once()
+        self.controller_start.reset_mock()
+        executor.thread = SimpleNamespace(is_alive=lambda: True)
+        runtime.toggle_execution()
+        self.assertTrue(executor.paused)
+        for attribute in ("diagnostic_pause", "window_resize_in_progress"):
+            setattr(facade, attribute, True)
+            with self.assertRaises(RuntimeError):
+                runtime.toggle_execution()
+            setattr(facade, attribute, False)
+        blocked[0] = "旧版正在运行"
+        with self.assertRaisesRegex(RuntimeError, "旧版"):
+            runtime.toggle_execution()
+        blocked[0] = None
+        facade.start_controller.starting = True
+        with self.assertRaisesRegex(ValueError, "正在启动"):
+            runtime.toggle_execution()
+        facade.start_controller.starting = False
+        self.controller_start.assert_not_called()
+        task = executor.onetime_tasks[0]
+        executor.current_task = task
+        task._enabled = task._paused = True
+        runtime.toggle_execution()
+        self.assertFalse(task.paused)
+        executor.start.assert_called_once()
+
     def test_batch_child_config_is_locked_until_batch_and_login_wait_finish(self):
         app, executor, facade = self.make_runtime([QuickHuntTask, DailyBatchTask])
         child, batch = executor.onetime_tasks

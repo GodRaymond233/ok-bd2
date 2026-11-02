@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 
 const require = createRequire(import.meta.url);
 const protocol = require("../dist/protocol.js");
-const { parseShellArgs } = require("../dist/shell-config.js");
+const { parseShellArgs, readDesktopState, fitBounds } = require("../dist/shell-config.js");
 const navigation = require("../dist/navigation.js");
 
 test("protocol lines", () => {
@@ -25,6 +26,29 @@ test("protocol lines", () => {
   const fatal = protocol.parseCoreLine('@@okbd2 {"type":"fatal","code":"startup","message":"m"}');
   assert.equal(fatal.code, "startup");
   assert.equal(fatal.holder_pid, null);
+  assert.deepEqual(protocol.parseCoreLine('@@okbd2 {"type":"notification","title":"标题","message":"内容","error":true}'),
+    { type: "notification", title: "标题", message: "内容", error: true });
+  assert.equal(protocol.parseCoreLine('@@okbd2 {"type":"notification","message":3}'), null);
+});
+
+test("desktop state tolerates damaged preferences and bounds remain visible after monitor changes", () => {
+  const directory = mkdtempSync(join(tmpdir(), "okbd2-desktop-"));
+  try {
+    const file = join(directory, "state.json");
+    assert.deepEqual(readDesktopState(file), { zoom: 100, maximized: false });
+    writeFileSync(file, '{broken');
+    assert.equal(readDesktopState(file).zoom, 100);
+    const bounds = { x: 2200, y: -900, width: 1800, height: 1000 };
+    writeFileSync(file, JSON.stringify({ zoom: 125, bounds, maximized: true }));
+    assert.deepEqual(readDesktopState(file), { zoom: 125, bounds, maximized: true });
+    const primary = { x: 0, y: 0, width: 1280, height: 720 };
+    assert.deepEqual(fitBounds(bounds, [primary]), primary);
+    const left = { x: -1920, y: 0, width: 1920, height: 1040 };
+    const saved = { x: -1800, y: 100, width: 1200, height: 800 };
+    assert.deepEqual(fitBounds(saved, [primary, left]), saved);
+    writeFileSync(file, JSON.stringify({ zoom: 999, bounds: { ...bounds, width: -1 } }));
+    assert.deepEqual(readDesktopState(file), { zoom: 100, bounds: undefined, maximized: false });
+  } finally { rmSync(directory, { recursive: true }); }
 });
 
 test("line splitting keeps partial lines", () => {

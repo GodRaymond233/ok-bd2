@@ -123,6 +123,30 @@ if ($AddUpdateTag) {
     if (& git -C $repoPath tag --list $UpdateTag) {
         throw "$repoPath already has $UpdateTag. Pass another -UpdateTag."
     }
+    $shellBuild = Join-Path $root 'desktop\shell\release\win-unpacked'
+    $shellVersion = (Get-Content -Raw (Join-Path $root 'desktop\shell\package.json') | ConvertFrom-Json).version
+    $manifest = Get-Content -Raw (Join-Path $shellBuild 'shell-manifest.json') | ConvertFrom-Json
+    if ($manifest.version -ne $shellVersion -or $shellVersion -notmatch '^\d+\.\d+\.\d+$') {
+        throw 'The packaged shell version does not match the source. Run windows-checks.ps1 first.'
+    }
+    $shellTarget = Join-Path $Output "data\apps\ok-bd2\shell\$shellVersion"
+    if (Test-Path $shellTarget) {
+        $built = @(Get-ChildItem -File -Recurse $shellBuild)
+        if (@(Get-ChildItem -File -Recurse $shellTarget).Count -ne $built.Count) {
+            throw 'Existing shell version has different contents; bump the shell version first.'
+        }
+        foreach ($file in $built) {
+            $relative = $file.FullName.Substring($shellBuild.Length + 1)
+            $installed = Join-Path $shellTarget $relative
+            if (-not (Test-Path $installed) -or
+                (Get-FileHash -LiteralPath $file.FullName).Hash -ne (Get-FileHash -LiteralPath $installed).Hash) {
+                throw 'Existing shell version has different contents; bump the shell version first.'
+            }
+        }
+    } else {
+        New-Item -ItemType Directory -Force -Path (Split-Path $shellTarget) | Out-Null
+        Copy-Item -Recurse -LiteralPath $shellBuild -Destination $shellTarget
+    }
     $work = Join-Path $Output 'update-staging'
     if (Test-Path $work) {
         throw "$work is left over from an earlier run; remove it first."

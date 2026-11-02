@@ -72,6 +72,21 @@ def make_client(test, device=GAME_WINDOW, window=None, launcher_version=None):
 
 
 class SettingsTextTest(unittest.TestCase):
+    def test_desktop_preferences_follow_saved_settings_and_toggle_requires_session(self):
+        client = make_client(self)
+        path = "/api/desktop/preferences"
+        self.assertEqual(client.get(path).json(), {"closeToTray": False, "hotkey": "F9"})
+        config = self.executor.global_config.configs["Basic Options"]
+        config["Minimize Window to System Tray when Closing"] = True
+        config["Start/Stop"] = "None"
+        self.assertEqual(client.get(path).json(), {"closeToTray": True, "hotkey": "None"})
+        response = client.post("/api/desktop/toggle-execution")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.headless.start_controller.starting = True
+        self.assertEqual(client.post("/api/desktop/toggle-execution").status_code, 400)
+        client.headers.pop("Authorization")
+        self.assertEqual(client.post("/api/desktop/toggle-execution").status_code, 403)
+
     def test_every_shown_setting_has_a_chinese_name(self):
         for option in (create_basic_options(enable_blur=True), create_notification_options()):
             for key in option.default_config:
@@ -256,6 +271,12 @@ class TestNotificationTest(unittest.TestCase):
             response = self.post(client, "discord")
         self.assertEqual(400, response.status_code)
         self.assertIn("发送失败", response.json()["detail"])
+        self.assertEqual(400, self.post(client, "system").status_code)
+        self.headless.notification_manager = SimpleNamespace(notify_system=Mock(return_value=True))
+        self.assertEqual(200, self.post(client, "system").status_code)
+        self.headless.notification_manager.notify_system.assert_called_once()
+        self.headless.notification_manager.notify_system.return_value = False
+        self.assertEqual(400, self.post(client, "system").status_code)
 
 
 class StarterWaitTest(unittest.TestCase):
