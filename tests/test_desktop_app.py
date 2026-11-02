@@ -236,6 +236,31 @@ class RuntimeControlTest(unittest.TestCase):
         self.assertFalse(task.paused)
         executor.start.assert_called_once()
 
+    def test_desktop_toggle_pauses_a_running_task_the_way_the_run_panel_shows(self):
+        app, executor, _ = self.make_runtime([BaseTask])
+        runtime = app.state.runtime
+        task = executor.onetime_tasks[0]
+        executor.thread = SimpleNamespace(is_alive=lambda: True)
+        executor.current_task = task
+        task._enabled = True
+        runtime.toggle_execution()
+        # The panel's state comes from task.paused (run.ts); a global pause would stay invisible.
+        self.assertTrue(task.paused)
+        self.assertFalse(executor.paused)
+        payload = next(item for item in runtime.tasks() if item["name"] == task.name)
+        self.assertTrue(payload["paused"])
+        runtime.toggle_execution()
+        self.assertFalse(task.paused)
+
+    def test_desktop_toggle_pauses_globally_when_no_one_time_task_runs(self):
+        app, executor, _ = self.make_runtime([BaseTask])
+        runtime = app.state.runtime
+        executor.thread = SimpleNamespace(is_alive=lambda: True)
+        # A trigger task (for example the login wait) cannot be paused on its own.
+        executor.current_task = SimpleNamespace(name="login", paused=False, enabled=True)
+        runtime.toggle_execution()
+        self.assertTrue(executor.paused)
+
     def test_batch_child_config_is_locked_until_batch_and_login_wait_finish(self):
         app, executor, facade = self.make_runtime([QuickHuntTask, DailyBatchTask])
         child, batch = executor.onetime_tasks

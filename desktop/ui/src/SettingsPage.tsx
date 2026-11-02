@@ -8,19 +8,22 @@ import { t } from "./i18n.ts";
 import {
   AUTO_RESIZE_KEY,
   BASIC,
+  DESKTOP_RETRY_MS,
   DEVICE_KEYS,
   findGroup,
+  needsDesktopRetry,
   NOTIFICATION,
   otherFields,
   pickFields,
   SHELL_KEYS,
+  shellSettingsKey,
   SYSTEM_NOTIFICATION_KEY,
   TEST_CHANNELS,
   type Theme,
   applyTheme,
   storedTheme,
 } from "./settings.ts";
-import type { AboutInfo, DesktopInfo, UpdateCheck } from "./types.ts";
+import type { AboutInfo, ShellDesktop, UpdateCheck } from "./types.ts";
 import { ConfirmDialog, Icon, Menu, Toggle } from "./ui.tsx";
 
 type Tab = "general" | "notify" | "about";
@@ -38,10 +41,13 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 
 function General({ core }: { core: Core }) {
   const [theme, setTheme] = useState<Theme>(storedTheme);
-  const [desktop, setDesktop] = useState<DesktopInfo | null>(null);
+  const [desktop, setDesktop] = useState<ShellDesktop | null>(null);
   const [desktopError, setDesktopError] = useState<string | null>(null);
   const [zoomSaving, setZoomSaving] = useState(false);
   const shell = window.okbd2Shell;
+  // The shell's answer changes when a setting does; only a problem it keeps retrying can clear alone.
+  const retrying = needsDesktopRetry(desktop, desktopError);
+  const shellSettings = shellSettingsKey(core.settings);
   useEffect(() => {
     let active = true;
     const refresh = () => {
@@ -51,16 +57,13 @@ function General({ core }: { core: Core }) {
       }, (reason) => { if (active) setDesktopError(message(reason)); });
     };
     refresh();
-    const timer = window.setInterval(refresh, 2000);
+    const timer = retrying ? window.setInterval(refresh, DESKTOP_RETRY_MS) : undefined;
     return () => { active = false; window.clearInterval(timer); };
-  }, [shell, core.settings]);
+  }, [shell, shellSettings, retrying]);
   const basic = findGroup(core.settings ?? [], BASIC);
   const batch = core.today?.batch;
   const locked = core.busy;
-  const save = async (key: string, value: unknown) => {
-    await core.setSetting(BASIC, key, value);
-    if (shell?.desktop) setDesktop(await shell.desktop());
-  };
+  const save = (key: string, value: unknown) => core.setSetting(BASIC, key, value);
   const themes: [Theme, string][] = [
     ["system", t("跟随系统")],
     ["light", t("浅色")],
@@ -151,6 +154,7 @@ function General({ core }: { core: Core }) {
           <div className="hidden-note">{t("关闭到托盘时任务继续运行；从托盘菜单选择退出才会停止任务。快捷键在其他窗口中也可启动或暂停执行器。")}</div>
           {!shell?.desktop && <div className="ferr">{t("请使用新版 Electron 外壳启用桌面设置。")}</div>}
           {desktopError && <div className="ferr" role="alert">{desktopError}</div>}
+          {desktop?.syncError && <div className="ferr" role="alert">{desktop.syncError}</div>}
           {desktop?.hotkeyError && <div className="ferr" role="alert">{desktop.hotkeyError}</div>}
           {desktop && !desktop.hotkeyError && <div className="hidden-note">
             {desktop.registeredHotkey ? `${t("快捷键已启用")}：${desktop.registeredHotkey}` : t("全局快捷键已关闭")}

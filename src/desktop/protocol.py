@@ -9,6 +9,7 @@ stdout (core -> shell), one line per message, prefixed with ``LINE_PREFIX``:
     {"type": "ready", "port": int, "pid": int, "api": API_VERSION, "core_version": str}
     {"type": "fatal", "code": str, "message": str}
     {"type": "exiting", "reason": str}
+    {"type": "notification", "title": str, "message": str, "error": bool}
 Anything else on stdout or stderr is log output.
 """
 

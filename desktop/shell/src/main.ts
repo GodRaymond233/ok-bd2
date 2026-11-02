@@ -17,9 +17,18 @@ import {
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { CoreError, CoreProcess, type CoreExit } from "./core-process";
+import { ExecutionToggle, HotkeyBinding, QuitGate, type ToggleFailure } from "./desktop-control";
 import { isAllowedExternal, isStatusPage, navigationAllowed, sameOrigin } from "./navigation";
 import { SUPPORTED_API, type CoreMessage } from "./protocol";
-import { fitBounds, parseShellArgs, readDesktopState, ZOOM_LEVELS, type ShellOptions } from "./shell-config";
+import {
+  fitBounds,
+  minimumSize,
+  parseShellArgs,
+  readDesktopState,
+  ZOOM_LEVELS,
+  type Bounds,
+  type ShellOptions,
+} from "./shell-config";
 import { ShellLog } from "./shell-log";
 
 type StatusKind = "starting" | "error" | "crashed" | "exiting";
@@ -37,6 +46,8 @@ const STATUS_PAGE = path.join(__dirname, "..", "static", "status.html");
 const PRELOAD = path.join(__dirname, "preload.js");
 // No "persist:" prefix: the launch cookie lives in memory only.
 const PARTITION = "okbd2-core";
+// Only while a key is held by another program or the settings could not be read.
+const DESKTOP_RETRY_MS = 5000;
 
 const parsed = parseShellArgs(process.argv.slice(1));
 const options: ShellOptions | null = "error" in parsed ? null : parsed;
@@ -52,18 +63,23 @@ let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let core: CoreProcess | null = null;
 let quitting = false;
-let quitStarted = false;
-let quitPrompt = false;
+const quit = new QuitGate();
 const desktopFile = path.join(app.getPath("userData"), "desktop-state.json");
 const desktopState = readDesktopState(desktopFile);
 let closeToTray = false;
-let requestedHotkey = "None";
-let registeredHotkey: string | null = null;
-let hotkeyError: string | null = null;
-let desktopSync: Promise<void> | null = null;
-let desktopTimer: ReturnType<typeof setInterval> | null = null;
+const hotkey = new HotkeyBinding(
+  {
+    register: (key, callback) => globalShortcut.register(key, callback),
+    unregister: (key) => globalShortcut.unregister(key),
+  },
+  () => toggleExecution(),
+);
+const executionToggle = new ExecutionToggle(reportControlFailure);
+let syncError: string | null = null;
+let desktopSync: Promise<void> = Promise.resolve();
+let desktopRetry: ReturnType<typeof setTimeout> | null = null;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
-let toggling = false;
+let controlDialogOpen = false;
 const startedAt = Date.now();
 const smoke: Record<string, unknown> = { shellPid: process.pid };
 let status: ShellStatus = {
@@ -105,83 +121,96 @@ function rememberWindow(): void {
   }, 300);
 }
 
-function clearHotkey(): void {
-  if (registeredHotkey) globalShortcut.unregister(registeredHotkey);
-  registeredHotkey = null;
+function flushDesktopState(): void {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = null;
+  try { saveDesktopState(); } catch (error) { log.warn(`desktop state: ${String(error)}`); }
 }
 
-async function toggleExecution(): Promise<void> {
+function toggleExecution(): void {
   const process_ = core;
-  if (toggling || quitStarted || process_?.state !== "ready" || !process_.ready) return;
-  toggling = true;
+  const ready = process_?.ready;
+  if (quit.started || process_?.state !== "ready" || !ready) return;
+  void executionToggle.run(() => fetch(`${ready.origin}/api/desktop/toggle-execution`, {
+    method: "POST", headers: { Authorization: `Bearer ${process_.token}` },
+    signal: AbortSignal.timeout(5000),
+  }));
+}
+
+function reportControlFailure(failure: ToggleFailure): void {
+  log.warn(`desktop control (${failure.kind}): ${failure.detail}`);
+  if (quit.started) return;
+  // A task may still be running: a notification says it without taking the foreground from the game.
+  if (failure.kind === "unknown" && deliverNotification("无法确认启动或暂停的结果", failure.detail, true)) return;
+  showWindow();
+  if (controlDialogOpen || !mainWindow || mainWindow.isDestroyed()) return;
+  controlDialogOpen = true;
+  void dialog.showMessageBox(mainWindow, {
+    type: "warning", title: "ok-bd2", message: "无法启动或暂停", detail: failure.detail,
+  }).catch((error) => log.warn(`desktop control dialog: ${String(error)}`))
+    .finally(() => { controlDialogOpen = false; });
+}
+
+async function readDesktopPreferences(process_: CoreProcess): Promise<void> {
   try {
-    const response = await fetch(`${process_.ready.origin}/api/desktop/toggle-execution`, {
-      method: "POST", headers: { Authorization: `Bearer ${process_.token}` },
-      signal: AbortSignal.timeout(5000),
-    });
-    if (!response.ok) {
-      const body = await response.json() as { detail?: string };
-      throw new Error(body.detail ?? "任务控制失败");
-    }
+    if (process_ !== core || quit.started || process_.state !== "ready") return;
+    const result = await apiGet("/api/desktop/preferences") as {
+      status: number; body: { closeToTray: boolean; hotkey: string };
+    } | null;
+    if (process_ !== core || quit.started || process_.state !== "ready") return;
+    if (!result || result.status !== 200) throw new Error("无法读取桌面设置");
+    closeToTray = result.body.closeToTray === true;
+    hotkey.apply(result.body.hotkey);
+    syncError = null;
   } catch (error) {
-    log.warn(`desktop control: ${String(error)}`);
-    showWindow();
-    if (mainWindow && !quitStarted) await dialog.showMessageBox(mainWindow, {
-      type: "warning", title: "ok-bd2", message: "无法启动或暂停", detail: String(error),
-    });
+    // The key stays registered: its callback checks the core itself, and a core that is only slow
+    // must not lose the hotkey to another program.
+    if (process_ === core) syncError = `桌面设置暂不可用：${String(error)}`;
   } finally {
-    toggling = false;
+    retryDesktopSoon();
   }
 }
 
-async function syncDesktop(): Promise<void> {
-  if (desktopSync) return desktopSync;
+// One read after another, so a read that started before a save can never hide the saved value.
+function syncDesktop(): Promise<void> {
   const process_ = core;
-  if (quitStarted || process_?.state !== "ready") return;
-  desktopSync = (async () => {
-    try {
-      const result = await apiGet("/api/desktop/preferences") as {
-        status: number; body: { closeToTray: boolean; hotkey: string };
-      } | null;
-      if (process_ !== core || quitStarted || process_.state !== "ready") return;
-      if (!result || result.status !== 200) throw new Error("无法读取桌面设置");
-      closeToTray = result.body.closeToTray === true;
-      const key = result.body.hotkey;
-      if (key !== requestedHotkey || hotkeyError !== null) {
-        clearHotkey();
-        requestedHotkey = key;
-        hotkeyError = null;
-        if (key !== "None") {
-          if (!["F9", "F10", "F11", "F12"].includes(key)) hotkeyError = "快捷键设置不受支持";
-          else if (globalShortcut.register(key, () => void toggleExecution())) registeredHotkey = key;
-          else hotkeyError = `${key} 已被其他程序占用，快捷键未启用；请更换按键。`;
-        }
-      }
-    } catch (error) {
-      if (process_ === core) {
-        clearHotkey();
-        hotkeyError = `桌面设置暂不可用：${String(error)}`;
-      }
-    }
-  })().finally(() => { desktopSync = null; });
+  if (quit.started || process_?.state !== "ready") return Promise.resolve();
+  desktopSync = desktopSync.then(() => readDesktopPreferences(process_));
   return desktopSync;
+}
+
+function retryDesktopSoon(): void {
+  if (desktopRetry || quit.started || !(syncError || hotkey.waitingForKey)) return;
+  desktopRetry = setTimeout(() => {
+    desktopRetry = null;
+    void syncDesktop();
+  }, DESKTOP_RETRY_MS);
 }
 
 function desktopInfo() {
   return { zoom: desktopState.zoom, zoomLevels: ZOOM_LEVELS, closeToTray,
-    hotkey: requestedHotkey, registeredHotkey, hotkeyError, trayAvailable: tray !== null };
+    hotkey: hotkey.requested, registeredHotkey: hotkey.registered, hotkeyError: hotkey.error, syncError,
+    trayAvailable: tray !== null };
 }
 
-function showNotification(message: CoreMessage): void {
-  if (message.type !== "notification" || quitStarted) return;
-  if (process.platform === "win32" && tray) {
-    tray.displayBalloon({ title: message.title || "ok-bd2", content: message.message,
-      iconType: message.error ? "error" : "info" });
-  } else if (Notification.isSupported()) {
-    const notification = new Notification({ title: message.title || "ok-bd2", body: message.message });
-    notification.on("click", showWindow);
-    notification.show();
+/** False when the system could not be asked to show it. */
+function deliverNotification(title: string, body: string, error: boolean): boolean {
+  if (quit.started) return false;
+  try {
+    if (process.platform === "win32" && tray) {
+      tray.displayBalloon({ title, content: body, iconType: error ? "error" : "info" });
+      return true;
+    }
+    if (Notification.isSupported()) {
+      const notification = new Notification({ title, body });
+      notification.on("click", showWindow);
+      notification.show();
+      return true;
+    }
+  } catch (reason) {
+    log.warn(`notification unavailable: ${String(reason)}`);
   }
+  return false;
 }
 
 function showStatus(next: ShellStatus): void {
@@ -245,13 +274,12 @@ async function startCore(): Promise<void> {
     canRestart: false,
   });
   const process_ = new CoreProcess(options.core);
-  clearHotkey();
-  requestedHotkey = "None";
+  hotkey.reset();
+  syncError = null;
   core = process_;
   process_.on("message", (message: CoreMessage) => {
-    if (core === process_) {
-      try { showNotification(message); }
-      catch (error) { log.warn(`notification unavailable: ${String(error)}`); }
+    if (core === process_ && message.type === "notification") {
+      deliverNotification(message.title || "ok-bd2", message.message, message.error);
     }
   });
   process_.on("exit", (exit: CoreExit) => onCoreExit(process_, exit));
@@ -267,7 +295,8 @@ async function startCore(): Promise<void> {
       return;
     }
     await syncDesktop();
-    if (quitStarted) return;
+    if (quit.started || core !== process_) return;
+    if (process_.state !== "ready") throw new CoreError("exited", "核心在页面加载前退出");
     await mainWindow.loadURL(`${ready.origin}/launch/${process_.token}`);
     smoke.pageLoadedMs = Date.now() - startedAt;
     smoke.pageUrl = mainWindow.webContents.getURL().replace(process_.token, "<token>");
@@ -276,7 +305,8 @@ async function startCore(): Promise<void> {
     }
   } catch (error) {
     log.error(`core start failed: ${error instanceof Error ? error.message : String(error)}`);
-    if (core === process_ && !quitStarted) {
+    // A core that dies during the page load has its crash page already; it says more than this.
+    if (core === process_ && !quit.started && status.kind !== "crashed") {
       showStatus(describeFailure(error));
       showWindow();
     }
@@ -408,12 +438,13 @@ async function runSmokeCycle(file: string): Promise<void> {
     await checkPageInterfaces();
     await checkPageNavigation();
     smoke.title = mainWindow?.webContents.getTitle();
+    await syncDesktop();
     smoke.desktop = desktopInfo();
   } catch (error) {
     smoke.apiError = String(error);
   }
   const before = Date.now();
-  quitStarted = true;
+  quit.started = true;
   const result = core ? await core.stop("smoke-test") : null;
   smoke.stop = result;
   smoke.stopMs = Date.now() - before;
@@ -423,6 +454,7 @@ async function runSmokeCycle(file: string): Promise<void> {
     !result.forced &&
     result.exitCode === 0 &&
     !smoke.apiError &&
+    syncError === null &&
     client?.core === "ok" &&
     client?.events === "connected";
   writeSmoke(file);
@@ -436,17 +468,18 @@ function onCoreExit(process_: CoreProcess, exit: CoreExit): void {
     `core exited: code=${exit.exitCode} signal=${exit.signal} requested=${exit.requested} ` +
       `reason=${exit.coreReason}`,
   );
-  if (core !== process_ || exit.requested || quitStarted) {
+  if (core !== process_ || exit.requested || quit.started) {
     return;
   }
-  clearHotkey();
+  hotkey.release();
   if (process_.ready === null) {
     return; // start() reports failures before ready
   }
   if (exit.coreReason !== null) {
     // The core ended itself (for example an update or "exit after task"): leave too.
-    quitStarted = true;
+    quit.started = true;
     quitting = true;
+    flushDesktopState();
     app.exit(0);
     return;
   }
@@ -466,7 +499,7 @@ function onCoreExit(process_: CoreProcess, exit: CoreExit): void {
 }
 
 async function restartCore(): Promise<void> {
-  if (quitStarted) {
+  if (quit.started) {
     return;
   }
   const previous = core;
@@ -496,36 +529,31 @@ async function currentTask(): Promise<string | null> {
   }
 }
 
+async function confirmQuit(): Promise<boolean> {
+  const running = await currentTask();
+  if (!running || quit.started || !mainWindow || mainWindow.isDestroyed()) {
+    return true;
+  }
+  showWindow();
+  const choice = await dialog.showMessageBox(mainWindow, {
+    type: "warning",
+    buttons: ["退出并停止任务", "取消"],
+    defaultId: 1,
+    cancelId: 1,
+    title: "ok-bd2",
+    message: `任务"${running}"正在运行。`,
+    detail: "退出会停止当前任务。",
+  });
+  return choice.response === 0;
+}
+
 async function beginQuit(reason: string): Promise<void> {
-  if (quitStarted || quitPrompt) {
+  if (!(await quit.begin(reason, confirmQuit))) {
     return;
   }
-  quitPrompt = true;
-  if (reason !== "session-end") {
-    const running = await currentTask();
-    if (running && mainWindow && !mainWindow.isDestroyed()) {
-      showWindow();
-      const choice = await dialog.showMessageBox(mainWindow, {
-        type: "warning",
-        buttons: ["退出并停止任务", "取消"],
-        defaultId: 1,
-        cancelId: 1,
-        title: "ok-bd2",
-        message: `任务"${running}"正在运行。`,
-        detail: "退出会停止当前任务。",
-      });
-      if (choice.response !== 0) {
-        quitPrompt = false;
-        return;
-      }
-    }
-  }
-  quitStarted = true;
-  quitPrompt = false;
-  clearHotkey();
-  if (desktopTimer) clearInterval(desktopTimer);
-  if (saveTimer) clearTimeout(saveTimer);
-  try { saveDesktopState(); } catch (error) { log.warn(`desktop state: ${String(error)}`); }
+  hotkey.release();
+  if (desktopRetry) clearTimeout(desktopRetry);
+  flushDesktopState();
   log.info(`quit requested: ${reason}`);
   showStatus({
     kind: "exiting",
@@ -564,7 +592,10 @@ function registerIpc(): void {
     const previous = desktopState.zoom;
     desktopState.zoom = zoom;
     try { saveDesktopState(); } catch (error) { desktopState.zoom = previous; throw error; }
-    mainWindow?.webContents.setZoomFactor(zoom / 100);
+    if (mainWindow) {
+      mainWindow.webContents.setZoomFactor(zoom / 100);
+      applyMinimumSize(mainWindow);
+    }
     return desktopInfo();
   });
   ipcMain.handle("shell:get-status", (event) => (trustedSender(event) ? status : null));
@@ -599,14 +630,28 @@ function iconImage(): Electron.NativeImage {
   return file && fs.existsSync(file) ? nativeImage.createFromPath(file) : nativeImage.createEmpty();
 }
 
+function workAreas(): Bounds[] {
+  return [screen.getPrimaryDisplay().workArea, ...screen.getAllDisplays().map((display) => display.workArea)];
+}
+
+// Zooming in must not take the pages below the width they were laid out for.
+function applyMinimumSize(window: BrowserWindow): void {
+  const normal = window.getNormalBounds();
+  const minimum = minimumSize(desktopState.zoom, screen.getDisplayMatching(normal).workArea);
+  window.setMinimumSize(minimum.width, minimum.height);
+  if (!window.isMaximized() && !window.isMinimized() &&
+      (normal.width < minimum.width || normal.height < minimum.height)) {
+    window.setBounds(fitBounds(normal, workAreas(), desktopState.zoom));
+  }
+}
+
 function createWindow(): BrowserWindow {
-  const primary = screen.getPrimaryDisplay().workArea;
-  const areas = [primary, ...screen.getAllDisplays().map((display) => display.workArea)];
-  const bounds = fitBounds(desktopState.bounds, areas);
+  const bounds = fitBounds(desktopState.bounds, workAreas(), desktopState.zoom);
+  const minimum = minimumSize(desktopState.zoom, screen.getDisplayMatching(bounds).workArea);
   const window = new BrowserWindow({
     ...bounds,
-    minWidth: Math.min(600, bounds.width),
-    minHeight: Math.min(450, bounds.height),
+    minWidth: minimum.width,
+    minHeight: minimum.height,
     show: false,
     title: "ok-bd2",
     icon: iconImage(),
@@ -656,7 +701,7 @@ function createWindow(): BrowserWindow {
   });
   contents.on("render-process-gone", (_event, details) => {
     log.error(`renderer gone: ${details.reason} (${details.exitCode})`);
-    if (details.reason !== "clean-exit" && !quitStarted) {
+    if (details.reason !== "clean-exit" && !quit.started) {
       contents.reload();
     }
   });
@@ -664,7 +709,8 @@ function createWindow(): BrowserWindow {
   window.on("close", (event) => {
     if (!quitting) {
       event.preventDefault();
-      if (!quitStarted && closeToTray && tray) {
+      // Only a running core has anything to keep alive in the tray.
+      if (!quit.started && closeToTray && tray && core?.state === "ready") {
         rememberWindow();
         window.hide();
       } else void beginQuit("window-closed");
@@ -691,7 +737,7 @@ function createTray(): void {
         label: "显示窗口",
         click: showWindow,
       },
-      { label: "启动 / 暂停", click: () => void toggleExecution() },
+      { label: "启动 / 暂停", click: () => toggleExecution() },
       { type: "separator" },
       { label: "退出", click: () => void beginQuit("tray-exit") },
     ]),
@@ -706,7 +752,7 @@ if (!app.requestSingleInstanceLock()) {
   app.setAppUserModelId(APP_ID);
   Menu.setApplicationMenu(null);
   app.on("second-instance", showWindow);
-  app.on("will-quit", clearHotkey);
+  app.on("will-quit", () => hotkey.release());
   app.on("before-quit", (event) => {
     if (!quitting) {
       event.preventDefault();
@@ -723,7 +769,6 @@ if (!app.requestSingleInstanceLock()) {
     registerIpc();
     mainWindow = createWindow();
     createTray();
-    desktopTimer = setInterval(() => void syncDesktop(), 2000);
     void mainWindow.loadFile(STATUS_PAGE);
     if (!options) {
       const message = "error" in parsed ? parsed.error : "参数无效";

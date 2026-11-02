@@ -2,8 +2,38 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { captureChoices, sizeText, starterProgress, starterText } from "../src/device.ts";
 import { fieldLabel, optionText } from "../src/form.ts";
-import { BASIC, DEVICE_KEYS, findGroup, otherFields, pickFields, SHELL_KEYS } from "../src/settings.ts";
-import type { ConfigField, SettingsGroup } from "../src/types.ts";
+import { BASIC, DEVICE_KEYS, findGroup, needsDesktopRetry, otherFields, pickFields, SHELL_KEYS, shellSettingsKey } from "../src/settings.ts";
+import type { ConfigField, SettingsGroup, ShellDesktop } from "../src/types.ts";
+
+test("the shell is only told about settings it applies", () => {
+  const group = (hotkey: string, other: string) =>
+    [{ name: BASIC, label: BASIC, fields: [
+      { key: "Start/Stop", value: hotkey },
+      { key: "Minimize Window to System Tray when Closing", value: false },
+      { key: "Auto Resize Game Window", value: other },
+    ] }] as unknown as SettingsGroup[];
+  assert.equal(shellSettingsKey(null), null);
+  assert.equal(shellSettingsKey(group("F9", "a")), shellSettingsKey(group("F9", "b")));
+  assert.notEqual(shellSettingsKey(group("F9", "a")), shellSettingsKey(group("F10", "a")));
+});
+
+test("the settings page polls the shell only while a desktop problem is open", () => {
+  const healthy: ShellDesktop = {
+    zoom: 100,
+    zoomLevels: [100],
+    closeToTray: false,
+    hotkey: "F9",
+    registeredHotkey: "F9",
+    hotkeyError: null,
+    syncError: null,
+    trayAvailable: true,
+  };
+  assert.equal(needsDesktopRetry(null, null), false);
+  assert.equal(needsDesktopRetry(healthy, null), false);
+  assert.equal(needsDesktopRetry({ ...healthy, hotkeyError: "占用" }, null), true);
+  assert.equal(needsDesktopRetry({ ...healthy, syncError: "读取失败" }, null), true);
+  assert.equal(needsDesktopRetry(healthy, "无权访问"), true);
+});
 
 const methods = ["WGC", "BitBlt_RenderFull", "ForegroundBitBlt"].map((id) => ({ id, label: id, selected: false }));
 

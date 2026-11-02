@@ -26,6 +26,13 @@ class ShellContractTest(unittest.TestCase):
         self.assertEqual(ts_number(self.source, "min"), protocol.API_VERSION)
         self.assertGreaterEqual(ts_number(self.source, "max"), protocol.API_VERSION)
 
+    def test_every_documented_core_message_is_parsed_by_the_shell(self):
+        types = re.findall(r'\{"type": "(\w+)"', protocol.__doc__)
+        self.assertIn("notification", types)
+        for message_type in types:
+            with self.subTest(type=message_type):
+                self.assertIn(f'case "{message_type}":', self.source)
+
     def test_exit_codes_match(self):
         for name in ("OK", "HANDSHAKE_FAILED", "EXECUTOR_LOCKED", "STARTUP_FAILED"):
             with self.subTest(name=name):

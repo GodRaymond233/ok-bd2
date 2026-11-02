@@ -23,11 +23,35 @@ export function readDesktopState(file: string): DesktopState {
   }
 }
 
-export function fitBounds(saved: Bounds | undefined, areas: Bounds[]): Bounds {
-  const area = areas.find((a) => saved && saved.x < a.x + a.width && saved.x + saved.width > a.x &&
-    saved.y < a.y + a.height && saved.y + saved.height > a.y) ?? areas[0];
-  const width = Math.min(area.width, Math.max(600, saved?.width ?? 1200));
-  const height = Math.min(area.height, Math.max(450, saved?.height ?? 800));
+/** The window size that keeps the pages' 600x450 CSS pixels at this zoom, within the display. */
+export function minimumSize(zoom: number, area: Bounds): { width: number; height: number } {
+  const factor = Math.max(1, zoom / 100);
+  return {
+    width: Math.min(area.width, Math.ceil(600 * factor)),
+    height: Math.min(area.height, Math.ceil(450 * factor)),
+  };
+}
+
+function sharedArea(a: Bounds, b: Bounds): number {
+  const width = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+  const height = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+  return width > 0 && height > 0 ? width * height : 0;
+}
+
+/** The saved window on the display it mostly covers; `areas[0]` when it is on none of them. */
+export function fitBounds(saved: Bounds | undefined, areas: Bounds[], zoom = 100): Bounds {
+  let area = areas[0];
+  let best = 0;
+  for (const candidate of saved ? areas : []) {
+    const shared = sharedArea(saved as Bounds, candidate);
+    if (shared > best) {
+      best = shared;
+      area = candidate;
+    }
+  }
+  const minimum = minimumSize(zoom, area);
+  const width = Math.min(area.width, Math.max(minimum.width, saved?.width ?? 1200));
+  const height = Math.min(area.height, Math.max(minimum.height, saved?.height ?? 800));
   return {
     x: Math.max(area.x, Math.min(saved?.x ?? area.x + Math.round((area.width - width) / 2), area.x + area.width - width)),
     y: Math.max(area.y, Math.min(saved?.y ?? area.y + Math.round((area.height - height) / 2), area.y + area.height - height)),

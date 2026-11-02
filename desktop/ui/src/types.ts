@@ -237,19 +237,21 @@ export interface ShellInfo {
 }
 
 export interface ShellBridge {
-  desktop(): Promise<DesktopInfo>;
-  setZoom(zoom: number): Promise<DesktopInfo>;
+  desktop(): Promise<ShellDesktop>;
+  setZoom(zoom: number): Promise<ShellDesktop>;
   info(): Promise<ShellInfo | null>;
   openLogsFolder(): Promise<void>;
   quit(): Promise<void>;
 }
 
-export interface DesktopInfo {
+/** What the shell applied from the settings; a different thing from the core's DesktopInfo. */
+export interface ShellDesktop {
   zoom: number;
   zoomLevels: number[];
   closeToTray: boolean;
   hotkey: string;
   registeredHotkey: string | null;
   hotkeyError: string | null;
+  syncError: string | null;
   trayAvailable: boolean;
 }

@@ -7,7 +7,7 @@ import { test } from "node:test";
 
 const require = createRequire(import.meta.url);
 const protocol = require("../dist/protocol.js");
-const { parseShellArgs, readDesktopState, fitBounds } = require("../dist/shell-config.js");
+const { parseShellArgs, readDesktopState, fitBounds, minimumSize } = require("../dist/shell-config.js");
 const navigation = require("../dist/navigation.js");
 
 test("protocol lines", () => {
@@ -49,6 +49,32 @@ test("desktop state tolerates damaged preferences and bounds remain visible afte
     writeFileSync(file, JSON.stringify({ zoom: 999, bounds: { ...bounds, width: -1 } }));
     assert.deepEqual(readDesktopState(file), { zoom: 100, bounds: undefined, maximized: false });
   } finally { rmSync(directory, { recursive: true }); }
+});
+
+test("a window across two displays stays on the one it mostly covers", () => {
+  const primary = { x: 0, y: 0, width: 1920, height: 1040 };
+  const left = { x: -1920, y: 0, width: 1920, height: 1040 };
+  const mostlyLeft = { x: -1200, y: 100, width: 1210, height: 800 };
+  const fitted = fitBounds(mostlyLeft, [primary, left]);
+  assert.equal(fitted.x, -1210);
+  assert.equal(fitted.width, 1210);
+  const mostlyPrimary = { x: -10, y: 100, width: 1210, height: 800 };
+  assert.equal(fitBounds(mostlyPrimary, [primary, left]).x, 0);
+  // Off every display: back on the first one, centred when nothing was saved.
+  assert.equal(fitBounds({ x: 9000, y: 9000, width: 800, height: 600 }, [primary, left]).x, 1120);
+  assert.equal(fitBounds(undefined, [primary, left]).x, 360);
+});
+
+test("zooming in raises the minimum window size, within the display", () => {
+  const area = { x: 0, y: 0, width: 1920, height: 1040 };
+  assert.deepEqual(minimumSize(100, area), { width: 600, height: 450 });
+  assert.deepEqual(minimumSize(80, area), { width: 600, height: 450 });
+  assert.deepEqual(minimumSize(125, area), { width: 750, height: 563 });
+  assert.deepEqual(minimumSize(150, area), { width: 900, height: 675 });
+  assert.deepEqual(minimumSize(150, { x: 0, y: 0, width: 800, height: 600 }), { width: 800, height: 600 });
+  const small = { x: 100, y: 100, width: 600, height: 450 };
+  assert.deepEqual(fitBounds(small, [area], 150), { x: 100, y: 100, width: 900, height: 675 });
+  assert.deepEqual(fitBounds(small, [area]), small);
 });
 
 test("line splitting keeps partial lines", () => {

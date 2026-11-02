@@ -11,6 +11,7 @@ import { ReportPage } from "./ReportPage.tsx";
 import { type DockRun, RunDock } from "./RunDock.tsx";
 import { childRuns, isActive, sealOf, shutdownSeconds } from "./run.ts";
 import { SettingsPage } from "./SettingsPage.tsx";
+import { shellSettingsKey } from "./settings.ts";
 import { captureSummary, type Notice, noticeFromEvent } from "./state.ts";
 import { TasksPage } from "./TasksPage.tsx";
 import { TodayPage } from "./TodayPage.tsx";
@@ -295,6 +296,14 @@ export function App() {
       cancelled = true;
     };
   }, [dockName, dockActive, dockStart, historyVersion]);
+
+  // The shell applies the tray and hotkey settings, and any settings tab can reset them.
+  const shellSettings = shellSettingsKey(settings);
+  useEffect(() => {
+    if (shellSettings) {
+      window.okbd2Shell?.desktop?.().catch(() => undefined);
+    }
+  }, [shellSettings]);
 
   const shutdownTotal = dockTask && !dockActive ? shutdownSeconds(dockTask) : null;
   useEffect(() => {

@@ -242,6 +242,9 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
                 task_action(current.name, "resume")
             elif runtime.executor.paused or not runtime.status()["running"]:
                 resume()
+            elif current in runtime.executor.onetime_tasks and current.enabled:
+                # The run panel's own pause: the panel shows it and offers 继续.
+                task_action(current.name, "pause")
             else:
                 pause()
             return runtime.status()
@@ -562,12 +565,12 @@ def create_app(
 
     @app.get("/api/desktop/preferences")
     def desktop_preferences():
-        with config_lock:
-            basic = runtime.executor.global_config.get_config("Basic Options")
-            return {
-                "closeToTray": bool(basic.get("Minimize Window to System Tray when Closing")),
-                "hotkey": basic.get("Start/Stop", "None"),
-            }
+        # No config_lock: a report holds it for seconds, and a save updates the values last.
+        basic = runtime.executor.global_config.get_config("Basic Options")
+        return {
+            "closeToTray": bool(basic.get("Minimize Window to System Tray when Closing")),
+            "hotkey": basic.get("Start/Stop", "None"),
+        }
 
     @app.post("/api/desktop/toggle-execution")
     def toggle_execution():

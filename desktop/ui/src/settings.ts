@@ -1,6 +1,13 @@
 // Where ok-script's global settings appear in the client, and the theme kept in this
 // browser profile. The core names the fields (src/desktop/settings_text.py).
-import type { ConfigField, SettingsGroup } from "./types.ts";
+import type { ConfigField, SettingsGroup, ShellDesktop } from "./types.ts";
+
+/** Same pace as the shell's own retry (DESKTOP_RETRY_MS in desktop/shell/src/main.ts). */
+export const DESKTOP_RETRY_MS = 5000;
+
+export function needsDesktopRetry(desktop: ShellDesktop | null, requestError: string | null): boolean {
+  return Boolean(requestError || desktop?.syncError || desktop?.hotkeyError);
+}
 
 export const BASIC = "Basic Options";
 export const NOTIFICATION = "Notification";
@@ -27,6 +34,12 @@ export const TEST_CHANNELS: Record<string, string> = {
 
 export function findGroup(groups: SettingsGroup[], name: string): SettingsGroup | undefined {
   return groups.find((group) => group.name === name);
+}
+
+/** Changes only when the shell has something new to apply; a refresh of the settings does not. */
+export function shellSettingsKey(groups: SettingsGroup[] | null): string | null {
+  const basic = findGroup(groups ?? [], BASIC);
+  return basic ? JSON.stringify(pickFields(basic, SHELL_KEYS).map((field) => field.value)) : null;
 }
 
 /** The group's fields with these keys, in the given order. */
