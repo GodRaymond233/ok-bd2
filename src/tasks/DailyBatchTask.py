@@ -156,8 +156,9 @@ class DailyBatchTask(BaseTask):
         """Why each child of the current or last run was skipped, by config key.
 
         ``reason`` is ``off`` (not taking part), ``stopped`` (an earlier child failed and
-        could not return home), ``done`` (completed this cycle) or ``not_due`` (failure
-        back-off; ``minutes`` until it may run). Kept in memory until the next run.
+        could not return home), ``done`` (completed this cycle), ``settlement`` (the weekly
+        PVP closure) or ``not_due`` (failure back-off; ``minutes`` until it may run). Kept in
+        memory until the next run.
         """
         # dict() copies in one step, so the executor thread adding a reason mid-copy
         # cannot break the API thread's iteration.
@@ -315,6 +316,7 @@ class DailyBatchTask(BaseTask):
 
             if child.task_class is PVPTask and task._skip_weekly_settlement():
                 skipped.append(child.config_key)
+                self._skip_reasons[child.config_key] = {"reason": "settlement", "minutes": None}
                 publish_outcome()
                 self.log_info(f"一键完成日常：{child.config_key} 赛季结算，本次跳过。")
                 continue
@@ -379,6 +381,9 @@ class DailyBatchTask(BaseTask):
                     if task_info_snapshot(task).get("PVP 结算休战"):
                         child_result = None
                         skipped.append(child.config_key)
+                        self._skip_reasons[child.config_key] = {
+                            "reason": "settlement", "minutes": None,
+                        }
                         publish_outcome()
                         self.log_info(f"一键完成日常：{child.config_key} 赛季结算，本次跳过。")
                     elif child_result:

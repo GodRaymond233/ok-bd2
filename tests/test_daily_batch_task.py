@@ -76,6 +76,8 @@ class DailyBatchTaskTest(unittest.TestCase):
                     self.assertEqual("自动PVP", task.info["跳过"])
                     self.assertEqual("later", task.info["完成"])
                     self.assertEqual("-", task.info["失败"])
+                    self.assertEqual({"reason": "settlement", "minutes": None},
+                                     task.skip_reasons()["自动PVP"])
                     from src.tasks.run_history import default_store
                     self.assertIsNone(default_store().last_run(pvp.name))
 

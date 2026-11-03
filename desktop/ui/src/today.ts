@@ -88,6 +88,8 @@ export function skipText(reason: SkipReason | undefined): string {
         : `${t("本轮跳过")} · ${t("调度未到期")}`;
     case "stopped":
       return `${t("本轮跳过")} · ${t("前面的子任务失败，已停止")}`;
+    case "settlement":
+      return `${t("本轮跳过")} · ${t("赛季结算中，北京时间周一 08:00 开放")}`;
     default:
       return t("本轮跳过");
   }

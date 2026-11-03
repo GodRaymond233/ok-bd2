@@ -101,6 +101,7 @@ test("after a run rows show this run's outcome with the child's own record", () 
   assert.deepEqual(rows[1], ["skip", "本轮跳过 · 前面的子任务失败，已停止", ""]);
   assert.deepEqual(rows[3], ["done", "本轮完成 · 3m 12s", ""]);
   assert.deepEqual(rows[4], ["fail", "本轮失败 · 镜中之战中止。", "bad"]);
+  assert.equal(skipText({ reason: "settlement", minutes: null }), "本轮跳过 · 赛季结算中，北京时间周一 08:00 开放");
   assert.equal(skipText(undefined), "本轮跳过");
 });
 

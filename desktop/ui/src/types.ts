@@ -72,7 +72,7 @@ export interface TodayItem {
 }
 
 export interface SkipReason {
-  reason: "off" | "stopped" | "done" | "not_due";
+  reason: "off" | "stopped" | "done" | "not_due" | "settlement";
   minutes: number | null;
 }
 
