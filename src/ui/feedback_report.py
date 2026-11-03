@@ -4,10 +4,9 @@ from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal, Slot
-from PySide6.QtGui import QColor, QPixmap
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication,
-    QCheckBox,
     QDialog,
     QFrame,
     QHBoxLayout,
@@ -21,7 +20,6 @@ from qfluentwidgets import FluentIcon, PrimaryPushButton, PushButton
 
 from src.diagnostics.models import DiagnosticSnapshot, ReportResult
 from src.diagnostics.service import DiagnosticsManager
-from src.ui.live_screenshot import LiveScreenshotWidget
 from src.ui.quest_theme import (
     BODY_FONT,
     MONO_FONT,
@@ -61,20 +59,12 @@ def _apply_report_dialog_theme(dialog: QDialog, restyle_chrome=None) -> None:
                 {chip_qss(colors['accent'], colors['accent_soft'])}
                 font-family: {MONO_FONT}; font-size: 12px; padding: 3px 10px;
             }}
-            QLabel#bd2ReportPreviewText {{
-                color: rgba(255, 255, 255, 0.62); font-size: 12px;
-            }}
             QLabel#bd2ReportPauseText {{
                 color: {colors['warn_ink']}; font-size: 12px; font-weight: 600;
             }}
             QFrame#bd2ReportAccentBar {{
                 background-color: {colors['accent']};
                 border: none; border-radius: 2px;
-            }}
-            QFrame#bd2ReportPreview {{
-                background-color: #151515;
-                border: 1px solid rgba(127, 127, 127, 0.35);
-                border-radius: 10px;
             }}
             QFrame#bd2ReportPauseNotice {{
                 background-color: {colors['warn_soft']};
@@ -165,49 +155,10 @@ class FeedbackReportDialog(QDialog):
         self.description_edit.setAcceptRichText(False)
         self.description_edit.setMaximumHeight(110)
 
-        self.preview = QFrame()
-        self.preview.setObjectName("bd2ReportPreview")
-        self.preview.setMinimumHeight(220)
-        preview_layout = QVBoxLayout(self.preview)
-        preview_layout.setContentsMargins(12, 12, 12, 12)
-        preview_layout.setSpacing(8)
-        if snapshot.frame is not None:
-            image_label = QLabel()
-            image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            image_label.setStyleSheet("background: transparent; border: none;")
-            image = LiveScreenshotWidget._frame_to_image(snapshot.frame)
-            image_label.setPixmap(
-                QPixmap.fromImage(image).scaled(
-                    520,
-                    292,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-            )
-            preview_layout.addWidget(image_label)
-        else:
-            placeholder_icon = QLabel()
-            placeholder_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            placeholder_icon.setStyleSheet("background: transparent; border: none;")
-            placeholder_icon.setPixmap(
-                FluentIcon.PHOTO.icon(color=QColor(255, 255, 255, 110)).pixmap(30, 30)
-            )
-            placeholder_text = QLabel("当前没有可用的游戏窗口截图，已保存的故障截图仍会自动附带")
-            placeholder_text.setObjectName("bd2ReportPreviewText")
-            placeholder_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            preview_layout.addStretch(1)
-            preview_layout.addWidget(placeholder_icon)
-            preview_layout.addWidget(placeholder_text)
-            preview_layout.addStretch(1)
-
-        self.include_screenshot = QCheckBox("额外附带上方当前页面截图（可选）")
-        self.include_screenshot.setChecked(False)
-        self.include_screenshot.setEnabled(snapshot.frame is not None)
-
         self.privacy_icon = QLabel()
         self.privacy_icon.setFixedSize(12, 12)
         privacy = QLabel(
-            "报错时自动保存的故障现场截图会随报告附带，当前页面截图可额外勾选。\n"
+            "报错时自动保存的故障现场截图会随报告附带。\n"
             "隐私范围：只导出受限运行信息、脱敏后的最近日志和上述游戏截图；"
             "不导出原始配置、环境变量、进程列表、用户名或机器名。"
         )
@@ -246,10 +197,6 @@ class FeedbackReportDialog(QDialog):
         layout.addWidget(_section_caption("问题描述"))
         layout.addWidget(self.description_edit)
         layout.addSpacing(4)
-        layout.addWidget(_section_caption("现场截图"))
-        layout.addWidget(self.preview)
-        layout.addWidget(self.include_screenshot)
-        layout.addSpacing(2)
         layout.addLayout(privacy_row)
         layout.addSpacing(6)
         layout.addLayout(button_row)
@@ -504,7 +451,7 @@ class FeedbackReportController(QObject):
 
                 self._start_build(
                     dialog.description,
-                    include_screenshot=dialog.include_screenshot.isChecked(),
+                    include_screenshot=False,
                 )
             finally:
                 # 对话框归父窗口所有，exec 结束后不释放会连同其主题回调

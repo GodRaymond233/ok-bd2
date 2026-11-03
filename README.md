@@ -84,6 +84,11 @@ BrownDust II.
 
 请下载 `setup.exe` 安装包，不要下载 GitHub 自动生成的 `Source code` 压缩包。
 
+如果 GitHub 下载较慢，可以使用以下网盘：
+
+- [夸克网盘](https://pan.quark.cn/s/80730a808d0e)：免费下载。
+- [百度网盘](https://pan.baidu.com/s/102Mh1djq2B1T-cIJhct9Gg?pwd=okww)：免费下载，提取码：`okww`。
+
 ### 方式二：从源码运行
 
 适合开发、调试或二次适配。
@@ -179,6 +184,8 @@ python main_debug.py
 
 在 **镜中之战** 任务中设置竞技场战斗倍数。程序会处理匹配、战斗结算和返回主页；
 AP 不足时，单次战斗倍数会自动降为 1。
+北京时间每周日23:00（含）至周一08:00（不含）为赛季结算休战期，自动PVP和一键日常均跳过PVP，
+不会记为今日已完成；08:00开放后可再次执行。准备期间跨入休战期也不会点击战斗开始。
 
 <p align="center">
   <img src="docs/images/usage/pvp-config.png" alt="自动 PVP 配置" width="960">

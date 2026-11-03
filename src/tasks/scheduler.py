@@ -19,7 +19,7 @@ from ok import Logger
 from ok.util.file import get_relative_path, read_json_file, write_json_file
 
 from src.tasks.collection.cycle import COLLECTION_REFRESH_HOUR
-from src.tasks.run_history import BEIJING_TZ, DAILY_REFRESH_HOUR
+from src.tasks.run_history import BEIJING_TZ, DAILY_REFRESH_HOUR, pvp_settlement_end_ts
 
 logger = Logger.get_logger(__name__)
 
@@ -147,6 +147,8 @@ class TaskScheduleStore:
 
     def is_due(self, task_name: str, now: float | None = None, *, scope: str | None = None) -> bool:
         """No record or an expired next_run means the task is due."""
+        if task_name == "镜中之战" and pvp_settlement_end_ts(now) is not None:
+            return False
         record = self._records.get(str(task_name), {})
         if scope is not None and record.get("ok") and record.get("completion_scope") != scope:
             return True
@@ -221,7 +223,8 @@ class TaskScheduleStore:
 
         if not candidates:
             return None
-        next_run = min(candidates)
+        settlement_end = pvp_settlement_end_ts(moment) if task_name == "镜中之战" else None
+        next_run = settlement_end if settlement_end is not None else min(candidates)
         with self._lock:
             self._records[str(task_name)] = {
                 "next_run": next_run,

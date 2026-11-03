@@ -1,4 +1,5 @@
 import re
+from datetime import datetime
 from pathlib import Path
 from time import monotonic
 
@@ -14,6 +15,7 @@ from src.tasks.BaseBD2Task import (
     BaseBD2Task,
 )
 from src.tasks.map_trade.models import MatchResult, TemplateSpec
+from src.tasks.run_history import BEIJING_TZ, pvp_settlement_end_ts
 from src.utils import task_vision
 from src.utils.calibration import FHD_1080, HD_720, QHD_1440
 from src.utils.cartridge_quick_switch import (
@@ -115,6 +117,7 @@ class PVPTask(BaseBD2Task):
         "状态",
         "当前阶段",
         "目标倍率",
+        "PVP 结算休战",
         "主页抽抽乐 OCR 尝试",
         "主页亮度p95",
         "主页抽抽乐 OCR",
@@ -158,7 +161,7 @@ class PVPTask(BaseBD2Task):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.name = "镜中之战"
-        self.description = "进行pvp自动战斗。"
+        self.description = "进行pvp自动战斗；北京时间周日23:00至周一08:00结算期间跳过。"
         self.icon = FluentIcon.GAME
         self.group_name = "日常/周常"
         self.group_icon = FluentIcon.CALENDAR
@@ -224,12 +227,17 @@ class PVPTask(BaseBD2Task):
             self.log_info("镜中之战已禁用。")
             return True
 
+        if self._skip_weekly_settlement():
+            return True
+
         target_multiplier = self._target_multiplier()
         self.info_set("状态", "镜中之战启动。")
         self.info_set("目标倍率", target_multiplier)
         self.log_info(f"镜中之战：目标倍率 {target_multiplier}。")
 
         if not self._ensure_pvp_hub():
+            if self._skip_weekly_settlement():
+                return self._return_home_after_settlement()
             self.info_set("状态", "镜中之战失败：未能进入 PVP 箱庭。")
             return False
 
@@ -240,6 +248,8 @@ class PVPTask(BaseBD2Task):
             current_multiplier = 1
             self.info_set("目标倍率", current_multiplier)
             start_state = self._start_auto_battle(current_multiplier)
+        if start_state == "settlement":
+            return self._return_home_after_settlement()
         if start_state == "ap_depleted":
             self.info_set("状态", "免费 AP 已耗尽。")
             self.log_completion("镜中之战：免费 AP 已耗尽，流程结束。")
@@ -259,6 +269,29 @@ class PVPTask(BaseBD2Task):
         self.info_set("状态", "镜中之战完成并返回主页。")
         self.log_completion("镜中之战：自动战斗完成并返回主页。")
         return True
+
+    def _skip_weekly_settlement(self) -> bool:
+        end_at = pvp_settlement_end_ts()
+        self.info_set("PVP 结算休战", end_at is not None)
+        if end_at is None:
+            return False
+        opens_at = datetime.fromtimestamp(end_at, tz=BEIJING_TZ)
+        message = (
+            "镜中之战赛季结算，PVP未执行，本次跳过；"
+            f"北京时间{opens_at:%Y-%m-%d %H:%M}开放后可重试。"
+        )
+        self.info_set("当前阶段", "赛季结算休战")
+        self.info_set("状态", message)
+        self.log_info(message)
+        return True
+
+    def _return_home_after_settlement(self) -> bool:
+        if self.auto_return_main_home(notify_failure=False):
+            return True
+        # 恢复失败必须走失败记账，不能当作正常跳过。
+        self.info_set("PVP 结算休战", False)
+        self.info_set("状态", "镜中之战结算期间返回主页失败。")
+        return False
 
     def _ensure_pvp_hub(self) -> bool:
         self.info_set("当前阶段", "确认镜中之战")
@@ -533,6 +566,8 @@ class PVPTask(BaseBD2Task):
         )
 
     def _start_auto_battle(self, multiplier: int) -> str:
+        if self._skip_weekly_settlement():
+            return "settlement"
         self.info_set("当前阶段", "寻找 PVP 舞台")
         if not self._click_pvp_stage_once(12.0):
             self._recover_stage_position()
@@ -640,6 +675,8 @@ class PVPTask(BaseBD2Task):
             return "failed"
         self._select_max_battle_count()
 
+        if self._skip_weekly_settlement():
+            return "settlement"
         self.info_set("当前阶段", "点击战斗开始")
         self.info_set("PVP 开始战斗 OCR", "跳过前置 OCR，按固定比例点击")
         self._click_screen_reference(*PVP_BATTLE_START_SCREEN_POINT, after_sleep=2.0)

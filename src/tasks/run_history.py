@@ -69,6 +69,16 @@ def _to_beijing(ts: float) -> datetime:
     return datetime.fromtimestamp(ts, tz=BEIJING_TZ)
 
 
+def pvp_settlement_end_ts(now: float | None = None) -> float | None:
+    """Weekly PVP closure: Sunday 23:00 inclusive to Monday 08:00 exclusive, UTC+8."""
+    moment = _to_beijing(time.time() if now is None else now)
+    if moment.weekday() == 6 and moment.hour >= 23:
+        moment += timedelta(days=1)
+    elif moment.weekday() != 0 or moment.hour >= 8:
+        return None
+    return moment.replace(hour=8, minute=0, second=0, microsecond=0).timestamp()
+
+
 def day_start_ts(now: float | None = None, *, refresh_hour: int = DAILY_REFRESH_HOUR) -> float:
     """Return the current daily refresh anchor in Beijing time."""
     moment = _to_beijing(time.time() if now is None else now)
@@ -330,12 +340,13 @@ class RunHistoryStore:
         """Record a finished run, accepting explicit timing/results for batch children."""
         if task is None or not getattr(task, "name", None):
             return
+        info = task_info_snapshot(task)
+        if info.get("PVP 结算休战"):
+            return
         finished = time.time() if finished is None else finished
         if started is None:
             started = getattr(task, "start_time", 0) or 0
         duration = max(0.0, finished - started) if started else None
-        info = task_info_snapshot(task)
-
         with self._lock:
             previous = self._records.get(str(task.name), {})
             successful = _is_successful_run(info) if ok is None else bool(ok)

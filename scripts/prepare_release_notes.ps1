@@ -115,6 +115,11 @@ $releaseNotes = @(
     "- [ok-bd2-win32-online-setup.exe](https://github.com/GodRaymond233/ok-bd2/releases/download/$ReleaseTag/ok-bd2-win32-online-setup.exe) 在线安装包，首次安装时需要联网下载依赖。"
     "- [ok-bd2-win32-Global-setup.exe](https://github.com/GodRaymond233/ok-bd2/releases/download/$ReleaseTag/ok-bd2-win32-Global-setup.exe) full package with dependencies, using GitHub and PyPI as update source."
     "- 不要下载 ok-bd2-win32.zip 或 Source code 压缩包。"
+    ""
+    "### 其他下载源"
+    ""
+    "- [夸克网盘](https://pan.quark.cn/s/80730a808d0e) 免费下载。"
+    "- [百度网盘](https://pan.baidu.com/s/102Mh1djq2B1T-cIJhct9Gg?pwd=okww) 免费下载，提取码：okww。"
 ) -join "`n"
 
 $workspace = (Resolve-Path -LiteralPath ".").Path
