@@ -137,12 +137,12 @@ def task_stopped():
         run["stopped"] = True
 
 
-def capture_failure_frame(task, reason, frame=None):
+def capture_failure_frame(task, reason, frame=None, *, lossless=False, recognition=None):
     """Freeze evidence before recovery, without requesting another game frame."""
     run = _run.get()
     if _recorder is None or run is None or run["object"] is not task:
         return False
-    _recorder.capture_frame(run, reason, frame)
+    _recorder.capture_frame(run, reason, frame, lossless=lossless, recognition=recognition)
     return True
 
 
@@ -257,7 +257,7 @@ class RuntimeEvidence(logging.Filter):
                 item["frames_omitted"] = run["frames_omitted"]
         self._enqueue(item)
 
-    def capture_frame(self, run, reason, frame=None):
+    def capture_frame(self, run, reason, frame=None, *, lossless=False, recognition=None):
         frames = run.setdefault("frames", [])
         now = time.time()
         evidence = {
@@ -267,6 +267,11 @@ class RuntimeEvidence(logging.Filter):
             ),
             "info": safe_info(run["object"], self.redactor),
         }
+        if recognition:
+            evidence["recognition"] = {
+                self.redactor.redact(str(key))[:100]: self.redactor.redact(str(value))[:1000]
+                for key, value in list(recognition.items())[:16]
+            }
         try:
             if frame is None:
                 evidence["source"] = "executor_frame"
@@ -290,7 +295,9 @@ class RuntimeEvidence(logging.Filter):
             else:
                 from src.diagnostics.bundle import _encode_frame
 
-                encoded, metadata = _encode_frame(frame, max_bytes=FAILURE_FRAME_LIMIT)
+                encoded, metadata = _encode_frame(
+                    frame, max_bytes=FAILURE_FRAME_LIMIT, lossless=lossless,
+                )
                 evidence.update(metadata)
                 if encoded is None:
                     evidence["omission"] = "frame_exceeded_limit"
@@ -299,6 +306,12 @@ class RuntimeEvidence(logging.Filter):
                     evidence["data"] = base64.b64encode(encoded).decode("ascii")
         except Exception as exc:
             evidence["omission"] = f"frame_capture_failed:{type(exc).__name__}"
+        if lossless:
+            previous = next((i for i, f in enumerate(frames)
+                             if f.get("reason") == evidence["reason"]), None)
+            if previous is not None:
+                frames[previous] = evidence
+                return
         if evidence.get("sha256") and any(f.get("sha256") == evidence["sha256"] for f in frames):
             return
         if len(frames) >= FAILURE_FRAME_COUNT:

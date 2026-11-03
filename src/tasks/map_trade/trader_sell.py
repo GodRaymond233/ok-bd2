@@ -64,6 +64,7 @@ from src.tasks.map_trade.trader_constants import (
 from src.tasks.map_trade.vision import normalize_text
 from src.utils.calibration import FHD_1080
 from src.utils.image_utils import relative_roi_frame, to_gray
+from src.utils.task_vision import reference_view
 
 # 等待单个日历条目全部可售卡片 OCR 确认的总时长与轮询间隔。
 SALE_ITEM_CANDIDATES_WAIT_TIMEOUT = 8.0
@@ -479,6 +480,20 @@ class SellFlowMixin:
         dialog_opened = False
         self._sale_dialog_rejected = False
         for click_number in range(1, SALE_DIALOG_OPEN_MAX_CLICKS + 1):
+            if getattr(candidate.percent_box, "reference_view", False) or click_number > 1:
+                fresh = self.vision.capture()
+                source = getattr(self.task, "capture_method_name", None)
+                if (fresh.shape != frame.shape
+                        or source != getattr(candidate.percent_box, "capture_source", source)):
+                    self._last_sale_reason = "未出售：画面尺寸或捕获来源变化，需重新定位"
+                    return None
+                nearby = [item for item in self._locate_sale_items(entry, fresh)
+                          if abs(item.center[0] - candidate.center[0]) <= fresh.shape[1] * 0.004
+                          and abs(item.center[1] - candidate.center[1]) <= fresh.shape[0] * 0.004]
+                if len(nearby) != 1:
+                    self._last_sale_reason = "未出售：点击前商品或120%标志未稳定确认"
+                    return None
+                candidate, frame = nearby[0], fresh
             self.vision.click_client(candidate.center, frame.shape, after_sleep=0.5)
             if self._wait_sale_dialog_item(entry):
                 dialog_opened = True
@@ -629,7 +644,12 @@ class SellFlowMixin:
                         return None
                     self.task.sleep(interval)
                     continue
-            candidates = self._locate_sale_items(entry, frame)
+            previous_deadline = getattr(self, "_sale_read_deadline", None)
+            self._sale_read_deadline = end_at
+            try:
+                candidates = self._locate_sale_items(entry, frame)
+            finally:
+                self._sale_read_deadline = previous_deadline
             if candidates:
                 self._last_sale_page_empty = False
                 return candidates, frame
@@ -784,6 +804,32 @@ class SellFlowMixin:
             search_roi=search_roi,
             gray_frame=gray_frame,
         )
+        recovered = False
+        if not matches and frame.shape[0] > FHD_1080.height:
+            cached = getattr(self, "_sale_reference_view", None)
+            if cached is None or cached[0] is not frame:
+                cached = (frame, reference_view(frame, FHD_1080.height))
+                self._sale_reference_view = cached
+            view = cached[1]
+            retry = self.vision.match_all(
+                view.frame, SALE_120_PERCENT_MARKER_TEMPLATE,
+                minimum_score=self.vision.threshold_for(SALE_120_PERCENT_MARKER_TEMPLATE),
+                peak_radius=SALE_120_PERCENT_MARKER_PEAK_RADIUS,
+                max_results=SALE_120_PERCENT_MARKER_MAX_RESULTS,
+                search_roi=view.rect_from_source(search_roi),
+            )
+            # Ambiguous markers must not become unique by discarding a conflicting read.
+            if len(retry) == 1:
+                mapped = view.match_to_source(retry[0])
+                left, top, width, height = search_roi
+                x, y = mapped.position
+                if (left <= x and top <= y
+                        and x + mapped.size[0] <= left + width
+                        and y + mapped.size[1] <= top + height
+                        and self._sale_marker_reads_120(frame, mapped)):
+                    matches = (mapped,)
+                    recovered = True
+                    self._status("出售标志复核", "同帧1080参考视图及局部120%数字确认")
         boxes = [
             SimpleNamespace(
                 name="↑120%",
@@ -792,11 +838,40 @@ class SellFlowMixin:
                 y=result.position[1],
                 width=result.size[0],
                 height=result.size[1],
+                reference_view=recovered,
+                capture_source=getattr(self.task, "capture_method_name", None),
             )
             for result in matches
         ]
         boxes.sort(key=lambda box: float(box.confidence), reverse=True)
         return boxes
+
+    def _sale_marker_reads_120(self, frame, marker) -> bool:
+        x, y = marker.position
+        width, height = marker.size
+        fh, fw = frame.shape[:2]
+        # This template's leading fifth is the arrow, not a price digit.
+        left = x + round(width * 0.22)
+        top, bottom = max(0, y - height // 3), min(fh, y + height + height // 3)
+        right = min(fw, x + width)
+        deadline = getattr(self, "_sale_read_deadline", None)
+        if deadline is None:
+            deadline = monotonic() + 1.0
+        for scale in (2.0, 3.0):
+            if monotonic() >= deadline:
+                return False
+            boxes = self.vision.ocr_boxes(
+                frame, "出售标志数字复核",
+                relative_roi=(left / fw, top / fh, right / fw, bottom / fh),
+                target_height=0, ocr_scale=scale, minimum_threshold=0.8,
+            )
+            digits = [re.sub(r"\s", "", str(box.name)) for box in boxes
+                      if re.search(r"\d", str(box.name))]
+            if monotonic() >= deadline:
+                return False
+            if digits:
+                return len(digits) == 1 and re.fullmatch(r"120[%％]", digits[0]) is not None
+        return False
 
     def _locate_sale_items(
         self,
@@ -814,6 +889,7 @@ class SellFlowMixin:
         names = (entry.item, *entry.aliases, *ITEM_ALIASES.get(entry.item, ()))
         normalized_names = tuple(self._normal(value) for value in names if value)
         catalog = self._sale_title_catalog(entry)
+        self._sale_reference_view = None
         saw_item_name = False
         saw_ocr_output = False
         specific_local_failure = False
@@ -904,6 +980,7 @@ class SellFlowMixin:
                     f"{entry.item}候选{len(candidates)}组："
                     + "、".join(str(candidate.center) for candidate in candidates),
                 )
+                self._sale_reference_view = None
                 return candidates
 
         self._status(
@@ -923,6 +1000,16 @@ class SellFlowMixin:
             # any local template or geometry miss remains a recognition failure.
             self._last_sale_unavailable = not saw_item_name
             self._last_sale_reason = last_reason or "全画面OCR未形成可用商品候选"
+        self._sale_reference_view = None
+        if saw_item_name and searched_roi_results:
+            left, top, width, height = searched_roi_results[0][0]
+            recorder = getattr(self.vision, "record_rejection", None)
+            if callable(recorder):
+                recorder(frame, (left, top, left + width, top + height),
+                         "sale_marker_unconfirmed", reason_detail=self._last_sale_reason,
+                         template=SALE_120_PERCENT_MARKER_TEMPLATE.file_name,
+                         threshold=self.vision.threshold_for(SALE_120_PERCENT_MARKER_TEMPLATE),
+                         reference_height=1080)
         return []
 
     def _find_sale_name_candidates(self, frame, normalized_names, catalog, target_height):

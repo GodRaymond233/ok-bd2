@@ -20,3 +20,9 @@ shop page, account information, or surrounding game state.
 
 The source recording was supplied by the repository owner for diagnosing and
 regression-testing this automation flow.
+
+`sale_native_2k_new.png` and `sale_native_2k_old.png` retain only the item-name
+and marker rectangle `(580,200)-(950,280)` from two native 2560x1440 report
+frames supplied on 2026-11-03. They reproduce the strict native pixel-score
+miss and verify the 1080 reference-view recovery. All other pixels are black;
+the report ZIPs and complete screenshots are not shipped.

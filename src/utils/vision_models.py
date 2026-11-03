@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import isfinite
 
+import numpy as np
+
 
 @dataclass(frozen=True)
 class TemplateSpec:
@@ -134,3 +136,33 @@ class MatchResult:
 
 
 EMPTY_MATCH = MatchResult(-1.0, (0, 0), (0, 0))
+
+
+@dataclass(frozen=True)
+class ReferenceView:
+    """A same-frame recognition image; coordinates always map to its source."""
+
+    frame: np.ndarray
+    source_size: tuple[int, int]
+
+    def point_from_source(self, point):
+        height, width = self.frame.shape[:2]
+        return (round(point[0] * width / self.source_size[0]),
+                round(point[1] * height / self.source_size[1]))
+
+    def rect_from_source(self, rect):
+        x, y, width, height = rect
+        left, top = self.point_from_source((x, y))
+        right, bottom = self.point_from_source((x + width, y + height))
+        return left, top, right - left, bottom - top
+
+    def match_to_source(self, result: MatchResult) -> MatchResult:
+        from dataclasses import replace
+
+        height, width = self.frame.shape[:2]
+        sx, sy = self.source_size[0] / width, self.source_size[1] / height
+        x, y = result.position
+        right, bottom = x + result.size[0], y + result.size[1]
+        left, top = round(x * sx), round(y * sy)
+        return replace(result, position=(left, top),
+                       size=(round(right * sx) - left, round(bottom * sy) - top))

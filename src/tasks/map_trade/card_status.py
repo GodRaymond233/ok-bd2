@@ -13,6 +13,7 @@ from src.tasks.map_trade.models import (
 )
 from src.tasks.map_trade.vision import Vision
 from src.utils.calibration import FHD_1080
+from src.utils.task_vision import reference_view
 
 CARD_ICON_LEFT_OFFSET = -15
 CARD_ICON_RIGHT_OFFSET = 165
@@ -228,9 +229,40 @@ class CardStatusDetector:
                 bounds=bounds,
                 complete_region=False,
             )
+        absorb = self._detect_action(frame, bounds, ABSORB_ACTION)
+        suppress = self._detect_action(frame, bounds, SUPPRESS_ACTION)
+        results = [absorb, suppress]
+        missing = [index for index, result in enumerate(results)
+                   if result.state == CardActionState.UNKNOWN
+                   and not result.pending and not result.completed]
+        if missing and frame.shape[0] > 720:
+            view = reference_view(frame, 720)
+            view_bounds, complete = card_icon_region(
+                view.point_from_source(badge_center), view.frame.shape,
+            )
+            if complete:
+                for index in missing:
+                    action = (ABSORB_ACTION, SUPPRESS_ACTION)[index]
+                    retry = self._detect_action(view.frame, view_bounds, action)
+                    mapped = replace(
+                        retry,
+                        pending=tuple(replace(e, result=view.match_to_source(e.result))
+                                      for e in retry.pending),
+                        completed=tuple(replace(e, result=view.match_to_source(e.result))
+                                        for e in retry.completed),
+                        reason=f"参考视图720：{retry.reason}",
+                    )
+                    if all(
+                        bounds[0] <= e.result.position[0]
+                        and bounds[1] <= e.result.position[1]
+                        and e.result.position[0] + e.result.size[0] <= bounds[2]
+                        and e.result.position[1] + e.result.size[1] <= bounds[3]
+                        for e in (*mapped.pending, *mapped.completed)
+                    ):
+                        results[index] = mapped
         return StoryCardCompletion(
-            absorb=self._detect_action(frame, bounds, ABSORB_ACTION),
-            suppress=self._detect_action(frame, bounds, SUPPRESS_ACTION),
+            absorb=results[0],
+            suppress=results[1],
             bounds=bounds,
             complete_region=True,
         )

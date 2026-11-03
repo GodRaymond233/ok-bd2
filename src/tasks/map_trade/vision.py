@@ -352,7 +352,30 @@ class Vision:
         return left, top, max(1, roi_width), max(1, roi_height)
 
     def capture(self):
-        return self.task.capture_frame()
+        frame = self.task.capture_frame()
+        self._capture_sequence = getattr(self, "_capture_sequence", 0) + 1
+        self._captured_frame_id = id(frame)
+        return frame
+
+    def record_rejection(self, frame, bounds, reason, **details) -> None:
+        """Freeze a bounded, lossless ROI from the frame that made the decision."""
+        from src.diagnostics.runtime import capture_failure_frame
+
+        height, width = frame.shape[:2]
+        left, top, right, bottom = bounds
+        left, top = max(0, int(left)), max(0, int(top))
+        right, bottom = min(width, int(right)), min(height, int(bottom))
+        if right <= left or bottom <= top:
+            return
+        sequence = (getattr(self, "_capture_sequence", None)
+                    if getattr(self, "_captured_frame_id", None) == id(frame) else None)
+        capture_failure_frame(
+            self.task, reason, frame[top:bottom, left:right], lossless=True,
+            recognition={"source_size": (width, height), "roi": (left, top, right, bottom),
+                         "capture_source": getattr(self.task, "capture_method_name", None),
+                         "frame_sequence": sequence,
+                         **details},
+        )
 
     def threshold_for(self, spec: TemplateSpec) -> float:
         key = getattr(self.task, "vision_threshold_key", "跑图跑商识图阈值")
