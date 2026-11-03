@@ -130,8 +130,6 @@ export interface ReportState {
     captured_at: string;
     task: Record<string, unknown>;
     warnings: string[];
-    has_screenshot: boolean;
-    frame_age_seconds: number | null;
     was_running: boolean;
   } | null;
   can_resume: boolean;

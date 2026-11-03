@@ -6,7 +6,6 @@ from dataclasses import replace
 from pathlib import Path
 
 from src.desktop.config_store import config_lock
-from src.desktop.preview import jpeg
 from src.diagnostics.bundle import MAX_DESCRIPTION_CHARS
 from src.diagnostics.service import DiagnosticsManager
 
@@ -48,8 +47,6 @@ class ReportSession:
                     "captured_at": snapshot.captured_at,
                     "task": snapshot.task,
                     "warnings": list(snapshot.warnings),
-                    "has_screenshot": snapshot.frame is not None,
-                    "frame_age_seconds": snapshot.frame_age_seconds,
                     "was_running": snapshot.executor_was_running,
                 },
                 "can_resume": bool(
@@ -91,21 +88,20 @@ class ReportSession:
         if self.snapshot is None or session_id != self.session_id:
             raise ValueError("问题现场已关闭或更换，请重新记录现场")
 
-    def build(self, session_id, description, include_screenshot):
+    def build(self, session_id, description):
         if (
             not isinstance(description, str)
             or not 5 <= len(description.strip()) <= MAX_DESCRIPTION_CHARS
         ):
             raise ValueError(f"请填写 5 至 {MAX_DESCRIPTION_CHARS} 字的问题描述")
-        if type(include_screenshot) is not bool:
-            raise ValueError("截图选项应为布尔值")
         with self._lock:
             self._require(session_id)
             if self.result is None:
+                # As in the Qt dialog: only failure screenshots saved automatically go out.
                 report = self.manager.build_report(
                     self.snapshot,
                     description.strip(),
-                    include_screenshot=include_screenshot,
+                    include_screenshot=False,
                 )
                 self._archives[report.report_id] = report.archive_path.resolve()
                 self._archives = dict(list(self._archives.items())[-10:])
@@ -131,13 +127,6 @@ class ReportSession:
             self._resume_allowed = False
             self.runtime.ok.headless_app.diagnostic_pause = False
             return self.state()
-
-    def image(self, session_id):
-        with self._lock:
-            self._require(session_id)
-            if self.snapshot.frame is None:
-                raise ValueError("这次问题现场没有截图")
-            return jpeg(self.snapshot.frame)
 
     def reveal(self, report_id):
         from ok.util.explorer import reveal_in_explorer

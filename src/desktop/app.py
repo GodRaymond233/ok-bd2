@@ -675,16 +675,11 @@ def create_app(
 
     @app.post("/api/bd2/report/build")
     def build_report(body: dict):
-        return report_call(reports.build, body.get("session_id"), body.get("description"),
-                           body.get("include_screenshot", False))
+        return report_call(reports.build, body.get("session_id"), body.get("description"))
 
     @app.post("/api/bd2/report/finish")
     def finish_report(body: dict):
         return report_call(reports.finish, body.get("session_id"), body.get("resume", False))
-
-    @app.get("/api/bd2/report/image")
-    def report_image(session: str):
-        return Response(report_call(reports.image, session), media_type="image/jpeg")
 
     @app.post("/api/bd2/reports/{report_id}/reveal")
     def reveal_report(report_id: str):

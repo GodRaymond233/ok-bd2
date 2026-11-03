@@ -97,8 +97,8 @@ export const api = {
   },
   reportState: () => request<ReportState>("/api/bd2/report"),
   prepareReport: () => request<ReportState>("/api/bd2/report/prepare", "POST", {}),
-  buildReport: (session_id: string, description: string, include_screenshot: boolean) =>
-    request<ReportState>("/api/bd2/report/build", "POST", { session_id, description, include_screenshot }),
+  buildReport: (session_id: string, description: string) =>
+    request<ReportState>("/api/bd2/report/build", "POST", { session_id, description }),
   finishReport: (session_id: string, resume: boolean) =>
     request<ReportState>("/api/bd2/report/finish", "POST", { session_id, resume }),
   revealReport: (id: string) => request<{ ok: boolean }>(`/api/bd2/reports/${encodeURIComponent(id)}/reveal`, "POST", {}),

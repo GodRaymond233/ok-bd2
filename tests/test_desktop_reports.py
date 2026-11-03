@@ -109,20 +109,14 @@ class ReportRoutesTest(unittest.TestCase):
                     ).status_code,
                 )
 
-    def test_zip_contains_manual_context_and_original_frame_and_is_revealed_by_registered_id(self):
+    def test_zip_leaves_out_the_current_frame_and_is_revealed_by_registered_id(self):
         self.executor.paused = True
         frame = np.full((720, 1280, 3), 100, np.uint8)
         self.reports.preview.latest_frame = lambda: (frame, 0.1)
         session = self.prepare()
-        image = self.client.get("/api/bd2/report/image", params={"session": session})
-        self.assertEqual("image/jpeg", image.headers["content-type"])
         response = self.client.post(
             "/api/bd2/report/build",
-            json={
-                "session_id": session,
-                "description": "没有找到预期的任务结果",
-                "include_screenshot": True,
-            },
+            json={"session_id": session, "description": "没有找到预期的任务结果"},
         )
         self.assertEqual(200, response.status_code, response.text)
         result = response.json()["result"]
@@ -131,10 +125,7 @@ class ReportRoutesTest(unittest.TestCase):
             manifest = json.loads(archive.read("manifest.json"))
             self.assertEqual("manual", manifest["report_context"]["source"])
             self.assertIn("state/task-summary.json", archive.namelist())
-            picture = cv2.imdecode(
-                np.frombuffer(archive.read("screenshots/current.webp"), np.uint8), 1
-            )
-            self.assertEqual(frame.shape, picture.shape)
+            self.assertNotIn("screenshots/current.webp", archive.namelist())
         with patch("ok.util.explorer.reveal_in_explorer") as reveal:
             self.assertEqual(400, self.client.post("/api/bd2/reports/unknown/reveal").status_code)
             reveal.assert_not_called()
@@ -150,7 +141,6 @@ class ReportRoutesTest(unittest.TestCase):
         for body in (
             {"description": "短"},
             {"description": "x" * 2001},
-            {"description": "有效的问题描述", "include_screenshot": "false"},
             {"description": "有效的问题描述", "session_id": "stale"},
         ):
             response = self.client.post(
