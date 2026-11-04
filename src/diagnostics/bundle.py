@@ -284,7 +284,11 @@ class ReportBundleBuilder:
             if total_bytes + len(encoded) > MAX_DIAGNOSTIC_FRAME_BYTES:
                 omissions.append("diagnostic_frames_exceeded_limit")
                 break
-            relative_path = f"screenshots/diagnostic/failure-{index + 1}.webp"
+            extension = "png" if entry.get("format") == "png" else "webp"
+            if extension == "png" and not encoded.startswith(b"\x89PNG\r\n\x1a\n"):
+                omissions.append(f"failure_frame_invalid:{entry['run']}")
+                continue
+            relative_path = f"screenshots/diagnostic/failure-{index + 1}.{extension}"
             target = stage / relative_path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(encoded)
@@ -610,10 +614,21 @@ def _encode_frame(
     frame,
     *,
     max_bytes: int = MAX_SCREENSHOT_BYTES,
+    lossless: bool = False,
 ) -> tuple[bytes | None, dict[str, Any]]:
     image = frame.copy()
     height, width = image.shape[:2]
     original_resolution = f"{width}x{height}"
+    if lossless:
+        success, encoded = cv2.imencode(".png", image, [cv2.IMWRITE_PNG_COMPRESSION, 3])
+        included = bool(success and len(encoded) <= max_bytes)
+        return (encoded.tobytes() if included else None), {
+            "included": included,
+            "original_resolution": original_resolution,
+            "exported_resolution": original_resolution,
+            "format": "png",
+            "lossless": True,
+        }
     attempts = SCREENSHOT_ENCODE_ATTEMPTS
     for max_width, quality in attempts:
         candidate = image

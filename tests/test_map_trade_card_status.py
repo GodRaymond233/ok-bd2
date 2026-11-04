@@ -26,13 +26,26 @@ from src.utils.template_resolution import offline_template_scale
 
 
 class CardStatusTest(unittest.TestCase):
+    def test_native_1368_completion_recovery_preserves_source_coordinates(self):
+        root = Path(__file__).resolve().parents[1] / "tests/fixtures/map_trade"
+        detector = CardStatusDetector(Vision(SimpleNamespace(config={})))
+        for index in (0, 1):
+            frame = cv2.imread(str(root / f"completion_native_1368_{index}.png"))
+            result = detector.detect(frame, (66, 667 - index))
+            self.assertEqual(CardActionState.COMPLETED, result.suppress.state)
+            self.assertIn("参考视图720", result.suppress.reason)
+            for evidence in result.suppress.completed:
+                x, y = evidence.result.center
+                self.assertTrue(result.bounds[0] <= x <= result.bounds[2])
+                self.assertTrue(result.bounds[1] <= y <= result.bounds[3])
+
     def test_suppression_completion_tolerates_small_scale_changes_without_confusing_icons(self):
         vision = Vision(SimpleNamespace(config={}))
         detector = CardStatusDetector(vision)
         template_root = Path(__file__).resolve().parents[1] / "recognition-assets/template-assets"
 
-        for height in (720, 900, 1080, 1440):
-            width = height * 16 // 9
+        for width, height in ((1280, 720), (1368, 769), (1600, 900), (1920, 1080),
+                              (2054, 1155), (2304, 1296), (2560, 1440)):
             center = (round(width * 0.35), round(height * 0.75))
             bounds, _complete = card_icon_region(center, (height, width, 3))
             left = bounds[0] + round(width * 0.025)

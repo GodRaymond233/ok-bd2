@@ -766,6 +766,8 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
                 name,
                 relative_roi=relative_roi,
             )
+        if tuple(keywords) == QUICK_SWITCH_PAGE_KEYWORDS:
+            text, _added = self._complete_quick_switch_labels(frame, text)
         normalized = normalize_text(self.vision.simplify(text))
         matched = sum(value in normalized for value in required)
         self._status(f"{name} OCR命中", f"{matched}/{len(required)}")

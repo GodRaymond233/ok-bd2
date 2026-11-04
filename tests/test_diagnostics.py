@@ -117,6 +117,7 @@ class _DeviceManagerStub:
 class DiagnosticLogEvidenceTest(unittest.TestCase):
     def test_failure_frames_survive_recovery_restart_and_current_screenshot_option(self):
         from src.tasks.BaseBD2Task import BaseBD2Task
+        from src.tasks.map_trade.vision import Vision
 
         class FailedTask(BaseBD2Task):
             def run(self):
@@ -124,7 +125,10 @@ class DiagnosticLogEvidenceTest(unittest.TestCase):
                 self.capture_frame()
                 # Framework sleeps invalidate executor.nullable_frame().
                 self._executor._frame = None
-                self._save_flow_diagnostic("button_not_found")
+                Vision(self).record_rejection(
+                    self.picture, (0, 0, 64, 48), "button_not_found",
+                    ocr="api_key=secret-example", reference_height=720,
+                )
                 self.picture.fill(220)
                 self.info["当前阶段"] = "返回主页"
                 self.capture_frame()
@@ -184,6 +188,10 @@ class DiagnosticLogEvidenceTest(unittest.TestCase):
                             self.assertAlmostEqual(expected, float(image.mean()), delta=2)
                             self.assertEqual(snapshot.failures[0]["run"], entry["run"])
                         self.assertEqual("按钮确认", frames[0]["info"]["当前阶段"])
+                        self.assertTrue(frames[0]["path"].endswith(".png"))
+                        self.assertTrue(frames[0]["lossless"])
+                        self.assertEqual("64x48", frames[0]["exported_resolution"])
+                        self.assertEqual("(0, 0, 64, 48)", frames[0]["recognition"]["roi"])
                         self.assertEqual("返回主页", frames[1]["info"]["当前阶段"])
                         state = archive.read("state/failures.json").decode()
                         self.assertNotIn('"data"', state)
@@ -214,6 +222,7 @@ class DiagnosticLogEvidenceTest(unittest.TestCase):
             ))
 
     def test_failure_frames_are_bounded_and_encoding_errors_preserve_task_outcome(self):
+        from src.diagnostics.bundle import _encode_frame
         from src.diagnostics.runtime import FAILURE_FRAME_LIMIT
         from src.tasks.BaseBD2Task import BaseBD2Task
 
@@ -224,6 +233,10 @@ class DiagnosticLogEvidenceTest(unittest.TestCase):
                     self.picture.fill(value)
                 raise ValueError("original failure")
 
+        pixels = np.random.default_rng(3).integers(0, 256, (720, 1280, 3), dtype=np.uint8)
+        encoded, metadata = _encode_frame(pixels, max_bytes=FAILURE_FRAME_LIMIT, lossless=True)
+        self.assertIsNone(encoded)
+        self.assertEqual("1280x720", metadata["exported_resolution"])
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             recorder = RuntimeEvidence(root)

@@ -65,6 +65,68 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class NavigatorTest(unittest.TestCase):
+    def test_nonstandard_quick_switch_requires_both_independent_anchors(self):
+        task = SimpleNamespace(config={}, info_set=lambda *_args: None)
+        navigator = Navigator(task, Vision(task))
+        for scene in (2, 3):
+            frame = load_bgr(
+                ROOT / f"tests/fixtures/quick_switch/square_native_1280x738_{scene}.png",
+            )
+            self.assertFalse(Vision.evaluate_frame_geometry(frame).accepted)
+            self.assertEqual((529, 684), navigator._find_quick_switch_button(frame).center)
+            for bounds in ((1180, 5, 1230, 58), (170, 132, 212, 173)):
+                missing = frame.copy()
+                left, top, right, bottom = bounds
+                missing[top:bottom, left:right] = 0
+                self.assertIsNone(navigator._find_quick_switch_button(missing))
+            wide = cv2.resize(frame, (1722, 738))
+            self.assertIsNone(navigator._find_quick_switch_button(wide))
+
+    def test_category_label_recovery_is_exact_same_frame_and_bounded(self):
+        from src.tasks.map_trade.navigator_constants import QUICK_SWITCH_PAGE_KEYWORDS
+        from src.utils.cartridge_quick_switch import LIFE_GAMEPLAY_CATEGORY_LABEL
+
+        frame = np.full((1440, 2560, 3), 80, np.uint8)
+        task = SimpleNamespace(config={}, info_set=lambda *_args: None)
+        vision = Vision(task)
+        nav = Navigator(task, vision)
+        missing = LIFE_GAMEPLAY_CATEGORY_LABEL
+        partial = " ".join(w for w in QUICK_SWITCH_PAGE_KEYWORDS if w != missing)
+        target = SimpleNamespace(name=missing, x=1380, y=1140, width=240, height=45)
+        for boxes, expected in (
+            ([target], True), ([], False), ([target, target], False),
+            ([SimpleNamespace(**{**vars(target), "name": missing[:-1]})], False),
+            ([SimpleNamespace(**{**vars(target), "y": 100})], False),
+        ):
+            vision.ocr_boxes = Mock(return_value=boxes)
+            nav._quick_switch_read_deadline = float("inf")
+            text, _ = nav._complete_quick_switch_labels(frame, partial)
+            self.assertEqual(expected, missing in text)
+            self.assertLessEqual(vision.ocr_boxes.call_count, 2)
+            self.assertTrue(all(c.args[0] is frame for c in vision.ocr_boxes.call_args_list))
+        for text in (" ".join(QUICK_SWITCH_PAGE_KEYWORDS), "最近 店长游戏卡"):
+            vision.ocr_boxes.reset_mock()
+            self.assertEqual((text, ()), nav._complete_quick_switch_labels(frame, text))
+            vision.ocr_boxes.assert_not_called()
+        nav._quick_switch_read_deadline = 0
+        vision.ocr_boxes.reset_mock()
+        self.assertEqual((partial, ()), nav._complete_quick_switch_labels(frame, partial))
+        vision.ocr_boxes.assert_not_called()
+
+    def test_nonstandard_menu_requires_ordered_label_positions(self):
+        from src.tasks.map_trade.navigator_constants import QUICK_SWITCH_PAGE_KEYWORDS
+
+        frame = np.full((738, 1280, 3), 80, np.uint8)
+        task = SimpleNamespace(config={}, info_set=lambda *_args: None)
+        nav = Navigator(task, Vision(task))
+        boxes = [SimpleNamespace(name=label, x=40 + i * 135, y=590, width=100, height=20)
+                 for i, label in enumerate(QUICK_SWITCH_PAGE_KEYWORDS)]
+        self.assertTrue(nav._quick_switch_menu_layout(frame, boxes))
+        self.assertFalse(nav._quick_switch_menu_layout(frame, boxes[:-1]))
+        self.assertFalse(nav._quick_switch_menu_layout(frame, boxes + [boxes[0]]))
+        boxes[0].x = 900
+        self.assertFalse(nav._quick_switch_menu_layout(frame, boxes))
+
     def _routing_navigator(self, *, vision=None, mode=MapPageMode.DIRECT_TELEPORT, current=None):
         vision = vision or SimpleNamespace()
         vision.capture = Mock(return_value=np.full((90, 160, 3), 120, dtype=np.uint8))

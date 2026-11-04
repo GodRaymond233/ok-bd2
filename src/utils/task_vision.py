@@ -7,7 +7,20 @@ import cv2
 import numpy as np
 
 from src.utils import image_utils, template_resolution
-from src.utils.vision_models import EMPTY_MATCH, MatchResult, TemplateSpec
+from src.utils.vision_models import EMPTY_MATCH, MatchResult, ReferenceView, TemplateSpec
+
+
+def reference_view(frame: np.ndarray, target_height: int) -> ReferenceView:
+    """Resample a recognition view without changing the source or its aspect."""
+    height, width = frame.shape[:2]
+    if min(height, width, target_height) <= 0:
+        raise ValueError("Reference view dimensions must be positive")
+    target_width = max(1, round(width * target_height / height))
+    image = frame if height == target_height else cv2.resize(
+        frame, (target_width, target_height),
+        interpolation=cv2.INTER_AREA if target_height < height else cv2.INTER_CUBIC,
+    )
+    return ReferenceView(image, (width, height))
 
 
 def resolve_match_threshold(

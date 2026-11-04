@@ -27,6 +27,7 @@ from src.tasks.map_trade.models import (
     collection_action_name,
 )
 from src.tasks.map_trade.navigator_constants import (
+    CHAPTER_HOME_TEMPLATES,
     CHARACTER_BADGE_FIRST_X,
     CHARACTER_BADGE_MIN_MARGIN,
     CHARACTER_BADGE_MIN_SCORE,
@@ -42,6 +43,8 @@ from src.tasks.map_trade.navigator_constants import (
     FIRST_CARD_CONFIRM_REGION,
     FIRST_CARD_INSERT_REGION,
     FIRST_CARD_SKIP_TEMPLATE,
+    MINIMAP_LARGE_TEMPLATE,
+    MINIMAP_SMALL_TEMPLATE,
     PROBE_QUICK_SWITCH_SCROLL_AMOUNT,
     PROBE_QUICK_SWITCH_SCROLL_COUNT,
     PROBE_QUICK_SWITCH_SCROLL_INTERVAL_SECONDS,
@@ -103,7 +106,7 @@ from src.tasks.map_trade.navigator_constants import (
     StoryBadgeDetection,
     StoryBadgeGrid,
 )
-from src.tasks.map_trade.vision import normalize_text
+from src.tasks.map_trade.vision import Vision, normalize_text
 from src.utils.calibration import FHD_1080
 from src.utils.image_utils import stabilize_template_match
 
@@ -168,15 +171,140 @@ class StoryCardNavigationMixin:
         return self._collection_observation(LocatedStoryCard(located.card, frame, badge))
 
     def _wait_for_quick_switch_page(self, timeout: float = 10.0) -> bool:
-        return self._wait_for_ocr_keywords(
-            QUICK_SWITCH_PAGE_KEYWORDS,
-            timeout,
-            "卡带选择页",
+        previous = getattr(self, "_quick_switch_read_deadline", None)
+        self._quick_switch_read_deadline = monotonic() + max(0.0, timeout)
+        try:
+            return self._wait_for_ocr_keywords(
+                QUICK_SWITCH_PAGE_KEYWORDS, timeout, "卡带选择页",
+            )
+        finally:
+            self._quick_switch_read_deadline = previous
+
+    def _complete_quick_switch_labels(self, frame, text):
+        from src.utils.cartridge_quick_switch import (
+            BATTLE_GAMEPLAY_CATEGORY_HIGHLIGHT_REGION,
+            BATTLE_GAMEPLAY_CATEGORY_LABEL,
+            LIFE_GAMEPLAY_CATEGORY_HIGHLIGHT_REGION,
+            LIFE_GAMEPLAY_CATEGORY_LABEL,
+        )
+
+        normalized = normalize_text(self.vision.simplify(text))
+        missing = [word for word in QUICK_SWITCH_PAGE_KEYWORDS
+                   if normalize_text(word) not in normalized]
+        if not missing or len(missing) > 2:
+            return text, ()
+        # Fixed label crops need the standard layout; a full menu read below
+        # independently validates nonstandard layouts before any category click.
+        if not Vision.evaluate_frame_geometry(frame).accepted:
+            return text, ()
+        regions = {
+            BATTLE_GAMEPLAY_CATEGORY_LABEL: BATTLE_GAMEPLAY_CATEGORY_HIGHLIGHT_REGION,
+            LIFE_GAMEPLAY_CATEGORY_LABEL: LIFE_GAMEPLAY_CATEGORY_HIGHLIGHT_REGION,
+        }
+        for category in ("story", "character", "event"):
+            label, _point, region = self._card_category(category)
+            regions[label] = region
+        if any(word not in regions for word in missing):
+            return text, ()
+        deadline = getattr(self, "_quick_switch_read_deadline", None)
+        if deadline is None:
+            deadline = monotonic() + 1.0
+        height, width = frame.shape[:2]
+        added = []
+        for word in missing:
+            region = regions[word]
+            left, top, right, bottom = region
+            padded = (max(0.0, left - 0.008), max(0.0, top - 0.008),
+                      min(1.0, right + 0.008), min(1.0, bottom + 0.008))
+            for scale in (1.0, 2.0):
+                if monotonic() >= deadline:
+                    break
+                boxes = self.vision.ocr_boxes(
+                    frame, f"卡带缺词复核-{word}", relative_roi=padded,
+                    target_height=0, ocr_scale=scale, minimum_threshold=0.8,
+                )
+                matches = [
+                    box for box in boxes
+                    if normalize_text(self.vision.simplify(str(box.name))) == normalize_text(word)
+                    and (center := self._ocr_box_center(box)) is not None
+                    and left <= center[0] / width <= right
+                    and top <= center[1] / height <= bottom
+                ]
+                if monotonic() >= deadline or len(matches) > 1:
+                    break
+                if len(matches) == 1:
+                    text += " " + word
+                    added.append(matches[0])
+                    break
+        remaining = [word for word in missing
+                     if normalize_text(word) not in normalize_text(self.vision.simplify(text))]
+        self._status("卡带分类复核", "完整" if not remaining else "缺失：" + "、".join(remaining))
+        if remaining and callable(getattr(self.vision, "record_rejection", None)):
+            self.vision.record_rejection(
+                frame, (0, round(height * 0.77), width, round(height * 0.85)),
+                "cartridge_labels_unconfirmed", missing=remaining, ocr=text,
+            )
+        return text, tuple(added)
+
+    @staticmethod
+    def _mild_aspect_geometry(geometry) -> bool:
+        return (
+            geometry.frame_width >= 1280 and geometry.frame_height >= 720
+            and geometry.content_rect == (0, 0, geometry.frame_width, geometry.frame_height)
+            and abs(geometry.aspect_ratio / (16 / 9) - 1) <= 0.03
+        )
+
+    def _quick_switch_entry_geometry(self, frame):
+        geometry = Vision.evaluate_frame_geometry(frame)
+        if geometry.accepted or not self._mild_aspect_geometry(geometry):
+            return geometry
+        observed = replace(geometry, rejection_reasons=())
+        anchors = []
+        for spec in (CHAPTER_HOME_TEMPLATES[0], MINIMAP_SMALL_TEMPLATE, MINIMAP_LARGE_TEMPLATE):
+            matches = self.vision.match_evidence_all(
+                frame, spec, geometry=observed, minimum_score=spec.threshold,
+                max_results=8, purpose="快速切换独立锚点",
+            )
+            valid = [e.result for e in matches if self.vision.passes(e.result, spec)
+                     and e.result.zncc_score >= 0.70 and e.result.pixel_score >= 0.70]
+            anchors.append(valid)
+        if len(anchors[0]) == 1 and len(anchors[1]) + len(anchors[2]) == 1:
+            self._status("快速切换布局", "轻微比例偏差；同帧主页及小地图锚点确认")
+            return observed
+        self._status("快速切换布局", "比例异常且独立锚点不足，未允许点击")
+        return geometry
+
+    def _quick_switch_menu_layout(self, frame, boxes) -> bool:
+        """Validate all seven labels as independent ordered anchors in this frame."""
+        geometry = Vision.evaluate_frame_geometry(frame)
+        if geometry.accepted:
+            return True
+        if not self._mild_aspect_geometry(geometry):
+            return False
+        centers = []
+        h, w = frame.shape[:2]
+        for label in QUICK_SWITCH_PAGE_KEYWORDS:
+            matches = [
+                self._ocr_box_center(box) for box in boxes
+                if normalize_text(self.vision.simplify(str(box.name))) == normalize_text(label)
+            ]
+            if len(matches) != 1 or matches[0] is None:
+                return False
+            centers.append(matches[0])
+        return (
+            all(0 < x < w and 0.77 <= y / h <= 0.85 for x, y in centers)
+            and all(a[0] < b[0] for a, b in zip(centers, centers[1:]))
+            and max(y for _, y in centers) - min(y for _, y in centers) <= h * 0.015
+            and all(0.04 <= (b[0] - a[0]) / w <= 0.16
+                    for a, b in zip(centers, centers[1:]))
         )
 
     def _find_quick_switch_button(self, frame: np.ndarray) -> MatchResult | None:
         """Identify the translucent navigation icon independently of its brightness."""
 
+        geometry = self._quick_switch_entry_geometry(frame)
+        if not geometry.accepted:
+            return None
         candidates = []
         for roi in QUICK_SWITCH_TEMPLATE.relative_rois:
             candidates.extend(self.vision.match_evidence_all(
@@ -186,6 +314,7 @@ class StoryCardNavigationMixin:
                 peak_radius=max(8, round(22 * frame.shape[0] / FHD_1080.height)),
                 max_results=8,
                 purpose="快速切换按钮",
+                geometry=geometry,
             ))
         if not candidates:
             self._status("快速切换按钮", "搜索区域内无可信候选")
@@ -298,7 +427,13 @@ class StoryCardNavigationMixin:
         end_at = monotonic() + max(0.0, timeout)
         while monotonic() <= end_at:
             frame = self.vision.capture()
-            if self._cartridge_category_confirmed(frame, category):
+            previous = getattr(self, "_quick_switch_read_deadline", None)
+            self._quick_switch_read_deadline = end_at
+            try:
+                confirmed = self._cartridge_category_confirmed(frame, category)
+            finally:
+                self._quick_switch_read_deadline = previous
+            if confirmed:
                 self._menu_confirmed = (monotonic(), category)
                 return True
             self.task.sleep(interval)
@@ -310,7 +445,14 @@ class StoryCardNavigationMixin:
 
     def _cartridge_category_confirmed(self, frame, category: str) -> bool:
         label, _point, region = self._card_category(category)
-        text = self.vision.simplify(self.vision.ocr_text(frame, f"{label}类别"))
+        if Vision.evaluate_frame_geometry(frame).accepted:
+            text = self.vision.simplify(self.vision.ocr_text(frame, f"{label}类别"))
+            text, _ = self._complete_quick_switch_labels(frame, text)
+        else:
+            boxes = self.vision.ocr_boxes(frame, f"{label}类别")
+            if not self._quick_switch_menu_layout(frame, boxes):
+                return False
+            text = self.vision.simplify(" ".join(str(box.name) for box in boxes))
         ratio = self.vision.bright_neutral_ratio(frame, region)
         self._status(f"{label}类别高亮", f"{ratio:.3f}")
         return (
@@ -326,7 +468,16 @@ class StoryCardNavigationMixin:
         for _attempt in range(2):
             frame = self.vision.capture()
             boxes = self.vision.ocr_boxes(frame, f"{label}类别")
+            if category != "story" and not Vision.evaluate_frame_geometry(frame).accepted:
+                self._status("卡带类别选择", "此类别的非标准槽位布局尚未验证")
+                return False
             text = normalize_text(self.vision.simplify(" ".join(str(box.name) for box in boxes)))
+            text, extra = self._complete_quick_switch_labels(frame, text)
+            boxes = [*boxes, *extra]
+            text = normalize_text(self.vision.simplify(text))
+            if not self._quick_switch_menu_layout(frame, boxes):
+                self._status("卡带类别选择", "非标准布局尚未确认，未执行固定位置操作")
+                return False
             if not all(normalize_text(word) in text for word in QUICK_SWITCH_PAGE_KEYWORDS):
                 self._status("卡带类别选择", "卡带页标签不完整，未点击类别")
                 return False
@@ -344,6 +495,9 @@ class StoryCardNavigationMixin:
             ]
             if len(targets) > 1:
                 self._status("卡带类别选择", "类别文字位置不唯一，未执行点击")
+                return False
+            if not targets and not Vision.evaluate_frame_geometry(frame).accepted:
+                self._status("卡带类别选择", "非标准布局缺少目标文字位置，未执行点击")
                 return False
             # 合并OCR框不能定位单个标签；已确认完整菜单时使用本项目标定点。
             target = (targets[0][0] / width, targets[0][1] / height) if targets else point
@@ -401,7 +555,7 @@ class StoryCardNavigationMixin:
             stable_hits = stable_hits + 1 if difference < CARTRIDGE_SCROLL_STABLE_DIFFERENCE else 0
             if stable_hits >= 2:
                 if not self._wait_for_quick_switch_page(timeout=1.0):
-                    self._status("卡带滚轮", "滚动后卡带选择页已消失，停止本次定位")
+                    self._status("卡带滚轮", "滚动后卡带分类标签未确认，停止本次定位")
                     return False
                 has_moved = (
                     float(np.mean(np.abs(current - baseline)))
@@ -422,6 +576,7 @@ class StoryCardNavigationMixin:
         assess = getattr(self.vision, "assess_frame", None)
         self._last_story_badge_geometry = None
         self._last_story_badge_geometry_reason = ""
+        self._story_badge_requires_grid = False
         if not callable(assess):
             return None
         try:
@@ -434,6 +589,13 @@ class StoryCardNavigationMixin:
             self._last_story_badge_geometry_reason = f"画面几何检查异常：{exc}"
             self._status("剧情角标几何", self._last_story_badge_geometry_reason)
             return False
+        if not geometry.accepted and self._mild_aspect_geometry(geometry):
+            boxes = self.vision.ocr_boxes(frame, "剧情角标布局锚点")
+            if (self._quick_switch_menu_layout(frame, boxes)
+                    and self.vision.bright_neutral_ratio(frame, STORY_CATEGORY_HIGHLIGHT_REGION)
+                    >= STORY_CATEGORY_HIGHLIGHT_MIN_RATIO):
+                geometry = replace(geometry, rejection_reasons=())
+                self._story_badge_requires_grid = True
         self._last_story_badge_geometry = geometry
         self._last_story_badge_geometry_reason = ""
         if not geometry.accepted:
@@ -550,6 +712,10 @@ class StoryCardNavigationMixin:
         detections: list[StoryBadgeDetection] = []
         for cluster in clusters:
             detections.append(self._rank_badge_candidates(cluster))
+        if (self._story_badge_requires_grid
+                and self._story_badge_grid(frame, tuple(detections)) is None):
+            self._status("剧情角标几何", "非标准布局未形成可信多角标栅格")
+            return ()
         return tuple(sorted(detections, key=lambda value: value.best.result.center[0]))
 
     @staticmethod
@@ -2333,6 +2499,13 @@ class StoryCardNavigationMixin:
         )
         self._status("卡带完成度", completion.state.value)
         completed = self._completion_satisfies_actions(completion, required_actions, card_id)
+        recorder = getattr(self.vision, "record_rejection", None)
+        if not completed and callable(recorder):
+            recorder(
+                confirmed.located.frame, completion.bounds, "card_completion_unconfirmed",
+                absorb=completion.absorb, suppress=completion.suppress,
+                reference_height=720,
+            )
         return CollectionCardSelectionResult(
             (
                 CollectionCardSelectionOutcome.VISUALLY_COMPLETE

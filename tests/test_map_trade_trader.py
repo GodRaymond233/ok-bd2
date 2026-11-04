@@ -180,6 +180,61 @@ class TradeSellTestTaskTest(unittest.TestCase):
 
 
 class SellFlowTest(StageHistoryTestCase):
+    def test_native_2k_sale_recovery_requires_exact_percent_and_unique_marker(self):
+        from unittest.mock import Mock
+
+        entry = CalendarEntry("火烤鱼板棒", "S17:试炼之路")
+        for scene in ("new", "old"):
+            frame = load_bgr(
+                ROOT / f"tests/fixtures/map_trade/trade_shop/sale_native_2k_{scene}.png",
+            )
+            for texts in (("120%",), ("119%",), ("1120%",), ("4120%",), ("120",),
+                          ("12%",), ("120%", "118%"), ()):
+                with self.subTest(scene=scene, texts=texts):
+                    trader = create_trader()
+                    name = self._text_box(entry.item, 795, 226, 141, 34)
+                    trader.vision.ocr_boxes = Mock(side_effect=lambda _f, title, **_kw:
+                        [name] if title == "出售商品列表" else
+                        [self._text_box(text, 672, 230, 55, 20) for text in texts])
+                    candidates = trader._locate_sale_items(entry, frame)
+                    self.assertEqual(int(texts == ("120%",)), len(candidates))
+                    self.assertIsNone(trader._sale_reference_view)
+                    if candidates:
+                        self.assertEqual((866, 243), candidates[0].center)
+                        self.assertTrue(candidates[0].percent_box.reference_view)
+                        self.assertAlmostEqual(656, candidates[0].percent_box.x, delta=2)
+                        self.assertAlmostEqual(230, candidates[0].percent_box.y, delta=2)
+            duplicate = frame.copy()
+            duplicate[210:276, 595:795] = 0
+            for x in (600, 718):
+                duplicate[230:248, x:x + 71] = frame[230:248, 656:727]
+            trader.vision.ocr_boxes = Mock(return_value=[name])
+            self.assertEqual([], trader._sale_template_percent_boxes(
+                duplicate, (595, 210, 200, 66), cv2.cvtColor(duplicate, cv2.COLOR_BGR2GRAY),
+            ))
+            trader.vision.ocr_boxes.assert_not_called()
+
+    def test_recovered_sale_rechecks_fresh_frame_before_click(self):
+        from unittest.mock import Mock
+
+        for changed in ("size", "source", "item"):
+            trader = create_trader()
+            frame = np.zeros((1440, 2560, 3), np.uint8)
+            trader._sale_name_signature = Mock(return_value=())
+            trader._sale_toast_id = Mock(return_value=None)
+            trader._locate_sale_items = Mock(return_value=[])
+            trader.vision.capture = Mock(
+                return_value=(frame[:1000] if changed == "size" else frame),
+            )
+            trader.vision.click_client = Mock()
+            candidate = SimpleNamespace(center=(866, 243), percent_box=SimpleNamespace(
+                reference_view=True, capture_source="old" if changed == "source" else None,
+            ))
+            self.assertIsNone(trader._sell_one_candidate(
+                CalendarEntry("火烤鱼板棒", "S17"), candidate, frame, previous_owned=None,
+            ))
+            trader.vision.click_client.assert_not_called()
+
     def test_pending_sale_reads_stock_and_never_repeats_the_confirmation(self):
         from unittest.mock import Mock
 
@@ -197,7 +252,7 @@ class SellFlowTest(StageHistoryTestCase):
         trader._wait_available_quantity = Mock(return_value=50)
         trader._ensure_sell_page = Mock(return_value=True)
         entry = CalendarEntry("苹果", "1")
-        candidate = SimpleNamespace(center=(10, 10))
+        candidate = SimpleNamespace(center=(10, 10), percent_box=None)
         frame = np.zeros((30, 30, 3), dtype=np.uint8)
         run_history.save_stage(trader.task, "出售:1:苹果", "pending",
                                evidence={"owned": 100, "selected": 10})
@@ -1227,7 +1282,7 @@ class SellFlowTest(StageHistoryTestCase):
         warnings = []
         clicked = []
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        candidate = SimpleNamespace(center=(620, 572))
+        candidate = SimpleNamespace(center=(620, 572), percent_box=None)
         scans = [([candidate], frame), None]
         trader = create_trader()
         trader.task = SimpleNamespace(
@@ -1267,7 +1322,7 @@ class SellFlowTest(StageHistoryTestCase):
         logs = []
         statuses = []
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        candidate = SimpleNamespace(center=(620, 572))
+        candidate = SimpleNamespace(center=(620, 572), percent_box=None)
         scans = [([candidate], frame), None]
         trader = create_trader()
         trader.task = SimpleNamespace(
@@ -1306,7 +1361,7 @@ class SellFlowTest(StageHistoryTestCase):
         statuses = []
         sleeps = clock.sleeps
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        candidate = SimpleNamespace(center=(620, 572))
+        candidate = SimpleNamespace(center=(620, 572), percent_box=None)
         locate_calls = []
         trader = create_trader()
         trader.task = SimpleNamespace(
@@ -1392,7 +1447,7 @@ class SellFlowTest(StageHistoryTestCase):
                         (point, shape, after_sleep)
                     )
                 )
-                candidate = SimpleNamespace(center=(640, 462))
+                candidate = SimpleNamespace(center=(640, 462), percent_box=None)
                 located = ([candidate], frame)
                 scans = [located, located if insurance else None]
 
@@ -1474,7 +1529,8 @@ class SellFlowTest(StageHistoryTestCase):
                            clock):
                     result = trader._sell_one_candidate(
                         CalendarEntry(item, "S2", reserve=reserve),
-                        SimpleNamespace(center=(640, 462)), frame, previous_owned=None,
+                        SimpleNamespace(center=(640, 462), percent_box=None),
+                        frame, previous_owned=None,
                     )
                 self.assertEqual((owned, True) if confirmed else None, result)
                 self.assertEqual(confirmed, SALE_CONFIRM_POINT in clicks)
@@ -1489,7 +1545,7 @@ class SellFlowTest(StageHistoryTestCase):
                 clock = FakeClock()
                 clicks = []
                 frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-                candidate = SimpleNamespace(center=(620, 572))
+                candidate = SimpleNamespace(center=(620, 572), percent_box=None)
                 trader = create_trader()
                 trader.task = SimpleNamespace(
                     config={}, info_set=Mock(), log_info=Mock(), log_warning=Mock(),
@@ -1555,7 +1611,7 @@ class SellFlowTest(StageHistoryTestCase):
                 def scan(_entry):
                     scans.append(True)
                     self.assertLessEqual(len(scans), 2, "确认最后一组售完后不得继续扫描")
-                    return [SimpleNamespace(center=(630, 572))], frame
+                    return [SimpleNamespace(center=(630, 572), percent_box=None)], frame
 
                 trader._wait_sale_item_candidates = scan
                 trader._sale_name_signature = lambda *_a: ()
@@ -1616,10 +1672,14 @@ class SellFlowTest(StageHistoryTestCase):
         trader._choose_sale_quantity = lambda _entry, _owned: True
         trader._wait_selected_sale_quantity = lambda expected, **_kwargs: expected
         trader._wait_sale_completion = lambda *_args, **_kwargs: True
+        trader.vision.capture = Mock(return_value=frame)
+        trader._locate_sale_items = Mock(return_value=[
+            SimpleNamespace(center=(951, 682), percent_box=None),
+        ])
 
         result = trader._sell_one_candidate(
             CalendarEntry("item", "S3"),
-            SimpleNamespace(center=(951, 682)),
+            SimpleNamespace(center=(951, 682), percent_box=None),
             frame,
             previous_owned=None,
         )
@@ -1627,6 +1687,7 @@ class SellFlowTest(StageHistoryTestCase):
         self.assertEqual((400, True), result)
         self.assertEqual(SALE_DIALOG_OPEN_MAX_CLICKS, len(client_clicks))
         self.assertEqual(2, len([message for message in messages if "补点重试" in message]))
+        self.assertEqual(2, trader._locate_sale_items.call_count)
 
     def test_sale_dialog_open_stops_after_click_limit(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -1645,10 +1706,14 @@ class SellFlowTest(StageHistoryTestCase):
         trader._sale_name_signature = lambda _entry, _frame: ()
         trader._sale_toast_id = lambda _frame: None
         trader._wait_sale_dialog_item = lambda _entry: False
+        trader.vision.capture = Mock(return_value=frame)
+        trader._locate_sale_items = Mock(return_value=[
+            SimpleNamespace(center=(951, 682), percent_box=None),
+        ])
 
         result = trader._sell_one_candidate(
             CalendarEntry("item", "S3"),
-            SimpleNamespace(center=(951, 682)),
+            SimpleNamespace(center=(951, 682), percent_box=None),
             frame,
             previous_owned=None,
         )
@@ -1666,7 +1731,7 @@ class SellFlowTest(StageHistoryTestCase):
         trader._wait_owned_quantity = lambda: self.fail("错误商品不得进入数量设置")
         with patch("src.tasks.map_trade.trader_sell.monotonic", lambda: clock[0]):
             result = trader._sell_one_candidate(
-                CalendarEntry("姜黄", "S12"), SimpleNamespace(center=(620, 579)),
+                CalendarEntry("姜黄", "S12"), SimpleNamespace(center=(620, 579), percent_box=None),
                 np.zeros((1080, 1920, 3), dtype=np.uint8), previous_owned=None,
             )
         self.assertIsNone(result)
@@ -1676,8 +1741,8 @@ class SellFlowTest(StageHistoryTestCase):
         for insurance, reserve in ((False, 0), (True, 5500)):
             with self.subTest(insurance=insurance, reserve=reserve):
                 frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-                first = SimpleNamespace(center=(620, 572))
-                second = SimpleNamespace(center=(620, 572))
+                first = SimpleNamespace(center=(620, 572), percent_box=None)
+                second = SimpleNamespace(center=(620, 572), percent_box=None)
                 scans = [([first], frame), ([second], frame), None]
                 clicked = []
                 trader = create_trader()
@@ -1720,7 +1785,8 @@ class SellFlowTest(StageHistoryTestCase):
         calls = []
         trader.vision = SimpleNamespace(capture=lambda: frames[min(len(calls), 1)])
         trader._locate_sale_items = lambda _entry, _frame: (
-            calls.append(_frame) or ([] if len(calls) < 2 else [SimpleNamespace(center=(640, 462))])
+            calls.append(_frame)
+            or ([] if len(calls) < 2 else [SimpleNamespace(center=(640, 462), percent_box=None)])
         )
 
         with patch("src.tasks.map_trade.trader_sell.monotonic", side_effect=lambda: sum(sleeps)):
