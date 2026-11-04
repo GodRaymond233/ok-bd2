@@ -18,6 +18,7 @@ from src.tasks.map_trade.action_icons import (
 )
 from src.tasks.map_trade.collector_constants import (
     ABSORB_ACTION,
+    ABSORB_SEARCH_MARGIN_SECONDS,
     ACTION_AFTER_CLICK_SECONDS,
     ACTION_FAILURE_FEEDBACK,
     ACTION_FEEDBACK_CHARACTER_RATIO,
@@ -32,13 +33,12 @@ from src.tasks.map_trade.collector_constants import (
     ACTION_SUCCESS_FEEDBACK,
     PRESS_AGAIN_PAUSE_SECONDS,
     SEARCH_ACTION,
-    SEARCH_BUFF_SECONDS,
     SEARCH_COUNTDOWN_INTERVAL,
     SEARCH_COUNTDOWN_PATTERN,
     SEARCH_COUNTDOWN_RELATIVE_ROI,
     SEARCH_COUNTDOWN_TIMEOUT,
     SEARCH_MISSED_FEEDBACK_COUNTDOWN_SECONDS,
-    SEARCH_REUSE_MAX_AGE_SECONDS,
+    SEARCH_RENEW_TIMEOUT,
     SKILL_FAILURE_TEXT_LIMIT,
     SKILL_GROUP_RELATIVE_POINTS,
     SKILL_GROUP_SWITCH_SETTLE_SECONDS,
@@ -688,29 +688,25 @@ class SkillExecutionMixin:
         card_id: str | None,
         map_role: CollectionMapRole,
     ) -> SearchCountdownSession | None:
-        """账本里有本卡带近期的探查施放，且图标不可读（被倒计时覆盖）时复用。
-
-        重进卡带后倒计时数字的 OCR 不可靠（实测重进窗口内一致读空），
-        因此以内存账本时间戳为准，不依赖数字；图标恢复 AVAILABLE 说明
-        增益已结束，走正常施放。
-        """
+        """复用本次施放实际读到的有效期；吸收提交仍须新帧OCR确认。"""
 
         if card_id is None:
             return None
-        cast_at = self._search_cast_monotonic.get((card_id, map_role.value))
-        if cast_at is None:
+        key = (card_id, map_role.value)
+        expires_at = self._search_expires_at.get(key)
+        if expires_at is None:
             return None
-        elapsed = monotonic() - cast_at
-        if elapsed >= SEARCH_REUSE_MAX_AGE_SECONDS:
+        if expires_at <= monotonic():
+            self._search_expires_at.pop(key, None)
             return None
         frame, detection = self._detect_action_icon(SEARCH_ACTION.icon)
-        if detection.state is ActionIconState.AVAILABLE:
-            self._search_cast_monotonic.pop((card_id, map_role.value), None)
+        remaining = int(expires_at - monotonic())
+        if detection.state is ActionIconState.AVAILABLE or remaining < ABSORB_SEARCH_MARGIN_SECONDS:
+            self._search_expires_at.pop(key, None)
             return None
-        remaining = max(1, int(SEARCH_BUFF_SECONDS - elapsed))
         self._status(
             "探查倒计时",
-            f"复用账本施放记录（{elapsed:.0f}秒前）；预估剩余{remaining}s",
+            f"复用本次实读有效期；预估剩余{remaining}s（吸收前复核）",
         )
         return SearchCountdownSession(
             SEARCH_COUNTDOWN_RELATIVE_ROI,
@@ -769,30 +765,22 @@ class SkillExecutionMixin:
             )
         self._wait_after_feedback_match(search_action, feedback)
         end_at = monotonic() + SEARCH_COUNTDOWN_TIMEOUT
-        last_text = ""
         while monotonic() <= end_at:
+            observed_at = monotonic()
             frame = self.vision.capture()
             # The normal search glyph is covered by the countdown digits as
             # soon as the action starts.  Its absence (or a transient
             # ``unknown`` state) is expected and must not veto the fixed OCR
             # countdown evidence.
-            last_text = self.vision.ocr_text(
-                frame,
-                "探查倒计时",
-                relative_roi=countdown_roi,
-                target_height=1080,
-                ocr_scale=SKILL_OCR_UPSCALE,
-            )
-            countdown = re.sub(r"\D", "", last_text)
-            self._status("探查倒计时", countdown or "-")
-            if SEARCH_COUNTDOWN_PATTERN.fullmatch(countdown):
+            countdown = self._read_search_countdown(frame)
+            if countdown is not None:
                 if card_id is not None:
-                    self._search_cast_monotonic[(card_id, map_role.value)] = monotonic()
-                return SearchCountdownSession(countdown_roi, int(countdown))
+                    self._search_expires_at[(card_id, map_role.value)] = observed_at + countdown - 1
+                return SearchCountdownSession(countdown_roi, countdown)
             self.task.sleep(SEARCH_COUNTDOWN_INTERVAL)
         return SkillExecutionResult(
             False,
-            message=f"探查点击后未确认倒计时：last_ocr={last_text or '-'}",
+            message="探查点击后未确认有效倒计时",
         )
 
     def _use_actions(
@@ -999,6 +987,7 @@ class SkillExecutionMixin:
 
     def _click_prepared_action(self, action, prepared, *, card_id, map_role):
         detection, before, generation = prepared
+        observed_at = monotonic()
         frame, recovered = self._capture_skill_field()
         existing = self.progress.get_action_record(card_id, map_role, action.name)
         early = self._existing_record_outcome(action, existing)
@@ -1012,6 +1001,15 @@ class SkillExecutionMixin:
             return SkillExecutionResult(
                 False, message="消费前场景或技能状态变化，重新读取次数和图标", press_again=True,
             )
+        if action is ABSORB_ACTION:
+            seconds = self._read_search_countdown(frame)
+            search = self.action_icons.detect(frame, SEARCH_ICON)
+            remaining = (seconds or 0) - (monotonic() - observed_at)
+            if (
+                search.state is ActionIconState.AVAILABLE
+                or remaining < ABSORB_SEARCH_MARGIN_SECONDS
+            ):
+                return self._renew_search_for_absorb(card_id=card_id, map_role=map_role)
         if not self.progress.arm_action(card_id, map_role, action.name, baseline=before):
             return SkillExecutionResult(
                 False, True, f"{action.name}每日额度或未决动作已阻止新点击",
@@ -1521,17 +1519,51 @@ class SkillExecutionMixin:
                 return False
             self.task.sleep(SEARCH_COUNTDOWN_INTERVAL)
 
-    def _search_running(self) -> bool:
+    def _read_search_countdown(self, frame) -> int | None:
         text = self.vision.ocr_text(
-            self.vision.capture(),
+            frame,
             "探查倒计时",
             relative_roi=SEARCH_COUNTDOWN_RELATIVE_ROI,
             target_height=1080,
             ocr_scale=SKILL_OCR_UPSCALE,
         )
-        countdown = re.sub(r"\D", "", text)
+        countdown = text.strip()
         self._status("探查倒计时", countdown or "-")
-        return bool(SEARCH_COUNTDOWN_PATTERN.fullmatch(countdown))
+        if SEARCH_COUNTDOWN_PATTERN.fullmatch(countdown) and int(countdown) > 0:
+            return int(countdown)
+        return None
+
+    def _search_running(self) -> bool:
+        return self._read_search_countdown(self.vision.capture()) is not None
+
+    def _renew_search_for_absorb(self, *, card_id, map_role) -> SkillExecutionResult:
+        """等低余量探查结束并重开；重开后丢弃旧吸收准备，重新核对次数和图标。"""
+        self._search_expires_at.pop((card_id, map_role.value), None)
+        self._status("吸收下一步点击", "探查剩余时间未确认充足，等待恢复后重新准备吸收")
+        end_at = monotonic() + SEARCH_RENEW_TIMEOUT
+        while monotonic() < end_at:
+            observed_at = monotonic()
+            frame, _recovered = self._capture_skill_field()
+            seconds = self._read_search_countdown(frame)
+            search = self.action_icons.detect(frame, SEARCH_ICON)
+            remaining = (seconds or 0) - (monotonic() - observed_at)
+            if monotonic() >= end_at:
+                break
+            if search.state is ActionIconState.AVAILABLE:
+                started = self._start_search(card_id=card_id, map_role=map_role)
+                if isinstance(started, SkillExecutionResult):
+                    return SkillExecutionResult(
+                        False, message=f"吸收前重新探查失败，未点击吸收：{started.message}",
+                    )
+                return SkillExecutionResult(
+                    False, message="探查已重新施放，重新准备吸收", press_again=True,
+                )
+            if remaining >= ABSORB_SEARCH_MARGIN_SECONDS:
+                return SkillExecutionResult(
+                    False, message="探查剩余时间已复核，重新准备吸收", press_again=True,
+                )
+            self.task.sleep(SEARCH_COUNTDOWN_INTERVAL)
+        return SkillExecutionResult(False, message="吸收前未确认探查有效剩余时间，未点击吸收")
 
     def _absorb_used_up(
         self, *, card_id: str, map_role: CollectionMapRole

@@ -59,9 +59,8 @@ class Collector(SkillExecutionMixin):
         self._skill_field_generation = 0
         self._skill_layout_checked = False
         self._recovery_suppression_enabled = False
-        # (card_id, map_role) -> 探查施放时刻（monotonic）：重进卡带时
-        # 倒计时数字 OCR 不可靠，靠账本判定增益仍在进行并复用。
-        self._search_cast_monotonic: dict[tuple[str, str], float] = {}
+        # 重进卡带时复用实读倒计时的单调时钟期限；吸收前必须重新OCR确认。
+        self._search_expires_at: dict[tuple[str, str], float] = {}
         self._scope_cards = COLLECTABLE_CARDS
         self._scope_actions = collection_action_policy(BATTLE_ACTIONS)
         # 本次运行中在已确认的活动卡类别页里未找到的卡带：跳过且不计入本周范围。
