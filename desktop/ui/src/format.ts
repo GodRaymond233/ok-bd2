@@ -48,13 +48,13 @@ export function whenText(seconds: number, now: number): string {
   if (days === 1) {
     return `${t("昨天")} ${clock}`;
   }
-  return `${moment.month}${t("月")}${moment.day}${t("日")} ${clock}`;
+  return `${t("{month}月{day}日", { month: moment.month, day: moment.day })} ${clock}`;
 }
 
 /** "10月22日 周四". */
 export function dateText(now: number): string {
   const moment = beijing(now);
-  return `${moment.month}${t("月")}${moment.day}${t("日")} ${t(WEEKDAYS[moment.weekday])}`;
+  return `${t("{month}月{day}日", { month: moment.month, day: moment.day })} ${t(WEEKDAYS[moment.weekday])}`;
 }
 
 /** "今日 04:00", "明日 08:00" or "周一 08:00" for an upcoming refresh. */
@@ -69,8 +69,8 @@ export function untilText(seconds: number, now: number): string {
   const minutes = Math.max(0, Math.ceil((seconds - now) / 60));
   const hours = Math.floor(minutes / 60);
   return hours > 0
-    ? `${t("还有")} ${hours} ${t("小时")} ${minutes % 60} ${t("分")}`
-    : `${t("还有")} ${minutes} ${t("分")}`;
+    ? t("还有 {hours} 小时 {minutes} 分", { hours, minutes: minutes % 60 })
+    : t("还有 {minutes} 分", { minutes });
 }
 
 /** Same shape as the Qt cards: "1h 2m", "4m 10s", "45s"; empty when unknown. */

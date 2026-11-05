@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, errorText } from "./api.ts";
 import type { Core } from "./App.tsx";
-import { t } from "./i18n.ts";
+import { coreText, t } from "./i18n.ts";
 import type { HuntBook, HuntPlan, HuntPlans, HuntStep, TaskPayload } from "./types.ts";
 import { ConfirmDialog } from "./ui.tsx";
 
@@ -22,7 +22,7 @@ function Steps({ steps, group, choices, onChange }: {
   return <div className="hunt-steps">
     {steps.length === 0 && <p className="why">{t("保留米饭，不刷取。")}</p>}
     {steps.map((step, index) => {
-      const label = `${group} ${t("步骤")} ${index + 1}`;
+      const label = `${group} ${t("步骤 {number}", { number: index + 1 })}`;
       return <div className="hunt-step" key={index}>
         <span>{index + 1}.</span>
         <select className="select" aria-label={`${label} ${t("目标")}`} value={step.target}
@@ -147,7 +147,7 @@ export function HuntPlanEditor({ core, task, onClose }: { core: Core; task: Task
   return <dialog className="dialog hunt-editor" ref={dialog} aria-label={t("快速狩猎方案编辑器")}
     onCancel={(event) => { event.preventDefault(); confirmation ? setConfirmation(null) : close(); }}>
     <div className="row">
-      <h2>{task.name} · {t("刷取方案")}</h2><span className="grow" />
+      <h2>{coreText(task.name)} · {t("刷取方案")}</h2><span className="grow" />
       <button className="btn sm" disabled={saving} onClick={close}>{t("关闭")}</button>
     </div>
     <p className="why">{t("从上往下匹配，只执行第一条满足条件的规则；狩猎场沿用游戏当前关卡。仅使用免费米饭。")}</p>
@@ -155,7 +155,7 @@ export function HuntPlanEditor({ core, task, onClose }: { core: Core; task: Task
     {loading ? <p role="status">{t("正在读取方案…")}</p> : <>
       {data?.inherited && <p className="why">{t("当前方案由原有刷取设置转换而来；确认保存前不会修改配置。")}</p>}
       {data?.load_error && <div className="warnline" role="alert">
-        {data.load_error} {t("原配置尚未修改，确认保存后才会替换。")}
+        {coreText(data.load_error)} {t("原配置尚未修改，确认保存后才会替换。")}
         {!book && <button className="btn sm" disabled={locked} onClick={() => setBook({ version: 1, active: 0, plans: [structuredClone(data.presets[0])] })}>{t("建立替换草稿")}</button>}
       </div>}
       {locked && <p className="warnline">{t("运行、排队或保留诊断现场期间不能修改方案，可以查看和模拟预览。")}</p>}
@@ -185,19 +185,19 @@ export function HuntPlanEditor({ core, task, onClose }: { core: Core; task: Task
           </div>
           {plan.rules.map((rule, index) => <section className="hunt-rule" key={index}>
             <div className="hunt-toolbar">
-              <b>{t("规则")} {index + 1} · {t("当")}</b>
-              <select className="select" aria-label={`${t("规则")} ${index + 1} ${t("条件")}`} value={rule.condition}
+              <b>{t("规则 {number} · 当", { number: index + 1 })}</b>
+              <select className="select" aria-label={`${t("规则 {number}", { number: index + 1 })} ${t("条件")}`} value={rule.condition}
                 onChange={(event) => editPlan((draft) => { draft.rules[index].condition = event.target.value; })}>
                 {Object.entries(data.conditions).map(([key, text]) => <option key={key} value={key}>{t(text)}</option>)}
               </select>
               <span className="grow" />
-              <button className="btn sm" disabled={index === 0} aria-label={`${t("规则")} ${index + 1} ${t("上移")}`}
+              <button className="btn sm" disabled={index === 0} aria-label={`${t("规则 {number}", { number: index + 1 })} ${t("上移")}`}
                 onClick={() => editPlan((draft) => { draft.rules = moved(draft.rules, index, -1); })}>↑</button>
-              <button className="btn sm" disabled={index === plan.rules.length - 1} aria-label={`${t("规则")} ${index + 1} ${t("下移")}`}
+              <button className="btn sm" disabled={index === plan.rules.length - 1} aria-label={`${t("规则 {number}", { number: index + 1 })} ${t("下移")}`}
                 onClick={() => editPlan((draft) => { draft.rules = moved(draft.rules, index, 1); })}>↓</button>
               <button className="btn sm" onClick={() => editPlan((draft) => { draft.rules.splice(index, 1); })}>{t("删除规则")}</button>
             </div>
-            <Steps steps={rule.steps} group={`${t("规则")} ${index + 1}`} choices={data}
+            <Steps steps={rule.steps} group={t("规则 {number}", { number: index + 1 })} choices={data}
               onChange={(steps) => editPlan((draft) => { draft.rules[index].steps = steps; })} />
           </section>)}
           <button className="btn" onClick={() => editPlan((draft) => { draft.rules.push({ condition: "gold", steps: [{ target: "gold", mode: "all", count: 1 }] }); })}>＋ {t("添加条件规则")}</button>
@@ -221,7 +221,7 @@ export function HuntPlanEditor({ core, task, onClose }: { core: Core; task: Task
             <button className="btn sm" onClick={() => setRetry((value) => value + 1)}>{t("重新预览")}</button>
           </div>
           <pre className={`record-text ${preview?.error || preview?.runnable === false ? "ferr" : ""}`} role="status">
-            {preview?.key === previewKey ? preview.text : t("正在校验并计算预览…")}
+            {preview?.key === previewKey ? coreText(preview.text) : t("正在校验并计算预览…")}
           </pre>
           <p className="why">{t("预览不读取游戏、不执行任务；每次消耗 6 米饭，不足一次的余量保留。")}</p>
         </section>

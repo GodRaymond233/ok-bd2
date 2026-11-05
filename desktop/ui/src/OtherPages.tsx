@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api, errorText } from "./api.ts";
 import type { Core } from "./App.tsx";
 import { durationText } from "./format.ts";
-import { t } from "./i18n.ts";
+import { coreText, t } from "./i18n.ts";
 import type { HistoryRun } from "./types.ts";
 import { ConfirmDialog, Icon } from "./ui.tsx";
 
@@ -41,7 +41,7 @@ export function RecordsPage({ core }: { core: Core }) {
       <p className="ds">{t("保留最近 300 次已结束的任务，时间按北京时间显示。运行中的任务见顶部运行栏。")}</p>
       <div className="card record-filters">
         <label>{t("任务")}<select className="select" aria-label={t("筛选任务")} value={task} onChange={(event) => setTask(event.target.value)}>
-          <option value="">{t("全部任务")}</option>{tasks.map((name) => <option key={name}>{name}</option>)}
+          <option value="">{t("全部任务")}</option>{tasks.map((name) => <option key={name} value={name}>{coreText(name)}</option>)}
         </select></label>
         <label>{t("结果")}<select className="select" aria-label={t("筛选结果")} value={outcome} onChange={(event) => setOutcome(event.target.value)}>
           <option value="all">{t("全部结果")}</option><option value="ok">{t("成功")}</option><option value="bad">{t("未成功")}</option>
@@ -51,24 +51,24 @@ export function RecordsPage({ core }: { core: Core }) {
         </select></label>
         <label className="grow">{t("搜索")}<input className="input" type="search" aria-label={t("搜索运行记录")} placeholder={t("任务、状态或失败原因")} value={query} onChange={(event) => setQuery(event.target.value)} /></label>
       </div>
-      {error && <div role="alert" className="ferr">{t("读取记录失败")}：{error}</div>}
+      {error && <div role="alert" className="ferr">{t("读取记录失败：{reason}", { reason: error })}</div>}
       {loading && <p role="status">{t("正在读取记录…")}</p>}
       {!loading && !error && filtered.length === 0 && <div className="card empty">{runs.length ? t("没有符合筛选条件的记录") : t("还没有运行记录。任务结束后会自动记录在这里。")}</div>}
       {filtered.length > 0 && <div className="card record-list">
-        <div className="record-heading">{t("符合条件")} {filtered.length} / {runs.length}</div>
+        <div className="record-heading">{t("符合条件 {shown} / {total}", { shown: filtered.length, total: runs.length })}</div>
         {filtered.map((run, index) => <div className="record-row" key={`${run.task}:${run.finished}:${index}`}>
-          <div><b>{run.task}</b><div className="ds">{timestamp(run.finished)} · {t("耗时")} {durationText(run.duration) || "—"}</div></div>
+          <div><b>{coreText(run.task)}</b><div className="ds">{timestamp(run.finished)} · {t("耗时 {time}", { time: durationText(run.duration) || "—" })}</div></div>
           <span className={run.ok ? "chip ok" : "chip warn"}>{run.ok ? t("成功") : t("未成功")}</span>
-          <span className="record-status">{run.status || t("未记录状态")}</span>
+          <span className="record-status">{coreText(run.status) || t("未记录状态")}</span>
           <button className="btn sm" onClick={() => setSelected(run)}>{t("查看详情")}</button>
           <button className="btn sm" onClick={() => core.openLogs(run)}>{t("对应日志")}</button>
         </div>)}
       </div>}
-      {selected && <ConfirmDialog title={`${t("运行详情")} · ${selected.task}`} confirm={t("查看对应日志")} cancel={t("关闭")} onCancel={() => setSelected(null)} onConfirm={() => core.openLogs(selected)}>
+      {selected && <ConfirmDialog title={`${t("运行详情")} · ${coreText(selected.task)}`} confirm={t("查看对应日志")} cancel={t("关闭")} onCancel={() => setSelected(null)} onConfirm={() => core.openLogs(selected)}>
         <div className="record-detail">
-        <p>{t("开始")}：{selected.started ? timestamp(selected.started) : t("未记录")}　{t("结束")}：{timestamp(selected.finished)}</p>
-        <p>{selected.status || t("未记录状态")}</p>
-        {Object.entries(selected.details ?? {}).map(([key, value]) => <div key={key}><b>{key === "Error" ? t("错误") : key}</b><pre className="record-text">{value}</pre></div>)}
+        <p>{t("开始：{time}", { time: selected.started ? timestamp(selected.started) : t("未记录") })}　{t("结束：{time}", { time: timestamp(selected.finished) })}</p>
+        <p>{coreText(selected.status) || t("未记录状态")}</p>
+        {Object.entries(selected.details ?? {}).map(([key, value]) => <div key={key}><b>{key === "Error" ? t("错误") : coreText(key)}</b><pre className="record-text">{coreText(value)}</pre></div>)}
         {!selected.ok && !Object.keys(selected.details ?? {}).length && <p className="ds">{t("这条记录没有额外错误详情，请结合对应日志检查。")}</p>}
         </div>
       </ConfirmDialog>}

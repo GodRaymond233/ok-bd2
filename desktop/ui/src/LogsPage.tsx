@@ -4,7 +4,7 @@ import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState }
 import { api, errorText } from "./api.ts";
 import type { Core } from "./App.tsx";
 import { durationText } from "./format.ts";
-import { t } from "./i18n.ts";
+import { coreText, t } from "./i18n.ts";
 import {
   type LevelFilter,
   type LogRecord,
@@ -40,7 +40,8 @@ function Highlight({ text, query }: { text: string; query: string }) {
 
 function dateLabel(date: string, today: string): string {
   const [, month, day] = date.split("-").map(Number);
-  return date === today ? `${t("今天")} ${month}月${day}日` : `${month}月${day}日`;
+  const label = t("{month}月{day}日", { month, day });
+  return date === today ? `${t("今天")} ${label}` : label;
 }
 
 function RunDivider({ row, onOnly, only }: { row: Extract<LogRow, { kind: "run" }>; onOnly: () => void; only: boolean }) {
@@ -49,7 +50,7 @@ function RunDivider({ row, onOnly, only }: { row: Extract<LogRow, { kind: "run" 
     return (
       <div className="ldiv" data-run={`${run.task}:${run.finished}`}>
         <Icon name="play" />
-        <b>{run.task}</b>
+        <b>{coreText(run.task)}</b>
         <span>
           {t("开始")} · {localClock(row.ts)}
         </span>
@@ -65,10 +66,10 @@ function RunDivider({ row, onOnly, only }: { row: Extract<LogRow, { kind: "run" 
   return (
     <div className={run.ok ? "ldiv" : "ldiv bad"}>
       <Icon name="stop" />
-      <b>{run.task}</b>
+      <b>{coreText(run.task)}</b>
       <span>
-        {t("结束")} · {run.ok ? t("成功") : run.status || t("未成功")}
-        {run.duration ? ` · ${t("用时")} ${durationText(run.duration)}` : ""}
+        {t("结束")} · {run.ok ? t("成功") : coreText(run.status) || t("未成功")}
+        {run.duration ? ` · ${t("用时 {time}", { time: durationText(run.duration) })}` : ""}
       </span>
     </div>
   );
@@ -96,7 +97,7 @@ function Line({ record, query }: { record: LogRecord; query: string }) {
         <div className="tb">
           {open && record.more.map((line, index) => <div key={index}><Highlight text={line} query={query} /></div>)}
           <button type="button" className="linkbtn" aria-expanded={open} onClick={() => setOpen(!open)}>
-            {open ? t("收起") : `${t("展开")} ${record.more.length} ${t("行")}`}
+            {open ? t("收起") : t("展开 {count} 行", { count: record.more.length })}
           </button>
         </div>
       )}
@@ -213,7 +214,7 @@ export function LogsPage({
         <div className="l">
           <h1 className="title">{t("日志")}</h1>
           <span className="date">
-            {t("本次运行与日志文件")} · {t("最近")} {records.length} {t("条")}
+            {t("本次运行与日志文件")} · {t("最近 {count} 条", { count: records.length })}
           </span>
         </div>
         <span className="row">
@@ -247,7 +248,7 @@ export function LogsPage({
         </label>
         {focus && (
           <span className="chip info filter">
-            {t("只看")}：{focus.task} {localClock(runStart(focus)).slice(0, 5)}–{localClock(focus.finished).slice(0, 5)}
+            {t("只看：{task}", { task: coreText(focus.task) })} {localClock(runStart(focus)).slice(0, 5)}–{localClock(focus.finished).slice(0, 5)}
             <button type="button" className="linkbtn" aria-label={t("取消只看这次")} onClick={followLatest}>
               <Icon name="x" />
             </button>
@@ -263,7 +264,7 @@ export function LogsPage({
       </div>
       <div className="lview" ref={view} onScroll={onScroll} aria-live={follow ? "polite" : "off"}>
         {file === null && <div className="empty">{t("正在读取日志…")}</div>}
-        {fileError && <div className="ferr">{t("读取日志文件失败")}：{fileError}</div>}
+        {fileError && <div className="ferr">{t("读取日志文件失败：{reason}", { reason: fileError })}</div>}
         {rows.map((row) => {
           if (row.kind === "date") {
             return (
@@ -296,7 +297,7 @@ export function LogsPage({
       </div>
       {!follow && unseen > 0 && (
         <button type="button" className="newpill" onClick={followLatest}>
-          {t("有")} {unseen} {t("条新日志")} <Icon name="chev-d" />
+          {t("有 {count} 条新日志", { count: unseen })} <Icon name="chev-d" />
         </button>
       )}
       <p className="why">{t("警告、错误的行左侧有竖线并标出级别；多行的记录（如错误堆栈）默认折叠。")}</p>

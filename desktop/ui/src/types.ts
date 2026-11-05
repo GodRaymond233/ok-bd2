@@ -1,3 +1,5 @@
+import type { LanguagePreference } from "./i18n.ts";
+
 /** ok-script's form field description (ok/core/config_schema.py build_config_fields). */
 export interface ConfigField {
   key: string;
@@ -71,6 +73,79 @@ export interface Guide {
   title: string;
   summary: string;
   markdown: string;
+}
+
+export interface ScriptEntry {
+  name: string;
+  modified: number;
+  /** The task it defines, once it loads. */
+  task: string | null;
+  error: boolean;
+}
+
+export interface ScriptDocument {
+  name: string;
+  code: string;
+  modified: number;
+  task: string | null;
+  error: string | null;
+  error_line: number | null;
+}
+
+/** A BaseTask method offered in the editor's palette (ok/core/script_templates.py). */
+export interface ScriptHelper {
+  name: string;
+  params: { name: string; default: string | null; doc: string }[];
+  doc: string;
+  full_doc: string;
+  category: string;
+  class_name: string;
+  is_static: boolean;
+}
+
+export interface ExportOptions {
+  tasks: string[];
+  manifest: { file_name?: string; script_name?: string; version?: string };
+}
+
+export interface RecordingState {
+  recording: boolean;
+  /** The game window is in front, so clicks count. */
+  active: boolean;
+  clicks: number;
+  target: string | null;
+}
+
+export interface TemplateImage {
+  name: string;
+  url: string;
+  modified: number;
+  categories: string[];
+}
+
+export interface TemplatesInfo {
+  debug: boolean;
+  generate_label_enum: boolean;
+  enum_path: string;
+}
+
+export interface TemplateBox {
+  id?: number;
+  category: string;
+  bbox: [number, number, number, number];
+}
+
+export interface TemplateMarkup {
+  name: string;
+  url: string;
+  width: number;
+  height: number;
+  annotations: TemplateBox[];
+}
+
+export interface LanguageState {
+  language: LanguagePreference;
+  catalogs: Record<string, Record<string, string>>;
 }
 
 export interface LastRun {
@@ -248,6 +323,8 @@ export interface DesktopInfo {
   pid: number;
   mode: string;
   ui_built: boolean;
+  /** The script editor and template pages are available. */
+  custom_scripts?: boolean;
   legacy_instances: { pid: number; location: string; description: string }[];
   /** PyAppify launcher; outdated is null when the version is unknown (a source checkout). */
   launcher?: { version: string | null; outdated: boolean | null };

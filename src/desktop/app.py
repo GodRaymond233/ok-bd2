@@ -20,11 +20,13 @@ from src.desktop.config_store import config_lock, save_config, task_config_busy
 from src.desktop.events import install_events
 from src.desktop.guides import guide_id, install_guides
 from src.desktop.hunt_plans import install_hunt_plans
+from src.desktop.language import install_language
 from src.desktop.maintenance import install_maintenance
 from src.desktop.okweb import app as framework
 from src.desktop.preview import LivePreview
 from src.desktop.protocol import API_VERSION
 from src.desktop.reports import ReportSession
+from src.desktop.scripts import install_scripts
 from src.desktop.security import LocalSession
 from src.desktop.settings_text import (
     FIELD_TEXT,
@@ -543,6 +545,8 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
             return runtime.capture_ui()
         return original_select_capture(method)
 
+    runtime.ensure_config_write = ensure_config_write
+    runtime.ensure_task_slot = ensure_task_slot
     runtime.select_capture = select_capture
     runtime.window_info = window_info
     runtime.resize_window = resize_window
@@ -635,6 +639,8 @@ def create_app(
     adapt_runtime(runtime, legacy_check=legacy_check, starter_wait=STARTER_WAIT)
     install_hunt_plans(app, runtime)
     install_guides(app)
+    install_scripts(app, runtime)
+    install_language(app, runtime)
     preview = LivePreview(runtime)
     reports = ReportSession(runtime, preview, core_version or str(config.get("version") or ""),
                             legacy_check=legacy_check)
@@ -718,6 +724,7 @@ def create_app(
             "pid": os.getpid(),
             "mode": "service",
             "ui_built": (ui_dist / "index.html").is_file(),
+            "custom_scripts": bool(getattr(runtime.task_manager, "has_custom", False)),
             "legacy_instances": [
                 {"pid": item.pid, "location": item.location, "description": item.describe()}
                 for item in instances

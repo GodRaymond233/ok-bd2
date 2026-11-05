@@ -1378,14 +1378,14 @@ def create_web_app(config, ok_instance=None):
     async def delete_template(name: str):
         try:
             return await asyncio.to_thread(runtime.delete_template, name)
-        except (ValueError, OSError) as exc:
+        except (ValueError, RuntimeError, OSError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/templates/capture")
     async def capture_template():
         try:
             return await asyncio.to_thread(runtime.capture_template)
-        except (RuntimeError, OSError) as exc:
+        except (ValueError, RuntimeError, OSError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/templates/{name}/annotations")
@@ -1399,7 +1399,7 @@ def create_web_app(config, ok_instance=None):
     async def save_template_annotations(name: str, body: dict):
         try:
             return await asyncio.to_thread(runtime.save_template_annotations, name, body.get("annotations"))
-        except (ValueError, OSError) as exc:
+        except (ValueError, RuntimeError, OSError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/templates/save")

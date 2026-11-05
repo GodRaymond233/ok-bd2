@@ -6,7 +6,7 @@ import type { Core } from "./App.tsx";
 import { ConfigForm } from "./ConfigForm.tsx";
 import { sizeText, starterProgress, starterText } from "./device.ts";
 import { CaptureOptions, WindowOptions } from "./DeviceOptions.tsx";
-import { t } from "./i18n.ts";
+import { coreText, t } from "./i18n.ts";
 import { AUTO_RESIZE_KEY, BASIC, DEVICE_KEYS, findGroup, pickFields } from "./settings.ts";
 import type { GamePaths, WindowInfo } from "./types.ts";
 import { Icon } from "./ui.tsx";
@@ -23,7 +23,7 @@ function Connection({ core }: { core: Core }) {
   if (ui?.status.starting) {
     const progress = wait ? starterProgress(wait) : null;
     title = t("正在通过 Starter 启动游戏");
-    detail = core.starterTask ? `${t("开始")}「${core.starterTask}」${t("时游戏没有运行，已通过 Starter 启动。")}` : t("游戏没有运行，已通过 Starter 启动。");
+    detail = core.starterTask ? t("开始「{task}」时游戏没有运行，已通过 Starter 启动。", { task: coreText(core.starterTask) }) : t("游戏没有运行，已通过 Starter 启动。");
     extra = (
       <div className="wait" role="status">
         <div className="row">
@@ -38,7 +38,7 @@ function Connection({ core }: { core: Core }) {
             <i style={{ width: `${Math.round(progress * 100)}%` }} />
           </div>
         )}
-        {wait?.message && <div className="dsc">{wait.message.split("\n").slice(1).join(" ") || t("请在 Starter 里完成操作，等待会自动继续。")}</div>}
+        {wait?.message && <div className="dsc">{coreText(wait.message.split("\n").slice(1).join(" ")) || t("请在 Starter 里完成操作，等待会自动继续。")}</div>}
       </div>
     );
   } else if (core.startError) {
@@ -58,9 +58,9 @@ function Connection({ core }: { core: Core }) {
       </>
     );
   } else if (device?.connected) {
-    title = `${t("已连接")} ${core.deviceName || "BrownDust II"}`;
+    title = t("已连接 {device}", { device: core.deviceName || "BrownDust II" });
     const interaction = ui?.interaction_methods.find((item) => item.selected)?.label ?? "";
-    detail = `${t("截图")} ${core.captureText}${interaction ? ` · ${t("交互")} ${interaction}` : ""}`;
+    detail = `${t("截图 {method}", { method: core.captureText })}${interaction ? ` · ${t("交互 {method}", { method: coreText(interaction) })}` : ""}`;
   } else {
     title = t("未找到游戏窗口");
     detail = t("游戏没有运行。开始任务时会通过 Starter 自动启动游戏；也可以先手动打开游戏，再点「刷新窗口」。");
@@ -119,10 +119,10 @@ function Resolution({ core }: { core: Core }) {
     api.resizeWindow(width, height).then(
       (value) =>
         setResult({
-          text: value.changed ? `${t("已调整到")} ${sizeText([value.width, value.height])}` : `${t("已经是")} ${sizeText([value.width, value.height])}`,
+          text: t(value.changed ? "已调整到 {size}" : "已经是 {size}", { size: sizeText([value.width, value.height]) }),
           error: false,
         }),
-      (reason: unknown) => setResult({ text: `${t("调整失败")}：${errorText(reason)}`, error: true }),
+      (reason: unknown) => setResult({ text: t("调整失败：{reason}", { reason: errorText(reason) }), error: true }),
     ).finally(() => setWorking(false));
   };
   const running = Boolean(core.current) && !core.ui?.status.paused;
@@ -233,7 +233,7 @@ export function DevicePage({ core }: { core: Core }) {
               <div className="lb">{t("交互方式")}</div>
               <div className="dsc">{t("BD2 专用，只有这一种。")}</div>
               <div className="ctrl">
-                <span className="dsc">{ui?.interaction_methods.find((item) => item.selected)?.label ?? "—"}</span>
+                <span className="dsc">{coreText(ui?.interaction_methods.find((item) => item.selected)?.label ?? "—")}</span>
               </div>
             </div>
           </div>

@@ -64,6 +64,9 @@ function probe() {
   const stateFile = path.join(out, "probe-state.json");
   fs.mkdirSync(fixture, { recursive: true });
   process.env.OKBD2_DESKTOP_FIXTURE = path.join(fixture, "configs");
+  // The probe reads Chinese text, whatever the system's language.
+  fs.mkdirSync(process.env.OKBD2_DESKTOP_FIXTURE, { recursive: true });
+  fs.writeFileSync(path.join(process.env.OKBD2_DESKTOP_FIXTURE, "ui_config.json"), JSON.stringify({ MainWindow: { Language: "zh_CN" } }));
   process.argv.push(
     "--core-python", process.env.PROBE_PYTHON,
     "--core-script", path.join(__dirname, "desktop_probe_core.py"),

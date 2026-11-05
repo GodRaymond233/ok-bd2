@@ -4,7 +4,7 @@ import { type UIEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api, errorText } from "./api.ts";
 import { type Block, type Inline, parseGuide } from "./guide.ts";
-import { t } from "./i18n.ts";
+import { coreText, t } from "./i18n.ts";
 import type { Guide } from "./types.ts";
 import { Icon } from "./ui.tsx";
 
@@ -134,11 +134,11 @@ export function GuidePanel({ id, onClose }: { id: string; onClose: () => void })
   // On the document itself: the page's own layers would otherwise cover it.
   return createPortal(
     <>
-      <aside className="guide-panel" role="complementary" aria-label={guide ? `${guide.title} ${t("使用说明")}` : t("使用说明")}>
+      <aside className="guide-panel" role="complementary" aria-label={guide ? `${coreText(guide.title)} ${t("使用说明")}` : t("使用说明")}>
         <header>
           <div className="tt">
             <small>{t("任务指南")}</small>
-            <h2>{guide?.title ?? t("使用说明")}</h2>
+            <h2>{guide ? coreText(guide.title) : t("使用说明")}</h2>
           </div>
           <button type="button" className="btn subtle sm icon" ref={closeButton} title={t("关闭")} aria-label={t("关闭说明")} onClick={onClose}>
             <Icon name="x" />

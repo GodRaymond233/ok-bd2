@@ -141,3 +141,19 @@ export function rememberRailWidth(railWidth: number): void {
     rememberInBrowser(RAIL_KEY, String(railWidth));
   }
 }
+
+const TEMPLATE_SAVE_KEY = "okbd2.templateSave";
+
+/** The last answers in the save-templates dialog; a new core port loses them, which costs a click. */
+export function storedTemplateSave(): { generate: boolean; path: string } | null {
+  try {
+    const value = JSON.parse(browserValue(TEMPLATE_SAVE_KEY) ?? "null") as { generate?: unknown; path?: unknown } | null;
+    return value && typeof value.path === "string" ? { generate: value.generate === true, path: value.path } : null;
+  } catch {
+    return null;
+  }
+}
+
+export function rememberTemplateSave(choice: { generate: boolean; path: string }): void {
+  rememberInBrowser(TEMPLATE_SAVE_KEY, JSON.stringify(choice));
+}

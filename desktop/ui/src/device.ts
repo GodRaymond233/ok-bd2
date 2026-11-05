@@ -1,6 +1,6 @@
 // Texts for the device page and the game start shown in the run panel.
 import { elapsedText } from "./format.ts";
-import { t } from "./i18n.ts";
+import { coreText, t } from "./i18n.ts";
 import type { CaptureUi, StarterWait } from "./types.ts";
 
 export const AUTO_CAPTURE = "auto";
@@ -25,7 +25,7 @@ export function captureChoices(ui: Pick<CaptureUi, "capture_methods" | "capture_
     {
       id: AUTO_CAPTURE,
       label: t("自动（推荐）"),
-      note: `${t("按")} ${order} ${t("的顺序，用第一个能截到画面的。")}`,
+      note: t("按 {order} 的顺序，用第一个能截到画面的。", { order }),
       selected: !ui.capture_preference,
     },
     ...ui.capture_methods.map((item) => ({
@@ -43,11 +43,11 @@ export function sizeText(size: [number, number] | null | undefined): string {
 
 /** "已等待 0:42 · 最多再等 1:18", or the Starter's own message while it updates. */
 export function starterText(wait: StarterWait): string {
-  const waited = `${t("已等待")} ${elapsedText(wait.waited)}`;
+  const waited = t("已等待 {time}", { time: elapsedText(wait.waited) });
   if (wait.message) {
-    return `${waited} · ${wait.message.split("\n")[0].replace(/，已等待 \d+ 秒/, "")}`;
+    return `${waited} · ${coreText(wait.message.split("\n")[0].replace(/，已等待 \d+ 秒/, ""))}`;
   }
-  return wait.seconds_left > 0 ? `${waited} · ${t("最多再等")} ${elapsedText(wait.seconds_left)}` : waited;
+  return wait.seconds_left > 0 ? `${waited} · ${t("最多再等 {time}", { time: elapsedText(wait.seconds_left) })}` : waited;
 }
 
 /** Share of the wait used, for the progress bar; null while the Starter updates. */

@@ -2,7 +2,7 @@
 import { useCallback, useRef, useState } from "react";
 import type { Core } from "./App.tsx";
 import { CaptureOptions, WindowOptions } from "./DeviceOptions.tsx";
-import { t } from "./i18n.ts";
+import { coreText, t } from "./i18n.ts";
 import { Icon, useDismiss } from "./ui.tsx";
 
 export function ConnectionPill({ core }: { core: Core }) {
@@ -25,7 +25,7 @@ export function ConnectionPill({ core }: { core: Core }) {
         className="connpill"
         aria-expanded={open}
         aria-haspopup="dialog"
-        title={connected ? `${t("已连接")} ${core.device?.label ?? ""}` : name}
+        title={connected ? t("已连接 {device}", { device: coreText(core.device?.label ?? "") }) : name}
         onClick={() => setOpen(!open)}
       >
         <span className={dot} />

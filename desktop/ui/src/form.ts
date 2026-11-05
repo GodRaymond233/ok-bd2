@@ -1,5 +1,5 @@
 // Helpers for the task settings form, which is built from the core's field descriptions.
-import { t } from "./i18n.ts";
+import { coreText, t } from "./i18n.ts";
 import type { ConfigField } from "./types.ts";
 
 export function isModified(field: ConfigField): boolean {
@@ -11,12 +11,12 @@ export function valueText(value: unknown): string {
     return value ? t("开") : t("关");
   }
   if (Array.isArray(value)) {
-    return value.length ? value.map(String).join("、") : t("无");
+    return value.length ? value.map((item) => coreText(String(item))).join(t("、")) : t("无");
   }
   if (value === "" || value === null || value === undefined) {
     return t("空");
   }
-  return String(value);
+  return coreText(String(value));
 }
 
 export function modifiedFields(fields: ConfigField[]): ConfigField[] {
@@ -34,10 +34,10 @@ export function parseNumber(text: string, field: ConfigField): number | string {
     return t("请输入整数");
   }
   if (field.minimum !== null && value < field.minimum) {
-    return `${t("不能小于")} ${field.minimum}`;
+    return t("不能小于 {value}", { value: field.minimum });
   }
   if (field.maximum !== null && value > field.maximum) {
-    return `${t("不能大于")} ${field.maximum}`;
+    return t("不能大于 {value}", { value: field.maximum });
   }
   return value;
 }
@@ -85,10 +85,10 @@ export function linesToList(text: string): string[] {
 
 /** The field's display name: the core's label for settings, otherwise the key. */
 export function fieldLabel(field: ConfigField): string {
-  return field.label || field.key;
+  return coreText(field.label || field.key);
 }
 
 /** An option's display name; the stored value when the core names none. */
 export function optionText(field: ConfigField, option: string): string {
-  return field.option_labels?.[option] ?? option;
+  return coreText(field.option_labels?.[option] ?? option);
 }

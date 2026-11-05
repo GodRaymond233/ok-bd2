@@ -1,7 +1,7 @@
 // The game window and capture method choices, on the device page and in the connection popover.
 import type { Core } from "./App.tsx";
 import { captureChoices } from "./device.ts";
-import { t } from "./i18n.ts";
+import { coreText, t } from "./i18n.ts";
 
 export function WindowOptions({ core, locked, notes }: { core: Core; locked: boolean; notes?: boolean }) {
   const devices = core.ui?.devices ?? [];
@@ -19,7 +19,7 @@ export function WindowOptions({ core, locked, notes }: { core: Core; locked: boo
         >
           <span className="rd" />
           <span className="txt">
-            <b>{device.label}</b>
+            <b>{coreText(device.label)}</b>
             {notes && <span className="dsc">{t("只支持 PC 版；列表来自「刷新窗口」。")}</span>}
           </span>
         </button>

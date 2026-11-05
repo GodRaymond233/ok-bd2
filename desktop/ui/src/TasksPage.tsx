@@ -7,7 +7,7 @@ import { GuidePanel } from "./GuidePanel.tsx";
 import { HuntPlanEditor } from "./HuntPlanEditor.tsx";
 import { modifiedFields, valueText } from "./form.ts";
 import { durationText, whenText } from "./format.ts";
-import { t } from "./i18n.ts";
+import { coreText, t } from "./i18n.ts";
 import { checklistRows } from "./today.ts";
 import { libraryGroups } from "./library.ts";
 import type { HistoryRun, TaskPayload } from "./types.ts";
@@ -18,7 +18,7 @@ function Marker({ core, task }: { core: Core; task: TaskPayload }) {
     return null;
   }
   if (task.waiting_for) {
-    return <span className="chip info" title={`${t("等待")}「${task.waiting_for}」${t("完成")}`}>{t("排队中")}</span>;
+    return <span className="chip info" title={t("等待「{task}」完成", { task: coreText(task.waiting_for) })}>{t("排队中")}</span>;
   }
   if (task.enabled || core.current === task.name) {
     return <span className="chip run">{t("运行中")}</span>;
@@ -47,18 +47,18 @@ function Marker({ core, task }: { core: Core; task: TaskPayload }) {
 function TaskRow({ core, task, selected, onSelect }: { core: Core; task: TaskPayload; selected: boolean; onSelect: () => void }) {
   return (
     <div className={selected ? "ti on" : "ti"}>
-      <button type="button" className="ti-open" aria-current={selected} title={task.description || task.name} onClick={onSelect}>
+      <button type="button" className="ti-open" aria-current={selected} title={coreText(task.description || task.name)} onClick={onSelect}>
         <TaskGlyph name={task.name} group={task.group_name} trigger={task.trigger} />
         <span className="txt">
-          <span className="nm">{task.name}</span>
-          {task.description && <span className="ds">{task.description}</span>}
+          <span className="nm">{coreText(task.name)}</span>
+          {task.description && <span className="ds">{coreText(task.description)}</span>}
         </span>
         <Marker core={core} task={task} />
       </button>
       {task.trigger ? (
         <Toggle
           checked={task.enabled}
-          label={task.name}
+          label={coreText(task.name)}
           onChange={(value) => void core.act(() => core.taskAction(task.name, value ? "enable" : "disable"))}
         />
       ) : (
@@ -67,7 +67,7 @@ function TaskRow({ core, task, selected, onSelect }: { core: Core; task: TaskPay
           className="btn sm icon"
           disabled={Boolean(core.startBlocked)}
           title={core.startBlocked ?? t("开始")}
-          aria-label={`${t("开始")} ${task.name}`}
+          aria-label={`${t("开始")} ${coreText(task.name)}`}
           onClick={() => void core.act(() => core.startTask(task.name))}
         >
           <Icon name="play" />
@@ -184,28 +184,28 @@ function TaskDetail({
   }, [loadHistory, task.name, historyVersion]);
 
   const row = item && summary ? checklistRows(summary, core.batchRun, core.childStage, core.now).find((candidate) => candidate.item === item) : undefined;
-  const last = row ? row.text : history?.[0] ? `${whenText(history[0].finished, core.now)} ${history[0].ok ? t("完成") : t("未成功")}` : t("还没有运行记录");
+  const last = row ? row.text : history?.[0] ? t(history[0].ok ? "{when} 完成" : "{when} 未成功", { when: whenText(history[0].finished, core.now) }) : t("还没有运行记录");
   const lastBad = row ? row.tone === "bad" : history?.[0] ? !history[0].ok : false;
   const saveField = (key: string, value: unknown) => core.setConfig(task.name, key, value).then(() => undefined);
 
   return (
-    <section className="detail" aria-label={task.name}>
+    <section className="detail" aria-label={coreText(task.name)}>
       <button type="button" className="crumb back-only" onClick={onBack}>
         <Icon name="chev-l" />
         {t("任务")}
       </button>
       <div className="crumb wide-only">
-        {t("任务")} <Icon name="chev-r" /> {task.name}
+        {t("任务")} <Icon name="chev-r" /> {coreText(task.name)}
       </div>
       <div className="dhead">
         <TaskGlyph name={task.name} group={task.group_name} trigger={task.trigger} />
         <div className="tt">
           <h1>
-            {task.name}
+            {coreText(task.name)}
             {isBatch && <span className="chip info">{t("合辑")}</span>}
             {task.trigger && <span className="chip ok">{t("触发任务")}</span>}
           </h1>
-          {task.description && <div className="ds">{task.description}</div>}
+          {task.description && <div className="ds">{coreText(task.description)}</div>}
           <div className="metas">
             {item && batch && (
               <label className="tgl">
@@ -219,7 +219,7 @@ function TaskDetail({
               </label>
             )}
             {!task.trigger && <span className={lastBad ? "last bad" : "last"}>{`${t("上次运行")} · ${last}`}</span>}
-            {task.waiting_for && <span className="last">{`${t("等待")}「${task.waiting_for}」${t("完成后开始")}`}</span>}
+            {task.waiting_for && <span className="last">{t("等待「{task}」完成后开始", { task: coreText(task.waiting_for) })}</span>}
           </div>
         </div>
         <div className="go">
@@ -250,7 +250,7 @@ function TaskDetail({
                 items={[
                   {
                     label: `${t("全部恢复默认")}…`,
-                    note: changed.length ? `${t("改过")} ${changed.length} ${t("项")}` : t("都是默认值"),
+                    note: changed.length ? t("改过 {count} 项", { count: changed.length }) : t("都是默认值"),
                     icon: "refresh",
                     disabled: locked || changed.length === 0,
                     onSelect: () => setConfirming(true),
@@ -265,7 +265,7 @@ function TaskDetail({
         <div className="lockbar" role="status">
           <Icon name="lock" />
           <b>{core.ui?.diagnostic_pause ? t("问题报告期间，设置已锁定") : t("运行中，设置已锁定")}</b>
-          <span>{core.current ? `${core.current} ${t("结束后可以修改。")}` : t("任务结束后可以修改。")}</span>
+          <span>{core.current ? t("{task} 结束后可以修改。", { task: coreText(core.current) }) : t("任务结束后可以修改。")}</span>
         </div>
       )}
       <div className="dgrid">
@@ -276,17 +276,16 @@ function TaskDetail({
                 <div key={child.key} className="fld">
                   <div className="lb">
                     <span className="order">{index + 1}</span>
-                    {child.name}
+                    {coreText(child.name)}
                   </div>
                   <div className="dsc">
-                    {t("是否在一键完成日常中执行")}
-                    {child.key}。
+                    {t("是否在一键完成日常中执行{name}。", { name: coreText(child.key) })}
                   </div>
                   <div className="ctrl">
                     <Toggle
                       checked={child.enabled}
                       disabled={locked}
-                      label={child.name}
+                      label={coreText(child.name)}
                       onChange={(value) => void core.act(() => core.setConfig(task.name, child.key, value))}
                     />
                   </div>
@@ -296,13 +295,13 @@ function TaskDetail({
                 .filter((field) => field.key === "启动自动执行日常" || field.key === "完成日常后自动关机")
                 .map((field) => (
                   <div key={field.key} className="fld">
-                    <div className="lb">{field.key}</div>
-                    <div className="dsc">{field.description}</div>
+                    <div className="lb">{coreText(field.key)}</div>
+                    <div className="dsc">{coreText(field.description)}</div>
                     <div className="ctrl">
                       <Toggle
                         checked={Boolean(field.value)}
                         disabled={locked}
-                        label={field.key}
+                        label={coreText(field.key)}
                         onChange={(value) => void core.act(() => core.setConfig(task.name, field.key, value))}
                       />
                     </div>
@@ -330,11 +329,11 @@ function TaskDetail({
                   <div key={`${run.finished}`} className="r">
                     <span className={run.ok ? "d" : "d bad"} />
                     <span className="w">{whenText(run.finished, core.now)}</span>
-                    <span className={run.ok ? "s" : "s bad"} title={run.status}>
+                    <span className={run.ok ? "s" : "s bad"} title={coreText(run.status)}>
                       {run.ok ? t("成功") : t("未成功")}
                       {run.duration ? ` · ${durationText(run.duration)}` : ""}
                     </span>
-                    <button type="button" className="linkbtn" aria-label={`${t("查看这次的日志")} ${whenText(run.finished, core.now)}`} onClick={() => core.openLogs(run)}>
+                    <button type="button" className="linkbtn" aria-label={t("查看这次的日志 {when}", { when: whenText(run.finished, core.now) })} onClick={() => core.openLogs(run)}>
                       {t("日志")}
                     </button>
                   </div>
@@ -352,8 +351,8 @@ function TaskDetail({
               <div className="kv">
                 {task.status_rows?.map((row) => (
                   <div key={row.key} style={{ display: "contents" }}>
-                    <span className="k">{row.label}</span>
-                    <span className="v">{row.value}</span>
+                    <span className="k">{coreText(row.label)}</span>
+                    <span className="v">{coreText(row.value)}</span>
                   </div>
                 ))}
               </div>
@@ -380,7 +379,7 @@ function TaskDetail({
       {readingGuide && task.guide_id && <GuidePanel id={task.guide_id} onClose={() => onGuide(false)} />}
       {confirming && (
         <ConfirmDialog
-          title={`${t("把")}「${task.name}」${t("的设置全部恢复默认？")}`}
+          title={t("把「{task}」的设置全部恢复默认？", { task: coreText(task.name) })}
           confirm={t("恢复默认")}
           onCancel={() => setConfirming(false)}
           onConfirm={() => {
@@ -394,7 +393,7 @@ function TaskDetail({
           <ul>
             {changed.map((field) => (
               <li key={field.key}>
-                {field.key}：{valueText(field.value)} → {valueText(field.default)}
+                {coreText(field.key)}{t("：")}{valueText(field.value)} → {valueText(field.default)}
               </li>
             ))}
           </ul>

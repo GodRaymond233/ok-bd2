@@ -5,7 +5,7 @@ import { api, errorText } from "./api.ts";
 import type { Core } from "./App.tsx";
 import { ConfigForm } from "./ConfigForm.tsx";
 import { versionText } from "./format.ts";
-import { t } from "./i18n.ts";
+import { coreText, type LanguagePreference, t } from "./i18n.ts";
 import {
   AUTO_RESIZE_KEY,
   BASIC,
@@ -97,6 +97,18 @@ function General({ core }: { core: Core }) {
             </div>
           </div>
           <div className="fld">
+            <div className="lb">{t("语言")}</div>
+            <div className="dsc">{t("立即生效。任务日志和游戏里的文字不受影响。")}</div>
+            <div className="ctrl">
+              <select className="select" aria-label={t("语言")} value={core.language}
+                onChange={(event) => void core.act(() => core.setLanguage(event.target.value as LanguagePreference))}>
+                <option value="Auto">{t("跟随系统")}</option>
+                <option value="zh_CN">简体中文</option>
+                <option value="en_US">English</option>
+              </select>
+            </div>
+          </div>
+          <div className="fld">
             <div className="lb">
               {t("界面缩放")}
             </div>
@@ -159,7 +171,7 @@ function General({ core }: { core: Core }) {
           {desktop?.syncError && <div className="ferr" role="alert">{desktop.syncError}</div>}
           {desktop?.hotkeyError && <div className="ferr" role="alert">{desktop.hotkeyError}</div>}
           {desktop && !desktop.hotkeyError && <div className="hidden-note">
-            {desktop.registeredHotkey ? `${t("快捷键已启用")}：${desktop.registeredHotkey}` : t("全局快捷键已关闭")}
+            {desktop.registeredHotkey ? t("快捷键已启用：{key}", { key: desktop.registeredHotkey }) : t("全局快捷键已关闭")}
           </div>}
           {desktop && !desktop.trayAvailable && <div className="ferr">{t("系统托盘不可用，关闭窗口将退出客户端。")}</div>}
         </ConfigForm>
@@ -245,7 +257,7 @@ function About({ core }: { core: Core }) {
   } else if (checkError) {
     update = (
       <>
-        <span className="ferr">{t("检查失败")}：{checkError}</span>
+        <span className="ferr">{t("检查失败：{reason}", { reason: checkError })}</span>
         <button type="button" className="btn sm" onClick={runCheck}>
           {t("再试一次")}
         </button>
@@ -255,14 +267,14 @@ function About({ core }: { core: Core }) {
     update = (
       <>
         <b>
-          {t("有新版本")} {latest.version}
+          {t("有新版本 {version}", { version: latest.version })}
         </b>
         <button type="button" className="linkbtn" aria-expanded={notesOpen} onClick={() => setNotesOpen(!notesOpen)}>
           {t("更新说明")}
         </button>
         <button type="button" className="btn sm primary" disabled={applying || !about?.update_supported}
           onClick={() => setConfirmUpdate(true)}>
-          {applying ? t("正在准备更新…") : `${t("更新到")} ${latest.version}`}
+          {applying ? t("正在准备更新…") : t("更新到 {version}", { version: latest.version })}
         </button>
       </>
     );
@@ -336,7 +348,7 @@ function About({ core }: { core: Core }) {
           </ConfigForm>
         </Section>
       )}
-      {confirmUpdate && latest && <ConfirmDialog title={`${t("更新到")} ${latest.version}？`}
+      {confirmUpdate && latest && <ConfirmDialog title={t("更新到 {version}？", { version: latest.version })}
         confirm={t("停止任务并更新")} onCancel={() => setConfirmUpdate(false)} onConfirm={() => {
           setConfirmUpdate(false); setApplying(true);
           void core.act(() => api.applyUpdate(latest.version)).then((ok) => { if (!ok) setApplying(false); });
@@ -372,7 +384,7 @@ function About({ core }: { core: Core }) {
             </a>
           </div>
           <p className="why">
-            {t("基于")} <a href={OK_SCRIPT_URL} target="_blank" rel="noreferrer">ok-script</a> {t("开发。")}
+            {t("基于")} <a href={OK_SCRIPT_URL} target="_blank" rel="noreferrer">ok-script</a>{t(" 开发。")}
           </p>
         </div>
       </Section>
@@ -421,7 +433,7 @@ function Backups({ core }: { core: Core }) {
       {data?.items.map((item) => <div className="fld" key={item.id}>
         <div className="lb">{item.created_at ? new Date(item.created_at).toLocaleString() : item.id}</div>
         <div className="dsc">{item.invalid ? t("校验失败，不能恢复") :
-          `${t("版本")} ${versionText(item.version ?? "")} · ${item.file_count} ${t("个文件")}`}</div>
+          `${t("版本 {version}", { version: versionText(item.version ?? "") })} · ${t("{count} 个文件", { count: item.file_count ?? 0 })}`}</div>
         <div className="ctrl"><button className="btn sm" disabled={busy || item.invalid || item.version !== data.version}
           onClick={() => setRestoring(item)}>{t("恢复")}</button></div>
       </div>)}
@@ -458,7 +470,7 @@ export function SettingsPage({ core }: { core: Core }) {
           <Menu
             items={[
               {
-                label: `${t("把「")}${label}${t("」恢复默认")}…`,
+                label: t("把「{name}」恢复默认…", { name: coreText(label) }),
                 icon: "refresh",
                 onSelect: () => setResetting(group),
               },
@@ -486,7 +498,7 @@ export function SettingsPage({ core }: { core: Core }) {
       </div>
       {resetting && (
         <ConfirmDialog
-          title={`${t("把「")}${findGroup(core.settings ?? [], resetting)?.label ?? resetting}${t("」全部恢复默认？")}`}
+          title={t("把「{name}」全部恢复默认？", { name: coreText(findGroup(core.settings ?? [], resetting)?.label ?? resetting) })}
           confirm={t("恢复默认")}
           onCancel={() => setResetting(null)}
           onConfirm={() => {

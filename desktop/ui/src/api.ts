@@ -1,4 +1,5 @@
 // Same-origin calls to the core. The launch cookie authenticates every request.
+import { coreText, type LanguagePreference, t } from "./i18n.ts";
 import type {
   AboutInfo,
   BackupEntry,
@@ -6,14 +7,24 @@ import type {
   CaptureUi,
   DesktopInfo,
   ExecutorStatus,
+  ExportOptions,
   GamePaths,
   Guide,
   HistoryRun,
   HuntBook,
   HuntPlans,
+  LanguageState,
+  RecordingState,
   ReportState,
+  ScriptDocument,
+  ScriptEntry,
+  ScriptHelper,
   SettingsGroup,
   TaskPayload,
+  TemplateBox,
+  TemplateImage,
+  TemplateMarkup,
+  TemplatesInfo,
   TodaySummary,
   UpdateCheck,
   WindowInfo,
@@ -30,7 +41,7 @@ export class ApiError extends Error {
 
 /** What to show for a caught error. */
 export function errorText(reason: unknown): string {
-  return reason instanceof Error ? reason.message : String(reason);
+  return coreText(reason instanceof Error ? reason.message : String(reason));
 }
 
 function detailText(detail: unknown): string {
@@ -75,11 +86,55 @@ async function request<T>(path: string, method: "GET" | "POST" = "GET", body?: u
   try {
     return JSON.parse(text) as T;
   } catch {
-    throw new ApiError(response.status, "后台服务返回的内容无法解析");
+    throw new ApiError(response.status, t("后台服务返回的内容无法解析"));
   }
 }
 
 export const api = {
+  language: () => request<LanguageState>("/api/desktop/language"),
+  setLanguage: (language: LanguagePreference) => request<LanguageState>("/api/desktop/language", "POST", { language }),
+  scripts: () => request<ScriptEntry[]>("/api/scripts"),
+  scriptHelpers: () => request<ScriptHelper[]>("/api/script-templates"),
+  script: (name: string) => request<ScriptDocument>(`/api/scripts/${encodeURIComponent(name)}`),
+  createScript: (className: string, taskName: string, description: string) =>
+    request<ScriptDocument>("/api/scripts", "POST", { class_name: className, task_name: taskName, description }),
+  saveScript: (name: string, code: string) => request<ScriptDocument>(`/api/scripts/${encodeURIComponent(name)}`, "POST", { code }),
+  copyScript: (name: string) => request<ScriptDocument>(`/api/scripts/${encodeURIComponent(name)}/copy`, "POST", {}),
+  deleteScript: (name: string) => request<{ deleted: string }>(`/api/scripts/${encodeURIComponent(name)}/delete`, "POST", {}),
+  runScript: (name: string, code: string) => request<ScriptDocument>(`/api/scripts/${encodeURIComponent(name)}/run`, "POST", { code }),
+  exportOptions: () => request<ExportOptions>("/api/scripts-export/options"),
+  exportScripts: (selected: string[], fileName: string, scriptName: string, version: string) =>
+    request<{ path: string; name: string }>("/api/bd2/scripts/export", "POST", {
+      selected,
+      file_name: fileName,
+      script_name: scriptName,
+      version,
+    }),
+  importScripts: async (file: File) => {
+    const response = await fetch(`/api/bd2/scripts/import?name=${encodeURIComponent(file.name)}`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: file,
+    });
+    if (!response.ok) {
+      throw await responseError(response, `HTTP ${response.status}`);
+    }
+    return (await response.json()) as { restart_required: boolean };
+  },
+  recording: () => request<RecordingState>("/api/bd2/scripts/recording"),
+  startRecording: () => request<RecordingState>("/api/scripts-record/start", "POST", {}),
+  stopRecording: (code: string, loop: string, count: number) =>
+    request<RecordingState & { code: string }>("/api/scripts-record/stop", "POST", { code, loop, count }),
+  templates: () => request<TemplateImage[]>("/api/templates"),
+  templatesInfo: () => request<TemplatesInfo>("/api/bd2/templates/info"),
+  captureTemplate: () => request<TemplateImage[]>("/api/templates/capture", "POST", {}),
+  deleteTemplate: (name: string) => request<{ deleted: string }>(`/api/templates/${encodeURIComponent(name)}/delete`, "POST", {}),
+  templateMarkup: (name: string) => request<TemplateMarkup>(`/api/templates/${encodeURIComponent(name)}/annotations`),
+  saveTemplateMarkup: (name: string, annotations: TemplateBox[]) =>
+    request<TemplateMarkup>(`/api/templates/${encodeURIComponent(name)}/annotations`, "POST", { annotations }),
+  saveTemplates: (options: { format: string; destination: string; generate_label_enum: boolean; enum_path: string }) =>
+    request<{ folder: string }>("/api/bd2/templates/save", "POST", options),
   capture: () => request<CaptureUi>("/api/ui/capture"),
   status: () => request<ExecutorStatus>("/api/status"),
   info: () => request<DesktopInfo>("/api/desktop/info"),

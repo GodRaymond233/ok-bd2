@@ -1,6 +1,6 @@
 // The 今日 page: what each checklist row and the hero card say, before and during a run.
 import { durationText, whenText } from "./format.ts";
-import { t } from "./i18n.ts";
+import { coreText, t } from "./i18n.ts";
 import { type ChildRun, type Seal, isActive } from "./run.ts";
 import type { SkipReason, TaskPayload, TodayItem, TodaySummary } from "./types.ts";
 
@@ -51,14 +51,14 @@ function completedText(item: TodayItem, now: number): string {
     return t("本周已完成");
   }
   if (item.completion === "quota") {
-    return `${t("今日额度已用尽")}（08:00 ${t("刷新")}）`;
+    return t("今日额度已用尽（08:00 刷新）");
   }
   const last = item.last;
   if (!last) {
     return t("今日已完成");
   }
   const duration = durationText(last.duration);
-  return `${whenText(last.finished, now)} ${t("完成")}${duration ? ` · ${t("耗时")} ${duration}` : ""}`;
+  return `${t("{when} 完成", { when: whenText(last.finished, now) })}${duration ? ` · ${t("耗时 {time}", { time: duration })}` : ""}`;
 }
 
 function idleRow(item: TodayItem, now: number): Row {
@@ -72,8 +72,8 @@ function idleRow(item: TodayItem, now: number): Row {
   }
   const last = item.last;
   if (last && !last.ok) {
-    const reason = last.status ? ` · ${last.status}` : "";
-    return { ...base, icon: "warn", text: `${whenText(last.finished, now)} ${t("未成功")}${reason}`, tone: "bad" };
+    const reason = last.status ? ` · ${coreText(last.status)}` : "";
+    return { ...base, icon: "warn", text: `${t("{when} 未成功", { when: whenText(last.finished, now) })}${reason}`, tone: "bad" };
   }
   return { ...base, icon: "todo", text: t("今日未执行"), tone: "" };
 }
@@ -84,7 +84,7 @@ export function skipText(reason: SkipReason | undefined): string {
       return `${t("本轮跳过")} · ${t("今日已完成")}`;
     case "not_due":
       return reason.minutes
-        ? `${t("本轮跳过")} · ${t("调度未到期")}（${t("约")} ${reason.minutes} ${t("分钟后")}）`
+        ? `${t("本轮跳过")} · ${t("调度未到期（约 {minutes} 分钟后）", { minutes: reason.minutes })}`
         : `${t("本轮跳过")} · ${t("调度未到期")}`;
     case "stopped":
       return `${t("本轮跳过")} · ${t("前面的子任务失败，已停止")}`;
@@ -118,7 +118,7 @@ export function checklistRows(
         return { ...base, icon: "done", text: duration ? `${t("本轮完成")} · ${duration}` : t("本轮完成"), tone: "" };
       }
       case "fail": {
-        const reason = last?.status ? ` · ${last.status}` : "";
+        const reason = last?.status ? ` · ${coreText(last.status)}` : "";
         return { ...base, icon: "fail", text: `${t("本轮失败")}${reason}`, tone: "bad" };
       }
       case "skip":
@@ -143,7 +143,7 @@ export function checklistRows(
           return { ...base, icon: "todo", text: t("本轮未执行"), tone: "" };
         }
         position += 1;
-        return { ...base, icon: "queue", order: position, text: `${t("待执行")} · ${t("第")} ${position} ${t("个")}`, tone: "" };
+        return { ...base, icon: "queue", order: position, text: `${t("待执行")} · ${t("第 {position} 个", { position })}`, tone: "" };
     }
   });
 }
@@ -172,8 +172,8 @@ export function hero(summary: TodaySummary, run: BatchRun | null): Hero {
     return {
       ...base,
       allDone: false,
-      title: run.seal === "stopping" ? [prefix, "", ""] : [`${prefix} · ${t("第")} `, String(Math.min(settled + 1, toRun)), ` / ${toRun} ${t("项")}`],
-      detail: order.map((item) => item.name).join(" → "),
+      title: run.seal === "stopping" ? [prefix, "", ""] : [t("{prefix} · 第 ", { prefix }), String(Math.min(settled + 1, toRun)), t(" / {total} 项", { total: toRun })],
+      detail: order.map((item) => coreText(item.name)).join(" → "),
     };
   }
   if (taking.length === 0) {
@@ -185,7 +185,7 @@ export function hero(summary: TodaySummary, run: BatchRun | null): Hero {
   return {
     ...base,
     allDone: false,
-    title: [`${t("今日日常")} · ${t("还剩")} `, String(remaining.length), ` ${t("项")}`],
-    detail: remaining.map((item) => item.name).join("、"),
+    title: [t("今日日常 · 还剩 "), String(remaining.length), t(" 项")],
+    detail: remaining.map((item) => coreText(item.name)).join(t("、")),
   };
 }

@@ -42,6 +42,8 @@ if (!process.versions.electron) {
   const backups = path.join(working, "../backups");
   fs.mkdirSync(configs, { recursive: true });
   fs.writeFileSync(path.join(configs, ".core_version"), "0.9.7");
+  // The probe reads Chinese text, whatever the system's language.
+  fs.writeFileSync(path.join(configs, "ui_config.json"), JSON.stringify({ MainWindow: { Language: "zh_CN" } }));
   fs.writeFileSync(path.join(configs, "probe-ledger.json"), '{"progress":"before"}');
   fs.writeFileSync(path.join(fixture, "ok-bd2.exe"), "launcher stand-in: never executed");
   const result = { mode, checks: [] };

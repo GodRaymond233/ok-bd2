@@ -4,7 +4,7 @@
 import type { Core } from "./App.tsx";
 import { starterProgress, starterText } from "./device.ts";
 import { durationText, elapsedText, refreshText } from "./format.ts";
-import { t } from "./i18n.ts";
+import { coreText, t } from "./i18n.ts";
 import { type Segment, SEAL_TEXT, type Seal, infoRows, isActive, segments } from "./run.ts";
 import type { LogRecord } from "./logs.ts";
 import type { HistoryRun, TaskPayload } from "./types.ts";
@@ -30,13 +30,13 @@ const SEGMENT_TEXT: Record<Segment["kind"], string> = {
 
 function SegmentBar({ parts }: { parts: Segment[] }) {
   return (
-    <div className="segbar" role="img" aria-label={parts.map((part) => `${t(SEGMENT_TEXT[part.kind])} ${part.names.length}`).join("，")}>
+    <div className="segbar" role="img" aria-label={parts.map((part) => `${t(SEGMENT_TEXT[part.kind])} ${part.names.length}`).join(t("，"))}>
       {parts.map((part) => (
         <i
           key={part.kind}
           className={`seg-${part.kind}`}
           style={{ flex: part.names.length }}
-          title={`${t(SEGMENT_TEXT[part.kind])}：${part.names.join("、")}`}
+          title={t("{kind}：{names}", { kind: t(SEGMENT_TEXT[part.kind]), names: part.names.map(coreText).join(t("、")) })}
         />
       ))}
     </div>
@@ -85,7 +85,7 @@ export function RunDock({
             <span className="d" />
             {t("启动游戏")}
           </span>
-          {core.starterTask && <span className="nm">{core.starterTask}</span>}
+          {core.starterTask && <span className="nm">{coreText(core.starterTask)}</span>}
           <span className="sub">{wait ? starterText(wait) : t("正在启动 Starter…")}</span>
           <span className="grow" />
           <button type="button" className="btn sm" onClick={() => core.navigate("device")}>
@@ -113,9 +113,9 @@ export function RunDock({
             <span className="d" />
             {t("未开始")}
           </span>
-          {core.starterTask && <span className="nm">{core.starterTask}</span>}
+          {core.starterTask && <span className="nm">{coreText(core.starterTask)}</span>}
           <span className="sub">
-            {t("启动游戏失败")}：{core.startError}
+            {t("启动游戏失败：{reason}", { reason: coreText(core.startError) })}
           </span>
           <span className="grow" />
           <button type="button" className="btn sm" onClick={() => core.openLogs(null)}>
@@ -134,7 +134,7 @@ export function RunDock({
         {core.today && core.allDone && <span className="ok">{t("今日日常已全部完成")}</span>}
         {core.today && (
           <span>
-            {t("下次刷新")} {refreshText(core.today.refresh.daily, core.now)}
+            {t("下次刷新 {time}", { time: refreshText(core.today.refresh.daily, core.now) })}
           </span>
         )}
         <span className="idle">
@@ -153,15 +153,15 @@ export function RunDock({
   const childName = (key: string) => {
     const item = core.today?.items.find((candidate) => candidate.key === key);
     const stage = item ? core.childStage(item) : "";
-    return item ? (stage ? `${item.name} · ${stage}` : item.name) : key;
+    return item ? (stage ? `${coreText(item.name)} · ${stage}` : coreText(item.name)) : coreText(key);
   };
   const failed = parts.find((part) => part.kind === "fail")?.names ?? [];
   const rows = infoRows(task, seal, childName, failed);
   const current = batchRun && active ? items.find((item) => batchRun.runs.get(item.key) === "doing") : undefined;
   const time = active
-    ? `${t("已运行")} ${elapsedText(core.now - task.start_time)}`
+    ? t("已运行 {time}", { time: elapsedText(core.now - task.start_time) })
     : run.record?.duration
-      ? `${t("用时")} ${durationText(run.record.duration)}`
+      ? t("用时 {time}", { time: durationText(run.record.duration) })
       : "";
   const tail = logs.slice(-3);
 
@@ -213,11 +213,11 @@ export function RunDock({
           <span className="d" />
           {t(SEAL_TEXT[seal])}
         </span>
-        <span className="nm">{task.name}</span>
+        <span className="nm">{coreText(task.name)}</span>
         {current && (
           <span className="sub">
             <Icon name="chev-r" />
-            {current.name}
+            {coreText(current.name)}
           </span>
         )}
         {time && <span className="time">{time}</span>}

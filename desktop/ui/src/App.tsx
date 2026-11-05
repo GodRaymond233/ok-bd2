@@ -5,7 +5,7 @@ import { api, errorText } from "./api.ts";
 import { ConnectionPill } from "./ConnectionPill.tsx";
 import { connectEvents } from "./events.ts";
 import { versionText } from "./format.ts";
-import { t } from "./i18n.ts";
+import { applyLanguage, coreText, currentLanguage, type Language, type LanguagePreference, languagePreference, t } from "./i18n.ts";
 import { DevicePage } from "./DevicePage.tsx";
 import { appendRecords, LOG_LIMIT, type LogRecord, parseLog, recordsFromEvent } from "./logs.ts";
 import { LogsPage } from "./LogsPage.tsx";
@@ -13,10 +13,12 @@ import { RecordsPage } from "./OtherPages.tsx";
 import { ReportPage } from "./ReportPage.tsx";
 import { type DockRun, RunDock } from "./RunDock.tsx";
 import { childRuns, isActive, sealOf, shutdownSeconds } from "./run.ts";
+import { ScriptsPage } from "./ScriptsPage.tsx";
 import { SettingsPage } from "./SettingsPage.tsx";
 import { clampRailWidth, maximumRailWidth, rememberDockExpanded, rememberRailWidth, shellSettingsKey, storedDockExpanded, storedRailWidth } from "./settings.ts";
 import { captureSummary, type Notice, noticeFromEvent } from "./state.ts";
 import { TasksPage } from "./TasksPage.tsx";
+import { TemplatesPage } from "./TemplatesPage.tsx";
 import { TodayPage } from "./TodayPage.tsx";
 import { type BatchRun, withBatchConfig } from "./today.ts";
 import type {
@@ -39,7 +41,7 @@ declare global {
   }
 }
 
-export type Page = "today" | "tasks" | "records" | "logs" | "device" | "settings" | "report";
+export type Page = "today" | "tasks" | "records" | "logs" | "scripts" | "templates" | "device" | "settings" | "report";
 
 export interface Core {
   ui: CaptureUi | null;
@@ -88,6 +90,9 @@ export interface Core {
   openLogsFolder: () => Promise<void>;
   /** An information toast. */
   notify: (text: string) => void;
+  /** The choice in 设置: a language, or follow the system. */
+  language: LanguagePreference;
+  setLanguage: (language: LanguagePreference) => Promise<void>;
   navigate: (page: Page) => void;
   openTask: (name: string) => void;
   /** The logs page, showing only this run when given. */
@@ -106,6 +111,10 @@ const NAV: { page: Page; label: string; icon: string }[] = [
   { page: "tasks", label: "任务", icon: "tasks" },
   { page: "records", label: "记录", icon: "history" },
   { page: "logs", label: "日志", icon: "logs" },
+];
+const NAV_TOOLS: typeof NAV = [
+  { page: "scripts", label: "脚本", icon: "script" },
+  { page: "templates", label: "模板", icon: "image" },
 ];
 const NAV_PINNED: typeof NAV = [
   { page: "device", label: "设备", icon: "device" },
@@ -128,7 +137,9 @@ export function App() {
   const [everConnected, setEverConnected] = useState(false);
   const [toast, setToast] = useState<Notice | null>(null);
   const [page, setPage] = useState<Page>("today");
-  const rail = useSlider<HTMLElement>('.nav[aria-current="page"]', page);
+  const [language, setLanguageChoice] = useState<LanguagePreference>(languagePreference);
+  const [shownLanguage, setShownLanguage] = useState<Language>(currentLanguage);
+  const rail = useSlider<HTMLElement>('.nav[aria-current="page"]', `${page}:${shownLanguage}`);
   const [railWidth, setRailWidth] = useState(storedRailWidth);
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   const railMaximum = maximumRailWidth(viewportWidth);
@@ -346,7 +357,7 @@ export function App() {
     : starting
       ? t("正在启动游戏")
       : busy
-        ? `${t("正在运行")} ${current ?? queued?.name ?? ""}`
+        ? t("正在运行 {task}", { task: coreText(current ?? queued?.name ?? "") })
         : null;
   const devices = ui?.devices ?? [];
   const device = devices.find((item) => item.selected) ?? devices[0] ?? null;
@@ -399,7 +410,7 @@ export function App() {
     childStage: (item) => {
       const child = tasks.find((task) => task.name === item.name);
       const stage = String(child?.info["当前子任务"] || child?.info["状态"] || "");
-      return stage === "-" ? "" : stage.replace(/。$/, "");
+      return stage === "-" ? "" : coreText(stage.replace(/。$/, ""));
     },
     act,
     setConfig: async (task, key, value) => {
@@ -429,6 +440,12 @@ export function App() {
       await window.okbd2Shell?.openLogsFolder();
     },
     notify: (text) => setToast({ text, error: false }),
+    language,
+    setLanguage: async (next) => {
+      applyLanguage(await api.setLanguage(next));
+      setLanguageChoice(next);
+      setShownLanguage(currentLanguage());
+    },
     openLogs: (run) => {
       setLogFocus(run);
       setPage("logs");
@@ -493,6 +510,12 @@ export function App() {
     case "logs":
       content = <LogsPage core={core} focus={logFocus} onFocus={setLogFocus} />;
       break;
+    case "scripts":
+      content = <ScriptsPage core={core} />;
+      break;
+    case "templates":
+      content = <TemplatesPage core={core} />;
+      break;
     case "device":
       content = <DevicePage core={core} />;
       break;
@@ -505,6 +528,8 @@ export function App() {
 
   return (
     <div
+      // The new text reaches everything below, including what its pages computed once.
+      key={shownLanguage}
       className="app"
       style={{ "--rail-w": `${visibleRailWidth}px` } as CSSProperties}
       data-core={coreError ? "error" : ui ? "ok" : "loading"}
@@ -526,7 +551,7 @@ export function App() {
           <Icon name="alert" />
           <b>{t("旧版 ok-bd2 正在运行")}</b>
           <span className="t">
-            {legacy.map((item) => item.description).join("；")}
+            {legacy.map((item) => coreText(item.description)).join(t("；"))}
             {t("。两个版本不能同时控制游戏，开始任务前请先关闭它。")}
           </span>
           <button type="button" className="btn sm" onClick={() => void refresh()}>
@@ -564,6 +589,7 @@ export function App() {
             </span>
           </div>
           {NAV.map(navItem)}
+          {info?.custom_scripts && <div className="nav-group">{NAV_TOOLS.map(navItem)}</div>}
           <div className="foot">{NAV_PINNED.map(navItem)}</div>
         </nav>
         <RailDivider width={visibleRailWidth} maximum={railMaximum} onResize={setRailWidth} onCommit={rememberRailWidth} />

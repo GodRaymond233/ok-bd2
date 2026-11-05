@@ -1,6 +1,6 @@
 // What the run panel shows for a task: its state seal, the batch progress and the info rows.
 // Mirrors the Qt run panel (src/ui/run_panel.py); the result state itself comes from the core.
-import { t } from "./i18n.ts";
+import { coreText, t } from "./i18n.ts";
 import type { TaskPayload, TodayItem } from "./types.ts";
 
 export type Seal = "run" | "pause" | "stopping" | "done" | "issue" | "abort";
@@ -121,28 +121,28 @@ export function infoRows(
   const rows: InfoRow[] = [];
   if (shown(info["状态"])) {
     const tone = seal === "issue" || seal === "abort" ? "bad" : "strong";
-    rows.push({ key: t("状态"), value: String(info["状态"]), tone });
+    rows.push({ key: t("状态"), value: coreText(String(info["状态"])), tone });
   }
   if (isActive(seal) && shown(info["当前子任务"])) {
     rows.push({ key: t("当前子任务"), value: childName(String(info["当前子任务"])), tone: "strong" });
   }
   if (failedNames.length > 0) {
-    rows.push({ key: t("失败子任务"), value: failedNames.join("、"), tone: "bad" });
+    rows.push({ key: t("失败子任务"), value: failedNames.map(coreText).join(t("、")), tone: "bad" });
   }
   if (!isActive(seal) && shown(info.Warning)) {
-    rows.push({ key: t("警告"), value: String(info.Warning), tone: "" });
+    rows.push({ key: t("警告"), value: coreText(String(info.Warning)), tone: "" });
   }
   if (shown(info.Error)) {
-    rows.push({ key: t("错误"), value: String(info.Error), tone: "bad" });
+    rows.push({ key: t("错误"), value: coreText(String(info.Error)), tone: "bad" });
   }
   for (const key of SALE_KEYS) {
     if (shown(info[key])) {
-      rows.push({ key, value: String(info[key]), tone: "" });
+      rows.push({ key: coreText(key), value: coreText(String(info[key])), tone: "" });
     }
   }
   const extras = Object.keys(info).filter((key) => !STANDARD_KEYS.has(key) && !SALE_KEYS.includes(key) && shown(info[key]));
   for (const key of extras.slice(0, 2)) {
-    rows.push({ key, value: String(info[key]), tone: "" });
+    rows.push({ key: coreText(key), value: coreText(String(info[key])), tone: "" });
   }
   return rows;
 }

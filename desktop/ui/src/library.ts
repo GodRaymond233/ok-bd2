@@ -1,6 +1,6 @@
 // The task library's groups (dailies, leveling, any other one-time group, then triggers) and
 // the icon each task shows.
-import { t } from "./i18n.ts";
+import { coreText, t } from "./i18n.ts";
 import type { TaskPayload } from "./types.ts";
 
 const GROUP_ORDER = ["日常/周常", "自动刷级"];
@@ -42,7 +42,7 @@ export function libraryGroups(tasks: TaskPayload[], query: string): Group[] {
   const visible = tasks.filter(
     (task) =>
       task.visible &&
-      (!needle || task.name.toLowerCase().includes(needle) || task.description.toLowerCase().includes(needle)),
+      (!needle || [task.name, task.description, coreText(task.name), coreText(task.description)].some((text) => text.toLowerCase().includes(needle))),
   );
   const groups = new Map<string, TaskPayload[]>();
   for (const task of visible) {
@@ -55,5 +55,5 @@ export function libraryGroups(tasks: TaskPayload[], query: string): Group[] {
   };
   return [...groups.entries()]
     .sort(([a], [b]) => rank(a) - rank(b))
-    .map(([name, grouped]) => ({ name: name === "日常/周常" ? "日常 / 周常" : name, tasks: grouped }));
+    .map(([name, grouped]) => ({ name: name === "日常/周常" ? t("日常 / 周常") : coreText(name), tasks: grouped }));
 }

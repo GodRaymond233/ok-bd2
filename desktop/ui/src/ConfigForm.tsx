@@ -4,7 +4,7 @@
 import { type KeyboardEvent, type ReactNode, useEffect, useState } from "react";
 import { errorText } from "./api.ts";
 import { fieldLabel, isModified, linesToList, numberStep, optionList, optionText, parseNumber, stepNumber, toggleChoice, valueText } from "./form.ts";
-import { t } from "./i18n.ts";
+import { coreText, t } from "./i18n.ts";
 import type { ConfigField } from "./types.ts";
 import { Icon, Toggle } from "./ui.tsx";
 
@@ -217,7 +217,7 @@ function Field({
           <>
             <span className="mod" title={t("与默认值不同")} />
             <button type="button" className="reset" disabled={disabled} onClick={() => save(field.default)}>
-              {t("恢复默认")}（{field.secret ? t("空") : field.option_labels ? optionText(field, String(field.default)) : valueText(field.default)}）
+              {t("恢复默认（{value}）", { value: field.secret ? t("空") : field.option_labels ? optionText(field, String(field.default)) : valueText(field.default) })}
             </button>
           </>
         )}
@@ -228,11 +228,11 @@ function Field({
           </span>
         )}
       </div>
-      {field.description && <div className="dsc">{field.description}</div>}
+      {field.description && <div className="dsc">{coreText(field.description)}</div>}
       {field.editor && (
         <div className="plan-summary">
-          <b>{field.editor_title}</b>
-          <span>{field.editor_summary}</span>
+          <b>{coreText(field.editor_title ?? "")}</b>
+          <span>{coreText(field.editor_summary ?? "")}</span>
         </div>
       )}
       <div className="ctrl">

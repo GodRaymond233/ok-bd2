@@ -110,6 +110,14 @@ const PATHS: Record<string, ReactNode> = {
     </>
   ),
   swords: <path d="M4 4l10 10M4 4h3.5L17 13.5M4 4v3.5L13.5 17M20 4 13.5 10.5M20 4h-3.5l-3 3M20 4v3.5l-3 3M14.5 17.5l3-3M6.5 14.5l3 3M6.5 17.5l-2.5 2.5M17.5 17.5l2.5 2.5" />,
+  script: <path d="M9 7.5 4.5 12 9 16.5M15 7.5l4.5 4.5-4.5 4.5M13.5 5l-3 14" />,
+  image: (
+    <>
+      <rect x="3.5" y="5" width="17" height="14" rx="2" />
+      <circle cx="9" cy="10" r="1.6" />
+      <path d="M3.5 16.5 8.5 13l3 2.2 3.5-3.7 5.5 5" />
+    </>
+  ),
   book: <path d="M12 6.5C10.3 5 7.8 4.5 4 4.5v14c3.8 0 6.3.5 8 2 1.7-1.5 4.2-2 8-2v-14c-3.8 0-6.3.5-8 2zM12 6.5v14" />,
   link: <path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" />,
   tag: (
@@ -349,6 +357,7 @@ export function ConfirmDialog({
   children,
   confirm,
   cancel,
+  disabled,
   onConfirm,
   onCancel,
 }: {
@@ -356,12 +365,16 @@ export function ConfirmDialog({
   children: ReactNode;
   confirm: string;
   cancel?: string;
+  disabled?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
   const confirmButton = useRef<HTMLButtonElement>(null);
   useEffect(() => {
-    confirmButton.current?.focus();
+    // A dialog with fields starts in its first field instead.
+    if (!confirmButton.current?.closest(".dialog")?.querySelector("input, select")) {
+      confirmButton.current?.focus();
+    }
     const escape = (event: KeyboardEvent) => event.key === "Escape" && onCancel();
     document.addEventListener("keydown", escape);
     return () => document.removeEventListener("keydown", escape);
@@ -375,7 +388,7 @@ export function ConfirmDialog({
           <button type="button" className="btn" onClick={onCancel}>
             {cancel ?? t("取消")}
           </button>
-          <button type="button" className="btn primary" ref={confirmButton} onClick={onConfirm}>
+          <button type="button" className="btn primary" ref={confirmButton} disabled={disabled} onClick={onConfirm}>
             {confirm}
           </button>
         </div>

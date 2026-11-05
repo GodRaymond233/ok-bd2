@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, errorText } from "./api.ts";
 import type { Core } from "./App.tsx";
-import { t } from "./i18n.ts";
+import { coreText, currentLanguage, t } from "./i18n.ts";
 import type { ReportState } from "./types.ts";
 
 export function ReportPage({ core }: { core: Core }) {
@@ -38,7 +38,7 @@ export function ReportPage({ core }: { core: Core }) {
     </section> : <>
       <section className="card report-section">
         <h2>{t("1. 已记录现场")}</h2>
-        <p>{snapshot ? new Date(snapshot.captured_at).toLocaleString("zh-CN", { hour12: false }) : ""} · {core.tasks.find((task) => task.class_name === snapshot?.task.class)?.name ?? String(snapshot?.task.class ?? "")}</p>
+        <p>{snapshot ? new Date(snapshot.captured_at).toLocaleString(currentLanguage() === "zh_CN" ? "zh-CN" : "en-US", { hour12: false }) : ""} · {coreText(core.tasks.find((task) => task.class_name === snapshot?.task.class)?.name ?? String(snapshot?.task.class ?? ""))}</p>
         <p>{snapshot?.was_running ? t("任务保持暂停，完成报告后可以选择继续。") : t("记录现场前任务已暂停，不会自动开始。")}</p>
         {snapshot?.warnings.map((warning) => <p className="warnline" key={warning}>{warning}</p>)}
       </section>
@@ -48,7 +48,7 @@ export function ReportPage({ core }: { core: Core }) {
         <p className="ds">{t("日志中的已知敏感字段会脱敏，请勿在描述里填写密码或令牌。")}</p>
         <button className="btn primary" disabled={busy || description.trim().length < 5} onClick={() => void run(() => api.buildReport(session, description))}>{busy ? t("正在打包…") : t("生成诊断 ZIP")}</button>
       </section> : <section className="card report-section" role="status">
-        <h2>{t("3. 报告已生成")}</h2><p className="record-text">{result.path}</p><pre className="record-text">{result.message}</pre>
+        <h2>{t("3. 报告已生成")}</h2><p className="record-text">{result.path}</p><pre className="record-text">{coreText(result.message)}</pre>
         <div className="row"><button className="btn primary" onClick={() => void core.act(() => api.revealReport(result.id))}>{t("在文件夹中显示")}</button>
           <button className="btn" onClick={() => void core.act(async () => { await navigator.clipboard.writeText(result.message); core.notify(t("反馈说明已复制")); })}>{t("复制反馈说明")}</button></div>
       </section>}
