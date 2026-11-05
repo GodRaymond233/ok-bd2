@@ -5,6 +5,7 @@ import unittest
 from dataclasses import replace
 from datetime import datetime
 from itertools import cycle
+from math import ceil
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -42,10 +43,8 @@ from src.tasks.map_trade.collector_constants import (
     ACTION_OCR_WINDOW_INTERVAL,
     BATTLE_ACTIONS,
     SEARCH_ACTION,
-    SEARCH_BUFF_SECONDS,
     SEARCH_COUNTDOWN_REFERENCE_ROI,
     SEARCH_COUNTDOWN_RELATIVE_ROI,
-    SEARCH_REUSE_MAX_AGE_SECONDS,
     SKILL_FAILURE_EVIDENCE_LIMIT,
     SKILL_FIXED_COUNT_REFERENCE_ROIS,
     SKILL_GROUP_REFERENCE_POINTS,
@@ -1073,6 +1072,7 @@ class CollectorSkillTest(unittest.TestCase):
                     progress.reconcile_pending(action.name, (5, 40))
                     collector.vision.ocr_text = lambda *a, **k: f"{5 + len(clicks)}/{limit}"
                     collector._read_count_window = Collector._read_count_window.__get__(collector)
+                    self._with_running_search(collector)
                     first = collector._use_action(
                         action, card_id="Q_sp1", map_role=CollectionMapRole.BATTLE_AREA_1,
                     )
@@ -1278,6 +1278,7 @@ class CollectorSkillTest(unittest.TestCase):
                         SkillFeedbackObservation("", "success"),
                     ]
                 )
+                self._with_running_search(collector)
                 result = collector._use_actions(
                     (ABSORB_ACTION,), card_id="Q_sp1", map_role=CollectionMapRole.MAIN_AREA
                 )
@@ -1381,7 +1382,7 @@ class CollectorSkillTest(unittest.TestCase):
             if icon.name in executed_icons:
                 state = ActionIconState.ABSENT if icon is SEARCH_ICON else ActionIconState.USED
             else:
-                state = states[icon.name]
+                state = states.get(icon.name, ActionIconState.ABSENT)
             return ActionIconDetection(
                 state,
                 MatchResult(
@@ -1417,6 +1418,148 @@ class CollectorSkillTest(unittest.TestCase):
 
         collector._read_action_feedback = feedback
         return collector, clicks, statuses, progress
+
+    def _with_running_search(self, collector):
+        """Counter/feedback fixtures have an active search in the separate first slot."""
+        ocr = getattr(collector.vision, "ocr_text", None)
+        detect = collector.action_icons.detect
+        collector.vision.ocr_text = lambda frame, name, **kwargs: (
+            "87" if name == "探查倒计时" else ocr(frame, name, **kwargs)
+        )
+        collector.action_icons.detect = lambda frame, icon: (
+            ActionIconDetection(ActionIconState.ABSENT, MatchResult(-1.0, (0, 0), (0, 0)))
+            if icon is SEARCH_ICON else detect(frame, icon)
+        )
+
+    def test_absorb_refreshes_expired_or_short_search_after_preparation(self):
+        for initial, preparation_delay, ocr_delay, renewals in (
+            (30, 0, 0, 0), (4, 6.564, 0, 1), (2, 0, 0, 1), (4, 0, 6.564, 1),
+        ):
+            with self.subTest(initial=initial, preparation=preparation_delay, ocr=ocr_delay):
+                collector, clicks, _statuses, progress = self._skill_collector(
+                    {ABSORB_ICON.name: ActionIconState.AVAILABLE,
+                     SEARCH_ICON.name: ActionIconState.AVAILABLE},
+                    {"吸收": ((11, 21), (11, 21), (12, 21)) if renewals
+                     else ((11, 21), (12, 21))},
+                )
+                now = [100.0]
+                expires = [now[0] + initial]
+                delay = [ocr_delay]
+                renewed = []
+                absorbed = []
+                collector.task.sleep = lambda seconds: now.__setitem__(0, now[0] + seconds)
+                detect = collector.action_icons.detect
+                search_match = MatchResult(0.98, (1550, 969), (52, 44))
+
+                def detect_icon(frame, icon):
+                    if icon is SEARCH_ICON:
+                        return ActionIconDetection(
+                            ActionIconState.AVAILABLE if now[0] >= expires[0]
+                            else ActionIconState.ABSENT,
+                            search_match, stable=True, sample_count=2,
+                        )
+                    return detect(frame, icon)
+
+                def ocr(_frame, name, **_kwargs):
+                    self.assertEqual("探查倒计时", name)
+                    value = str(max(0, ceil(expires[0] - now[0])))
+                    now[0] += delay[0]
+                    delay[0] = 0
+                    return value
+
+                click = collector.vision.click_client
+
+                def click_skill(center, shape, after_sleep=0):
+                    if center == search_match.center:
+                        self.assertIsNone(progress.get_action_record("Q_sp16", "main_area", "吸收"))
+                        renewed.append(now[0])
+                        expires[0] = now[0] + 20
+                    else:
+                        self.assertGreater(expires[0] - now[0], 2)
+                        absorbed.append(now[0])
+                    click(center, shape, after_sleep)
+
+                collector.action_icons.detect = detect_icon
+                collector.vision.ocr_text = ocr
+                collector.vision.click_client = click_skill
+                prepare = collector._prepare_action
+                prepared = []
+
+                def prepare_slow(*args, **kwargs):
+                    result = prepare(*args, **kwargs)
+                    if not prepared:
+                        now[0] += preparation_delay
+                    prepared.append(result)
+                    return result
+
+                collector._prepare_action = prepare_slow
+                with patch(
+                    "src.tasks.map_trade.collector_skills.monotonic", side_effect=lambda: now[0],
+                ):
+                    result = collector._use_actions(
+                        (ABSORB_ACTION,), card_id="Q_sp16", map_role=CollectionMapRole.MAIN_AREA,
+                    )
+                self.assertTrue(result.completed, result.message)
+                self.assertEqual(renewals, len(renewed))
+                self.assertEqual(1, len(absorbed))
+                self.assertEqual(1 + renewals, len(clicks))
+                self.assertEqual((12, 21), progress.trusted_action_baseline("吸收"))
+                self.assertTrue(progress.weekly_action_complete("Q_sp16", "main_area", "吸收"))
+
+    def test_absorb_unreadable_or_failed_search_does_not_reserve_or_click(self):
+        for text, search_available in (("", False), ("0", False), ("1/21", False), ("87", True)):
+            with self.subTest(text=text, search_available=search_available):
+                collector, clicks, _statuses, progress = self._skill_collector(
+                    {ABSORB_ICON.name: ActionIconState.AVAILABLE}, {"吸收": ((11, 21),)},
+                )
+                now = [100.0]
+                collector.task.sleep = lambda seconds: now.__setitem__(0, now[0] + seconds)
+                collector.vision.ocr_text = lambda *_args, **_kwargs: text
+                detect = collector.action_icons.detect
+
+                def detect_search(frame, icon):
+                    if icon is SEARCH_ICON and search_available:
+                        return ActionIconDetection(
+                            ActionIconState.AVAILABLE, MatchResult(0.99, (1550, 969), (52, 44)),
+                        )
+                    return detect(frame, icon)
+
+                collector.action_icons.detect = detect_search
+                collector._start_search = Mock(
+                    return_value=SkillExecutionResult(False, message="未确认探查"),
+                )
+                with patch(
+                    "src.tasks.map_trade.collector_skills.monotonic", side_effect=lambda: now[0],
+                ):
+                    result = collector._use_actions(
+                        (ABSORB_ACTION,), card_id="Q_sp16", map_role=CollectionMapRole.MAIN_AREA,
+                    )
+                self.assertFalse(result.completed)
+                self.assertIn("未点击吸收", result.message)
+                self.assertEqual([], clicks)
+                self.assertIsNone(progress.get_action_record("Q_sp16", "main_area", "吸收"))
+                self.assertLessEqual(now[0], 116)
+                self.assertEqual(int(search_available), collector._start_search.call_count)
+
+    def test_absorb_search_recheck_preserves_unresolved_and_completed_actions(self):
+        for state in ("armed", "clicked", "settled"):
+            with self.subTest(state=state):
+                collector, clicks, _statuses, progress = self._skill_collector(
+                    {ABSORB_ICON.name: ActionIconState.AVAILABLE}, {"吸收": ((11, 21),)},
+                )
+                progress.arm_action("Q_sp16", "main_area", "吸收", baseline=(11, 21))
+                if state != "armed":
+                    progress.mark_action_clicked("Q_sp16", "main_area", "吸收")
+                if state == "settled":
+                    progress.mark_action_local_done("Q_sp16", "main_area", "吸收", pending=True)
+                    progress.reconcile_pending("吸收", (12, 21))
+                collector._renew_search_for_absorb = Mock()
+                result = collector._use_actions(
+                    (ABSORB_ACTION,), card_id="Q_sp16", map_role=CollectionMapRole.MAIN_AREA,
+                )
+                self.assertEqual(state == "settled", result.completed)
+                collector._renew_search_for_absorb.assert_not_called()
+                self.assertEqual([], clicks)
 
     def test_summon_missing_post_icon_requires_stable_increment_and_success_to_settle(self):
         cases = (
@@ -1636,8 +1779,6 @@ class CollectorSkillTest(unittest.TestCase):
         self.assertEqual(0.80, ACTION_FEEDBACK_CHARACTER_RATIO)
         self.assertEqual(0.40, ACTION_FEEDBACK_RELEVANCE_RATIO)
         self.assertEqual(5.0, ACTION_FEEDBACK_TIMEOUT)
-        self.assertEqual(90.0, SEARCH_BUFF_SECONDS)
-        self.assertEqual(75.0, SEARCH_REUSE_MAX_AGE_SECONDS)
         self.assertEqual((1535, 960, 82, 60), SEARCH_COUNTDOWN_REFERENCE_ROI)
         self.assertEqual(
             {
@@ -1771,6 +1912,7 @@ class CollectorSkillTest(unittest.TestCase):
                     progress.mark_action_clicked("Q_sp19", role, action.name)
                     if blocked:
                         progress.mark_action_blocked("Q_sp19", role, action.name, text)
+                        self._with_running_search(collector)
                         result = collector._use_action(action, card_id="Q_sp19", map_role=role)
                     else:
                         collector.vision.ocr_text = lambda *_args, **_kwargs: text
@@ -1969,6 +2111,7 @@ class CollectorSkillTest(unittest.TestCase):
             "src.tasks.map_trade.collector_skills.monotonic",
             side_effect=lambda: clock[0],
         ):
+            self._with_running_search(collector)
             result = collector._use_action(
                 ABSORB_ACTION,
                 card_id="Q_sp2",
@@ -2101,9 +2244,9 @@ class CollectorSkillTest(unittest.TestCase):
             MatchResult(-1.0, (0, 0), (0, 0)),
         )
         collector.action_icons = SimpleNamespace(detect=lambda _frame, _icon: unknown)
-        collector._search_cast_monotonic[
+        collector._search_expires_at[
             ("Q_sp2", CollectionMapRole.MAIN_AREA.value)
-        ] = 990.0
+        ] = 1034.0
 
         with patch(
             "src.tasks.map_trade.collector_skills.monotonic",
@@ -2116,11 +2259,17 @@ class CollectorSkillTest(unittest.TestCase):
 
         self.assertIsInstance(result, SearchCountdownSession)
         self.assertEqual(SEARCH_COUNTDOWN_RELATIVE_ROI, result.relative_roi)
-        self.assertGreaterEqual(result.value, 1)
+        self.assertEqual(34, result.value)
         self.assertEqual([], clicks)
         self.assertIn(
             ("Q_sp2", CollectionMapRole.MAIN_AREA.value),
-            collector._search_cast_monotonic,
+            collector._search_expires_at,
+        )
+
+        with patch("src.tasks.map_trade.collector_skills.monotonic", return_value=1035.0):
+            self.assertIsNone(collector._reuse_recent_search("Q_sp2", CollectionMapRole.MAIN_AREA))
+        self.assertNotIn(
+            ("Q_sp2", CollectionMapRole.MAIN_AREA.value), collector._search_expires_at,
         )
 
     def test_search_cast_records_ledger_for_later_reuse(self):
@@ -2158,16 +2307,16 @@ class CollectorSkillTest(unittest.TestCase):
         collector._open_skill_menu = lambda *_args, **_kwargs: True
         collector.action_icons = SimpleNamespace(detect=lambda *_args: available)
 
-        result = collector._start_search(
-            map_role=CollectionMapRole.MAIN_AREA,
-            card_id="Q_sp2",
-        )
+        with patch("src.tasks.map_trade.collector_skills.monotonic", return_value=1000.0):
+            result = collector._start_search(
+                map_role=CollectionMapRole.MAIN_AREA,
+                card_id="Q_sp2",
+            )
 
         self.assertIsInstance(result, SearchCountdownSession)
         self.assertEqual(1, len(clicks))
-        self.assertIn(
-            ("Q_sp2", CollectionMapRole.MAIN_AREA.value),
-            collector._search_cast_monotonic,
+        self.assertEqual(
+            1043.0, collector._search_expires_at[("Q_sp2", CollectionMapRole.MAIN_AREA.value)],
         )
 
     def test_start_search_without_ledger_still_requires_skill_bar(self):
@@ -2536,6 +2685,7 @@ class CollectorSkillTest(unittest.TestCase):
             1.0,
         )
 
+        self._with_running_search(collector)
         result = collector._use_action(
             ABSORB_ACTION,
             card_id="Q_sp1",
@@ -3313,6 +3463,7 @@ class CollectorSkillTest(unittest.TestCase):
         collector.action_icons.detect = lambda *_args: next(detections)
         collector._read_action_feedback = lambda _action: SkillFeedbackObservation("", None)
 
+        self._with_running_search(collector)
         result = collector._use_action(
             ABSORB_ACTION, card_id="Q_sp1", map_role=CollectionMapRole.MAIN_AREA,
         )
@@ -3401,6 +3552,7 @@ class CollectorSkillTest(unittest.TestCase):
                 "吸收周围的拾取物", "success", 1.0
             )
 
+            self._with_running_search(collector)
             result = collector._use_action(
                 ABSORB_ACTION,
                 card_id="Q_sp1",
@@ -3479,6 +3631,7 @@ class CollectorSkillTest(unittest.TestCase):
                 "吸收周围的拾取物", "success", 1.0
             )
 
+            self._with_running_search(collector)
             result = collector._use_action(
                 ABSORB_ACTION,
                 card_id="Q_sp1",
@@ -3564,6 +3717,7 @@ class CollectorSkillTest(unittest.TestCase):
             )
             first.action_icons = SimpleNamespace(detect=lambda *_args: used)
 
+            self._with_running_search(first)
             result = first._use_action(
                 ABSORB_ACTION,
                 card_id="Q_sp1",
@@ -3612,6 +3766,7 @@ class CollectorSkillTest(unittest.TestCase):
             second._read_action_feedback = lambda _action: SkillFeedbackObservation(
                 "吸收周围的拾取物", "success", 1.0
             )
+            self._with_running_search(second)
             next_result = second._use_action(
                 ABSORB_ACTION,
                 card_id="Q_sp1",
@@ -3761,6 +3916,7 @@ class CollectorSkillTest(unittest.TestCase):
                         return collector
 
                     first = collector_for(progress)
+                    self._with_running_search(first)
                     result = first._use_action(
                         action, card_id="Q_sp3", map_role=CollectionMapRole.BATTLE_AREA_2,
                     )
@@ -3780,6 +3936,7 @@ class CollectorSkillTest(unittest.TestCase):
                     resumed = ProgressStore(path)
                     resumed.load()
                     second = collector_for(resumed)
+                    self._with_running_search(second)
                     self.assertTrue(second._use_action(
                         action, card_id="Q_sp3", map_role=CollectionMapRole.BATTLE_AREA_2,
                     ).completed)
@@ -3912,6 +4069,7 @@ class CollectorSkillTest(unittest.TestCase):
                 "吸收周围的拾取物", "success", 1.0
             )
 
+            self._with_running_search(collector)
             result = collector._use_action(
                 ABSORB_ACTION,
                 card_id="Q_sp1",
@@ -3996,6 +4154,7 @@ class CollectorSkillTest(unittest.TestCase):
                 "吸收周围的拾取物", "success", 1.0
             )
 
+            self._with_running_search(collector)
             result = collector._use_action(
                 ABSORB_ACTION,
                 card_id="Q_sp1",
@@ -4260,6 +4419,7 @@ class CollectorSkillTest(unittest.TestCase):
             collector._read_count_window = read_count_window
 
             with self.assertRaisesRegex(RuntimeError, "click interrupted"):
+                self._with_running_search(collector)
                 collector._use_action(
                     ABSORB_ACTION,
                     card_id="Q_sp1",

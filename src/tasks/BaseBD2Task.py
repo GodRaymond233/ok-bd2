@@ -1387,9 +1387,9 @@ class BaseBD2Task(BaseTask):
         if interval <= 0:
             return True
         with self._action_interval_lock:
-            now = time.time()
-            last_time = self._last_interval_action_time.get(action_name, 0)
-            if now - last_time < interval:
+            now = monotonic()
+            last_time = self._last_interval_action_time.get(action_name)
+            if last_time is not None and now - last_time < interval:
                 return False
             self._last_interval_action_time[action_name] = now
             return True

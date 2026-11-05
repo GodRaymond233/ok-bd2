@@ -7,6 +7,7 @@
 /intro/
 my_key.txt
 pyappify_build/
+/p/
 pyappify_dist/
 pyappify-*.log
 pyappify-*.pid

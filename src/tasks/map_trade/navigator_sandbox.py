@@ -55,6 +55,7 @@ from src.tasks.map_trade.navigator_constants import (
     AUTO_MOVE_CANCEL_ATTEMPTS,
     AUTO_MOVE_CANCEL_REFERENCE_POINT,
     AUTO_MOVE_IDLE_READS,
+    FIELD_HUD_CONFIRMATION_GRACE_SECONDS,
     FIELD_MAP_CLOSE_TIMEOUT,
     HAND_TEMPLATE,
     HUNTING_GROUND_NAV_ENTRY,
@@ -1362,7 +1363,7 @@ class SandboxNavigationMixin:
         expected_modes: set[MapPageMode],
         *,
         card_number: int | None = None,
-        timeout: float | None = 8.0,
+        timeout: float | None = FIELD_MAP_CLOSE_TIMEOUT,
     ) -> NavigationResult:
         """Close one strictly identified map page, then re-confirm the sandbox."""
 
@@ -1371,14 +1372,24 @@ class SandboxNavigationMixin:
         for attempt in range(2):
             frame = self.vision.capture()
             detection = self._detect_map_page_mode(frame)
+            remaining = end_at - monotonic()
+            if remaining <= 0:
+                return NavigationResult(
+                    False, self._screen_state_for_map_page_mode(detection.mode),
+                    "关闭地图页面复核超时，未追加返回点击", map_page_mode=detection.mode,
+                )
             if attempt == 0 and detection.mode not in expected_modes:
                 if (
                     detection.mode == MapPageMode.UNKNOWN
                     and self.classify(frame) == ScreenState.SANDBOX
                 ):
                     if card_number is None:
-                        return self._wait_for_current_sandbox(timeout=budget)
-                    return self._wait_for_story_sandbox(int(card_number), timeout=budget)
+                        return self._wait_for_current_sandbox(
+                            timeout=max(0.0, end_at - monotonic()),
+                        )
+                    return self._wait_for_story_sandbox(
+                        int(card_number), timeout=max(0.0, end_at - monotonic()),
+                    )
                 return NavigationResult(
                     False, self._screen_state_for_map_page_mode(detection.mode),
                     "关闭前地图页面身份不符，未执行点击："
@@ -2161,12 +2172,21 @@ class SandboxNavigationMixin:
         技能栏由采集步骤单独识别；入场遭遇战恢复后仍须确认箱庭。
         """
         stall = max(0.0, timeout)
-        end_at = monotonic() + stall
+        started_at = monotonic()
+        end_at = started_at + stall
         # 自动移动期间延长场景等待，但不得超过行走总上限。
         walk_cap = end_at + SANDBOX_NAVIGATION_WALK_TIMEOUT
         hits = 0
         last_state = ScreenState.UNKNOWN
-        while monotonic() <= end_at:
+        confirmation_extended = False
+        while True:
+            if monotonic() > end_at:
+                if not hits or confirmation_extended:
+                    break
+                # 截图恢复或慢识别可能耗尽预算；已有箱庭证据时只补一次双帧复核窗口。
+                confirmation_extended = True
+                end_at = monotonic() + FIELD_HUD_CONFIRMATION_GRACE_SECONDS
+                self._status("箱庭确认等待", "已识别箱庭，继续限时复核下一帧")
             frame = self.vision.capture()
             loading = frame is not None and self._black_frame(frame)
             if (
@@ -2216,7 +2236,11 @@ class SandboxNavigationMixin:
                             continue
             if interval > 0:
                 self.task.sleep(interval)
-        return NavigationResult(False, last_state, failure_message)
+        return NavigationResult(
+            False, last_state,
+            f"{failure_message}；最后界面={last_state.value}；"
+            f"连续箱庭={hits}/{TRADE_CARD_SANDBOX_HITS}；耗时={monotonic() - started_at:.1f}s",
+        )
 
     def _walk_text(self, frame: np.ndarray) -> str | None:
         """Read the walk banner; None denotes an OCR failure rather than an empty banner."""
@@ -2698,9 +2722,11 @@ class SandboxNavigationMixin:
             self.task.sleep(0.4)
 
     def _close_field_map(self) -> bool:
-        return self._close_confirmed_map_page(
+        result = self._close_confirmed_map_page(
             {MapPageMode.SANDBOX_LARGE_MAP}, timeout=FIELD_MAP_CLOSE_TIMEOUT,
-        ).success
+        )
+        self._status("地图关闭复核", result.message)
+        return result.success
 
     def _walk_to_collection_map(
         self,
@@ -2777,7 +2803,9 @@ class SandboxNavigationMixin:
                 and tuple(self._target_keys_in_text(card, header)) == (target.key,)
             ):
                 if not self._close_field_map():
-                    return NavigationResult(False, ScreenState.SANDBOX_MAP, "到达后区域地图未关闭")
+                    return NavigationResult(
+                        False, ScreenState.UNKNOWN, "到达后关闭地图及箱庭稳定确认失败",
+                    )
                 return NavigationResult(True, ScreenState.SANDBOX, f"已走到{target.title}")
             if header is None or current_title not in header or attempt + 1 >= WALK_EXIT_ATTEMPTS:
                 break

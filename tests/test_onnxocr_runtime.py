@@ -76,6 +76,7 @@ class _FakeAsyncInferQueue:
 class _FakeCore:
     available_devices = ["CPU"]
     cache_properties = []
+    compile_configs = []
 
     def set_property(self, properties):
         self.__class__.cache_properties.append(properties)
@@ -85,7 +86,8 @@ class _FakeCore:
         return _FakeModel()
 
     @staticmethod
-    def compile_model(*, model, device_name):
+    def compile_model(*, model, device_name, config):
+        _FakeCore.compile_configs.append((device_name, config))
         return _FakeCompiledModel()
 
 
@@ -95,9 +97,10 @@ def _fake_openvino_module():
 
 class OnnxOcrRuntimeTest(unittest.TestCase):
     def test_onnxocr_version_and_async_parser_contract(self):
-        self.assertEqual("0.0.22", importlib.metadata.version("onnxocr-ppocrv5"))
+        self.assertEqual("0.0.23", importlib.metadata.version("onnxocr-ppocrv5"))
         parser = infer_args()
         self.assertEqual(1, parser.parse_args([]).openvino_num_requests)
+        self.assertEqual(16, parser.parse_args([]).openvino_cpu_cache_capacity)
         self.assertEqual(
             3, parser.parse_args(["--openvino_num_requests", "3"]).openvino_num_requests
         )
@@ -105,17 +108,18 @@ class OnnxOcrRuntimeTest(unittest.TestCase):
     def test_installed_predict_base_does_not_enumerate_available_devices(self):
         # onnxocr 0.0.20 called core.available_devices during init, which also
         # initializes the OpenVINO GPU plugin and crashed with 0xc0000005 on
-        # some GPU driver stacks (BUG-20260829-03); 0.0.22 probes NPU lazily.
+        # some GPU driver stacks (BUG-20260829-03); 0.0.23 probes NPU lazily.
         spec = importlib.util.find_spec("onnxocr.predict_base")
         self.assertIsNotNone(spec)
         source = Path(spec.origin).read_text(encoding="utf-8")
-        # 0.0.22 keeps the phrase inside an explanatory comment only.
+        # 0.0.23 keeps the phrase inside an explanatory comment only.
         self.assertNotIn("devices = core.available_devices", source)
         self.assertIn('core.get_property("NPU", "AVAILABLE_DEVICES")', source)
 
     def test_async_infer_queue_default_and_explicit_jobs_are_bounded(self):
         _FakeAsyncInferQueue.instances.clear()
         _FakeCore.cache_properties.clear()
+        _FakeCore.compile_configs.clear()
         with (
             tempfile.TemporaryDirectory() as temp_dir,
             mock.patch.dict(sys.modules, {"openvino": _fake_openvino_module()}),
@@ -133,10 +137,16 @@ class OnnxOcrRuntimeTest(unittest.TestCase):
                 use_npu=False,
                 logger=logging.getLogger("test-onnxocr"),
                 openvino_num_requests=2,
+                openvino_cpu_cache_capacity=8,
             )
 
             self.assertEqual([1, 2], [queue.jobs for queue in _FakeAsyncInferQueue.instances])
             self.assertEqual(2, len(explicit._async_queue))
+            self.assertEqual(
+                [("CPU", {"CPU_RUNTIME_CACHE_CAPACITY": "16"}),
+                 ("CPU", {"CPU_RUNTIME_CACHE_CAPACITY": "8"})],
+                _FakeCore.compile_configs,
+            )
             self.assertTrue((Path(temp_dir) / "cache" / "openvino").is_dir())
             self.assertEqual(
                 {"CACHE_DIR": str(Path(temp_dir) / "cache" / "openvino")},
@@ -187,7 +197,7 @@ class OnnxOcrRuntimeTest(unittest.TestCase):
         self.assertNotIn("**/cache/", lines)
 
     def test_ok_script_does_not_forward_unknown_onnxocr_params(self):
-        self.assertEqual("2.0.6", importlib.metadata.version("ok-script"))
+        self.assertEqual("2.0.22", importlib.metadata.version("ok-script"))
         spec = importlib.util.find_spec("ok.task.TaskExecutor")
         self.assertIsNotNone(spec)
         source = Path(spec.origin).read_text(encoding="utf-8")

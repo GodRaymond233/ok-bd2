@@ -7,9 +7,17 @@ annotated-types==0.8.0 ; sys_platform == 'win32'
 anyio==4.15.1 ; sys_platform == 'win32'
     # via
     #   httpx2
+    #   mcp
+    #   sse-starlette
     #   starlette
+attrs==26.1.0 ; sys_platform == 'win32'
+    # via
+    #   jsonschema
+    #   referencing
 certifi==2026.7.22 ; sys_platform == 'win32'
     # via requests
+cffi==2.1.1 ; platform_python_implementation != 'PyPy' and sys_platform == 'win32'
+    # via cryptography
 charset-normalizer==3.4.9 ; sys_platform == 'win32'
     # via requests
 click==8.5.0 ; sys_platform == 'win32'
@@ -18,6 +26,8 @@ comtypes==1.4.16 ; sys_platform == 'win32'
     # via
     #   ok-bd2
     #   pycaw
+cryptography==50.0.2 ; sys_platform == 'win32'
+    # via pyjwt
 darkdetect==0.8.0 ; sys_platform == 'win32'
     # via
     #   ok-script
@@ -38,11 +48,20 @@ h11==0.16.0 ; sys_platform == 'win32'
 httpcore2==2.13.1 ; sys_platform == 'win32'
     # via httpx2
 httpx2==2.13.1 ; sys_platform == 'win32'
+    # via mcp
 idna==3.18 ; sys_platform == 'win32'
     # via
     #   anyio
     #   httpx2
     #   requests
+jsonschema==4.26.0 ; sys_platform == 'win32'
+    # via mcp
+jsonschema-specifications==2025.9.1 ; sys_platform == 'win32'
+    # via jsonschema
+mcp==2.3.0 ; sys_platform == 'win32'
+    # via ok-script
+mcp-types==2.3.0 ; sys_platform == 'win32'
+    # via mcp
 mouse==0.7.1 ; sys_platform == 'win32'
     # via ok-script
 msvc-runtime==14.44.35112 ; sys_platform == 'win32'
@@ -53,9 +72,9 @@ numpy==2.4.6 ; sys_platform == 'win32'
     #   opencv-python
     #   openvino
     #   shapely
-ok-script==2.0.6 ; sys_platform == 'win32'
+ok-script==2.0.22 ; sys_platform == 'win32'
     # via ok-bd2
-onnxocr-ppocrv5==0.0.22 ; sys_platform == 'win32'
+onnxocr-ppocrv5==0.0.23 ; sys_platform == 'win32'
     # via
     #   ok-bd2
     #   ok-script
@@ -64,8 +83,10 @@ opencc==1.4.1 ; sys_platform == 'win32'
 opencv-python==5.0.0.93 ; sys_platform == 'win32'
     # via ok-bd2
 opentelemetry-api==1.45.1 ; sys_platform == 'win32'
-    # via fastapi
-openvino==2026.2.1 ; sys_platform == 'win32'
+    # via
+    #   fastapi
+    #   mcp
+openvino==2026.4.1 ; sys_platform == 'win32'
     # via ok-bd2
 openvino-telemetry==2025.2.0 ; sys_platform == 'win32'
     # via openvino
@@ -89,14 +110,21 @@ pycaw==20240210 ; sys_platform == 'win32'
     # via ok-script
 pyclipper==1.4.0 ; sys_platform == 'win32'
     # via onnxocr-ppocrv5
+pycparser==3.12 ; implementation_name != 'PyPy' and platform_python_implementation != 'PyPy' and sys_platform == 'win32'
+    # via cffi
 pydantic==2.14.1 ; sys_platform == 'win32'
-    # via fastapi
+    # via
+    #   fastapi
+    #   mcp
+    #   mcp-types
 pydantic-core==2.50.1 ; sys_platform == 'win32'
     # via pydantic
 pydirectinput==1.0.4 ; sys_platform == 'win32'
     # via
     #   ok-bd2
     #   ok-script
+pyjwt==2.15.1 ; sys_platform == 'win32'
+    # via mcp
 pynput==1.8.2 ; sys_platform == 'win32'
     # via
     #   ok-bd2
@@ -120,19 +148,30 @@ pysidesix-frameless-window==0.8.1 ; sys_platform == 'win32'
     # via
     #   ok-script
     #   pyside6-fluent-widgets
+python-multipart==0.0.33 ; sys_platform == 'win32'
+    # via mcp
 python-xlib==0.33 ; sys_platform == 'win32' and 'linux' in sys_platform
     # via pynput
 pywin32==311 ; sys_platform == 'win32'
     # via
+    #   mcp
     #   ok-bd2
     #   ok-script
     #   pysidesix-frameless-window
+referencing==0.37.0 ; sys_platform == 'win32'
+    # via
+    #   jsonschema
+    #   jsonschema-specifications
 requests==2.34.2 ; sys_platform == 'win32'
     # via
     #   adbutils
     #   ok-script
 retry2==0.9.5 ; sys_platform == 'win32'
     # via adbutils
+rpds-py==2026.9.1 ; sys_platform == 'win32'
+    # via
+    #   jsonschema
+    #   referencing
 ruff==0.16.0 ; sys_platform == 'win32'
 shapely==2.1.2 ; sys_platform == 'win32'
     # via onnxocr-ppocrv5
@@ -145,8 +184,13 @@ six==1.17.0 ; sys_platform == 'win32'
     # via
     #   pynput
     #   python-xlib
+sse-starlette==3.6.0 ; sys_platform == 'win32'
+    # via mcp
 starlette==1.9.0 ; sys_platform == 'win32'
-    # via fastapi
+    # via
+    #   fastapi
+    #   mcp
+    #   sse-starlette
 truststore==0.10.5 ; sys_platform == 'win32'
     # via
     #   httpcore2
@@ -156,19 +200,25 @@ typing-extensions==4.16.0 ; sys_platform == 'win32'
     #   anyio
     #   fastapi
     #   httpx2
+    #   mcp
+    #   mcp-types
     #   ok-script
     #   opentelemetry-api
     #   pydantic
     #   pydantic-core
+    #   referencing
     #   starlette
     #   typing-inspection
 typing-inspection==0.4.4 ; sys_platform == 'win32'
     # via
     #   fastapi
+    #   mcp
     #   pydantic
 urllib3==2.7.0 ; sys_platform == 'win32'
     # via requests
 uvicorn==0.54.0 ; sys_platform == 'win32'
-    # via ok-bd2
+    # via
+    #   mcp
+    #   ok-bd2
 wsproto==1.3.2 ; sys_platform == 'win32'
     # via ok-bd2

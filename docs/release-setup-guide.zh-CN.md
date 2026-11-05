@@ -106,12 +106,12 @@ git push origin v0.1.0
 发布完成后，Release 页面应出现这些文件：
 
 ```text
-ok-bd2-win32-China-setup.exe
-ok-bd2-win32-online-setup.exe
-ok-bd2-win32-Global-setup.exe
+ok-bd2-win32-China-setup-<版本>.exe
+ok-bd2-win32-online-setup-<版本>.exe
+ok-bd2-win32-Global-setup-<版本>.exe
 ```
 
-安装 `ok-bd2-win32-China-setup.exe` 后，本机目录会类似：
+安装 `ok-bd2-win32-China-setup-<版本>.exe` 后，本机目录会类似：
 
 ```text
 C:\Users\<你>\AppData\Local\ok-bd2

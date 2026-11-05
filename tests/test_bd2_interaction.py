@@ -203,6 +203,27 @@ class BD2InteractionOperateTest(unittest.TestCase):
 
 
 class BD2InteractionClickModeTest(unittest.TestCase):
+    def test_click_throttling_uses_elapsed_time_across_system_clock_changes(self):
+        task = object.__new__(BaseBD2Task)
+        task._action_interval_lock = threading.Lock()
+        task._last_interval_action_time = {}
+        with (
+            patch("src.tasks.BaseBD2Task.monotonic") as elapsed,
+            patch("src.tasks.BaseBD2Task.time.time") as wall_clock,
+            patch.object(BaseBD2Task.__mro__[1], "click", return_value=True) as click,
+        ):
+            for seconds, wall_time, action, accepted in (
+                (0.0, 1000, "claim", True),
+                (0.5, 5000, "claim", False),
+                (0.5, 5000, "other", True),
+                (1.0, 1, "claim", True),
+                (1.4, 10000, "claim", False),
+            ):
+                elapsed.return_value = seconds
+                wall_clock.return_value = wall_time
+                self.assertEqual(accepted, task.click(.25, .75, interval=1, action_name=action))
+        self.assertEqual(3, click.call_count)
+
     def test_standard_click_keeps_target_through_release_before_restoring(self):
         for wrapped, requested, interrupted in (
             (False, .02, False), (True, .02, False),

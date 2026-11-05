@@ -61,6 +61,14 @@ FIELD_TEXT = {
     "QQ Bot API App ID": ("App ID", ""),
     "QQ Bot API Token": ("Token", ""),
     "QQ Bot API Channel ID": ("频道 ID", ""),
+    "SMTP Notification": ("邮件（SMTP）", "通过你的邮箱服务器发送通知邮件。"),
+    "SMTP Host": ("服务器地址", "例如 smtp.qq.com。"),
+    "SMTP Port": ("端口", "通常是 587 或 465。"),
+    "SMTP Username": ("用户名", "登录邮箱服务器用的账号，一般就是邮箱地址。"),
+    "SMTP Password": ("授权码", "在邮箱设置里生成的授权码，通常不是登录密码。"),
+    "SMTP Use TLS": ("加密连接", "587 端口用 STARTTLS，465 端口用 SSL。"),
+    "SMTP Default Sender": ("发件地址", ""),
+    "SMTP Default Recipient": ("收件地址", "多个地址用英文逗号隔开。"),
 }
 
 OPTION_LABELS = {
@@ -75,6 +83,7 @@ SECRET_KEYS = {
     "Telegram Bot Token",
     "Enterprise WeChat Webhook URL",
     "QQ Bot API Token",
+    "SMTP Password",
 }
 
 # QQ and WeChat desktop notifications drive those programs' windows (OCR, posted clicks,
@@ -87,6 +96,9 @@ OMITTED_KEYS = {
     "WeChat Desktop Notification (Not Reliable)",
     "WeChat Desktop Nickname",
     "Launch with DX11",
+    # Starts only with ok-script's own start(), which the service never calls, and it lets
+    # local programs run code in this process; nothing in the client needs it.
+    "Enable MCP Server",
 }
 
 # Notification channels the client can send a test message through, with the settings

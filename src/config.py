@@ -8,6 +8,7 @@ from ok import Box
 from ok.util.GlobalConfig import create_basic_options
 
 from src import GAME_EXE, HWND_CLASS
+from src.compat.executor_cleanup import enable_executor_cleanup
 from src.compat.starter_guard import enable_starter_launch_guard
 from src.compat.starter_launch import enable_starter_launch_uri
 from src.compat.windows_graphics import WGC_MIN_CAPTURE_SIZE, enable_windows_10_wgc
@@ -31,6 +32,7 @@ def runtime_version(project_file: Path | None = None) -> str:
         raise RuntimeError("Missing pyproject.toml and PyAppify release tag.")
     return version
 
+enable_executor_cleanup()
 enable_windows_10_wgc()
 enable_starter_launch_uri()
 enable_starter_launch_guard(install_ui=is_qt_mode())
@@ -92,7 +94,7 @@ config = {
             "params": {
                 "use_openvino": True,
                 # ok-script forwards only use_openvino/use_npu here;
-                # onnxocr 0.0.22 therefore keeps its safe AsyncInferQueue default (1).
+                # onnxocr 0.0.23 therefore keeps its safe AsyncInferQueue default (1).
             },
         },
     },

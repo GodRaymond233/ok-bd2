@@ -78,9 +78,9 @@ BrownDust II.
 [Releases](https://github.com/GodRaymond233/ok-bd2/releases)
 下载最新安装包。
 
-- `ok-bd2-win32-China-setup.exe`：完整安装包，默认使用国内更新源。
-- `ok-bd2-win32-Global-setup.exe`：完整安装包，使用 GitHub / PyPI 作为更新源。
-- `ok-bd2-win32-online-setup.exe`：在线安装包，首次运行需要联网下载依赖。
+- `ok-bd2-win32-China-setup-<版本>.exe`：完整安装包，默认使用国内更新源。
+- `ok-bd2-win32-Global-setup-<版本>.exe`：完整安装包，使用 GitHub / PyPI 作为更新源。
+- `ok-bd2-win32-online-setup-<版本>.exe`：在线安装包，首次运行需要联网下载依赖。
 
 请下载 `setup.exe` 安装包，不要下载 GitHub 自动生成的 `Source code` 压缩包。
 

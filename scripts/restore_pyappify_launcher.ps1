@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$ReleaseTag,
-    [string]$BuildDir = "pyappify_build"
+    [string]$BuildDir = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -43,7 +43,14 @@ if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
 }
 
 $workspace = (Resolve-Path -LiteralPath ".").Path
-$buildPath = Assert-UnderWorkspace -PathToCheck $BuildDir -Workspace $workspace
+$buildRoot = $workspace
+if ([string]::IsNullOrWhiteSpace($BuildDir)) {
+    if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
+        $buildRoot = (Resolve-Path -LiteralPath $env:RUNNER_TEMP).Path
+    }
+    $BuildDir = "p"
+}
+$buildPath = Assert-UnderWorkspace -PathToCheck $BuildDir -Workspace $buildRoot
 $configPath = Join-Path $workspace "pyappify.yml"
 $configText = Get-Content -LiteralPath $configPath -Raw
 $appNameMatch = [regex]::Match($configText, '(?m)^\s*name:\s*["'']?([^"''\r\n]+)["'']?\s*$')
@@ -77,6 +84,14 @@ try {
     $launcherSource = Join-Path $extractRoot "$appName\$appName.exe"
     if (-not (Test-Path -LiteralPath $launcherSource)) {
         throw "Launcher was not found in $assetName at $launcherSource"
+    }
+    $versionInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($launcherSource)
+    $launcherVersion = [version]::new(
+        $versionInfo.FileMajorPart, $versionInfo.FileMinorPart,
+        $versionInfo.FileBuildPart, $versionInfo.FilePrivatePart
+    )
+    if ($launcherVersion -lt [version]"1.2.4.0") {
+        throw "Launcher $launcherVersion cannot prepare an exact application tag; rebuild with PyAppify 1.2.4 or newer."
     }
 
     $launcherTarget = Join-Path $buildPath "src-tauri\target\release\$appName.exe"
