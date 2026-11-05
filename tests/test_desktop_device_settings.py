@@ -111,6 +111,36 @@ class SettingsTextTest(unittest.TestCase):
         self.assertTrue(notify["Discord Webhook"]["secret"])
         self.assertTrue(notify["Discord Webhook"]["sub_config"])
 
+    def test_a_desktop_messenger_that_is_on_stays_visible_so_it_can_be_turned_off(self):
+        client = make_client(self)
+        notification = self.executor.global_config.configs["Notification"]
+        notification["QQ Desktop Notification (Not Reliable)"] = True
+        groups = {group["name"]: group for group in client.get("/api/settings").json()}
+        notify = {field["key"]: field for field in groups["Notification"]["fields"]}
+        self.assertEqual("QQ 桌面通知", notify["QQ Desktop Notification (Not Reliable)"]["label"])
+        self.assertEqual("QQ 昵称", notify["QQ Desktop Nickname"]["label"])
+        self.assertNotIn("WeChat Desktop Notification (Not Reliable)", notify)
+        self.assertNotIn("WeChat Desktop Nickname", notify)
+
+    def test_launcher_settings_are_named_and_its_window_can_be_opened(self):
+        group = describe_group({
+            "name": "App Launcher",
+            "fields": [
+                {"key": "Auto Start {app_name}", "description": "x"},
+                {"key": "Auto Update", "description": "x"},
+            ],
+        })
+        self.assertEqual("启动器", group["label"])
+        labels = [field["label"] for field in group["fields"]]
+        self.assertEqual(["开机时打开启动器", "更新方式"], labels)
+        self.assertEqual("手动更新", group["fields"][1]["option_labels"]["Manual Update"])
+        client = make_client(self)
+        self.assertEqual(400, client.post("/api/desktop/launcher/open").status_code)
+        show = Mock()
+        client.app.state.runtime._pyappify_module = SimpleNamespace(show_pyappify=show)
+        self.assertEqual({"opened": True}, client.post("/api/desktop/launcher/open").json())
+        show.assert_called_once_with()
+
     def test_saving_a_setting_returns_the_named_group(self):
         client = make_client(self)
         response = client.post(
@@ -259,6 +289,25 @@ class TestNotificationTest(unittest.TestCase):
         self.assertEqual(200, response.status_code, response.text)
         self.assertEqual(("123:abc", "42"), tg.call_args.args[:2])
         discord.assert_not_called()
+
+    def test_mail_goes_through_the_saved_server_and_needs_no_login(self):
+        client = make_client(self)
+        notify = self.executor.global_config.configs["Notification"]
+        response = self.post(client, "smtp")
+        self.assertEqual(400, response.status_code)
+        self.assertEqual("请先填写：服务器地址、发件地址、收件地址", response.json()["detail"])
+        notify.update({
+            "SMTP Host": "smtp.example",
+            "SMTP Default Sender": "a@example",
+            "SMTP Default Recipient": "b@example",
+            "SMTP Use TLS": False,
+        })
+        with patch("ok.notification.providers.SmtpProvider._deliver") as deliver:
+            self.assertEqual(200, self.post(client, "smtp").status_code, "sent")
+        message = deliver.call_args.args[0]
+        self.assertEqual(("a@example", "b@example"), (message["From"], message["To"]))
+        with patch("ok.notification.providers.SmtpProvider._deliver", side_effect=OSError("down")):
+            self.assertIn("发送失败", self.post(client, "smtp").json()["detail"])
 
     def test_names_missing_settings_and_reports_failures(self):
         client = make_client(self)

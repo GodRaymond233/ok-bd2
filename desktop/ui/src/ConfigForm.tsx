@@ -246,7 +246,6 @@ function Field({
 
 export function ConfigForm({
   fields,
-  hidden = 0,
   disabled,
   saveField,
   extra,
@@ -254,7 +253,6 @@ export function ConfigForm({
   children,
 }: {
   fields: ConfigField[];
-  hidden?: number;
   disabled: boolean;
   saveField: SaveField;
   /** Something to put beside a field's control, such as a test button. */
@@ -277,12 +275,6 @@ export function ConfigForm({
         />
       ))}
       {children}
-      {hidden > 0 && (
-        <div className="hidden-note">
-          <Icon name="info" />
-          {t("已隐藏")} {hidden} {t("项识别与维护参数（阈值、等待秒数、测试按钮等），与 Qt 版一致")}
-        </div>
-      )}
     </div>
   );
 }

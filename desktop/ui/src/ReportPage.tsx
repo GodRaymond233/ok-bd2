@@ -39,7 +39,7 @@ export function ReportPage({ core }: { core: Core }) {
       <section className="card report-section">
         <h2>{t("1. 已记录现场")}</h2>
         <p>{snapshot ? new Date(snapshot.captured_at).toLocaleString("zh-CN", { hour12: false }) : ""} · {core.tasks.find((task) => task.class_name === snapshot?.task.class)?.name ?? String(snapshot?.task.class ?? "")}</p>
-        <p>{snapshot?.was_running ? t("执行器保持暂停，完成报告后可以选择继续。") : t("记录现场前执行器已暂停，不会自动启动任务。")}</p>
+        <p>{snapshot?.was_running ? t("任务保持暂停，完成报告后可以选择继续。") : t("记录现场前任务已暂停，不会自动开始。")}</p>
         {snapshot?.warnings.map((warning) => <p className="warnline" key={warning}>{warning}</p>)}
       </section>
       {!result ? <section className="card report-section">

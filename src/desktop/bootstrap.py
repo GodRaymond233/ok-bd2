@@ -64,28 +64,28 @@ def check_shell(directory: Path) -> Path:
     if not executable.is_file():
         raise BootstrapError(
             protocol.EXIT_SHELL_MISSING,
-            f"没有找到桌面外壳：{executable}。请重新安装，或使用带外壳的测试包。",
+            f"没有找到桌面程序：{executable}。请重新安装。",
         )
     try:
         manifest = json.loads((directory / MANIFEST_NAME).read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise BootstrapError(
-            protocol.EXIT_SHELL_INCOMPATIBLE, f"桌面外壳缺少有效的版本清单：{error}"
+            protocol.EXIT_SHELL_INCOMPATIBLE, f"桌面程序缺少有效的版本清单：{error}"
         ) from error
     if not isinstance(manifest, dict) or not isinstance(manifest.get("api"), dict):
-        raise BootstrapError(protocol.EXIT_SHELL_INCOMPATIBLE, "桌面外壳版本清单格式无效")
+        raise BootstrapError(protocol.EXIT_SHELL_INCOMPATIBLE, "桌面程序版本清单格式无效")
     version = manifest.get("version")
     api = manifest["api"]
     if version != REQUIRED_SHELL_VERSION:
         raise BootstrapError(
             protocol.EXIT_SHELL_INCOMPATIBLE,
-            f"桌面外壳版本为 {version}，当前核心需要 {REQUIRED_SHELL_VERSION}。",
+            f"桌面程序版本为 {version}，当前需要 {REQUIRED_SHELL_VERSION}，请重新安装。",
         )
     if (type(api.get("min")) is not int or type(api.get("max")) is not int
             or not api["min"] <= protocol.API_VERSION <= api["max"]):
         raise BootstrapError(
             protocol.EXIT_SHELL_INCOMPATIBLE,
-            f"桌面外壳不支持核心接口版本 {protocol.API_VERSION}。",
+            f"桌面程序与当前版本不兼容（接口 {protocol.API_VERSION}），请重新安装。",
         )
     return executable
 

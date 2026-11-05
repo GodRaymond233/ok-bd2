@@ -134,6 +134,7 @@
   --rail-w-compact: 60px;
   --side-col-w: 280px;        /* today side cards, detail recent runs */
   --lib-col-w: 340px;         /* task list */
+  --guide-w: 520px;           /* task guide beside the page */
   --content-max: 1080px;
   --runbar-h: 52px;
   --dock-max-h: 280px;

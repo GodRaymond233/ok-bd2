@@ -514,7 +514,7 @@ export function App() {
       {coreError && (
         <div className="banner error" role="alert">
           <Icon name="alert" />
-          <b>{t("无法连接核心")}</b>
+          <b>{t("无法连接后台服务")}</b>
           <span className="t">{coreError}</span>
           <button type="button" className="btn sm" onClick={() => void refresh()}>
             {t("重试")}
@@ -527,7 +527,7 @@ export function App() {
           <b>{t("旧版 ok-bd2 正在运行")}</b>
           <span className="t">
             {legacy.map((item) => item.description).join("；")}
-            {t("。新客户端不能同时控制游戏，开始任务前请先关闭它。")}
+            {t("。两个版本不能同时控制游戏，开始任务前请先关闭它。")}
           </span>
           <button type="button" className="btn sm" onClick={() => void refresh()}>
             {t("重新检查")}
@@ -535,7 +535,7 @@ export function App() {
         </div>
       )}
       {ui?.diagnostic_pause && page !== "report" && <div className="banner info" role="status">
-        <span className="t">{t("问题报告正在保留现场，执行器保持暂停。")}</span>
+        <span className="t">{t("问题报告正在保留现场，任务保持暂停。")}</span>
         <button className="btn sm" onClick={() => core.navigate("report")}>{t("返回问题报告")}</button>
       </div>}
       {info?.launcher?.outdated && (
@@ -551,7 +551,7 @@ export function App() {
       {everConnected && !eventsConnected && !coreError && (
         <div className="banner info" role="status">
           <Icon name="refresh" />
-          <span className="t">{t("与核心的实时连接中断，正在重新同步…")}</span>
+          <span className="t">{t("与后台服务的连接中断，正在重新连接…")}</span>
         </div>
       )}
       <div className="app-body">

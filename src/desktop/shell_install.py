@@ -20,13 +20,13 @@ RELEASE_FILE = Path(__file__).with_name("shell-release.json")
 def install_shell(destination, version, check_shell, *, release_file=RELEASE_FILE):
     destination = Path(destination)
     if destination.is_symlink() or destination.is_junction():
-        raise ValueError("外壳安装目录不能是链接")
+        raise ValueError("桌面程序安装目录不能是链接")
     if destination.exists():
         return check_shell(destination)
     try:
         release = json.loads(Path(release_file).read_text("utf-8"))
     except (OSError, ValueError) as error:
-        raise ValueError("没有可用的外壳下载清单，请安装完整桌面测试包") from error
+        raise ValueError("没有可用的桌面程序下载清单，请重新安装完整版本") from error
     if (
         not isinstance(release, dict)
         or release.get("version") != version
@@ -35,10 +35,10 @@ def install_shell(destination, version, check_shell, *, release_file=RELEASE_FIL
         or not release["urls"]
         or any(not isinstance(url, str) for url in release["urls"])
     ):
-        raise ValueError("外壳下载清单无效或版本不匹配")
+        raise ValueError("桌面程序下载清单无效或版本不匹配")
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.parent.is_symlink() or destination.parent.is_junction():
-        raise ValueError("外壳安装目录不能是链接")
+        raise ValueError("桌面程序安装目录不能是链接")
     with tempfile.TemporaryDirectory(prefix=".download-", dir=destination.parent) as temporary:
         staging = Path(temporary)
         archive = staging / "shell.zip"
@@ -58,22 +58,22 @@ def install_shell(destination, version, check_shell, *, release_file=RELEASE_FIL
                     while chunk := source.read(1024 * 1024):
                         size += len(chunk)
                         if size > MAX_DOWNLOAD:
-                            raise ValueError("外壳下载超过大小限制")
+                            raise ValueError("桌面程序下载超过大小限制")
                         digest.update(chunk)
                         target.write(chunk)
                 if digest.hexdigest() != release["sha256"]:
-                    raise ValueError("外壳 SHA256 校验失败")
+                    raise ValueError("桌面程序 SHA256 校验失败")
                 break
             except (OSError, ValueError) as error:
                 errors.append(type(error).__name__ + ": " + str(error)[:240])
         else:
-            raise ValueError("所有外壳下载地址均失败：" + "; ".join(errors))
+            raise ValueError("所有桌面程序下载地址均失败：" + "; ".join(errors))
         unpacked = staging / "unpacked"
         unpacked.mkdir()
         try:
             extract_shell(archive, unpacked)
         except (zipfile.BadZipFile, RuntimeError) as error:
-            raise ValueError("外壳压缩包无效，未安装") from error
+            raise ValueError("桌面程序压缩包无效，未安装") from error
         check_shell(unpacked)
         try:
             unpacked.rename(destination)
@@ -87,7 +87,7 @@ def extract_shell(archive: Path, destination: Path):
     with zipfile.ZipFile(archive) as source:
         members = source.infolist()
         if len(members) > MAX_FILES or sum(item.file_size for item in members) > MAX_UNPACKED:
-            raise ValueError("外壳压缩包超过展开限制")
+            raise ValueError("桌面程序压缩包超过展开限制")
         seen = set()
         for item in members:
             path = PurePosixPath(item.filename)
@@ -106,7 +106,7 @@ def extract_shell(archive: Path, destination: Path):
                 or stat.S_ISLNK(item.external_attr >> 16)
                 or item.filename.casefold().rstrip("/") in seen
             ):
-                raise ValueError("外壳压缩包包含不安全或重复路径")
+                raise ValueError("桌面程序压缩包包含不安全或重复路径")
             seen.add(item.filename.casefold().rstrip("/"))
             target = destination.joinpath(*parts)
             if item.is_dir():

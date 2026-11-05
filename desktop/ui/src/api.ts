@@ -7,6 +7,7 @@ import type {
   DesktopInfo,
   ExecutorStatus,
   GamePaths,
+  Guide,
   HistoryRun,
   HuntBook,
   HuntPlans,
@@ -74,7 +75,7 @@ async function request<T>(path: string, method: "GET" | "POST" = "GET", body?: u
   try {
     return JSON.parse(text) as T;
   } catch {
-    throw new ApiError(response.status, "核心返回的内容无法解析");
+    throw new ApiError(response.status, "后台服务返回的内容无法解析");
   }
 }
 
@@ -97,6 +98,8 @@ export const api = {
   resizeWindow: (width: number, height: number) =>
     request<{ width: number; height: number; changed: boolean }>("/api/bd2/window/resize", "POST", { width, height }),
   game: () => request<GamePaths>("/api/bd2/game"),
+  guide: (id: string) => request<Guide>(`/api/bd2/guides/${encodeURIComponent(id)}`),
+  openLauncher: () => request<{ opened: boolean }>("/api/desktop/launcher/open", "POST"),
   cancelStarter: () => request<{ cancelled: boolean }>("/api/bd2/starter/cancel", "POST"),
   testNotification: (channel: string) => request<{ sent: boolean }>("/api/bd2/notify/test", "POST", { channel }),
   about: () => request<AboutInfo>("/api/about"),

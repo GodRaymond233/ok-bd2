@@ -102,12 +102,14 @@ export interface InfoRow {
 }
 
 const STANDARD_KEYS = new Set(["状态", "当前子任务", "完成", "失败", "跳过", "Log", "Warning", "Error", "启用"]);
+/** The result of 每日跑商: always shown, and they do not count as task-specific values. */
+const SALE_KEYS = ["已出售商品", "未出售商品"];
 
 const shown = (value: unknown) => value !== undefined && value !== null && String(value) !== "" && String(value) !== "-";
 
 /**
  * The info rows of the Qt run panel, in its order: status, current child, failed children,
- * warning (once finished), error, then up to two task-specific values.
+ * warning (once finished), error, what was sold, then up to two task-specific values.
  */
 export function infoRows(
   task: TaskPayload,
@@ -128,12 +130,17 @@ export function infoRows(
     rows.push({ key: t("失败子任务"), value: failedNames.join("、"), tone: "bad" });
   }
   if (!isActive(seal) && shown(info.Warning)) {
-    rows.push({ key: "Warning", value: String(info.Warning), tone: "" });
+    rows.push({ key: t("警告"), value: String(info.Warning), tone: "" });
   }
   if (shown(info.Error)) {
-    rows.push({ key: "Error", value: String(info.Error), tone: "bad" });
+    rows.push({ key: t("错误"), value: String(info.Error), tone: "bad" });
   }
-  const extras = Object.keys(info).filter((key) => !STANDARD_KEYS.has(key) && shown(info[key]));
+  for (const key of SALE_KEYS) {
+    if (shown(info[key])) {
+      rows.push({ key, value: String(info[key]), tone: "" });
+    }
+  }
+  const extras = Object.keys(info).filter((key) => !STANDARD_KEYS.has(key) && !SALE_KEYS.includes(key) && shown(info[key]));
   for (const key of extras.slice(0, 2)) {
     rows.push({ key, value: String(info[key]), tone: "" });
   }

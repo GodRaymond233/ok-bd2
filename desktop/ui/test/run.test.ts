@@ -19,6 +19,12 @@ test("joined names respect names that contain the separator", () => {
   assert.ok(!joinedHas(undefined, "跑商"));
 });
 
+test("what 每日跑商 sold is always shown and leaves room for two other values", () => {
+  const trade = task({ info: { 状态: "完成", 甲: 1, 乙: 2, 丙: 3, 已出售商品: "苹果 x3\n梨 x1", 未出售商品: "无" } });
+  const rows = infoRows(trade, "done", (key) => key, []).map((row) => row.key);
+  assert.deepEqual(rows, ["状态", "已出售商品", "未出售商品", "甲", "乙"]);
+});
+
 test("the seal follows the task and the core's result state", () => {
   assert.equal(sealOf(task({ enabled: true }), "白嫖抽抽乐"), "run");
   assert.equal(sealOf(task({ enabled: true, paused: true }), "白嫖抽抽乐"), "pause");
@@ -81,8 +87,8 @@ test("info rows keep the Qt panel's order and hide placeholders", () => {
     [
       ["状态", "bad"],
       ["失败子任务", "bad"],
-      ["Warning", ""],
-      ["Error", "bad"],
+      ["警告", ""],
+      ["错误", "bad"],
     ],
   );
 });

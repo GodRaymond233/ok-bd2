@@ -524,7 +524,7 @@ def _start_and_serve(
         try:
             dependency_check()
         except SystemExit as exit_request:
-            channel.fatal("dependencies", "核心依赖缺失或已修复，需要重新启动 ok-bd2")
+            channel.fatal("dependencies", "运行所需的组件缺失或已修复，需要重新启动 ok-bd2")
             return int(exit_request.code or protocol.EXIT_STARTUP_FAILED)
 
         controller.checkpoint()
@@ -603,7 +603,7 @@ def _start_and_serve(
         return protocol.EXIT_OK
     except Exception as error:
         logger.error(f"核心服务启动失败：{error}")
-        channel.fatal("startup", f"核心服务启动失败：{error}")
+        channel.fatal("startup", f"启动失败：{error}")
         if server is not None:
             server.stop()
         return protocol.EXIT_STARTUP_FAILED

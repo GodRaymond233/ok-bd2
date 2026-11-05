@@ -226,7 +226,7 @@ class BackupStore:
         if re.fullmatch(r"\d+\.\d+\.\d+", previous) and re.fullmatch(r"\d+\.\d+\.\d+", version):
             if tuple(map(int, previous.split("."))) > tuple(map(int, version.split("."))):
                 raise ValueError(
-                    f"配置来自较新核心 {previous}，当前为 {version}。"
+                    f"配置来自较新版本 {previous}，当前为 {version}。"
                     "请先退出并恢复与当前版本匹配的备份，再启动；原配置尚未改写。"
                 )
         result = self.create(previous, "version-change") if self.configs.exists() else None
@@ -240,7 +240,7 @@ class BackupStore:
         self.recover_restore()
         metadata = self.read(backup_id)
         if metadata["version"] != normalized_version(version):
-            raise ValueError("请先切换到备份对应的核心版本，再恢复；未知版本备份需人工核对")
+            raise ValueError("这份备份来自其他版本，请先切换到对应版本再恢复")
         # Retain the selected backup until it has been copied and the replacement succeeds.
         marker = self.configs / MARKER
         current_version = marker.read_text("utf-8").strip() if marker.exists() else "unknown"

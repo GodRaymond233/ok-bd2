@@ -133,7 +133,7 @@ def install_maintenance(app, runtime, version, request):
     def send(operation, *, target="", backup_id=""):
         require_store()
         if request is None:
-            raise ValueError("此操作需要新版 Electron 外壳")
+            raise ValueError("请先更新客户端，再进行这个操作")
         launcher = ""
         if operation == "update":
             if target not in available or not runtime.about()["update_supported"]:
@@ -145,7 +145,7 @@ def install_maintenance(app, runtime, version, request):
         elif operation == "restore":
             metadata = store.read(backup_id)
             if metadata["version"] != normalized_version(version):
-                raise ValueError("请先切换到备份对应的核心版本，再恢复")
+                raise ValueError("这份备份来自其他版本，请先切换到对应版本再恢复")
         enter(stop_tasks=True)
         try:
             from ok import og
@@ -218,7 +218,7 @@ def main(argv=None):
 
     acquired, _ = acquire_executor_lock("maintenance")
     if not acquired:
-        raise RuntimeError("另一个核心正在运行，已取消维护操作")
+        raise RuntimeError("另一个 ok-bd2 正在运行，已取消这个操作")
     try:
         if legacy_guard().blocking_message(force=True):
             raise RuntimeError("旧版程序正在运行，请先退出再维护配置")

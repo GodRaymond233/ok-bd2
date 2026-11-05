@@ -51,6 +51,23 @@ export interface TaskPayload {
   hidden_config_count?: number;
   instructions?: string | null;
   guide?: string | null;
+  /** The illustrated guide, read with api.guide. */
+  guide_id?: string | null;
+  /** What the task reports while it runs, under the names it gives them. */
+  status_rows?: StatusRow[];
+}
+
+export interface StatusRow {
+  key: string;
+  label: string;
+  value: string;
+}
+
+export interface Guide {
+  id: string;
+  title: string;
+  summary: string;
+  markdown: string;
 }
 
 export interface LastRun {

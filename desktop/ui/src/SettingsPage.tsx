@@ -12,6 +12,7 @@ import {
   DESKTOP_RETRY_MS,
   DEVICE_KEYS,
   findGroup,
+  LAUNCHER,
   needsDesktopRetry,
   NOTIFICATION,
   otherFields,
@@ -27,6 +28,7 @@ import type { AboutInfo, BackupEntry, BackupList, ShellDesktop, Theme, UpdateChe
 import { ConfirmDialog, Icon, Menu, Toggle, useSlider } from "./ui.tsx";
 
 type Tab = "general" | "notify" | "about";
+const OK_SCRIPT_URL = "https://github.com/ok-oldking/ok-script";
 const NOTICES_URL = "https://github.com/GodRaymond233/ok-bd2/blob/main/THIRD_PARTY_NOTICES.md";
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -75,7 +77,7 @@ function General({ core }: { core: Core }) {
         <div className="card form">
           <div className="fld">
             <div className="lb">{t("主题")}</div>
-            <div className="dsc">{t("只影响这台电脑上的新客户端。")}</div>
+            <div className="dsc">{t("只影响这台电脑。")}</div>
             <div className="ctrl">
               <span className="segpick slides" ref={themePick} role="group" aria-label={t("主题")}>
                 {themes.map(([value, label]) => (
@@ -151,8 +153,8 @@ function General({ core }: { core: Core }) {
           disabled={!desktop || core.busy}
           saveField={save}
         >
-          <div className="hidden-note">{t("关闭到托盘时任务继续运行；从托盘菜单选择退出才会停止任务。快捷键在其他窗口中也可启动或暂停执行器。")}</div>
-          {!shell?.desktop && <div className="ferr">{t("请使用新版 Electron 外壳启用桌面设置。")}</div>}
+          <div className="hidden-note">{t("关闭到托盘时任务继续运行；从托盘菜单选择退出才会停止任务。在其他窗口中也可以用快捷键开始或暂停任务。")}</div>
+          {!shell?.desktop && <div className="ferr">{t("当前版本不支持这些设置，请更新客户端。")}</div>}
           {desktopError && <div className="ferr" role="alert">{desktopError}</div>}
           {desktop?.syncError && <div className="ferr" role="alert">{desktop.syncError}</div>}
           {desktop?.hotkeyError && <div className="ferr" role="alert">{desktop.hotkeyError}</div>}
@@ -208,9 +210,6 @@ function Notify({ core }: { core: Core }) {
             ) : null
           }
         >
-          <div className="hidden-note">
-            {t("QQ、微信桌面通知不在这里：它们要操作你电脑上的 QQ / 微信窗口，ok-script 也标注它们不可靠。已经开启的照常工作，要关闭请用 Qt 版。")}
-          </div>
         </ConfigForm>
       </Section>
       <p className="why">{t("打开一个渠道后才显示它的地址和令牌；令牌默认遮住，离开输入框时保存。")}</p>
@@ -232,6 +231,7 @@ function About({ core }: { core: Core }) {
     window.okbd2Shell?.info().then((info) => setShell(info?.shellVersion ?? null), () => undefined);
   }, []);
   const launcher = core.info?.launcher;
+  const launcherGroup = findGroup(core.settings ?? [], LAUNCHER);
   const links = about?.links?.default ?? {};
   const runCheck = () => {
     setChecking(true);
@@ -288,17 +288,17 @@ function About({ core }: { core: Core }) {
         <div className="card form">
           <div className="fld">
             <div className="lb">ok-bd2</div>
-            <div className="dsc">{t("自动化核心与任务")}</div>
+            <div className="dsc">{t("脚本与任务")}</div>
             <div className="ctrl mono">{core.info ? versionText(core.info.core_version) : "…"}</div>
           </div>
           <div className="fld">
-            <div className="lb">{t("新客户端")}</div>
-            <div className="dsc">{t("外壳与页面")}</div>
+            <div className="lb">{t("客户端")}</div>
+            <div className="dsc">{t("窗口与界面")}</div>
             <div className="ctrl mono">{shell ? versionText(shell) : "—"}</div>
           </div>
           <div className="fld">
             <div className="lb">{t("启动器")}</div>
-            <div className="dsc">{t("PyAppify，负责安装和更新")}</div>
+            <div className="dsc">{t("负责安装和更新")}</div>
             <div className="ctrl mono">
               {launcher?.version ? versionText(launcher.version) : t("未知（源码运行）")}
               {launcher?.outdated && <span className="chip warn">{t("过旧")}</span>}
@@ -322,6 +322,20 @@ function About({ core }: { core: Core }) {
           </div>
         </div>
       </Section>
+      {launcherGroup && (
+        <Section title={t("启动器")}>
+          <ConfigForm
+            fields={launcherGroup.fields}
+            disabled={false}
+            saveField={(key, value) => core.setSetting(LAUNCHER, key, value)}
+          >
+            <button type="button" className="btn sm" onClick={() => void core.act(api.openLauncher)}>
+              <Icon name="link" />
+              {t("打开启动器")}
+            </button>
+          </ConfigForm>
+        </Section>
+      )}
       {confirmUpdate && latest && <ConfirmDialog title={`${t("更新到")} ${latest.version}？`}
         confirm={t("停止任务并更新")} onCancel={() => setConfirmUpdate(false)} onConfirm={() => {
           setConfirmUpdate(false); setApplying(true);
@@ -357,7 +371,9 @@ function About({ core }: { core: Core }) {
               {t("第三方许可")}
             </a>
           </div>
-          <p className="why">{t("基于 ok-script 开发。")}</p>
+          <p className="why">
+            {t("基于")} <a href={OK_SCRIPT_URL} target="_blank" rel="noreferrer">ok-script</a> {t("开发。")}
+          </p>
         </div>
       </Section>
       <Section title={t("文件夹")}>
@@ -390,11 +406,11 @@ function Backups({ core }: { core: Core }) {
   useEffect(() => { void refresh(); }, []);
   return <Section title={t("配置备份与恢复")}>
     <div className="card pad">
-      <p className="dsc">{t("包含任务设置、方案、进度账本和运行记录；保留最近 5 份。升级时在加载配置前自动备份。")}</p>
+      <p className="dsc">{t("包含任务设置、方案、任务进度和运行记录；保留最近 5 份。更新后第一次打开时会自动备份。")}</p>
       <div className="row wrap">
         <button className="btn sm" disabled={busy || core.busy || !data?.supported} onClick={() => {
           setBusy(true);
-          void core.act(async () => { await api.createBackup(); await refresh(); core.notify(t("备份已保存，执行器保持暂停。")); })
+          void core.act(async () => { await api.createBackup(); await refresh(); core.notify(t("备份已保存，任务保持暂停。")); })
             .finally(() => setBusy(false));
         }}>{busy ? t("正在处理…") : t("立即备份")}</button>
         <button className="btn sm" disabled={busy} onClick={() => void refresh()}>{t("刷新列表")}</button>
@@ -405,18 +421,18 @@ function Backups({ core }: { core: Core }) {
       {data?.items.map((item) => <div className="fld" key={item.id}>
         <div className="lb">{item.created_at ? new Date(item.created_at).toLocaleString() : item.id}</div>
         <div className="dsc">{item.invalid ? t("校验失败，不能恢复") :
-          `${t("核心版本")} ${item.version} · ${item.file_count} ${t("个文件")}`}</div>
+          `${t("版本")} ${versionText(item.version ?? "")} · ${item.file_count} ${t("个文件")}`}</div>
         <div className="ctrl"><button className="btn sm" disabled={busy || item.invalid || item.version !== data.version}
           onClick={() => setRestoring(item)}>{t("恢复")}</button></div>
       </div>)}
-      <p className="why">{t("恢复会覆盖备份之后的设置与进度，恢复前会再备份当前数据；完成后请退出客户端，再从启动器重新打开。跨版本降级请按测试包说明先离线恢复备份，再切换版本；未知版本备份需要人工核对。")}</p>
+      <p className="why">{t("恢复会覆盖备份之后的设置与进度，恢复前会再备份当前数据；完成后请退出客户端，再从启动器重新打开。只能恢复当前版本生成的备份。")}</p>
       <p className="why">{t("启动器的重新安装或切换国内/海外配置可能删除现有配置，请事先备份。")}</p>
     </div>
     {restoring && <ConfirmDialog title={t("恢复这份备份？")} confirm={t("停止任务并恢复")}
       onCancel={() => setRestoring(null)} onConfirm={() => {
         const id = restoring.id; setRestoring(null); setBusy(true);
         void core.act(() => api.restoreBackup(id)).then((ok) => { if (!ok) setBusy(false); });
-      }}><p className="why">{t("当前配置、账本与运行记录会被备份内容整体替换，之后新增的进度不会合并。完成后请重新启动客户端。")}</p>
+      }}><p className="why">{t("当前设置、任务进度与运行记录会被备份内容整体替换，之后新增的进度不会保留。完成后请重新启动客户端。")}</p>
     </ConfirmDialog>}
   </Section>;
 }

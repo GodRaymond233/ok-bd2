@@ -8,6 +8,7 @@ Chinese.  Option values stay as stored; ``option_labels`` only names them.
 GROUP_LABELS = {
     "Basic Options": "基本设置",
     "Notification": "通知",
+    "App Launcher": "启动器",
 }
 
 # key: (label, description)
@@ -61,6 +62,18 @@ FIELD_TEXT = {
     "QQ Bot API App ID": ("App ID", ""),
     "QQ Bot API Token": ("Token", ""),
     "QQ Bot API Channel ID": ("频道 ID", ""),
+    "QQ Desktop Notification (Not Reliable)": (
+        "QQ 桌面通知",
+        "会操作电脑上的 QQ 窗口，可能打断你正在做的事，也可能发送失败。关闭后这一项不再显示。",
+    ),
+    "QQ Desktop Nickname": ("QQ 昵称", "接收通知的联系人。"),
+    "WeChat Desktop Notification (Not Reliable)": (
+        "微信桌面通知",
+        "会操作电脑上的微信窗口，可能打断你正在做的事，也可能发送失败。关闭后这一项不再显示。",
+    ),
+    "WeChat Desktop Nickname": ("微信昵称", "接收通知的联系人。"),
+    "Auto Start {app_name}": ("开机时打开启动器", "登录 Windows 后自动打开启动器。"),
+    "Auto Update": ("更新方式", "启动器如何安装新版本。"),
     "SMTP Notification": ("邮件（SMTP）", "通过你的邮箱服务器发送通知邮件。"),
     "SMTP Host": ("服务器地址", "例如 smtp.qq.com。"),
     "SMTP Port": ("端口", "通常是 587 或 465。"),
@@ -72,6 +85,11 @@ FIELD_TEXT = {
 }
 
 OPTION_LABELS = {
+    "Auto Update": {
+        "Manual Update": "手动更新",
+        "Automatic Update(Release Only)": "自动更新（只装正式版）",
+        "Automatic Update (Pre-release)": "自动更新（包括预发布版）",
+    },
     "Use DirectML": {"Auto": "自动", "Yes": "是", "No": "否"},
     "Start/Stop": {"None": "不使用"},
     "Blur Algorithm": {"Blur": "模糊", "Inpaint": "修补"},
@@ -87,14 +105,16 @@ SECRET_KEYS = {
 }
 
 # QQ and WeChat desktop notifications drive those programs' windows (OCR, posted clicks,
-# typed text, Esc) and ok-script itself calls them unreliable; the client leaves them
-# out (user decision 2026-10-23).  Saved values still apply; the Qt window shows them.
+# typed text, Esc) and ok-script itself calls them unreliable; the client does not offer
+# them (user decision 2026-10-23).  Saved values still apply, so a switch that is on stays
+# visible to be turned off; its nickname is a sub-setting that only exists while it is on.
+SHOWN_WHILE_ON = {
+    "QQ Desktop Notification (Not Reliable)",
+    "WeChat Desktop Notification (Not Reliable)",
+}
+
 # DX11 stays out as in Qt: the Starter launch cannot pass it (src/config.py).
 OMITTED_KEYS = {
-    "QQ Desktop Notification (Not Reliable)",
-    "QQ Desktop Nickname",
-    "WeChat Desktop Notification (Not Reliable)",
-    "WeChat Desktop Nickname",
     "Launch with DX11",
     # Starts only with ok-script's own start(), which the service never calls, and it lets
     # local programs run code in this process; nothing in the client needs it.
@@ -111,7 +131,21 @@ TEST_CHANNELS = {
         "QQ Bot API Notification",
         ("QQ Bot API App ID", "QQ Bot API Token", "QQ Bot API Channel ID"),
     ),
+    "smtp": (
+        "SMTP Notification",
+        (
+            "SMTP Host",
+            "SMTP Port",
+            "SMTP Username",
+            "SMTP Password",
+            "SMTP Use TLS",
+            "SMTP Default Sender",
+            "SMTP Default Recipient",
+        ),
+    ),
 }
+# A mail server may take no login, and an unticked box reads as empty.
+OPTIONAL_TEST_KEYS = {"SMTP Username", "SMTP Password", "SMTP Use TLS"}
 
 
 def describe_group(group):
@@ -119,7 +153,7 @@ def describe_group(group):
     fields = []
     for field in group["fields"]:
         key = field["key"]
-        if key in OMITTED_KEYS:
+        if key in OMITTED_KEYS or (key in SHOWN_WHILE_ON and not field.get("value")):
             continue
         label, description = FIELD_TEXT.get(key, (key, field.get("description") or ""))
         field = dict(field, label=label, description=description)

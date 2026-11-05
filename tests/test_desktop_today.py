@@ -1,6 +1,7 @@
 """Today's progress, the recent-runs list and the BD2 routes the desktop client reads."""
 
 import json
+import re
 import tempfile
 import threading
 import unittest
@@ -396,6 +397,51 @@ class Bd2RoutesTest(unittest.TestCase):
         fields = {field["key"]: field for field in payload["config"]}
         self.assertEqual("hunt_plan", fields[PLAN_KEY]["editor"])
         self.assertNotIn("editor", fields["启用"])
+
+    def test_task_payload_lists_what_the_task_reports(self):
+        task = self._task(QuickHuntTask, "带状态", {"启用": True, PLAN_KEY: ""})
+        task.status_keys = ["状态", "米饭", "还没有值"]
+        task.status_key_labels = {"米饭": "剩余米饭"}
+        task.info = {"状态": "运行中", "米饭": 12, "已确认": False, "Error": "超时", "空": "-"}
+        self.assertEqual(
+            [
+                {"key": "状态", "label": "状态", "value": "运行中"},
+                {"key": "米饭", "label": "剩余米饭", "value": "12"},
+                {"key": "已确认", "label": "已确认", "value": "否"},
+                {"key": "Error", "label": "错误", "value": "超时"},
+            ],
+            self.tasks()[task.name]["status_rows"],
+        )
+
+    def test_guide_route_serves_each_shipped_guide_and_its_pictures(self):
+        guided = self._task(QuickHuntTask, "带说明", {"启用": True, PLAN_KEY: ""})
+        self.assertEqual("quick-hunt", self.tasks()[guided.name]["guide_id"])
+        self.assertIsNone(self.tasks()["快速狩猎"]["guide_id"])
+        deploy = (Path(__file__).resolve().parents[1] / "deploy.txt").read_text("utf-8").split()
+        for title, slug, summary in GUIDES.values():
+            with self.subTest(guide=slug):
+                response = self.client.get(f"/api/bd2/guides/{slug}", headers=self.headers)
+                self.assertEqual(200, response.status_code, response.text)
+                guide = response.json()
+                self.assertEqual((title, summary), (guide["title"], guide["summary"]))
+                names = re.findall(r"!\[[^\]]*\]\(\.\./images/usage/([^)]+)\)", guide["markdown"])
+                self.assertTrue(names)
+                for name in names:
+                    # A picture missing from deploy.txt would be missing after an update.
+                    self.assertIn(f"docs/images/usage/{name}", deploy)
+                    image = self.client.get(f"/guide-images/{name}", headers=self.headers)
+                    self.assertEqual(200, image.status_code, name)
+                    self.assertEqual("image/png", image.headers["content-type"])
+
+    def test_guide_routes_refuse_anything_else(self):
+        missing = self.client.get("/api/bd2/guides/nope", headers=self.headers)
+        self.assertEqual(404, missing.status_code)
+        names = ("nope.png", "..%2F..%2Fpyproject.toml", "..%5C..%5Csecret.png", "readme.txt")
+        for name in names:
+            with self.subTest(name=name):
+                response = self.client.get(f"/guide-images/{name}", headers=self.headers)
+                self.assertEqual(404, response.status_code)
+        self.assertEqual(403, self.client.get("/guide-images/trade-warehouse.png").status_code)
 
     def test_routes_need_the_launch_capability(self):
         for path in ("/api/bd2/today", "/api/bd2/history"):

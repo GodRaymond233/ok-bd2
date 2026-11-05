@@ -465,7 +465,7 @@ class DesktopAppTest(unittest.TestCase):
             headers = {"Authorization": f"Bearer {TOKEN}"}
             with TestClient(self.make_app(dist), base_url=ORIGIN) as client:
                 response = client.get("/", headers=headers)
-                self.assertIn("界面尚未构建", response.text)
+                self.assertIn("界面文件缺失", response.text)
                 self.assertFalse(
                     client.get("/api/desktop/info", headers=headers).json()["ui_built"]
                 )

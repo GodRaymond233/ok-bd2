@@ -11,6 +11,8 @@ export function needsDesktopRetry(desktop: ShellDesktop | null, requestError: st
 
 export const BASIC = "Basic Options";
 export const NOTIFICATION = "Notification";
+/** Exists only when the installed launcher offers these settings. */
+export const LAUNCHER = "App Launcher";
 
 /** Game start and exit options shown on the device page (user decision 2026-10-23). */
 export const DEVICE_KEYS = [
@@ -30,6 +32,7 @@ export const TEST_CHANNELS: Record<string, string> = {
   "Telegram Notification": "telegram",
   "Enterprise WeChat Webhook Notification": "wecom",
   "QQ Bot API Notification": "qqbot",
+  "SMTP Notification": "smtp",
 };
 
 export function findGroup(groups: SettingsGroup[], name: string): SettingsGroup | undefined {

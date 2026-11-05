@@ -694,6 +694,8 @@ svg.i.f {
 
 .kv .v {
   overflow-wrap: anywhere;
+  /* 每日跑商 lists what it sold one item per line. */
+  white-space: pre-line;
 }
 
 .kv .v.strong {
@@ -1532,6 +1534,10 @@ label.tgl {
   margin-top: 2px;
 }
 
+.sc .guide-open {
+  margin-top: 10px;
+}
+
 .sc.link {
   cursor: pointer;
   transition: border-color var(--dur-fast);
@@ -1913,6 +1919,39 @@ button.crumb {
   gap: 8px;
   justify-content: flex-end;
   flex-wrap: wrap;
+}
+
+/* A list of choices needs the width; beside it, the name would shrink to one character a line. */
+.fld:has(.chips) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.fld:has(.chips) .ctrl {
+  grid-column: 1;
+  grid-row: auto;
+  justify-content: flex-start;
+  margin-top: 6px;
+}
+
+.fld:has(.chips) .chips {
+  justify-content: flex-start;
+}
+
+@container (max-width: 640px) {
+  .fld:has(textarea) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .fld:has(textarea) .ctrl {
+    grid-column: 1;
+    grid-row: auto;
+    justify-content: flex-start;
+    margin-top: 6px;
+  }
+
+  .fld:has(textarea) textarea {
+    width: 100%;
+  }
 }
 
 @container (max-width: 400px) {
@@ -3112,4 +3151,236 @@ mark {
     min-width: 0;
     width: 100%;
   }
+}
+
+/* ---- task guide: beside the page, so the settings stay usable ---- */
+.guide-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: var(--z-pop);
+  display: flex;
+  flex-direction: column;
+  width: min(620px, 100vw);
+  border-left: 1px solid var(--line-strong);
+  background: var(--surface);
+  box-shadow: var(--shadow-pop);
+  animation: guide-in var(--dur-medium) var(--ease-enter);
+}
+
+@keyframes guide-in {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+}
+
+.guide-panel > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-5) var(--sp-3);
+}
+
+.guide-panel .tt small {
+  color: var(--accent-ink);
+  font-size: var(--fs-small);
+}
+
+.guide-panel h2 {
+  margin: 2px 0 0;
+  font-size: var(--fs-page);
+  line-height: var(--lh-tight);
+}
+
+.guide-panel > nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 0 var(--sp-5) var(--sp-3);
+  border-bottom: 1px solid var(--line);
+}
+
+.guide-panel > nav button {
+  padding: 4px 10px;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--ink-dim);
+  font: inherit;
+  font-size: var(--fs-small);
+  cursor: pointer;
+}
+
+.guide-panel > nav button:hover {
+  background: var(--surface-hover);
+}
+
+.guide-panel > nav button[aria-current="true"] {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: var(--fw-bold);
+}
+
+.guide-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--sp-2) var(--sp-5) var(--sp-6);
+  line-height: 1.7;
+  scroll-padding-top: var(--sp-3);
+}
+
+.guide-body:focus-visible {
+  outline: none;
+}
+
+.guide-body h3 {
+  margin: var(--sp-5) 0 var(--sp-2);
+  font-size: var(--fs-title);
+}
+
+.guide-body p {
+  margin: var(--sp-2) 0;
+}
+
+.guide-body ol,
+.guide-body ul {
+  margin: var(--sp-2) 0;
+  padding-left: 22px;
+}
+
+.guide-body li + li {
+  margin-top: 4px;
+}
+
+.guide-body em {
+  color: var(--ink-dim);
+  font-style: normal;
+  font-size: var(--fs-small);
+}
+
+.guide-body code {
+  padding: 1px 5px;
+  border-radius: var(--r-xs);
+  background: var(--surface-inset);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+
+.guide-body a {
+  color: var(--accent-ink);
+}
+
+.guide-body figure {
+  margin: var(--sp-3) 0;
+}
+
+.guide-body figure button {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-inset);
+  overflow: hidden;
+  cursor: zoom-in;
+}
+
+.guide-body figure button:hover {
+  border-color: var(--line-strong);
+}
+
+.guide-body figure button:focus-visible {
+  box-shadow: var(--focus-ring);
+  outline: none;
+}
+
+.guide-body figure img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.guide-body figcaption {
+  margin-top: 6px;
+  color: var(--ink-faint);
+  font-size: var(--fs-small);
+}
+
+@media (min-width: 1100px) {
+  .workspace:has(.lib.guide-open) {
+    margin-right: var(--guide-w);
+  }
+
+  .lib.guide-open > .libcol {
+    display: none;
+  }
+
+  .lib.guide-open {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .guide-panel {
+    width: var(--guide-w);
+  }
+}
+
+.guide-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-toast);
+  display: flex;
+  flex-direction: column;
+  background: rgba(0, 0, 0, 0.72);
+  animation: fade-in var(--dur-medium) var(--ease-enter);
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.guide-viewer-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.guide-viewer-bar .cap {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-dim);
+  font-size: var(--fs-small);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.guide-viewer-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: auto;
+  padding: var(--sp-4);
+}
+
+.guide-viewer-body img {
+  display: block;
+  margin: auto;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  cursor: default;
+}
+
+.guide-viewer-body.actual img {
+  max-width: none;
+  max-height: none;
 }

@@ -18,6 +18,7 @@ from ok.core.events import communicate
 from src.compat.update_card_ui import launcher_supports_update_check
 from src.desktop.config_store import config_lock, save_config, task_config_busy
 from src.desktop.events import install_events
+from src.desktop.guides import guide_id, install_guides
 from src.desktop.hunt_plans import install_hunt_plans
 from src.desktop.maintenance import install_maintenance
 from src.desktop.okweb import app as framework
@@ -25,7 +26,12 @@ from src.desktop.preview import LivePreview
 from src.desktop.protocol import API_VERSION
 from src.desktop.reports import ReportSession
 from src.desktop.security import LocalSession
-from src.desktop.settings_text import FIELD_TEXT, TEST_CHANNELS, describe_group
+from src.desktop.settings_text import (
+    FIELD_TEXT,
+    OPTIONAL_TEST_KEYS,
+    TEST_CHANNELS,
+    describe_group,
+)
 from src.desktop.starter_wait import STARTER_WAIT
 from src.game_path import resolve_game_exe_path, resolve_launcher_exe_path
 from src.task_guides import GUIDES
@@ -53,6 +59,8 @@ AUTO_CAPTURE = "auto"
 AUTO_CAPTURE_CONFIG = "windows"
 TEST_TITLE = "ok-bd2 测试消息"
 TEST_MESSAGE = "这是一条测试消息。收到它说明通知设置正确。"
+# ok-script's own info keys, which tasks report in English.
+STATUS_LABELS = {"Log": "最近日志", "Warning": "警告", "Error": "错误"}
 
 
 class LegacyInstanceRunning(RuntimeError):
@@ -61,8 +69,8 @@ class LegacyInstanceRunning(RuntimeError):
 
 MISSING_UI_PAGE = """<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><title>ok-bd2</title></head>
-<body><h1>界面尚未构建</h1>
-<p>核心服务已启动，但没有找到界面文件。开发时请在 desktop/ui 目录运行 npm ci 和 npm run build。</p>
+<body><h1>界面文件缺失</h1>
+<p>ok-bd2 已启动，但没有找到界面文件。请重新安装当前版本。</p>
 </body></html>"""
 
 DEVICE_KINDS = {"windows": "PC", "adb": "安卓", "browser": "浏览器"}
@@ -143,14 +151,47 @@ def task_payload(task):
             "group_name": task.group_name,
             "instructions": getattr(task, "instructions", None),
             "guide": GUIDES.get(type(task).__name__, (None, None, None))[2],
+            "guide_id": guide_id(task),
             "waiting_for": waiting.name if waiting else None,
             "start_time": float(task.start_time or 0),
             "info": framework._json_value(info),
+            "status_rows": status_rows(task, info),
             "run_state": run_state(task, info),
             "config_busy": task_config_busy(task),
             "config": fields,
             "hidden_config_count": hidden_config_count(task),
         }
+
+
+def status_rows(task, info):
+    """The values a task reports while it runs, under the names it gives them.
+
+    Same order and sources as the Qt window's 任务状态确认 (src/ui/AutoLoginStatusTab.py):
+    the declared ``status_keys``, then anything else in ``info``. A declared key without a
+    value yet is left out.
+    """
+    labels = getattr(task, "status_key_labels", None) or {}
+    defaults = getattr(task, "default_config", None) or {}
+    rows = []
+    for key in dict.fromkeys([*(getattr(task, "status_keys", None) or ()), *info]):
+        value = info[key] if key in info else task.config.get(key, defaults.get(key))
+        text = status_text(value)
+        # 启用 is the task's own switch, which the form above shows.
+        if text and key != "启用":
+            label = labels.get(key, STATUS_LABELS.get(key, key))
+            rows.append({"key": str(key), "label": str(label), "value": text})
+    return rows
+
+
+def status_text(value):
+    if value is True:
+        return "是"
+    if value is False:
+        return "否"
+    if value is None:
+        return ""
+    text = "、".join(map(str, value)) if isinstance(value, (list, tuple)) else str(value)
+    return "" if text == "-" else text
 
 
 def hidden_config_count(task):
@@ -436,12 +477,20 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
             "launcher": resolve_launcher_exe_path(running_path=recorded_path),
         }
 
+    def open_launcher():
+        """Show the launcher window, as the Qt settings page's button does."""
+        show = getattr(runtime.pyappify_module, "show_pyappify", None)
+        if not callable(show):
+            raise ValueError("当前运行方式没有启动器")
+        show()
+        return {"opened": True}
+
     def test_notification(channel):
         """Send one message through one channel with its saved settings."""
         if channel == "system":
             manager = getattr(runtime.ok.headless_app, "notification_manager", None)
             if manager is None or not manager.notify_system(TEST_TITLE, TEST_MESSAGE, tray=True):
-                raise ValueError("请先开启系统通知，并通过 Electron 客户端启动")
+                raise ValueError("请先开启系统通知")
             return {"sent": True}
         if channel not in TEST_CHANNELS:
             raise ValueError("未知的通知渠道")
@@ -450,9 +499,19 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
         _, keys = TEST_CHANNELS[channel]
         config = runtime.executor.global_config.get_config("Notification")
         values = [str(config.get(key) or "").strip() for key in keys]
-        missing = [FIELD_TEXT[key][0] for key, value in zip(keys, values) if not value]
+        missing = [
+            FIELD_TEXT[key][0]
+            for key, value in zip(keys, values)
+            if not value and key not in OPTIONAL_TEST_KEYS
+        ]
         if missing:
             raise ValueError(f"请先填写：{'、'.join(missing)}")
+        if channel == "smtp":
+            # The SMTP provider takes its settings up front, unconverted, and has no address.
+            provider = providers.SmtpProvider(*[config.get(key) for key in keys])
+            if not provider.send(None, TEST_TITLE, TEST_MESSAGE, []):
+                raise RuntimeError("发送失败，原因见日志")
+            return {"sent": True}
         provider = {
             "discord": providers.DiscordProvider,
             "telegram": providers.TelegramBotProvider,
@@ -477,6 +536,7 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
     runtime.resize_window = resize_window
     runtime.game_paths = game_paths
     runtime.test_notification = test_notification
+    runtime.open_launcher = open_launcher
     runtime.settings = lambda: [describe_group(group) for group in original_settings()]
     runtime.start_daily = start_daily
     runtime.tasks = lambda: [task_payload(task) for task in runtime.executor.get_all_tasks()]
@@ -562,6 +622,7 @@ def create_app(
     STARTER_WAIT.install()
     adapt_runtime(runtime, legacy_check=legacy_check, starter_wait=STARTER_WAIT)
     install_hunt_plans(app, runtime)
+    install_guides(app)
     preview = LivePreview(runtime)
     reports = ReportSession(runtime, preview, core_version or str(config.get("version") or ""),
                             legacy_check=legacy_check)
@@ -722,10 +783,17 @@ def create_app(
         except (ValueError, RuntimeError) as error:
             raise HTTPException(400, str(error)) from error
 
+    @app.post("/api/desktop/launcher/open")
+    def open_launcher():
+        try:
+            return runtime.open_launcher()
+        except (ValueError, RuntimeError) as error:
+            raise HTTPException(400, str(error)) from error
+
     @app.post("/api/desktop/shutdown")
     def desktop_shutdown():
         if request_shutdown is None:
-            raise HTTPException(409, "当前运行方式不支持从界面退出")
+            raise HTTPException(409, "当前运行方式不能从界面退出")
         request_shutdown("client-request")
         return {"accepted": True}
 

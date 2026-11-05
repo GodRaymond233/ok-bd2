@@ -139,7 +139,7 @@ export function RunDock({
         )}
         <span className="idle">
           <span className="d off" />
-          {t("执行器空闲")}
+          {t("空闲")}
         </span>
       </div>
     );
@@ -192,9 +192,13 @@ export function RunDock({
         <Icon name="folder" />
         {t("日志文件夹")}
       </button>
-      <button type="button" className="btn sm" onClick={() => core.navigate("report")}>
+      <button
+        type="button"
+        className={seal === "issue" || seal === "abort" ? "btn sm primary" : "btn sm"}
+        onClick={() => core.navigate("report")}
+      >
         <Icon name="report" />
-        {t("问题报告")}
+        {seal === "issue" || seal === "abort" ? t("生成问题报告") : t("问题报告")}
       </button>
       <button type="button" className="btn subtle sm icon" title={t("关闭")} aria-label={t("关闭")} onClick={onDismiss}>
         <Icon name="x" />

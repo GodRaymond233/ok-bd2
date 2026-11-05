@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import type { Core } from "./App.tsx";
 import { ConfigForm } from "./ConfigForm.tsx";
+import { GuidePanel } from "./GuidePanel.tsx";
 import { HuntPlanEditor } from "./HuntPlanEditor.tsx";
 import { modifiedFields, valueText } from "./form.ts";
 import { durationText, whenText } from "./format.ts";
@@ -15,6 +16,9 @@ import { ConfirmDialog, Icon, Menu, TaskGlyph, Toggle, useSlider } from "./ui.ts
 function Marker({ core, task }: { core: Core; task: TaskPayload }) {
   if (task.trigger) {
     return null;
+  }
+  if (task.waiting_for) {
+    return <span className="chip info" title={`${t("等待")}「${task.waiting_for}」${t("完成")}`}>{t("排队中")}</span>;
   }
   if (task.enabled || core.current === task.name) {
     return <span className="chip run">{t("运行中")}</span>;
@@ -88,6 +92,7 @@ export function TasksPage({
 }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<string | null>(null);
+  const [guideOf, setGuideOf] = useState<string | null>(null);
   const tabs = useSlider<HTMLDivElement>('[aria-selected="true"]', filter);
   const everything = libraryGroups(core.tasks, "");
   const groups = libraryGroups(core.tasks, query).filter((group) => !filter || group.name === filter);
@@ -98,7 +103,7 @@ export function TasksPage({
     ...everything.map((group): [string, string, number] => [group.name, group.name, group.tasks.length]),
   ];
   return (
-    <div className={detailOpen ? "lib detail-open" : "lib"}>
+    <div className={`lib${detailOpen ? " detail-open" : ""}${guideOf === task?.name ? " guide-open" : ""}`}>
       <nav className="libcol" aria-label={t("任务库")}>
         <label className="search">
           <Icon name="search" />
@@ -127,14 +132,34 @@ export function TasksPage({
           </div>
         ))}
         {groups.length === 0 && <div className="libnote">{t("没有匹配的任务")}</div>}
-        {core.tasks.some((item) => item.group_name === "测试") || <div className="libnote">{t("调试模式下另有「测试」组")}</div>}
       </nav>
-      {task && <TaskDetail key={task.name} core={core} task={task} onBack={onBack} />}
+      {task && (
+        <TaskDetail
+          key={task.name}
+          core={core}
+          task={task}
+          onBack={onBack}
+          readingGuide={guideOf === task.name}
+          onGuide={(open) => setGuideOf(open ? task.name : null)}
+        />
+      )}
     </div>
   );
 }
 
-function TaskDetail({ core, task, onBack }: { core: Core; task: TaskPayload; onBack: () => void }) {
+function TaskDetail({
+  core,
+  task,
+  onBack,
+  readingGuide,
+  onGuide,
+}: {
+  core: Core;
+  task: TaskPayload;
+  onBack: () => void;
+  readingGuide: boolean;
+  onGuide: (open: boolean) => void;
+}) {
   const [history, setHistory] = useState<HistoryRun[] | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [editingPlan, setEditingPlan] = useState(false);
@@ -194,6 +219,7 @@ function TaskDetail({ core, task, onBack }: { core: Core; task: TaskPayload; onB
               </label>
             )}
             {!task.trigger && <span className={lastBad ? "last bad" : "last"}>{`${t("上次运行")} · ${last}`}</span>}
+            {task.waiting_for && <span className="last">{`${t("等待")}「${task.waiting_for}」${t("完成后开始")}`}</span>}
           </div>
         </div>
         <div className="go">
@@ -284,7 +310,7 @@ function TaskDetail({ core, task, onBack }: { core: Core; task: TaskPayload; onB
                 ))}
             </div>
           ) : (
-            <ConfigForm fields={fields} hidden={task.hidden_config_count ?? 0} disabled={locked} saveField={saveField}
+            <ConfigForm fields={fields} disabled={locked} saveField={saveField}
               extra={(field) => field.editor === "hunt_plan" ? (
                 <button className="btn sm" onClick={() => setEditingPlan(true)}>{t("编辑刷取方案")}</button>
               ) : null} />
@@ -317,6 +343,22 @@ function TaskDetail({ core, task, onBack }: { core: Core; task: TaskPayload; onB
               <button className="linkbtn more" onClick={() => core.navigate("records")}>{t("查看全部运行记录")}</button>
             </div>
           )}
+          {(task.status_rows?.length ?? 0) > 0 && (
+            <div className="card sc">
+              <div className="hd">
+                <Icon name="target" />
+                <b>{t("运行状态")}</b>
+              </div>
+              <div className="kv">
+                {task.status_rows?.map((row) => (
+                  <div key={row.key} style={{ display: "contents" }}>
+                    <span className="k">{row.label}</span>
+                    <span className="v">{row.value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           {(task.guide || task.instructions) && (
             <div className="card sc">
               <div className="hd">
@@ -324,12 +366,18 @@ function TaskDetail({ core, task, onBack }: { core: Core; task: TaskPayload; onB
                 <b>{t("使用说明")}</b>
               </div>
               <div className="l1">{task.guide ?? task.instructions}</div>
-              {task.guide && <div className="l2">{t("图文说明在 Qt 版任务卡的「使用说明」里，新客户端稍后接入。")}</div>}
+              {task.guide_id && (
+                <button type="button" className="btn sm guide-open" aria-expanded={readingGuide} onClick={() => onGuide(true)}>
+                  <Icon name="book" />
+                  {t("查看图文说明")}
+                </button>
+              )}
             </div>
           )}
         </div>
       </div>
       {editingPlan && <HuntPlanEditor core={core} task={task} onClose={() => setEditingPlan(false)} />}
+      {readingGuide && task.guide_id && <GuidePanel id={task.guide_id} onClose={() => onGuide(false)} />}
       {confirming && (
         <ConfirmDialog
           title={`${t("把")}「${task.name}」${t("的设置全部恢复默认？")}`}
@@ -341,7 +389,7 @@ function TaskDetail({ core, task, onBack }: { core: Core; task: TaskPayload; onB
           }}
         >
           {(task.hidden_config_count ?? 0) > 0 && (
-            <p className="why">{t("隐藏的识别与维护参数也会一并恢复默认。")}</p>
+            <p className="why">{t("界面上没有显示的高级参数也会一起恢复默认。")}</p>
           )}
           <ul>
             {changed.map((field) => (

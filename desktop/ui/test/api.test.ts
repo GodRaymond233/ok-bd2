@@ -52,7 +52,7 @@ test("a success that is not JSON is an ApiError, not a SyntaxError", async () =>
   respond("<html>", 200);
   const error = await failure(() => api.info());
   assert.equal(error.status, 200);
-  assert.equal(error.message, "核心返回的内容无法解析");
+  assert.equal(error.message, "后台服务返回的内容无法解析");
 });
 
 test("a success returns its data, and an empty one returns null", async () => {

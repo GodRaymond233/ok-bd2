@@ -42,7 +42,7 @@ class ConfigurationBackupTest(unittest.TestCase):
         snapshot = self.store.create("1.4.12", "manual")
         self.store.prepare_startup("1.4.13")
         self.data.write_text("newer data", "utf-8")
-        with self.assertRaisesRegex(ValueError, "较新核心"):
+        with self.assertRaisesRegex(ValueError, "较新版本"):
             self.store.prepare_startup("1.4.12")
         self.assertEqual(self.data.read_text("utf-8"), "newer data")
         safety = self.store.restore(snapshot["id"], "1.4.12")
