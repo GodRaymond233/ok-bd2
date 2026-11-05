@@ -52,7 +52,7 @@ function Control({
   };
 
   if (field.editor) {
-    return <span className="why">{field.value ? t("已设置方案") : t("未设置方案（按默认规则）")}</span>;
+    return null;
   }
   switch (field.kind) {
     case "boolean":
@@ -229,7 +229,12 @@ function Field({
         )}
       </div>
       {field.description && <div className="dsc">{field.description}</div>}
-      {field.editor && <div className="dsc">{t("方案在编辑器中确认保存后生效。")}</div>}
+      {field.editor && (
+        <div className="plan-summary">
+          <b>{field.editor_title}</b>
+          <span>{field.editor_summary}</span>
+        </div>
+      )}
       <div className="ctrl">
         {extra}
         <Control field={field} disabled={disabled} save={save} setError={setError} />

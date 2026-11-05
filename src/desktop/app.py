@@ -37,7 +37,7 @@ from src.game_path import resolve_game_exe_path, resolve_launcher_exe_path
 from src.task_guides import GUIDES
 from src.tasks.BaseBD2Task import task_info_snapshot
 from src.tasks.DailyBatchTask import RUN_MODE_ALL, RUN_MODE_INCOMPLETE, DailyBatchTask
-from src.tasks.quick_hunt_plan import PLAN_KEY
+from src.tasks.quick_hunt_plan import PLAN_KEY, describe_plan, load_book
 from src.tasks.run_history import RECENT_LIMIT, default_store, run_state
 from src.tasks.today import find_batch, today_summary
 from src.ui.hide_config_rows import mark_hidden_config_keys
@@ -139,6 +139,7 @@ def task_payload(task):
         for field in fields:
             if field["key"] in DEDICATED_EDITORS:
                 field["editor"] = DEDICATED_EDITORS[field["key"]]
+                field["editor_title"], field["editor_summary"] = plan_summary(task.config)
         return {
             "name": task.name,
             "class_name": type(task).__name__,
@@ -163,21 +164,32 @@ def task_payload(task):
         }
 
 
-def status_rows(task, info):
-    """The values a task reports while it runs, under the names it gives them.
+def plan_summary(config):
+    """The active rice plan's name and rules, as the Qt task card shows them."""
+    try:
+        book = load_book(config)
+        plan = book["plans"][book["active"]]
+        return plan["name"], describe_plan(plan)
+    except ValueError as error:
+        return "需要修正", str(error)
 
-    Same order and sources as the Qt window's 任务状态确认 (src/ui/AutoLoginStatusTab.py):
-    the declared ``status_keys``, then anything else in ``info``. A declared key without a
-    value yet is left out.
+
+def status_rows(task, info):
+    """The values a task reported in its current or last run, under the names it gives them.
+
+    In the order of the Qt window's 任务状态确认 (src/ui/AutoLoginStatusTab.py): the declared
+    ``status_keys``, then anything else in ``info``. That page also fills declared keys from
+    the settings for diagnosis; here a setting is not a result, and hidden ones stay hidden.
     """
     labels = getattr(task, "status_key_labels", None) or {}
-    defaults = getattr(task, "default_config", None) or {}
+    config_type = getattr(task, "config_type", None) or {}
     rows = []
     for key in dict.fromkeys([*(getattr(task, "status_keys", None) or ()), *info]):
-        value = info[key] if key in info else task.config.get(key, defaults.get(key))
-        text = status_text(value)
+        spec = config_type.get(key)
+        hidden = isinstance(spec, dict) and spec.get("hidden")
+        text = status_text(info.get(key))
         # 启用 is the task's own switch, which the form above shows.
-        if text and key != "启用":
+        if text and not hidden and key != "启用":
             label = labels.get(key, STATUS_LABELS.get(key, key))
             rows.append({"key": str(key), "label": str(label), "value": text})
     return rows

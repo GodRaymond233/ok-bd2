@@ -396,13 +396,20 @@ class Bd2RoutesTest(unittest.TestCase):
         # The hunt plan is JSON from a dedicated editor; the client must not offer a text box.
         fields = {field["key"]: field for field in payload["config"]}
         self.assertEqual("hunt_plan", fields[PLAN_KEY]["editor"])
+        self.assertTrue(fields[PLAN_KEY]["editor_title"])
+        self.assertIn("保留免费米饭", fields[PLAN_KEY]["editor_summary"])
         self.assertNotIn("editor", fields["启用"])
 
     def test_task_payload_lists_what_the_task_reports(self):
         task = self._task(QuickHuntTask, "带状态", {"启用": True, PLAN_KEY: ""})
-        task.status_keys = ["状态", "米饭", "还没有值"]
+        task.status_keys = ["状态", "米饭", "启用", "只是设置", "识别阈值"]
         task.status_key_labels = {"米饭": "剩余米饭"}
-        task.info = {"状态": "运行中", "米饭": 12, "已确认": False, "Error": "超时", "空": "-"}
+        task.config["只是设置"] = "不是结果"
+        task.config_type = {"识别阈值": {"hidden": True}}
+        task.info = {
+            "状态": "运行中", "米饭": 12, "已确认": False, "Error": "超时", "空": "-",
+            "启用": True, "识别阈值": 0.7,
+        }
         self.assertEqual(
             [
                 {"key": "状态", "label": "状态", "value": "运行中"},

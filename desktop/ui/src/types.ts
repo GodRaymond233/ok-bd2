@@ -13,6 +13,9 @@ export interface ConfigField {
   sub_config: boolean;
   /** Set when only a dedicated editor may change the value (the quick-hunt plan). */
   editor?: string;
+  /** The value as that editor describes it. */
+  editor_title?: string;
+  editor_summary?: string;
   /** Display name and option names for settings the core keys in English. */
   label?: string;
   option_labels?: Record<string, string>;
