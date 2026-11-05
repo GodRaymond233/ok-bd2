@@ -38,6 +38,8 @@ dev = [
 
 [tool.ruff]
 line-length = 100
+# A copy of ok-script's code, kept comparable with the original.
+extend-exclude = ["src/desktop/okweb"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]

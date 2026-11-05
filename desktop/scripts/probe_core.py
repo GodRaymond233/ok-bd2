@@ -155,8 +155,8 @@ def mutex_holder(entry):
 def mutex_contender(entry):
     sys.argv[0] = entry
     import ok
-    from ok.ui.web.app import WebRuntime
 
+    from src.desktop.okweb.app import WebRuntime
     from src.desktop.service import service_config
 
     class ReachedAfterMutex(Exception):

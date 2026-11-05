@@ -570,7 +570,7 @@ def _start_and_serve(
         # The runtime starts in the server's lifespan: never start it after an exit request.
         controller.checkpoint()
         try:
-            from ok.ui.web.server import _configure_server_logging
+            from src.desktop.okweb.server_logging import _configure_server_logging
 
             _configure_server_logging()
         except Exception as error:

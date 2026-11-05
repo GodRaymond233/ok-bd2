@@ -12,9 +12,9 @@ from unittest.mock import Mock, patch
 
 from fastapi.testclient import TestClient
 from ok import BaseTask, Config
-from ok.ui.web import app as framework
 
 from src.desktop.app import adapt_runtime, create_app
+from src.desktop.okweb import app as framework
 from src.task_guides import GUIDES
 from src.tasks.DailyBatchTask import (
     RUN_MODE_ALL,

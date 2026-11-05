@@ -11,6 +11,7 @@ otherwise.
 | Project | Use in this project | License / notice | Source |
 |---|---|---|---|
 | ok-script | Core GUI, task framework, capture, input, OCR integration, update helpers | Upstream GitHub repository contains AGPL-3.0 `LICENSE.txt`; PyPI metadata has also advertised an MIT classifier. This project treats redistributed ok-script code as AGPL-3.0 unless upstream clarifies otherwise. | https://github.com/ok-oldking/ok-script |
+| ok-script Web runtime (copy) | `src/desktop/okweb` is a copy of the Web runtime of ok-script 2.0.6, which later versions removed; it serves the desktop client | `LICENSES/ok-script-2.0.6.txt` | https://github.com/ok-oldking/ok-script |
 | adbutils | ADB support through ok-script/device workflows | MIT | https://github.com/openatx/adbutils |
 | comtypes | Windows COM support | MIT | https://github.com/enthought/comtypes |
 | msvc-runtime | Installs Microsoft Visual C++ runtime DLLs beside the packaged Python runtime | Proprietary Microsoft redistributable components. The wheel includes the Visual Studio 2022 redistribution notice; release builds must preserve the package notice and comply with Microsoft's redistribution terms. | https://pypi.org/project/msvc-runtime/ |

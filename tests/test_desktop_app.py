@@ -25,13 +25,13 @@ from ok.device.capture_methods.bitblt import BitBltCaptureMethod, ForegroundBitB
 from ok.device.capture_methods.windows_graphics import WindowsGraphicsCaptureMethod
 from ok.task.exceptions import TaskDisabledException
 from ok.task.TaskExecutor import TaskExecutor
-from ok.ui.web import app as framework
 from starlette.websockets import WebSocketDisconnect
 
 from src.config import config as bd2_config
 from src.desktop.app import adapt_runtime, create_app, frontend_ready
 from src.desktop.config_store import save_config
 from src.desktop.events import EventBuffer, install_events
+from src.desktop.okweb import app as framework
 from src.desktop.security import LocalSession
 from src.tasks.DailyBatchTask import DailyBatchTask
 from src.tasks.QuickHuntTask import QuickHuntTask

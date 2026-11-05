@@ -14,13 +14,13 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from ok.core.config_schema import build_config_fields
 from ok.core.events import communicate
-from ok.ui.web import app as framework
 
 from src.compat.update_card_ui import launcher_supports_update_check
 from src.desktop.config_store import config_lock, save_config, task_config_busy
 from src.desktop.events import install_events
 from src.desktop.hunt_plans import install_hunt_plans
 from src.desktop.maintenance import install_maintenance
+from src.desktop.okweb import app as framework
 from src.desktop.preview import LivePreview
 from src.desktop.protocol import API_VERSION
 from src.desktop.reports import ReportSession

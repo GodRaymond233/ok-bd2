@@ -11,7 +11,8 @@ from collections import deque
 
 from fastapi import WebSocket, WebSocketDisconnect
 from ok.core.events import communicate
-from ok.ui.web.app import _json_value
+
+from src.desktop.okweb.app import _json_value
 
 
 class EventBuffer:

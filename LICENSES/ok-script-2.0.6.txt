@@ -1,0 +1,73 @@
+ok-script License
+================
+
+Copyright (c) 2026 ok-oldking
+
+This project is licensed under the Apache License, Version 2.0, as modified
+by the Commons Clause License Condition v1.0 and the additional terms below.
+The Apache License, Version 2.0, is available at:
+
+https://www.apache.org/licenses/LICENSE-2.0
+
+The Commons Clause License Condition v1.0 is available at:
+
+https://commonsclause.com/
+
+If there is a conflict between the Apache License 2.0 and the Commons Clause
+or additional terms below, the Commons Clause and additional terms control.
+
+Commons Clause
+-------------
+
+Without limiting the conditions of the Apache License 2.0, the grant of
+rights under that license does not include the right to Sell this Software.
+
+For this license, “Sell” means selling, lending, leasing, licensing, offering
+for sale, lease, or license, or otherwise transferring this Software to a
+third party for a fee or other consideration. “Sell” does not include:
+
+* Using the Software internally, including by an organization or its
+  employees, without transferring it to a third party for a fee or other
+  consideration; or
+* Distributing the Software as part of a larger application or product,
+  provided that the larger application or product is not primarily the
+  Software or a competing product.
+
+Additional Terms
+----------------
+
+1. You may use this Software in closed-source and commercial projects. You
+   may charge for your own application, service, support, or other material
+   that incorporates the Software, provided that you do not sell or offer the
+   Software itself, or a competing product based primarily on it, as a product.
+
+2. You may fork the Software, make improvements, and keep the fork open
+   source and freely available. You may not take this project, rename it or
+   make only minor changes, and sell or market it as a competing product.
+
+3. You may not use this Software for hacking, unauthorized access, malware,
+   fraud, or any other illegal activity. You are responsible for complying
+   with all applicable laws and obtaining authorization for any security or
+   automation activity.
+
+4. Any project that uses, incorporates, or is derived from this Software
+   must mention ok-script and link to at least one of the following in at
+   least one of the project's website, GitHub repository, or the software
+   itself:
+
+   * Website: https://ok-script.com/
+   * GitHub: https://github.com/ok-oldking/ok-script
+
+   The notice must be reasonably visible and retained in modified or
+   redistributed versions.
+
+5. Use of the Qt UI, including components based on PyQt-Fluent-Widgets or
+   its related packages, is separately subject to the license and terms of
+   the upstream project:
+
+   https://github.com/zhiyiYo/PyQt-Fluent-Widgets
+
+6. Except for these additional terms, the Apache License 2.0 applies,
+   including its copyright, notice, patent, warranty, and liability
+   provisions. The Software is provided “AS IS”, without warranties or
+   conditions of any kind.
