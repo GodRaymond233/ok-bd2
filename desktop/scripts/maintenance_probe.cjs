@@ -48,6 +48,7 @@ if (!process.versions.electron) {
   const check = (name, value) => { result.checks.push({ name, passed: Boolean(value) }); assert(value, name); };
   let win, core, command, backupId;
   let failBackup = false;
+  let leftRestoredPage = false;
   const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const until = async (action) => {
     for (let i = 0; i < 500; i++) { if (await action()) return; await delay(50); }
@@ -120,6 +121,7 @@ if (!process.versions.electron) {
       check("core stopped normally", code === 0 && core.state === "exited");
       check("hotkeys released", !globalShortcut.isRegistered("F9"));
       if (mode === "restore") {
+        check("the client exits only when the user leaves the finished page", leftRestoredPage);
         check("saved snapshot restored", fs.readFileSync(path.join(configs, "probe-ledger.json"), "utf8").includes("before"));
         check("files created after backup removed", !fs.existsSync(path.join(configs, "new-probe-file.json")));
       } else check("launcher was called", Boolean(command));
@@ -152,6 +154,15 @@ if (!process.versions.electron) {
       check("restore requires explicit confirmation", (await api("/api/desktop/backups/restore", { id: backupId })).status === 400);
       await until(() => click("恢复"));
       await until(() => click("停止任务并恢复"));
+      await until(async () => await js("document.body.dataset.kind === 'restored'").catch(() => false));
+      check("restore waits on its finished page", core.state === "exited");
+      check("the finished page offers only the exit", await js(
+        "['spinner', 'restart'].every((id) => document.getElementById(id).hidden) && !document.getElementById('quit').hidden"));
+      await js("window.okbd2Shell.restartCore()");
+      await delay(300);
+      check("the core stays stopped on the finished page", core.state === "exited");
+      leftRestoredPage = true;
+      await until(() => click("退出"));
     } else {
       await until(() => click("检查更新"));
       await until(() => click("更新到 v0.9.8"));

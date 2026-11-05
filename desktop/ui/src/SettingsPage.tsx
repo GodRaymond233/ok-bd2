@@ -409,7 +409,7 @@ function Backups({ core }: { core: Core }) {
         <div className="ctrl"><button className="btn sm" disabled={busy || item.invalid || item.version !== data.version}
           onClick={() => setRestoring(item)}>{t("恢复")}</button></div>
       </div>)}
-      <p className="why">{t("恢复会覆盖备份之后的设置与进度，恢复前会再备份当前数据，并退出客户端。跨版本降级请按测试包说明先离线恢复备份，再切换版本；未知版本备份需要人工核对。")}</p>
+      <p className="why">{t("恢复会覆盖备份之后的设置与进度，恢复前会再备份当前数据；完成后请退出客户端，再从启动器重新打开。跨版本降级请按测试包说明先离线恢复备份，再切换版本；未知版本备份需要人工核对。")}</p>
       <p className="why">{t("启动器的重新安装或切换国内/海外配置可能删除现有配置，请事先备份。")}</p>
     </div>
     {restoring && <ConfirmDialog title={t("恢复这份备份？")} confirm={t("停止任务并恢复")}

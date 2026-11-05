@@ -33,7 +33,7 @@ import { ShellLog } from "./shell-log";
 import { launchUpdate, maintainData } from "./maintenance";
 import type { MaintenanceMessage } from "./protocol";
 
-type StatusKind = "starting" | "error" | "crashed" | "exiting";
+type StatusKind = "starting" | "error" | "crashed" | "exiting" | "restored";
 
 interface ShellStatus {
   kind: StatusKind;
@@ -534,10 +534,10 @@ async function performMaintenance(process_: CoreProcess, message: MaintenanceMes
       quitting = true;
       app.exit(0);
     } else {
-      showStatus({ kind: "exiting", title: "备份已恢复", message: "请重新启动客户端，核对设置与进度后再运行任务。",
-        details: [], canRestart: false });
-      quitting = true;
-      app.exit(0);
+      // Stays on this page until the user leaves; the core stays stopped so that nothing runs on the restored data.
+      showStatus({ kind: "restored", title: "备份已恢复",
+        message: "请退出后从启动器重新打开，核对设置与进度后再运行任务。", details: [], canRestart: false });
+      showWindow();
     }
   } catch (error) {
     log.error(`maintenance failed: ${String(error)}`);
