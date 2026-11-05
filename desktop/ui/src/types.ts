@@ -248,9 +248,18 @@ export interface ShellInfo {
   api: { min: number; max: number };
 }
 
+export type Theme = "system" | "light" | "dark";
+
+export interface UiPreferences {
+  theme?: Theme;
+  dockExpanded?: boolean;
+}
+
 export interface ShellBridge {
   desktop(): Promise<ShellDesktop>;
   setZoom(zoom: number): Promise<ShellDesktop>;
+  uiPreferences(): UiPreferences;
+  setUiPreferences(change: UiPreferences): Promise<void>;
   info(): Promise<ShellInfo | null>;
   openLogsFolder(): Promise<void>;
   quit(): Promise<void>;

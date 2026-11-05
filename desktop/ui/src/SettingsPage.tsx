@@ -20,11 +20,10 @@ import {
   shellSettingsKey,
   SYSTEM_NOTIFICATION_KEY,
   TEST_CHANNELS,
-  type Theme,
   applyTheme,
   storedTheme,
 } from "./settings.ts";
-import type { AboutInfo, BackupEntry, BackupList, ShellDesktop, UpdateCheck } from "./types.ts";
+import type { AboutInfo, BackupEntry, BackupList, ShellDesktop, Theme, UpdateCheck } from "./types.ts";
 import { ConfirmDialog, Icon, Menu, Toggle } from "./ui.tsx";
 
 type Tab = "general" | "notify" | "about";

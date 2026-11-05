@@ -302,18 +302,32 @@ function probe() {
     await until(() => js("document.querySelector('h1.title')?.textContent==='问题报告'"), "report page");
     check("the finished run's button leads to the report page", true);
 
+    const dockToggle = "document.querySelector('.dock button[aria-expanded]')";
+    const dockExpanded = !(await js(`${dockToggle}.getAttribute('aria-expanded')==='true'`));
+    await js(`${dockToggle}.click()`);
+    await until(() => js(`window.okbd2Shell.uiPreferences().dockExpanded===${dockExpanded}`), "run panel choice");
+    await js(`document.querySelector('nav button[title="设置"]').click()`);
+    await until(() => js(`Boolean(document.querySelector('[aria-label="主题"]'))`), "theme choice");
+    await js(`[...document.querySelectorAll('[aria-label="主题"] button')].find(b=>b.textContent.trim()==='深色').click()`);
+    await until(() => js("window.okbd2Shell.uiPreferences().theme==='dark'"), "theme saved");
+    check("the theme applies at once", await js("document.documentElement.dataset.theme==='dark'"));
+    const savedDesktop = () => JSON.parse(fs.readFileSync(path.join(fixture, "shell-data", "desktop-state.json"), "utf8"));
+    check("the page's choices reach the state file", savedDesktop().theme === "dark" && savedDesktop().dockExpanded === dockExpanded);
+    await js("window.okbd2Shell.setUiPreferences({theme:'neon',dockExpanded:'no'})");
+    check("invalid preferences are ignored", savedDesktop().theme === "dark" && savedDesktop().dockExpanded === dockExpanded);
+
     check("shortcut is active before normal quit", globalShortcut.isRegistered(key));
     win.maximize();
     await delay(400);
     // A bare X server has no window manager to maximize anything; Windows always does.
     if (process.platform === "win32") check("the window maximizes", win.isMaximized());
-    fs.writeFileSync(stateFile, JSON.stringify({ key, maximized: win.isMaximized() }));
+    fs.writeFileSync(stateFile, JSON.stringify({ key, maximized: win.isMaximized(), dockExpanded }));
     result.complete = true;
     await js("window.okbd2Shell.quit()");
   }
 
   async function restartRun() {
-    const { key, maximized } = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    const { key, maximized, dockExpanded } = JSON.parse(fs.readFileSync(stateFile, "utf8"));
     probedKeys = [key];
     const info = await desktop();
     check("zoom persisted after process restart", info.zoom === 125 && Math.abs(win.webContents.getZoomFactor() - 1.25) < 0.01);
@@ -322,6 +336,12 @@ function probe() {
     check("maximized state restored", win.isMaximized() === maximized);
     win.unmaximize();
     check("tray preference persisted", info.closeToTray === true);
+    check("theme persisted after process restart", await js("document.documentElement.dataset.theme==='dark'"));
+    await api("/api/probe/current-task", { name: (await api("/api/tasks")).body[0].name });
+    await until(() => js("Boolean(document.querySelector('.dock button[aria-expanded]'))"), "run panel");
+    check("run panel choice persisted after process restart",
+      (await js("document.querySelector('.dock button[aria-expanded]').getAttribute('aria-expanded')==='true'")) === dockExpanded);
+    await api("/api/probe/current-task", { name: null });
     check("shortcut is active before core crash", globalShortcut.isRegistered(key));
     win.close();
     await delay(100);
@@ -338,6 +358,15 @@ function probe() {
 
   async function closeRun() {
     probedKeys = [JSON.parse(fs.readFileSync(stateFile, "utf8")).key];
+    // A restarted core has another port, so the page has another origin.
+    const origin = new URL(win.webContents.getURL()).origin;
+    void api("/api/probe/crash", {}).catch(() => {});
+    await until(() => win.webContents.getURL().startsWith("file:"), "crash page");
+    await delay(1000); // Whatever the crash left behind lets go of the executor lock first.
+    void js("window.okbd2Shell.restartCore()").catch(() => {});
+    await until(clientReady, "restarted core");
+    check("a restarted core has another origin", new URL(win.webContents.getURL()).origin !== origin);
+    check("theme survives a core restart", await js("document.documentElement.dataset.theme==='dark'"));
     await js(`document.querySelector('nav button[title="设置"]').click()`);
     await until(() => js(`document.querySelector('[aria-label="界面缩放"]')?.disabled===false`), "settings loaded");
     await setting("Minimize Window to System Tray when Closing", false);

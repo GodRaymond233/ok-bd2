@@ -6,7 +6,20 @@ import type { CoreCommand } from "./core-process";
 
 export const ZOOM_LEVELS = [80, 90, 100, 110, 125, 150];
 export interface Bounds { x: number; y: number; width: number; height: number }
-export interface DesktopState { zoom: number; bounds?: Bounds; maximized: boolean }
+const THEMES = ["system", "light", "dark"] as const;
+type Theme = (typeof THEMES)[number];
+/** What the pages remember. A page's own storage is lost: it is in memory and tied to the core's random port. */
+export interface UiPreferences { theme?: Theme; dockExpanded?: boolean }
+export interface DesktopState extends UiPreferences { zoom: number; bounds?: Bounds; maximized: boolean }
+
+/** The valid part of the preferences in a state file or from a page. */
+export function validUiPreferences(value: unknown): UiPreferences {
+  const { theme, dockExpanded } = (value ?? {}) as Record<string, unknown>;
+  return {
+    ...(THEMES.includes(theme as Theme) ? { theme: theme as Theme } : {}),
+    ...(typeof dockExpanded === "boolean" ? { dockExpanded } : {}),
+  };
+}
 
 export function readDesktopState(file: string): DesktopState {
   try {
@@ -17,6 +30,7 @@ export function readDesktopState(file: string): DesktopState {
       maximized: data.maximized === true,
       bounds: b && [b.x, b.y, b.width, b.height].every(Number.isInteger) && b.width > 0 && b.height > 0
         ? { x: b.x, y: b.y, width: b.width, height: b.height } : undefined,
+      ...validUiPreferences(data),
     };
   } catch {
     return { zoom: 100, maximized: false };

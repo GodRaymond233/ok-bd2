@@ -1,6 +1,6 @@
-// Where ok-script's global settings appear in the client, and the theme kept in this
-// browser profile. The core names the fields (src/desktop/settings_text.py).
-import type { ConfigField, SettingsGroup, ShellDesktop } from "./types.ts";
+// Where ok-script's global settings appear in the client, and what the pages remember.
+// The core names the fields (src/desktop/settings_text.py).
+import type { ConfigField, SettingsGroup, ShellDesktop, Theme } from "./types.ts";
 
 /** Same pace as the shell's own retry (DESKTOP_RETRY_MS in desktop/shell/src/main.ts). */
 export const DESKTOP_RETRY_MS = 5000;
@@ -52,19 +52,31 @@ export function otherFields(group: SettingsGroup | undefined, keys: string[]): C
   return group?.fields.filter((field) => !keys.includes(field.key)) ?? [];
 }
 
-export type Theme = "system" | "light" | "dark";
+// The shell keeps these two: this page's localStorage is lost when the core restarts on another
+// port. A page opened without the shell (a dev core in a browser) keeps them in localStorage.
 const THEME_KEY = "okbd2.theme";
+const DOCK_KEY = "okbd2.dockExpanded";
+
+function browserValue(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null; // storage can be unavailable
+  }
+}
+
+function rememberInBrowser(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // the choice still applies to this page
+  }
+}
 
 export function storedTheme(): Theme {
-  try {
-    const value = localStorage.getItem(THEME_KEY);
-    if (value === "light" || value === "dark") {
-      return value;
-    }
-  } catch {
-    // storage can be unavailable; follow the system
-  }
-  return "system";
+  const shell = window.okbd2Shell;
+  const value = shell ? shell.uiPreferences().theme : browserValue(THEME_KEY);
+  return value === "light" || value === "dark" ? value : "system";
 }
 
 export function applyTheme(theme: Theme): void {
@@ -73,9 +85,29 @@ export function applyTheme(theme: Theme): void {
   } else {
     document.documentElement.dataset.theme = theme;
   }
-  try {
-    localStorage.setItem(THEME_KEY, theme);
-  } catch {
-    // the theme still applies for this session
+  const shell = window.okbd2Shell;
+  if (shell) {
+    void shell.setUiPreferences({ theme }).catch(() => undefined);
+  } else {
+    rememberInBrowser(THEME_KEY, theme);
+  }
+}
+
+/** The run panel state the user last chose; null before the first choice. */
+export function storedDockExpanded(): boolean | null {
+  const shell = window.okbd2Shell;
+  if (shell) {
+    return shell.uiPreferences().dockExpanded ?? null;
+  }
+  const value = browserValue(DOCK_KEY);
+  return value === null ? null : value === "1";
+}
+
+export function rememberDockExpanded(dockExpanded: boolean): void {
+  const shell = window.okbd2Shell;
+  if (shell) {
+    void shell.setUiPreferences({ dockExpanded }).catch(() => undefined);
+  } else {
+    rememberInBrowser(DOCK_KEY, dockExpanded ? "1" : "0");
   }
 }

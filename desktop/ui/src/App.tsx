@@ -12,7 +12,7 @@ import { ReportPage } from "./ReportPage.tsx";
 import { type DockRun, RunDock } from "./RunDock.tsx";
 import { childRuns, isActive, sealOf, shutdownSeconds } from "./run.ts";
 import { SettingsPage } from "./SettingsPage.tsx";
-import { shellSettingsKey } from "./settings.ts";
+import { rememberDockExpanded, shellSettingsKey, storedDockExpanded } from "./settings.ts";
 import { captureSummary, type Notice, noticeFromEvent } from "./state.ts";
 import { TasksPage } from "./TasksPage.tsx";
 import { TodayPage } from "./TodayPage.tsx";
@@ -95,19 +95,8 @@ export interface Core {
 const REFRESH_EVENTS = new Set(["task", "task_done", "task_list_updated", "executor_paused"]);
 // Game start progress only changes the capture state (status.starting, starter_wait).
 const CAPTURE_EVENTS = new Set(["starting_emulator", "starter_wait", "adb_devices"]);
-const DOCK_KEY = "okbd2.dockExpanded";
 
-function storedDockExpanded(): boolean {
-  try {
-    const value = localStorage.getItem(DOCK_KEY);
-    if (value !== null) {
-      return value === "1";
-    }
-  } catch {
-    // storage can be unavailable; fall back to the width rule
-  }
-  return window.innerWidth >= 900;
-}
+const initialDockExpanded = () => storedDockExpanded() ?? window.innerWidth >= 900;
 
 const NAV: { page: Page; label: string; icon: string; later?: string }[] = [
   { page: "today", label: "今日", icon: "today" },
@@ -141,7 +130,7 @@ export function App() {
   const [dockDismissed, setDockDismissed] = useState(false);
   const [dockRecord, setDockRecord] = useState<HistoryRun | null>(null);
   const [shutdownSeen, setShutdownSeen] = useState<number | null>(null);
-  const [dockExpanded, setDockExpanded] = useState(storedDockExpanded);
+  const [dockExpanded, setDockExpanded] = useState(initialDockExpanded);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const taskRevision = useRef(0);
 
@@ -446,11 +435,7 @@ export function App() {
 
   const setExpanded = (expanded: boolean) => {
     setDockExpanded(expanded);
-    try {
-      localStorage.setItem(DOCK_KEY, expanded ? "1" : "0");
-    } catch {
-      // remembering the choice is a convenience only
-    }
+    rememberDockExpanded(expanded);
   };
 
   const connected = Boolean(device?.connected);

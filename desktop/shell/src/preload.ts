@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld("okbd2Shell", {
   info: () => ipcRenderer.invoke("shell:info"),
   desktop: () => ipcRenderer.invoke("shell:desktop"),
   setZoom: (zoom: number) => ipcRenderer.invoke("shell:zoom", zoom),
+  uiPreferences: () => ipcRenderer.sendSync("shell:ui-preferences"),
+  setUiPreferences: (change: unknown) => ipcRenderer.invoke("shell:set-ui-preferences", change),
   restartCore: () => ipcRenderer.invoke("shell:restart-core"),
   openLogsFolder: () => ipcRenderer.invoke("shell:open-logs"),
   quit: () => ipcRenderer.invoke("shell:quit"),

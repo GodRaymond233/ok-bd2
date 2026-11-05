@@ -12,6 +12,7 @@ import {
   session,
   screen,
   shell,
+  type IpcMainEvent,
   type IpcMainInvokeEvent,
 } from "electron";
 import * as fs from "node:fs";
@@ -25,6 +26,7 @@ import {
   minimumSize,
   parseShellArgs,
   readDesktopState,
+  validUiPreferences,
   ZOOM_LEVELS,
   type Bounds,
   type ShellOptions,
@@ -613,7 +615,7 @@ async function beginQuit(reason: string): Promise<void> {
   app.exit(0);
 }
 
-function trustedSender(event: IpcMainInvokeEvent): boolean {
+function trustedSender(event: IpcMainEvent | IpcMainInvokeEvent): boolean {
   const url = event.senderFrame?.url ?? "";
   return event.sender === mainWindow?.webContents && event.senderFrame === event.sender.mainFrame &&
     (isStatusPage(url, STATUS_PAGE) || sameOrigin(url, coreOrigin()));
@@ -637,6 +639,17 @@ function registerIpc(): void {
       applyMinimumSize(mainWindow);
     }
     return desktopInfo();
+  });
+  // Synchronous: the page needs its theme before the first paint.
+  ipcMain.on("shell:ui-preferences", (event) => {
+    event.returnValue = trustedSender(event) ? validUiPreferences(desktopState) : {};
+  });
+  ipcMain.handle("shell:set-ui-preferences", (event, change: unknown) => {
+    if (!trustedSender(event)) throw new Error("页面无权修改桌面设置");
+    const before = JSON.stringify(desktopState);
+    Object.assign(desktopState, validUiPreferences(change));
+    // A failed save is logged; the preference still applies until the client closes.
+    if (JSON.stringify(desktopState) !== before) flushDesktopState();
   });
   ipcMain.handle("shell:get-status", (event) => (trustedSender(event) ? status : null));
   ipcMain.handle("shell:info", (event) =>

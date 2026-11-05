@@ -64,6 +64,10 @@ test("desktop state tolerates damaged preferences and bounds remain visible afte
     assert.deepEqual(fitBounds(saved, [primary, left]), saved);
     writeFileSync(file, JSON.stringify({ zoom: 999, bounds: { ...bounds, width: -1 } }));
     assert.deepEqual(readDesktopState(file), { zoom: 100, bounds: undefined, maximized: false });
+    writeFileSync(file, JSON.stringify({ zoom: 100, theme: "dark", dockExpanded: false }));
+    assert.deepEqual(readDesktopState(file), { zoom: 100, bounds: undefined, maximized: false, theme: "dark", dockExpanded: false });
+    writeFileSync(file, JSON.stringify({ zoom: 100, theme: "neon", dockExpanded: "no" }));
+    assert.deepEqual(readDesktopState(file), { zoom: 100, bounds: undefined, maximized: false });
   } finally { rmSync(directory, { recursive: true }); }
 });
 
