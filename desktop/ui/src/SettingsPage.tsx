@@ -4,6 +4,7 @@ import { type ReactNode, useEffect, useState } from "react";
 import { api } from "./api.ts";
 import type { Core } from "./App.tsx";
 import { ConfigForm } from "./ConfigForm.tsx";
+import { versionText } from "./format.ts";
 import { t } from "./i18n.ts";
 import {
   AUTO_RESIZE_KEY,
@@ -289,18 +290,18 @@ function About({ core }: { core: Core }) {
           <div className="fld">
             <div className="lb">ok-bd2</div>
             <div className="dsc">{t("自动化核心与任务")}</div>
-            <div className="ctrl mono">{core.info ? `v${core.info.core_version}` : "…"}</div>
+            <div className="ctrl mono">{core.info ? versionText(core.info.core_version) : "…"}</div>
           </div>
           <div className="fld">
             <div className="lb">{t("新客户端")}</div>
             <div className="dsc">{t("外壳与页面")}</div>
-            <div className="ctrl mono">{shell ? `v${shell}` : "—"}</div>
+            <div className="ctrl mono">{shell ? versionText(shell) : "—"}</div>
           </div>
           <div className="fld">
             <div className="lb">{t("启动器")}</div>
             <div className="dsc">{t("PyAppify，负责安装和更新")}</div>
             <div className="ctrl mono">
-              {launcher?.version ? `v${launcher.version}` : t("未知（源码运行）")}
+              {launcher?.version ? versionText(launcher.version) : t("未知（源码运行）")}
               {launcher?.outdated && <span className="chip warn">{t("过旧")}</span>}
             </div>
           </div>

@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api.ts";
 import { connectEvents } from "./events.ts";
+import { versionText } from "./format.ts";
 import { t } from "./i18n.ts";
 import { DevicePage } from "./DevicePage.tsx";
 import { appendRecords, LOG_LIMIT, type LogRecord, parseLog, recordsFromEvent } from "./logs.ts";
@@ -549,7 +550,7 @@ export function App() {
             </span>
             <span className="txt">
               <div className="nm">ok-bd2</div>
-              <div className="ver">{info ? `v${info.core_version.replace(/^v/i, "")}` : "…"}</div>
+              <div className="ver">{info ? versionText(info.core_version) : "…"}</div>
             </span>
           </div>
           {NAV.map((item) => (

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { clockText, dateText, durationText, elapsedText, refreshText, untilText, whenText } from "../src/format.ts";
+import { clockText, dateText, durationText, elapsedText, refreshText, untilText, versionText, whenText } from "../src/format.ts";
 
 // Thursday 2026-10-22 10:00 in Beijing.
 const NOW = Date.UTC(2026, 9, 22, 2, 0) / 1000;
@@ -32,4 +32,9 @@ test("durations match the Qt cards and the stopwatch pads", () => {
   assert.equal(elapsedText(72), "01:12");
   assert.equal(elapsedText(3723), "1:02:03");
   assert.equal(elapsedText(-5), "00:00");
+});
+
+test("a version reads the same from the source and from an installed tag", () => {
+  assert.equal(versionText("0.9.7"), "v0.9.7");
+  assert.equal(versionText("v0.9.7"), "v0.9.7");
 });

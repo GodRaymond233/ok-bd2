@@ -90,6 +90,11 @@ export function durationText(seconds: number | null | undefined): string {
   return `${whole % 60}s`;
 }
 
+/** "v0.9.7", whether the version came from the source ("0.9.7") or an installed tag ("v0.9.7"). */
+export function versionText(version: string): string {
+  return `v${version.replace(/^v/i, "")}`;
+}
+
 /** Stopwatch text for a run in progress: "01:12" or "1:02:03". */
 export function elapsedText(seconds: number): string {
   const whole = Math.max(0, Math.floor(seconds));
