@@ -92,6 +92,7 @@ class FakeManager:
 class ScriptCase(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.folder = self.root / "ok_tasks"
         self.folder.mkdir()
@@ -126,7 +127,6 @@ class ScriptCase(unittest.TestCase):
         previous = os.getcwd()
         os.chdir(self.root)
         self.addCleanup(os.chdir, previous)
-        self.addCleanup(self.temporary.cleanup)
         self.app = create_app(
             {"version": "0.1.1"},
             token=TOKEN,
