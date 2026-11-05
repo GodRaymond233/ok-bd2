@@ -23,11 +23,13 @@ export function connectEvents(
       onState(true);
     };
     socket.onmessage = (message) => {
+      let payload: EventPayload;
       try {
-        onEvent(JSON.parse(String(message.data)) as EventPayload);
+        payload = JSON.parse(String(message.data)) as EventPayload;
       } catch {
-        // ignore malformed frames
+        return; // ignore malformed frames
       }
+      onEvent(payload);
     };
     socket.onclose = () => {
       onState(false);
