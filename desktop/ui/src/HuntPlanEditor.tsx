@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api } from "./api.ts";
+import { api, errorText } from "./api.ts";
 import type { Core } from "./App.tsx";
 import { t } from "./i18n.ts";
 import type { HuntBook, HuntPlan, HuntPlans, HuntStep, TaskPayload } from "./types.ts";
@@ -86,7 +86,7 @@ export function HuntPlanEditor({ core, task, onClose }: { core: Core; task: Task
       setBook(value.book);
       setBaseline(JSON.stringify(value.book));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(errorText(reason));
     } finally {
       setLoading(false);
     }
@@ -107,7 +107,7 @@ export function HuntPlanEditor({ core, task, onClose }: { core: Core; task: Task
           if (!controller.signal.aborted) setPreview({ key: previewKey, ...value, error: false });
         },
         (reason: unknown) => {
-          if (!controller.signal.aborted) setPreview({ key: previewKey, text: String(reason), error: true, runnable: false });
+          if (!controller.signal.aborted) setPreview({ key: previewKey, text: errorText(reason), error: true, runnable: false });
         },
       );
     }, 250);
@@ -138,7 +138,7 @@ export function HuntPlanEditor({ core, task, onClose }: { core: Core; task: Task
       core.notify(t("方案已保存，将用于后续快速狩猎"));
       onClose();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(errorText(reason));
     } finally {
       setSaving(false);
     }

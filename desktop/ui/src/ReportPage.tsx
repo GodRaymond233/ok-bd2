@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "./api.ts";
+import { api, errorText } from "./api.ts";
 import type { Core } from "./App.tsx";
 import { t } from "./i18n.ts";
 import type { ReportState } from "./types.ts";
@@ -12,7 +12,7 @@ export function ReportPage({ core }: { core: Core }) {
   const [description, setDescription] = useState("");
   const load = () => {
     setLoading(true);
-    return api.reportState().then((value) => { setState(value); setError(null); }, (reason: unknown) => setError(String(reason)))
+    return api.reportState().then((value) => { setState(value); setError(null); }, (reason: unknown) => setError(errorText(reason)))
       .finally(() => setLoading(false));
   };
   useEffect(() => { void load(); }, []);
@@ -21,7 +21,7 @@ export function ReportPage({ core }: { core: Core }) {
     setError(null);
     await core.act(async () => {
       try { setState(await action()); }
-      catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); throw reason; }
+      catch (reason) { setError(errorText(reason)); throw reason; }
     });
     setBusy(false);
   };

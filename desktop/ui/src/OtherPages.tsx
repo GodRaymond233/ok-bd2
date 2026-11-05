@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api } from "./api.ts";
+import { api, errorText } from "./api.ts";
 import type { Core } from "./App.tsx";
 import { durationText } from "./format.ts";
 import { t } from "./i18n.ts";
@@ -23,7 +23,7 @@ export function RecordsPage({ core }: { core: Core }) {
     setLoading(true);
     api.history("", 300).then(
       (value) => { if (!cancelled) { setRuns(value); setError(null); } },
-      (reason: unknown) => !cancelled && setError(String(reason)),
+      (reason: unknown) => !cancelled && setError(errorText(reason)),
     ).finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
   }, [core.historyVersion, reload]);

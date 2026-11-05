@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "./api.ts";
+import { api, errorText } from "./api.ts";
 import type { Core } from "./App.tsx";
 import { t } from "./i18n.ts";
 import { Icon } from "./ui.tsx";
@@ -27,7 +27,7 @@ export function Preview({ core }: { core: Core }) {
           setError(null);
         }
       } catch (reason) {
-        if (!cancelled) { setImage(null); setError(reason instanceof Error ? reason.message : String(reason)); }
+        if (!cancelled) { setImage(null); setError(errorText(reason)); }
       } finally {
         if (!cancelled) timer = setTimeout(() => void tick(), 500);
       }

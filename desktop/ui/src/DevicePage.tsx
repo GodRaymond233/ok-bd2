@@ -1,7 +1,7 @@
 // 设备: is the game connected and how it is captured, the Starter wait, the window size, and
 // the game start and exit options (user decision 2026-10-23: they live here, not in 设置).
 import { useEffect, useState } from "react";
-import { api } from "./api.ts";
+import { api, errorText } from "./api.ts";
 import type { Core } from "./App.tsx";
 import { ConfigForm } from "./ConfigForm.tsx";
 import { captureChoices, sizeText, starterProgress, starterText } from "./device.ts";
@@ -10,8 +10,6 @@ import { AUTO_RESIZE_KEY, BASIC, DEVICE_KEYS, findGroup, pickFields } from "./se
 import type { GamePaths, WindowInfo } from "./types.ts";
 import { Icon } from "./ui.tsx";
 import { Preview } from "./Preview.tsx";
-
-const message = (reason: unknown) => (reason instanceof Error ? reason.message : String(reason));
 
 function Connection({ core }: { core: Core }) {
   const ui = core.ui;
@@ -123,7 +121,7 @@ function Resolution({ core }: { core: Core }) {
           text: value.changed ? `${t("已调整到")} ${sizeText([value.width, value.height])}` : `${t("已经是")} ${sizeText([value.width, value.height])}`,
           error: false,
         }),
-      (reason: unknown) => setResult({ text: `${t("调整失败")}：${message(reason)}`, error: true }),
+      (reason: unknown) => setResult({ text: `${t("调整失败")}：${errorText(reason)}`, error: true }),
     ).finally(() => setWorking(false));
   };
   const running = Boolean(core.current) && !core.ui?.status.paused;

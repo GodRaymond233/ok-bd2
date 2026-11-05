@@ -27,6 +27,11 @@ export class ApiError extends Error {
   }
 }
 
+/** What to show for a caught error. */
+export function errorText(reason: unknown): string {
+  return reason instanceof Error ? reason.message : String(reason);
+}
+
 function detailText(detail: unknown): string {
   if (typeof detail === "string") {
     return detail;

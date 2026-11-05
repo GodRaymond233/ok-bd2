@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
-import { api, ApiError } from "../src/api.ts";
+import { api, ApiError, errorText } from "../src/api.ts";
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -69,4 +69,9 @@ test("a cancelled request stays a cancellation", async () => {
   };
   await assert.rejects(api.preview(NOT_CANCELLED), (error) => error === cancelled);
   await assert.rejects(api.info(), (error) => error === cancelled);
+});
+
+test("a caught error reads as its message, without the type in front", () => {
+  assert.equal(errorText(new ApiError(400, "请先连接游戏")), "请先连接游戏");
+  assert.equal(errorText("断开连接"), "断开连接");
 });

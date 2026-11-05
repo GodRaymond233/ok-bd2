@@ -2,6 +2,7 @@
 // choices save at once; text and numbers save when the field loses focus or on Enter.
 // A refused value shows the core's reason under the field and the field shows the saved value.
 import { type KeyboardEvent, type ReactNode, useEffect, useState } from "react";
+import { errorText } from "./api.ts";
 import { fieldLabel, isModified, linesToList, numberStep, optionList, optionText, parseNumber, stepNumber, toggleChoice, valueText } from "./form.ts";
 import { t } from "./i18n.ts";
 import type { ConfigField } from "./types.ts";
@@ -203,7 +204,7 @@ function Field({
     setError(null);
     saveField(field.key, value).then(
       () => setSaved(Date.now()),
-      (reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)),
+      (reason: unknown) => setError(errorText(reason)),
     );
   };
   const modified = isModified(field);

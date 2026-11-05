@@ -1,6 +1,6 @@
 // The desktop client: navigation rail, pages and the run panel shared by all pages.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api } from "./api.ts";
+import { api, errorText } from "./api.ts";
 import { connectEvents } from "./events.ts";
 import { versionText } from "./format.ts";
 import { t } from "./i18n.ts";
@@ -97,8 +97,6 @@ const REFRESH_EVENTS = new Set(["task", "task_done", "task_list_updated", "execu
 const CAPTURE_EVENTS = new Set(["starting_emulator", "starter_wait", "adb_devices"]);
 const DOCK_KEY = "okbd2.dockExpanded";
 
-const message = (reason: unknown) => (reason instanceof Error ? reason.message : String(reason));
-
 function storedDockExpanded(): boolean {
   try {
     const value = localStorage.getItem(DOCK_KEY);
@@ -167,7 +165,7 @@ export function App() {
       setSettings(groups);
       setCoreError(null);
     } catch (reason) {
-      setCoreError(message(reason));
+      setCoreError(errorText(reason));
     }
   }, []);
 
@@ -355,7 +353,7 @@ export function App() {
         await action();
         return true;
       } catch (reason) {
-        setToast({ text: message(reason), error: true });
+        setToast({ text: errorText(reason), error: true });
         return false;
       } finally {
         scheduleRefresh();

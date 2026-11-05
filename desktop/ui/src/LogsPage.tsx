@@ -1,7 +1,7 @@
 // 日志: the log file's last records plus the live ones, with level and text filters, date and
 // run dividers, and "follow latest" that stops when you scroll up.
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { api } from "./api.ts";
+import { api, errorText } from "./api.ts";
 import type { Core } from "./App.tsx";
 import { durationText } from "./format.ts";
 import { t } from "./i18n.ts";
@@ -132,7 +132,7 @@ export function LogsPage({
       (reason: unknown) => {
         if (!cancelled) {
           setFile([]);
-          setFileError(reason instanceof Error ? reason.message : String(reason));
+          setFileError(errorText(reason));
         }
       },
     );

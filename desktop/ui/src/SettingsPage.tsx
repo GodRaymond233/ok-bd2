@@ -1,7 +1,7 @@
 // 设置: 通用, 通知, 关于与更新. Fields come from ok-script's global settings, named by the
 // core; the game start and exit options are on the device page.
 import { type ReactNode, useEffect, useState } from "react";
-import { api } from "./api.ts";
+import { api, errorText } from "./api.ts";
 import type { Core } from "./App.tsx";
 import { ConfigForm } from "./ConfigForm.tsx";
 import { versionText } from "./format.ts";
@@ -28,7 +28,6 @@ import type { AboutInfo, BackupEntry, BackupList, ShellDesktop, UpdateCheck } fr
 import { ConfirmDialog, Icon, Menu, Toggle } from "./ui.tsx";
 
 type Tab = "general" | "notify" | "about";
-const message = (reason: unknown) => (reason instanceof Error ? reason.message : String(reason));
 const NOTICES_URL = "https://github.com/GodRaymond233/ok-bd2/blob/main/THIRD_PARTY_NOTICES.md";
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -55,7 +54,7 @@ function General({ core }: { core: Core }) {
       if (!shell?.desktop) return;
       shell.desktop().then((value) => {
         if (active) { setDesktop(value); setDesktopError(null); }
-      }, (reason) => { if (active) setDesktopError(message(reason)); });
+      }, (reason) => { if (active) setDesktopError(errorText(reason)); });
     };
     refresh();
     const timer = retrying ? window.setInterval(refresh, DESKTOP_RETRY_MS) : undefined;
@@ -237,7 +236,7 @@ function About({ core }: { core: Core }) {
   const runCheck = () => {
     setChecking(true);
     setCheckError(null);
-    api.updates().then(setCheck, (reason: unknown) => setCheckError(message(reason))).finally(() => setChecking(false));
+    api.updates().then(setCheck, (reason: unknown) => setCheckError(errorText(reason))).finally(() => setChecking(false));
   };
   const latest = check?.versions[0];
   let update;
@@ -387,7 +386,7 @@ function Backups({ core }: { core: Core }) {
   const [busy, setBusy] = useState(false);
   const [restoring, setRestoring] = useState<BackupEntry | null>(null);
   const refresh = () => api.backups().then((value) => { setData(value); setError(null); },
-    (reason) => setError(message(reason)));
+    (reason) => setError(errorText(reason)));
   useEffect(() => { void refresh(); }, []);
   return <Section title={t("配置备份与恢复")}>
     <div className="card pad">
