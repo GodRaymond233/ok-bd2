@@ -3,7 +3,8 @@
  *
  * The system follows ok-script 3's kit (ok/ui/qt/kit/theme.py), which ok-ww's new UI uses:
  * neutral greys, one accent, flat bordered surfaces, and a window frame (sidebar and run bar)
- * in one tone with the page content on a layer of its own.
+ * in one tone with the page content on a layer of its own. The accent is the Fluent blue of the
+ * Qt UI (src/ui/quest_theme.py), chosen by the user over the kit's violet.
  *
  * --accent fills sit behind white text (4.5:1); --accent-ink is the same hue for text and icons
  * on surfaces. To change the app's color, change the --accent-* values here and their dark
@@ -53,11 +54,11 @@
   --switch-off: #8E8E96;
 
   /* ---- accent ---- */
-  --accent: #7350FF;
-  --accent-rgb: 115, 80, 255;
-  --accent-hi: #6238F5;       /* hover */
-  --accent-deep: #5629E0;     /* pressed */
-  --accent-ink: #5B35E6;      /* text and icons on surfaces */
+  --accent: #0F6CBD;
+  --accent-rgb: 15, 108, 189;
+  --accent-hi: #115EA3;       /* hover */
+  --accent-deep: #0F548C;     /* pressed */
+  --accent-ink: #0F5FA6;      /* text and icons on surfaces */
   --accent-soft: rgba(var(--accent-rgb), .14);
   --accent-wash: rgba(var(--accent-rgb), .07);
   --accent-line: rgba(var(--accent-rgb), .55);
@@ -163,12 +164,12 @@
     --ink-faint: #9494A1;
     --ink-disabled: #6E6E7A;
     --switch-off: #6E6E7A;
-    --accent-hi: #6A46F5;
-    --accent-deep: #5F3BE8;
-    --accent-ink: #AD9CFF;
+    --accent-hi: #1673C6;
+    --accent-deep: #0F62AB;
+    --accent-ink: #6CB6F7;
     --accent-soft: rgba(var(--accent-rgb), .22);
     --accent-wash: rgba(var(--accent-rgb), .12);
-    --accent-line: rgba(173, 156, 255, .55);
+    --accent-line: rgba(108, 182, 247, .55);
     --ok: #4ADE80;
     --ok-soft: rgba(74, 222, 128, .11);
     --danger: #F87171;
@@ -207,12 +208,12 @@
   --ink-faint: #9494A1;
   --ink-disabled: #6E6E7A;
   --switch-off: #6E6E7A;
-  --accent-hi: #6A46F5;
-  --accent-deep: #5F3BE8;
-  --accent-ink: #AD9CFF;
+  --accent-hi: #1673C6;
+  --accent-deep: #0F62AB;
+  --accent-ink: #6CB6F7;
   --accent-soft: rgba(var(--accent-rgb), .22);
   --accent-wash: rgba(var(--accent-rgb), .12);
-  --accent-line: rgba(173, 156, 255, .55);
+  --accent-line: rgba(108, 182, 247, .55);
   --ok: #4ADE80;
   --ok-soft: rgba(74, 222, 128, .11);
   --danger: #F87171;
