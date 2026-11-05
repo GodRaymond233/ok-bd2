@@ -13,6 +13,7 @@ from unittest.mock import Mock, patch
 import cv2
 import numpy as np
 from fastapi.testclient import TestClient
+from ok import Config
 from ok.core.template_store import CocoTemplateStore
 
 from src.desktop import scripts as scripts_module
@@ -121,6 +122,7 @@ class ScriptCase(unittest.TestCase):
             ),
         )
         self.controller = controller
+        self.enterContext(patch.object(Config, "config_folder", str(self.root / "configs")))
         previous = os.getcwd()
         os.chdir(self.root)
         self.addCleanup(os.chdir, previous)
@@ -490,11 +492,28 @@ class TemplateRoutesTest(ScriptCase):
         ):
             self.assertIn(reason, self.post("/api/bd2/templates/save", body).json()["detail"])
         self.assertFalse((self.root / "src").exists())
+
+    def test_save_remembers_its_choices_in_the_qt_tabs_file(self):
         info = self.get("/api/bd2/templates/info").json()
         self.assertEqual(
             info,
             {"debug": False, "generate_label_enum": False, "enum_path": scripts_module.ENUM_PATH},
         )
+        self.post(
+            "/api/templates/0.png/annotations",
+            {"annotations": [{"category": "ok", "bbox": [1, 2, 3, 4]}]},
+        )
+        path = "ok_tasks/Mine.py"
+        saved = self.post(
+            "/api/bd2/templates/save",
+            {"format": "split", "generate_label_enum": True, "enum_path": path},
+        )
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertTrue((self.root / path).is_file())
+        info = self.get("/api/bd2/templates/info").json()
+        self.assertTrue(info["generate_label_enum"])
+        self.assertEqual(info["enum_path"], path)
+        self.assertTrue((self.root / "configs" / "template_tab.json").is_file())
 
     def test_save_says_when_there_is_nothing(self):
         self.store.coco_path.unlink(missing_ok=True)

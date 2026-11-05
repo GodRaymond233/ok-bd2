@@ -15,6 +15,7 @@ from pathlib import Path
 from urllib.parse import unquote
 
 from fastapi import HTTPException, Request
+from ok import Config
 from ok.core.events import communicate
 from ok.util.explorer import reveal_in_explorer
 
@@ -407,6 +408,12 @@ def install_scripts(app, runtime):
             raise ValueError(f"枚举文件只能放在 ok_tasks 文件夹里，例如 {ENUM_PATH}")
         return ".".join(parts)
 
+    def template_options():
+        # The Qt tab's own file: both windows remember the same choices.
+        return Config(
+            "template_tab", {"generate_label_enum": False, "label_enum_relative_path": ENUM_PATH}
+        )
+
     def save_templates(body):
         from ok.feature.FeatureSet import compress_copy_coco, generate_templates
 
@@ -436,6 +443,10 @@ def install_scripts(app, runtime):
             feature_set = getattr(runtime.executor, "feature_set", None)
             if feature_set is not None:
                 feature_set.process_data()
+            options = template_options()
+            options["generate_label_enum"] = bool(body.get("generate_label_enum"))
+            if body.get("enum_path"):
+                options["label_enum_relative_path"] = str(body["enum_path"])
         return {"folder": str(target)}
 
     runtime.scripts = scripts
@@ -492,13 +503,11 @@ def install_scripts(app, runtime):
 
     @app.get("/api/bd2/templates/info")
     def templates_info():
-        debug = bool(runtime.ok.config.get("debug"))
-        # The configured defaults name the program's own files, for development only.
-        defaults = (runtime.ok.config.get("template_tab") or {}) if debug else {}
+        options = template_options()
         return {
-            "debug": debug,
-            "generate_label_enum": bool(defaults.get("generate_label_enum")),
-            "enum_path": defaults.get("label_enum_relative_path") or ENUM_PATH,
+            "debug": bool(runtime.ok.config.get("debug")),
+            "generate_label_enum": bool(options.get("generate_label_enum")),
+            "enum_path": options.get("label_enum_relative_path") or ENUM_PATH,
         }
 
     @app.post("/api/bd2/templates/save")

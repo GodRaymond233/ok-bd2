@@ -6,19 +6,16 @@ import type { Core } from "./App.tsx";
 import { t } from "./i18n.ts";
 import { MarkupEditor } from "./MarkupEditor.tsx";
 import { matchesTemplate } from "./markup.ts";
-import { rememberTemplateSave, storedTemplateSave } from "./settings.ts";
 import type { TemplateImage, TemplatesInfo } from "./types.ts";
 import { ConfirmDialog, Icon } from "./ui.tsx";
 
 function SaveDialog({ info, onDone, onCancel }: { info: TemplatesInfo; onDone: (folder: string) => void; onCancel: () => void }) {
-  const remembered = storedTemplateSave();
   const [format, setFormat] = useState("split");
   const [destination, setDestination] = useState("tasks");
-  const [generate, setGenerate] = useState(remembered?.generate ?? info.generate_label_enum);
-  const [enumPath, setEnumPath] = useState(remembered?.path ?? info.enum_path);
+  const [generate, setGenerate] = useState(info.generate_label_enum);
+  const [enumPath, setEnumPath] = useState(info.enum_path);
   const [error, setError] = useState<string | null>(null);
   const save = () => {
-    rememberTemplateSave({ generate, path: enumPath });
     api.saveTemplates({ format, destination, generate_label_enum: generate, enum_path: enumPath }).then(
       (result) => onDone(result.folder),
       (reason: unknown) => setError(errorText(reason)),
@@ -41,7 +38,7 @@ function SaveDialog({ info, onDone, onCancel }: { info: TemplatesInfo; onDone: (
         {generate && (
           <label>
             {t("枚举文件路径")}
-            <input className="input mono" value={enumPath} placeholder={info.enum_path} onChange={(event) => setEnumPath(event.target.value)} />
+            <input className="input mono" value={enumPath} placeholder="ok_tasks/LabelEnum.py" onChange={(event) => setEnumPath(event.target.value)} />
             <small>{t("路径相对于程序所在文件夹。")}</small>
           </label>
         )}
@@ -58,7 +55,7 @@ export function TemplatesPage({ core }: { core: Core }) {
   const [marking, setMarking] = useState<string | null>(null);
   const [capturing, setCapturing] = useState(false);
   const [dialog, setDialog] = useState<"delete" | "save" | null>(null);
-  const [info, setInfo] = useState<TemplatesInfo>({ debug: false, generate_label_enum: false, enum_path: "ok_tasks/LabelEnum.py" });
+  const [info, setInfo] = useState<TemplatesInfo | null>(null);
   const grid = useRef<HTMLDivElement>(null);
 
   const report = useCallback((reason: unknown) => {
@@ -168,7 +165,7 @@ export function TemplatesPage({ core }: { core: Core }) {
           <p>{t("图片和它的标注都会被删除，这个操作无法撤销。")}</p>
         </ConfirmDialog>
       )}
-      {dialog === "save" && (
+      {dialog === "save" && info && (
         <SaveDialog
           info={info}
           onCancel={() => setDialog(null)}
