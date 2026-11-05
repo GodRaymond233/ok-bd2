@@ -25,7 +25,7 @@ from src.desktop import protocol
 from src.desktop.backups import installed_base
 
 # The shell build this core expects; bumped together with desktop/shell/package.json.
-REQUIRED_SHELL_VERSION = "0.3.0"
+REQUIRED_SHELL_VERSION = "0.3.1"
 MANIFEST_NAME = "shell-manifest.json"
 SHELL_EXECUTABLE = "ok-bd2-desktop.exe" if os.name == "nt" else "ok-bd2-desktop"
 SHELL_DIR_ENV = "OK_BD2_SHELL_DIR"
