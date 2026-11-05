@@ -1,12 +1,15 @@
+import hashlib
 import json
 import os
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from src.desktop import bootstrap, protocol
+from src.desktop.shell_install import install_shell
 
 
 class ShellLayoutTest(unittest.TestCase):
@@ -124,6 +127,87 @@ class MainTest(unittest.TestCase):
             code = bootstrap.main([], popen=None, working_dir=Path(directory))
         self.assertEqual(code, protocol.EXIT_SHELL_MISSING)
         report.assert_called_once()
+
+
+class ShellDownloadTest(unittest.TestCase):
+    def test_pinned_download_uses_next_source_and_keeps_old_shell(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            old = root / "shell/0.1.0/sentinel"
+            old.parent.mkdir(parents=True)
+            old.write_text("old", "utf-8")
+            archive = root / "shell.zip"
+            manifest = {"version": bootstrap.REQUIRED_SHELL_VERSION, "api": {"min": 1, "max": 1}}
+            with zipfile.ZipFile(archive, "w") as output:
+                output.writestr(bootstrap.SHELL_EXECUTABLE, b"verified shell")
+                output.writestr(bootstrap.MANIFEST_NAME, json.dumps(manifest))
+            release = root / "release.json"
+            release.write_text(
+                json.dumps(
+                    {
+                        "version": bootstrap.REQUIRED_SHELL_VERSION,
+                        "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+                        "urls": [(root / "missing.zip").as_uri(), archive.as_uri()],
+                    }
+                ),
+                "utf-8",
+            )
+            destination = root / "shell" / bootstrap.REQUIRED_SHELL_VERSION
+            executable = install_shell(
+                destination,
+                bootstrap.REQUIRED_SHELL_VERSION,
+                bootstrap.check_shell,
+                release_file=release,
+            )
+            self.assertEqual(executable.read_bytes(), b"verified shell")
+            self.assertEqual(old.read_text("utf-8"), "old")
+            archive.unlink()
+            self.assertEqual(
+                install_shell(
+                    destination,
+                    bootstrap.REQUIRED_SHELL_VERSION,
+                    bootstrap.check_shell,
+                    release_file=release,
+                ),
+                executable,
+            )
+
+    def test_hash_mismatch_and_unsafe_zip_leave_no_installed_version(self):
+        for name, wrong_hash in (
+            ("../outside", False),
+            ("C:/outside", False),
+            ("file:stream", False),
+            ("CON.txt", False),
+            (bootstrap.SHELL_EXECUTABLE, True),
+        ):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                archive = root / "bad.zip"
+                with zipfile.ZipFile(archive, "w") as output:
+                    output.writestr(name, b"bad")
+                release = root / "release.json"
+                release.write_text(
+                    json.dumps(
+                        {
+                            "version": bootstrap.REQUIRED_SHELL_VERSION,
+                            "sha256": "0" * 64
+                            if wrong_hash
+                            else hashlib.sha256(archive.read_bytes()).hexdigest(),
+                            "urls": [archive.as_uri()],
+                        }
+                    ),
+                    "utf-8",
+                )
+                destination = root / "shell" / bootstrap.REQUIRED_SHELL_VERSION
+                with self.assertRaises(ValueError):
+                    install_shell(
+                        destination,
+                        bootstrap.REQUIRED_SHELL_VERSION,
+                        bootstrap.check_shell,
+                        release_file=release,
+                    )
+                self.assertFalse(destination.exists())
+                self.assertFalse((root / "outside").exists())
 
 
 if __name__ == "__main__":

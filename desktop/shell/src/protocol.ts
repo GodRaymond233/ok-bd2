@@ -35,7 +35,10 @@ export type FatalMessage = {
 };
 export type ExitingMessage = { type: "exiting"; reason: string };
 export type NotificationMessage = { type: "notification"; title: string; message: string; error: boolean };
-export type CoreMessage = ReadyMessage | FatalMessage | ExitingMessage | NotificationMessage;
+export type MaintenanceMessage = { type: "maintenance"; operation: "update" | "restore";
+  version: string; target: string; backup_id: string; launcher: string };
+export type CoreMessage = ReadyMessage | FatalMessage | ExitingMessage | NotificationMessage |
+  MaintenanceMessage | { type: "maintenance-ready" };
 
 export function parseCoreLine(line: string): CoreMessage | null {
   if (!line.startsWith(LINE_PREFIX)) {
@@ -83,6 +86,13 @@ export function parseCoreLine(line: string): CoreMessage | null {
           typeof message.error !== "boolean") return null;
       return { type: "notification", title: message.title.slice(0, 256),
         message: message.message.slice(0, 4096), error: message.error };
+    case "maintenance":
+      if ((message.operation !== "update" && message.operation !== "restore") ||
+          !["version", "target", "backup_id", "launcher"].every((key) => typeof message[key] === "string")) return null;
+      return { type: "maintenance", operation: message.operation, version: String(message.version),
+        target: String(message.target), backup_id: String(message.backup_id), launcher: String(message.launcher) };
+    case "maintenance-ready":
+      return { type: "maintenance-ready" };
     default:
       return null;
   }

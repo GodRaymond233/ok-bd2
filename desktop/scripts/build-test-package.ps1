@@ -107,6 +107,9 @@ function Write-UpdateTree {
     }
     Copy-Item -Force (Join-Path $root '.update_repo_gitignore') (Join-Path $Destination '.gitignore')
     Write-TestYml (Join-Path $Destination 'pyappify.yml')
+    Invoke-Native $python @((Join-Path $PSScriptRoot 'build-shell-release.py'),
+        '--output', (Join-Path $Output 'shell-downloads'),
+        '--manifest', (Join-Path $Destination 'src\desktop\shell-release.json'), '--local')
 }
 
 if (-not (Test-Path $python)) {
@@ -221,7 +224,7 @@ Copy-Item -Recurse -Force (Join-Path $shellBuild '*') $shellTarget
 # 5. First-run setup: clone from the local repo, install Python and the locked requirements.
 if (-not $SkipSetup) {
     Write-Host 'Running the launcher setup (UAC prompt; downloads Python and the requirements)...'
-    $setup = Start-Process -FilePath (Join-Path $Output 'ok-bd2.exe') -ArgumentList @('-c', 'setup', '-p', $AppProfile) -WorkingDirectory $Output -Wait -PassThru
+    $setup = Start-Process -FilePath (Join-Path $Output 'ok-bd2.exe') -ArgumentList @('-c', 'setup', '-p', $AppProfile) -WorkingDirectory $Output -WindowStyle Hidden -Wait -PassThru
     Write-Host "setup exit code: $($setup.ExitCode)"
     $working = Join-Path $appBase 'working'
     if ($setup.ExitCode -ne 0 -or -not (Test-Path (Join-Path $working 'main_desktop.py'))) {

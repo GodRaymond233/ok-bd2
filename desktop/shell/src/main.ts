@@ -30,6 +30,8 @@ import {
   type ShellOptions,
 } from "./shell-config";
 import { ShellLog } from "./shell-log";
+import { launchUpdate, maintainData } from "./maintenance";
+import type { MaintenanceMessage } from "./protocol";
 
 type StatusKind = "starting" | "error" | "crashed" | "exiting";
 
@@ -80,6 +82,8 @@ let desktopSync: Promise<void> = Promise.resolve();
 let desktopRetry: ReturnType<typeof setTimeout> | null = null;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let controlDialogOpen = false;
+let maintenanceRunning = false;
+const cleanMaintenance = new WeakSet<CoreProcess>();
 const startedAt = Date.now();
 const smoke: Record<string, unknown> = { shellPid: process.pid };
 let status: ShellStatus = {
@@ -130,7 +134,7 @@ function flushDesktopState(): void {
 function toggleExecution(): void {
   const process_ = core;
   const ready = process_?.ready;
-  if (quit.started || process_?.state !== "ready" || !ready) return;
+  if (maintenanceRunning || quit.started || process_?.state !== "ready" || !ready) return;
   void executionToggle.run(() => fetch(`${ready.origin}/api/desktop/toggle-execution`, {
     method: "POST", headers: { Authorization: `Bearer ${process_.token}` },
     signal: AbortSignal.timeout(5000),
@@ -153,11 +157,11 @@ function reportControlFailure(failure: ToggleFailure): void {
 
 async function readDesktopPreferences(process_: CoreProcess): Promise<void> {
   try {
-    if (process_ !== core || quit.started || process_.state !== "ready") return;
+    if (maintenanceRunning || process_ !== core || quit.started || process_.state !== "ready") return;
     const result = await apiGet("/api/desktop/preferences") as {
       status: number; body: { closeToTray: boolean; hotkey: string };
     } | null;
-    if (process_ !== core || quit.started || process_.state !== "ready") return;
+    if (maintenanceRunning || process_ !== core || quit.started || process_.state !== "ready") return;
     if (!result || result.status !== 200) throw new Error("无法读取桌面设置");
     closeToTray = result.body.closeToTray === true;
     hotkey.apply(result.body.hotkey);
@@ -174,13 +178,13 @@ async function readDesktopPreferences(process_: CoreProcess): Promise<void> {
 // One read after another, so a read that started before a save can never hide the saved value.
 function syncDesktop(): Promise<void> {
   const process_ = core;
-  if (quit.started || process_?.state !== "ready") return Promise.resolve();
+  if (maintenanceRunning || quit.started || process_?.state !== "ready") return Promise.resolve();
   desktopSync = desktopSync.then(() => readDesktopPreferences(process_));
   return desktopSync;
 }
 
 function retryDesktopSoon(): void {
-  if (desktopRetry || quit.started || !(syncError || hotkey.waitingForKey)) return;
+  if (maintenanceRunning || desktopRetry || quit.started || !(syncError || hotkey.waitingForKey)) return;
   desktopRetry = setTimeout(() => {
     desktopRetry = null;
     void syncDesktop();
@@ -281,6 +285,8 @@ async function startCore(): Promise<void> {
     if (core === process_ && message.type === "notification") {
       deliverNotification(message.title || "ok-bd2", message.message, message.error);
     }
+    if (core === process_ && message.type === "maintenance-ready") cleanMaintenance.add(process_);
+    if (core === process_ && message.type === "maintenance") void performMaintenance(process_, message);
   });
   process_.on("exit", (exit: CoreExit) => onCoreExit(process_, exit));
   log.info(`starting core: ${options.core.python} ${options.core.script} (cwd ${options.core.cwd})`);
@@ -499,7 +505,7 @@ function onCoreExit(process_: CoreProcess, exit: CoreExit): void {
 }
 
 async function restartCore(): Promise<void> {
-  if (quit.started) {
+  if (quit.started || maintenanceRunning) {
     return;
   }
   const previous = core;
@@ -507,6 +513,39 @@ async function restartCore(): Promise<void> {
     await previous.stop("restart");
   }
   await startCore();
+}
+
+async function performMaintenance(process_: CoreProcess, message: MaintenanceMessage): Promise<void> {
+  if (maintenanceRunning || quit.started || !options) return;
+  maintenanceRunning = true;
+  hotkey.release();
+  if (desktopRetry) clearTimeout(desktopRetry);
+  flushDesktopState();
+  showStatus({ kind: "exiting", title: message.operation === "update" ? "正在准备更新" : "正在恢复备份",
+    message: "正在停止核心并保存数据，请稍候。", details: [], canRestart: false });
+  try {
+    const stopped = await process_.stop("maintenance");
+    if (stopped.forced || stopped.exitCode !== 0 || !cleanMaintenance.has(process_))
+      throw new Error("核心未完成安全退出，维护操作已取消，配置保持原样。");
+    await maintainData(options.core.python, options.core.cwd, message);
+    if (quit.started || quitting) return;
+    if (message.operation === "update") {
+      await launchUpdate(options.core.cwd, message);
+      quitting = true;
+      app.exit(0);
+    } else {
+      showStatus({ kind: "exiting", title: "备份已恢复", message: "请重新启动客户端，核对设置与进度后再运行任务。",
+        details: [], canRestart: false });
+      quitting = true;
+      app.exit(0);
+    }
+  } catch (error) {
+    log.error(`maintenance failed: ${String(error)}`);
+    showStatus({ kind: "error", title: "维护未完成", message: String(error), details: [], canRestart: true });
+    showWindow();
+  } finally {
+    maintenanceRunning = false;
+  }
 }
 
 async function currentTask(): Promise<string | null> {
@@ -548,6 +587,7 @@ async function confirmQuit(): Promise<boolean> {
 }
 
 async function beginQuit(reason: string): Promise<void> {
+  if (maintenanceRunning && reason !== "session-end") return;
   if (!(await quit.begin(reason, confirmQuit))) {
     return;
   }

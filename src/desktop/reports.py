@@ -63,6 +63,8 @@ class ReportSession:
             if self.snapshot is not None:
                 return self.state()
             app = self.runtime.ok.headless_app
+            if getattr(app, "maintenance", False):
+                raise ValueError("正在准备更新或恢复备份，请稍候")
             if app.start_controller.starting or getattr(app, "window_resize_in_progress", False):
                 raise ValueError("请先等待游戏启动或窗口调整完成，再记录问题现场")
             app.diagnostic_pause = True

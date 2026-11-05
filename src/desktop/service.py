@@ -151,6 +151,8 @@ class ShutdownController:
         self._lock = threading.Lock()
         self.reason: str | None = None
         self.started_at: float | None = None
+        self.runtime_stopped = threading.Event()
+        self.quit_failed = False
 
     @property
     def started(self) -> bool:
@@ -194,7 +196,10 @@ class ShutdownController:
         try:
             quit_runtime()
         except Exception as error:
+            self.quit_failed = True
             self._logger.error(f"退出时停止运行时失败：{error}")
+        finally:
+            self.runtime_stopped.set()
 
 
 class CommandReader:
@@ -526,6 +531,9 @@ def _start_and_serve(
         config = config_loader()
         if configure is not None:
             configure(config)
+        from src.desktop.backups import prepare_installed_configs
+
+        prepare_installed_configs(config)
         controller.checkpoint()
         guard_installer()
         if guard.instances(force=True):
@@ -537,6 +545,12 @@ def _start_and_serve(
         origin = f"http://127.0.0.1:{port}"
         if app_factory is None:
             from src.desktop.app import create_app as app_factory
+        maintenance_requested = []
+
+        def request_maintenance(**fields):
+            maintenance_requested.append(fields)
+            channel.send("maintenance", **fields)
+
         app = app_factory(
             service_config(config),
             token=handshake.token,
@@ -544,6 +558,7 @@ def _start_and_serve(
             legacy_check=lambda: guard.blocking_message(force=True),
             legacy_instances=lambda: guard.instances(),
             request_shutdown=controller.request,
+            maintenance_request=request_maintenance,
         )
         runtime = app.state.runtime
         manager = getattr(getattr(runtime.ok, "headless_app", None), "notification_manager", None)
@@ -596,4 +611,22 @@ def _start_and_serve(
     logger.info(f"核心服务就绪：{origin}")
     server.wait()
     controller.request("server-stopped")
+    if maintenance_requested:
+        from ok import og
+
+        if not controller.runtime_stopped.wait(8) or controller.quit_failed:
+            logger.error("维护已取消：核心退出回调未完成")
+            return protocol.EXIT_STARTUP_FAILED
+        evidence = getattr(getattr(og, "my_app", None), "diagnostic_evidence", None)
+        threads = [getattr(runtime.executor, "thread", None),
+                   getattr(getattr(og, "handler", None), "thread", None),
+                   getattr(evidence, "worker", None)]
+        deadline = time.monotonic() + 8
+        for thread in threads:
+            if thread is not None and thread is not threading.current_thread():
+                thread.join(max(0, deadline - time.monotonic()))
+                if thread.is_alive():
+                    logger.error("维护已取消：后台写入尚未结束")
+                    return protocol.EXIT_STARTUP_FAILED
+        channel.send("maintenance-ready")
     return protocol.EXIT_OK

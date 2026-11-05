@@ -120,7 +120,7 @@ def start_application(
 
 def _run_windowed(config_loader, configure, mode: str) -> None:
     from src.compat.dependency_guard import ensure_core_dependencies
-    from src.desktop.protocol import EXIT_EXECUTOR_LOCKED
+    from src.desktop.protocol import EXIT_EXECUTOR_LOCKED, EXIT_STARTUP_FAILED
     from src.executor_guard import (
         acquire_executor_lock,
         install_executor_guards,
@@ -141,6 +141,14 @@ def _run_windowed(config_loader, configure, mode: str) -> None:
     config = config_loader()
     if configure is not None:
         configure(config)
+    from src.desktop.backups import prepare_installed_configs
+
+    try:
+        prepare_installed_configs(config)
+    except (OSError, ValueError, RuntimeError) as error:
+        if mode != "headless":
+            show_refusal_dialog(f"配置备份检查未通过：{error}")
+        raise SystemExit(EXIT_STARTUP_FAILED) from error
     # The session-wide executor lock replaces ok-script's per-directory mutex, which
     # would terminate a same-directory older instance after five seconds.
     config["check_mutex"] = False

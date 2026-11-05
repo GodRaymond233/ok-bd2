@@ -174,6 +174,7 @@ export interface CaptureUi {
   /** The Starter wait while the game starts (src/desktop/starter_wait.py). */
   starter_wait?: StarterWait | null;
   diagnostic_pause?: boolean;
+  maintenance?: boolean;
 }
 
 export interface StarterWait {
@@ -206,7 +207,20 @@ export interface UpdateCheck {
 export interface AboutInfo {
   version: string;
   links: Record<string, Record<string, string>>;
+  update_supported: boolean;
 }
+
+export interface BackupEntry {
+  id: string;
+  invalid?: boolean;
+  created_at?: string;
+  version?: string;
+  reason?: string;
+  file_count?: number;
+  bytes?: number;
+}
+
+export interface BackupList { items: BackupEntry[]; version: string; busy: boolean; supported: boolean }
 
 export interface DesktopInfo {
   api: number;

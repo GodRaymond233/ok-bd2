@@ -10,6 +10,9 @@ stdout (core -> shell), one line per message, prefixed with ``LINE_PREFIX``:
     {"type": "fatal", "code": str, "message": str}
     {"type": "exiting", "reason": str}
     {"type": "notification", "title": str, "message": str, "error": bool}
+    {"type": "maintenance", "operation": "update"|"restore", "version": str,
+     "target": str, "backup_id": str, "launcher": str}
+    {"type": "maintenance-ready"}  # only after the writers stopped cleanly
 Anything else on stdout or stderr is log output.
 """
 

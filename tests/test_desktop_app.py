@@ -136,6 +136,83 @@ def make_executor():
 
 
 class RuntimeControlTest(unittest.TestCase):
+    def test_update_requires_checked_newer_version_and_blocks_mutation_during_handoff(self):
+        from src.desktop.maintenance import install_maintenance
+
+        self.enterContext(patch("src.desktop.maintenance.active_launcher", return_value=None))
+        app, executor, facade = self.make_runtime([BaseTask])
+        runtime = app.state.runtime
+        runtime.check_for_updates = lambda release_only=True: {
+            "versions": [{"version": "v1.4.13"}, {"version": "v1.4.11"}]
+        }
+        runtime.about = lambda: {"update_supported": True}
+        runtime._pyappify_module = SimpleNamespace(pyappify_executable=__file__)
+        request = Mock()
+        install_maintenance(app, runtime, "1.4.12", request)
+        task = executor.onetime_tasks[0]
+        with TestClient(app) as client:
+            self.assertEqual(
+                client.post("/api/updates/apply", json={"version": "v1.4.13"}).status_code, 400
+            )
+            runtime.check_for_updates()
+            with patch("src.desktop.maintenance.active_launcher", return_value=Path("other.exe")):
+                with self.assertRaisesRegex(ValueError, "另一安装目录"):
+                    runtime.check_for_updates()
+                self.assertEqual(
+                    client.post("/api/updates/apply", json={"version": "v1.4.13"}).status_code, 400
+                )
+            self.assertEqual(
+                client.post("/api/updates/apply", json={"version": "v1.4.11"}).status_code, 400
+            )
+            self.assertFalse(getattr(facade, "maintenance", False))
+            task._enabled = True
+            response = client.post("/api/updates/apply", json={"version": "v1.4.13"})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertTrue(facade.maintenance)
+            self.assertTrue(executor.paused)
+            self.assertFalse(task.enabled)
+            request.assert_called_once_with(operation="update", version="1.4.12",
+                target="v1.4.13", backup_id="", launcher=__file__)
+            self.assertEqual(client.post(f"/api/tasks/{task.name}/start").status_code, 400)
+            self.assertEqual(client.post(
+                f"/api/tasks/{task.name}/config", json={"key": "value", "value": 2}
+            ).status_code, 400)
+            self.assertEqual(client.post("/api/desktop/backups").status_code, 400)
+            self.assertTrue(facade.maintenance)
+            self.assertEqual(
+                client.post("/api/updates/apply", json={"version": "v1.4.13"}).status_code, 400
+            )
+            self.assertEqual(request.call_count, 1)
+
+    def test_update_keeps_trigger_preference_and_refuses_unfinished_tasks(self):
+        from ok import TriggerTask
+
+        from src.desktop.maintenance import install_maintenance
+
+        self.enterContext(patch("src.desktop.maintenance.active_launcher", return_value=None))
+        app, executor, facade = self.make_runtime([TriggerTask])
+        task = executor.onetime_tasks.pop()
+        executor.trigger_tasks.append(task)
+        runtime = app.state.runtime
+        runtime.check_for_updates = lambda release_only=True: {"versions": [{"version": "v1.4.13"}]}
+        runtime.about = lambda: {"update_supported": True}
+        runtime._pyappify_module = SimpleNamespace(pyappify_executable=__file__)
+        request = Mock()
+        install_maintenance(app, runtime, "1.4.12", request)
+        runtime.check_for_updates()
+        task._enabled = True
+        task.config["_enabled"] = True
+        executor.current_task = task
+        task.running = True
+        with patch("src.desktop.maintenance.time.monotonic", side_effect=[0, 21]):
+            with self.assertRaisesRegex(RuntimeError, "安全停止"):
+                runtime.update_to_version("v1.4.13")
+        request.assert_not_called()
+        self.assertTrue(task.enabled)
+        self.assertTrue(task.config["_enabled"])
+        self.assertFalse(facade.maintenance)
+        self.assertTrue(executor.paused)
+
     def make_runtime(self, task_classes, legacy_check=None):
         self.enterContext(patch("ok.core.events.communicate.task.emit"))
         directory = tempfile.TemporaryDirectory()

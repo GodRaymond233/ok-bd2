@@ -1,6 +1,8 @@
 // Same-origin calls to the core. The launch cookie authenticates every request.
 import type {
   AboutInfo,
+  BackupEntry,
+  BackupList,
   CaptureUi,
   DesktopInfo,
   ExecutorStatus,
@@ -66,6 +68,10 @@ export const api = {
   testNotification: (channel: string) => request<{ sent: boolean }>("/api/bd2/notify/test", "POST", { channel }),
   about: () => request<AboutInfo>("/api/about"),
   updates: () => request<UpdateCheck>("/api/updates"),
+  applyUpdate: (version: string) => request<{ accepted: boolean }>("/api/updates/apply", "POST", { version }),
+  backups: () => request<BackupList>("/api/desktop/backups"),
+  createBackup: () => request<BackupEntry>("/api/desktop/backups", "POST", {}),
+  restoreBackup: (id: string) => request<{ accepted: boolean }>("/api/desktop/backups/restore", "POST", { id, confirmed: true }),
   refreshDevices: () => request<{ accepted: boolean }>("/api/devices/refresh", "POST"),
   startTask: (name: string) => request<TaskPayload>(`/api/tasks/${encodeURIComponent(name)}/start`, "POST"),
   taskAction: (name: string, action: string) =>

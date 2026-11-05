@@ -9,6 +9,22 @@ const require = createRequire(import.meta.url);
 const protocol = require("../dist/protocol.js");
 const { parseShellArgs, readDesktopState, fitBounds, minimumSize } = require("../dist/shell-config.js");
 const navigation = require("../dist/navigation.js");
+const { maintenanceArguments, updateCommand } = require("../dist/maintenance.js");
+
+test("maintenance validates the version and binds the launcher to its installation", () => {
+  const root = join(tmpdir(), "okbd2-install");
+  const cwd = join(root, "data/apps/ok-bd2/working");
+  const message = { type: "maintenance", operation: "update", version: "v0.9.7",
+    target: "v0.9.8", backup_id: "", launcher: join(root, "ok-bd2.exe") };
+  assert.deepEqual(updateCommand(cwd, message), { executable: message.launcher, cwd: root,
+    args: ["--update-to-version", "v0.9.8"] });
+  assert.throws(() => updateCommand(cwd, { ...message, launcher: join(tmpdir(), "other.exe") }));
+  assert.throws(() => maintenanceArguments({ ...message, target: "--other-command" }));
+  assert.throws(() => maintenanceArguments({ ...message, operation: "restore", backup_id: "../configs" }));
+  const line = "@@okbd2 " + JSON.stringify(message);
+  assert.deepEqual(protocol.parseCoreLine(line), message);
+  assert.deepEqual(protocol.parseCoreLine('@@okbd2 {"type":"maintenance-ready"}'), { type: "maintenance-ready" });
+});
 
 test("protocol lines", () => {
   const ready = protocol.parseCoreLine(

@@ -26,6 +26,18 @@ def load_config():
     def create(*args, **kwargs):
         app = original(*args, **kwargs)
         runtime = app.state.runtime
+        if os.environ.get("OKBD2_MAINTENANCE_PROBE"):
+            from types import SimpleNamespace
+
+            from pyappify import is_greater_version
+
+            runtime._pyappify_module = SimpleNamespace(
+                pyappify_executable=str(Path.cwd().parents[3] / "ok-bd2.exe"),
+                pyappify_version="1.2.3", app_version="v0.9.7",
+                get_version_list=lambda **kwargs: [{"version": "v0.9.8", "update_note": ["probe"]}],
+                calculate_update_notes=lambda *args: ["probe"], hide_pyappify=lambda: None,
+                is_greater_version=is_greater_version,
+            )
         state = {"starts": 0, "running": False, "current_task": None}
         original_status = runtime.status
 
@@ -66,6 +78,8 @@ def load_config():
         return app
 
     desktop.create_app = create
+    if os.environ.get("OKBD2_MAINTENANCE_PROBE"):
+        return dict(config, config_folder="configs", version="v0.9.7", update_pyappify=None)
     return dict(config, config_folder=os.environ["OKBD2_DESKTOP_FIXTURE"], update_pyappify=None)
 
 

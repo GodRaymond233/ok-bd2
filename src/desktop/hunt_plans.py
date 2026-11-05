@@ -59,6 +59,7 @@ def install_hunt_plans(app, runtime):
                 "targets": TARGETS,
                 "modes": MODES,
                 "busy": bool(task_config_busy(task) or facade.start_controller.starting
+                             or getattr(facade, "maintenance", False)
                              or getattr(facade, "diagnostic_pause", False)
                              or getattr(facade, "window_resize_in_progress", False)),
             }

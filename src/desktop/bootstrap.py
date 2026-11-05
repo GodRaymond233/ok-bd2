@@ -9,8 +9,8 @@ Layouts:
                       <base>/data/apps/ok-bd2/shell/<version>/ok-bd2-desktop.exe
                       <base>/data/apps/ok-bd2/shell-data  (Chromium profile)
     Source checkout   desktop/shell/release/win-unpacked/ok-bd2-desktop.exe
-``OK_BD2_SHELL_DIR`` overrides the shell directory.  Downloading a missing shell is a
-stage 5 task; stage 1 reports it instead.
+``OK_BD2_SHELL_DIR`` overrides the shell directory. Packaged installs obtain a missing
+shell from the release manifest before starting any automation process.
 """
 
 from __future__ import annotations
@@ -22,9 +22,10 @@ import sys
 from pathlib import Path
 
 from src.desktop import protocol
+from src.desktop.backups import installed_base
 
 # The shell build this core expects; bumped together with desktop/shell/package.json.
-REQUIRED_SHELL_VERSION = "0.2.1"
+REQUIRED_SHELL_VERSION = "0.3.0"
 MANIFEST_NAME = "shell-manifest.json"
 SHELL_EXECUTABLE = "ok-bd2-desktop.exe" if os.name == "nt" else "ok-bd2-desktop"
 SHELL_DIR_ENV = "OK_BD2_SHELL_DIR"
@@ -38,9 +39,7 @@ class BootstrapError(Exception):
 
 def pyappify_app_base(working_dir: Path) -> Path | None:
     """``data/apps/ok-bd2`` when running from a PyAppify working directory."""
-    if working_dir.name.lower() == "working" and working_dir.parent.parent.name.lower() == "apps":
-        return working_dir.parent
-    return None
+    return installed_base(working_dir)
 
 
 def shell_directory(working_dir: Path, env=None) -> Path:
@@ -73,14 +72,17 @@ def check_shell(directory: Path) -> Path:
         raise BootstrapError(
             protocol.EXIT_SHELL_INCOMPATIBLE, f"桌面外壳缺少有效的版本清单：{error}"
         ) from error
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("api"), dict):
+        raise BootstrapError(protocol.EXIT_SHELL_INCOMPATIBLE, "桌面外壳版本清单格式无效")
     version = manifest.get("version")
-    api = manifest.get("api") or {}
+    api = manifest["api"]
     if version != REQUIRED_SHELL_VERSION:
         raise BootstrapError(
             protocol.EXIT_SHELL_INCOMPATIBLE,
             f"桌面外壳版本为 {version}，当前核心需要 {REQUIRED_SHELL_VERSION}。",
         )
-    if not api.get("min", 0) <= protocol.API_VERSION <= api.get("max", -1):
+    if (type(api.get("min")) is not int or type(api.get("max")) is not int
+            or not api["min"] <= protocol.API_VERSION <= api["max"]):
         raise BootstrapError(
             protocol.EXIT_SHELL_INCOMPATIBLE,
             f"桌面外壳不支持核心接口版本 {protocol.API_VERSION}。",
@@ -144,7 +146,16 @@ def main(argv: list[str] | None = None, *, popen=subprocess.Popen, working_dir=N
     working_dir = Path(working_dir or os.getcwd())
     entry_script = "main_debug.py" if "--debug" in argv else "main.py"
     try:
-        executable = check_shell(shell_directory(working_dir))
+        directory = shell_directory(working_dir)
+        if pyappify_app_base(working_dir) is not None and not os.environ.get(SHELL_DIR_ENV):
+            from src.desktop.shell_install import install_shell
+
+            try:
+                executable = install_shell(directory, REQUIRED_SHELL_VERSION, check_shell)
+            except (OSError, ValueError) as error:
+                raise BootstrapError(protocol.EXIT_SHELL_MISSING, str(error)) from error
+        else:
+            executable = check_shell(directory)
     except BootstrapError as error:
         report(str(error))
         return error.exit_code

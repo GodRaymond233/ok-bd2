@@ -48,7 +48,7 @@ function Invoke-NativeStep {
     $started = Get-Date
     try {
         $process = Start-Process -FilePath $File -ArgumentList $Arguments -WorkingDirectory $WorkingDirectory `
-            -NoNewWindow -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+            -WindowStyle Hidden -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
         $null = $process.Handle  # keeps ExitCode readable after the wait
         $process.WaitForExit()
         $code = $process.ExitCode
@@ -124,7 +124,7 @@ function Invoke-SmokeStep {
     $started = Get-Date
     $code = 1
     if (Test-Path $ReportFile) { Remove-Item -Force $ReportFile }
-    $process = Start-Process -FilePath $Executable -ArgumentList $Arguments -WorkingDirectory $root -PassThru
+    $process = Start-Process -FilePath $Executable -ArgumentList $Arguments -WorkingDirectory $root -WindowStyle Hidden -PassThru
     $null = $process.Handle
     if (-not $process.WaitForExit($SmokeTimeoutSeconds * 1000)) {
         Write-Host "$Name did not finish within $SmokeTimeoutSeconds s; ending the process it started."
@@ -200,6 +200,10 @@ if (Test-Path $exe) {
     $desktopProbe = Join-Path $root 'desktop\scripts\desktop_probe.cjs'
     $desktopProbeOut = Join-Path $OutDir 'desktop-probe'
     $passed = (Invoke-NativeStep -Name 'desktop-probe' -File 'cmd.exe' -Arguments @('/d', '/c', 'node', "`"$desktopProbe`"", '--python', "`"$python`"", '--out', "`"$desktopProbeOut`"")) -and $passed
+
+    $maintenanceProbe = Join-Path $root 'desktop\scripts\maintenance_probe.cjs'
+    $maintenanceOut = Join-Path $OutDir 'maintenance-probe'
+    $passed = (Invoke-NativeStep -Name 'maintenance-probe' -File 'cmd.exe' -Arguments @('/d', '/c', 'node', "`"$maintenanceProbe`"", '--python', "`"$python`"", '--out', "`"$maintenanceOut`"")) -and $passed
 
     $smoke = Join-Path $OutDir 'shell-smoke.json'
     $arguments = @(

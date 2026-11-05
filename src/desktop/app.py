@@ -20,6 +20,7 @@ from src.compat.update_card_ui import launcher_supports_update_check
 from src.desktop.config_store import config_lock, save_config, task_config_busy
 from src.desktop.events import install_events
 from src.desktop.hunt_plans import install_hunt_plans
+from src.desktop.maintenance import install_maintenance
 from src.desktop.preview import LivePreview
 from src.desktop.protocol import API_VERSION
 from src.desktop.reports import ReportSession
@@ -188,6 +189,8 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
 
     def start_controller(task=None, exit_after=False):
         with config_lock:
+            if getattr(runtime.ok.headless_app, "maintenance", False):
+                return False
             if getattr(runtime.ok.headless_app, "diagnostic_pause", False):
                 return False
             if getattr(runtime.ok.headless_app, "window_resize_in_progress", False):
@@ -250,6 +253,8 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
             return runtime.status()
 
     def ensure_config_write():
+        if getattr(runtime.ok.headless_app, "maintenance", False):
+            raise RuntimeError("正在准备更新或恢复备份，请稍候")
         if getattr(runtime.ok.headless_app, "diagnostic_pause", False):
             raise RuntimeError("请先完成或取消问题报告，再修改配置或启动任务")
         if getattr(runtime.ok.headless_app, "window_resize_in_progress", False):
@@ -352,6 +357,7 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
             ):
                 raise ValueError("请先等待游戏窗口调整完成，再恢复任务")
             if operation in {"enable", "resume"}:
+                ensure_config_write()
                 refuse_legacy()
             if operation == "enable" and trigger:
                 task.enable()
@@ -515,6 +521,7 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
         ui["capture_in_use"] = capture_in_use(manager)
         ui["starter_wait"] = starter_wait.snapshot() if starter_wait is not None else None
         ui["diagnostic_pause"] = bool(getattr(runtime.ok.headless_app, "diagnostic_pause", False))
+        ui["maintenance"] = bool(getattr(runtime.ok.headless_app, "maintenance", False))
         return ui
 
     # The routes, the select_* operations and the event stream all go through this.
@@ -545,6 +552,7 @@ def create_app(
     legacy_check=None,
     legacy_instances=None,
     request_shutdown=None,
+    maintenance_request=None,
     core_version=None,
 ):
     """Build the loopback API for the desktop shell on top of ok-script's Web runtime."""
@@ -559,6 +567,9 @@ def create_app(
                             legacy_check=legacy_check)
     app.state.reports = reports
     runtime.prevent_report_resume = reports.prevent_resume
+    install_maintenance(
+        app, runtime, core_version or str(config.get("version") or ""), maintenance_request
+    )
     install_events(app, runtime)
     app.add_middleware(LocalSession, token=token, origin=origin)
     frontend_once = threading.Event()

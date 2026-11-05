@@ -333,9 +333,9 @@ export function App() {
       : null;
 
   const queued = tasks.find((task) => !task.trigger && task.enabled && task.name !== current);
-  const busy = Boolean(current) || Boolean(queued) || starting || Boolean(ui?.diagnostic_pause);
+  const busy = Boolean(current) || Boolean(queued) || starting || Boolean(ui?.diagnostic_pause) || Boolean(ui?.maintenance);
   const legacy = info && info.legacy_instances.length > 0 ? info.legacy_instances : null;
-  const startBlocked = ui?.diagnostic_pause
+  const startBlocked = ui?.maintenance ? t("正在准备更新或恢复备份") : ui?.diagnostic_pause
     ? t("请先完成或取消问题报告")
     : legacy
     ? t("旧版 ok-bd2 正在运行，请先关闭它")
