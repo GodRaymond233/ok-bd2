@@ -4,22 +4,22 @@ import { dateText, refreshText, untilText } from "./format.ts";
 import { t } from "./i18n.ts";
 import { type Row, checklistRows, hero } from "./today.ts";
 import type { TaskPayload } from "./types.ts";
-import { Icon, Menu, Toggle } from "./ui.tsx";
+import { Icon, Menu, TaskGlyph, Toggle } from "./ui.tsx";
 
 function Ring({ done, total }: { done: number; total: number }) {
-  const circumference = 2 * Math.PI * 31;
+  const circumference = 2 * Math.PI * 32;
   const finished = total > 0 && done === total;
   return (
     <div className={finished ? "ring done" : "ring"} role="img" aria-label={`${t("已完成")} ${done} / ${total}`}>
       <svg viewBox="0 0 72 72">
-        <circle className="track" cx="36" cy="36" r="31" fill="none" strokeWidth="6" />
+        <circle className="track" cx="36" cy="36" r="32" fill="none" strokeWidth="5" />
         <circle
           className="val"
           cx="36"
           cy="36"
-          r="31"
+          r="32"
           fill="none"
-          strokeWidth="6"
+          strokeWidth="5"
           strokeLinecap="round"
           strokeDasharray={circumference}
           strokeDashoffset={circumference * (1 - (total ? done / total : 0))}
@@ -56,19 +56,6 @@ export function TodayPage({ core }: { core: Core }) {
           <h1 className="title">{t("今日")}</h1>
           <span className="date">{dateText(core.now)}</span>
         </div>
-        <button type="button" className={connected ? "connchip" : "connchip off"} onClick={() => core.navigate("device")}>
-          <span className={connected ? "d" : "d off"} />
-          {connected ? (
-            <>
-              <b>{core.deviceName}</b> {core.captureText}
-            </>
-          ) : (
-            <>
-              {t("未连接游戏")} · {t("去连接")}
-              <Icon name="chev-r" />
-            </>
-          )}
-        </button>
       </div>
       {summary && (
         <div className="refresh">
@@ -230,22 +217,16 @@ export function TodayPage({ core }: { core: Core }) {
                     }
                   }}
                 >
-                  <Toggle
-                    checked={row.item.enabled}
-                    disabled={locked}
-                    title={lockedReason ?? t("参与一键日常")}
-                    label={`${row.item.name} ${t("参与一键日常")}`}
-                    onChange={(value) => setBatch(row.item.key, value)}
-                  />
-                  <StateIcon row={row} />
+                  <TaskGlyph name={row.item.name} group="日常/周常" />
                   <span className="txt">
                     <span className="nm">{row.item.name}</span>
                     <span className={`mt ${row.tone}`}>{row.text}</span>
                   </span>
                   <span className="acts">
+                    <StateIcon row={row} />
                     <button
                       type="button"
-                      className="btn subtle sm icon"
+                      className="btn sm icon"
                       disabled={Boolean(startReason)}
                       title={startReason ?? t("单独运行")}
                       aria-label={`${t("单独运行")} ${row.item.name}`}
@@ -256,7 +237,13 @@ export function TodayPage({ core }: { core: Core }) {
                     >
                       <Icon name="play" />
                     </button>
-                    <Icon name="chev-r" />
+                    <Toggle
+                      checked={row.item.enabled}
+                      disabled={locked}
+                      title={lockedReason ?? t("参与一键日常")}
+                      label={`${row.item.name} ${t("参与一键日常")}`}
+                      onChange={(value) => setBatch(row.item.key, value)}
+                    />
                   </span>
                 </div>
               ))}
@@ -279,9 +266,7 @@ export function TodayPage({ core }: { core: Core }) {
               }}
             >
               <div className="hd">
-                <span className="bdg info">
-                  <Icon name="map" />
-                </span>
+                <TaskGlyph name={weekly.name} group="日常/周常" />
                 <b>{weekly.name}</b>
                 <span className="chev">
                   <Icon name="chev-r" />
@@ -301,9 +286,7 @@ export function TodayPage({ core }: { core: Core }) {
           {leveling.length > 0 && (
             <div className="card sc">
               <div className="hd">
-                <span className="bdg">
-                  <Icon name="level" />
-                </span>
+                <TaskGlyph name={t("压制")} group="自动刷级" />
                 <b>{t("自动刷级")}</b>
               </div>
               {leveling.map((task) => (
@@ -311,7 +294,7 @@ export function TodayPage({ core }: { core: Core }) {
                   <span>{task.name}</span>
                   <button
                     type="button"
-                    className="btn subtle sm icon"
+                    className="btn sm icon"
                     disabled={Boolean(startReason)}
                     title={startReason ?? t("开始")}
                     aria-label={`${t("开始")} ${task.name}`}
@@ -333,9 +316,7 @@ function TriggerCard({ core, task }: { core: Core; task: TaskPayload }) {
   return (
     <div className="card sc">
       <div className="hd">
-        <span className="bdg ok">
-          <Icon name="login" />
-        </span>
+        <TaskGlyph name={task.name} trigger />
         <b>{task.name}</b>
         <Toggle
           checked={task.enabled}

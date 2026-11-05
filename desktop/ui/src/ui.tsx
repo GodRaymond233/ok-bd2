@@ -1,6 +1,8 @@
-// Small shared pieces: the line icon set, the switch, the ⋯ menu and the confirm dialog.
-import { type ReactNode, useEffect, useRef, useState } from "react";
+// Small shared pieces: the line icon set, the switch, the sliding selection, the ⋯ menu and the
+// confirm dialog.
+import { type ReactNode, type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { t } from "./i18n.ts";
+import { taskGlyph } from "./library.ts";
 
 // Fluent-style line icons on a 24 grid; play, pause and stop are filled.
 const PATHS: Record<string, ReactNode> = {
@@ -89,6 +91,30 @@ const PATHS: Record<string, ReactNode> = {
     </>
   ),
   send: <path d="M4.5 12 19.5 5l-4 14-3.5-5.5zM12 13.5l7.5-8.5" />,
+  bolt: <path d="M13 3.5 5.5 13.5H11l-1 7 7.5-10H12z" />,
+  home: <path d="M4 11.5 12 5l8 6.5M6.5 9.8V19.5h11V9.8M10 19.5v-5h4v5" />,
+  gift: <path d="M4 9h16v3.5H4zM5.5 12.5v7.5h13v-7.5M12 9v11M12 9S10.5 4.5 8 4.5A2.2 2.2 0 0 0 8 9zM12 9s1.5-4.5 4-4.5A2.2 2.2 0 0 1 16 9z" />,
+  target: (
+    <>
+      <circle cx="12" cy="12" r="8.5" />
+      <circle cx="12" cy="12" r="3.5" />
+      <path d="M12 2v3.5M12 18.5V22M2 12h3.5M18.5 12H22" />
+    </>
+  ),
+  star: <path d="M12 4l2.4 5 5.6.8-4 3.9.9 5.5-4.9-2.6-4.9 2.6.9-5.5-4-3.9 5.6-.8z" />,
+  coins: (
+    <>
+      <ellipse cx="12" cy="7" rx="7.5" ry="3.2" />
+      <path d="M4.5 7v5c0 1.8 3.4 3.2 7.5 3.2s7.5-1.4 7.5-3.2V7M4.5 12v5c0 1.8 3.4 3.2 7.5 3.2s7.5-1.4 7.5-3.2v-5" />
+    </>
+  ),
+  swords: <path d="M4 4l10 10M4 4h3.5L17 13.5M4 4v3.5L13.5 17M20 4 13.5 10.5M20 4h-3.5l-3 3M20 4v3.5l-3 3M14.5 17.5l3-3M6.5 14.5l3 3M6.5 17.5l-2.5 2.5M17.5 17.5l2.5 2.5" />,
+  tag: (
+    <>
+      <path d="M4 4.5h7.5l8.5 8.5-7 7-8.5-8.5z" />
+      <path d="M8 8.5v.1" />
+    </>
+  ),
 };
 
 const FILLED = new Set(["play", "pause", "stop"]);
@@ -101,18 +127,74 @@ export function Icon({ name }: { name: string }) {
   );
 }
 
-/** Gradient the progress ring strokes with; rendered once by the app. */
-export function SharedDefs() {
+/** A task's icon on a tile tinted by its category. */
+export function TaskGlyph({ name, group, trigger }: { name: string; group?: string | null; trigger?: boolean }) {
+  const glyph = taskGlyph(name, group ?? null, Boolean(trigger));
   return (
-    <svg width="0" height="0" style={{ position: "absolute" }} aria-hidden="true">
-      <defs>
-        <linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="var(--accent-hi)" />
-          <stop offset="1" stopColor="var(--accent-deep)" />
-        </linearGradient>
-      </defs>
-    </svg>
+    <span className={`glyph ${glyph.category}`} aria-hidden="true">
+      <Icon name={glyph.icon} />
+    </span>
   );
+}
+
+/**
+ * Keeps the host's selection highlight (its ::before, see .slides in styles.css) on the child
+ * matching `selector`, so the highlight travels when `selection` changes instead of jumping.
+ */
+export function useSlider<T extends HTMLElement>(selector: string, selection: unknown): RefObject<T | null> {
+  const host = useRef<T>(null);
+  useLayoutEffect(() => {
+    const element = host.current;
+    if (!element) {
+      return;
+    }
+    const place = () => {
+      const active = element.querySelector<HTMLElement>(selector);
+      element.toggleAttribute("data-slide", Boolean(active));
+      if (active) {
+        // Measured against the host, as the item may sit in a nested group of its own.
+        const from = element.getBoundingClientRect();
+        const to = active.getBoundingClientRect();
+        element.style.setProperty("--slide-x", `${to.left - from.left - element.clientLeft + element.scrollLeft}px`);
+        element.style.setProperty("--slide-y", `${to.top - from.top - element.clientTop + element.scrollTop}px`);
+        element.style.setProperty("--slide-w", `${to.width}px`);
+        element.style.setProperty("--slide-h", `${to.height}px`);
+      }
+    };
+    place();
+    // Only moves animate: not the first placement, which comes before the first paint.
+    const frame = requestAnimationFrame(() => element.toggleAttribute("data-slide-ready", true));
+    const observer = new ResizeObserver(place);
+    observer.observe(element);
+    for (const child of element.querySelectorAll(":scope > *")) {
+      observer.observe(child);
+    }
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [selector, selection]);
+  return host;
+}
+
+/** Calls `close` on a press outside `root` or on Escape, while `open`. */
+export function useDismiss(open: boolean, root: RefObject<HTMLElement | null>, close: () => void) {
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    const dismiss = (event: Event) => {
+      if (event instanceof KeyboardEvent ? event.key === "Escape" : !root.current?.contains(event.target as Node)) {
+        close();
+      }
+    };
+    document.addEventListener("mousedown", dismiss);
+    document.addEventListener("keydown", dismiss);
+    return () => {
+      document.removeEventListener("mousedown", dismiss);
+      document.removeEventListener("keydown", dismiss);
+    };
+  }, [open, root, close]);
 }
 
 export function Toggle({
@@ -157,22 +239,7 @@ export interface MenuItem {
 export function Menu({ items, label }: { items: MenuItem[]; label?: string }) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLSpanElement>(null);
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-    const close = (event: Event) => {
-      if (event instanceof KeyboardEvent ? event.key === "Escape" : !root.current?.contains(event.target as Node)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", close);
-    document.addEventListener("keydown", close);
-    return () => {
-      document.removeEventListener("mousedown", close);
-      document.removeEventListener("keydown", close);
-    };
-  }, [open]);
+  useDismiss(open, root, () => setOpen(false));
   return (
     <span className="menu" ref={root}>
       <button

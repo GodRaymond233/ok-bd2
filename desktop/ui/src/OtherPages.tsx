@@ -38,7 +38,7 @@ export function RecordsPage({ core }: { core: Core }) {
       <div className="ph"><div className="l"><h1 className="title">{t("记录")}</h1></div>
         <button className="btn sm" disabled={loading} onClick={() => setReload((value) => value + 1)}><Icon name="refresh" />{t("刷新记录")}</button>
       </div>
-      <p className="ds">{t("保留最近 300 次已结束的任务，时间按北京时间显示。运行中的任务见底部执行面板。")}</p>
+      <p className="ds">{t("保留最近 300 次已结束的任务，时间按北京时间显示。运行中的任务见顶部运行栏。")}</p>
       <div className="card record-filters">
         <label>{t("任务")}<select className="select" aria-label={t("筛选任务")} value={task} onChange={(event) => setTask(event.target.value)}>
           <option value="">{t("全部任务")}</option>{tasks.map((name) => <option key={name}>{name}</option>)}

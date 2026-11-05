@@ -1,5 +1,6 @@
-// The run panel at the bottom of every page: one line while idle, the current or last run
-// otherwise. Pause, resume and stop act at once; there is no confirmation.
+// The right end of the run bar above every page: one line while idle, the current or last run
+// otherwise, with its details below on request. Pause, resume and stop act at once; there is no
+// confirmation.
 import type { Core } from "./App.tsx";
 import { starterProgress, starterText } from "./device.ts";
 import { durationText, elapsedText, refreshText } from "./format.ts";
@@ -130,27 +131,16 @@ export function RunDock({
   if (!run) {
     return (
       <div className="dock-idle" role="status">
-        <span>{core.ui?.status.starting ? t("正在启动游戏") : t("执行器空闲")}</span>
-        <span className="sp">|</span>
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-          <span className={connected ? "d" : "d off"} />
-          {connected ? `${t("已连接")} · ${core.captureText}` : t("未连接游戏")}
-          {!connected && (
-            <button type="button" className="linkbtn" onClick={() => core.navigate("device")}>
-              {t("连接")}
-            </button>
-          )}
-        </span>
-        {core.today && (
-          <>
-            <span className="sp">|</span>
-            <span>
-              {t("下次刷新")} {refreshText(core.today.refresh.daily, core.now)}
-            </span>
-          </>
-        )}
-        <span className="grow" />
         {core.today && core.allDone && <span className="ok">{t("今日日常已全部完成")}</span>}
+        {core.today && (
+          <span>
+            {t("下次刷新")} {refreshText(core.today.refresh.daily, core.now)}
+          </span>
+        )}
+        <span className="idle">
+          <span className="d off" />
+          {t("执行器空闲")}
+        </span>
       </div>
     );
   }
@@ -245,33 +235,35 @@ export function RunDock({
           <Icon name={expanded ? "chev-d" : "chev-u"} />
         </button>
       </div>
+      {run.shutdownLeft !== null && (
+        <div className="shutdown" role="alert">
+          <Icon name="power" />
+          <span>
+            <b>{elapsedText(run.shutdownLeft)}</b> {t("后关机")}
+          </span>
+          <span className="t">{t("全部已启用的日常今日均已完成。要取消，在命令行执行 shutdown /a。")}</span>
+        </div>
+      )}
       {expanded && (
         <div className="exp">
-          {run.shutdownLeft !== null && (
-            <div className="shutdown" role="alert">
-              <Icon name="power" />
-              <span>
-                <b>{elapsedText(run.shutdownLeft)}</b> {t("后关机")}
-              </span>
-              <span className="t">{t("全部已启用的日常今日均已完成。要取消，在命令行执行 shutdown /a。")}</span>
+          {(parts.length > 0 || rows.length > 0) && (
+            <div>
+              {parts.length > 0 && (
+                <>
+                  <SegmentBar parts={parts} />
+                  <Legend parts={parts} />
+                </>
+              )}
+              <div className="kv">
+                {rows.map((row) => (
+                  <div key={row.key} style={{ display: "contents" }}>
+                    <span className="k">{row.key}</span>
+                    <span className={`v ${row.tone}`}>{row.value}</span>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
-          <div>
-            {parts.length > 0 && (
-              <>
-                <SegmentBar parts={parts} />
-                <Legend parts={parts} />
-              </>
-            )}
-            <div className="kv">
-              {rows.map((row) => (
-                <div key={row.key} style={{ display: "contents" }}>
-                  <span className="k">{row.key}</span>
-                  <span className={`v ${row.tone}`}>{row.value}</span>
-                </div>
-              ))}
-            </div>
-          </div>
           <div>
             <div className="loghd">
               <span>{t("最近日志")}</span>

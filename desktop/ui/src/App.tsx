@@ -1,6 +1,8 @@
-// The desktop client: navigation rail, pages and the run panel shared by all pages.
+// The desktop client: the window frame (sidebar and run bar) and the page inside it.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import appIcon from "../../../icons/icon.png";
 import { api, errorText } from "./api.ts";
+import { ConnectionPill } from "./ConnectionPill.tsx";
 import { connectEvents } from "./events.ts";
 import { versionText } from "./format.ts";
 import { t } from "./i18n.ts";
@@ -29,7 +31,7 @@ import type {
   TodayItem,
   TodaySummary,
 } from "./types.ts";
-import { Icon, SharedDefs } from "./ui.tsx";
+import { Icon, useSlider } from "./ui.tsx";
 
 declare global {
   interface Window {
@@ -96,15 +98,19 @@ const REFRESH_EVENTS = new Set(["task", "task_done", "task_list_updated", "execu
 // Game start progress only changes the capture state (status.starting, starter_wait).
 const CAPTURE_EVENTS = new Set(["starting_emulator", "starter_wait", "adb_devices"]);
 
-const initialDockExpanded = () => storedDockExpanded() ?? window.innerWidth >= 900;
+// The run bar already shows what runs and for how long; the details open on request.
+const initialDockExpanded = () => storedDockExpanded() ?? false;
 
-const NAV: { page: Page; label: string; icon: string; later?: string }[] = [
+const NAV: { page: Page; label: string; icon: string }[] = [
   { page: "today", label: "今日", icon: "today" },
   { page: "tasks", label: "任务", icon: "tasks" },
   { page: "records", label: "记录", icon: "history" },
   { page: "logs", label: "日志", icon: "logs" },
+];
+const NAV_PINNED: typeof NAV = [
   { page: "device", label: "设备", icon: "device" },
   { page: "settings", label: "设置", icon: "settings" },
+  { page: "report", label: "问题报告", icon: "report" },
 ];
 
 export function App() {
@@ -122,6 +128,7 @@ export function App() {
   const [everConnected, setEverConnected] = useState(false);
   const [toast, setToast] = useState<Notice | null>(null);
   const [page, setPage] = useState<Page>("today");
+  const rail = useSlider<HTMLElement>('.nav[aria-current="page"]', page);
   const [selectedTask, setSelectedTask] = useState<string | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [now, setNow] = useState(() => Date.now() / 1000);
@@ -438,7 +445,20 @@ export function App() {
     rememberDockExpanded(expanded);
   };
 
-  const connected = Boolean(device?.connected);
+  const navItem = (item: (typeof NAV)[number]) => (
+    <button
+      key={item.page}
+      type="button"
+      className="nav"
+      aria-current={page === item.page ? "page" : undefined}
+      title={t(item.label)}
+      onClick={() => core.navigate(item.page)}
+    >
+      <Icon name={item.icon} />
+      <span className="tx">{t(item.label)}</span>
+    </button>
+  );
+
   let content;
   switch (page) {
     case "tasks":
@@ -481,7 +501,6 @@ export function App() {
       data-events={eventsConnected ? "connected" : "disconnected"}
       data-tasks={tasks.filter((task) => task.visible).length}
     >
-      <SharedDefs />
       {coreError && (
         <div className="banner error" role="alert">
           <Icon name="alert" />
@@ -526,59 +545,32 @@ export function App() {
         </div>
       )}
       <div className="app-body">
-        <nav className="rail" aria-label={t("主导航")}>
+        <nav className="rail slides" ref={rail} aria-label={t("主导航")}>
           <div className="id">
-            <span className="avatar" aria-hidden="true">
-              BD
-            </span>
+            <img className="avatar" src={appIcon} alt="" />
             <span className="txt">
               <div className="nm">ok-bd2</div>
               <div className="ver">{info ? versionText(info.core_version) : "…"}</div>
             </span>
           </div>
-          {NAV.map((item) => (
-            <button
-              key={item.page}
-              type="button"
-              className="nav"
-              aria-current={page === item.page ? "page" : undefined}
-              title={t(item.label)}
-              onClick={() => core.navigate(item.page)}
-            >
-              <Icon name={item.icon} />
-              <span className="tx">{t(item.label)}</span>
-              {item.later && <span className="later">{t(item.later)}</span>}
-            </button>
-          ))}
-          <div className="foot">
-            <button
-              type="button"
-              className="nav conn"
-              title={connected ? `${t("已连接")} ${device?.label ?? ""}` : t("未连接游戏")}
-              onClick={() => core.navigate("device")}
-            >
-              <span className={connected ? "d" : "d off"} />
-              <span className="t">
-                {connected ? t("已连接") : t("未连接游戏")}
-                <small>{connected ? core.captureText : t("点此查看")}</small>
-              </span>
-            </button>
-            <button type="button" className="nav" title={t("问题报告")} aria-current={page === "report" ? "page" : undefined} onClick={() => core.navigate("report")}>
-              <Icon name="report" />
-              <span className="tx">{t("问题报告")}</span>
-            </button>
-          </div>
+          {NAV.map(navItem)}
+          <div className="foot">{NAV_PINNED.map(navItem)}</div>
         </nav>
-        <main className="main">{content}</main>
+        <div className="workspace">
+          <header className="runbar">
+            <ConnectionPill core={core} />
+            <RunDock
+              core={core}
+              run={dockRun}
+              logs={logs}
+              expanded={dockExpanded}
+              onExpand={setExpanded}
+              onDismiss={() => setDockDismissed(true)}
+            />
+          </header>
+          <main className="main">{content}</main>
+        </div>
       </div>
-      <RunDock
-        core={core}
-        run={dockRun}
-        logs={logs}
-        expanded={dockExpanded}
-        onExpand={setExpanded}
-        onDismiss={() => setDockDismissed(true)}
-      />
       {toast && (
         <div className={toast.error ? "toast" : "toast info"} role={toast.error ? "alert" : "status"}>
           <Icon name={toast.error ? "alert" : "info"} />

@@ -24,7 +24,7 @@ import {
   storedTheme,
 } from "./settings.ts";
 import type { AboutInfo, BackupEntry, BackupList, ShellDesktop, Theme, UpdateCheck } from "./types.ts";
-import { ConfirmDialog, Icon, Menu, Toggle } from "./ui.tsx";
+import { ConfirmDialog, Icon, Menu, Toggle, useSlider } from "./ui.tsx";
 
 type Tab = "general" | "notify" | "about";
 const NOTICES_URL = "https://github.com/GodRaymond233/ok-bd2/blob/main/THIRD_PARTY_NOTICES.md";
@@ -40,6 +40,7 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 
 function General({ core }: { core: Core }) {
   const [theme, setTheme] = useState<Theme>(storedTheme);
+  const themePick = useSlider<HTMLSpanElement>('[aria-pressed="true"]', theme);
   const [desktop, setDesktop] = useState<ShellDesktop | null>(null);
   const [desktopError, setDesktopError] = useState<string | null>(null);
   const [zoomSaving, setZoomSaving] = useState(false);
@@ -76,7 +77,7 @@ function General({ core }: { core: Core }) {
             <div className="lb">{t("主题")}</div>
             <div className="dsc">{t("只影响这台电脑上的新客户端。")}</div>
             <div className="ctrl">
-              <span className="segpick" role="group" aria-label={t("主题")}>
+              <span className="segpick slides" ref={themePick} role="group" aria-label={t("主题")}>
                 {themes.map(([value, label]) => (
                   <button
                     key={value}
@@ -423,6 +424,7 @@ function Backups({ core }: { core: Core }) {
 export function SettingsPage({ core }: { core: Core }) {
   const [tab, setTab] = useState<Tab>("general");
   const [resetting, setResetting] = useState<string | null>(null);
+  const strip = useSlider<HTMLDivElement>('[aria-selected="true"]', tab);
   const tabs: [Tab, string][] = [
     ["general", t("通用")],
     ["notify", t("通知")],
@@ -448,7 +450,7 @@ export function SettingsPage({ core }: { core: Core }) {
           />
         )}
       </div>
-      <div className="tabs" role="tablist">
+      <div className="tabs slides" ref={strip} role="tablist">
         {tabs.map(([value, text]) => (
           <button key={value} type="button" role="tab" aria-selected={tab === value} onClick={() => setTab(value)}>
             {text}

@@ -18,7 +18,7 @@ import {
   runStart,
 } from "./logs.ts";
 import type { HistoryRun } from "./types.ts";
-import { ConfirmDialog, Icon, Toggle } from "./ui.tsx";
+import { ConfirmDialog, Icon, Toggle, useSlider } from "./ui.tsx";
 
 const NEAR_BOTTOM = 40;
 
@@ -123,6 +123,7 @@ export function LogsPage({
   const [unseen, setUnseen] = useState(0);
   const [exporting, setExporting] = useState(false);
   const view = useRef<HTMLDivElement>(null);
+  const levelPick = useSlider<HTMLSpanElement>('[aria-pressed="true"]', level);
   const lastCount = useRef(0);
 
   useEffect(() => {
@@ -227,7 +228,7 @@ export function LogsPage({
         </span>
       </div>
       <div className="ltool">
-        <span className="segpick" role="group" aria-label={t("级别")}>
+        <span className="segpick slides" ref={levelPick} role="group" aria-label={t("级别")}>
           {levels.map(([value, label]) => (
             <button key={value} type="button" aria-pressed={level === value} onClick={() => setLevel(value)}>
               {label}

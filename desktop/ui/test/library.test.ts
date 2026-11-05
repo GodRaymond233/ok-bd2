@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { libraryGroups } from "../src/library.ts";
+import { libraryGroups, taskGlyph } from "../src/library.ts";
 import { task } from "./fixtures.ts";
 
 const TASKS = [
@@ -30,4 +30,11 @@ test("search matches names and descriptions", () => {
     [["刷砍价等级"]],
   );
   assert.deepEqual(libraryGroups(TASKS, "不存在"), []);
+});
+
+test("a task's glyph comes from its name, its color family from its group", () => {
+  assert.deepEqual(taskGlyph("每日跑商", "日常/周常", false), { icon: "coins", category: "daily" });
+  assert.deepEqual(taskGlyph("刷砍价等级", "自动刷级", false), { icon: "tag", category: "level" });
+  assert.deepEqual(taskGlyph("自动登录游戏", null, true), { icon: "login", category: "trigger" });
+  assert.deepEqual(taskGlyph("BD2 基础检查", "测试", false), { icon: "tasks", category: "other" });
 });

@@ -4,7 +4,8 @@ import { useEffect, useState } from "react";
 import { api, errorText } from "./api.ts";
 import type { Core } from "./App.tsx";
 import { ConfigForm } from "./ConfigForm.tsx";
-import { captureChoices, sizeText, starterProgress, starterText } from "./device.ts";
+import { sizeText, starterProgress, starterText } from "./device.ts";
+import { CaptureOptions, WindowOptions } from "./DeviceOptions.tsx";
 import { t } from "./i18n.ts";
 import { AUTO_RESIZE_KEY, BASIC, DEVICE_KEYS, findGroup, pickFields } from "./settings.ts";
 import type { GamePaths, WindowInfo } from "./types.ts";
@@ -192,8 +193,6 @@ export function DevicePage({ core }: { core: Core }) {
   }, []);
   const locked = Boolean(core.current) || Boolean(ui?.status.starting);
   const lockReason = locked ? t("运行中或启动游戏时不能切换窗口、截图方式和交互方式。") : null;
-  const devices = ui?.devices ?? [];
-  const choices = ui ? captureChoices(ui) : [];
   const basic = findGroup(core.settings ?? [], BASIC);
   const select = (action: () => Promise<unknown>) => void core.act(action);
 
@@ -216,26 +215,7 @@ export function DevicePage({ core }: { core: Core }) {
                 {t("刷新窗口")}
               </button>
             </div>
-            <div role="radiogroup" aria-label={t("游戏窗口")}>
-              {devices.map((device) => (
-                <button
-                  key={device.id}
-                  type="button"
-                  role="radio"
-                  className="opt"
-                  aria-checked={Boolean(device.selected)}
-                  disabled={locked}
-                  onClick={() => !device.selected && select(() => core.selectDevice(device.id))}
-                >
-                  <span className="rd" />
-                  <span className="txt">
-                    <b>{device.label}</b>
-                    <span className="dsc">{t("只支持 PC 版；列表来自「刷新窗口」。")}</span>
-                  </span>
-                </button>
-              ))}
-              {devices.length === 0 && <div className="empty">{t("没有找到游戏窗口")}</div>}
-            </div>
+            <WindowOptions core={core} locked={locked} notes />
             {lockReason && <div className="hidden-note">{lockReason}</div>}
           </div>
           <div className="card devcard">
@@ -248,25 +228,7 @@ export function DevicePage({ core }: { core: Core }) {
                 </span>
               )}
             </div>
-            <div role="radiogroup" aria-label={t("截图方式")}>
-              {choices.map((choice) => (
-                <button
-                  key={choice.id}
-                  type="button"
-                  role="radio"
-                  className="opt"
-                  aria-checked={choice.selected}
-                  disabled={locked}
-                  onClick={() => !choice.selected && select(() => core.selectCapture(choice.id))}
-                >
-                  <span className="rd" />
-                  <span className="txt">
-                    <b>{choice.label}</b>
-                    <span className="dsc">{choice.note}</span>
-                  </span>
-                </button>
-              ))}
-            </div>
+            <CaptureOptions core={core} locked={locked} notes />
             <div className="fld">
               <div className="lb">{t("交互方式")}</div>
               <div className="dsc">{t("BD2 专用，只有这一种。")}</div>

@@ -1,4 +1,5 @@
-// 任务: the task library (grouped, searchable) and the selected task's detail with its settings.
+// 任务: the task list (filtered by group, searchable, each row with its own run button or
+// switch) and the selected task's detail with its settings.
 import { useEffect, useState } from "react";
 import type { Core } from "./App.tsx";
 import { ConfigForm } from "./ConfigForm.tsx";
@@ -9,18 +10,14 @@ import { t } from "./i18n.ts";
 import { checklistRows } from "./today.ts";
 import { libraryGroups } from "./library.ts";
 import type { HistoryRun, TaskPayload } from "./types.ts";
-import { ConfirmDialog, Icon, Menu, Toggle } from "./ui.tsx";
+import { ConfirmDialog, Icon, Menu, TaskGlyph, Toggle, useSlider } from "./ui.tsx";
 
 function Marker({ core, task }: { core: Core; task: TaskPayload }) {
   if (task.trigger) {
-    return <span className={task.enabled ? "chip ok" : "chip off"}>{task.enabled ? t("开") : t("关")}</span>;
+    return null;
   }
   if (task.enabled || core.current === task.name) {
-    return (
-      <span className="mk run" title={t("运行中")}>
-        <Icon name="play" />
-      </span>
-    );
+    return <span className="chip run">{t("运行中")}</span>;
   }
   if (task.name === core.today?.batch?.name) {
     return <span className="chip info">{t("合辑")}</span>;
@@ -43,6 +40,39 @@ function Marker({ core, task }: { core: Core; task: TaskPayload }) {
   return null;
 }
 
+function TaskRow({ core, task, selected, onSelect }: { core: Core; task: TaskPayload; selected: boolean; onSelect: () => void }) {
+  return (
+    <div className={selected ? "ti on" : "ti"}>
+      <button type="button" className="ti-open" aria-current={selected} title={task.description || task.name} onClick={onSelect}>
+        <TaskGlyph name={task.name} group={task.group_name} trigger={task.trigger} />
+        <span className="txt">
+          <span className="nm">{task.name}</span>
+          {task.description && <span className="ds">{task.description}</span>}
+        </span>
+        <Marker core={core} task={task} />
+      </button>
+      {task.trigger ? (
+        <Toggle
+          checked={task.enabled}
+          label={task.name}
+          onChange={(value) => void core.act(() => core.taskAction(task.name, value ? "enable" : "disable"))}
+        />
+      ) : (
+        <button
+          type="button"
+          className="btn sm icon"
+          disabled={Boolean(core.startBlocked)}
+          title={core.startBlocked ?? t("开始")}
+          aria-label={`${t("开始")} ${task.name}`}
+          onClick={() => void core.act(() => core.startTask(task.name))}
+        >
+          <Icon name="play" />
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function TasksPage({
   core,
   selected,
@@ -57,8 +87,16 @@ export function TasksPage({
   onBack: () => void;
 }) {
   const [query, setQuery] = useState("");
-  const groups = libraryGroups(core.tasks, query);
+  const [filter, setFilter] = useState<string | null>(null);
+  const tabs = useSlider<HTMLDivElement>('[aria-selected="true"]', filter);
+  const everything = libraryGroups(core.tasks, "");
+  const groups = libraryGroups(core.tasks, query).filter((group) => !filter || group.name === filter);
   const task = core.tasks.find((candidate) => candidate.name === selected) ?? groups[0]?.tasks[0];
+  const total = everything.reduce((count, group) => count + group.tasks.length, 0);
+  const tabList: [string | null, string, number][] = [
+    [null, t("全部"), total],
+    ...everything.map((group): [string, string, number] => [group.name, group.name, group.tasks.length]),
+  ];
   return (
     <div className={detailOpen ? "lib detail-open" : "lib"}>
       <nav className="libcol" aria-label={t("任务库")}>
@@ -72,20 +110,19 @@ export function TasksPage({
             onChange={(event) => setQuery(event.target.value)}
           />
         </label>
+        <div className="tabs slides" ref={tabs} role="tablist" aria-label={t("任务分组")}>
+          {tabList.map(([value, label, count]) => (
+            <button key={label} type="button" role="tab" aria-selected={filter === value} onClick={() => setFilter(value)}>
+              {label}
+              <span className="count">{count}</span>
+            </button>
+          ))}
+        </div>
         {groups.map((group) => (
           <div key={group.name}>
-            <div className="grp">{group.name}</div>
+            {!filter && <div className="grp">{group.name}</div>}
             {group.tasks.map((item) => (
-              <button
-                key={item.name}
-                type="button"
-                className="ti"
-                aria-current={item.name === task?.name}
-                onClick={() => onSelect(item.name)}
-              >
-                <span className="nm">{item.name}</span>
-                <Marker core={core} task={item} />
-              </button>
+              <TaskRow key={item.name} core={core} task={item} selected={item.name === task?.name} onSelect={() => onSelect(item.name)} />
             ))}
           </div>
         ))}
@@ -136,6 +173,7 @@ function TaskDetail({ core, task, onBack }: { core: Core; task: TaskPayload; onB
         {t("任务")} <Icon name="chev-r" /> {task.name}
       </div>
       <div className="dhead">
+        <TaskGlyph name={task.name} group={task.group_name} trigger={task.trigger} />
         <div className="tt">
           <h1>
             {task.name}
@@ -256,9 +294,7 @@ function TaskDetail({ core, task, onBack }: { core: Core; task: TaskPayload; onB
           {!task.trigger && (
             <div className="card sc">
               <div className="hd">
-                <span className="bdg">
-                  <Icon name="history" />
-                </span>
+                <Icon name="history" />
                 <b>{t("最近运行")}</b>
               </div>
               <div className="hist">
@@ -284,9 +320,7 @@ function TaskDetail({ core, task, onBack }: { core: Core; task: TaskPayload; onB
           {(task.guide || task.instructions) && (
             <div className="card sc">
               <div className="hd">
-                <span className="bdg info">
-                  <Icon name="info" />
-                </span>
+                <Icon name="info" />
                 <b>{t("使用说明")}</b>
               </div>
               <div className="l1">{task.guide ?? task.instructions}</div>
