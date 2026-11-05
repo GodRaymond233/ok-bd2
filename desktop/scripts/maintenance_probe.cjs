@@ -135,6 +135,9 @@ if (!process.versions.electron) {
     check("game starter not called", (await api("/api/probe/state")).body.starts === 0);
     await until(() => click("设置"));
     await until(() => click("关于与更新"));
+    // The core reports its installed tag here, which already starts with v.
+    await until(() => js("document.body.textContent.includes('v0.9.7')"));
+    check("the installed version reads with one v", !await js("document.body.textContent.includes('vv0.9.7')"));
     await until(() => click("立即备份"));
     await until(async () => {
       const state = (await api("/api/desktop/backups")).body;
