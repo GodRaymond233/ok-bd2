@@ -27,6 +27,30 @@ export class ApiError extends Error {
   }
 }
 
+function detailText(detail: unknown): string {
+  if (typeof detail === "string") {
+    return detail;
+  }
+  // FastAPI reports a rejected request as a list of { msg, ... }.
+  if (Array.isArray(detail)) {
+    return detail.map((item: { msg?: unknown } | null) => item?.msg ?? JSON.stringify(item)).join("；");
+  }
+  return JSON.stringify(detail);
+}
+
+/** A failed response as an error: the core's `detail`, else the body as it came, else `fallback`. */
+async function responseError(response: Response, fallback: string): Promise<ApiError> {
+  const text = await response.text();
+  let data: unknown = null;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    // An error from below the routes (a plain "Internal Server Error") is not JSON.
+  }
+  const message = data && typeof data === "object" && "detail" in data ? detailText(data.detail) : text;
+  return new ApiError(response.status, message || fallback);
+}
+
 async function request<T>(path: string, method: "GET" | "POST" = "GET", body?: unknown, signal?: AbortSignal): Promise<T> {
   const response = await fetch(path, {
     signal,
@@ -35,14 +59,18 @@ async function request<T>(path: string, method: "GET" | "POST" = "GET", body?: u
     headers: body === undefined ? undefined : { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  const text = await response.text();
-  const data = text ? (JSON.parse(text) as unknown) : null;
   if (!response.ok) {
-    const detail =
-      data && typeof data === "object" && "detail" in data ? String((data as { detail: unknown }).detail) : text;
-    throw new ApiError(response.status, detail || `HTTP ${response.status}`);
+    throw await responseError(response, `HTTP ${response.status}`);
   }
-  return data as T;
+  const text = await response.text();
+  if (!text) {
+    return null as T;
+  }
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new ApiError(response.status, "核心返回的内容无法解析");
+  }
 }
 
 export const api = {
@@ -96,8 +124,7 @@ export const api = {
   preview: async (signal: AbortSignal) => {
     const response = await fetch("/api/bd2/preview", { signal, credentials: "same-origin" });
     if (!response.ok) {
-      const error = await response.json() as { detail?: string };
-      throw new ApiError(response.status, error.detail ?? "无法读取游戏画面");
+      throw await responseError(response, "无法读取游戏画面");
     }
     return response.blob();
   },
