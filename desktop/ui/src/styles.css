@@ -214,6 +214,37 @@ svg.i.f {
 }
 
 /* ================= sidebar ================= */
+.rail-divider {
+  position: relative;
+  z-index: var(--z-pop);
+  flex: 0 0 8px;
+  margin: 0 -4px;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+  outline: none;
+}
+
+.rail-divider::before {
+  content: "";
+  position: absolute;
+  inset: 0 3px;
+  background: transparent;
+}
+
+.rail-divider:hover::before,
+.rail-divider:focus-visible::before,
+.rail-divider[data-dragging]::before {
+  background: var(--accent);
+}
+
+.rail-divider[data-dragging]::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  cursor: col-resize;
+}
+
 .rail {
   flex: none;
   width: var(--rail-w);
@@ -2951,6 +2982,10 @@ mark {
 }
 
 @media (max-width: 899px) {
+  .rail-divider {
+    display: none;
+  }
+
   .rail {
     width: var(--rail-w-compact);
   }

@@ -52,10 +52,21 @@ export function otherFields(group: SettingsGroup | undefined, keys: string[]): C
   return group?.fields.filter((field) => !keys.includes(field.key)) ?? [];
 }
 
-// The shell keeps these two: this page's localStorage is lost when the core restarts on another
+// The shell keeps these preferences: localStorage is lost when the core restarts on another
 // port. A page opened without the shell (a dev core in a browser) keeps them in localStorage.
 const THEME_KEY = "okbd2.theme";
 const DOCK_KEY = "okbd2.dockExpanded";
+const RAIL_KEY = "okbd2.railWidth";
+export const RAIL_WIDTH = { default: 216, min: 160, max: 360 } as const;
+
+export function maximumRailWidth(viewportWidth: number): number {
+  // Keep room for the task list and its detail at the smallest two-column layout.
+  return Math.min(RAIL_WIDTH.max, Math.max(RAIL_WIDTH.min, viewportWidth - 640));
+}
+
+export function clampRailWidth(width: number, maximum: number = RAIL_WIDTH.max): number {
+  return Math.max(RAIL_WIDTH.min, Math.min(maximum, Math.round(width)));
+}
 
 function browserValue(key: string): string | null {
   try {
@@ -109,5 +120,21 @@ export function rememberDockExpanded(dockExpanded: boolean): void {
     void shell.setUiPreferences({ dockExpanded }).catch(() => undefined);
   } else {
     rememberInBrowser(DOCK_KEY, dockExpanded ? "1" : "0");
+  }
+}
+
+export function storedRailWidth(): number {
+  const shell = window.okbd2Shell;
+  const value = shell ? shell.uiPreferences().railWidth : Number(browserValue(RAIL_KEY));
+  return typeof value === "number" && Number.isInteger(value) && value >= RAIL_WIDTH.min && value <= RAIL_WIDTH.max
+    ? value : RAIL_WIDTH.default;
+}
+
+export function rememberRailWidth(railWidth: number): void {
+  const shell = window.okbd2Shell;
+  if (shell) {
+    void shell.setUiPreferences({ railWidth }).catch(() => undefined);
+  } else {
+    rememberInBrowser(RAIL_KEY, String(railWidth));
   }
 }

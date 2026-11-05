@@ -1,5 +1,5 @@
 // The desktop client: the window frame (sidebar and run bar) and the page inside it.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import appIcon from "../../../icons/icon.png";
 import { api, errorText } from "./api.ts";
 import { ConnectionPill } from "./ConnectionPill.tsx";
@@ -14,7 +14,7 @@ import { ReportPage } from "./ReportPage.tsx";
 import { type DockRun, RunDock } from "./RunDock.tsx";
 import { childRuns, isActive, sealOf, shutdownSeconds } from "./run.ts";
 import { SettingsPage } from "./SettingsPage.tsx";
-import { rememberDockExpanded, shellSettingsKey, storedDockExpanded } from "./settings.ts";
+import { clampRailWidth, maximumRailWidth, rememberDockExpanded, rememberRailWidth, shellSettingsKey, storedDockExpanded, storedRailWidth } from "./settings.ts";
 import { captureSummary, type Notice, noticeFromEvent } from "./state.ts";
 import { TasksPage } from "./TasksPage.tsx";
 import { TodayPage } from "./TodayPage.tsx";
@@ -31,7 +31,7 @@ import type {
   TodayItem,
   TodaySummary,
 } from "./types.ts";
-import { Icon, useSlider } from "./ui.tsx";
+import { Icon, RailDivider, useSlider } from "./ui.tsx";
 
 declare global {
   interface Window {
@@ -129,6 +129,15 @@ export function App() {
   const [toast, setToast] = useState<Notice | null>(null);
   const [page, setPage] = useState<Page>("today");
   const rail = useSlider<HTMLElement>('.nav[aria-current="page"]', page);
+  const [railWidth, setRailWidth] = useState(storedRailWidth);
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
+  const railMaximum = maximumRailWidth(viewportWidth);
+  const visibleRailWidth = clampRailWidth(railWidth, railMaximum);
+  useEffect(() => {
+    const resize = () => setViewportWidth(window.innerWidth);
+    window.addEventListener("resize", resize);
+    return () => window.removeEventListener("resize", resize);
+  }, []);
   const [selectedTask, setSelectedTask] = useState<string | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [now, setNow] = useState(() => Date.now() / 1000);
@@ -497,6 +506,7 @@ export function App() {
   return (
     <div
       className="app"
+      style={{ "--rail-w": `${visibleRailWidth}px` } as CSSProperties}
       data-core={coreError ? "error" : ui ? "ok" : "loading"}
       data-events={eventsConnected ? "connected" : "disconnected"}
       data-tasks={tasks.filter((task) => task.visible).length}
@@ -545,7 +555,7 @@ export function App() {
         </div>
       )}
       <div className="app-body">
-        <nav className="rail slides" ref={rail} aria-label={t("主导航")}>
+        <nav id="navigation-rail" className="rail slides" ref={rail} aria-label={t("主导航")}>
           <div className="id">
             <img className="avatar" src={appIcon} alt="" />
             <span className="txt">
@@ -556,6 +566,7 @@ export function App() {
           {NAV.map(navItem)}
           <div className="foot">{NAV_PINNED.map(navItem)}</div>
         </nav>
+        <RailDivider width={visibleRailWidth} maximum={railMaximum} onResize={setRailWidth} onCommit={rememberRailWidth} />
         <div className="workspace">
           <header className="runbar">
             <ConnectionPill core={core} />

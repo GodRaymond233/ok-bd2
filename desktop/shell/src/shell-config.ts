@@ -9,15 +9,16 @@ export interface Bounds { x: number; y: number; width: number; height: number }
 const THEMES = ["system", "light", "dark"] as const;
 type Theme = (typeof THEMES)[number];
 /** What the pages remember. A page's own storage is lost: it is in memory and tied to the core's random port. */
-export interface UiPreferences { theme?: Theme; dockExpanded?: boolean }
+export interface UiPreferences { theme?: Theme; dockExpanded?: boolean; railWidth?: number }
 export interface DesktopState extends UiPreferences { zoom: number; bounds?: Bounds; maximized: boolean }
 
 /** The valid part of the preferences in a state file or from a page. */
 export function validUiPreferences(value: unknown): UiPreferences {
-  const { theme, dockExpanded } = (value ?? {}) as Record<string, unknown>;
+  const { theme, dockExpanded, railWidth } = (value ?? {}) as Record<string, unknown>;
   return {
     ...(THEMES.includes(theme as Theme) ? { theme: theme as Theme } : {}),
     ...(typeof dockExpanded === "boolean" ? { dockExpanded } : {}),
+    ...(typeof railWidth === "number" && Number.isInteger(railWidth) && railWidth >= 160 && railWidth <= 360 ? { railWidth } : {}),
   };
 }
 

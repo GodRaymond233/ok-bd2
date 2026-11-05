@@ -253,6 +253,7 @@ export type Theme = "system" | "light" | "dark";
 export interface UiPreferences {
   theme?: Theme;
   dockExpanded?: boolean;
+  railWidth?: number;
 }
 
 export interface ShellBridge {

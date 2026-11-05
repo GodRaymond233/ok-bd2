@@ -1,8 +1,9 @@
 // Small shared pieces: the line icon set, the switch, the sliding selection, the ⋯ menu and the
 // confirm dialog.
-import { type ReactNode, type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { t } from "./i18n.ts";
 import { taskGlyph } from "./library.ts";
+import { clampRailWidth, RAIL_WIDTH } from "./settings.ts";
 
 // Fluent-style line icons on a 24 grid; play, pause and stop are filled.
 const PATHS: Record<string, ReactNode> = {
@@ -195,6 +196,66 @@ export function useDismiss(open: boolean, root: RefObject<HTMLElement | null>, c
       document.removeEventListener("keydown", dismiss);
     };
   }, [open, root, close]);
+}
+
+/** Resize locally while dragging; persist only the finished gesture. */
+export function RailDivider({ width, maximum, onResize, onCommit }: {
+  width: number; maximum: number; onResize: (width: number) => void; onCommit: (width: number) => void;
+}) {
+  const drag = useRef<{ id: number; x: number; start: number; value: number } | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const change = (value: number) => {
+    const next = clampRailWidth(value, maximum);
+    onResize(next);
+    onCommit(next);
+  };
+  const finish = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!drag.current || drag.current.id !== event.pointerId) return;
+    const value = clampRailWidth(drag.current.value, maximum);
+    drag.current = null;
+    setDragging(false);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    onResize(value);
+    onCommit(value);
+  };
+  return <div
+    className="rail-divider"
+    role="separator"
+    tabIndex={0}
+    aria-label={t("调整导航栏宽度")}
+    aria-orientation="vertical"
+    aria-controls="navigation-rail"
+    aria-valuemin={RAIL_WIDTH.min}
+    aria-valuemax={maximum}
+    aria-valuenow={width}
+    title={t("左右拖动调整导航栏宽度，双击恢复默认")}
+    data-dragging={dragging || undefined}
+    onPointerDown={(event) => {
+      if (event.button !== 0 || !event.isPrimary) return;
+      event.preventDefault();
+      event.currentTarget.focus();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      drag.current = { id: event.pointerId, x: event.clientX, start: width, value: width };
+      setDragging(true);
+    }}
+    onPointerMove={(event) => {
+      if (!drag.current || drag.current.id !== event.pointerId) return;
+      const next = clampRailWidth(drag.current.start + event.clientX - drag.current.x, maximum);
+      drag.current.value = next;
+      onResize(next);
+    }}
+    onPointerUp={finish}
+    onPointerCancel={finish}
+    onLostPointerCapture={finish}
+    onDoubleClick={() => change(RAIL_WIDTH.default)}
+    onKeyDown={(event) => {
+      const choices: Record<string, number> = { ArrowLeft: width - 10, ArrowRight: width + 10, Home: RAIL_WIDTH.min, End: maximum };
+      const next = choices[event.key];
+      if (next === undefined) return;
+      event.preventDefault();
+      change(next);
+    }}
+  />;
 }
 
 export function Toggle({

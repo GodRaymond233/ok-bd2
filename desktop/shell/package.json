@@ -1,6 +1,6 @@
 {
   "name": "ok-bd2-desktop-shell",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "description": "ok-bd2 desktop shell: hosts the client window and supervises the Python core",
   "author": "GodRaymond233",

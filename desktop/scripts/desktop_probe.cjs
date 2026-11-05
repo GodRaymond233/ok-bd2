@@ -166,6 +166,7 @@ function probe() {
   const clientReady = async () =>
     win && supervised?.state === "ready" &&
     (await js(`document.querySelector('[data-core]')?.dataset.core==='ok'`).catch(() => false));
+  const railRestored = () => js("(()=>{const expected=innerWidth<900?60:Math.min(280,Math.max(160,innerWidth-640));return window.okbd2Shell.uiPreferences().railWidth===280 && Math.abs(document.querySelector('.rail').getBoundingClientRect().width-expected)<1})()");
 
   const actualExit = app.exit.bind(app);
   app.exit = (code) => {
@@ -177,7 +178,41 @@ function probe() {
     actualExit(result.passed ? 0 : 1);
   };
 
+  async function checkRailResize() {
+    const width = () => js("Math.round(document.querySelector('.rail').getBoundingClientRect().width)");
+    const drag = async (requested, expected, preview = false) => {
+      const position = await js("(()=>{const r=document.querySelector('.rail-divider').getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+100),width:Math.round(document.querySelector('.rail').getBoundingClientRect().width)}})()");
+      const x = position.x + requested - position.width;
+      win.webContents.sendInputEvent({ type: "mouseMove", x: position.x, y: position.y });
+      win.webContents.sendInputEvent({ type: "mouseDown", x: position.x, y: position.y, button: "left", clickCount: 1 });
+      try {
+        win.webContents.sendInputEvent({ type: "mouseMove", x, y: position.y, modifiers: ["leftButtonDown"] });
+        await until(async () => await width() === expected, "dragged navigation width");
+        if (preview) check("drag previews without saving every move", await js("window.okbd2Shell.uiPreferences().railWidth===undefined"));
+      } finally {
+        win.webContents.sendInputEvent({ type: "mouseUp", x, y: position.y, button: "left", clickCount: 1 });
+      }
+      await until(() => js(`window.okbd2Shell.uiPreferences().railWidth===${expected}`), "saved navigation width");
+    };
+    check("navigation starts at its default width", await width() === 216);
+    await drag(280, 280, true);
+    check("navigation can be dragged right", await width() === 280);
+    await drag(40, 160);
+    check("navigation has a usable minimum width", await width() === 160);
+    await drag(700, 360);
+    check("navigation has a bounded maximum width", await width() === 360);
+    await js("document.querySelector('.rail-divider').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowLeft',bubbles:true}))");
+    await until(async () => await width() === 350, "keyboard navigation width");
+    check("navigation divider supports keyboard adjustment", true);
+    await js("document.querySelector('.rail-divider').dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))");
+    await until(async () => await width() === 216, "reset navigation width");
+    check("double click resets navigation width", true);
+    await drag(280, 280);
+    fs.writeFileSync(path.join(out, "sidebar-resized.png"), (await win.webContents.capturePage()).toPNG());
+  }
+
   async function firstRun() {
+    await checkRailResize();
     // Whatever this machine has free; another program may hold F9, as it did on the build machine.
     const free = ["F10", "F11", "F12", "F9"].filter((key) => {
       if (!register(key, () => {})) return false;
@@ -277,6 +312,8 @@ function probe() {
     // The minimum counts the window frame, as it does at 100%.
     check("the page keeps its layout width at the minimum", (await js("window.innerWidth")) >= 580);
     check("the minimum size has no sideways scrolling", await js("document.documentElement.scrollWidth<=window.innerWidth"));
+    check("compact windows keep the icon rail and hide its divider", await js("Math.round(document.querySelector('.rail').getBoundingClientRect().width)===60 && getComputedStyle(document.querySelector('.rail-divider')).display==='none'"));
+    check("compact layout preserves the chosen wide navigation width", await js("window.okbd2Shell.uiPreferences().railWidth===280"));
     await js("window.okbd2Shell.setZoom(125)");
     win.setBounds({ x: 80, y: 80, width: 980, height: 720 });
     await delay(400);
@@ -312,9 +349,9 @@ function probe() {
     await until(() => js("window.okbd2Shell.uiPreferences().theme==='dark'"), "theme saved");
     check("the theme applies at once", await js("document.documentElement.dataset.theme==='dark'"));
     const savedDesktop = () => JSON.parse(fs.readFileSync(path.join(fixture, "shell-data", "desktop-state.json"), "utf8"));
-    check("the page's choices reach the state file", savedDesktop().theme === "dark" && savedDesktop().dockExpanded === dockExpanded);
-    await js("window.okbd2Shell.setUiPreferences({theme:'neon',dockExpanded:'no'})");
-    check("invalid preferences are ignored", savedDesktop().theme === "dark" && savedDesktop().dockExpanded === dockExpanded);
+    check("the page's choices reach the state file", savedDesktop().theme === "dark" && savedDesktop().dockExpanded === dockExpanded && savedDesktop().railWidth === 280);
+    await js("window.okbd2Shell.setUiPreferences({theme:'neon',dockExpanded:'no',railWidth:0})");
+    check("invalid preferences are ignored", savedDesktop().theme === "dark" && savedDesktop().dockExpanded === dockExpanded && savedDesktop().railWidth === 280);
 
     check("shortcut is active before normal quit", globalShortcut.isRegistered(key));
     win.maximize();
@@ -334,6 +371,8 @@ function probe() {
     check("minimum size follows the saved zoom", win.getMinimumSize()[0] === 750);
     check("normal bounds restored", win.getNormalBounds().width === 980 && win.getNormalBounds().height === 720);
     check("maximized state restored", win.isMaximized() === maximized);
+    await until(railRestored, "restored navigation width");
+    check("navigation width is restored after process restart", true);
     win.unmaximize();
     check("tray preference persisted", info.closeToTray === true);
     check("theme persisted after process restart", await js("document.documentElement.dataset.theme==='dark'"));
@@ -367,6 +406,8 @@ function probe() {
     await until(clientReady, "restarted core");
     check("a restarted core has another origin", new URL(win.webContents.getURL()).origin !== origin);
     check("theme survives a core restart", await js("document.documentElement.dataset.theme==='dark'"));
+    await until(railRestored, "navigation width after core restart");
+    check("navigation width survives a core restart", true);
     await js(`document.querySelector('nav button[title="设置"]').click()`);
     await until(() => js(`document.querySelector('[aria-label="界面缩放"]')?.disabled===false`), "settings loaded");
     await setting("Minimize Window to System Tray when Closing", false);
