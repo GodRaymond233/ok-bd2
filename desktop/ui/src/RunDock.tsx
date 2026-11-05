@@ -202,7 +202,7 @@ export function RunDock({
         <Icon name="folder" />
         {t("日志文件夹")}
       </button>
-      <button type="button" className="btn sm" disabled title={t("阶段 3 接入")}>
+      <button type="button" className="btn sm" onClick={() => core.navigate("report")}>
         <Icon name="report" />
         {t("问题报告")}
       </button>

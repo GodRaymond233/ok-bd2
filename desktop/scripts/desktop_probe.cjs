@@ -292,6 +292,16 @@ function probe() {
     const count = delivered.length;
     check("disabled system notification not delivered", (await api("/api/bd2/notify/test", { channel: "system" })).status === 400 && delivered.length === count);
 
+    const reportButton = `[...document.querySelectorAll('.dock button')].find(b=>b.textContent.trim()==='问题报告')`;
+    await api("/api/probe/current-task", { name: (await api("/api/tasks")).body[0].name });
+    await until(() => js("Boolean(document.querySelector('.dock'))"), "run panel");
+    await api("/api/probe/current-task", { name: null });
+    await until(() => js(`Boolean(${reportButton})`), "finished run panel");
+    check("a finished run can open the report page", await js(`!${reportButton}.disabled`));
+    await js(`${reportButton}.click()`);
+    await until(() => js("document.querySelector('h1.title')?.textContent==='问题报告'"), "report page");
+    check("the finished run's button leads to the report page", true);
+
     check("shortcut is active before normal quit", globalShortcut.isRegistered(key));
     win.maximize();
     await delay(400);

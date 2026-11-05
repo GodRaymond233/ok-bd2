@@ -69,6 +69,8 @@ def load_config():
         @app.post("/api/probe/current-task")
         def current_task(body: dict):
             state["current_task"] = body["name"]
+            # The page refreshes on this event, as it does when a real run starts or ends.
+            communicate.executor_paused.emit(runtime.executor.paused)
             return {"ok": True}
 
         @app.post("/api/probe/crash")
