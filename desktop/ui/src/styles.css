@@ -1818,6 +1818,12 @@ button.crumb {
   container-type: inline-size;
 }
 
+.form > .btn {
+  display: flex;
+  width: fit-content;
+  margin: 2px 18px 14px;
+}
+
 .fld {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
