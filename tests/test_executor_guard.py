@@ -201,6 +201,29 @@ class LegacyDetectorTest(unittest.TestCase):
         self.assertEqual(found[0].location, "D:\\ok-bd2")
         self.assertIn("进程 40", found[0].describe())
 
+    def test_reads_command_lines_only_for_python_candidates(self):
+        import psutil
+
+        unrelated = FakeProcess(50, name="unrelated.exe")
+        unrelated.as_dict = Mock(side_effect=AssertionError("unrelated process inspected"))
+        vanished = self.legacy(51)
+        vanished.as_dict = Mock(side_effect=psutil.NoSuchProcess(51))
+        legacy = self.legacy()
+        legacy.as_dict = Mock(return_value=dict(legacy.info))
+
+        def processes(attrs):
+            self.assertNotIn("cmdline", attrs)
+            for process in (unrelated, vanished, legacy):
+                process.info = {key: process.info[key] for key in attrs}
+                yield process
+
+        detector = detector_for([])
+        detector._process_iter = None
+        with patch("psutil.process_iter", side_effect=processes):
+            found = detector.scan()
+        self.assertEqual([item.pid for item in found], [40])
+        unrelated.as_dict.assert_not_called()
+
     def test_detects_absolute_debug_entry_and_pyappify_layout(self):
         absolute = self.legacy(
             41, cmdline=["python.exe", "D:\\ok-bd2-dev\\main_debug.py"], cwd="C:\\"

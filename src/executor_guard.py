@@ -293,10 +293,19 @@ class LegacyDetector:
 
     def _iterate(self):
         if self._process_iter is not None:
-            return self._process_iter()
+            yield from self._process_iter()
+            return
         import psutil
 
-        return psutil.process_iter(["pid", "name", "exe", "cmdline", "create_time"])
+        # Reading unrelated processes' command lines can block for seconds on Windows.
+        for process in psutil.process_iter(["pid", "name"]):
+            if not _is_python(process.info.get("name")):
+                continue
+            try:
+                process.info.update(process.as_dict(attrs=["exe", "cmdline", "create_time"]))
+            except psutil.NoSuchProcess:
+                continue
+            yield process
 
     def _excluded(self) -> set[int]:
         excluded = {self.self_pid, *self.excluded_pids}
