@@ -1,9 +1,13 @@
+import ctypes
 import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import numpy as np
+from ok.device.capture_methods import update as capture_update
+from ok.device.capture_methods.windows_graphics import WindowsGraphicsCaptureMethod
+from ok.task.exceptions import CaptureBusyException
 
 from src.compat.windows_graphics import (
     ResizeStabilityGate,
@@ -19,7 +23,7 @@ class WindowsGraphicsCompatibilityTest(unittest.TestCase):
         blank_frame = np.zeros((720, 1280, 4), dtype=np.uint8)
         blank_frame[:, :, 3] = 255
         capture = SimpleNamespace(
-            get_frame=Mock(
+            get_frame_for_probe=Mock(
                 side_effect=(
                     blank_frame,
                     np.ones((720, 1280, 3), dtype=np.uint8),
@@ -28,18 +32,21 @@ class WindowsGraphicsCompatibilityTest(unittest.TestCase):
             get_name=Mock(return_value="Windows Graphics Capture"),
         )
         fake_time = SimpleNamespace(
-            monotonic=Mock(side_effect=(0.0, 0.0, 0.1)),
+            monotonic=Mock(side_effect=(0.0, 0.0, 0.1, 0.15)),
             sleep=Mock(),
         )
 
         with patch("src.compat.windows_graphics.time", fake_time):
             self.assertTrue(_capture_can_produce_visible_frame(capture, 1.5))
 
-        self.assertEqual(2, capture.get_frame.call_count)
+        waits = [call.args[0] for call in capture.get_frame_for_probe.call_args_list]
+        self.assertEqual(2, len(waits))
+        self.assertAlmostEqual(1.5, waits[0])
+        self.assertAlmostEqual(1.35, waits[1])
 
     def test_first_frame_probe_rejects_continuous_black_frames(self):
         capture = SimpleNamespace(
-            get_frame=Mock(return_value=np.zeros((720, 1280, 3), dtype=np.uint8)),
+            get_frame_for_probe=Mock(return_value=np.zeros((720, 1280, 3), dtype=np.uint8)),
             get_name=Mock(return_value="Windows Graphics Capture"),
         )
         fake_time = SimpleNamespace(
@@ -50,7 +57,43 @@ class WindowsGraphicsCompatibilityTest(unittest.TestCase):
         with patch("src.compat.windows_graphics.time", fake_time):
             self.assertFalse(_capture_can_produce_visible_frame(capture, 1.5))
 
-        capture.get_frame.assert_called_once_with()
+        capture.get_frame_for_probe.assert_called_once_with(1.5)
+        fake_time.sleep.assert_not_called()
+
+    def test_first_frame_probe_caps_poll_sleep_and_preserves_busy(self):
+        capture = SimpleNamespace(
+            get_frame_for_probe=Mock(return_value=None),
+            get_name=Mock(return_value="Windows Graphics Capture"),
+        )
+        fake_time = SimpleNamespace(
+            monotonic=Mock(side_effect=(0.0, 0.0, 0.98, 1.0)),
+            sleep=Mock(),
+        )
+        with patch("src.compat.windows_graphics.time", fake_time):
+            self.assertFalse(_capture_can_produce_visible_frame(capture, 1.0))
+        self.assertAlmostEqual(0.02, fake_time.sleep.call_args.args[0])
+        capture.get_frame_for_probe.assert_called_once_with(1.0)
+
+        capture.get_frame_for_probe.side_effect = CaptureBusyException("busy")
+        with self.assertRaises(CaptureBusyException):
+            _capture_can_produce_visible_frame(capture, 1.0)
+
+    def test_busy_probe_keeps_wgc_selected_without_closing_or_caching_failure(self):
+        capture = SimpleNamespace(
+            start_or_stop=Mock(return_value=True),
+            get_frame_for_probe=Mock(side_effect=CaptureBusyException("busy")),
+            get_name=Mock(return_value="Windows Graphics Capture"),
+            close=Mock(),
+        )
+        with (
+            patch.object(capture_update, "windows_graphics_available", return_value=True),
+            patch.object(capture_update, "get_capture", return_value=capture),
+            patch.object(capture_update, "_capture_can_produce_frame",
+                         _capture_can_produce_visible_frame),
+        ):
+            self.assertIs(capture, capture_update.get_win_graphics_capture(None, None, None))
+        capture.close.assert_not_called()
+        self.assertFalse(hasattr(capture, "last_start_failure_key"))
 
     def test_resize_gate_requires_one_continuously_stable_size(self):
         gate = ResizeStabilityGate(delay_seconds=0.8)
@@ -228,7 +271,7 @@ class WindowsGraphicsCompatibilityTest(unittest.TestCase):
                         self.failures.append("reader waited on capture resource lock")
 
         patch_windows_graphics_capture_class(FakeCapture)
-        for entry in ("close", "frame_arrived_callback", "start_or_stop"):
+        for entry in ("close", "frame_arrived_callback"):
             with self.subTest(entry=entry):
                 capture = FakeCapture()
                 capture._ok_bd2_supported_target_signature = ()
@@ -251,8 +294,7 @@ class WindowsGraphicsCompatibilityTest(unittest.TestCase):
                 self.assertEqual([], capture.failures)
                 self.assertIsNone(capture.frame_pool)
                 self.assertFalse(capture._ok_bd2_resize_gate.active)
-                if entry != "start_or_stop":
-                    self.assertTrue(capture.woken_before_close_wait)
+                self.assertTrue(capture.woken_before_close_wait)
                 if entry == "frame_arrived_callback":
                     self.assertEqual(
                         ["frame closed", "capture closed"], capture.lifecycle
@@ -307,13 +349,25 @@ class WindowsGraphicsCompatibilityTest(unittest.TestCase):
                 self.frames = iter(frames)
                 self.state = state
                 self.read_calls = self.close_calls = 0
+                self.deadlines = []
                 if state == "exit":
                     self.exit_event.set()
 
-            def do_get_frame(self):
+            do_get_frame = WindowsGraphicsCaptureMethod.do_get_frame
+            do_get_frame_wait = WindowsGraphicsCaptureMethod.do_get_frame_wait
+            get_frame_for_probe = WindowsGraphicsCaptureMethod.get_frame_for_probe
+
+            def _do_get_frame(self, frame_deadline=None):
                 self.read_calls += 1
+                self.last_deadline = frame_deadline
+                self.deadlines.append(frame_deadline)
                 if self.state == "cancelled":
                     self._frame_cancel_generation += 1
+                if self.state == "error_once" and self.read_calls == 1:
+                    raise RuntimeError("capture failed")
+                if self.state.startswith("watchdog") and self.read_calls == 1:
+                    self.close()
+                    return self._do_get_frame(frame_deadline=frame_deadline)
                 return next(self.frames)
 
             def start_or_stop(self, capture_cursor=False):
@@ -334,13 +388,81 @@ class WindowsGraphicsCompatibilityTest(unittest.TestCase):
             ("exit", (None,), None, 1, 0),
             ("disconnected", (None,), None, 1, 0),
             ("cancelled", (None,), None, 1, 0),
+            ("watchdog_recovered", (frame,), frame, 2, 1),
+            ("watchdog_unavailable", (None, None), None, 2, 1),
         )
-        for state, frames, expected, reads, closes in cases:
-            with self.subTest(state=state):
-                capture = FakeCapture(frames, state)
-                self.assertIs(capture.do_get_frame(), expected)
-                self.assertEqual(reads, capture.read_calls)
-                self.assertEqual(closes, capture.close_calls)
+        for entry in ("poll", "wait", "probe"):
+            for state, frames, expected, reads, closes in cases:
+                with self.subTest(entry=entry, state=state):
+                    capture = FakeCapture(frames, state)
+                    if entry == "poll":
+                        actual = capture.do_get_frame()
+                    elif entry == "wait":
+                        actual = capture.do_get_frame_wait(0.1)
+                    else:
+                        actual = capture.get_frame_for_probe(1.5)
+                        self.assertIsNotNone(capture.last_deadline)
+                    self.assertIs(actual, expected)
+                    self.assertEqual(reads, capture.read_calls)
+                    self.assertEqual(closes, capture.close_calls)
+                    self.assertEqual(1, len(set(capture.deadlines)))
+
+        capture = FakeCapture((None, frame), "error_once")
+        with self.assertRaisesRegex(RuntimeError, "capture failed"):
+            capture.do_get_frame()
+        self.assertIs(capture.do_get_frame(), frame)
+        self.assertEqual((3, 1), (capture.read_calls, capture.close_calls))
+
+        capture = FakeCapture((None, frame), "recovered")
+        with patch("src.compat.windows_graphics.time.monotonic", side_effect=(0, 2)):
+            self.assertIsNone(capture._do_get_frame(frame_deadline=1))
+        self.assertEqual((1, 0), (capture.read_calls, capture.close_calls))
+        self.assertEqual(1, capture.last_deadline)
+
+        capture = FakeCapture((frame,), "healthy")
+        with patch("src.compat.windows_graphics.time.monotonic", return_value=2):
+            self.assertIsNone(capture._do_get_frame(frame_deadline=1))
+        self.assertEqual((0, 0), (capture.read_calls, capture.close_calls))
+
+    def test_start_reports_busy_before_size_validation_can_close_capture(self):
+        original_close = Mock()
+
+        class FakeCapture:
+            def __init__(self):
+                self.get_frame_lock = Mock()
+                self.get_frame_lock.acquire.return_value = False
+                self.hwnd_window = SimpleNamespace(exists=True, width=300, height=200)
+
+            start_or_stop = Mock()
+            close = original_close
+
+        patch_windows_graphics_capture_class(FakeCapture)
+        capture = FakeCapture()
+        with self.assertRaises(CaptureBusyException):
+            capture.start_or_stop()
+        capture.get_frame_lock.acquire.assert_called_once_with(blocking=False)
+        capture.get_frame_lock.release.assert_not_called()
+        original_close.assert_not_called()
+
+    def test_mapped_frame_is_owned_contiguous_bgr_and_excludes_row_padding(self):
+        class FakeCapture:
+            def __init__(self):
+                self.last_size = SimpleNamespace(Width=3, Height=2)
+
+            def start_or_stop(self, capture_cursor=False):
+                return True
+
+            def close(self):
+                pass
+
+        patch_windows_graphics_capture_class(FakeCapture)
+        mapped = np.arange(32, dtype=np.uint8).reshape(2, 4, 4)
+        expected = mapped[:, :3, :3].copy()
+        mapinfo = SimpleNamespace(pData=ctypes.c_void_p(mapped.ctypes.data), RowPitch=16)
+        frame = FakeCapture().read_mapped_frame(mapinfo)
+        mapped.fill(0)
+        np.testing.assert_array_equal(expected, frame)
+        self.assertTrue(frame.flags.c_contiguous)
 
     def test_rapid_resize_recreates_frame_pool_once_after_frame_close(self):
         lifecycle = []

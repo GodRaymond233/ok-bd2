@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import ctypes
 import time
 from dataclasses import dataclass
 
+import cv2
 import numpy as np
 import ok
 from ok.device.capture_methods import update as capture_update
+from ok.device.capture_methods.bitblt_utils import PBYTE
+from ok.task.exceptions import CaptureBusyException
 from ok.util import window as ok_window
 from ok.util.logger import Logger
 
@@ -81,11 +85,17 @@ def _frame_has_visible_pixels(frame: object) -> bool:
 
 
 def _capture_can_produce_visible_frame(capture: object, timeout: float) -> bool:
-    deadline = time.monotonic() + timeout
+    deadline = time.monotonic() + max(0.0, float(timeout))
     blank_frames = 0
-    while time.monotonic() < deadline:
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
         try:
-            frame = capture.get_frame()
+            frame = capture.get_frame_for_probe(remaining)
+        except CaptureBusyException:
+            # A competing reader must not disqualify an active WGC session.
+            raise
         except Exception as exc:
             logger.warning(f"{capture.get_name()} did not produce a frame: {exc}")
             return False
@@ -93,7 +103,10 @@ def _capture_can_produce_visible_frame(capture: object, timeout: float) -> bool:
             if _frame_has_visible_pixels(frame):
                 return True
             blank_frames += 1
-        time.sleep(0.05)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.05, remaining))
     if blank_frames:
         logger.warning(
             f"{capture.get_name()} produced only blank frames within {timeout}s; "
@@ -153,7 +166,7 @@ def patch_windows_graphics_capture_class(capture_class: type) -> None:
     original_init = capture_class.__init__
     original_start_or_stop = capture_class.start_or_stop
     original_close = capture_class.close
-    original_do_get_frame = getattr(capture_class, "do_get_frame", None)
+    original_do_get_frame = getattr(capture_class, "_do_get_frame", None)
 
     def stable_init(self, *args, **kwargs):
         self._ok_bd2_resize_gate = ResizeStabilityGate()
@@ -162,6 +175,16 @@ def patch_windows_graphics_capture_class(capture_class: type) -> None:
         original_init(self, *args, **kwargs)
 
     def stable_start_or_stop(self, capture_cursor=False):
+        # Size validation can close a session, so it shares the upstream
+        # non-blocking request lock and its retryable BUSY semantics.
+        if not self.get_frame_lock.acquire(blocking=False):
+            raise CaptureBusyException("Windows Graphics Capture is busy")
+        try:
+            return validate_and_start(self, capture_cursor)
+        finally:
+            self.get_frame_lock.release()
+
+    def validate_and_start(self, capture_cursor):
         window = getattr(self, "hwnd_window", None)
         if window is not None and getattr(window, "exists", False):
             size = (getattr(window, "width", 0), getattr(window, "height", 0))
@@ -183,10 +206,7 @@ def patch_windows_graphics_capture_class(capture_class: type) -> None:
                     self._ok_bd2_last_invalid_size_log = now
                 self.close()
                 return False
-        # The upstream start path can close a session while holding self.lock.
-        # Take the reentrant request lock first, matching do_get_frame().
-        with self.get_frame_lock:
-            return original_start_or_stop(self, capture_cursor=capture_cursor)
+        return original_start_or_stop(self, capture_cursor=capture_cursor)
 
     def stable_frame_arrived_callback(self, *args):
         next_frame = None
@@ -281,35 +301,60 @@ def patch_windows_graphics_capture_class(capture_class: type) -> None:
             _resize_gate(self).clear()
         return original_close(self)
 
-    def recovering_get_frame(self):
-        with self.get_frame_lock:
-            generation = self._frame_cancel_generation
-            frame = original_do_get_frame(self)
-            if (
-                frame is not None
-                or self.exit_event.is_set()
-                or generation != self._frame_cancel_generation
-            ):
-                return frame
-            window = self.hwnd_window
-            if (
-                not window.exists
-                or not window.hwnd
-                or not _valid_capture_size((window.width, window.height))
-            ):
-                return frame
-            # TaskExecutor can time out before the upstream ten-second watchdog.
-            logger.warning("WGC frame request timed out; restarting capture once")
-            self.close()
-            self.last_frame_time = time.time()
-            return original_do_get_frame(self)
+    def recovering_get_frame(self, frame_deadline=None):
+        # All upstream entry points hold get_frame_lock before calling this:
+        # polling, bounded BUSY waits, and first-frame probes share recovery.
+        if frame_deadline is not None and time.monotonic() >= frame_deadline:
+            return None
+        # The upstream watchdog recursively calls _do_get_frame after close().
+        # Only the outer request owns recovery; recursion shares its budget.
+        if getattr(self, "_ok_bd2_frame_request_active", False):
+            return original_do_get_frame(self, frame_deadline=frame_deadline)
+        self._ok_bd2_frame_request_active = True
+        try:
+            return recover_once(self, frame_deadline)
+        finally:
+            self._ok_bd2_frame_request_active = False
+
+    def recover_once(self, frame_deadline):
+        generation = self._frame_cancel_generation
+        frame = original_do_get_frame(self, frame_deadline=frame_deadline)
+        if (
+            frame is not None
+            or self.exit_event.is_set()
+            or generation != self._frame_cancel_generation
+            or (frame_deadline is not None and time.monotonic() >= frame_deadline)
+        ):
+            return frame
+        window = self.hwnd_window
+        if (
+            not window.exists
+            or not window.hwnd
+            or not _valid_capture_size((window.width, window.height))
+        ):
+            return frame
+        # TaskExecutor can time out before the upstream ten-second watchdog.
+        logger.warning("WGC frame request timed out; restarting capture once")
+        self.close()
+        self.last_frame_time = time.time()
+        return original_do_get_frame(self, frame_deadline=frame_deadline)
+
+    def read_mapped_bgr_frame(self, mapinfo):
+        mapped = np.ctypeslib.as_array(
+            ctypes.cast(mapinfo.pData, PBYTE),
+            (self.last_size.Height, mapinfo.RowPitch // 4, 4),
+        )[:, :self.last_size.Width]
+        # Copy before Unmap and remove alpha in one pass; OCR and templates
+        # receive owned, contiguous BGR data rather than a strided BGRA view.
+        return cv2.cvtColor(mapped, cv2.COLOR_BGRA2BGR)
 
     capture_class.__init__ = stable_init
     capture_class.start_or_stop = stable_start_or_stop
     capture_class.frame_arrived_callback = stable_frame_arrived_callback
     capture_class.close = stable_close
+    capture_class.read_mapped_frame = read_mapped_bgr_frame
     if original_do_get_frame is not None:
-        capture_class.do_get_frame = recovering_get_frame
+        capture_class._do_get_frame = recovering_get_frame
     setattr(capture_class, _WGC_PATCH_MARKER, True)
 
 

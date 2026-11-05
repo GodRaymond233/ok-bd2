@@ -1,0 +1,82 @@
+name: Check installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      application_tag:
+        description: Existing tag in both update repositories to package (not this checkout)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      APPLICATION_TAG: ${{ inputs.application_tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.21"
+      - name: Validate requested application tag
+        shell: pwsh
+        run: |
+          if ($env:APPLICATION_TAG -notmatch '^v\d+\.\d+\.\d+(?:[-.][A-Za-z0-9.-]+)?$') {
+            throw "application_tag must be an explicit application version tag."
+          }
+          Write-Output "Checking installer for existing update tag $env:APPLICATION_TAG"
+      - name: Check current checkout dependencies
+        shell: pwsh
+        run: .\scripts\check_dependency_exports.ps1
+      - name: Install current checkout dependencies
+        run: python scripts/install_dependencies.py requirements-dev.txt
+      - name: Check current checkout
+        shell: pwsh
+        run: .\scripts\run_checks.ps1 -Mode Final
+      - name: Validate current checkout update payload
+        shell: pwsh
+        run: |
+          python -m ok.update.inline_ok_requirements --tag $env:APPLICATION_TAG
+          if ($LASTEXITCODE -ne 0) { throw "Could not inline the current checkout." }
+          if (-not (Test-Path -LiteralPath ok -PathType Container)) {
+            throw "The inlined framework is missing."
+          }
+          if ((Get-Content -LiteralPath requirements.txt -Raw) -match '(?im)^\s*ok-script\b') {
+            throw "The update payload still depends on ok-script."
+          }
+      - name: Prepare launcher
+        shell: pwsh
+        run: .\scripts\prepare_pyappify_launcher.ps1 -Version v1.2.4 -NsisCompression zlib
+      - name: Package existing update tag
+        uses: ok-oldking/pyappify-action@33534434fc01d51039285d3f0c9bd3ab4d952bea
+        with:
+          version: v1.2.4
+          app_version: ${{ inputs.application_tag }}
+          add_version_name: true
+      - name: Verify installer assets
+        shell: pwsh
+        run: |
+          $version = $env:APPLICATION_TAG -replace '^v', ''
+          foreach ($profile in @('China', 'Global', 'online')) {
+            $asset = "pyappify_dist/ok-bd2-win32-$profile-setup-$version.exe"
+            if (-not (Test-Path -LiteralPath $asset)) { throw "Missing installer: $asset" }
+          }
+          "Installer payload: $env:APPLICATION_TAG from the existing update repositories." >> $env:GITHUB_STEP_SUMMARY
+          "Current checkout checks ran separately; unpublished application changes are not in these installers." >> $env:GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@v7
+        with:
+          name: installer-check-${{ inputs.application_tag }}
+          path: pyappify_dist/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7

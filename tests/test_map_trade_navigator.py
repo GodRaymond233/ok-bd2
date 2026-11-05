@@ -1658,6 +1658,7 @@ class NavigatorTest(unittest.TestCase):
         task = object.__new__(BaseBD2Task)
         task._executor = SimpleNamespace(
             paused=False, debug=False, config={"ocr": {"default": {"lib": "onnxocr"}}},
+            blocked_by_pause=lambda: False,
             ocr_lib=lambda _: engine, ocr_po_translation=None, text_fix={},
         )
         task.config = {}
