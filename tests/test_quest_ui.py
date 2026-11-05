@@ -1296,6 +1296,29 @@ class ExpandTimingTest(QuestUiTestBase):
 
 
 class TaskGuideTest(QuestUiTestBase):
+    def test_mouse_filter_leaves_layout_paint_events_untouched(self):
+        from unittest.mock import Mock, patch
+
+        from ok.ui.qt.tasks.LabelAndLineEdit import GlobalMouseButtonFilter
+        from PySide6.QtCore import QEvent, QPointF, QRect, Qt
+        from PySide6.QtGui import QMouseEvent, QPaintEvent
+        from PySide6.QtWidgets import QWidget, QWidgetItem
+
+        mouse_filter = GlobalMouseButtonFilter(self.app)
+        self.addCleanup(mouse_filter.deleteLater)
+        widget = QWidget()
+        self.addCleanup(widget.deleteLater)
+        # PySide6 can expose the layout-item wrapper during widget painting.
+        self.assertFalse(mouse_filter.eventFilter(QWidgetItem(widget), QPaintEvent(QRect())))
+        focused = Mock(_is_hotkey_input=True)
+        event = QMouseEvent(
+            QEvent.MouseButtonPress, QPointF(), QPointF(),
+            Qt.XButton1, Qt.XButton1, Qt.NoModifier,
+        )
+        with patch.object(QApplication, "focusWidget", return_value=focused):
+            self.assertTrue(mouse_filter.eventFilter(self.app, event))
+        focused.setText.assert_called_once_with("mouse4")
+
     def test_guides_load_offline_navigate_and_resize_images(self):
         from pathlib import Path
         from unittest.mock import patch
