@@ -49,7 +49,7 @@ def error_line(error):
 
 
 def mouse_recorder():
-    """ok-script's recorder without its keyboard listener and its Qt alerts."""
+    """Record mouse clicks and report status through the client."""
     from ok import og
     from ok.ui.qt.tasks.RecordScript import Recorder
     from pynput import mouse
