@@ -332,6 +332,18 @@ function probe() {
     const count = delivered.length;
     check("disabled system notification not delivered", (await api("/api/bd2/notify/test", { channel: "system" })).status === 400 && delivered.length === count);
 
+    await js(`document.querySelector('nav button[title="今日"]').click()`);
+    const firstChild = (await api("/api/probe/batch-progress", { step: 0 })).body.name;
+    await until(() => js(`document.querySelector('.dock .sub')?.textContent.trim()===${JSON.stringify(firstChild)}`), "initial batch child");
+    // Let the initial lifecycle refresh settle before advancing info without an event.
+    await delay(1200);
+    const nextChild = (await api("/api/probe/batch-progress", { step: 1 })).body.name;
+    await until(() => js(`document.querySelector('.dock .sub')?.textContent.trim()===${JSON.stringify(nextChild)}`), "live child transition", 40);
+    check("batch child advances without a lifecycle event", true);
+    check("today checklist follows the same live transition", await js(`document.querySelector('.today')?.textContent.includes('执行中 · 探针阶段')`));
+    const batchTask = (await api("/api/tasks")).body.find(task => task.class_name === "DailyBatchTask");
+    await api(`/api/tasks/${encodeURIComponent(batchTask.name)}/action`, { action: "stop" });
+
     const reportButton = `[...document.querySelectorAll('.dock button')].find(b=>b.textContent.trim()==='问题报告')`;
     await api("/api/probe/current-task", { name: (await api("/api/tasks")).body[0].name });
     await until(() => js("Boolean(document.querySelector('.dock'))"), "run panel");

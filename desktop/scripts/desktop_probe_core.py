@@ -7,6 +7,7 @@ or sending it any input. ``/api/probe/*`` lets the probe read and set what it ch
 
 import os
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -72,6 +73,26 @@ def load_config():
             # The page refreshes on this event, as it does when a real run starts or ends.
             communicate.executor_paused.emit(runtime.executor.paused)
             return {"ok": True}
+
+        @app.post("/api/probe/batch-progress")
+        def batch_progress(body: dict):
+            from src.tasks.DailyBatchTask import DailyBatchTask
+
+            batch = runtime.executor.get_task_by_class(DailyBatchTask)
+            step = body["step"]
+            if step == 0:
+                batch._enabled = True
+                batch.start_time = time.time()
+                batch.info_clear()
+                state["current_task"] = batch.name
+            child = batch.child_tasks[step]
+            batch.info_set("当前子任务", child.config_key)
+            batch.info_set("完成", "、".join(item.config_key for item in batch.child_tasks[:step]))
+            runtime.executor.get_task_by_class(child.task_class).info_set("状态", "探针阶段")
+            if step == 0:
+                communicate.task.emit(batch)
+            # Advancing info alone matches real batch execution; there is no task event.
+            return {"name": runtime.executor.get_task_by_class(child.task_class).name}
 
         @app.post("/api/probe/crash")
         def crash():

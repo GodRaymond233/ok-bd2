@@ -162,8 +162,10 @@ export function App() {
   const [dockExpanded, setDockExpanded] = useState(initialDockExpanded);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const taskRevision = useRef(0);
+  const refreshSequence = useRef(0);
 
   const refresh = useCallback(async () => {
+    const sequence = ++refreshSequence.current;
     const revision = taskRevision.current;
     try {
       const [capture, taskList, summary, desktop, groups] = await Promise.all([
@@ -173,6 +175,7 @@ export function App() {
         api.info(),
         api.settings(),
       ]);
+      if (sequence !== refreshSequence.current) return;
       setUi(capture);
       // A refresh started before a save must not overwrite the saved task response.
       if (revision === taskRevision.current) {
@@ -183,7 +186,7 @@ export function App() {
       setSettings(groups);
       setCoreError(null);
     } catch (reason) {
-      setCoreError(errorText(reason));
+      if (sequence === refreshSequence.current) setCoreError(errorText(reason));
     }
   }, []);
 
@@ -286,6 +289,19 @@ export function App() {
   const dockTask = dockName ? tasks.find((task) => task.name === dockName) : undefined;
   const dockSeal = dockTask ? sealOf(dockTask, current) : null;
   const dockActive = dockSeal !== null && isActive(dockSeal);
+
+  // Task info changes do not emit lifecycle events, including batch child transitions.
+  useEffect(() => {
+    if (!dockActive) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      await refresh();
+      if (!cancelled) timer = setTimeout(() => void poll(), 1000);
+    };
+    timer = setTimeout(() => void poll(), 1000);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [dockActive, refresh]);
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now() / 1000), dockActive ? 1000 : 30_000);
