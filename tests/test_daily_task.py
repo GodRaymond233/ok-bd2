@@ -2879,6 +2879,66 @@ class DailyTaskHelperTest(StageHistoryTestCase):
                     task._save_flow_diagnostic.assert_called_with("business_collect_failed")
 
 
+    def test_guest_collection_clears_season_overlay_before_clicking_restaurant(self):
+        for width, height in ((1280, 720), (1920, 1080)):
+            for mode in (
+                "early", "late", "stuck", "title_only", "dismiss_only", "split", "other_page",
+            ):
+                with self.subTest(size=(width, height), mode=mode):
+                    def box(name, x, y):
+                        return SimpleNamespace(name=name, x=(x - .01) * width,
+                                               y=(y - .01) * height,
+                                               width=.02 * width, height=.02 * height)
+
+                    frame = np.full((height, width, 3), 230, dtype=np.uint8)
+                    popup = self._business_controls(width, height)
+                    popup.append(box("立刻前往", .7, .3))
+                    restaurant = [box("格鲁菲餐厅", .1, .05), box("常客", .15, .3)]
+                    title = box("魔兽追踪者赛季奖励", .65, .28)
+                    dismiss = box("奖励已发放至背包。", .7, .8)
+                    reads, after_close = [0], [0]
+
+                    def screen(actions, _now):
+                        if (.7, .3) not in actions:
+                            return frame, popup, False
+                        reads[0] += 1
+                        if (.15, .3) in actions:
+                            self.assertGreaterEqual(after_close[0], 4)
+                            return frame, [box("火圣石×10", .5, .5)], False
+                        if mode == "late" and reads[0] == 1:
+                            return frame, restaurant[:1], False
+                        if (.7, .8) in actions and mode != "stuck":
+                            after_close[0] += 1
+                            if mode == "other_page":
+                                return frame, [box("其他页面", .5, .5)], False
+                            # 可读清屏帧之间插入空白帧，不能拼接成连续关闭确认。
+                            return frame, ([] if after_close[0] == 2 else restaurant), False
+                        overlay = [title, dismiss]
+                        if mode == "title_only":
+                            overlay = [title]
+                        elif mode == "dismiss_only":
+                            overlay = [dismiss]
+                        elif mode == "split":
+                            overlay = [title] if reads[0] % 2 else [dismiss]
+                        return frame, restaurant + overlay, False
+
+                    task, statuses, clicks, _, clock = self._business_flow_task(screen)
+                    del task._collect_business_guest_stones
+                    task.config["loading 消失等待秒数"] = 5.0
+                    task._quick_vision = Mock(return_value=SimpleNamespace(
+                        ocr_boxes=lambda *_args, **_kwargs: task.ocr(),
+                    ))
+                    expected = mode in {"early", "late"}
+                    self.assertEqual(expected, task._collect_business_guest_stones())
+                    expected_clicks = [(.7, .3)]
+                    if mode not in {"title_only", "dismiss_only", "split"}:
+                        expected_clicks.append((.7, .8))
+                    if expected:
+                        expected_clicks.append((.15, .3))
+                        self.assertEqual("已领取", statuses["常客圣石结果"])
+                    self.assertEqual(expected_clicks, clicks)
+                    self.assertLess(clock[0], 18.0)
+
     def test_guest_recheck_scales_crop_and_click_bounds_and_rejects_ambiguity(self):
         for height, width, roi in ((1080, 1920, (154, 205, 288, 173)),
                                    (720, 1280, (102, 137, 192, 115))):
@@ -2893,7 +2953,6 @@ class DailyTaskHelperTest(StageHistoryTestCase):
                     task.log_info = Mock()
                     task.sleep = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
                     task._save_flow_diagnostic = Mock()
-                    task._wait_for_ocr_keywords = Mock(return_value=(True, "格鲁菲餐厅"))
                     task._click_business_bounds = lambda image, bounds, after_sleep: (
                         self.assertIs(image, frame), clicks.append(bounds), task.sleep(after_sleep),
                     )
@@ -2930,8 +2989,8 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         self.assertEqual((.08, .19, .23, .35), BUSINESS_GUEST_RELATIVE_ROI)
 
     def test_business_collect_requires_restaurant_entry_and_arrival(self):
-        for has_restaurant_go, arrived in ((False, True), (True, False)):
-            with self.subTest(go=has_restaurant_go, arrived=arrived):
+        for has_restaurant_go in (False, True):
+            with self.subTest(go=has_restaurant_go):
                 frame = np.full((720, 1280, 3), 230, dtype=np.uint8)
                 popup = self._business_controls()
                 popup.append(SimpleNamespace(
@@ -2948,7 +3007,6 @@ class DailyTaskHelperTest(StageHistoryTestCase):
                 task._quick_vision = Mock(return_value=SimpleNamespace(
                     ocr_boxes=lambda *_args: task.ocr(),
                 ))
-                task._wait_for_ocr_keywords = Mock(side_effect=[(True, ""), (arrived, "")])
                 self.assertFalse(task.run_business_collect())
                 self.assertEqual(3 if has_restaurant_go else 2, len(clicks))
                 self.assertEqual("未确认", statuses["常客圣石结果"])

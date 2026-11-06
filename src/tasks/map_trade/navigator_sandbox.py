@@ -2271,10 +2271,12 @@ class SandboxNavigationMixin:
         return "移动中" in text, self._walk_caught(text)
 
     def _walk_state(self, frame: np.ndarray, *, field_confirmed: bool = False) -> str:
-        """Return caught/moving/idle; unreadable or non-field observations stay unknown."""
+        """Classify walk blockers before banners; unreadable observations stay unknown."""
         text = self._walk_text(frame)
         if text is None:
             return "unknown"
+        if all(word in text for word in CONSUMABLE_INVENTORY_FULL_KEYWORDS):
+            return "inventory_full"
         if self._walk_caught(text):
             return "caught"
         if "移动中" in text:
@@ -2292,7 +2294,7 @@ class SandboxNavigationMixin:
         return "done" if self._wait_resuming_walk(timeout) else "timeout"
 
     def _wait_resuming_walk(self, timeout: float) -> bool:
-        """等待可自动续走的路线结束，期间不发送额外点击。
+        """等待可自动续走的路线结束，背包满时关闭提示并停止任务。
 
         被驱逐后游戏会重新加载并继续移动；横幅、加载和巡逻提示均消失后再确认停止。
         """
@@ -2306,6 +2308,12 @@ class SandboxNavigationMixin:
                 self._status("导航状态", "加载中，等待自动移动继续")
             else:
                 walk_state = self._walk_state(frame)
+                if walk_state == "inventory_full":
+                    self._click_auto_move_dialog_button(frame, "确认")
+                    message = "消耗品背包已满，无法进入战斗区域；请清理背包后重新运行"
+                    self._status("导航状态", message)
+                    self.task.log_warning(message)
+                    raise RuntimeError(message)
                 if walk_state in {"moving", "caught"}:
                     idle = 0
                     if walk_state == "caught":
@@ -2934,7 +2942,7 @@ class SandboxNavigationMixin:
         )
 
     def _click_auto_move_dialog_button(self, frame: np.ndarray, label: str) -> bool:
-        """Click a unique button paired with the walk question on the same frame."""
+        """Click a unique button paired with a known movement dialog on the same frame."""
         try:
             boxes = self.vision.ocr_boxes(
                 frame, "出口自动移动确认窗", relative_roi=AUTO_MOVE_TEXT_RELATIVE_ROI,
@@ -2948,7 +2956,13 @@ class SandboxNavigationMixin:
             normalize_text(self.vision.simplify(str(getattr(box, "name", ""))))
             for box in boxes
         ]
-        if not any(word in "".join(normalized) for word in AUTO_MOVE_QUESTION_KEYWORDS):
+        text = "".join(normalized)
+        if not (
+            any(word in text for word in AUTO_MOVE_QUESTION_KEYWORDS)
+            or (label == "确认" and all(
+                word in text for word in CONSUMABLE_INVENTORY_FULL_KEYWORDS
+            ))
+        ):
             return False
         matches = [
             box for box, text in zip(boxes, normalized, strict=True) if text == label
@@ -3113,6 +3127,7 @@ class SandboxNavigationMixin:
 
 AUTO_MOVE_TEXT_RELATIVE_ROI = (560 / 1920, 80 / 1080, 1360 / 1920, 980 / 1080)
 AUTO_MOVE_QUESTION_KEYWORDS = ("是否自动移动", "前往所选目的地")
+CONSUMABLE_INVENTORY_FULL_KEYWORDS = ("无法移动", "消耗品背包需有空位")
 FIELD_BATTLE_TURN_RELATIVE_ROI = (0.40, 0.05, 0.60, 0.16)
 FIELD_BATTLE_TIMEOUT = 180.0
 # Pause button in the user's 1920x1080 battle capture.

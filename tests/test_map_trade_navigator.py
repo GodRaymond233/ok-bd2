@@ -848,6 +848,58 @@ class NavigatorTest(unittest.TestCase):
                     self.assertEqual(expected, navigator._wait_auto_move_finished(1))
                     self.assertEqual(expected == "done", navigator._wait_resuming_walk(1))
 
+    def test_inventory_full_walk_confirms_once_and_stops_before_retry(self):
+        for width, height, left, top in ((1920, 1080, 560, 80), (1280, 720, 373, 53)):
+            for mode in (
+                "paired", "missing_confirm", "ambiguous", "title_only", "body_only", "changed_pair",
+            ):
+                with self.subTest(size=(width, height), mode=mode):
+                    frame = np.full((height, width, 3), 120, dtype=np.uint8)
+                    clock, clicks = [0.0], []
+
+                    def box(name):
+                        return SimpleNamespace(
+                            name=name, x=width * .5 - left - 20,
+                            y=height * .57 - top - 10, width=40, height=20,
+                        )
+
+                    def ocr(*, name, **_kwargs):
+                        texts = ["无法移动", "消耗品背包需有空位，才能前往战斗区域。", "自动移动中"]
+                        if mode == "title_only":
+                            del texts[1]
+                        elif mode == "body_only":
+                            del texts[0]
+                        if mode == "changed_pair" and name == "出口自动移动确认窗":
+                            texts = []
+                        texts += ["确认"] * (
+                            0 if mode == "missing_confirm" else 2 if mode == "ambiguous" else 1
+                        )
+                        return [box(text) for text in texts]
+
+                    task = SimpleNamespace(
+                        config={}, info_set=Mock(), log_warning=Mock(), ocr=ocr,
+                        capture_frame=lambda: frame,
+                        sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+                    )
+                    task.operate_click = lambda x, y, after_sleep: (
+                        clicks.append((x, y)), task.sleep(after_sleep),
+                    )
+                    navigator = Navigator(task, Vision(task))
+                    navigator.classify = Mock(return_value=ScreenState.SANDBOX)
+                    with patch("src.tasks.map_trade.navigator_sandbox.monotonic",
+                               side_effect=lambda: clock[0]):
+                        if mode in {"title_only", "body_only"}:
+                            self.assertFalse(navigator._wait_resuming_walk(1))
+                        else:
+                            with self.assertRaisesRegex(RuntimeError, "消耗品背包已满.*清理背包"):
+                                navigator._wait_resuming_walk(30)
+                            self.assertLessEqual(clock[0], .8)
+                            task.log_warning.assert_called_once()
+                    self.assertEqual(1 if mode == "paired" else 0, len(clicks))
+                    if clicks:
+                        self.assertAlmostEqual(.5, clicks[0][0])
+                        self.assertAlmostEqual(.57, clicks[0][1], delta=1 / height)
+
     def test_portal_walk_leaves_victory_and_requires_confirmed_idle(self):
         frame = np.full((108, 192, 3), 120, dtype=np.uint8)
         for leave_count, expected in ((1, "done"), (0, "timeout"), (2, "timeout")):

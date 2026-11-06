@@ -6,7 +6,7 @@ from ok.task.exceptions import FinishedException, TaskDisabledException
 
 from src.icons import TaskIcon as FluentIcon
 from src.tasks import run_history
-from src.tasks.BaseBD2Task import BaseBD2Task
+from src.tasks.BaseBD2Task import BaseBD2Task, _PendingOverlay
 from src.tasks.map_trade.models import TemplateSpec
 from src.tasks.quick_hunt import QuickHuntConfigMixin
 from src.tasks.task_vision_mixin import REFERENCE_HEIGHT, REFERENCE_WIDTH, TaskVisionMixin
@@ -588,22 +588,38 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
             self.log_info("常客圣石：未能确定餐馆行的前往按钮。")
             return False
         self._click_business_bounds(frame, self._business_bounds(actions[0]), after_sleep=1.0)
-        arrived, _ = self._wait_for_ocr_keywords(
-            ["格鲁菲餐厅"],
-            timeout=float(self.config.get("loading 消失等待秒数", 35.0)),
-            minimum_matches=1,
-            name="常客圣石餐厅确认",
-        )
-        if not arrived:
-            self.log_info("常客圣石：未确认进入格鲁菲餐厅。")
-            return False
-
-        deadline = monotonic() + 12.0
+        deadline = monotonic() + float(self.config.get("loading 消失等待秒数", 35.0))
+        arrived = False
+        pending_reward, pending_rank = _PendingOverlay(), _PendingOverlay()
+        handled: set[str] = set()
         clicks = 0
         confirm_until = 0.0
         while monotonic() < deadline:
             frame = self.capture_frame()
             boxes = vision.ocr_boxes(frame, "常客圣石")
+            _, action, target = self._observe_cartridge_overlays(
+                boxes, pending_reward, pending_rank, handled,
+                allow_pvp_pages=False, allow_season_reward=False,
+            )
+            if pending_reward.title is not None:
+                # 奖励页可能迟于餐厅出现；关闭确认前不能点击透出的常客按钮。
+                if (action and action not in handled and target is not None
+                        and monotonic() < deadline):
+                    self.info_set("常客圣石奖励页", action)
+                    self._click_business_bounds(
+                        frame, self._business_bounds(target), after_sleep=0.5,
+                    )
+                    handled.add(action)
+                self.sleep(0.25)
+                continue
+            restaurant = self._find_ocr_box(boxes, "格鲁菲餐厅") is not None
+            if not arrived:
+                if not restaurant:
+                    self.sleep(0.25)
+                    continue
+                arrived = True
+                self.info_set("常客圣石餐厅确认 关键字", "1/1")
+                deadline = monotonic() + 12.0
             rewards = [
                 reward.group() for box in boxes
                 if (reward := re.search(r"[火水风光暗]圣石[×xX*]\d+", normalize_ocr_text(box.name)))
@@ -613,7 +629,6 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
                 self.info_set("常客圣石奖励", "、".join(rewards))
                 self.log_info(f"常客圣石：已领取，{'、'.join(rewards)}。")
                 return True
-            restaurant = self._find_ocr_box(boxes, "格鲁菲餐厅") is not None
             guests = [box for box in boxes if normalize_ocr_text(box.name) == "常客"]
             scale = "全图720"
             if restaurant and not guests and monotonic() >= confirm_until:
@@ -642,7 +657,9 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
             clicks += 1
             # 每次等待奖励 3 秒；首次额外留 1.5 秒缓冲，期间继续读取迟到的提示。
             confirm_until = monotonic() + 3.0 + (1.5 if clicks == 1 else 0.0)
-        self.log_info("常客圣石：未确认领取完成。")
+        self.log_info(
+            "常客圣石：未确认领取完成。" if arrived else "常客圣石：未确认进入格鲁菲餐厅。",
+        )
         self._save_flow_diagnostic("business_guest_stones_failed")
         return False
 
