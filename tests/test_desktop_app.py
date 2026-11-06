@@ -395,13 +395,8 @@ class RuntimeControlTest(unittest.TestCase):
         start = Mock()
         controller = SimpleNamespace(start=start, starting=False)
         app_facade = SimpleNamespace(start_controller=controller, diagnostic_pause=True)
-        executor = SimpleNamespace(
-            get_all_tasks=lambda: [],
-            current_task=None,
-            thread=None,
-            paused=True,
-            basic_options={},
-        )
+        executor = make_executor()
+        executor.paused = True
         engine = SimpleNamespace(
             config={},
             task_executor=executor,
