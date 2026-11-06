@@ -46,8 +46,9 @@ def load_config():
             return dict(original_status(), running=state["running"],
                         current_task=state["current_task"])
 
-        def safe_start(*args, **kwargs):
+        def safe_start(task=None, exit_after=False):
             state["starts"] += 1
+            state["last_start_task"] = type(task).__name__ if task else None
             state["running"] = True
             runtime.executor.paused = False
             communicate.executor_paused.emit(False)
@@ -70,6 +71,7 @@ def load_config():
         @app.post("/api/probe/current-task")
         def current_task(body: dict):
             state["current_task"] = body["name"]
+            state["running"] = body.get("running", state["running"])
             # The page refreshes on this event, as it does when a real run starts or ends.
             communicate.executor_paused.emit(runtime.executor.paused)
             return {"ok": True}
@@ -88,7 +90,10 @@ def load_config():
             child = batch.child_tasks[step]
             batch.info_set("当前子任务", child.config_key)
             batch.info_set("完成", "、".join(item.config_key for item in batch.child_tasks[:step]))
-            runtime.executor.get_task_by_class(child.task_class).info_set("状态", "探针阶段")
+            child_task = runtime.executor.get_task_by_class(child.task_class)
+            child_task.info_set("状态", "探针阶段")
+            child_task.info_set("目标卡带", "Q_cp7: match=0.981, pixel=0.976, zncc=-1.000")
+            child_task.info_set("Warning", "探针警告")
             if step == 0:
                 communicate.task.emit(batch)
             # Advancing info alone matches real batch execution; there is no task event.

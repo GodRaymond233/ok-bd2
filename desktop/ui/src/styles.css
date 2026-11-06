@@ -3611,6 +3611,24 @@ mark {
   line-height: 20px;
 }
 
+.status-details {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.status-details > summary {
+  color: var(--ink-dim);
+  cursor: pointer;
+  font-size: var(--fs-caption);
+}
+
+.status-details > .kv {
+  margin-top: 10px;
+  max-height: 360px;
+  overflow: auto;
+}
+
 .tools-page {
   display: flex;
   flex-direction: column;

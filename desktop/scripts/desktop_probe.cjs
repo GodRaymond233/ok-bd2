@@ -279,6 +279,14 @@ function probe() {
     failToggle = false;
     delivered.length = shown;
 
+    // Window discovery may already find a game; the connection test starts with an idle runner.
+    await api("/api/probe/current-task", { name: null, running: false });
+    await until(() => js("document.querySelector('[data-action=connect-game]')?.disabled===false"), "home connection button");
+    fs.writeFileSync(path.join(out, "home-connection.png"), (await win.webContents.capturePage()).toPNG());
+    await js("document.querySelector('[data-action=connect-game]').click()");
+    await until(async () => (await state()).last_start_task === "LauncherTask", "standalone connection request");
+    check("home connects through LauncherTask without selecting daily execution", (await state()).current_task === null);
+
     await setting("Minimize Window to System Tray when Closing", true);
     win.close();
     await delay(100);
@@ -341,10 +349,25 @@ function probe() {
     await until(() => js(`document.querySelector('.dock .sub')?.textContent.trim()===${JSON.stringify(nextChild)}`), "live child transition", 40);
     check("batch child advances without a lifecycle event", true);
     check("today checklist follows the same live transition", await js(`document.querySelector('.today')?.textContent.includes('执行中 · 探针阶段')`));
+    await js(`document.querySelector('nav button[title="任务"]').click()`);
+    await until(() => js(`Boolean([...document.querySelectorAll('.ti-open .nm')].find(e=>e.textContent===${JSON.stringify(nextChild)}))`), "child in task library");
+    await js(`[...document.querySelectorAll('.ti-open .nm')].find(e=>e.textContent===${JSON.stringify(nextChild)}).closest('button').click()`);
+    await until(() => js("document.querySelector('.status-summary')?.textContent.includes('探针警告')"), "compact status");
+    check("status keeps warnings visible and folds raw matching data", await js("!document.querySelector('.status-summary').textContent.includes('match=') && !document.querySelector('.status-details').open"));
+    await js("document.querySelector('.status-details summary').click()");
+    check("diagnostic details can be expanded without losing evidence", await js("document.querySelector('.status-details').open && document.querySelector('.status-details .kv').textContent.includes('match=0.981')"));
+    await js("document.querySelector('.status-details summary').click()");
+    await js("window.okbd2Shell.setZoom(100)");
+    win.setBounds({ x: 80, y: 80, width: 1280, height: 900 });
+    await delay(350);
+    fs.writeFileSync(path.join(out, "compact-status.png"), (await win.webContents.capturePage()).toPNG());
+    await js("window.okbd2Shell.setZoom(125)");
+    win.setBounds({ x: 80, y: 80, width: 980, height: 720 });
     const batchTask = (await api("/api/tasks")).body.find(task => task.class_name === "DailyBatchTask");
-    await api(`/api/tasks/${encodeURIComponent(batchTask.name)}/action`, { action: "stop" });
+    const stoppedBatch = await api(`/api/tasks/${encodeURIComponent(batchTask.name)}/action`, { action: "stop" });
+    assert.equal(stoppedBatch.status, 200, JSON.stringify(stoppedBatch));
 
-    const reportButton = `[...document.querySelectorAll('.dock button')].find(b=>b.textContent.trim()==='问题报告')`;
+    const reportButton = `[...document.querySelectorAll('.dock button')].find(b=>['问题报告','生成问题报告'].includes(b.textContent.trim()))`;
     await api("/api/probe/current-task", { name: (await api("/api/tasks")).body[0].name });
     await until(() => js("Boolean(document.querySelector('.dock'))"), "run panel");
     await api("/api/probe/current-task", { name: null });

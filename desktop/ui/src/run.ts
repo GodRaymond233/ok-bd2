@@ -1,7 +1,7 @@
 // What the run panel shows for a task: its state seal, the batch progress and the info rows.
 // Mirrors the Qt run panel (src/ui/run_panel.py); the result state itself comes from the core.
 import { coreText, t } from "./i18n.ts";
-import type { TaskPayload, TodayItem } from "./types.ts";
+import type { StatusRow, TaskPayload, TodayItem } from "./types.ts";
 
 export type Seal = "run" | "pause" | "stopping" | "done" | "issue" | "abort";
 
@@ -99,6 +99,21 @@ export interface InfoRow {
   key: string;
   value: string;
   tone: "" | "strong" | "bad";
+}
+
+/** Keep operational progress readable; recognition evidence remains available on demand. */
+export function statusSummary(rows: StatusRow[]) {
+  const priority = [
+    "状态", "当前阶段", "阶段", "当前任务", "当前子任务", "快速狩猎当前阶段",
+    "进度", "完成循环数", "料理进度", "完成", "失败", "跳过", "结果", "快速狩猎结果",
+    "已出售商品", "未出售商品",
+  ];
+  const alerts = new Set(["Warning", "Error", "警告", "错误"]);
+  const selected = priority.map((key) => rows.find((row) => row.key === key))
+    .filter((row): row is StatusRow => Boolean(row)).slice(0, 4);
+  selected.push(...rows.filter((row) => alerts.has(row.key)));
+  const keys = new Set(selected.map((row) => row.key));
+  return { summary: selected, details: rows.filter((row) => !keys.has(row.key)) };
 }
 
 const STANDARD_KEYS = new Set(["状态", "当前子任务", "完成", "失败", "跳过", "Log", "Warning", "Error", "启用"]);

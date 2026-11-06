@@ -10,7 +10,8 @@ import { durationText, whenText } from "./format.ts";
 import { coreText, t } from "./i18n.ts";
 import { checklistRows } from "./today.ts";
 import { libraryGroups } from "./library.ts";
-import type { HistoryRun, TaskPayload } from "./types.ts";
+import { statusSummary } from "./run.ts";
+import type { HistoryRun, StatusRow, TaskPayload } from "./types.ts";
 import { ConfirmDialog, Icon, Menu, TaskGlyph, Toggle, useSlider } from "./ui.tsx";
 
 function Marker({ core, task }: { core: Core; task: TaskPayload }) {
@@ -42,6 +43,15 @@ function Marker({ core, task }: { core: Core; task: TaskPayload }) {
     );
   }
   return null;
+}
+
+function StatusValues({ rows }: { rows: StatusRow[] }) {
+  return <div className="kv">{rows.map((row) => (
+    <div key={row.key} style={{ display: "contents" }}>
+      <span className="k">{coreText(row.label)}</span>
+      <span className="v">{coreText(row.value)}</span>
+    </div>
+  ))}</div>;
 }
 
 function TaskRow({ core, task, selected, onSelect }: { core: Core; task: TaskPayload; selected: boolean; onSelect: () => void }) {
@@ -170,6 +180,7 @@ function TaskDetail({
   const locked = core.busy || Boolean(task.config_busy);
   const fields = task.config ?? [];
   const changed = modifiedFields(fields);
+  const status = statusSummary(task.status_rows ?? []);
 
   const { history: loadHistory, historyVersion } = core;
   useEffect(() => {
@@ -348,14 +359,11 @@ function TaskDetail({
                 <Icon name="target" />
                 <b>{t("运行状态")}</b>
               </div>
-              <div className="kv">
-                {task.status_rows?.map((row) => (
-                  <div key={row.key} style={{ display: "contents" }}>
-                    <span className="k">{coreText(row.label)}</span>
-                    <span className="v">{coreText(row.value)}</span>
-                  </div>
-                ))}
-              </div>
+              <div className="status-summary"><StatusValues rows={status.summary} /></div>
+              {status.details.length > 0 && <details className="status-details">
+                <summary>{t("诊断详情（{count} 项）", { count: status.details.length })}</summary>
+                <StatusValues rows={status.details} />
+              </details>}
             </div>
           )}
           {(task.guide || task.instructions) && (

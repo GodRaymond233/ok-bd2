@@ -1,4 +1,5 @@
 // 今日: is the game connected, what is left today, and where to start.
+import { useState } from "react";
 import type { Core } from "./App.tsx";
 import { dateText, refreshText, untilText } from "./format.ts";
 import { coreText, t } from "./i18n.ts";
@@ -46,9 +47,19 @@ function StateIcon({ row }: { row: Row }) {
 }
 
 export function TodayPage({ core }: { core: Core }) {
+  const [connecting, setConnecting] = useState(false);
   const summary = core.today;
   const batch = summary?.batch ? core.tasks.find((task) => task.name === summary.batch?.name) : undefined;
   const connected = Boolean(core.device?.connected);
+  const launcher = core.tasks.find((task) => task.class_name === "LauncherTask");
+  const starting = Boolean(core.ui?.status.starting);
+  const ready = connected && core.ui?.status.running && !core.ui.status.paused;
+  const connect = async () => {
+    if (!launcher) return;
+    setConnecting(true);
+    try { await core.act(() => core.startTask(launcher.name)); }
+    finally { setConnecting(false); }
+  };
   const head = (
     <>
       <div className="ph">
@@ -56,7 +67,18 @@ export function TodayPage({ core }: { core: Core }) {
           <h1 className="title">{t("今日")}</h1>
           <span className="date">{dateText(core.now)}</span>
         </div>
+        <div className="row">
+          <button type="button" className="btn" data-action="connect-game"
+            disabled={!launcher || connecting || starting || ready || Boolean(core.startBlocked)}
+            title={core.startBlocked ?? undefined} onClick={() => void connect()}>
+            <Icon name={ready ? "check" : "play"} />
+            {starting || connecting ? t("正在连接…") : ready ? t("已连接游戏") : t("启动／连接游戏")}
+          </button>
+          {starting && <button type="button" className="btn subtle" disabled={!core.ui?.starter_wait}
+            onClick={() => void core.act(core.cancelStarter)}>{t("取消等待")}</button>}
+        </div>
       </div>
+      {core.startError && <div className="ferr" role="alert">{core.startError}</div>}
       {summary && (
         <div className="refresh">
           <span>
