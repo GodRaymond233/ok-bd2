@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from weakref import ref
 
-from PySide6.QtCore import QEasingCurve, QPoint, QPointF, QRect, QSize, Qt
+from PySide6.QtCore import QEasingCurve, QEvent, QPoint, QPointF, QRect, QSize, Qt
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -335,12 +335,28 @@ def install_responsive_task_config_ui():
 
     from ok.ui.qt.tasks import LabelAndMultiSelection as multi_selection_module
     from ok.ui.qt.tasks.ConfigCard import ConfigCard
+    from ok.ui.qt.tasks.LabelAndLineEdit import GlobalMouseButtonFilter
     from ok.ui.qt.tasks.LabelAndTextEdit import LabelAndTextEdit
     from ok.ui.qt.tasks.LabelAndWidget import LabelAndWidget
     from ok.ui.qt.tasks.TaskCard import TaskCard
 
     if getattr(LabelAndWidget, "_bd2_responsive_ui_installed", False):
         return
+
+    original_mouse_filter = GlobalMouseButtonFilter.eventFilter
+    mouse_button_events = {
+        QEvent.MouseButtonPress, QEvent.MouseButtonRelease, QEvent.MouseButtonDblClick,
+        QEvent.NonClientAreaMouseButtonPress, QEvent.NonClientAreaMouseButtonRelease,
+    }
+
+    def mouse_button_filter(self, watched, event):
+        # QObject's fallback returns False. Calling it on unrelated paint/layout events
+        # can fail when PySide6 exposes a QWidgetItem wrapper instead of a QObject.
+        if event.type() not in mouse_button_events:
+            return False
+        return original_mouse_filter(self, watched, event)
+
+    GlobalMouseButtonFilter.eventFilter = mouse_button_filter
 
     original_label_init = LabelAndWidget.__init__
     original_add_widget = LabelAndWidget.add_widget
