@@ -25,6 +25,10 @@ def load_config():
     original = desktop.create_app
 
     def create(*args, **kwargs):
+        from src.tasks.run_history import RunHistoryStore, set_default_store
+
+        if fixture := os.environ.get("OKBD2_DESKTOP_FIXTURE"):
+            set_default_store(RunHistoryStore(str(Path(fixture) / "task_run_history.json")))
         app = original(*args, **kwargs)
         runtime = app.state.runtime
         if os.environ.get("OKBD2_MAINTENANCE_PROBE"):
