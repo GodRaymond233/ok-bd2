@@ -214,7 +214,7 @@ svg.i.f {
 }
 
 /* ================= sidebar ================= */
-.rail-divider {
+.width-divider {
   position: relative;
   z-index: var(--z-pop);
   flex: 0 0 8px;
@@ -225,20 +225,20 @@ svg.i.f {
   outline: none;
 }
 
-.rail-divider::before {
+.width-divider::before {
   content: "";
   position: absolute;
   inset: 0 3px;
   background: transparent;
 }
 
-.rail-divider:hover::before,
-.rail-divider:focus-visible::before,
-.rail-divider[data-dragging]::before {
+.width-divider:hover::before,
+.width-divider:focus-visible::before,
+.width-divider[data-dragging]::before {
   background: var(--accent);
 }
 
-.rail-divider[data-dragging]::after {
+.width-divider[data-dragging]::after {
   content: "";
   position: fixed;
   inset: 0;
@@ -1567,9 +1567,24 @@ label.tgl {
 
 /* ================= tasks ================= */
 .lib {
+  position: relative;
   display: grid;
   grid-template-columns: var(--lib-col-w) minmax(0, 1fr);
   height: 100%;
+}
+
+.task-list-divider {
+  position: absolute;
+  /* Keep the task list's scrollbar free; drag from the detail-side padding. */
+  left: calc(var(--lib-col-w) - 1px);
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  margin: 0;
+}
+
+.task-list-divider::before {
+  inset: 0 6px 0 0;
 }
 
 .libcol {
@@ -3034,7 +3049,7 @@ mark {
 }
 
 @media (max-width: 899px) {
-  .rail-divider {
+  .width-divider {
     display: none;
   }
 
@@ -3328,7 +3343,8 @@ mark {
     margin-right: var(--guide-w);
   }
 
-  .lib.guide-open > .libcol {
+  .lib.guide-open > .libcol,
+  .lib.guide-open > .task-list-divider {
     display: none;
   }
 

@@ -3,7 +3,7 @@
 import { type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { t } from "./i18n.ts";
 import { taskGlyph } from "./library.ts";
-import { clampRailWidth, RAIL_WIDTH } from "./settings.ts";
+import { RAIL_WIDTH, TASK_LIST_WIDTH } from "./settings.ts";
 
 // Fluent-style line icons on a 24 grid; play, pause and stop are filled.
 const PATHS: Record<string, ReactNode> = {
@@ -208,20 +208,37 @@ export function useDismiss(open: boolean, root: RefObject<HTMLElement | null>, c
   }, [open, root, close]);
 }
 
-/** Resize locally while dragging; persist only the finished gesture. */
-export function RailDivider({ width, maximum, onResize, onCommit }: {
+type DividerProps = {
   width: number; maximum: number; onResize: (width: number) => void; onCommit: (width: number) => void;
+};
+
+export function RailDivider(props: DividerProps) {
+  return <WidthDivider {...props} minimum={RAIL_WIDTH.min} defaultWidth={RAIL_WIDTH.default}
+    className="rail-divider" controls="navigation-rail" label={t("调整导航栏宽度")}
+    hint={t("左右拖动调整导航栏宽度，双击恢复默认")} />;
+}
+
+export function TaskListDivider(props: DividerProps & { defaultWidth: number }) {
+  return <WidthDivider {...props} minimum={TASK_LIST_WIDTH.min}
+    className="task-list-divider" controls="task-library" label={t("调整任务列表宽度")}
+    hint={t("左右拖动调整任务列表宽度，双击恢复默认")} />;
+}
+
+/** Resize locally while dragging; persist only the finished gesture. */
+function WidthDivider({ width, minimum, maximum, defaultWidth, className, controls, label, hint, onResize, onCommit }: DividerProps & {
+  minimum: number; defaultWidth: number; className: string; controls: string; label: string; hint: string;
 }) {
+  const clamp = (value: number) => Math.max(minimum, Math.min(maximum, Math.round(value)));
   const drag = useRef<{ id: number; x: number; start: number; value: number } | null>(null);
   const [dragging, setDragging] = useState(false);
   const change = (value: number) => {
-    const next = clampRailWidth(value, maximum);
+    const next = clamp(value);
     onResize(next);
     onCommit(next);
   };
   const finish = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!drag.current || drag.current.id !== event.pointerId) return;
-    const value = clampRailWidth(drag.current.value, maximum);
+    const value = clamp(drag.current.value);
     drag.current = null;
     setDragging(false);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
@@ -229,16 +246,16 @@ export function RailDivider({ width, maximum, onResize, onCommit }: {
     onCommit(value);
   };
   return <div
-    className="rail-divider"
+    className={`width-divider ${className}`}
     role="separator"
     tabIndex={0}
-    aria-label={t("调整导航栏宽度")}
+    aria-label={label}
     aria-orientation="vertical"
-    aria-controls="navigation-rail"
-    aria-valuemin={RAIL_WIDTH.min}
+    aria-controls={controls}
+    aria-valuemin={minimum}
     aria-valuemax={maximum}
     aria-valuenow={width}
-    title={t("左右拖动调整导航栏宽度，双击恢复默认")}
+    title={hint}
     data-dragging={dragging || undefined}
     onPointerDown={(event) => {
       if (event.button !== 0 || !event.isPrimary) return;
@@ -250,16 +267,16 @@ export function RailDivider({ width, maximum, onResize, onCommit }: {
     }}
     onPointerMove={(event) => {
       if (!drag.current || drag.current.id !== event.pointerId) return;
-      const next = clampRailWidth(drag.current.start + event.clientX - drag.current.x, maximum);
+      const next = clamp(drag.current.start + event.clientX - drag.current.x);
       drag.current.value = next;
       onResize(next);
     }}
     onPointerUp={finish}
     onPointerCancel={finish}
     onLostPointerCapture={finish}
-    onDoubleClick={() => change(RAIL_WIDTH.default)}
+    onDoubleClick={() => change(defaultWidth)}
     onKeyDown={(event) => {
-      const choices: Record<string, number> = { ArrowLeft: width - 10, ArrowRight: width + 10, Home: RAIL_WIDTH.min, End: maximum };
+      const choices: Record<string, number> = { ArrowLeft: width - 10, ArrowRight: width + 10, Home: minimum, End: maximum };
       const next = choices[event.key];
       if (next === undefined) return;
       event.preventDefault();

@@ -60,7 +60,13 @@ export function otherFields(group: SettingsGroup | undefined, keys: string[]): C
 const THEME_KEY = "okbd2.theme";
 const DOCK_KEY = "okbd2.dockExpanded";
 const RAIL_KEY = "okbd2.railWidth";
+const TASK_LIST_KEY = "okbd2.taskListWidth";
 export const RAIL_WIDTH = { default: 216, min: 160, max: 360 } as const;
+export const TASK_LIST_WIDTH = { default: 340, compact: 280, min: 220, max: 480 } as const;
+
+export function maximumTaskListWidth(contentWidth: number): number {
+  return Math.max(TASK_LIST_WIDTH.min, Math.min(TASK_LIST_WIDTH.max, Math.floor(contentWidth - 360)));
+}
 
 export function maximumRailWidth(viewportWidth: number): number {
   // Keep room for the task list and its detail at the smallest two-column layout.
@@ -139,5 +145,21 @@ export function rememberRailWidth(railWidth: number): void {
     void shell.setUiPreferences({ railWidth }).catch(() => undefined);
   } else {
     rememberInBrowser(RAIL_KEY, String(railWidth));
+  }
+}
+
+export function storedTaskListWidth(): number | null {
+  const shell = window.okbd2Shell;
+  const value = shell ? shell.uiPreferences().taskListWidth : Number(browserValue(TASK_LIST_KEY));
+  return typeof value === "number" && Number.isInteger(value) && value >= TASK_LIST_WIDTH.min && value <= TASK_LIST_WIDTH.max
+    ? value : null;
+}
+
+export function rememberTaskListWidth(taskListWidth: number): void {
+  const shell = window.okbd2Shell;
+  if (shell) {
+    void shell.setUiPreferences({ taskListWidth }).catch(() => undefined);
+  } else {
+    rememberInBrowser(TASK_LIST_KEY, String(taskListWidth));
   }
 }

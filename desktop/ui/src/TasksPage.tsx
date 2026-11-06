@@ -1,6 +1,6 @@
 // 任务: the task list (filtered by group, searchable, each row with its own run button or
 // switch) and the selected task's detail with its settings.
-import { useEffect, useState } from "react";
+import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Core } from "./App.tsx";
 import { ConfigForm } from "./ConfigForm.tsx";
 import { GuidePanel } from "./GuidePanel.tsx";
@@ -11,8 +11,9 @@ import { coreText, t } from "./i18n.ts";
 import { checklistRows } from "./today.ts";
 import { libraryGroups } from "./library.ts";
 import { statusSummary } from "./run.ts";
+import { maximumTaskListWidth, rememberTaskListWidth, storedTaskListWidth, TASK_LIST_WIDTH } from "./settings.ts";
 import type { HistoryRun, StatusRow, TaskPayload } from "./types.ts";
-import { ConfirmDialog, Icon, Menu, TaskGlyph, Toggle, useSlider } from "./ui.tsx";
+import { ConfirmDialog, Icon, Menu, TaskGlyph, TaskListDivider, Toggle, useSlider } from "./ui.tsx";
 
 function Marker({ core, task }: { core: Core; task: TaskPayload }) {
   if (task.trigger) {
@@ -103,6 +104,22 @@ export function TasksPage({
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<string | null>(null);
   const [guideOf, setGuideOf] = useState<string | null>(null);
+  const [preferredWidth, setPreferredWidth] = useState(storedTaskListWidth);
+  const [layout, setLayout] = useState({ content: window.innerWidth, viewport: window.innerWidth });
+  const library = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const node = library.current;
+    if (!node) return;
+    const measure = () => setLayout({ content: node.clientWidth, viewport: window.innerWidth });
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    window.addEventListener("resize", measure);
+    measure();
+    return () => { observer.disconnect(); window.removeEventListener("resize", measure); };
+  }, []);
+  const defaultWidth = layout.viewport < 1200 ? TASK_LIST_WIDTH.compact : TASK_LIST_WIDTH.default;
+  const maximum = maximumTaskListWidth(layout.content);
+  const width = Math.min(maximum, preferredWidth ?? defaultWidth);
   const tabs = useSlider<HTMLDivElement>('[aria-selected="true"]', filter);
   const everything = libraryGroups(core.tasks, "");
   const groups = libraryGroups(core.tasks, query).filter((group) => !filter || group.name === filter);
@@ -113,8 +130,9 @@ export function TasksPage({
     ...everything.map((group): [string, string, number] => [group.name, group.name, group.tasks.length]),
   ];
   return (
-    <div className={`lib${detailOpen ? " detail-open" : ""}${guideOf === task?.name ? " guide-open" : ""}`}>
-      <nav className="libcol" aria-label={t("任务库")}>
+    <div ref={library} style={{ "--lib-col-w": `${width}px` } as CSSProperties}
+      className={`lib${detailOpen ? " detail-open" : ""}${guideOf === task?.name ? " guide-open" : ""}`}>
+      <nav id="task-library" className="libcol" aria-label={t("任务库")}>
         <label className="search">
           <Icon name="search" />
           <input
@@ -143,6 +161,8 @@ export function TasksPage({
         ))}
         {groups.length === 0 && <div className="libnote">{t("没有匹配的任务")}</div>}
       </nav>
+      <TaskListDivider width={width} maximum={maximum} defaultWidth={defaultWidth}
+        onResize={setPreferredWidth} onCommit={rememberTaskListWidth} />
       {task && (
         <TaskDetail
           key={task.name}

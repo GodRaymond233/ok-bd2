@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
-import { applyTheme, rememberDockExpanded, rememberRailWidth, storedDockExpanded, storedRailWidth, storedTheme } from "../src/settings.ts";
+import { applyTheme, rememberDockExpanded, rememberRailWidth, rememberTaskListWidth, storedDockExpanded, storedRailWidth, storedTaskListWidth, storedTheme } from "../src/settings.ts";
 import type { UiPreferences } from "../src/types.ts";
 
 function setGlobal(name: string, value: unknown): void {
@@ -39,15 +39,17 @@ afterEach(() => {
 });
 
 test("in the shell, the page's choices are read from and sent to the shell", () => {
-  const sent = useShell({ theme: "dark", dockExpanded: false, railWidth: 280 });
+  const sent = useShell({ theme: "dark", dockExpanded: false, railWidth: 280, taskListWidth: 400 });
   assert.equal(storedTheme(), "dark");
   assert.equal(storedDockExpanded(), false);
   assert.equal(storedRailWidth(), 280);
+  assert.equal(storedTaskListWidth(), 400);
   applyTheme("light");
   rememberDockExpanded(true);
   rememberRailWidth(260);
+  rememberTaskListWidth(320);
   assert.equal(dataset.theme, "light");
-  assert.deepEqual(sent, [{ theme: "light" }, { dockExpanded: true }, { railWidth: 260 }]);
+  assert.deepEqual(sent, [{ theme: "light" }, { dockExpanded: true }, { railWidth: 260 }, { taskListWidth: 320 }]);
 });
 
 test("in the shell, nothing saved yet means the defaults", () => {
@@ -55,8 +57,10 @@ test("in the shell, nothing saved yet means the defaults", () => {
   assert.equal(storedTheme(), "system");
   assert.equal(storedDockExpanded(), null);
   assert.equal(storedRailWidth(), 216);
-  useShell({ railWidth: 9000 });
+  assert.equal(storedTaskListWidth(), null);
+  useShell({ railWidth: 9000, taskListWidth: 9000 });
   assert.equal(storedRailWidth(), 216);
+  assert.equal(storedTaskListWidth(), null);
 });
 
 test("a choice the shell could not save still applies to the page", async () => {
@@ -82,9 +86,11 @@ test("without the shell, the choices stay in the browser", () => {
   applyTheme("dark");
   rememberDockExpanded(false);
   rememberRailWidth(240);
+  rememberTaskListWidth(400);
   assert.equal(storedTheme(), "dark");
   assert.equal(storedDockExpanded(), false);
   assert.equal(storedRailWidth(), 240);
+  assert.equal(storedTaskListWidth(), 400);
 });
 
 test("without the shell or storage, the page still works", () => {

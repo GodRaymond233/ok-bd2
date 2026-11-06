@@ -385,6 +385,7 @@ export interface UiPreferences {
   theme?: Theme;
   dockExpanded?: boolean;
   railWidth?: number;
+  taskListWidth?: number;
 }
 
 export interface ShellBridge {

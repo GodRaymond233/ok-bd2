@@ -214,8 +214,60 @@ function probe() {
     fs.writeFileSync(path.join(out, "sidebar-resized.png"), (await win.webContents.capturePage()).toPNG());
   }
 
+  async function checkTaskListResize() {
+    win.setBounds({ x: 80, y: 80, width: 1480, height: 900 });
+    await js(`document.querySelector('nav button[title="任务"]').click()`);
+    const width = () => js("Math.round(document.querySelector('.libcol').getBoundingClientRect().width)");
+    await until(async () => await width() === 340, "default task list width");
+    const drag = async (requested, expected, preview = false) => {
+      const position = await js("(()=>{const r=document.querySelector('.task-list-divider').getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+100),width:Math.round(document.querySelector('.libcol').getBoundingClientRect().width)}})()");
+      const x = position.x + requested - position.width;
+      win.webContents.sendInputEvent({ type: "mouseMove", x: position.x, y: position.y });
+      win.webContents.sendInputEvent({ type: "mouseDown", x: position.x, y: position.y, button: "left", clickCount: 1 });
+      try {
+        win.webContents.sendInputEvent({ type: "mouseMove", x, y: position.y, modifiers: ["leftButtonDown"] });
+        await until(async () => await width() === expected, "dragged task list");
+        if (preview) check("task list previews width before saving", await js("window.okbd2Shell.uiPreferences().taskListWidth===undefined"));
+      } finally {
+        win.webContents.sendInputEvent({ type: "mouseUp", x, y: position.y, button: "left", clickCount: 1 });
+      }
+      await until(() => js(`window.okbd2Shell.uiPreferences().taskListWidth===${expected}`), "saved task list width");
+    };
+    await drag(400, 400, true);
+    check("task list can be dragged wider", await width() === 400);
+    await drag(100, 220);
+    check("task list has a usable minimum", await width() === 220);
+    await drag(700, 480);
+    check("task list has a bounded maximum", await width() === 480);
+    await js("document.querySelector('.task-list-divider').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowLeft',bubbles:true}))");
+    await until(async () => await width() === 470, "task list keyboard adjustment");
+    check("task list divider supports keyboard adjustment", true);
+    await js("document.querySelector('.task-list-divider').dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))");
+    await until(async () => await width() === 340, "task list reset");
+    check("task list double click resets width", true);
+    await drag(400, 400);
+    fs.writeFileSync(path.join(out, "task-list-resized.png"), (await win.webContents.capturePage()).toPNG());
+    win.setBounds({ x: 80, y: 80, width: 1000, height: 720 });
+    await until(() => js("document.querySelector('.detail').getBoundingClientRect().width>=360 && document.documentElement.scrollWidth<=innerWidth"), "detail space while narrowing");
+    check("task list contracts to preserve detail space without changing preference", await js("window.okbd2Shell.uiPreferences().taskListWidth===400"));
+    win.setBounds({ x: 80, y: 80, width: 800, height: 720 });
+    await until(() => js("getComputedStyle(document.querySelector('.task-list-divider')).display==='none'"), "compact task list");
+    check("compact task view keeps the saved task list width", await js("window.okbd2Shell.uiPreferences().taskListWidth===400"));
+    win.setBounds({ x: 80, y: 80, width: 1480, height: 900 });
+    await until(async () => await width() === 400, "restored wide task list");
+    check("widening restores the chosen task list width", true);
+    await js(`document.querySelector('nav button[title="今日"]').click()`);
+  }
+
+  async function checkTaskListRestored(reason) {
+    await js(`document.querySelector('nav button[title="任务"]').click()`);
+    await until(() => js("(()=>{const lib=document.querySelector('.lib'),col=document.querySelector('.libcol');if(!lib||!col)return false;const expected=innerWidth<900?lib.clientWidth:Math.min(400,Math.max(220,Math.min(480,lib.clientWidth-360)));return window.okbd2Shell.uiPreferences().taskListWidth===400&&Math.abs(col.getBoundingClientRect().width-expected)<1})()"), "task list after " + reason);
+    check("task list width survives " + reason, true);
+  }
+
   async function firstRun() {
     await checkRailResize();
+    await checkTaskListResize();
     // Whatever this machine has free; another program may hold F9, as it did on the build machine.
     const free = ["F10", "F11", "F12", "F9"].filter((key) => {
       if (!register(key, () => {})) return false;
@@ -311,6 +363,7 @@ function probe() {
     win.webContents.reload();
     await until(clientReady, "reload");
     check("zoom survives page reload", Math.abs(win.webContents.getZoomFactor() - 1.25) < 0.01);
+    check("task list width survives page reload", await js("window.okbd2Shell.uiPreferences().taskListWidth===400"));
 
     win.setMinimumSize(600, 450);
     win.setSize(600, 450);
@@ -411,6 +464,7 @@ function probe() {
     check("maximized state restored", win.isMaximized() === maximized);
     await until(railRestored, "restored navigation width");
     check("navigation width is restored after process restart", true);
+    await checkTaskListRestored("process restart");
     win.unmaximize();
     check("tray preference persisted", info.closeToTray === true);
     check("theme persisted after process restart", await js("document.documentElement.dataset.theme==='dark'"));
@@ -446,6 +500,7 @@ function probe() {
     check("theme survives a core restart", await js("document.documentElement.dataset.theme==='dark'"));
     await until(railRestored, "navigation width after core restart");
     check("navigation width survives a core restart", true);
+    await checkTaskListRestored("core restart");
     await js(`document.querySelector('nav button[title="设置"]').click()`);
     await until(() => js(`document.querySelector('[aria-label="界面缩放"]')?.disabled===false`), "settings loaded");
     await setting("Minimize Window to System Tray when Closing", false);
