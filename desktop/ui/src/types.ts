@@ -75,6 +75,38 @@ export interface Guide {
   markdown: string;
 }
 
+export interface ToolState {
+  run_id: number;
+  kind: "code" | "ocr" | "check" | null;
+  active: boolean;
+  stopping: boolean;
+  output: string;
+  truncated: boolean;
+  code: string;
+  task_class: string;
+  image_url: string | null;
+  result: {
+    value: string | null;
+    error: string | null;
+    cancelled: boolean;
+    duration: number;
+    details: {
+      checks?: { name: string; ok: boolean; detail: string }[];
+      boxes?: { text: string; x: number; y: number; width: number; height: number; confidence: number }[];
+      width?: number;
+      height?: number;
+    } | null;
+  } | null;
+}
+
+export interface McpState {
+  enabled: boolean;
+  requested: boolean;
+  url: string | null;
+  connection_file: string | null;
+  error: string | null;
+}
+
 export interface ScriptEntry {
   name: string;
   modified: number;
@@ -270,6 +302,8 @@ export interface CaptureUi {
   starter_wait?: StarterWait | null;
   diagnostic_pause?: boolean;
   maintenance?: boolean;
+  tools_busy?: boolean;
+  overlay?: { boxes: boolean };
 }
 
 export interface StarterWait {

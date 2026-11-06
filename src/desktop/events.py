@@ -113,6 +113,7 @@ def install_events(app, runtime):
                     in {
                         "adb_devices",
                         "executor_paused",
+                        "executor_exclusive",
                         "starting_emulator",
                         "task",
                         "task_list_updated",
@@ -124,6 +125,7 @@ def install_events(app, runtime):
                     if payload["event"] in {
                         "adb_devices",
                         "executor_paused",
+                        "executor_exclusive",
                         "starting_emulator",
                         "task",
                         "task_list_updated",

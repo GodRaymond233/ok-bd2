@@ -37,12 +37,12 @@ const GROUP_LABELS: Record<string, string> = {
 const drafts = new Map<string, string>();
 let lastOpen: string | null = null;
 
-function CodeEditor({ value, errorLine, editor, onChange, onSave }: {
+export function CodeEditor({ value, errorLine, editor, onChange, onSave }: {
   value: string;
   errorLine: number | null;
   editor: RefObject<HTMLTextAreaElement | null>;
   onChange: (value: string) => void;
-  onSave: () => void;
+  onSave?: () => void;
 }) {
   const gutter = useRef<HTMLDivElement>(null);
   const colored = useRef<HTMLPreElement>(null);
@@ -65,7 +65,7 @@ function CodeEditor({ value, errorLine, editor, onChange, onSave }: {
       apply(newLine(value, start, end));
     } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
       event.preventDefault();
-      onSave();
+      onSave?.();
     }
   };
 

@@ -551,6 +551,12 @@ def _start_and_serve(
             maintenance_requested.append(fields)
             channel.send("maintenance", **fields)
 
+        if os.name == "nt":
+            from ok.ui.overlay.win32_gdi import Win32GdiOverlay
+
+            # The Electron core uses the native clipboard and has no Qt event loop.
+            Win32GdiOverlay._create_qt_clipboard_writer = staticmethod(lambda: None)
+
         app = app_factory(
             service_config(config),
             token=handshake.token,

@@ -14,6 +14,7 @@ import type {
   HuntBook,
   HuntPlans,
   LanguageState,
+  McpState,
   RecordingState,
   ReportState,
   ScriptDocument,
@@ -26,6 +27,7 @@ import type {
   TemplateMarkup,
   TemplatesInfo,
   TodaySummary,
+  ToolState,
   UpdateCheck,
   WindowInfo,
 } from "./types.ts";
@@ -93,6 +95,15 @@ async function request<T>(path: string, method: "GET" | "POST" = "GET", body?: u
 export const api = {
   language: () => request<LanguageState>("/api/desktop/language"),
   setLanguage: (language: LanguagePreference) => request<LanguageState>("/api/desktop/language", "POST", { language }),
+  tools: () => request<ToolState>("/api/desktop/tools"),
+  runTool: (kind: "code" | "ocr" | "check", code = "", task = "") =>
+    request<ToolState>("/api/desktop/tools/run", "POST", { kind, code, task }),
+  stopTool: () => request<ToolState>("/api/desktop/tools/stop", "POST"),
+  clearToolOutput: () => request<ToolState>("/api/desktop/tools/clear", "POST"),
+  resetToolVariables: () => request<ToolState>("/api/desktop/tools/reset", "POST"),
+  mcp: () => request<McpState>("/api/desktop/mcp"),
+  setMcp: (enabled: boolean, confirmed = false) => request<McpState>("/api/desktop/mcp", "POST", { enabled, confirmed }),
+  setOverlay: (boxes: boolean) => request<CaptureUi>("/api/overlay", "POST", { name: "boxes", value: boxes }),
   scripts: () => request<ScriptEntry[]>("/api/scripts"),
   scriptHelpers: () => request<ScriptHelper[]>("/api/script-templates"),
   script: (name: string) => request<ScriptDocument>(`/api/scripts/${encodeURIComponent(name)}`),

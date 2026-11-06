@@ -125,6 +125,9 @@ def make_executor():
         onetime_task_queue=[],
         trigger_tasks=[],
         current_task=None,
+        current_job=None,
+        _exclusive_owner=None,
+        _job_queue=[],
         thread=None,
         paused=False,
         debug_mode=False,
@@ -563,6 +566,152 @@ NO_GAME_WINDOW = {
 def new(capture_class):
     """A capture object without a window; capture_in_use only looks at its class."""
     return capture_class.__new__(capture_class)
+
+
+class DesktopToolsTest(unittest.TestCase):
+    def setUp(self):
+        from tests.test_desktop_device_settings import make_client
+
+        self.folder = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(patch(
+            "src.desktop.tools.Config",
+            side_effect=lambda name, defaults: Config(name, defaults, folder=self.folder),
+        ))
+        self.client = make_client(self)
+        self.runtime = self.client.app.state.runtime
+        self.tools = self.client.app.state.tools
+        self.engine = self.runtime.ok
+        self.engine._mcp_server = None
+        self.engine.set_mcp_enabled = Mock()
+        self.executor.exit_event = threading.Event()
+        self.executor._start_thread_locked = Mock()
+        self.task = BaseTask(executor=self.executor, app=self.headless)
+        self.task.config = Config("fixture", {"value": 1}, folder=self.folder)
+        self.task.default_config = {"value": 1}
+        self.executor.onetime_tasks.append(self.task)
+        self.engine.get_task = lambda name: (self.task, False)
+
+    def post(self, action, **body):
+        return self.client.post(f"/api/desktop/tools/{action}", json=body)
+
+    def execute(self, **body):
+        response = self.post("run", **body)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.executor._run_job(self.executor._pop_job())
+        return self.client.get("/api/desktop/tools").json()
+
+    def test_code_output_namespace_reset_and_shared_preferences(self):
+        code = "value = 40\nprint('hello')\nvalue + 2"
+        state = self.execute(kind="code", code=code, task=self.task.name)
+        self.assertEqual(state["output"], "hello\n")
+        self.assertEqual(state["result"]["value"], "42")
+        self.assertIsNone(self.executor.exclusive_owner)
+        saved = Config("run_code", {"code": "", "target_task": ""}, folder=self.folder)
+        self.assertEqual(saved["code"], code)
+        self.assertEqual(saved["target_task"], "BaseTask")
+        state = self.execute(kind="code", code="value + 3")
+        self.assertEqual(state["result"]["value"], "43")
+        self.assertNotIn("task", self.tools.session.namespace)
+        self.assertEqual(self.post("reset").status_code, 200)
+        state = self.execute(kind="code", code="value")
+        self.assertIn("NameError", state["result"]["error"])
+        cleared = self.post("clear").json()
+        self.assertIsNone(cleared["result"]["error"])
+
+    def test_tool_ownership_blocks_mutations_until_cancelled(self):
+        response = self.post("run", kind="code", code="1 + 1")
+        self.assertTrue(response.json()["active"])
+        self.assertTrue(self.client.get("/api/ui/capture").json()["tools_busy"])
+        for path, body in (
+            ("/api/desktop/tools/run", {"kind": "check"}),
+            ("/api/desktop/tools/reset", {}),
+            (f"/api/tasks/{self.task.name}/start", {}),
+            (f"/api/tasks/{self.task.name}/config", {"key": "value", "value": 2}),
+            ("/api/bd2/report/prepare", {}),
+            ("/api/desktop/backups", {}),
+        ):
+            with self.subTest(path=path):
+                refused = self.client.post(path, json=body)
+                self.assertEqual(refused.status_code, 400, refused.text)
+                self.assertIn("调试操作", refused.text)
+        cancelled = self.post("stop").json()
+        self.assertTrue(cancelled["result"]["cancelled"])
+        self.assertFalse(cancelled["active"])
+        self.assertIsNone(self.executor.exclusive_owner)
+        self.assertFalse(self.client.get("/api/ui/capture").json()["tools_busy"])
+        self.assertEqual(self.task.config["value"], 1)
+
+    def test_tools_respect_start_report_maintenance_and_existing_jobs(self):
+        for attribute in ("maintenance", "diagnostic_pause", "window_resize_in_progress"):
+            with self.subTest(attribute=attribute):
+                setattr(self.headless, attribute, True)
+                self.assertEqual(self.post("run", kind="check").status_code, 400)
+                self.assertEqual(self.client.post(
+                    "/api/overlay", json={"name": "boxes", "value": True}
+                ).status_code, 400)
+                setattr(self.headless, attribute, False)
+        self.headless.start_controller.starting = True
+        self.assertEqual(self.post("run", kind="check").status_code, 400)
+        self.headless.start_controller.starting = False
+        self.task._enabled = True
+        self.assertEqual(self.post("run", kind="check").status_code, 400)
+        self.task._enabled = False
+        queued = self.executor.submit(lambda: None)
+        self.assertEqual(self.post("run", kind="check").status_code, 400)
+        queued.cancel()
+        self.tools.legacy_check = lambda: "旧版正在运行"
+        self.assertEqual(self.post("run", kind="check").status_code, 400)
+        self.assertIsNone(self.executor.exclusive_owner)
+
+    def test_ocr_returns_the_recognized_frame_and_boxes(self):
+        import cv2
+        import numpy as np
+
+        self.assertEqual(self.post("run", kind="ocr").status_code, 400)
+        frame = np.full((32, 48, 3), 123, dtype=np.uint8)
+        capture = SimpleNamespace(connected=lambda: True, get_frame=lambda: frame)
+        self.manager.capture_method = capture
+        self.task.ocr = Mock(return_value=[SimpleNamespace(
+            name="fixture", x=1, y=2, width=10, height=12, confidence=0.9,
+        )])
+        state = self.execute(kind="ocr")
+        self.task.ocr.assert_called_once_with(frame=frame, log=True, screenshot=True)
+        self.assertEqual(state["result"]["details"], {
+            "width": 48, "height": 32,
+            "boxes": [{"text": "fixture", "x": 1, "y": 2, "width": 10,
+                       "height": 12, "confidence": 0.9}],
+        })
+        response = self.client.get(state["image_url"])
+        self.assertEqual(response.headers["content-type"], "image/png")
+        decoded = cv2.imdecode(np.frombuffer(response.content, np.uint8), 1)
+        np.testing.assert_array_equal(decoded, frame)
+
+    def test_mcp_requires_confirmation_and_reports_start_failure(self):
+        path = "/api/desktop/mcp"
+        self.assertFalse(self.client.get(path).json()["enabled"])
+        self.assertEqual(self.client.post(path, json={"enabled": True}).status_code, 400)
+        self.engine.set_mcp_enabled.assert_not_called()
+        accepted = self.client.post(path, json={"enabled": True, "confirmed": True})
+        self.assertEqual(accepted.status_code, 200)
+        self.engine.set_mcp_enabled.assert_called_once_with(True)
+        self.engine.set_mcp_enabled.side_effect = OSError("occupied")
+        response = self.client.post(path, json={"enabled": True, "confirmed": True})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.client.get(path).json()["error"], "occupied")
+        self.engine.set_mcp_enabled.side_effect = None
+        self.post("run", kind="code", code="1")
+        self.assertEqual(self.client.post(path, json={"enabled": False}).status_code, 200)
+        self.post("stop")
+
+    def test_new_routes_require_the_local_session(self):
+        self.client.headers.pop("Authorization")
+        for path in ("/api/desktop/tools", "/api/desktop/tools/ocr/image", "/api/desktop/mcp"):
+            self.assertEqual(self.client.get(path).status_code, 403, path)
+        for action in ("run", "stop", "reset", "clear"):
+            self.assertEqual(self.post(action, kind="code", code="print('x')").status_code, 403)
+        self.assertEqual(self.client.post(
+            "/api/desktop/mcp", json={"enabled": True, "confirmed": True}
+        ).status_code, 403)
 
 
 class CaptureUiTest(unittest.TestCase):

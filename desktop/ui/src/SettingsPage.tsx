@@ -24,7 +24,7 @@ import {
   applyTheme,
   storedTheme,
 } from "./settings.ts";
-import type { AboutInfo, BackupEntry, BackupList, ShellDesktop, Theme, UpdateCheck } from "./types.ts";
+import type { AboutInfo, BackupEntry, BackupList, McpState, ShellDesktop, Theme, UpdateCheck } from "./types.ts";
 import { ConfirmDialog, Icon, Menu, Toggle, useSlider } from "./ui.tsx";
 
 type Tab = "general" | "notify" | "about";
@@ -38,6 +38,52 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
       {children}
     </section>
   );
+}
+
+function McpSettings({ core }: { core: Core }) {
+  const [state, setState] = useState<McpState | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState(false);
+  const [working, setWorking] = useState(false);
+  useEffect(() => {
+    let active = true;
+    const refresh = () => void api.mcp().then(
+      (next) => { if (active) { setState(next); setError(null); } },
+      (reason: unknown) => { if (active) setError(errorText(reason)); },
+    );
+    refresh();
+    const timer = setInterval(refresh, 3000);
+    return () => { active = false; clearInterval(timer); };
+  }, []);
+  const change = async (enabled: boolean) => {
+    setWorking(true); setError(null);
+    try { setState(await api.setMcp(enabled, enabled)); setConfirm(false); }
+    catch (reason) { setError(errorText(reason)); }
+    finally { setWorking(false); }
+  };
+  return <Section title={t("本机工具连接（MCP）")}>
+    <div className="card form">
+      <div className="fld">
+        <div className="lb">{t("启用 MCP 服务")}</div>
+        <div className="dsc">{t("让受信任的本机编程工具连接客户端。默认关闭，需要连接时再开启。")}</div>
+        <div className="ctrl"><Toggle label={t("启用 MCP 服务")} checked={Boolean(state?.enabled || state?.requested)}
+          disabled={!state || working || (!state.enabled && core.busy) || Boolean(core.ui?.maintenance) || Boolean(core.ui?.diagnostic_pause)}
+          onChange={(enabled) => enabled ? setConfirm(true) : void change(false)} /></div>
+      </div>
+      {state?.enabled && <div className="pad">
+        <div className="row"><code>{state.url}</code><button className="btn sm subtle" onClick={() => void core.act(async () => { await navigator.clipboard.writeText(state.url ?? ""); core.notify(t("MCP 地址已复制")); })}>{t("复制地址")}</button></div>
+        <p className="why">{t("连接令牌保存在以下本机文件中，请只交给你信任的工具，不要发送到群聊或问题报告。")}</p>
+        <p className="dsc mono path">{state.connection_file}</p>
+        <button className="btn sm" onClick={() => void core.act(core.openLogsFolder)}>{t("打开日志文件夹")}</button>
+      </div>}
+      {(error || state?.error) && <div className="ferr" role="alert">{error ?? coreText(state?.error ?? "")}</div>}
+    </div>
+    {confirm && <ConfirmDialog title={t("启用 MCP 服务？")} confirm={t("允许并开启")} disabled={working || core.busy}
+      onConfirm={() => void change(true)} onCancel={() => setConfirm(false)}>
+      <p>{t("连接的工具可以使用你的账户权限运行 Python、读取或修改文件，并操作客户端和游戏。请只连接受信任的工具，并保管好连接令牌。")}</p>
+      {error && <div className="ferr">{error}</div>}
+    </ConfirmDialog>}
+  </Section>;
 }
 
 function General({ core }: { core: Core }) {
@@ -179,6 +225,7 @@ function General({ core }: { core: Core }) {
       <Section title={t("识别与性能")}>
         <ConfigForm fields={otherFields(basic, [...DEVICE_KEYS, AUTO_RESIZE_KEY, ...SHELL_KEYS])} disabled={false} saveField={save} />
       </Section>
+      <McpSettings core={core} />
       <p className="why">{t("改完即保存。游戏启动、退出和窗口相关的选项在「设备」页。")}</p>
     </>
   );

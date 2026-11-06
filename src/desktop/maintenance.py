@@ -47,6 +47,7 @@ def ensure_launcher_matches(executable):
 
 def install_maintenance(app, runtime, version, request):
     from src.desktop.config_store import config_lock
+    from src.desktop.tools import executor_busy
 
     folder = runtime.ok.config.get("config_folder", "configs")
     store = BackupStore(Path.cwd()) if folder == "configs" else None
@@ -86,6 +87,8 @@ def install_maintenance(app, runtime, version, request):
         with config_lock:
             if getattr(facade, "maintenance", False):
                 raise ValueError("更新或备份操作正在进行")
+            if executor_busy(runtime.executor):
+                raise ValueError("调试操作正在进行，请等待或停止后再试")
             if (
                 facade.start_controller.starting
                 or getattr(facade, "diagnostic_pause", False)

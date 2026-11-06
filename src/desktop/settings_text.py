@@ -116,8 +116,7 @@ SHOWN_WHILE_ON = {
 # DX11 stays out as in Qt: the Starter launch cannot pass it (src/config.py).
 OMITTED_KEYS = {
     "Launch with DX11",
-    # Starts only with ok-script's own start(), which the service never calls, and it lets
-    # local programs run code in this process; nothing in the client needs it.
+    # MCP has its own confirmation and runtime control, not a plain config switch.
     "Enable MCP Server",
 }
 

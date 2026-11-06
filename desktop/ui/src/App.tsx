@@ -19,6 +19,7 @@ import { clampRailWidth, maximumRailWidth, rememberDockExpanded, rememberRailWid
 import { captureSummary, type Notice, noticeFromEvent } from "./state.ts";
 import { TasksPage } from "./TasksPage.tsx";
 import { TemplatesPage } from "./TemplatesPage.tsx";
+import { ToolsPage } from "./ToolsPage.tsx";
 import { TodayPage } from "./TodayPage.tsx";
 import { type BatchRun, withBatchConfig } from "./today.ts";
 import type {
@@ -41,7 +42,7 @@ declare global {
   }
 }
 
-export type Page = "today" | "tasks" | "records" | "logs" | "scripts" | "templates" | "device" | "settings" | "report";
+export type Page = "today" | "tasks" | "records" | "logs" | "scripts" | "templates" | "tools" | "device" | "settings" | "report";
 
 export interface Core {
   ui: CaptureUi | null;
@@ -99,7 +100,7 @@ export interface Core {
   openLogs: (run: HistoryRun | null) => void;
 }
 
-const REFRESH_EVENTS = new Set(["task", "task_done", "task_list_updated", "executor_paused"]);
+const REFRESH_EVENTS = new Set(["task", "task_done", "task_list_updated", "executor_paused", "executor_exclusive"]);
 // Game start progress only changes the capture state (status.starting, starter_wait).
 const CAPTURE_EVENTS = new Set(["starting_emulator", "starter_wait", "adb_devices"]);
 
@@ -111,6 +112,7 @@ const NAV: { page: Page; label: string; icon: string }[] = [
   { page: "tasks", label: "任务", icon: "tasks" },
   { page: "records", label: "记录", icon: "history" },
   { page: "logs", label: "日志", icon: "logs" },
+  { page: "tools", label: "工具", icon: "target" },
 ];
 const NAV_TOOLS: typeof NAV = [
   { page: "scripts", label: "脚本", icon: "script" },
@@ -348,9 +350,10 @@ export function App() {
       : null;
 
   const queued = tasks.find((task) => !task.trigger && task.enabled && task.name !== current);
-  const busy = Boolean(current) || Boolean(queued) || starting || Boolean(ui?.diagnostic_pause) || Boolean(ui?.maintenance);
+  const busy = Boolean(current) || Boolean(queued) || starting || Boolean(ui?.diagnostic_pause) || Boolean(ui?.maintenance) || Boolean(ui?.tools_busy);
   const legacy = info && info.legacy_instances.length > 0 ? info.legacy_instances : null;
-  const startBlocked = ui?.maintenance ? t("正在准备更新或恢复备份") : ui?.diagnostic_pause
+  const startBlocked = ui?.maintenance ? t("正在准备更新或恢复备份") : ui?.tools_busy
+    ? t("调试操作正在进行，请等待或停止后再试") : ui?.diagnostic_pause
     ? t("请先完成或取消问题报告")
     : legacy
     ? t("旧版 ok-bd2 正在运行，请先关闭它")
@@ -515,6 +518,9 @@ export function App() {
       break;
     case "templates":
       content = <TemplatesPage core={core} />;
+      break;
+    case "tools":
+      content = <ToolsPage core={core} />;
       break;
     case "device":
       content = <DevicePage core={core} />;

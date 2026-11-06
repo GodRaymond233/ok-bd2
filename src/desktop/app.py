@@ -35,6 +35,7 @@ from src.desktop.settings_text import (
     describe_group,
 )
 from src.desktop.starter_wait import STARTER_WAIT
+from src.desktop.tools import executor_busy, install_tools
 from src.game_path import resolve_game_exe_path, resolve_launcher_exe_path
 from src.task_guides import GUIDES
 from src.tasks.BaseBD2Task import task_info_snapshot
@@ -307,13 +308,15 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
                 pause()
             return runtime.status()
 
-    def ensure_config_write():
+    def ensure_config_write(*, allow_tools=False):
         if getattr(runtime.ok.headless_app, "maintenance", False):
             raise RuntimeError("正在准备更新或恢复备份，请稍候")
         if getattr(runtime.ok.headless_app, "diagnostic_pause", False):
             raise RuntimeError("请先完成或取消问题报告，再修改配置或启动任务")
         if getattr(runtime.ok.headless_app, "window_resize_in_progress", False):
             raise RuntimeError("正在调整游戏窗口，请等待调整完成")
+        if not allow_tools and executor_busy(runtime.executor):
+            raise RuntimeError("调试操作正在进行，请等待或停止后再试")
 
     def about():
         result = original_about()
@@ -598,6 +601,7 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
         ui["starter_wait"] = starter_wait.snapshot() if starter_wait is not None else None
         ui["diagnostic_pause"] = bool(getattr(runtime.ok.headless_app, "diagnostic_pause", False))
         ui["maintenance"] = bool(getattr(runtime.ok.headless_app, "maintenance", False))
+        ui["tools_busy"] = executor_busy(runtime.executor)
         return ui
 
     # The routes, the select_* operations and the event stream all go through this.
@@ -641,6 +645,7 @@ def create_app(
     install_guides(app)
     install_scripts(app, runtime)
     install_language(app, runtime)
+    install_tools(app, runtime, legacy_check)
     preview = LivePreview(runtime)
     reports = ReportSession(runtime, preview, core_version or str(config.get("version") or ""),
                             legacy_check=legacy_check)

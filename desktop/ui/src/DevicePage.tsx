@@ -9,7 +9,7 @@ import { CaptureOptions, WindowOptions } from "./DeviceOptions.tsx";
 import { coreText, t } from "./i18n.ts";
 import { AUTO_RESIZE_KEY, BASIC, DEVICE_KEYS, findGroup, pickFields } from "./settings.ts";
 import type { GamePaths, WindowInfo } from "./types.ts";
-import { Icon } from "./ui.tsx";
+import { Icon, Toggle } from "./ui.tsx";
 import { Preview } from "./Preview.tsx";
 
 function Connection({ core }: { core: Core }) {
@@ -235,6 +235,13 @@ export function DevicePage({ core }: { core: Core }) {
               <div className="ctrl">
                 <span className="dsc">{coreText(ui?.interaction_methods.find((item) => item.selected)?.label ?? "—")}</span>
               </div>
+            </div>
+            <div className="fld">
+              <div className="lb">{t("显示识别框")}</div>
+              <div className="dsc">{t("在游戏窗口上显示识别区域。")}</div>
+              <div className="ctrl"><Toggle checked={Boolean(ui?.overlay?.boxes)} label={t("显示识别框")}
+                disabled={!ui || Boolean(ui.maintenance) || Boolean(ui.diagnostic_pause)}
+                onChange={(value) => void core.act(() => api.setOverlay(value))} /></div>
             </div>
           </div>
         </div>

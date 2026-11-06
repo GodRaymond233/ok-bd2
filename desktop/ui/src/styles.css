@@ -3611,6 +3611,80 @@ mark {
   line-height: 20px;
 }
 
+.tools-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.tools-page .row {
+  flex-wrap: wrap;
+}
+
+.tools-page .bh {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line);
+  font-weight: var(--fw-bold);
+}
+
+.tool-code > .code {
+  flex: none;
+  height: 280px;
+  margin: 0 18px 16px;
+}
+
+.tool-output {
+  max-height: 360px;
+  overflow: auto;
+  font-family: var(--font-mono);
+}
+
+.tool-checks {
+  margin: 0;
+}
+
+.tool-checks > div {
+  display: grid;
+  grid-template-columns: minmax(100px, 1fr) 2fr;
+  gap: 12px;
+  padding: 6px 0;
+}
+
+.tool-checks dd {
+  margin: 0;
+}
+
+.ocr-image {
+  display: block;
+  width: 100%;
+  max-height: 420px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+
+.ocr-image rect {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.ocr-text > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.ocr-text small {
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+}
+
 .code-lines {
   flex: none;
   min-width: 44px;

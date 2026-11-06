@@ -6,6 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from src.desktop.config_store import config_lock
+from src.desktop.tools import executor_busy
 from src.diagnostics.bundle import MAX_DESCRIPTION_CHARS
 from src.diagnostics.service import DiagnosticsManager
 
@@ -62,6 +63,8 @@ class ReportSession:
         with config_lock, self._lock:
             if self.snapshot is not None:
                 return self.state()
+            if executor_busy(self.runtime.executor):
+                raise ValueError("调试操作正在进行，请等待或停止后再试")
             app = self.runtime.ok.headless_app
             if getattr(app, "maintenance", False):
                 raise ValueError("正在准备更新或恢复备份，请稍候")
