@@ -417,8 +417,21 @@ function probe() {
     await js("window.okbd2Shell.setZoom(125)");
     win.setBounds({ x: 80, y: 80, width: 980, height: 720 });
     const batchTask = (await api("/api/tasks")).body.find(task => task.class_name === "DailyBatchTask");
+    await js(`[...document.querySelectorAll('.ti-open .nm')].find(e=>e.textContent===${JSON.stringify(batchTask.name)}).closest('button').click()`);
+    await until(() => js(`document.querySelector('.detail')?.getAttribute('aria-label')===${JSON.stringify(batchTask.name)} && document.querySelector('.hist')?.textContent.includes('还没有运行记录')`), "batch history before stop");
     const stoppedBatch = await api(`/api/tasks/${encodeURIComponent(batchTask.name)}/action`, { action: "stop" });
     assert.equal(stoppedBatch.status, 200, JSON.stringify(stoppedBatch));
+    await api("/api/probe/batch-progress", { stop: true });
+    await until(() => js("Boolean(document.querySelector('.dock .seal.abort') && document.querySelector('.hist .s[title=已中止]'))"), "interrupted history after task event");
+    check("interrupted run appears without navigating or reloading", true);
+    check("stop notification uses Chinese in the Chinese interface", await js("document.querySelector('.toast')?.textContent.includes('已中止') && !document.querySelector('.toast').textContent.includes('Stopped')"));
+    await js("window.okbd2Shell.setZoom(100)");
+    win.setBounds({ x: 80, y: 80, width: 1480, height: 900 });
+    await until(() => js("[...document.querySelectorAll('.dock .segbar')].some(bar=>bar.getBoundingClientRect().width>0 && bar.querySelector('.seg-incomplete')?.getBoundingClientRect().width>bar.querySelector('.seg-done')?.getBoundingClientRect().width)"), "unfinished share of stopped batch");
+    check("stopped batch retains the unfinished share of its progress", true);
+    fs.writeFileSync(path.join(out, "stopped-batch.png"), (await win.webContents.capturePage()).toPNG());
+    await js("window.okbd2Shell.setZoom(125)");
+    win.setBounds({ x: 80, y: 80, width: 980, height: 720 });
 
     const reportButton = `[...document.querySelectorAll('.dock button')].find(b=>['问题报告','生成问题报告'].includes(b.textContent.trim()))`;
     await api("/api/probe/current-task", { name: (await api("/api/tasks")).body[0].name });

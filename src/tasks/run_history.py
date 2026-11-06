@@ -336,6 +336,7 @@ class RunHistoryStore:
         *,
         started: float | None = None,
         ok: bool | None = None,
+        status: str | None = None,
     ) -> None:
         """Record a finished run, accepting explicit timing/results for batch children."""
         if task is None or not getattr(task, "name", None):
@@ -347,6 +348,7 @@ class RunHistoryStore:
         if started is None:
             started = getattr(task, "start_time", 0) or 0
         duration = max(0.0, finished - started) if started else None
+        status = str(info.get("状态", "")) if status is None else status
         with self._lock:
             previous = self._records.get(str(task.name), {})
             successful = _is_successful_run(info) if ok is None else bool(ok)
@@ -355,7 +357,7 @@ class RunHistoryStore:
             self._records[str(task.name)] = {
                 "finished": finished,
                 "duration": duration,
-                "status": str(info.get("状态", "")),
+                "status": status,
                 "ok": successful,
                 "completed": max(completed, finished) if successful else completed,
                 "completion_scope": (configuration_scope(task) if successful
@@ -370,7 +372,7 @@ class RunHistoryStore:
                     "finished": finished,
                     "duration": duration,
                     "ok": successful,
-                    "status": str(info.get("状态", "")),
+                    "status": status,
                     "details": {key: str(info[key])[:4000]
                                 for key in ("Error", "结果", "失败", "当前阶段")
                                 if info.get(key) not in (None, "", "-")},
@@ -447,6 +449,8 @@ def install_run_history_recorder(exit_event=None) -> bool:
 
         def on_task_done(self, task):
             if task is None or not getattr(task, "name", None):
+                return
+            if getattr(task, "_start_after_login", False):
                 return
             name = str(task.name)
             try:

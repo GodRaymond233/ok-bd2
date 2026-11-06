@@ -624,6 +624,10 @@ svg.i.f {
   box-shadow: inset 0 0 0 1px var(--line-strong);
 }
 
+.seg-incomplete {
+  background: var(--line-strong);
+}
+
 @keyframes stripes {
   to {
     background-position: 34px 0;

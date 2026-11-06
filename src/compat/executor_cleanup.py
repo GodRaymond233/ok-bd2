@@ -40,6 +40,7 @@ def _execute(self):
             self.reset_scene()
         elif time.time() - self._last_frame_time > 0.2:
             self.reset_scene()
+        returned = False
         try:
             task.start_time = time.time()
             task.running = True
@@ -62,6 +63,7 @@ def _execute(self):
                 try:
                     logger.debug(f"start running onetime_task {task.name}")
                     task.run()
+                    returned = True
                     logger.debug(f"end running onetime_task {task.name}")
                 finally:
                     prevent_sleeping(False)
@@ -77,10 +79,14 @@ def _execute(self):
                     communicate.quit.emit()
         except TaskDisabledException:
             logger.info(f"TaskDisabledException, continue {task}")
+            if not returned:
+                _record_interrupted(task, is_trigger_task, "已中止")
             self._finish_task(task, is_trigger_task)
             communicate.notification.emit("Stopped", task.name, False, False, None, None, None)
         except FinishedException:
             logger.info("FinishedException, breaking")
+            if not returned:
+                _record_interrupted(task, is_trigger_task, "已中止")
             break
         except Exception as error:
             if isinstance(error, CaptureException):
@@ -96,6 +102,8 @@ def _execute(self):
                 message = str(error)
             communicate.notification.emit(message, name, True, True, None, params, None)
             task.info_set(task._app.tr("Error"), message)
+            if not returned:
+                _record_interrupted(task, is_trigger_task, "失败")
             logger.error(f"{name} exception stopped", error)
             if self._frame is not None:
                 communicate.screenshot.emit(self._frame, name, True, None)
@@ -104,6 +112,18 @@ def _execute(self):
         finally:
             self._finish_task(task, is_trigger_task)
     self.destroy()
+
+
+def _record_interrupted(task, is_trigger_task, status):
+    if is_trigger_task:
+        return
+    try:
+        # task_done only reports normal returns; keep that framework contract unchanged.
+        from src.tasks.run_history import default_store
+
+        default_store().record_task_done(task, ok=False, status=status)
+    except Exception as error:
+        logger.error(f"record interrupted task failed: {error}")
 
 
 def _finish_task(self, task, is_trigger_task):

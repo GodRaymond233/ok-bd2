@@ -78,7 +78,7 @@ export function childRuns(batch: TaskPayload, items: TodayItem[], seal: Seal): M
 }
 
 export interface Segment {
-  kind: "done" | "fail" | "skip" | "doing" | "pause" | "todo";
+  kind: "done" | "fail" | "skip" | "doing" | "pause" | "todo" | "incomplete";
   names: string[];
 }
 
@@ -90,7 +90,7 @@ export function segments(items: TodayItem[], runs: Map<string, ChildRun>, seal: 
     { kind: "fail", names: pick("fail") },
     { kind: "skip", names: pick("skip") },
     { kind: seal === "run" ? "doing" : "pause", names: pick("doing") },
-    { kind: "todo", names: isActive(seal) ? pick("todo") : [] },
+    { kind: isActive(seal) ? "todo" : "incomplete", names: pick("todo") },
   ];
   return result.filter((segment) => segment.names.length > 0);
 }

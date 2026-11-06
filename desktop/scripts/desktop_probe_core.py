@@ -81,6 +81,14 @@ def load_config():
             from src.tasks.DailyBatchTask import DailyBatchTask
 
             batch = runtime.executor.get_task_by_class(DailyBatchTask)
+            if body.get("stop"):
+                from src.compat.executor_cleanup import _record_interrupted
+
+                _record_interrupted(batch, False, "已中止")
+                state.update(current_task=None, running=False)
+                communicate.task.emit(batch)
+                communicate.notification.emit("Stopped", batch.name, False, False, None, None, None)
+                return {"ok": True}
             step = body["step"]
             if step == 0:
                 batch._enabled = True

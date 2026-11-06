@@ -54,6 +54,14 @@ test("batch progress while running and once finished", () => {
   );
   assert.deepEqual(segments(ITEMS, childRuns(running, ITEMS, "pause"), "pause")[2], { kind: "pause", names: ["每日跑商"] });
 
+  const stopped = segments(ITEMS, childRuns(running, ITEMS, "abort"), "abort");
+  assert.deepEqual(stopped.map((part) => [part.kind, part.names]), [
+    ["done", ["快速狩猎"]],
+    ["skip", ["公会、小屋、酒馆"]],
+    ["incomplete", ["每日跑商", "镜中之战"]],
+  ]);
+  assert.equal(stopped.reduce((total, part) => total + part.names.length, 0), ITEMS.length);
+
   const finished = task({
     name: "一键完成日常",
     run_state: "fail",

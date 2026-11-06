@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { captureSummary, noticeFromEvent } from "../src/state.ts";
+import { setLanguage } from "../src/i18n.ts";
 
 test("capture summary shows the method in use and how it was chosen", () => {
   const capture_methods = ["WGC", "BitBlt_RenderFull", "ForegroundBitBlt"].map((id) => ({
@@ -34,4 +35,12 @@ test("notifications and a failed game start become notices", () => {
     error: true,
   });
   assert.equal(noticeFromEvent({ event: "log", args: [20, "x"] }), null);
+  const stopped = { event: "notification", args: ["Stopped", "一键完成日常", false, false, null, null, null] };
+  assert.deepEqual(noticeFromEvent(stopped), { text: "一键完成日常：已中止", error: false });
+  try {
+    setLanguage("en_US");
+    assert.equal(noticeFromEvent({ ...stopped, args: ["Stopped"] })?.text, "Stopped");
+  } finally {
+    setLanguage("zh_CN");
+  }
 });

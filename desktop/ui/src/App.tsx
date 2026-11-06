@@ -242,7 +242,7 @@ export function App() {
           if (notice) {
             setToast(notice);
           }
-          if (payload.event === "task_done") {
+          if (payload.event === "task_done" || (payload.event === "task" && payload.ui?.status.current_task === null)) {
             setHistoryVersion((version) => version + 1);
           }
           if (REFRESH_EVENTS.has(payload.event) || payload.resync) {

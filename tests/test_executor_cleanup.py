@@ -1,3 +1,5 @@
+import os
+import tempfile
 import threading
 import time
 import unittest
@@ -5,10 +7,12 @@ from types import SimpleNamespace
 from unittest.mock import Mock, call, patch
 
 import numpy as np
+from ok.core.events import EventBus
 from ok.task.exceptions import FinishedException, TaskDisabledException
 from ok.task.TaskExecutor import TaskExecutor
 
 from src.compat import executor_cleanup
+from src.tasks.run_history import RunHistoryStore, install_run_history_recorder
 
 
 class ExecutorCleanupTest(unittest.TestCase):
@@ -40,27 +44,56 @@ class ExecutorCleanupTest(unittest.TestCase):
         return executor, task
 
     def test_onetime_completion_and_exceptions_release_sleep_and_task_state(self):
-        for exception in (None, TaskDisabledException, FinishedException, RuntimeError):
+        for exception in (
+            None, "waiting for login", TaskDisabledException, FinishedException, RuntimeError,
+        ):
             with self.subTest(exception=exception):
                 executor, task = self.make_executor()
+                task.info = {"状态": "任务完成。"}
+                task.info_set.side_effect = task.info.__setitem__
+                task._start_after_login = exception == "waiting for login"
 
                 def run():
                     executor.exit_event.set()
-                    if exception is not None:
+                    if exception is not None and not task._start_after_login:
                         raise exception("stop test")
 
                 task.run = Mock(side_effect=run)
+                events = EventBus()
                 with (
+                    tempfile.TemporaryDirectory() as directory,
                     patch.object(executor_cleanup, "prevent_sleeping") as prevent_sleep,
-                    patch.object(executor_cleanup, "communicate") as events,
+                    patch.object(executor_cleanup, "communicate", events),
+                    patch("ok.core.events.communicate", events),
+                    patch("ok.core.events._dispatcher", None),
+                    patch.object(install_run_history_recorder, "_installed", False, create=True),
+                    patch.object(install_run_history_recorder, "_recorder", None, create=True),
+                    patch("src.tasks.scheduler.default_store"),
+                    patch.object(
+                        events.task_done, "emit", wraps=events.task_done.emit,
+                    ) as completed,
                 ):
-                    executor.execute()
+                    store = RunHistoryStore(os.path.join(directory, "history.json"))
+                    with patch("src.tasks.run_history.default_store", return_value=store):
+                        install_run_history_recorder()
+                        executor.execute()
+                    recent = store.recent_runs()
+                    if task._start_after_login:
+                        self.assertEqual([], recent)
+                    else:
+                        self.assertEqual(1, len(recent))
+                        self.assertEqual(exception is None, recent[0]["ok"])
+                        self.assertGreaterEqual(recent[0]["duration"], 0)
+                        if exception in (TaskDisabledException, FinishedException):
+                            self.assertEqual("已中止", recent[0]["status"])
+                        elif exception is RuntimeError:
+                            self.assertEqual("stop test", recent[0]["details"]["Error"])
+                    self.assertEqual(1 if exception is None or task._start_after_login else 0,
+                                     completed.call_count)
                 self.assertEqual([call(True), call(False)], prevent_sleep.call_args_list)
                 self.assertFalse(task.running)
                 self.assertIsNone(executor.current_task)
                 executor.destroy.assert_called_once_with()
-                self.assertEqual(1 if exception is None else 0,
-                                 events.task_done.emit.call_count)
 
     def test_trigger_completion_and_missing_frame_reset_task_without_marking_done(self):
         for missing_frame in (False, True):

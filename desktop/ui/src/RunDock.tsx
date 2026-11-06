@@ -26,6 +26,7 @@ const SEGMENT_TEXT: Record<Segment["kind"], string> = {
   doing: "执行中",
   pause: "当前",
   todo: "待执行",
+  incomplete: "未完成",
 };
 
 function SegmentBar({ parts }: { parts: Segment[] }) {

@@ -32,7 +32,7 @@ export function noticeFromEvent(payload: EventPayload): Notice | null {
   }
   if (payload.event === "notification" && typeof args[0] === "string" && args[0]) {
     const params = args[5] && typeof args[5] === "object" ? (args[5] as Record<string, unknown>) : {};
-    const text = coreText(args[0]).replace(/\{(\w+)\}/g, (whole, key: string) => (key in params ? String(params[key]) : whole));
+    const text = coreText(args[0] === "Stopped" ? "已中止" : args[0]).replace(/\{(\w+)\}/g, (whole, key: string) => (key in params ? String(params[key]) : whole));
     const title = typeof args[1] === "string" && args[1] ? t("{title}：", { title: coreText(args[1]) }) : "";
     return { text: `${title}${text}`, error: Boolean(args[2]) };
   }
