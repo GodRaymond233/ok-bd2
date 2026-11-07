@@ -312,6 +312,11 @@ class HuntPlanTest(StageHistoryTestCase):
         task._quick_hunt_wait_result = Mock(side_effect=result)
         self.assertFalse(task._quick_hunt_run_rice_scheduler())
         self.assertEqual([6, 6], clicks)
+        original_scope = run_history.read_stage(task, "狩猎方案")["scope"]
+        task.config[PLAN_KEY] = json.dumps({"version": 1, "active": 0, "plans": [
+            {"name": "新方案", "reserve": 0, "rules": [], "fallback": [step("gold")]},
+        ]})
+        task.config["快速狩猎 OCR 阈值"] = .4
         self.assertFalse(task._quick_hunt_run_rice_scheduler())
         self.assertEqual([6, 6], clicks)
         unknown[0] = False
@@ -320,6 +325,7 @@ class HuntPlanTest(StageHistoryTestCase):
         self.assertTrue(task._quick_hunt_run_rice_scheduler())
         self.assertEqual([6, 6, 6, 72], clicks)
         self.assertEqual(0, balance[0])
+        self.assertEqual(original_scope, run_history.read_stage(task, "狩猎方案")["scope"])
 
     def test_free_rice_reader_does_not_use_stored_rice_or_ambiguous_ocr(self):
         from src.tasks.QuickHuntTask import QuickHuntTask

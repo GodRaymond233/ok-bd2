@@ -115,6 +115,42 @@ class RunHistoryStoreTest(unittest.TestCase):
         with open(self.path, encoding="utf-8") as stream:
             self.assertEqual("{broken", stream.read())
 
+    def test_retire_pending_is_atomic_preserves_evidence_and_checks_snapshot(self):
+        self.store.save_stage("狩猎", "米饭", "pending", "old", {"cost": 6})
+        self.store.save_stage("狩猎", "火把", "pending", "today", {"cost": 1})
+        original = self.store.stage("狩猎", "米饭")
+        stale = {**original, "scope": "different"}
+        with self.assertRaises(RuntimeError):
+            self.store.retire_stages("狩猎", {"米饭": stale}, "expired")
+        with patch("src.tasks.run_history.write_json_file", side_effect=OSError("disk full")):
+            with self.assertRaises(RuntimeError):
+                self.store.retire_stages("狩猎", {"米饭": original}, "expired")
+        self.assertEqual(original, self.store.stage("狩猎", "米饭"))
+        self.assertEqual(original, RunHistoryStore(self.path).stage("狩猎", "米饭"))
+        self.store.retire_stages("狩猎", {"米饭": original}, "expired")
+        reloaded = RunHistoryStore(self.path)
+        self.assertEqual({}, reloaded.stage("狩猎", "米饭"))
+        self.assertEqual("pending", reloaded.stage("狩猎", "火把")["state"])
+        with open(self.path, encoding="utf-8") as stream:
+            saved = json.load(stream)
+        self.assertEqual(1, saved["version"])
+        self.assertEqual(1, len(saved["retired_stages"]))
+        self.assertEqual(original, saved["retired_stages"][0]["record"])
+        self.assertEqual("expired", saved["retired_stages"][0]["reason"])
+
+    def test_retired_stage_history_is_bounded_and_survives_normal_saves(self):
+        for index in range(66):
+            self.store.save_stage("狩猎", str(index), "pending", "old")
+        pending = self.store.pending_stages("狩猎", "")
+        self.store.retire_stages("狩猎", pending, "expired")
+        reloaded = RunHistoryStore(self.path)
+        reloaded.record_task_done(_TaskStub("其他任务", {"状态": "完成"}))
+        with open(self.path, encoding="utf-8") as stream:
+            saved = json.load(stream)
+        self.assertEqual([str(index) for index in range(2, 66)],
+                         [row["step"] for row in saved["retired_stages"]])
+        self.assertFalse(reloaded.pending_stages("狩猎", ""))
+
     def test_record_and_reload_roundtrip(self):
         task = _TaskStub("快速狩猎", info={"状态": "快速狩猎完成。"}, start_time=1000.0)
         self.store.record_task_done(task, finished=1090.0)

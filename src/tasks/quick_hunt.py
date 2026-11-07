@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, replace
-from time import monotonic
+from math import isfinite
+from time import monotonic, time
 from typing import Literal
 
 import cv2
@@ -501,6 +502,7 @@ class QuickHuntFeatureMixin:
     def run_quick_hunt(self) -> bool:
         """Run the quick-hunt scheduler using PC-safe mouse input."""
 
+        self._hunt_checkpoint = None
         opened = self._quick_hunt_open_menu()
         if opened != "opened":
             self._status_set("快速狩猎结果", "无法进入狩猎菜单")
@@ -521,11 +523,14 @@ class QuickHuntFeatureMixin:
             self._save_flow_diagnostic("quick_hunt_error")
             raise
         finally:
-            if not cancelled:
-                if not success:
-                    self._save_flow_diagnostic("quick_hunt_failed")
-                home_ok = self._quick_hunt_return_home()
-                success = success and home_ok
+            try:
+                if not cancelled:
+                    if not success:
+                        self._save_flow_diagnostic("quick_hunt_failed")
+                    home_ok = self._quick_hunt_return_home()
+                    success = success and home_ok
+            finally:
+                self._hunt_checkpoint = None
 
         self._status_set("快速狩猎结果", "完成" if success else "失败")
         return success
@@ -650,17 +655,26 @@ class QuickHuntFeatureMixin:
 
     def _quick_hunt_run_rice_scheduler(self) -> bool:
         self._status_set("快速狩猎当前阶段", "米饭调度")
+        if not self._quick_hunt_reconcile_pending("米饭"):
+            return False
         self._quick_hunt_selected_plan_target = "hunt"
         try:
             book = load_book(self.config)
             plan = book["plans"][book["active"]]
             plan_record = run_history.read_stage(self, "狩猎方案")
             scope = run_history.stage_scope(self)
-            is_same_plan = plan_record.get("scope") == scope
+            plan_cycle = self._quick_hunt_record_cycle(plan_record) if plan_record else None
+            today = run_history.day_start_ts()
+            if plan_record and (plan_cycle is None or plan_cycle > today):
+                self._quick_hunt_pending_status(
+                    {"狩猎方案": plan_record}, "已保存方案的周期无效，保留原额度并停止")
+                return False
+            is_same_plan = plan_cycle == today
             if is_same_plan and plan_record.get("state") == "done":
                 self._status_set("快速狩猎米饭", "本周期方案已完成")
                 return True
-            if not plan["fallback"] and all(not rule["steps"] for rule in plan["rules"]):
+            if (not is_same_plan and not plan["fallback"]
+                    and all(not rule["steps"] for rule in plan["rules"])):
                 self._status_set("快速狩猎米饭", "方案保留米饭")
                 return True
             rice = self._quick_hunt_free_rice()
@@ -673,6 +687,10 @@ class QuickHuntFeatureMixin:
                 evidence = plan_record["evidence"]
                 matched, steps = evidence["matched"], evidence["steps"]
                 allowance = evidence["allowance"]
+                scope = plan_record["scope"]
+                plan = {**plan, "name": evidence.get("name", plan["name"]),
+                        "reserve": max(plan.get("reserve", 0), evidence.get("reserve", 0))}
+                self._status_set("快速狩猎恢复", "接续本周期已保存方案与额度")
             else:
                 states = self._quick_hunt_plan_double_states() if plan["rules"] else {}
                 matched, steps = select_steps(plan, states)
@@ -682,15 +700,26 @@ class QuickHuntFeatureMixin:
                 return True
             if rice is None:
                 raise ValueError("无法确认免费米饭数量，停止刷取。")
+            prepared_at = (plan_record["evidence"].get("prepared_at", plan_record["time"])
+                           if is_same_plan else time())
+            if run_history.day_start_ts() != float(scope.split(":", 1)[0]):
+                self._status_set("快速狩猎恢复", "游戏周期已变化，重新运行后核验新周期方案")
+                return False
             run_history.save_stage(self, "狩猎方案", "pending", scope=scope,
                                    evidence={"matched": matched, "steps": steps,
-                                             "allowance": allowance})
+                                             "allowance": allowance,
+                                             "reserve": plan.get("reserve", 0),
+                                             "name": plan["name"], "prepared_at": prepared_at})
         except ValueError as exc:
             self.log_info(f"快速狩猎：{exc}")
             return False
         self._status_set("快速狩猎当前阶段", f"{plan['name']} / {matched}")
         self.log_info(f"快速狩猎方案：{plan['name']}；命中{matched}")
-        return self._quick_hunt_execute_rice_steps(plan, steps, allowance, scope)
+        self._hunt_plan_scope = scope
+        try:
+            return self._quick_hunt_execute_rice_steps(plan, steps, allowance, scope)
+        finally:
+            self._hunt_plan_scope = None
 
     def _quick_hunt_execute_rice_steps(
         self, plan: dict, steps: list[dict], allowance: int, scope: str,
@@ -764,7 +793,8 @@ class QuickHuntFeatureMixin:
                 if result != "done":
                     return result == "depleted"
                 allowance -= RICE_PER_HUNT
-        run_history.save_stage(self, "狩猎方案", "done", scope=scope)
+        evidence = run_history.read_stage(self, "狩猎方案").get("evidence", {})
+        run_history.save_stage(self, "狩猎方案", "done", scope=scope, evidence=evidence)
         self._status_set("快速狩猎米饭", "方案执行结束")
         return True
 
@@ -869,6 +899,8 @@ class QuickHuntFeatureMixin:
         self._status_set("快速狩猎当前阶段", "圣石洞穴")
         if not self._quick_hunt_enter_crystal_cave():
             return False
+        if not self._quick_hunt_reconcile_pending("火把"):
+            return False
         torches = self._quick_hunt_free_resource("火把")
         if torches is None:
             self.log_info("快速狩猎：免费火把数量未确认，停止刷取。")
@@ -916,8 +948,9 @@ class QuickHuntFeatureMixin:
             run_history.stage_owner(self), f"狩猎提交:{resource}:")
         for key, record in pending.items():
             run_history.save_stage(
-                self, key, "done",
-                evidence={**record["evidence"], "result": "资源已耗尽"},
+                self, key, "done", scope=record["scope"],
+                evidence={**record["evidence"], "result": "depleted",
+                          "phase": "settled", "reason": "免费资源已耗尽，原提交结果未确认"},
             )
 
     def _quick_hunt_enter_crystal_cave(self, attempts: int = 3) -> bool:
@@ -1254,6 +1287,123 @@ class QuickHuntFeatureMixin:
         self._save_flow_diagnostic("quick_hunt_cancel_failed")
         return False
 
+    @staticmethod
+    def _quick_hunt_record_cycle(record: dict) -> float | None:
+        """Validate the original game cycle separately from the configuration fingerprint."""
+        try:
+            prefix, fingerprint = record["scope"].split(":", 1)
+            cycle = float(prefix)
+            prepared = float(record["evidence"].get("prepared_at", record["time"]))
+            updated = float(record["time"])
+            if (not re.fullmatch(r"[0-9a-f]{16}", fingerprint)
+                    or not all(isfinite(value) for value in (cycle, prepared, updated))
+                    or not prepared <= updated <= time()
+                    or run_history.day_start_ts(cycle) != cycle
+                    or run_history.day_start_ts(prepared) != cycle):
+                return None
+            return cycle
+        except (KeyError, TypeError, ValueError, OverflowError, OSError):
+            return None
+
+    def _quick_hunt_pending_status(self, pending: dict, reason: str, remaining=None) -> None:
+        self._status_set("快速狩猎恢复", reason)
+        self._status_set("快速狩猎待确认记录", [
+            {"checkpoint": key, "scope": record.get("scope"), "time": record.get("time"),
+             "current_free": remaining,
+             **{name: record.get("evidence", {}).get(name) for name in (
+                 "map", "resource", "count", "cost", "pool", "prepared_at",
+                 "phase", "start_clicks")}}
+            for key, record in list(pending.items())[:8]
+        ])
+        self.log_info(f"快速狩猎：{reason}。")
+
+    def _quick_hunt_reconcile_pending(self, resource: str) -> bool:
+        store, owner = run_history.default_store(), run_history.stage_owner(self)
+        prefix = f"狩猎提交:{resource}:"
+        pending = store.pending_stages(owner, prefix)
+        if not pending:
+            return True
+        today = run_history.day_start_ts()
+        cycles = {key: self._quick_hunt_record_cycle(record) for key, record in pending.items()}
+        if (any(cycle is None or cycle > today for cycle in cycles.values())
+                or any(record["evidence"].get("resource", resource) != resource
+                       for record in pending.values())):
+            self._quick_hunt_pending_status(pending, "上次提交周期、时间或资源无效，请核对记录")
+            return False
+        active = getattr(self, "_hunt_checkpoint", None)
+        grace = max(0.0, float(self.config.get("快速狩猎结算等待秒数", 15.0)))
+        grace += max(0.0, self._quick_hunt_ui_timeout())
+        retired = {}
+        for key, record in pending.items():
+            evidence = record["evidence"]
+            unsent = ("prepared_at" in evidence and evidence.get("phase") == "prepared"
+                      and type(evidence.get("start_clicks")) is int
+                      and evidence["start_clicks"] == 0)
+            expired = cycles[key] < today and time() - record["time"] >= grace
+            if (unsent or expired) and (active is None or active[0] != key):
+                retired[key] = record
+        if retired:
+            values = []
+            for _ in range(2):
+                frame = self.capture_frame()
+                if not self._quick_hunt_is_menu_restored(frame, "待确认提交恢复"):
+                    break
+                values.append(self._quick_hunt_free_resource(resource, frame))
+                self.sleep(0.15)
+            if (len(values) != 2 or values[0] is None or values[0] != values[1]
+                    or run_history.day_start_ts() != today):
+                self._quick_hunt_pending_status(pending, "旧记录保留：菜单或免费余额尚未稳定")
+                return False
+            store.retire_stages(owner, retired, "旧周期结果未知或已准备未发送，重新核验当前额度")
+            self._quick_hunt_pending_status(
+                retired, f"已归档{len(retired)}条旧周期或未发送记录，重新核验当前免费额度",
+                values[0])
+            pending = store.pending_stages(owner, prefix)
+        if not pending:
+            return True
+        if len(store.pending_stages(owner, "狩猎提交:")) != 1:
+            self._quick_hunt_pending_status(pending, "存在多条未确认提交，不能归属结果")
+            return False
+        key, record = next(iter(pending.items()))
+        result = self._quick_hunt_recover_submission(record, key, key, resource)
+        return result in ("done", "depleted")
+
+    def _quick_hunt_update_submission(self, phase: str, *, start: bool = False) -> bool:
+        checkpoint = getattr(self, "_hunt_checkpoint", None)
+        if checkpoint is None:
+            return False
+        key, scope, evidence = checkpoint
+        record = run_history.read_stage(self, key)
+        if (record.get("state") != "pending" or record.get("scope") != scope
+                or record.get("evidence") != evidence):
+            raise RuntimeError("狩猎提交记录已变化，停止发送")
+        updated = {**evidence, "phase": phase}
+        if start:
+            count = evidence.get("start_clicks")
+            if (type(count) is not int or not 0 <= count < QUICK_HUNT_ACTION_ATTEMPTS
+                    or evidence.get("phase") not in ("prepared", "attempted")):
+                return False
+            updated["start_clicks"] = count + 1
+        if updated != evidence:
+            run_history.save_stage(self, key, "pending", scope=scope, evidence=updated)
+            self._hunt_checkpoint = (key, scope, updated)
+        return True
+
+    def _quick_hunt_settle_submission(self, result: str) -> None:
+        checkpoint = getattr(self, "_hunt_checkpoint", None)
+        if checkpoint is None:
+            return
+        key, scope, evidence = checkpoint
+        record = run_history.read_stage(self, key)
+        if evidence.get("phase") == "prepared" and evidence.get("start_clicks") == 0:
+            return
+        if record.get("state") == "pending":
+            if record.get("scope") != scope or record.get("evidence") != evidence:
+                raise RuntimeError("狩猎结果与待确认记录不一致，保留现场")
+            run_history.save_stage(self, key, "done", scope=scope,
+                                   evidence={**evidence, "result": result, "phase": "settled"})
+        self._hunt_checkpoint = None
+
     def _quick_hunt_execute_current_map(
         self,
         count_mode: str,
@@ -1265,19 +1415,22 @@ class QuickHuntFeatureMixin:
     ) -> str:
         self._status_set("快速狩猎当前阶段", stage)
         checkpoint = f"狩猎提交:{resource}:{checkpoint_name or stage.removesuffix('重试')}"
-        scope = run_history.stage_scope(self)
+        scope = (getattr(self, "_hunt_plan_scope", None) if resource == "米饭" else None)
+        scope = scope or run_history.stage_scope(self)
         record = run_history.read_stage(self, checkpoint)
-        pending = run_history.default_store().pending_stages(
-            run_history.stage_owner(self), f"狩猎提交:{resource}:")
-        if pending and checkpoint not in pending:
-            self.log_info(f"快速狩猎：{resource}另一个目标存在待确认提交，不启动新的消费阶段。")
+        was_pending = record.get("state") == "pending"
+        if not self._quick_hunt_reconcile_pending(resource):
             return "failed"
-        if record.get("state") == "pending":
-            return self._quick_hunt_recover_submission(record, checkpoint, scope, stage, resource)
+        record = run_history.read_stage(self, checkpoint)
+        if was_pending and record.get("state") == "done":
+            return "depleted" if record["evidence"].get("result") == "depleted" else "done"
         if ((count_mode == "MIN" or checkpoint_name is not None) and record.get("state") == "done"
-                and record.get("scope") == scope):
+                and self._quick_hunt_record_cycle(record) == run_history.day_start_ts()):
             self.log_info(f"快速狩猎：{stage}本周期 MIN 已确认，继续剩余阶段。")
             return "done"
+        if float(scope.split(":", 1)[0]) != run_history.day_start_ts():
+            self._status_set("快速狩猎恢复", "游戏周期已变化，结束本轮并在新周期重新核验")
+            return "failed"
         if not self._quick_hunt_open_confirmation(stage):
             return "failed"
         if expected_map_pattern is not None:
@@ -1306,37 +1459,41 @@ class QuickHuntFeatureMixin:
             self._save_flow_diagnostic("quick_hunt_confirmation_failed")
             self._quick_hunt_cancel_dialog(stage)
             return "failed"
+        prepared_at = time()
+        if run_history.day_start_ts(prepared_at) != float(scope.split(":", 1)[0]):
+            self._quick_hunt_cancel_dialog(stage)
+            return "failed"
         evidence = {"map": submission.map_name, "count": submission.count,
-                    "cost": submission.cost, "pool": submission.pool, "resource": resource}
+                    "cost": submission.cost, "pool": submission.pool, "resource": resource,
+                    "prepared_at": prepared_at, "phase": "prepared", "start_clicks": 0}
         run_history.save_stage(self, checkpoint, "pending", scope=scope, evidence=evidence)
         self._hunt_checkpoint = (checkpoint, scope, evidence)
-        try:
-            self._quick_vision().click_client(
-                submission.start_point, submission.frame_shape, after_sleep=0.3,
-            )
-            return self._quick_hunt_wait_result(stage, submission=submission, resource=resource)
-        finally:
-            self._hunt_checkpoint = None
+        if not self._quick_hunt_update_submission("attempted", start=True):
+            return "failed"
+        self._quick_vision().click_client(
+            submission.start_point, submission.frame_shape, after_sleep=0.3,
+        )
+        return self._quick_hunt_wait_result(stage, submission=submission, resource=resource)
 
     def _quick_hunt_recover_submission(
-        self, record: dict, checkpoint: str, scope: str, stage: str, resource: str,
+        self, record: dict, checkpoint: str, stage: str, resource: str,
     ) -> str:
         """Read pending consumption evidence without submitting another resource spend."""
         evidence = record.get("evidence", {})
+        self._hunt_checkpoint = (checkpoint, record["scope"], evidence)
         remaining = self._quick_hunt_free_resource(resource)
         if remaining == 0:
-            run_history.save_stage(self, checkpoint, "done", scope=scope,
-                                   evidence={**evidence, "result": "资源已耗尽"})
-            return "depleted"
-        if record.get("scope") == scope:
-            self._hunt_checkpoint = (checkpoint, scope, evidence)
-            try:
-                result = self._quick_hunt_wait_result(stage, resource=resource, timeout=2.0)
-                if result in {"done", "depleted"}:
-                    return result
-            finally:
-                self._hunt_checkpoint = None
-        self.log_info(f"快速狩猎：{stage}前次提交结果未知，已只读复核资源，本次不再次开始。")
+            self._quick_hunt_settle_submission("depleted")
+            self._quick_hunt_pending_status(
+                {checkpoint: record}, "免费资源已耗尽，结束本资源流程；原提交结果未确认", remaining)
+            return ("depleted" if run_history.read_stage(self, checkpoint).get("state") == "done"
+                    else "failed")
+        result = self._quick_hunt_wait_result(stage, resource=resource, timeout=2.0)
+        if (result in {"done", "depleted"}
+                and run_history.read_stage(self, checkpoint).get("state") == "done"):
+            return result
+        self._quick_hunt_pending_status(
+            {checkpoint: record}, "上次提交结果仍待确认，本次不重复开始", remaining)
         return "failed"
 
     def _quick_hunt_open_confirmation(self, stage: str) -> bool:
@@ -1406,7 +1563,8 @@ class QuickHuntFeatureMixin:
         close_clicks = 0
         menu_hits = 0
         last_state = "等待结算"
-        start_clicks = 1 if submission else 0
+        checkpoint = getattr(self, "_hunt_checkpoint", None)
+        start_clicks = checkpoint[2].get("start_clicks", 1) if checkpoint and submission else 0
         next_start = self._active_time(monotonic) + QUICK_HUNT_RETRY_INTERVAL
         same_dialog_hits = 0
         may_have_started = False
@@ -1418,11 +1576,7 @@ class QuickHuntFeatureMixin:
             if is_reward_open or is_depleted_open:
                 if pending_result is None:
                     pending_result = "done" if is_reward_open else "depleted"
-                    checkpoint = getattr(self, "_hunt_checkpoint", None)
-                    if checkpoint is not None:
-                        key, scope, evidence = checkpoint
-                        run_history.save_stage(self, key, "done", scope=scope,
-                                               evidence={**evidence, "result": pending_result})
+                    self._quick_hunt_settle_submission(pending_result)
                     # Start the close deadline once, even when settlement used its entire allowance.
                     end_at = self._active_time(monotonic) + self._quick_hunt_ui_timeout()
                 menu_hits = 0
@@ -1448,6 +1602,8 @@ class QuickHuntFeatureMixin:
                 current = self._quick_hunt_dialog_snapshot(frame, stage, resource)
                 if current is None or current.signature != submission.signature:
                     # Once the original dialog changed, a late response may have spent resources.
+                    if not may_have_started:
+                        self._quick_hunt_update_submission("transitioned")
                     may_have_started = True
                     same_dialog_hits = 0
                     last_state = "提交结果待确认，禁止再次开始"
@@ -1455,7 +1611,8 @@ class QuickHuntFeatureMixin:
                     same_dialog_hits += 1
                     last_state = "次数弹窗仍在，尚未确认开始"
                     if (same_dialog_hits >= 2 and self._active_time(monotonic) >= next_start
-                            and start_clicks < QUICK_HUNT_ACTION_ATTEMPTS):
+                            and start_clicks < QUICK_HUNT_ACTION_ATTEMPTS
+                            and self._quick_hunt_update_submission("attempted", start=True)):
                         self._quick_vision().click_client(
                             current.start_point, current.frame_shape, after_sleep=0.3,
                         )
@@ -1466,6 +1623,13 @@ class QuickHuntFeatureMixin:
             self._status_set(f"{stage}-结算退出状态", f"{last_state}；关闭点击={close_clicks}/3")
             self.sleep(0.3)
         self.log_info(f"快速狩猎：{stage}结算退出超时，{last_state}；关闭点击={close_clicks}/3。")
+        checkpoint = getattr(self, "_hunt_checkpoint", None)
+        if checkpoint is not None:
+            self._quick_hunt_pending_status(
+                {checkpoint[0]: run_history.read_stage(self, checkpoint[0])},
+                "上次提交结果仍待确认，退出时继续核对结果")
+        elif pending_result is not None:
+            self._status_set("快速狩猎恢复", "结果已确认，退出菜单失败")
         self._save_flow_diagnostic(
             "quick_hunt_result_close_failed" if pending_result else "quick_hunt_start_unconfirmed"
         )
@@ -1644,6 +1808,12 @@ class QuickHuntFeatureMixin:
         return bright_ratio >= BUTTON_ENABLED_BRIGHT_MIN_RATIO
 
     def _quick_hunt_return_home(self) -> bool:
+        try:
+            return self._quick_hunt_return_home_loop()
+        finally:
+            self._hunt_checkpoint = None
+
+    def _quick_hunt_return_home_loop(self) -> bool:
         self._status_set("快速狩猎当前阶段", "返回主页")
         end_at = self._active_time(monotonic) + max(
             self._quick_hunt_ui_timeout(), float(self.config.get("主页确认等待秒数", 10.0)),
@@ -1690,6 +1860,8 @@ class QuickHuntFeatureMixin:
                     or ("画面" in reward and "即可" in reward)):
                 if reward_clicks >= QUICK_HUNT_ACTION_ATTEMPTS:
                     break
+                self._quick_hunt_settle_submission("done")
+                self._status_set("快速狩猎恢复", "奖励已确认，正在返回主页")
                 self.operate_click(
                     (QUICK_HUNT_REWARD_ROI[0] + QUICK_HUNT_REWARD_ROI[2]) / 2,
                     (QUICK_HUNT_REWARD_ROI[1] + QUICK_HUNT_REWARD_ROI[3]) / 2,
@@ -1701,6 +1873,13 @@ class QuickHuntFeatureMixin:
             ):
                 if shortage_clicks >= QUICK_HUNT_ACTION_ATTEMPTS:
                     break
+                checkpoint = getattr(self, "_hunt_checkpoint", None)
+                if checkpoint is not None and re.search(
+                    rf"{re.escape(checkpoint[2].get('resource', '未指定资源'))}.*(?:不足|耗尽)|"
+                    rf"(?:不足|耗尽).*{re.escape(checkpoint[2].get('resource', '未指定资源'))}",
+                    dialog_text,
+                ):
+                    self._quick_hunt_settle_submission("depleted")
                 if self._quick_hunt_dismiss_shortage(frame):
                     shortage_clicks += 1
                 else:
