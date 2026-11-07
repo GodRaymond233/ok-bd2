@@ -5,7 +5,7 @@ import { dateText, refreshText, untilText } from "./format.ts";
 import { coreText, t } from "./i18n.ts";
 import { type Row, checklistRows, hero } from "./today.ts";
 import type { TaskPayload } from "./types.ts";
-import { Icon, Menu, TaskGlyph, Toggle } from "./ui.tsx";
+import { Icon, Menu, PageHead, TaskGlyph, Toggle } from "./ui.tsx";
 
 function Ring({ done, total }: { done: number; total: number }) {
   const circumference = 2 * Math.PI * 32;
@@ -62,23 +62,16 @@ export function TodayPage({ core }: { core: Core }) {
   };
   const head = (
     <>
-      <div className="ph">
-        <div className="l">
-          <h1 className="title">{t("今日")}</h1>
-          <span className="date">{dateText(core.now)}</span>
-        </div>
-        <div className="row">
-          <button type="button" className="btn" data-action="connect-game"
-            disabled={!launcher || connecting || starting || ready || Boolean(core.startBlocked)}
-            title={core.startBlocked ?? undefined} onClick={() => void connect()}>
-            <Icon name={ready ? "check" : "play"} />
-            {starting || connecting ? t("正在连接…") : ready ? t("已连接游戏") : t("启动／连接游戏")}
-          </button>
-          {starting && <button type="button" className="btn subtle" disabled={!core.ui?.starter_wait}
-            onClick={() => void core.act(core.cancelStarter)}>{t("取消等待")}</button>}
-        </div>
-      </div>
-      {core.startError && <div className="ferr" role="alert">{core.startError}</div>}
+      <PageHead title={t("今日")} aside={<span className="date">{dateText(core.now)}</span>}>
+        <button type="button" className="btn" data-action="connect-game"
+          disabled={!launcher || connecting || starting || ready || Boolean(core.startBlocked)}
+          title={core.startBlocked ?? undefined} onClick={() => void connect()}>
+          <Icon name={ready ? "check" : "play"} />
+          {starting || connecting ? t("正在连接…") : ready ? t("已连接游戏") : t("启动／连接游戏")}
+        </button>
+        {starting && <button type="button" className="btn subtle" disabled={!core.ui?.starter_wait}
+          onClick={() => void core.act(core.cancelStarter)}>{t("取消等待")}</button>}
+      </PageHead>
       {summary && (
         <div className="refresh">
           <span>
@@ -137,11 +130,21 @@ export function TodayPage({ core }: { core: Core }) {
   );
   let actions;
   if (run && (run.seal === "run" || run.seal === "pause" || run.seal === "stopping")) {
+    // The same controls as the run bar, where the eye already is.
+    const stopping = run.seal === "stopping";
     actions = (
-      <button type="button" className="btn primary" disabled>
-        <Icon name="play" />
-        {t("执行中")}…
-      </button>
+      <>
+        <button type="button" className="btn" disabled={stopping}
+          onClick={() => void core.act(() => core.taskAction(batch.name, run.seal === "pause" ? "resume" : "pause"))}>
+          <Icon name={run.seal === "pause" ? "play" : "pause"} />
+          {run.seal === "pause" ? t("继续") : t("暂停")}
+        </button>
+        <button type="button" className="btn stop" disabled={stopping}
+          onClick={() => void core.act(() => core.taskAction(batch.name, "stop"))}>
+          <Icon name="stop" />
+          {stopping ? `${t("正在停止")}…` : t("停止")}
+        </button>
+      </>
     );
   } else if (card.allDone || card.total === 0) {
     actions = menu;

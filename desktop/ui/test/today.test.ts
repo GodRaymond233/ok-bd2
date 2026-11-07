@@ -78,6 +78,8 @@ test("during a run the checklist is the progress", () => {
   const card = hero(data, run);
   assert.deepEqual(card.title, ["正在执行剩余 · 第 ", "1", " / 2 项"]);
   assert.equal(card.detail, "广场女神像 → 镜中之战");
+  // The ring counts the same run as the title, not what earlier runs finished today.
+  assert.deepEqual([card.done, card.total], [0, 2]);
 
   const paused: BatchRun = { ...run, seal: "pause" };
   assert.deepEqual(names(checklistRows(data, paused, () => "确认主页", NOW))[3], ["pause", "已暂停 · 确认主页", "held"]);

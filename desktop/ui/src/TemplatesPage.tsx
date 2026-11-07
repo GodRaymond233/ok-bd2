@@ -7,7 +7,7 @@ import { t } from "./i18n.ts";
 import { MarkupEditor } from "./MarkupEditor.tsx";
 import { matchesTemplate } from "./markup.ts";
 import type { TemplateImage, TemplatesInfo } from "./types.ts";
-import { ConfirmDialog, Icon } from "./ui.tsx";
+import { ConfirmDialog, Icon, PageHead } from "./ui.tsx";
 
 function SaveDialog({ info, onDone, onCancel }: { info: TemplatesInfo; onDone: (folder: string) => void; onCancel: () => void }) {
   const [format, setFormat] = useState("split");
@@ -87,17 +87,13 @@ export function TemplatesPage({ core }: { core: Core }) {
   const current = images?.find((image) => image.name === selected) ?? null;
 
   return (
-    <div className="page">
-      <div className="ph">
-        <div className="l"><h1>{t("模板")}</h1></div>
-        <div className="row wrap">
+    <div className="page templates-page">
+      <PageHead title={t("模板")} note={t("从游戏画面截图，框出要识别的部分并命名，保存后脚本就可以按名称查找它们。")}>
           <button type="button" className="btn primary" disabled={capturing} onClick={capture}><Icon name="camera" />{t("截取画面")}</button>
           <button type="button" className="btn" disabled={!current} onClick={() => setMarking(selected)}><Icon name="tag" />{t("标注")}</button>
           <button type="button" className="btn" disabled={!current} onClick={() => setDialog("delete")}><Icon name="x" />{t("删除")}</button>
           <button type="button" className="btn" disabled={!images?.length || Boolean(core.startBlocked)} title={core.startBlocked ?? undefined} onClick={() => setDialog("save")}><Icon name="check" />{t("保存")}</button>
-        </div>
-      </div>
-      <p className="page-note">{t("从游戏画面截图，框出要识别的部分并命名，保存后脚本就可以按名称查找它们。")}</p>
+      </PageHead>
       {images && images.length > 0 && (
         <label className="search template-search">
           <Icon name="search" />

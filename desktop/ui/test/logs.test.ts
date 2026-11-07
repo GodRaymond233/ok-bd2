@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   appendRecords,
+  isStatusEcho,
+  lastMessages,
   LOG_LIMIT,
   levelCounts,
   logRows,
@@ -151,4 +153,31 @@ test("filters by level, text and one run", () => {
     "end 一键完成日常",
   ]);
   assert.deepEqual(kinds(logRows(records, [], { ...ALL, query: "没有这句" })), []);
+});
+
+test("thread names with spaces still leave the logger name and message", () => {
+  const [worker, unnamed, executor] = parseLog([
+    "2026-11-07 19:36:11,820 INFO AnyIO worker thread DailyBatchTask:info_set 当前子任务 快速狩猎",
+    "2026-11-07 19:36:12,000 WARNING Thread-3 (poll) ok:截图超时",
+    "2026-11-07 19:36:13,000 INFO TaskExecutor QuickHuntTask:快速狩猎：开始。",
+  ].join("\n"));
+  assert.deepEqual([worker.source, worker.text], ["DailyBatchTask", "info_set 当前子任务 快速狩猎"]);
+  assert.deepEqual([unnamed.source, unnamed.text, unnamed.level], ["ok", "截图超时", 30]);
+  assert.deepEqual([executor.source, executor.text], ["QuickHuntTask", "快速狩猎：开始。"]);
+});
+
+test("status echoes can be left out of the views and the run bar's tail", () => {
+  const records = parseLog([
+    "2026-10-22 10:20:41,001 INFO TaskExecutor DailyBatchTask:一键完成日常：开始。",
+    "2026-10-22 10:20:41,002 INFO TaskExecutor DailyBatchTask:info_set 当前子任务 公会、小屋、酒馆",
+    "2026-10-22 10:20:42,000 INFO TaskExecutor DailyTask:公会：签到完成。",
+    "2026-10-22 10:20:42,001 INFO TaskExecutor DailyTask:info_set 状态 签到完成",
+    "2026-10-22 10:20:43,000 INFO TaskExecutor DailyTask:info_set 状态 小屋",
+  ].join("\n"));
+  assert.deepEqual(records.map(isStatusEcho), [false, true, false, true, true]);
+  assert.deepEqual(lastMessages(records, 3).map((record) => record.text), ["一键完成日常：开始。", "公会：签到完成。"]);
+  const lines = (echoes?: boolean) => logRows(records, [], { ...ALL, echoes }).filter((row) => row.kind === "line").length;
+  assert.equal(lines(undefined), 5);
+  assert.equal(lines(true), 5);
+  assert.equal(lines(false), 2);
 });

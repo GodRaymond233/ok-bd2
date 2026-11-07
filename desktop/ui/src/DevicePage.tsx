@@ -9,7 +9,7 @@ import { CaptureOptions, WindowOptions } from "./DeviceOptions.tsx";
 import { coreText, t } from "./i18n.ts";
 import { AUTO_RESIZE_KEY, BASIC, DEVICE_KEYS, findGroup, pickFields } from "./settings.ts";
 import type { GamePaths, WindowInfo } from "./types.ts";
-import { Icon, Toggle } from "./ui.tsx";
+import { Icon, PageHead, Toggle } from "./ui.tsx";
 import { Preview } from "./Preview.tsx";
 
 function Connection({ core }: { core: Core }) {
@@ -198,11 +198,7 @@ export function DevicePage({ core }: { core: Core }) {
 
   return (
     <div className="page device-page">
-      <div className="ph">
-        <div className="l">
-          <h1 className="title">{t("设备")}</h1>
-        </div>
-      </div>
+      <PageHead title={t("设备")} />
       <Connection core={core} />
       <div className="grid2">
         <div className="stack">

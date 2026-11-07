@@ -806,6 +806,19 @@ svg.i.f {
   align-items: baseline;
   flex-wrap: wrap;
   gap: 2px 12px;
+  min-width: 0;
+}
+
+.ph-acts {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.ph-note {
+  flex-basis: 100%;
+  margin: -4px 0 0;
+  color: var(--ink-dim);
+  font-size: var(--fs-small);
 }
 
 h1.title {
@@ -2795,6 +2808,11 @@ mark {
 }
 
 /* ================= settings ================= */
+.settings-page > .ph {
+  /* The menu sits over the right edge of the settings, not of the window. */
+  max-width: 820px;
+}
+
 .settings-page > .tabs {
   margin-top: 12px;
 }
@@ -2846,8 +2864,7 @@ mark {
   width: 100%;
 }
 
-.records-page .ds,
-.report-page > .ds {
+.records-page .ds {
   color: var(--ink-dim);
   font-size: var(--fs-small);
   margin: 2px 0 0;
@@ -2884,6 +2901,13 @@ mark {
 
 .record-row > div:first-child {
   flex: 1 1 210px;
+}
+
+/* One width for 成功 and 未成功, so the statuses after them line up. */
+.record-row > .chip {
+  flex: 0 0 auto;
+  min-width: 5em;
+  justify-content: center;
 }
 
 .record-status {
@@ -3046,7 +3070,6 @@ mark {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .kbdchip.extra,
   .dock .mini {
     display: none;
   }
@@ -3484,9 +3507,8 @@ mark {
   font-family: var(--font-mono);
 }
 
-.page-note {
-  margin: 4px 0 14px;
-  color: var(--ink-dim);
+.templates-page > .ph {
+  margin-bottom: 14px;
 }
 
 .tool-empty {

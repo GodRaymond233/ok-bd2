@@ -9,6 +9,7 @@ import {
   type LevelFilter,
   type LogRecord,
   type LogRow,
+  isStatusEcho,
   levelCounts,
   localClock,
   logRows,
@@ -18,7 +19,7 @@ import {
   runStart,
 } from "./logs.ts";
 import type { HistoryRun } from "./types.ts";
-import { ConfirmDialog, Icon, Toggle, useSlider } from "./ui.tsx";
+import { ConfirmDialog, Icon, PageHead, Toggle, useSlider } from "./ui.tsx";
 
 const NEAR_BOTTOM = 40;
 
@@ -120,6 +121,8 @@ export function LogsPage({
   const [runs, setRuns] = useState<HistoryRun[]>([]);
   const [level, setLevel] = useState<LevelFilter>("all");
   const [query, setQuery] = useState("");
+  // Status echoes repeat what the task page shows; they stay one switch away.
+  const [echoes, setEchoes] = useState(false);
   const [follow, setFollow] = useState(true);
   const [unseen, setUnseen] = useState(0);
   const [exporting, setExporting] = useState(false);
@@ -157,7 +160,8 @@ export function LogsPage({
 
   const records = useMemo(() => mergeLogs(file ?? [], core.logs), [file, core.logs]);
   const counts = useMemo(() => levelCounts(records), [records]);
-  const rows = useMemo(() => logRows(records, runs, { level, query, run: focus }), [records, runs, level, query, focus]);
+  const echoCount = useMemo(() => records.filter(isStatusEcho).length, [records]);
+  const rows = useMemo(() => logRows(records, runs, { level, query, run: focus, echoes }), [records, runs, level, query, focus, echoes]);
   const lines = rows.filter((row) => row.kind === "line").length;
 
   // New lines scroll into view while following; otherwise they are counted.
@@ -210,24 +214,18 @@ export function LogsPage({
 
   return (
     <div className="page logs-page">
-      <div className="ph">
-        <div className="l">
-          <h1 className="title">{t("日志")}</h1>
-          <span className="date">
-            {t("本次运行与日志文件")} · {t("最近 {count} 条", { count: records.length })}
-          </span>
-        </div>
-        <span className="row">
-          <button type="button" className="btn sm" onClick={() => void core.openLogsFolder()}>
-            <Icon name="folder" />
-            {t("打开日志文件夹")}
-          </button>
-          <button type="button" className="btn sm" onClick={() => setExporting(true)}>
-            <Icon name="download" />
-            {t("导出日志")}…
-          </button>
-        </span>
-      </div>
+      <PageHead title={t("日志")} aside={<span className="date">
+        {t("本次运行与日志文件")} · {t("最近 {count} 条", { count: records.length })}
+      </span>}>
+        <button type="button" className="btn sm" onClick={() => void core.openLogsFolder()}>
+          <Icon name="folder" />
+          {t("打开日志文件夹")}
+        </button>
+        <button type="button" className="btn sm" onClick={() => setExporting(true)}>
+          <Icon name="download" />
+          {t("导出日志")}…
+        </button>
+      </PageHead>
       <div className="ltool">
         <span className="segpick slides" ref={levelPick} role="group" aria-label={t("级别")}>
           {levels.map(([value, label]) => (
@@ -255,6 +253,10 @@ export function LogsPage({
           </span>
         )}
         <span className="grow" />
+        <label className="tgl" title={t("任务每次更新运行状态都会写一行日志，内容与任务页的运行状态相同。")}>
+          <Toggle checked={echoes} label={t("显示状态刷新")} onChange={setEchoes} />
+          {t("显示状态刷新（{count}）", { count: echoCount })}
+        </label>
         {!focus && (
           <label className="tgl">
             <Toggle checked={follow} label={t("跟随最新")} onChange={(value) => (value ? followLatest() : setFollow(false))} />
@@ -287,6 +289,7 @@ export function LogsPage({
               onClick={() => {
                 setLevel("all");
                 setQuery("");
+                setEchoes(true);
                 onFocus(null);
               }}
             >

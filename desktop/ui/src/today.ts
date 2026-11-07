@@ -171,6 +171,9 @@ export function hero(summary: TodaySummary, run: BatchRun | null): Hero {
     const prefix = run.seal === "pause" ? t("已暂停") : run.seal === "stopping" ? `${t("正在停止")}…` : mode;
     return {
       ...base,
+      // The ring counts this run, as the title does; items done earlier today are skipped.
+      done: settled,
+      total: toRun,
       allDone: false,
       title: run.seal === "stopping" ? [prefix, "", ""] : [t("{prefix} · 第 ", { prefix }), String(Math.min(settled + 1, toRun)), t(" / {total} 项", { total: toRun })],
       detail: order.map((item) => coreText(item.name)).join(" → "),

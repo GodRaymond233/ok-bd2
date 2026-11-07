@@ -14,7 +14,6 @@ export function ConnectionPill({ core }: { core: Core }) {
   const connected = Boolean(core.device?.connected);
   const starting = Boolean(core.ui?.status.starting);
   const locked = Boolean(core.current) || starting;
-  const interaction = core.ui?.interaction_methods.find((item) => item.selected)?.label;
   const name = starting ? t("正在启动游戏") : connected ? core.deviceName || "BrownDust II" : t("未连接游戏");
   const dot = starting ? "d run" : connected ? "d" : "d off";
 
@@ -31,7 +30,6 @@ export function ConnectionPill({ core }: { core: Core }) {
         <span className={dot} />
         <b className="nm">{name}</b>
         {connected && core.captureText && <span className="kbdchip">{core.captureText}</span>}
-        {connected && interaction && <span className="kbdchip extra">{interaction}</span>}
         <Icon name={open ? "chev-u" : "chev-d"} />
       </button>
       {open && (

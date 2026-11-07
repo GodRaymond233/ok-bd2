@@ -3,10 +3,22 @@ import { api, errorText } from "./api.ts";
 import type { Core } from "./App.tsx";
 import { durationText } from "./format.ts";
 import { coreText, t } from "./i18n.ts";
+import { runOutcome } from "./run.ts";
 import type { HistoryRun } from "./types.ts";
-import { ConfirmDialog, Icon } from "./ui.tsx";
+import { ConfirmDialog, Icon, PageHead } from "./ui.tsx";
 
 const timestamp = (value: number) => new Date(value * 1000).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
+
+const OUTCOME = {
+  ok: ["chip ok", "成功"],
+  stopped: ["chip", "已中止"],
+  bad: ["chip warn", "未成功"],
+} as const;
+
+function Outcome({ run }: { run: HistoryRun }) {
+  const [className, text] = OUTCOME[runOutcome(run)];
+  return <span className={className}>{t(text)}</span>;
+}
 
 export function RecordsPage({ core }: { core: Core }) {
   const [runs, setRuns] = useState<HistoryRun[]>([]);
@@ -35,10 +47,9 @@ export function RecordsPage({ core }: { core: Core }) {
     && `${run.task} ${run.status} ${Object.values(run.details ?? {}).join(" ")}`.toLowerCase().includes(query.trim().toLowerCase()));
   return (
     <div className="page records-page">
-      <div className="ph"><div className="l"><h1 className="title">{t("记录")}</h1></div>
+      <PageHead title={t("记录")} note={t("保留最近 300 次已结束的任务，时间按北京时间显示。运行中的任务见顶部运行栏。")}>
         <button className="btn sm" disabled={loading} onClick={() => setReload((value) => value + 1)}><Icon name="refresh" />{t("刷新记录")}</button>
-      </div>
-      <p className="ds">{t("保留最近 300 次已结束的任务，时间按北京时间显示。运行中的任务见顶部运行栏。")}</p>
+      </PageHead>
       <div className="card record-filters">
         <label>{t("任务")}<select className="select" aria-label={t("筛选任务")} value={task} onChange={(event) => setTask(event.target.value)}>
           <option value="">{t("全部任务")}</option>{tasks.map((name) => <option key={name} value={name}>{coreText(name)}</option>)}
@@ -58,7 +69,7 @@ export function RecordsPage({ core }: { core: Core }) {
         <div className="record-heading">{t("符合条件 {shown} / {total}", { shown: filtered.length, total: runs.length })}</div>
         {filtered.map((run, index) => <div className="record-row" key={`${run.task}:${run.finished}:${index}`}>
           <div><b>{coreText(run.task)}</b><div className="ds">{timestamp(run.finished)} · {t("耗时 {time}", { time: durationText(run.duration) || "—" })}</div></div>
-          <span className={run.ok ? "chip ok" : "chip warn"}>{run.ok ? t("成功") : t("未成功")}</span>
+          <Outcome run={run} />
           <span className="record-status">{coreText(run.status) || t("未记录状态")}</span>
           <button className="btn sm" onClick={() => setSelected(run)}>{t("查看详情")}</button>
           <button className="btn sm" onClick={() => core.openLogs(run)}>{t("对应日志")}</button>

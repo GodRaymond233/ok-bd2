@@ -6,7 +6,7 @@ import { starterProgress, starterText } from "./device.ts";
 import { durationText, elapsedText, refreshText } from "./format.ts";
 import { coreText, t } from "./i18n.ts";
 import { type Segment, SEAL_TEXT, type Seal, infoRows, isActive, segments } from "./run.ts";
-import type { LogRecord } from "./logs.ts";
+import { lastMessages, type LogRecord } from "./logs.ts";
 import type { HistoryRun, TaskPayload } from "./types.ts";
 import { Icon } from "./ui.tsx";
 
@@ -51,8 +51,8 @@ function Legend({ parts }: { parts: Segment[] }) {
         <span key={part.kind}>
           <i className={`seg-${part.kind}`} />
           {t(SEGMENT_TEXT[part.kind])}{" "}
-          {part.kind === "doing" || part.kind === "pause" ? <b>{part.names.join("、")}</b> : <b>{part.names.length}</b>}
-          {part.kind === "fail" && ` ${part.names.join("、")}`}
+          {part.kind === "doing" || part.kind === "pause" ? <b>{part.names.map(coreText).join(t("、"))}</b> : <b>{part.names.length}</b>}
+          {part.kind === "fail" && ` ${part.names.map(coreText).join(t("、"))}`}
         </span>
       ))}
     </div>
@@ -74,9 +74,10 @@ export function RunDock({
   onExpand: (expanded: boolean) => void;
   onDismiss: () => void;
 }) {
-  const connected = Boolean(core.device?.connected);
   const status = core.ui?.status;
-  if (!run && status?.starting) {
+  // A new game start, and its failure, take the bar over from the last run's result.
+  const settled = !run || !isActive(run.seal);
+  if (settled && status?.starting) {
     const wait = core.ui?.starter_wait ?? null;
     const progress = wait ? starterProgress(wait) : null;
     return (
@@ -106,7 +107,7 @@ export function RunDock({
       </section>
     );
   }
-  if (!run && core.startError) {
+  if (settled && core.startError) {
     return (
       <section className="dock" aria-label={t("运行面板")}>
         <div className="bar">
@@ -156,15 +157,17 @@ export function RunDock({
     const stage = item ? core.childStage(item) : "";
     return item ? (stage ? `${coreText(item.name)} · ${stage}` : coreText(item.name)) : coreText(key);
   };
-  const failed = parts.find((part) => part.kind === "fail")?.names ?? [];
-  const rows = infoRows(task, seal, childName, failed);
+  const failedNames = parts.find((part) => part.kind === "fail")?.names ?? [];
+  const rows = infoRows(task, seal, childName, failedNames);
   const current = batchRun && active ? items.find((item) => batchRun.runs.get(item.key) === "doing") : undefined;
   const time = active
     ? t("已运行 {time}", { time: elapsedText(core.now - task.start_time) })
     : run.record?.duration
       ? t("用时 {time}", { time: durationText(run.record.duration) })
       : "";
-  const tail = logs.slice(-3);
+  const tail = lastMessages(logs, 3);
+  // A run you stopped yourself is not a problem to report; one that failed is.
+  const failed = seal === "issue";
 
   const controls = active ? (
     <>
@@ -193,13 +196,9 @@ export function RunDock({
         <Icon name="folder" />
         {t("日志文件夹")}
       </button>
-      <button
-        type="button"
-        className={seal === "issue" || seal === "abort" ? "btn sm primary" : "btn sm"}
-        onClick={() => core.navigate("report")}
-      >
+      <button type="button" className={failed ? "btn sm primary" : "btn sm"} onClick={() => core.navigate("report")}>
         <Icon name="report" />
-        {seal === "issue" || seal === "abort" ? t("生成问题报告") : t("问题报告")}
+        {failed ? t("生成问题报告") : t("问题报告")}
       </button>
       <button type="button" className="btn subtle sm icon" title={t("关闭")} aria-label={t("关闭")} onClick={onDismiss}>
         <Icon name="x" />

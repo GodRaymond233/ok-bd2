@@ -24,6 +24,8 @@ export interface LogFilter {
   query: string;
   /** Only this run's lines (and its dividers). */
   run: HistoryRun | null;
+  /** Whether to show the status echoes (see isStatusEcho); shown unless false. */
+  echoes?: boolean;
 }
 
 export type LogRow =
@@ -36,8 +38,10 @@ export const LOG_LIMIT = 5000;
 const LEVELS: Record<string, number> = { DEBUG: 10, INFO: 20, WARNING: 30, ERROR: 40, CRITICAL: 50 };
 
 // ok-script's format: "%(asctime)s %(levelname)s %(threadName)s %(message)s", where messages
-// from ok-script's Logger start with "name:" (ok/util/logger.py).
-const LINE = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2}),(\d+) (DEBUG|INFO|WARNING|ERROR|CRITICAL) \S+ ?(.*)$/;
+// from ok-script's Logger start with "name:" (ok/util/logger.py). Most thread names are one
+// word (MainThread, TaskExecutor), but the service's request threads are "AnyIO worker thread"
+// and Python names unnamed threads "Thread-3 (target)".
+const LINE = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2}),(\d+) (DEBUG|INFO|WARNING|ERROR|CRITICAL) (?:AnyIO worker thread|Thread-\d+ \([^)]*\)|\S+) ?(.*)$/;
 
 const SOURCE = /^([\w.-]{1,60}):(?!\/\/)(.*)$/s;
 
@@ -97,6 +101,25 @@ export function mergeLogs(file: LogRecord[], live: LogRecord[], limit = LOG_LIMI
   return merged.length > limit ? merged.slice(merged.length - limit) : merged;
 }
 
+/**
+ * ok-script logs every info_set ("info_set 状态 …"), so a run writes thousands of these lines.
+ * The task page and the run bar show the same values, so the views can leave them out.
+ */
+export function isStatusEcho(record: LogRecord): boolean {
+  return record.text.startsWith("info_set ");
+}
+
+/** The last `count` records that are not status echoes, oldest first. */
+export function lastMessages(records: LogRecord[], count: number): LogRecord[] {
+  const found: LogRecord[] = [];
+  for (let index = records.length - 1; index >= 0 && found.length < count; index -= 1) {
+    if (!isStatusEcho(records[index])) {
+      found.unshift(records[index]);
+    }
+  }
+  return found;
+}
+
 function levelMatches(level: number, filter: LevelFilter): boolean {
   if (filter === "info") {
     return level < 30;
@@ -123,6 +146,9 @@ export function runStart(run: HistoryRun): number {
 
 export function recordMatches(record: LogRecord, filter: LogFilter): boolean {
   if (!levelMatches(record.level, filter.level)) {
+    return false;
+  }
+  if (filter.echoes === false && isStatusEcho(record)) {
     return false;
   }
   if (filter.run && (record.ts < Math.floor(runStart(filter.run)) || record.ts > Math.ceil(filter.run.finished))) {

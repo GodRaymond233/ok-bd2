@@ -3,6 +3,7 @@ import { api, errorText } from "./api.ts";
 import type { Core } from "./App.tsx";
 import { coreText, currentLanguage, t } from "./i18n.ts";
 import type { ReportState } from "./types.ts";
+import { PageHead } from "./ui.tsx";
 
 export function ReportPage({ core }: { core: Core }) {
   const [state, setState] = useState<ReportState | null>(null);
@@ -29,8 +30,7 @@ export function ReportPage({ core }: { core: Core }) {
   const result = state?.result;
   const session = state?.session_id;
   return <div className="page report-page">
-    <div className="ph"><div className="l"><h1 className="title">{t("问题报告")}</h1></div></div>
-    <p className="ds">{t("生成本地诊断 ZIP，包含日志、运行信息和已有的故障截图。文件由你自行检查、发送，不会自动上传。")}</p>
+    <PageHead title={t("问题报告")} note={t("生成本地诊断 ZIP，包含日志、运行信息和已有的故障截图。文件由你自行检查、发送，不会自动上传。")} />
     {error && <div className="ferr" role="alert">{error} <button className="btn sm" disabled={busy || loading} onClick={() => void load()}>{t("重新读取现场")}</button></div>}
     {loading ? <p role="status">{t("正在读取现场状态…")}</p> : !session ? <section className="card report-section">
       <h2>{t("1. 记录问题现场")}</h2><p>{t("如果任务正在运行，会先暂停执行并保留日志和运行信息。完成或取消报告后，由你决定是否继续任务。")}</p>

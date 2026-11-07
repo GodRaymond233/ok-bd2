@@ -35,6 +35,14 @@ export function sealOf(task: TaskPayload, currentTask: string | null): Seal {
 
 export const isActive = (seal: Seal) => seal === "run" || seal === "pause" || seal === "stopping";
 
+/** The core records a run stopped by hand (or by quitting) with this status. */
+const STOPPED_STATUS = "已中止";
+
+/** A run record's outcome: a run you stopped is its own case, not a failure. */
+export function runOutcome(run: { ok: boolean; status: string }): "ok" | "stopped" | "bad" {
+  return run.ok ? "ok" : run.status === STOPPED_STATUS ? "stopped" : "bad";
+}
+
 /**
  * Whether a '、'-joined info list contains a name. Names may contain '、' themselves
  * (公会、小屋、酒馆), so this is the boundary-aware test of run_history.contains_joined_name.
@@ -135,7 +143,7 @@ export function infoRows(
   const info = task.info;
   const rows: InfoRow[] = [];
   if (shown(info["状态"])) {
-    const tone = seal === "issue" || seal === "abort" ? "bad" : "strong";
+    const tone = seal === "issue" ? "bad" : "strong";
     rows.push({ key: t("状态"), value: coreText(String(info["状态"])), tone });
   }
   if (isActive(seal) && shown(info["当前子任务"])) {

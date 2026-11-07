@@ -138,6 +138,25 @@ export function Icon({ name }: { name: string }) {
   );
 }
 
+/**
+ * A page's title row: the name, what sits beside it (a date, a count), the page's own actions
+ * on the right, and one line about the page under them. Every page uses it, so titles line up.
+ */
+export function PageHead({ title, aside, note, children }: {
+  title: string; aside?: ReactNode; note?: ReactNode; children?: ReactNode;
+}) {
+  return (
+    <header className="ph">
+      <div className="l">
+        <h1 className="title">{title}</h1>
+        {aside}
+      </div>
+      {children && <div className="row ph-acts">{children}</div>}
+      {note && <p className="ph-note">{note}</p>}
+    </header>
+  );
+}
+
 /** A task's icon on a tile tinted by its category. */
 export function TaskGlyph({ name, group, trigger }: { name: string; group?: string | null; trigger?: boolean }) {
   const glyph = taskGlyph(name, group ?? null, Boolean(trigger));

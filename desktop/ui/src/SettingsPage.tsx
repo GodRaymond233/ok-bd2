@@ -25,7 +25,7 @@ import {
   storedTheme,
 } from "./settings.ts";
 import type { AboutInfo, BackupEntry, BackupList, McpState, ShellDesktop, Theme, UpdateCheck } from "./types.ts";
-import { ConfirmDialog, Icon, Menu, Toggle, useSlider } from "./ui.tsx";
+import { ConfirmDialog, Icon, Menu, PageHead, Toggle, useSlider } from "./ui.tsx";
 
 type Tab = "general" | "notify" | "about";
 const OK_SCRIPT_URL = "https://github.com/ok-oldking/ok-script";
@@ -509,10 +509,7 @@ export function SettingsPage({ core }: { core: Core }) {
   const label = group ? findGroup(core.settings ?? [], group)?.label ?? group : "";
   return (
     <div className="page settings-page">
-      <div className="ph">
-        <div className="l">
-          <h1 className="title">{t("设置")}</h1>
-        </div>
+      <PageHead title={t("设置")}>
         {group && (
           <Menu
             items={[
@@ -524,7 +521,7 @@ export function SettingsPage({ core }: { core: Core }) {
             ]}
           />
         )}
-      </div>
+      </PageHead>
       <div className="tabs slides" ref={strip} role="tablist">
         {tabs.map(([value, text]) => (
           <button key={value} type="button" role="tab" aria-selected={tab === value} onClick={() => setTab(value)}>

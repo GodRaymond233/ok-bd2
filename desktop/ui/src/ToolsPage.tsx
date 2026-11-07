@@ -4,7 +4,7 @@ import type { Core } from "./App.tsx";
 import { coreText, t } from "./i18n.ts";
 import { CodeEditor } from "./ScriptsPage.tsx";
 import type { ToolState } from "./types.ts";
-import { Icon } from "./ui.tsx";
+import { Icon, PageHead } from "./ui.tsx";
 
 let draft: { code: string; task: string } | null = null;
 
@@ -17,6 +17,10 @@ export function ToolsPage({ core }: { core: Core }) {
   const editor = useRef<HTMLTextAreaElement>(null);
   const initialized = useRef(false);
   const tasks = core.tasks;
+  // The task list is replaced on every refresh (each second during a run); reading it through a
+  // ref keeps that from restarting the poll below.
+  const taskList = useRef(tasks);
+  taskList.current = tasks;
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -29,7 +33,7 @@ export function ToolsPage({ core }: { core: Core }) {
         if (!initialized.current) {
           initialized.current = true;
           if (draft === null) {
-            const selected = tasks.find((item) => item.class_name === next.task_class)?.name ?? "";
+            const selected = taskList.current.find((item) => item.class_name === next.task_class)?.name ?? "";
             setCode(next.code); setTask(selected);
             draft = { code: next.code, task: selected };
           }
@@ -41,7 +45,7 @@ export function ToolsPage({ core }: { core: Core }) {
     };
     void refresh();
     return () => { active = false; clearTimeout(timer); };
-  }, [tasks]);
+  }, []);
 
   const run = async (action: () => Promise<ToolState>) => {
     setWorking(true);
@@ -59,7 +63,7 @@ export function ToolsPage({ core }: { core: Core }) {
   const boxes = details?.boxes;
 
   return <div className="page tools-page">
-    <div className="ph"><div className="l"><h1 className="title">{t("工具")}</h1><div className="sub">{t("检查连接、识别文字，或临时运行一段代码。")}</div></div></div>
+    <PageHead title={t("工具")} note={t("检查连接、识别文字，或临时运行一段代码。")} />
     {blocked && !active && <div className="warnline">{blocked}</div>}
     {error && <div className="ferr" role="alert">{error}</div>}
     <section className="card pad tool-actions">

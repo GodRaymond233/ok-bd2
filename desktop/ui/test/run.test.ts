@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { childRuns, infoRows, joinedHas, sealOf, segments, shutdownSeconds } from "../src/run.ts";
+import {
+  childRuns,
+  infoRows,
+  joinedHas,
+  runOutcome,
+  sealOf,
+  segments,
+  shutdownSeconds,
+} from "../src/run.ts";
 import { item, task } from "./fixtures.ts";
 
 const ITEMS = [
@@ -104,4 +112,10 @@ test("info rows keep the Qt panel's order and hide placeholders", () => {
 test("the shutdown countdown announced by the batch", () => {
   assert.equal(shutdownSeconds(task({ info: { 状态: "今日日常已全部完成，60 秒后自动关机。" } })), 60);
   assert.equal(shutdownSeconds(task({ info: { 状态: "一键完成日常完成。" } })), null);
+});
+
+test("a run stopped by hand is neither a success nor a failure", () => {
+  assert.equal(runOutcome({ ok: true, status: "完成。" }), "ok");
+  assert.equal(runOutcome({ ok: false, status: "已中止" }), "stopped");
+  assert.equal(runOutcome({ ok: false, status: "每日跑商中止: 未找到商人" }), "bad");
 });

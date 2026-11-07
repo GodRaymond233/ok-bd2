@@ -162,10 +162,22 @@ export function App() {
   const [dockExpanded, setDockExpanded] = useState(initialDockExpanded);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const taskRevision = useRef(0);
-  const refreshSequence = useRef(0);
+  // Each counter names the newest read of its part, so a late response never undoes a newer one.
+  const fullSequence = useRef(0);
+  const taskSequence = useRef(0);
+
+  const applyTasks = useCallback((sequence: number, revision: number, taskList: TaskPayload[], summary: TodaySummary) => {
+    if (sequence !== taskSequence.current) return;
+    // A refresh started before a save must not overwrite the saved task response.
+    if (revision === taskRevision.current) {
+      setTasks(taskList);
+    }
+    setToday(summary);
+  }, []);
 
   const refresh = useCallback(async () => {
-    const sequence = ++refreshSequence.current;
+    const sequence = ++fullSequence.current;
+    const tasksRead = ++taskSequence.current;
     const revision = taskRevision.current;
     try {
       const [capture, taskList, summary, desktop, groups] = await Promise.all([
@@ -175,20 +187,28 @@ export function App() {
         api.info(),
         api.settings(),
       ]);
-      if (sequence !== refreshSequence.current) return;
+      applyTasks(tasksRead, revision, taskList, summary);
+      if (sequence !== fullSequence.current) return;
       setUi(capture);
-      // A refresh started before a save must not overwrite the saved task response.
-      if (revision === taskRevision.current) {
-        setTasks(taskList);
-      }
-      setToday(summary);
       setInfo(desktop);
       setSettings(groups);
       setCoreError(null);
     } catch (reason) {
-      if (sequence === refreshSequence.current) setCoreError(errorText(reason));
+      if (sequence === fullSequence.current) setCoreError(errorText(reason));
     }
-  }, []);
+  }, [applyTasks]);
+
+  /** What changes while a task runs: its info (the batch's current child) and today's list. */
+  const refreshRun = useCallback(async () => {
+    const tasksRead = ++taskSequence.current;
+    const revision = taskRevision.current;
+    try {
+      const [taskList, summary] = await Promise.all([api.tasks(), api.today()]);
+      applyTasks(tasksRead, revision, taskList, summary);
+    } catch {
+      // The next read or the event stream reports a lost core.
+    }
+  }, [applyTasks]);
 
   const scheduleRefresh = useCallback(() => {
     if (refreshTimer.current !== null) {
@@ -296,12 +316,12 @@ export function App() {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
-      await refresh();
+      await refreshRun();
       if (!cancelled) timer = setTimeout(() => void poll(), 1000);
     };
     timer = setTimeout(() => void poll(), 1000);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [dockActive, refresh]);
+  }, [dockActive, refreshRun]);
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now() / 1000), dockActive ? 1000 : 30_000);

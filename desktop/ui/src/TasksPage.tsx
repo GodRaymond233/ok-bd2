@@ -10,7 +10,7 @@ import { durationText, whenText } from "./format.ts";
 import { coreText, t } from "./i18n.ts";
 import { checklistRows } from "./today.ts";
 import { libraryGroups } from "./library.ts";
-import { statusSummary } from "./run.ts";
+import { runOutcome, statusSummary } from "./run.ts";
 import { maximumTaskListWidth, rememberTaskListWidth, storedTaskListWidth, TASK_LIST_WIDTH } from "./settings.ts";
 import type { HistoryRun, StatusRow, TaskPayload } from "./types.ts";
 import { ConfirmDialog, Icon, Menu, TaskGlyph, TaskListDivider, Toggle, useSlider } from "./ui.tsx";
@@ -215,8 +215,11 @@ function TaskDetail({
   }, [loadHistory, task.name, historyVersion]);
 
   const row = item && summary ? checklistRows(summary, core.batchRun, core.childStage, core.now).find((candidate) => candidate.item === item) : undefined;
-  const last = row ? row.text : history?.[0] ? t(history[0].ok ? "{when} 完成" : "{when} 未成功", { when: whenText(history[0].finished, core.now) }) : t("还没有运行记录");
-  const lastBad = row ? row.tone === "bad" : history?.[0] ? !history[0].ok : false;
+  const lastRun = history?.[0];
+  const lastOutcome = lastRun ? runOutcome(lastRun) : null;
+  const lastText = { ok: "{when} 完成", stopped: "{when} 已中止", bad: "{when} 未成功" } as const;
+  const last = row ? row.text : lastRun && lastOutcome ? t(lastText[lastOutcome], { when: whenText(lastRun.finished, core.now) }) : t("还没有运行记录");
+  const lastBad = row ? row.tone === "bad" : lastOutcome === "bad";
   const saveField = (key: string, value: unknown) => core.setConfig(task.name, key, value).then(() => undefined);
 
   return (
@@ -356,19 +359,22 @@ function TaskDetail({
               <div className="hist">
                 {history === null && <div className="r">{t("读取中…")}</div>}
                 {history?.length === 0 && <div className="r">{t("还没有运行记录")}</div>}
-                {history?.map((run) => (
+                {history?.map((run) => {
+                  const outcome = runOutcome(run);
+                  return (
                   <div key={`${run.finished}`} className="r">
-                    <span className={run.ok ? "d" : "d bad"} />
+                    <span className={outcome === "ok" ? "d" : outcome === "stopped" ? "d off" : "d bad"} />
                     <span className="w">{whenText(run.finished, core.now)}</span>
-                    <span className={run.ok ? "s" : "s bad"} title={coreText(run.status)}>
-                      {run.ok ? t("成功") : t("未成功")}
+                    <span className={outcome === "bad" ? "s bad" : "s"} title={coreText(run.status)}>
+                      {outcome === "ok" ? t("成功") : outcome === "stopped" ? t("已中止") : t("未成功")}
                       {run.duration ? ` · ${durationText(run.duration)}` : ""}
                     </span>
                     <button type="button" className="linkbtn" aria-label={t("查看这次的日志 {when}", { when: whenText(run.finished, core.now) })} onClick={() => core.openLogs(run)}>
                       {t("日志")}
                     </button>
                   </div>
-                ))}
+                  );
+                })}
               </div>
               <button className="linkbtn more" onClick={() => core.navigate("records")}>{t("查看全部运行记录")}</button>
             </div>
