@@ -1,10 +1,10 @@
 // The 今日 page: what each checklist row and the hero card say, before and during a run.
 import { durationText, whenText } from "./format.ts";
 import { coreText, t } from "./i18n.ts";
-import { type ChildRun, type Seal, isActive } from "./run.ts";
+import { type ChildRun, type Seal, isActive, runOutcome, sealOf } from "./run.ts";
 import type { SkipReason, TaskPayload, TodayItem, TodaySummary } from "./types.ts";
 
-export type RowIcon = "done" | "todo" | "warn" | "doing" | "pause" | "skip" | "fail" | "off" | "queue";
+export type RowIcon = "done" | "todo" | "warn" | "doing" | "pause" | "skip" | "fail" | "off" | "queue" | "abort";
 
 export interface Row {
   item: TodayItem;
@@ -145,6 +145,39 @@ export function checklistRows(
         position += 1;
         return { ...base, icon: "queue", order: position, text: `${t("待执行")} · ${t("第 {position} 个", { position })}`, tone: "" };
     }
+  });
+}
+
+/** Daily results remain visible even when a child is excluded from the batch or run alone. */
+export function dailyProgressRows(
+  summary: TodaySummary,
+  run: BatchRun | null,
+  tasks: TaskPayload[],
+  current: string | null,
+  childStage: (item: TodayItem) => string,
+  now: number,
+): Row[] {
+  const rows = run ? checklistRows(summary, run, childStage, now) : summary.items.map((item) => {
+    // Today's result must not turn yesterday's failure into a failure in this cycle.
+    const last = item.last && item.last.finished >= summary.refresh.daily - 86400 ? item.last : null;
+    const row = idleRow({ ...item, enabled: true, last }, now);
+    if (!item.done && last && runOutcome(last) === "stopped") {
+      return { ...row, item, icon: "abort" as const, tone: "" as const, text: t("已中止") };
+    }
+    return { ...row, item };
+  });
+  return rows.map((row) => {
+    if (run?.seal === "abort" && run.batch.info["当前子任务"] === row.item.key && row.icon === "todo") {
+      return { ...row, icon: "abort", text: t("已中止") };
+    }
+    const child = tasks.find((task) => task.name === row.item.name && task.name === current);
+    if (!child || (run && isActive(run.seal))) return row;
+    const seal = sealOf(child, current);
+    const label = seal === "stopping" ? t("正在停止") : seal === "pause" ? t("已暂停") : t("执行中");
+    const stage = childStage(row.item);
+    return { ...row, current: true, icon: seal === "run" ? "doing" : "pause",
+      tone: seal === "run" ? "live" : "held",
+      text: `${t("单独运行")} · ${label}${stage ? ` · ${stage}` : ""}` };
   });
 }
 

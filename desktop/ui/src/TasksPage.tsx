@@ -8,9 +8,9 @@ import { HuntPlanEditor } from "./HuntPlanEditor.tsx";
 import { modifiedFields, valueText } from "./form.ts";
 import { durationText, whenText } from "./format.ts";
 import { coreText, t } from "./i18n.ts";
-import { checklistRows } from "./today.ts";
+import { checklistRows, dailyProgressRows, type RowIcon } from "./today.ts";
 import { libraryGroups } from "./library.ts";
-import { runOutcome, statusSummary } from "./run.ts";
+import { isActive, runOutcome, SEAL_TEXT, statusSummary } from "./run.ts";
 import { maximumTaskListWidth, rememberTaskListWidth, storedTaskListWidth, TASK_LIST_WIDTH } from "./settings.ts";
 import type { HistoryRun, StatusRow, TaskPayload } from "./types.ts";
 import { ConfirmDialog, Icon, Menu, TaskGlyph, TaskListDivider, Toggle, useSlider } from "./ui.tsx";
@@ -53,6 +53,56 @@ function StatusValues({ rows }: { rows: StatusRow[] }) {
       <span className="v">{coreText(row.value)}</span>
     </div>
   ))}</div>;
+}
+
+function DailyProgress({ core }: { core: Core }) {
+  const summary = core.today;
+  if (!summary) return null;
+  const run = core.batchRun;
+  const rows = dailyProgressRows(summary, run, core.tasks, core.current, core.childStage, core.now);
+  const pendingLabel = run && isActive(run.seal) ? "待执行" : "未执行";
+  const labels: Record<RowIcon, string> = {
+    done: "成功", fail: "失败", warn: "失败", doing: "执行中", pause: "已暂停",
+    queue: "待执行", todo: pendingLabel,
+    skip: "跳过", off: "不参与", abort: "已中止",
+  };
+  const taking = rows.filter((row) => row.icon !== "off");
+  const done = taking.filter((row) => row.icon === "done").length;
+  const failed = taking.filter((row) => row.tone === "bad").length;
+  const skipped = taking.filter((row) => row.icon === "skip").length;
+  const aborted = taking.filter((row) => row.icon === "abort").length;
+  const current = rows.find((row) => row.current);
+  return (
+    <section className="card daily-progress" aria-label={t("日常进度")}>
+      <div className="daily-progress-head">
+        <div><h2>{t("日常进度")}</h2><span className="dsc">{t(run ? "本轮日常" : "今日累计")}
+          {run && ` · ${t(SEAL_TEXT[run.seal])}`}</span></div>
+        <div className="daily-count"><b>{done}</b> / {taking.length} {t("成功")}</div>
+      </div>
+      <div className="daily-progress-summary">
+        <span className="ok">{t("成功")} {done}</span>
+        <span className={failed ? "bad" : ""}>{t("失败")} {failed}</span>
+        {skipped > 0 && <span>{t("跳过")} {skipped}</span>}
+        {aborted > 0 && <span>{t("已中止")} {aborted}</span>}
+        <span>{t(pendingLabel)} {taking.filter((row) => row.icon === "todo" || row.icon === "queue").length}</span>
+      </div>
+      <div className="daily-current" role="status">
+        {current ? <><Icon name={current.icon === "pause" ? "pause" : "play"} /><b>{coreText(current.item.name)}</b><span>{current.text}</span></>
+          : <span>{t(run ? isActive(run.seal) ? "正在准备下一项日常任务" : "本轮日常已结束，结果如下" : "今日完成情况；单独运行的结果也会计入")}</span>}
+      </div>
+      <ol className="daily-steps">
+        {rows.map((row, index) => (
+          <li key={row.item.key} className={`daily-step ${row.icon}${row.current ? " current" : ""}`} aria-current={row.current ? "step" : undefined}>
+            <span className="step-number">{row.icon === "done" ? <Icon name="check" /> : row.icon === "fail" || row.icon === "warn" ? <Icon name="x" /> : index + 1}</span>
+            <button type="button" className="daily-step-content" onClick={() => core.openTask(row.item.name)}>
+              <b>{coreText(row.item.name)}</b><span>{row.text}</span>
+            </button>
+            <span className={`step-state ${row.tone}`}>{row.current && (run?.seal === "stopping" || (!run && core.tasks.some((task) => task.name === row.item.name && !task.enabled))) ? t("正在停止") : t(labels[row.icon])}</span>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
 }
 
 function TaskRow({ core, task, selected, onSelect }: { core: Core; task: TaskPayload; selected: boolean; onSelect: () => void }) {
@@ -305,6 +355,10 @@ function TaskDetail({
       <div className="dgrid">
         <div>
           {isBatch && summary ? (
+            <>
+            <DailyProgress core={core} />
+            <details className="daily-settings">
+            <summary>{t("日常设置与参与项目")}</summary>
             <div className="card form">
               {summary.items.map((child, index) => (
                 <div key={child.key} className="fld">
@@ -342,6 +396,8 @@ function TaskDetail({
                   </div>
                 ))}
             </div>
+            </details>
+            </>
           ) : (
             <ConfigForm fields={fields} disabled={locked} saveField={saveField}
               extra={(field) => field.editor === "hunt_plan" ? (
@@ -381,6 +437,10 @@ function TaskDetail({
           )}
           {(task.status_rows?.length ?? 0) > 0 && (
             <div className="card sc">
+              {isBatch ? <details className="status-details">
+                <summary>{t(core.batchRun && isActive(core.batchRun.seal) ? "本轮日常诊断详情" : "上次日常运行详情")}</summary>
+                <StatusValues rows={task.status_rows ?? []} />
+              </details> : <>
               <div className="hd">
                 <Icon name="target" />
                 <b>{t("运行状态")}</b>
@@ -390,6 +450,7 @@ function TaskDetail({
                 <summary>{t("诊断详情（{count} 项）", { count: status.details.length })}</summary>
                 <StatusValues rows={status.details} />
               </details>}
+              </>}
             </div>
           )}
           {(task.guide || task.instructions) && (

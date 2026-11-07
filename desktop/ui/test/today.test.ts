@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { childRuns } from "../src/run.ts";
-import { type BatchRun, checklistRows, hero, skipText, withBatchConfig } from "../src/today.ts";
+import { type BatchRun, checklistRows, dailyProgressRows, hero, skipText, withBatchConfig } from "../src/today.ts";
 import { item, summary, task } from "./fixtures.ts";
 
 const NOW = Date.UTC(2026, 9, 22, 2, 0) / 1000; // 10:00 Beijing
@@ -123,4 +123,39 @@ test("hero card before, without and after the dailies", () => {
   const none = summary(data.items.map((entry) => ({ ...entry, enabled: false })));
   assert.deepEqual(hero(none, null).title[1], "没有参与的子任务");
   assert.equal(hero(none, null).allDone, false);
+});
+
+test("daily overview includes standalone work even when batch switches are off", () => {
+  const data = today();
+  data.refresh.daily = AT(4, 0) + 86400;
+  data.items.forEach((entry) => { entry.enabled = false; });
+  const trade = task({ name: "每日跑商", enabled: true, running: true });
+  let rows = dailyProgressRows(data, null, [trade], trade.name, () => "购买食材", NOW);
+  assert.equal(rows[0].icon, "done");
+  assert.equal(rows[1].icon, "doing");
+  assert.equal(rows[1].text, "单独运行 · 执行中 · 购买食材");
+  assert.equal(rows[1].current, true);
+  assert.equal(rows[2].icon, "done");
+  assert.equal(rows[3].icon, "todo");
+  trade.paused = true;
+  assert.equal(dailyProgressRows(data, null, [trade], trade.name, () => "", NOW)[1].icon, "pause");
+  trade.enabled = false;
+  assert.match(dailyProgressRows(data, null, [trade], trade.name, () => "", NOW)[1].text, /正在停止/);
+  rows = dailyProgressRows(data, null, [], null, () => "", NOW);
+  assert.equal(rows[1].icon, "warn");
+  data.items[1].last!.finished -= 86400;
+  assert.equal(dailyProgressRows(data, null, [], null, () => "", NOW)[1].icon, "todo");
+  data.items[1].last = { finished: NOW, ok: false, duration: 10, status: "已中止" };
+  assert.equal(dailyProgressRows(data, null, [], null, () => "", NOW)[1].icon, "abort");
+});
+
+test("daily overview preserves batch failures and marks the interrupted child separately", () => {
+  const data = today();
+  const batch = task({ name: "一键完成日常", start_time: AT(9, 0), info: {
+    完成: "公会、小屋、酒馆", 失败: "跑商", 当前子任务: "广场女神像",
+  } });
+  const run: BatchRun = { batch, seal: "abort", runs: childRuns(batch, data.items, "abort") };
+  const rows = dailyProgressRows(data, run, [], null, () => "", NOW);
+  assert.deepEqual(rows.map((row) => row.icon), ["done", "fail", "off", "abort", "todo"]);
+  assert.equal(rows.some((row) => row.current), false);
 });

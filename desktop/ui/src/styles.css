@@ -1882,6 +1882,85 @@ button.crumb {
   }
 }
 
+.daily-progress { overflow: hidden; }
+.daily-progress-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 18px 8px;
+}
+.daily-progress-head h2 { margin: 0 0 4px; font-size: var(--fs-title); }
+.daily-progress-head .dsc, .daily-count { color: var(--ink-dim); }
+.daily-count b { font-size: 24px; color: var(--ok); }
+.daily-progress-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  padding: 0 18px 12px;
+  color: var(--ink-dim);
+}
+.daily-progress-summary .ok { color: var(--ok); }
+.daily-progress-summary .bad { color: var(--danger); }
+.daily-current {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 10px 18px;
+  background: var(--accent-wash);
+  color: var(--accent-ink);
+  overflow-wrap: anywhere;
+}
+.daily-current span { font-size: var(--fs-small); }
+.daily-steps { list-style: none; margin: 0; padding: 0; }
+.daily-step {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 54px;
+  padding: 6px 18px;
+  border-top: 1px solid var(--line);
+}
+.daily-step.current { background: var(--accent-wash); }
+.step-number {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  color: var(--ink-dim);
+  background: var(--surface-hover);
+}
+.daily-step.done .step-number { color: var(--ok); background: var(--ok-soft); }
+.daily-step.fail .step-number, .daily-step.warn .step-number { color: var(--danger); background: var(--danger-soft); }
+.daily-step.current .step-number { color: var(--on-accent); background: var(--accent); }
+.daily-step-content {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.daily-step-content:hover b { color: var(--accent-ink); }
+.daily-step-content span { color: var(--ink-dim); font-size: var(--fs-small); }
+.step-state { white-space: nowrap; font-weight: var(--fw-bold); font-size: var(--fs-small); color: var(--ink-dim); }
+.daily-step.done .step-state { color: var(--ok); }
+.step-state.bad { color: var(--danger); }
+.step-state.live { color: var(--accent-ink); }
+.step-state.held { color: var(--caution); }
+.daily-settings { margin-top: 16px; }
+.daily-settings > summary { cursor: pointer; padding: 10px 0; font-weight: var(--fw-bold); }
+.sc > .status-details:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+
 .form {
   overflow: hidden;
   container-type: inline-size;

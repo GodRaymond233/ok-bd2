@@ -40,7 +40,7 @@ function StateIcon({ row }: { row: Row }) {
   if (row.icon === "queue") {
     return <span className="si queue">{row.order}</span>;
   }
-  const icon = { done: "check", warn: "alert", fail: "x", doing: "play", pause: "pause", skip: "skip", off: "minus", todo: "" }[
+  const icon = { done: "check", warn: "alert", fail: "x", doing: "play", pause: "pause", skip: "skip", off: "minus", todo: "", abort: "stop" }[
     row.icon
   ];
   return <span className={`si ${row.icon}`}>{icon && <Icon name={icon} />}</span>;
