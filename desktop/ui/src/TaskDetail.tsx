@@ -156,13 +156,14 @@ export function TaskDetail({
       </label>
     );
   } else if (task.enabled) {
+    // A queued task has nothing to pause yet; it can only leave the queue.
     actions = (
       <>
-        <button type="button" className="btn" disabled={seal === "stopping"}
+        {!task.waiting_for && <button type="button" className="btn" disabled={seal === "stopping"}
           onClick={() => void core.act(() => core.taskAction(task.name, task.paused ? "resume" : "pause"))}>
           <Icon name={task.paused ? "play" : "pause"} />
           {task.paused ? t("继续") : t("暂停")}
-        </button>
+        </button>}
         <button type="button" className="btn stop" disabled={seal === "stopping"}
           onClick={() => void core.act(() => core.taskAction(task.name, "stop"))}>
           <Icon name="stop" />

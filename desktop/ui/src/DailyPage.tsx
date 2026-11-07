@@ -3,10 +3,10 @@
 // run as a whole, on the right with ok-script 3's task detail.
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { Core } from "./App.tsx";
-import { clockText, dateText, refreshText } from "./format.ts";
+import { clockText, dateText, durationText, elapsedText, refreshText, whenText } from "./format.ts";
 import { coreText, t } from "./i18n.ts";
-import { isActive } from "./run.ts";
-import { TaskDetail } from "./TaskDetail.tsx";
+import { isActive, runOutcome, SEAL_TEXT } from "./run.ts";
+import { TaskDetail, useHistory } from "./TaskDetail.tsx";
 import { dailyProgressRows, hero, type Row, type RowIcon } from "./today.ts";
 import type { TodayItem, TodaySummary } from "./types.ts";
 import { Icon, Menu, PageHead, TaskGlyph, Toggle } from "./ui.tsx";
@@ -39,12 +39,15 @@ function cycleText(item: TodayItem, summary: TodaySummary) {
 export function DailyPage({
   core,
   selected,
+  pinned,
   detailOpen,
   onSelect,
   onBack,
 }: {
   core: Core;
   selected: string | null;
+  /** Opened on a chosen item (from 任务), which a running batch must not take over. */
+  pinned: boolean;
   detailOpen: boolean;
   onSelect: (key: string) => void;
   onBack: () => void;
@@ -55,7 +58,7 @@ export function DailyPage({
   const run = core.batchRun;
   const active = Boolean(run && isActive(run.seal));
   // While the run goes on, the detail follows its current child until you pick something else.
-  const [following, setFollowing] = useState(true);
+  const [following, setFollowing] = useState(!pinned);
   const runStart = run?.batch.start_time ?? 0;
   const lastRunStart = useRef(runStart);
   useEffect(() => {
@@ -63,6 +66,7 @@ export function DailyPage({
     lastRunStart.current = runStart;
   }, [runStart]);
 
+  const batchHistory = useHistory(core, summary?.batch?.name ?? "", 1);
   const launcher = core.tasks.find((task) => task.class_name === "LauncherTask");
   const connected = Boolean(core.device?.connected);
   const starting = Boolean(core.ui?.status.starting);
@@ -95,8 +99,9 @@ export function DailyPage({
   const setBatch = (key: string, value: boolean) => void core.act(() => core.setConfig(batch.name, key, value));
   const startDaily = (mode: "all" | "incomplete") => void core.act(() => core.startDaily(mode));
 
-  const chosen = active && following && current ? current.item.key : selected ?? OVERVIEW;
-  const chosenItem = summary.items.find((item) => item.key === chosen);
+  const wanted = active && following && current ? current.item.key : selected ?? OVERVIEW;
+  const chosenItem = summary.items.find((item) => item.key === wanted);
+  const chosen = chosenItem ? chosenItem.key : OVERVIEW;
   const detailTask = chosenItem ? core.tasks.find((task) => task.name === chosenItem.name) : batch;
   const pick = (key: string) => {
     if (active) setFollowing(Boolean(current && key === current.item.key));
@@ -139,6 +144,12 @@ export function DailyPage({
   }
 
   const taking = rows.filter((row) => row.item.enabled);
+  const lastBatch = batchHistory?.[0];
+  const overviewText = run && active
+    ? `${t(SEAL_TEXT[run.seal])}${run.batch.start_time > 0 ? ` · ${t("已运行 {time}", { time: elapsedText(core.now - run.batch.start_time) })}` : ""}`
+    : lastBatch
+      ? `${t("上次 {when} {result}", { when: whenText(lastBatch.finished, core.now), result: t({ ok: "成功", stopped: "已中止", bad: "未成功" }[runOutcome(lastBatch)]) })}${lastBatch.duration ? ` · ${durationText(lastBatch.duration)}` : ""}`
+      : t("还没有运行记录");
   const counts = {
     done: taking.filter((row) => row.icon === "done").length,
     bad: taking.filter((row) => row.tone === "bad").length,
@@ -157,7 +168,7 @@ export function DailyPage({
             {card.title[0]}<em>{card.title[1]}</em>{card.title[2]}
           </div>
           <div className="dh-sub">
-            {active && current ? <><b>{coreText(current.item.name)}</b> · {current.text}</>
+            {current ? <><b>{coreText(current.item.name)}</b> · {current.text}</>
               : card.allDone ? t("下次刷新 {time}（北京时间）", { time: refreshText(summary.refresh.daily, core.now) })
               : card.detail}
           </div>
@@ -219,7 +230,7 @@ export function DailyPage({
                   <TaskGlyph name={batch.name} group={batch.group_name} />
                   <span className="txt">
                     <span className="nm">{t("整体运行")}</span>
-                    <span className="ds">{t("每次一键日常的结果、诊断和日志")}</span>
+                    <span className={`ds${active ? " live" : lastBatch && runOutcome(lastBatch) === "bad" ? " bad" : ""}`}>{overviewText}</span>
                   </span>
                 </button>
               </div>
@@ -274,6 +285,11 @@ export function DailyPage({
               <div className="dmember">
                 <Icon name="info" />
                 <span>{t("一键完成日常每次从头到尾的运行：结果、当时的诊断信息和日志。各项目的设置在左侧选中后查看。")}</span>
+                <label className="tgl">
+                  <Toggle checked={summary.batch.enabled} disabled={locked} label={t("启用一键完成日常")}
+                    onChange={(value) => setBatch("启用", value)} />
+                  {t("启用")}
+                </label>
               </div>
             )}
           />

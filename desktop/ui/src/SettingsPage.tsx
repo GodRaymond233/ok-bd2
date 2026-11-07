@@ -179,7 +179,7 @@ function General({ core }: { core: Core }) {
           <div className="card form">
             <div className="fld">
               <div className="lb">{t("启动后自动执行剩余日常")}</div>
-              <div className="dsc">{t("与「今日」页和一键完成日常设置里的是同一个开关。")}</div>
+              <div className="dsc">{t("与「日常」页上的是同一个开关。")}</div>
               <div className="ctrl">
                 <Toggle
                   checked={batch.auto_start}

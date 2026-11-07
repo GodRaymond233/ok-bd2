@@ -164,6 +164,7 @@ export function App() {
   const [detailOpen, setDetailOpen] = useState(false);
   const [dailySelected, setDailySelected] = useState<string | null>(null);
   const [dailyDetailOpen, setDailyDetailOpen] = useState(false);
+  const [dailyPinned, setDailyPinned] = useState(false);
   const [now, setNow] = useState(() => Date.now() / 1000);
   const [historyVersion, setHistoryVersion] = useState(0);
   const [dockName, setDockName] = useState<string | null>(null);
@@ -510,12 +511,14 @@ export function App() {
       }
       if (target === "daily") {
         setDailyDetailOpen(false);
+        setDailyPinned(false);
       }
     },
     openTask: (name) => {
       if (name === today?.batch?.name) {
         setDailySelected(OVERVIEW);
         setDailyDetailOpen(true);
+        setDailyPinned(true);
         setPage("daily");
         return;
       }
@@ -526,6 +529,7 @@ export function App() {
     openDaily: (key) => {
       setDailySelected(key ?? OVERVIEW);
       setDailyDetailOpen(key !== undefined);
+      setDailyPinned(key !== undefined);
       setPage("daily");
     },
   };
@@ -594,6 +598,7 @@ export function App() {
         <DailyPage
           core={core}
           selected={dailySelected}
+          pinned={dailyPinned}
           detailOpen={dailyDetailOpen}
           onSelect={(key) => {
             setDailySelected(key);

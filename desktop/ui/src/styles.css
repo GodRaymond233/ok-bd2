@@ -4401,3 +4401,15 @@ mark {
 .ti.overview {
   min-height: 52px;
 }
+
+.ti.overview .ds.live {
+  color: var(--accent-ink);
+}
+
+.ti.overview .ds.bad {
+  color: var(--danger);
+}
+
+.tasks-page .ph-acts {
+  margin-left: auto;
+}
