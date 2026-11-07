@@ -42,6 +42,7 @@ BEIJING_TZ = timezone(timedelta(hours=8))
 DAILY_REFRESH_HOUR = 4
 
 STORE_VERSION = 1
+RETIRED_STAGE_LIMIT = 64
 DEFAULT_FILE = ("configs", "task_run_history.json")
 RECENT_LIMIT = 300
 
@@ -175,6 +176,7 @@ class RunHistoryStore:
         self._records: dict[str, dict] = {}
         self._stages: dict[str, dict] = {}
         self._recent: list[dict] = []
+        self._retired_stages: list[dict] = []
         self._stage_error = False
         self._load()
 
@@ -207,6 +209,11 @@ class RunHistoryStore:
             and isinstance(run.get("task"), str)
             and isinstance(run.get("finished"), (int, float))
         ][-RECENT_LIMIT:]
+        retired = data.get("retired_stages", [])
+        if not isinstance(retired, list):
+            self._stage_error = True
+        else:
+            self._retired_stages = retired[-RETIRED_STAGE_LIMIT:]
 
     def _save(self) -> bool:
         if self._stage_error:
@@ -225,6 +232,7 @@ class RunHistoryStore:
                     "tasks": self._records,
                     "stages": self._stages,
                     "recent": self._recent,
+                    "retired_stages": self._retired_stages,
                 },
             ) is False:
                 raise OSError("运行记录写入失败")
@@ -275,6 +283,27 @@ class RunHistoryStore:
             self.stage(owner, "")
             return {key: self.stage(owner, key) for key in self._stages.get(owner, {})
                     if key.startswith(prefix) and self.stage(owner, key).get("state") == "pending"}
+
+    def retire_stages(self, owner: str, expected: dict[str, dict], reason: str) -> None:
+        """Atomically retain unresolved evidence and remove only unchanged pending records."""
+        if not expected:
+            return
+        with self._lock:
+            for step, record in expected.items():
+                if record.get("state") != "pending" or self.stage(owner, step) != record:
+                    raise RuntimeError("待归档的任务记录已变化，停止消费")
+            previous = copy.deepcopy(self._stages)
+            retired = self._retired_stages
+            self._retired_stages = (retired + [
+                {"owner": owner, "step": step, "record": copy.deepcopy(record),
+                 "reason": reason, "retired_at": time.time()}
+                for step, record in expected.items()
+            ])[-RETIRED_STAGE_LIMIT:]
+            for step in expected:
+                del self._stages[owner][step]
+            if not self._save():
+                self._stages, self._retired_stages = previous, retired
+                raise RuntimeError("任务记录归档失败，停止消费")
 
     def last_run(self, task_name: str) -> dict | None:
         with self._lock:

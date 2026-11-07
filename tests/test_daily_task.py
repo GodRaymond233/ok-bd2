@@ -1,3 +1,4 @@
+import json
 import re
 import unittest
 from dataclasses import replace
@@ -52,7 +53,7 @@ from src.tasks.quick_hunt import (
     QUICK_HUNT_STONE_LIST_ROI,
     HuntDialog,
 )
-from src.tasks.quick_hunt_plan import legacy_plan, select_steps
+from src.tasks.quick_hunt_plan import PLAN_KEY, legacy_plan, select_steps
 from src.tasks.QuickHuntTask import QuickHuntTask
 from src.tasks.task_vision_mixin import (
     LOADING_TEMPLATE,
@@ -60,7 +61,7 @@ from src.tasks.task_vision_mixin import (
     REFERENCE_WIDTH,
 )
 from src.utils.image_utils import crop_relative
-from tests.helpers import StageHistoryTestCase
+from tests.helpers import FakeClock, StageHistoryTestCase
 
 
 def hunt_dialog(**changes):
@@ -1954,6 +1955,14 @@ class DailyTaskHelperTest(StageHistoryTestCase):
                     return ""
 
                 task._quick_hunt_ocr_text = Mock(side_effect=ocr_text)
+                if submission is not None:
+                    from src.tasks import run_history
+                    self.reset_stage_history()
+                    scope = run_history.stage_scope(task)
+                    evidence = {"phase": "attempted", "start_clicks": 1, "resource": "米饭"}
+                    run_history.save_stage(task, "狩猎提交:米饭:金币 MAX", "pending",
+                                           scope=scope, evidence=evidence)
+                    task._hunt_checkpoint = ("狩猎提交:米饭:金币 MAX", scope, evidence)
                 with patch("src.tasks.quick_hunt.monotonic", side_effect=lambda: clock["now"]):
                     self.assertEqual(
                         expected, task._quick_hunt_wait_result("金币 MAX", submission=submission),
@@ -3021,6 +3030,269 @@ class DailyTaskHelperTest(StageHistoryTestCase):
 
         self.assertTrue(task._quick_hunt_select_plan_target("hunt"))
 
+
+
+class QuickHuntRecoveryTest(StageHistoryTestCase):
+    def setUp(self):
+        super().setUp()
+        from src.tasks import run_history
+        self.day = run_history.day_start_ts()
+        self._reset_hunt()
+        self.enterContext(patch("src.tasks.quick_hunt.time", lambda: self.wall + self.clock.now))
+        self.enterContext(patch("src.tasks.run_history.time.time",
+                                lambda: self.wall + self.clock.now))
+
+    def _reset_hunt(self):
+        self.reset_stage_history()
+        self.clock, self.wall = FakeClock(), self.day + 3600
+        task = self.task = object.__new__(QuickHuntTask)
+        task.config = {"快速狩猎结算等待秒数": 1.0, "快速狩猎界面等待秒数": 1.0}
+        task.info_set = task.log_info = Mock()
+        task._active_time = lambda clock: self.clock.now
+        task.sleep = self.clock.sleep
+        task.capture_frame = Mock(return_value=object())
+        task._quick_hunt_is_menu_restored = Mock(return_value=True)
+        task._quick_hunt_free_resource = Mock(return_value=90)
+        task._quick_hunt_settlement_signals = Mock(return_value=(False, False))
+        task._quick_hunt_open_confirmation = Mock(return_value=True)
+        task._quick_hunt_prepare_dialog = Mock(return_value=hunt_dialog())
+        task._quick_hunt_dialog_snapshot = Mock(return_value=None)
+        task._quick_vision = Mock(return_value=SimpleNamespace(click_client=Mock()))
+        task._save_flow_diagnostic = Mock()
+        task.operate_click = Mock(side_effect=lambda *_, after_sleep=0:
+                                  self.clock.sleep(after_sleep))
+
+    def _seed(self, step="金币 MIN", *, days=0, resource="米饭", at=None, evidence=None):
+        from src.tasks import run_history
+        cycle = self.day + days * 86400
+        at = cycle + 1800 if at is None else at
+        scope = f"{cycle}:{run_history.configuration_scope(self.task)}"
+        data = {"map": "哥布林遗迹极难", "count": 1, "cost": 6, "pool": 90,
+                "resource": resource, "phase": "attempted", "start_clicks": 1,
+                "prepared_at": at, **(evidence or {})}
+        key = f"狩猎提交:{resource}:{step}"
+        with patch("src.tasks.run_history.time.time", return_value=at):
+            self.history.save_stage("QuickHuntTask", key, "pending", scope, data)
+        return key, self.history.stage("QuickHuntTask", key)
+
+    def test_expired_or_unsent_pending_retires_only_its_resource_before_new_submission(self):
+        for days, step, unsent in ((-1, "金币 MIN", False), (-7, "旧版金币 MAX", False),
+                                   (0, "金币 MIN", True)):
+            with self.subTest(days=days, step=step, unsent=unsent):
+                self._reset_hunt()
+                key, original = self._seed(step, days=days, evidence=(
+                    {"phase": "prepared", "start_clicks": 0} if unsent else {}))
+                other, torch = self._seed(resource="火把")
+                self.assertEqual("failed", self.task._quick_hunt_execute_current_map(
+                    "MIN", "金币 MIN"))
+                self.task._quick_vision().click_client.assert_called_once()
+                with open(self.history.path, encoding="utf-8") as stream:
+                    retired = json.load(stream)["retired_stages"]
+                self.assertEqual(original, retired[-1]["record"])
+                self.assertEqual(torch, self.history.stage("QuickHuntTask", other))
+                new = self.history.stage("QuickHuntTask", "狩猎提交:米饭:金币 MIN")
+                self.assertTrue(new["scope"].startswith(str(self.day) + ":"))
+                self.assertEqual(1, new["evidence"]["start_clicks"])
+                self.assertEqual("transitioned", new["evidence"]["phase"])
+                if key != "狩猎提交:米饭:金币 MIN":
+                    self.assertFalse(self.history.stage("QuickHuntTask", key))
+
+    def test_pending_retirement_rejects_uncertain_cycle_menu_balance_or_active_request(self):
+        for case in ("future", "invalid_scope", "time_conflict", "unknown_balance",
+                     "changing_balance", "not_menu", "active", "just_crossed", "wrong_resource",
+                     "archive_write_failure", "ambiguous_rewards"):
+            with self.subTest(case=case):
+                self._reset_hunt()
+                at = self.day - .5 if case == "just_crossed" else None
+                if at is not None:
+                    self.wall = self.day + .1
+                days = 1 if case == "future" else (0 if case == "ambiguous_rewards" else -1)
+                key, record = self._seed(days=days, at=at)
+                if case == "ambiguous_rewards":
+                    self._seed(resource="火把")
+                    self.task._quick_hunt_settlement_signals.return_value = (True, False)
+                if case in ("invalid_scope", "time_conflict", "wrong_resource"):
+                    group = self.history._stages["QuickHuntTask"][key]
+                    if case == "invalid_scope":
+                        group["scope"] = "unknown"
+                    elif case == "time_conflict":
+                        group["evidence"]["prepared_at"] = self.day + 1
+                    else:
+                        group["evidence"]["resource"] = "火把"
+                    self.history._save()
+                    record = self.history.stage("QuickHuntTask", key)
+                if case == "unknown_balance":
+                    self.task._quick_hunt_free_resource.return_value = None
+                if case == "changing_balance":
+                    self.task._quick_hunt_free_resource.side_effect = [89, 90]
+                if case == "not_menu":
+                    self.task._quick_hunt_is_menu_restored.return_value = False
+                if case == "active":
+                    self.task._hunt_checkpoint = (key, record["scope"], record["evidence"])
+                if case == "archive_write_failure":
+                    with patch.object(self.history, "_save", return_value=False):
+                        with self.assertRaises(RuntimeError):
+                            self.task._quick_hunt_reconcile_pending("米饭")
+                else:
+                    self.assertFalse(self.task._quick_hunt_reconcile_pending("米饭"))
+                self.assertEqual(record, self.history.stage("QuickHuntTask", key))
+                self.task._quick_hunt_open_confirmation.assert_not_called()
+                self.task._quick_vision.assert_not_called()
+
+    def test_changed_configuration_recovers_read_only_and_preserves_original_scope(self):
+        for reward in (False, True):
+            with self.subTest(reward=reward):
+                self._reset_hunt()
+                key, original = self._seed(evidence={"start_clicks": 3})
+                self.task.config["快速狩猎 OCR 阈值"] = .4
+                self.task.config["快速狩猎界面等待秒数"] = 2.0
+                self.task._quick_hunt_settlement_signals.side_effect = lambda *_: (
+                    reward and self.task.operate_click.call_count == 0, False)
+                expected = "done" if reward else "failed"
+                self.assertEqual(expected, self.task._quick_hunt_execute_current_map(
+                    "MIN", "金币 MIN"))
+                from src.tasks.run_history import RunHistoryStore
+                self.history_mock.return_value = RunHistoryStore(self.history.path)
+                self.task._hunt_checkpoint = None
+                self.assertEqual(expected, self.task._quick_hunt_execute_current_map(
+                    "MIN", "金币 MIN"))
+                record = self.history_mock.return_value.stage("QuickHuntTask", key)
+                self.assertEqual(original["scope"], record["scope"])
+                self.assertEqual(3, record["evidence"]["start_clicks"])
+                self.task._quick_hunt_open_confirmation.assert_not_called()
+                self.task._quick_vision.assert_not_called()
+
+    def test_start_attempts_are_durable_and_failed_writes_never_dispatch(self):
+        for failed_write, expected_clicks in ((None, 3), (1, 0), (2, 0), (3, 1)):
+            with self.subTest(failed_write=failed_write):
+                self._reset_hunt()
+                self.task.config["快速狩猎结算等待秒数"] = 5.0
+                self.task._quick_hunt_dialog_snapshot.return_value = hunt_dialog()
+                writes = [0]
+                save = self.history._save
+
+                def persist():
+                    writes[0] += 1
+                    return False if writes[0] == failed_write else save()
+
+                with patch.object(self.history, "_save", side_effect=persist):
+                    if failed_write is not None:
+                        with self.assertRaises(RuntimeError):
+                            self.task._quick_hunt_execute_current_map("MIN", "金币 MIN")
+                    else:
+                        self.assertEqual("failed", self.task._quick_hunt_execute_current_map(
+                            "MIN", "金币 MIN"))
+                self.assertEqual(expected_clicks, self.task._quick_vision().click_client.call_count)
+                if expected_clicks:
+                    from src.tasks.run_history import RunHistoryStore
+                    store = RunHistoryStore(self.history.path)
+                    self.history_mock.return_value = store
+                    self.task._hunt_checkpoint = None
+                    self.assertEqual(expected_clicks, store.stage(
+                        "QuickHuntTask", "狩猎提交:米饭:金币 MIN")["evidence"]["start_clicks"])
+                    self.assertEqual("failed", self.task._quick_hunt_execute_current_map(
+                        "MIN", "金币 MIN"))
+                    self.assertEqual(expected_clicks,
+                                     self.task._quick_vision().click_client.call_count)
+
+    def test_late_cleanup_settles_before_close_but_cancellation_does_not_invent_completion(self):
+        for case in ("reward", "cross_cycle", "cancel", "unbound", "write_failure"):
+            with self.subTest(case=case):
+                self._reset_hunt()
+                self.assertEqual("failed", self.task._quick_hunt_execute_current_map(
+                    "MIN", "金币 MIN"))
+                key = "狩猎提交:米饭:金币 MIN"
+                original = self.history.stage("QuickHuntTask", key)
+                if case == "cross_cycle":
+                    self.wall += 86400
+                if case == "unbound":
+                    self.task._hunt_checkpoint = None
+                home = [False]
+                self.task._home_p95_threshold = lambda: 185
+                self.task._quick_hunt_current_map_context = lambda frame: "哥布林遗迹"
+                self.task._quick_hunt_home_signals = lambda frame: (home[0], 3, 255, "抽抽乐")
+                self.task.clear_temporary_home_announcement_if_needed = Mock(return_value=False)
+                self.task._quick_hunt_ocr_text = lambda frame, roi, name: (
+                    "REWARD" if case != "cancel" and roi == QUICK_HUNT_REWARD_TITLE_ROI else "")
+                self.task._quick_hunt_menu_still_open = lambda frame: False
+                self.task._quick_hunt_dialog_ocr = lambda frame, name: (True, "", "")
+
+                def close(*args, **kwargs):
+                    state = self.history.stage("QuickHuntTask", key)["state"]
+                    self.assertEqual("pending" if case in ("cancel", "unbound") else "done", state)
+                    home[0] = True
+                    return True
+
+                self.task.operate_click = Mock(side_effect=close)
+                self.task._quick_hunt_cancel_dialog = Mock(side_effect=close)
+                if case == "write_failure":
+                    with patch.object(self.history, "_save", return_value=False):
+                        with self.assertRaises(RuntimeError):
+                            self.task._quick_hunt_return_home()
+                    self.task.operate_click.assert_not_called()
+                else:
+                    self.assertTrue(self.task._quick_hunt_return_home())
+                record = self.history.stage("QuickHuntTask", key)
+                self.assertEqual(original["scope"], record["scope"])
+                self.assertEqual("done" if case in ("reward", "cross_cycle") else "pending",
+                                 record["state"])
+                self.assertIsNone(self.task._hunt_checkpoint)
+
+    def test_cycle_change_before_dispatch_stops_without_creating_a_new_submission(self):
+        from src.tasks import run_history
+        for during_dialog in (False, True):
+            with self.subTest(during_dialog=during_dialog):
+                self._reset_hunt()
+                if during_dialog:
+                    def prepare(*args):
+                        self.wall += 86400
+                        return hunt_dialog()
+                    self.task._quick_hunt_prepare_dialog.side_effect = prepare
+                    self.task._quick_hunt_cancel_dialog = Mock(return_value=True)
+                else:
+                    self.task._hunt_plan_scope = (
+                        f"{self.day - 86400}:{run_history.configuration_scope(self.task)}")
+                self.assertEqual("failed", self.task._quick_hunt_execute_current_map(
+                    "MIN", "金币 MIN"))
+                self.task._quick_vision.assert_not_called()
+                self.assertFalse(self.history.pending_stages("QuickHuntTask", "狩猎提交:"))
+                if during_dialog:
+                    self.task._quick_hunt_cancel_dialog.assert_called_once()
+                else:
+                    self.task._quick_hunt_open_confirmation.assert_not_called()
+
+    def test_plan_cycle_validation_and_late_finish_preserve_the_original_allowance(self):
+        from src.tasks import run_history
+        plan = {"name": "一次", "reserve": 0, "rules": [],
+                "fallback": [{"target": "hunt", "mode": "count", "count": 1}]}
+        for scope in ("invalid", f"{self.day + 86400}:0123456789abcdef"):
+            with self.subTest(scope=scope):
+                self._reset_hunt()
+                self.task.config[PLAN_KEY] = json.dumps(
+                    {"version": 1, "active": 0, "plans": [plan]})
+                run_history.save_stage(self.task, "狩猎方案", "pending", scope=scope,
+                                       evidence={"allowance": 6})
+                original = run_history.read_stage(self.task, "狩猎方案")
+                self.assertFalse(self.task._quick_hunt_run_rice_scheduler())
+                self.assertEqual(original, run_history.read_stage(self.task, "狩猎方案"))
+                self.task._quick_hunt_free_resource.assert_not_called()
+        self._reset_hunt()
+        self.task.config[PLAN_KEY] = json.dumps({"version": 1, "active": 0, "plans": [plan]})
+        self.task._quick_hunt_select_plan_target = Mock(return_value=True)
+
+        def finish(*args, **kwargs):
+            self.wall += 86400
+            self.task._quick_hunt_settle_submission("done")
+            return "done"
+
+        self.task._quick_hunt_wait_result = Mock(side_effect=finish)
+        for days in (0, 1):
+            self.assertTrue(self.task._quick_hunt_run_rice_scheduler())
+            record = run_history.read_stage(self.task, "狩猎方案")
+            self.assertEqual("done", record["state"])
+            self.assertEqual(self.day + days * 86400, self.task._quick_hunt_record_cycle(record))
+            self.assertEqual(90, record["evidence"]["allowance"])
+        self.assertEqual(2, self.task._quick_vision().click_client.call_count)
 
 
 if __name__ == "__main__":

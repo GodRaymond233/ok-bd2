@@ -13,6 +13,7 @@ from src.tasks.FreeGachaTask import (
     FREE_ENTRY_RETRY_READY,
     FREE_ENTRY_RETRY_UNKNOWN,
     LOADING_TEMPLATE,
+    RESULT_BACK_TEMPLATE,
     FreeDrawConfirmation,
     FreeGachaTask,
 )
@@ -452,24 +453,109 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
         self.assertEqual(BACK_PAGE_KEYWORDS, ocr_calls[0][0])
         self.assertEqual(1, ocr_calls[0][1])
 
-    def test_result_handler_clicks_ticket_detail_then_backs_and_verifies_gacha_page(self):
-        task = object.__new__(FreeGachaTask)
-        task.config = {}
-        task.info_set = lambda *_args, **_kwargs: None
-        task.log_info = lambda *_args, **_kwargs: None
-        clicks = []
-        sleeps = []
-        waits = []
+    def test_result_return_recovers_lost_clicks_and_stops_at_pool_or_budget(self):
+        for case, expected, counts in (
+            ("lost_clicks", True, (2, 2)), ("late_detail", True, (1, 1)),
+            ("already_pool", True, (0, 0)), ("unknown", False, (0, 0)),
+            ("loading", False, (0, 0)), ("blocked", False, (0, 0)),
+            ("detail_stuck", False, (3, 0)), ("result_stuck", False, (0, 3)),
+            ("ocr_over_budget", False, (0, 0)),
+        ):
+            with self.subTest(case=case):
+                task = object.__new__(FreeGachaTask)
+                task.config = {}
+                task.info_set = Mock()
+                task.log_info = Mock()
+                task._save_flow_diagnostic = Mock()
+                task._click_skip_until_back_page = Mock(return_value=(case != "late_detail", ""))
+                now, clicks = [0.0], []
+                task.sleep = lambda seconds: now.__setitem__(0, now[0] + seconds)
+                task.capture_frame = Mock(return_value=np.zeros((10, 10, 3), dtype=np.uint8))
+                task.operate_click = lambda x, y, **_: clicks.append((x, y))
 
-        task._click_skip_until_back_page = lambda _section_name: (True, "付费 免费")
-        task._click_reference = lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep))
-        task.sleep = lambda seconds: sleeps.append(seconds)
-        task._wait_for_gacha_page = lambda name: waits.append(name) or True
+                def observe(_frame, _pool):
+                    if case == "ocr_over_budget":
+                        now[0] += 20
+                        return "detail", (.74, .30)
+                    if case == "already_pool":
+                        return "pool", None
+                    if case in ("unknown", "loading", "blocked"):
+                        return case, None
+                    if case == "late_detail" and now[0] < .75:
+                        return "unknown", None
+                    close_count = clicks.count((.74, .30))
+                    back_count = clicks.count((.09, .05))
+                    needed = 2 if case == "lost_clicks" else 1
+                    if case == "detail_stuck" or (case != "result_stuck" and close_count < needed):
+                        return "detail", (.74, .30)
+                    if case == "result_stuck" or back_count < needed:
+                        return "result", (.09, .05)
+                    return "pool", None
 
-        self.assertTrue(FreeGachaTask._handle_result_until_back(task, "服装抽抽乐"))
-        self.assertEqual([1.0], sleeps)
-        self.assertEqual([(1420, 326, 1.0), (105, 51, 0.0)], clicks)
-        self.assertEqual(["服装抽抽乐 返回抽卡页"], waits)
+                task._result_return_state = observe
+                with patch.object(free_gacha_module, "monotonic", side_effect=lambda: now[0]):
+                    self.assertEqual(expected, task._handle_result_until_back("装备抽抽乐"))
+                self.assertEqual(counts, (clicks.count((.74, .30)), clicks.count((.09, .05))))
+                self.assertLessEqual(now[0], 20 if case == "ocr_over_budget" else 12)
+                if expected:
+                    task._save_flow_diagnostic.assert_not_called()
+                else:
+                    task._save_flow_diagnostic.assert_called_once_with("gacha_result_return_failed")
+
+    def test_result_return_requires_result_evidence_and_current_back_position(self):
+        for scale in (1, 2 / 3, 2):
+            task = object.__new__(FreeGachaTask)
+            task.config = {}
+            task.info_set = Mock()
+            frame = np.zeros((round(1080 * scale), round(1920 * scale), 3), dtype=np.uint8)
+            miss = MatchResult(-1.0, (0, 0), (0, 0))
+            back = MatchResult(.99, (160 * scale, 30 * scale),
+                               (20 * scale, 40 * scale), pixel_score=.94, zncc_score=.94)
+            task._match = Mock(side_effect=lambda _f, spec:
+                               back if spec == RESULT_BACK_TEMPLATE else miss)
+            cases = (
+                (["付费4025", "免费137312", "160", "UR0/100"], "result"),
+                (["付费4025", "免费137312", "160", "0/100"], "result"),
+                (BACK_PAGE_KEYWORDS, "detail"),
+                (["付费4025", "免费137312", "0/100", "抽抽乐券"], "unknown"),
+                (["付费4025", "免费137312", "0/100", "抽抽乐记录"], "unknown"),
+                (["付费4025", "免费137312", "0/100", "抽1次"], "unknown"),
+                (["付费4025", "免费137312", "0/100", "取消"], "unknown"),
+                (["付费4025", "免费137312", "101/100"], "unknown"),
+                (["付费4025", "免费137312", "0/100", "1/100"], "unknown"),
+                (["付费4025", "免费137312"], "unknown"),
+                (["0/100"], "unknown"),
+                (["服装抽抽乐"], "blocked"),
+                (["确认抽抽乐"], "blocked"),
+            )
+            for labels, expected in cases:
+                with self.subTest(scale=scale, labels=labels):
+                    task._gacha_ocr_boxes = Mock(return_value=[
+                        SimpleNamespace(name=label, x=100 * scale, y=950 * scale,
+                                        width=100 * scale, height=30 * scale) for label in labels])
+                    state, point = task._result_return_state(frame, "装备抽抽乐")
+                    self.assertEqual(expected, state)
+                    if state == "result":
+                        self.assertAlmostEqual(170 / 1920, point[0])
+                        self.assertAlmostEqual(50 / 1080, point[1])
+                    elif state == "detail":
+                        self.assertEqual((1420 / 1920, 326 / 1080), point)
+                    else:
+                        self.assertIsNone(point)
+            task._gacha_ocr_boxes = Mock(return_value=pool_boxes("装备", scale=scale))
+            self.assertEqual(("pool", None), task._result_return_state(frame, "装备抽抽乐"))
+            result_boxes = [SimpleNamespace(name=label, x=100 * scale, y=700 * scale,
+                                           width=100 * scale, height=30 * scale)
+                            for label in ("付费4025", "免费137312", "0/100")]
+            task._gacha_ocr_boxes.return_value = result_boxes
+            self.assertEqual(("unknown", None), task._result_return_state(frame, "装备抽抽乐"))
+            result_boxes[-1].y = 950 * scale
+            task._match = Mock(return_value=miss)
+            self.assertEqual(("unknown", None), task._result_return_state(frame, "装备抽抽乐"))
+            task._match = Mock(return_value=MatchResult(.99, (0, 0), (20, 20), pixel_score=.99))
+            task._gacha_ocr_boxes.reset_mock()
+            self.assertEqual(("loading", None), task._result_return_state(frame, "装备抽抽乐"))
+            task._gacha_ocr_boxes.assert_not_called()
 
     def test_open_confirm_dialog_retries_while_entry_still_ready(self):
         task = object.__new__(FreeGachaTask)
