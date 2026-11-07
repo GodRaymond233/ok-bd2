@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { childRuns } from "../src/run.ts";
-import { type BatchRun, checklistRows, dailyProgressRows, hero, skipText, withBatchConfig } from "../src/today.ts";
+import { type BatchRun, checklistRows, dailyProgressRows, hero, liveChild, skipText, withBatchConfig } from "../src/today.ts";
 import { item, summary, task } from "./fixtures.ts";
 
 const NOW = Date.UTC(2026, 9, 22, 2, 0) / 1000; // 10:00 Beijing
@@ -158,4 +158,16 @@ test("daily overview preserves batch failures and marks the interrupted child se
   const rows = dailyProgressRows(data, run, [], null, () => "", NOW);
   assert.deepEqual(rows.map((row) => row.icon), ["done", "fail", "off", "abort", "todo"]);
   assert.equal(rows.some((row) => row.current), false);
+});
+
+test("the daily run's current child is named by its task, only while the run is active", () => {
+  const data = today();
+  const batch = task({ name: data.batch!.name, enabled: true, info: { 当前子任务: "跑商", 完成: "公会、小屋、酒馆" } });
+  const enabled = data.items.filter((entry) => entry.enabled);
+  const running: BatchRun = { batch, seal: "run", runs: childRuns(batch, enabled, "run") };
+  assert.equal(liveChild(data, running), "每日跑商");
+  assert.equal(liveChild(data, { ...running, seal: "pause" }), "每日跑商");
+  assert.equal(liveChild(data, { ...running, seal: "abort" }), null);
+  assert.equal(liveChild(data, null), null);
+  assert.equal(liveChild(null, running), null);
 });

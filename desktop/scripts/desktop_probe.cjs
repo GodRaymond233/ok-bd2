@@ -256,12 +256,12 @@ function probe() {
     win.setBounds({ x: 80, y: 80, width: 1480, height: 900 });
     await until(async () => await width() === 400, "restored wide task list");
     check("widening restores the chosen task list width", true);
-    await js(`document.querySelector('nav button[title="今日"]').click()`);
+    await js(`document.querySelector('nav button[title="日常"]').click()`);
   }
 
   async function checkTaskListRestored(reason) {
     await js(`document.querySelector('nav button[title="任务"]').click()`);
-    await until(() => js("(()=>{const lib=document.querySelector('.lib'),col=document.querySelector('.libcol');if(!lib||!col)return false;const expected=innerWidth<900?lib.clientWidth:Math.min(400,Math.max(220,Math.min(480,lib.clientWidth-360)));return window.okbd2Shell.uiPreferences().taskListWidth===400&&Math.abs(col.getBoundingClientRect().width-expected)<1})()"), "task list after " + reason);
+    await until(() => js("(()=>{const lib=document.querySelector('.lib'),col=document.querySelector('.libcol');if(!lib||!col)return false;const expected=innerWidth<900?lib.clientWidth:Math.min(400,Math.max(220,Math.min(480,lib.clientWidth-376)));return window.okbd2Shell.uiPreferences().taskListWidth===400&&Math.abs(col.getBoundingClientRect().width-expected)<1})()"), "task list after " + reason);
     check("task list width survives " + reason, true);
   }
 
@@ -393,7 +393,7 @@ function probe() {
     const count = delivered.length;
     check("disabled system notification not delivered", (await api("/api/bd2/notify/test", { channel: "system" })).status === 400 && delivered.length === count);
 
-    await js(`document.querySelector('nav button[title="今日"]').click()`);
+    await js(`document.querySelector('nav button[title="日常"]').click()`);
     const firstChild = (await api("/api/probe/batch-progress", { step: 0 })).body.name;
     await until(() => js(`document.querySelector('.dock .sub')?.textContent.trim()===${JSON.stringify(firstChild)}`), "initial batch child");
     // Let the initial lifecycle refresh settle before advancing info without an event.
@@ -401,7 +401,7 @@ function probe() {
     const nextChild = (await api("/api/probe/batch-progress", { step: 1 })).body.name;
     await until(() => js(`document.querySelector('.dock .sub')?.textContent.trim()===${JSON.stringify(nextChild)}`), "live child transition", 40);
     check("batch child advances without a lifecycle event", true);
-    check("today checklist follows the same live transition", await js(`document.querySelector('.today')?.textContent.includes('执行中 · 探针阶段')`));
+    check("daily run order follows the same live transition", await js(`document.querySelector('.daily-page .steps')?.textContent.includes('执行中 · 探针阶段')`));
     await js(`document.querySelector('nav button[title="任务"]').click()`);
     await until(() => js(`Boolean([...document.querySelectorAll('.ti-open .nm')].find(e=>e.textContent===${JSON.stringify(nextChild)}))`), "child in task library");
     await js(`[...document.querySelectorAll('.ti-open .nm')].find(e=>e.textContent===${JSON.stringify(nextChild)}).closest('button').click()`);
@@ -417,7 +417,10 @@ function probe() {
     await js("window.okbd2Shell.setZoom(125)");
     win.setBounds({ x: 80, y: 80, width: 980, height: 720 });
     const batchTask = (await api("/api/tasks")).body.find(task => task.class_name === "DailyBatchTask");
-    await js(`[...document.querySelectorAll('.ti-open .nm')].find(e=>e.textContent===${JSON.stringify(batchTask.name)}).closest('button').click()`);
+    // 一键完成日常 has its own page; its whole-run row shows the run's history.
+    await js(`document.querySelector('nav button[title="日常"]').click()`);
+    await until(() => js("Boolean(document.querySelector('.ti.overview .ti-open'))"), "daily whole-run row");
+    await js("document.querySelector('.ti.overview .ti-open').click()");
     await until(() => js(`document.querySelector('.detail')?.getAttribute('aria-label')===${JSON.stringify(batchTask.name)} && document.querySelector('.hist')?.textContent.includes('还没有运行记录')`), "batch history before stop");
     const stoppedBatch = await api(`/api/tasks/${encodeURIComponent(batchTask.name)}/action`, { action: "stop" });
     assert.equal(stoppedBatch.status, 200, JSON.stringify(stoppedBatch));

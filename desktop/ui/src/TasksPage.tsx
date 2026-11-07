@@ -1,111 +1,76 @@
-// 任务: the task list (filtered by group, searchable, each row with its own run button or
-// switch) and the selected task's detail with its settings.
-import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from "react";
+// 任务: ok-script 3's task page (ok/ui/qt/tasks/tasks_page.py), which ok-ww uses. Filter tabs by kind
+// and group across the top; a list of section cards (按需任务, 触发任务), each row with its own run
+// button or switch; the selected task's detail beside it. 一键完成日常 has its own page, so it is
+// not listed here; its children are, since each also runs on its own.
+import { type CSSProperties, type ReactNode, useLayoutEffect, useRef, useState } from "react";
 import type { Core } from "./App.tsx";
-import { ConfigForm } from "./ConfigForm.tsx";
-import { GuidePanel } from "./GuidePanel.tsx";
-import { HuntPlanEditor } from "./HuntPlanEditor.tsx";
-import { modifiedFields, valueText } from "./form.ts";
-import { durationText, whenText } from "./format.ts";
 import { coreText, t } from "./i18n.ts";
-import { checklistRows, dailyProgressRows, type RowIcon } from "./today.ts";
-import { libraryGroups } from "./library.ts";
-import { isActive, runOutcome, SEAL_TEXT, statusSummary } from "./run.ts";
 import { maximumTaskListWidth, rememberTaskListWidth, storedTaskListWidth, TASK_LIST_WIDTH } from "./settings.ts";
-import type { HistoryRun, StatusRow, TaskPayload } from "./types.ts";
-import { ConfirmDialog, Icon, Menu, TaskGlyph, TaskListDivider, Toggle, useSlider } from "./ui.tsx";
+import { TaskDetail } from "./TaskDetail.tsx";
+import { liveChild } from "./today.ts";
+import type { TaskPayload } from "./types.ts";
+import { Icon, PageHead, TaskGlyph, TaskListDivider, Toggle, useSlider } from "./ui.tsx";
 
-function Marker({ core, task }: { core: Core; task: TaskPayload }) {
-  if (task.trigger) {
-    return null;
+const KIND_ALL = "all";
+const KIND_ONETIME = "onetime";
+const KIND_TRIGGER = "trigger";
+const GROUP = "group:";
+const GROUP_ORDER = ["日常/周常", "自动刷级"];
+
+// The last filter, kept while the app runs (ok-script keeps it across starts).
+let lastFilter = KIND_ALL;
+
+function groupLabel(name: string) {
+  return name === "日常/周常" ? t("日常 / 周常") : coreText(name);
+}
+
+const groupRank = (name: string | null) => {
+  const index = GROUP_ORDER.indexOf(name ?? "");
+  return index >= 0 ? index : name ? 50 : 60;
+};
+
+/** The tasks this page lists: visible, not the daily run (it has its own page). */
+export function listedTasks(core: Core): { onetime: TaskPayload[]; triggers: TaskPayload[] } {
+  const batch = core.today?.batch?.name;
+  const visible = core.tasks.filter((task) => task.visible && task.name !== batch);
+  const onetime = visible.filter((task) => !task.trigger).sort((a, b) => groupRank(a.group_name) - groupRank(b.group_name));
+  return { onetime, triggers: visible.filter((task) => task.trigger) };
+}
+
+function matches(task: TaskPayload, key: string, needle: string) {
+  if (needle && ![task.name, task.description, coreText(task.name), coreText(task.description)]
+    .some((text) => text.toLowerCase().includes(needle))) {
+    return false;
   }
+  if (key === KIND_ONETIME) return !task.trigger;
+  if (key === KIND_TRIGGER) return task.trigger;
+  if (key.startsWith(GROUP)) return task.group_name === key.slice(GROUP.length);
+  return true;
+}
+
+function Status({ core, task }: { core: Core; task: TaskPayload }) {
+  if (task.trigger) return null;
   if (task.waiting_for) {
     return <span className="chip info" title={t("等待「{task}」完成", { task: coreText(task.waiting_for) })}>{t("排队中")}</span>;
   }
-  if (task.enabled || core.current === task.name) {
-    return <span className="chip run">{t("运行中")}</span>;
-  }
-  if (task.name === core.today?.batch?.name) {
-    return <span className="chip info">{t("合辑")}</span>;
+  if (task.enabled && task.paused) return <span className="chip warn">{t("已暂停")}</span>;
+  if (task.enabled || core.current === task.name) return <span className="chip run">{t("运行中")}</span>;
+  if (liveChild(core.today, core.batchRun) === task.name) {
+    return core.batchRun?.seal === "pause" ? <span className="chip warn">{t("已暂停")}</span> : <span className="chip run">{t("日常中")}</span>;
   }
   const item = core.today?.items.find((candidate) => candidate.name === task.name);
   if (item?.done) {
-    return (
-      <span className="mk ok" title={t("已完成")}>
-        <Icon name="check" />
-      </span>
-    );
+    return <span className="mk ok" title={t("今日已完成")}><Icon name="check" /></span>;
   }
-  if (item?.last && !item.last.ok) {
-    return (
-      <span className="mk bad" title={t("上次未成功")}>
-        <Icon name="alert" />
-      </span>
-    );
+  if (item?.last && !item.last.ok && item.last.status !== "已中止") {
+    return <span className="mk bad" title={t("上次未成功")}><Icon name="alert" /></span>;
   }
   return null;
 }
 
-function StatusValues({ rows }: { rows: StatusRow[] }) {
-  return <div className="kv">{rows.map((row) => (
-    <div key={row.key} style={{ display: "contents" }}>
-      <span className="k">{coreText(row.label)}</span>
-      <span className="v">{coreText(row.value)}</span>
-    </div>
-  ))}</div>;
-}
-
-function DailyProgress({ core }: { core: Core }) {
-  const summary = core.today;
-  if (!summary) return null;
-  const run = core.batchRun;
-  const rows = dailyProgressRows(summary, run, core.tasks, core.current, core.childStage, core.now);
-  const pendingLabel = run && isActive(run.seal) ? "待执行" : "未执行";
-  const labels: Record<RowIcon, string> = {
-    done: "成功", fail: "失败", warn: "失败", doing: "执行中", pause: "已暂停",
-    queue: "待执行", todo: pendingLabel,
-    skip: "跳过", off: "不参与", abort: "已中止",
-  };
-  const taking = rows.filter((row) => row.icon !== "off");
-  const done = taking.filter((row) => row.icon === "done").length;
-  const failed = taking.filter((row) => row.tone === "bad").length;
-  const skipped = taking.filter((row) => row.icon === "skip").length;
-  const aborted = taking.filter((row) => row.icon === "abort").length;
-  const current = rows.find((row) => row.current);
-  return (
-    <section className="card daily-progress" aria-label={t("日常进度")}>
-      <div className="daily-progress-head">
-        <div><h2>{t("日常进度")}</h2><span className="dsc">{t(run ? "本轮日常" : "今日累计")}
-          {run && ` · ${t(SEAL_TEXT[run.seal])}`}</span></div>
-        <div className="daily-count"><b>{done}</b> / {taking.length} {t("成功")}</div>
-      </div>
-      <div className="daily-progress-summary">
-        <span className="ok">{t("成功")} {done}</span>
-        <span className={failed ? "bad" : ""}>{t("失败")} {failed}</span>
-        {skipped > 0 && <span>{t("跳过")} {skipped}</span>}
-        {aborted > 0 && <span>{t("已中止")} {aborted}</span>}
-        <span>{t(pendingLabel)} {taking.filter((row) => row.icon === "todo" || row.icon === "queue").length}</span>
-      </div>
-      <div className="daily-current" role="status">
-        {current ? <><Icon name={current.icon === "pause" ? "pause" : "play"} /><b>{coreText(current.item.name)}</b><span>{current.text}</span></>
-          : <span>{t(run ? isActive(run.seal) ? "正在准备下一项日常任务" : "本轮日常已结束，结果如下" : "今日完成情况；单独运行的结果也会计入")}</span>}
-      </div>
-      <ol className="daily-steps">
-        {rows.map((row, index) => (
-          <li key={row.item.key} className={`daily-step ${row.icon}${row.current ? " current" : ""}`} aria-current={row.current ? "step" : undefined}>
-            <span className="step-number">{row.icon === "done" ? <Icon name="check" /> : row.icon === "fail" || row.icon === "warn" ? <Icon name="x" /> : index + 1}</span>
-            <button type="button" className="daily-step-content" onClick={() => core.openTask(row.item.name)}>
-              <b>{coreText(row.item.name)}</b><span>{row.text}</span>
-            </button>
-            <span className={`step-state ${row.tone}`}>{row.current && (run?.seal === "stopping" || (!run && core.tasks.some((task) => task.name === row.item.name && !task.enabled))) ? t("正在停止") : t(labels[row.icon])}</span>
-          </li>
-        ))}
-      </ol>
-    </section>
-  );
-}
-
 function TaskRow({ core, task, selected, onSelect }: { core: Core; task: TaskPayload; selected: boolean; onSelect: () => void }) {
+  const running = task.enabled && !task.paused;
+  const paused = task.enabled && task.paused;
   return (
     <div className={selected ? "ti on" : "ti"}>
       <button type="button" className="ti-open" aria-current={selected} title={coreText(task.description || task.name)} onClick={onSelect}>
@@ -114,7 +79,7 @@ function TaskRow({ core, task, selected, onSelect }: { core: Core; task: TaskPay
           <span className="nm">{coreText(task.name)}</span>
           {task.description && <span className="ds">{coreText(task.description)}</span>}
         </span>
-        <Marker core={core} task={task} />
+        <Status core={core} task={task} />
       </button>
       {task.trigger ? (
         <Toggle
@@ -122,19 +87,44 @@ function TaskRow({ core, task, selected, onSelect }: { core: Core; task: TaskPay
           label={coreText(task.name)}
           onChange={(value) => void core.act(() => core.taskAction(task.name, value ? "enable" : "disable"))}
         />
+      ) : running ? (
+        <button type="button" className="btn sm icon" title={t("停止")} aria-label={`${t("停止")} ${coreText(task.name)}`}
+          onClick={() => void core.act(() => core.taskAction(task.name, "stop"))}>
+          <Icon name="stop" />
+        </button>
       ) : (
         <button
           type="button"
           className="btn sm icon"
-          disabled={Boolean(core.startBlocked)}
-          title={core.startBlocked ?? t("开始")}
-          aria-label={`${t("开始")} ${coreText(task.name)}`}
-          onClick={() => void core.act(() => core.startTask(task.name))}
+          disabled={Boolean(core.startBlocked) && !paused}
+          title={paused ? t("继续") : core.startBlocked ?? t("开始")}
+          aria-label={`${paused ? t("继续") : t("开始")} ${coreText(task.name)}`}
+          onClick={() => void core.act(() => paused ? core.taskAction(task.name, "resume") : core.startTask(task.name))}
         >
           <Icon name="play" />
         </button>
       )}
     </div>
+  );
+}
+
+function Section({ title, icon, rows, collapsible, short }: {
+  title: string; icon: string; rows: ReactNode[]; collapsible: boolean;
+  /** Keeps a short list in view below the other section (ok-script's trigger section). */
+  short?: boolean;
+}) {
+  const [open, setOpen] = useState(true);
+  const expanded = open || !collapsible;
+  return (
+    <section className={`tsec card${expanded ? "" : " folded"}${short ? " short" : ""}`}>
+      <button type="button" className="tsec-head" aria-expanded={expanded} disabled={!collapsible} onClick={() => setOpen(!open)}>
+        <Icon name={icon} />
+        <b>{title}</b>
+        <span className="count">{rows.length}</span>
+        {collapsible && <span className="chev"><Icon name={expanded ? "chev-u" : "chev-d"} /></span>}
+      </button>
+      {expanded && <div className="tsec-rows">{rows}</div>}
+    </section>
   );
 }
 
@@ -152,8 +142,11 @@ export function TasksPage({
   onBack: () => void;
 }) {
   const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<string | null>(null);
-  const [guideOf, setGuideOf] = useState<string | null>(null);
+  const [filter, setFilterState] = useState(lastFilter);
+  const setFilter = (key: string) => {
+    lastFilter = key;
+    setFilterState(key);
+  };
   const [preferredWidth, setPreferredWidth] = useState(storedTaskListWidth);
   const [layout, setLayout] = useState({ content: window.innerWidth, viewport: window.innerWidth });
   const library = useRef<HTMLDivElement>(null);
@@ -168,21 +161,51 @@ export function TasksPage({
     return () => { observer.disconnect(); window.removeEventListener("resize", measure); };
   }, []);
   const defaultWidth = layout.viewport < 1200 ? TASK_LIST_WIDTH.compact : TASK_LIST_WIDTH.default;
-  const maximum = maximumTaskListWidth(layout.content);
+  // The detail keeps its minimum beside the list and the gap between them.
+  const maximum = maximumTaskListWidth(layout.content - 16);
   const width = Math.min(maximum, preferredWidth ?? defaultWidth);
-  const tabs = useSlider<HTMLDivElement>('[aria-selected="true"]', filter);
-  const everything = libraryGroups(core.tasks, "");
-  const groups = libraryGroups(core.tasks, query).filter((group) => !filter || group.name === filter);
-  const task = core.tasks.find((candidate) => candidate.name === selected) ?? groups[0]?.tasks[0];
-  const total = everything.reduce((count, group) => count + group.tasks.length, 0);
-  const tabList: [string | null, string, number][] = [
-    [null, t("全部"), total],
-    ...everything.map((group): [string, string, number] => [group.name, group.name, group.tasks.length]),
+
+  const { onetime, triggers } = listedTasks(core);
+  const all = [...onetime, ...triggers];
+  const groups = [...new Set(all.map((task) => task.group_name).filter((name): name is string => Boolean(name)))]
+    .sort((a, b) => groupRank(a) - groupRank(b));
+  const tabList: [string, string, number][] = [
+    [KIND_ALL, t("全部"), all.length],
+    ...(onetime.length && triggers.length ? [
+      [KIND_ONETIME, t("按需"), onetime.length] as [string, string, number],
+      [KIND_TRIGGER, t("触发"), triggers.length] as [string, string, number],
+    ] : []),
+    ...groups.map((name): [string, string, number] => [GROUP + name, groupLabel(name), all.filter((task) => task.group_name === name).length]),
   ];
+  const key = tabList.some(([value]) => value === filter) ? filter : KIND_ALL;
+  const tabs = useSlider<HTMLDivElement>('[aria-selected="true"]', key);
+  const needle = query.trim().toLowerCase();
+  const shownOnetime = onetime.filter((task) => matches(task, key, needle));
+  const shownTriggers = triggers.filter((task) => matches(task, key, needle));
+  const shown = [...shownOnetime, ...shownTriggers];
+  const task = shown.find((candidate) => candidate.name === selected) ?? all.find((candidate) => candidate.name === selected) ?? shown[0];
+  const row = (item: TaskPayload) => (
+    <TaskRow key={`${item.group_name}:${item.name}`} core={core} task={item} selected={item === task} onSelect={() => onSelect(item.name)} />
+  );
+  // A group seen as one section takes the group's name, as ok-script titles it.
+  const single = key.startsWith(GROUP) && (shownOnetime.length === 0 || shownTriggers.length === 0);
+  const groupTitle = single ? groupLabel(key.slice(GROUP.length)) : null;
+
   return (
-    <div ref={library} style={{ "--lib-col-w": `${width}px` } as CSSProperties}
-      className={`lib${detailOpen ? " detail-open" : ""}${guideOf === task?.name ? " guide-open" : ""}`}>
-      <nav id="task-library" className="libcol" aria-label={t("任务库")}>
+    <div className="page tasks-page">
+      <PageHead title={t("任务")} aside={
+        <div className="tabs slides" ref={tabs} role="tablist" aria-label={t("任务分组")}>
+          {tabList.map(([value, label, count], index) => (
+            <span key={value} className="tabwrap">
+              {value.startsWith(GROUP) && !tabList[index - 1][0].startsWith(GROUP) && <span className="tabsep" />}
+              <button type="button" role="tab" aria-selected={key === value} onClick={() => setFilter(value)}>
+                {label}
+                <span className="count">{count}</span>
+              </button>
+            </span>
+          ))}
+        </div>
+      }>
         <label className="search">
           <Icon name="search" />
           <input
@@ -193,307 +216,56 @@ export function TasksPage({
             onChange={(event) => setQuery(event.target.value)}
           />
         </label>
-        <div className="tabs slides" ref={tabs} role="tablist" aria-label={t("任务分组")}>
-          {tabList.map(([value, label, count]) => (
-            <button key={label} type="button" role="tab" aria-selected={filter === value} onClick={() => setFilter(value)}>
-              {label}
-              <span className="count">{count}</span>
-            </button>
-          ))}
-        </div>
-        {groups.map((group) => (
-          <div key={group.name}>
-            {!filter && <div className="grp">{group.name}</div>}
-            {group.tasks.map((item) => (
-              <TaskRow key={item.name} core={core} task={item} selected={item.name === task?.name} onSelect={() => onSelect(item.name)} />
-            ))}
-          </div>
-        ))}
-        {groups.length === 0 && <div className="libnote">{t("没有匹配的任务")}</div>}
-      </nav>
-      <TaskListDivider width={width} maximum={maximum} defaultWidth={defaultWidth}
-        onResize={setPreferredWidth} onCommit={rememberTaskListWidth} />
-      {task && (
-        <TaskDetail
-          key={task.name}
-          core={core}
-          task={task}
-          onBack={onBack}
-          readingGuide={guideOf === task.name}
-          onGuide={(open) => setGuideOf(open ? task.name : null)}
-        />
-      )}
+      </PageHead>
+      <div ref={library} style={{ "--lib-col-w": `${width}px` } as CSSProperties}
+        className={`lib${detailOpen ? " detail-open" : ""}`}>
+        <nav id="task-library" className="libcol" aria-label={t("任务库")}>
+          {shownOnetime.length > 0 && (
+            <Section title={groupTitle ?? t("按需任务")} icon="bolt" collapsible={key === KIND_ALL && shownTriggers.length > 0}
+              rows={shownOnetime.map(row)} />
+          )}
+          {shownTriggers.length > 0 && (
+            <Section title={groupTitle ?? t("触发任务")} icon="history" collapsible={key === KIND_ALL && shownOnetime.length > 0}
+              short={shownOnetime.length > 0}
+              rows={shownTriggers.map(row)} />
+          )}
+          {shown.length === 0 && <div className="libnote">{t("没有匹配的任务")}</div>}
+        </nav>
+        <TaskListDivider width={width} maximum={maximum} defaultWidth={defaultWidth}
+          onResize={setPreferredWidth} onCommit={rememberTaskListWidth} />
+        {task && (
+          <TaskDetail key={`${task.group_name}:${task.name}`} core={core} task={task} backLabel={t("任务")} onBack={onBack}
+            context={<DailyMembership core={core} task={task} />} />
+        )}
+      </div>
     </div>
   );
 }
 
-function TaskDetail({
-  core,
-  task,
-  onBack,
-  readingGuide,
-  onGuide,
-}: {
-  core: Core;
-  task: TaskPayload;
-  onBack: () => void;
-  readingGuide: boolean;
-  onGuide: (open: boolean) => void;
-}) {
-  const [history, setHistory] = useState<HistoryRun[] | null>(null);
-  const [confirming, setConfirming] = useState(false);
-  const [editingPlan, setEditingPlan] = useState(false);
+/** Under a daily child's header: its place in 一键完成日常 and whether it takes part. */
+function DailyMembership({ core, task }: { core: Core; task: TaskPayload }) {
   const summary = core.today;
-  const isBatch = task.name === summary?.batch?.name;
-  const item = summary?.items.find((candidate) => candidate.name === task.name);
-  const batch = summary?.batch ? core.tasks.find((candidate) => candidate.name === summary.batch?.name) : undefined;
-  const locked = core.busy || Boolean(task.config_busy);
-  const fields = task.config ?? [];
-  const changed = modifiedFields(fields);
-  const status = statusSummary(task.status_rows ?? []);
-
-  const { history: loadHistory, historyVersion } = core;
-  useEffect(() => {
-    let cancelled = false;
-    loadHistory(task.name, 3).then(
-      (runs) => !cancelled && setHistory(runs),
-      () => !cancelled && setHistory([]),
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [loadHistory, task.name, historyVersion]);
-
-  const row = item && summary ? checklistRows(summary, core.batchRun, core.childStage, core.now).find((candidate) => candidate.item === item) : undefined;
-  const lastRun = history?.[0];
-  const lastOutcome = lastRun ? runOutcome(lastRun) : null;
-  const lastText = { ok: "{when} 完成", stopped: "{when} 已中止", bad: "{when} 未成功" } as const;
-  const last = row ? row.text : lastRun && lastOutcome ? t(lastText[lastOutcome], { when: whenText(lastRun.finished, core.now) }) : t("还没有运行记录");
-  const lastBad = row ? row.tone === "bad" : lastOutcome === "bad";
-  const saveField = (key: string, value: unknown) => core.setConfig(task.name, key, value).then(() => undefined);
-
+  const batch = summary?.batch;
+  const index = summary?.items.findIndex((item) => item.name === task.name) ?? -1;
+  if (!summary || !batch || index < 0) return null;
+  const item = summary.items[index];
   return (
-    <section className="detail" aria-label={coreText(task.name)}>
-      <button type="button" className="crumb back-only" onClick={onBack}>
-        <Icon name="chev-l" />
-        {t("任务")}
+    <div className="dmember">
+      <Icon name="bolt" />
+      <span>{t("一键完成日常 · 第 {n} 项", { n: index + 1 })}</span>
+      <label className="tgl">
+        <Toggle
+          checked={item.enabled}
+          disabled={core.busy}
+          label={t("参与一键日常")}
+          onChange={(value) => void core.act(() => core.setConfig(batch.name, item.key, value))}
+        />
+        {item.enabled ? t("参与") : t("不参与")}
+      </label>
+      <button type="button" className="linkbtn" onClick={() => core.openDaily(item.key)}>
+        {t("在日常中查看")}
+        <Icon name="chev-r" />
       </button>
-      <div className="crumb wide-only">
-        {t("任务")} <Icon name="chev-r" /> {coreText(task.name)}
-      </div>
-      <div className="dhead">
-        <TaskGlyph name={task.name} group={task.group_name} trigger={task.trigger} />
-        <div className="tt">
-          <h1>
-            {coreText(task.name)}
-            {isBatch && <span className="chip info">{t("合辑")}</span>}
-            {task.trigger && <span className="chip ok">{t("触发任务")}</span>}
-          </h1>
-          {task.description && <div className="ds">{coreText(task.description)}</div>}
-          <div className="metas">
-            {item && batch && (
-              <label className="tgl">
-                <Toggle
-                  checked={item.enabled}
-                  disabled={locked}
-                  label={t("参与一键日常")}
-                  onChange={(value) => void core.act(() => core.setConfig(batch.name, item.key, value))}
-                />
-                {t("参与一键日常")}
-              </label>
-            )}
-            {!task.trigger && <span className={lastBad ? "last bad" : "last"}>{`${t("上次运行")} · ${last}`}</span>}
-            {task.waiting_for && <span className="last">{t("等待「{task}」完成后开始", { task: coreText(task.waiting_for) })}</span>}
-          </div>
-        </div>
-        <div className="go">
-          {task.trigger ? (
-            <label className="tgl">
-              <Toggle
-                checked={task.enabled}
-                label={t("启用")}
-                onChange={(value) => void core.act(() => core.taskAction(task.name, value ? "enable" : "disable"))}
-              />
-              {t("启用")}
-            </label>
-          ) : (
-            <>
-              <div>
-                <button
-                  type="button"
-                  className="btn primary"
-                  disabled={Boolean(core.startBlocked)}
-                  onClick={() => void core.act(() => core.startTask(task.name))}
-                >
-                  <Icon name="play" />
-                  {t("开始")}
-                </button>
-                {core.startBlocked && <div className="why">{core.startBlocked}</div>}
-              </div>
-              <Menu
-                items={[
-                  {
-                    label: `${t("全部恢复默认")}…`,
-                    note: changed.length ? t("改过 {count} 项", { count: changed.length }) : t("都是默认值"),
-                    icon: "refresh",
-                    disabled: locked || changed.length === 0,
-                    onSelect: () => setConfirming(true),
-                  },
-                ]}
-              />
-            </>
-          )}
-        </div>
-      </div>
-      {locked && (
-        <div className="lockbar" role="status">
-          <Icon name="lock" />
-          <b>{core.ui?.diagnostic_pause ? t("问题报告期间，设置已锁定") : t("运行中，设置已锁定")}</b>
-          <span>{core.current ? t("{task} 结束后可以修改。", { task: coreText(core.current) }) : t("任务结束后可以修改。")}</span>
-        </div>
-      )}
-      <div className="dgrid">
-        <div>
-          {isBatch && summary ? (
-            <>
-            <DailyProgress core={core} />
-            <details className="daily-settings">
-            <summary>{t("日常设置与参与项目")}</summary>
-            <div className="card form">
-              {summary.items.map((child, index) => (
-                <div key={child.key} className="fld">
-                  <div className="lb">
-                    <span className="order">{index + 1}</span>
-                    {coreText(child.name)}
-                  </div>
-                  <div className="dsc">
-                    {t("是否在一键完成日常中执行{name}。", { name: coreText(child.key) })}
-                  </div>
-                  <div className="ctrl">
-                    <Toggle
-                      checked={child.enabled}
-                      disabled={locked}
-                      label={coreText(child.name)}
-                      onChange={(value) => void core.act(() => core.setConfig(task.name, child.key, value))}
-                    />
-                  </div>
-                </div>
-              ))}
-              {fields
-                .filter((field) => field.key === "启动自动执行日常" || field.key === "完成日常后自动关机")
-                .map((field) => (
-                  <div key={field.key} className="fld">
-                    <div className="lb">{coreText(field.key)}</div>
-                    <div className="dsc">{coreText(field.description)}</div>
-                    <div className="ctrl">
-                      <Toggle
-                        checked={Boolean(field.value)}
-                        disabled={locked}
-                        label={coreText(field.key)}
-                        onChange={(value) => void core.act(() => core.setConfig(task.name, field.key, value))}
-                      />
-                    </div>
-                  </div>
-                ))}
-            </div>
-            </details>
-            </>
-          ) : (
-            <ConfigForm fields={fields} disabled={locked} saveField={saveField}
-              extra={(field) => field.editor === "hunt_plan" ? (
-                <button className="btn sm" onClick={() => setEditingPlan(true)}>{t("编辑刷取方案")}</button>
-              ) : null} />
-          )}
-        </div>
-        <div className="dside">
-          {!task.trigger && (
-            <div className="card sc">
-              <div className="hd">
-                <Icon name="history" />
-                <b>{t("最近运行")}</b>
-              </div>
-              <div className="hist">
-                {history === null && <div className="r">{t("读取中…")}</div>}
-                {history?.length === 0 && <div className="r">{t("还没有运行记录")}</div>}
-                {history?.map((run) => {
-                  const outcome = runOutcome(run);
-                  return (
-                  <div key={`${run.finished}`} className="r">
-                    <span className={outcome === "ok" ? "d" : outcome === "stopped" ? "d off" : "d bad"} />
-                    <span className="w">{whenText(run.finished, core.now)}</span>
-                    <span className={outcome === "bad" ? "s bad" : "s"} title={coreText(run.status)}>
-                      {outcome === "ok" ? t("成功") : outcome === "stopped" ? t("已中止") : t("未成功")}
-                      {run.duration ? ` · ${durationText(run.duration)}` : ""}
-                    </span>
-                    <button type="button" className="linkbtn" aria-label={t("查看这次的日志 {when}", { when: whenText(run.finished, core.now) })} onClick={() => core.openLogs(run)}>
-                      {t("日志")}
-                    </button>
-                  </div>
-                  );
-                })}
-              </div>
-              <button className="linkbtn more" onClick={() => core.navigate("records")}>{t("查看全部运行记录")}</button>
-            </div>
-          )}
-          {(task.status_rows?.length ?? 0) > 0 && (
-            <div className="card sc">
-              {isBatch ? <details className="status-details">
-                <summary>{t(core.batchRun && isActive(core.batchRun.seal) ? "本轮日常诊断详情" : "上次日常运行详情")}</summary>
-                <StatusValues rows={task.status_rows ?? []} />
-              </details> : <>
-              <div className="hd">
-                <Icon name="target" />
-                <b>{t("运行状态")}</b>
-              </div>
-              <div className="status-summary"><StatusValues rows={status.summary} /></div>
-              {status.details.length > 0 && <details className="status-details">
-                <summary>{t("诊断详情（{count} 项）", { count: status.details.length })}</summary>
-                <StatusValues rows={status.details} />
-              </details>}
-              </>}
-            </div>
-          )}
-          {(task.guide || task.instructions) && (
-            <div className="card sc">
-              <div className="hd">
-                <Icon name="info" />
-                <b>{t("使用说明")}</b>
-              </div>
-              <div className="l1">{task.guide ?? task.instructions}</div>
-              {task.guide_id && (
-                <button type="button" className="btn sm guide-open" aria-expanded={readingGuide} onClick={() => onGuide(true)}>
-                  <Icon name="book" />
-                  {t("查看图文说明")}
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-      {editingPlan && <HuntPlanEditor core={core} task={task} onClose={() => setEditingPlan(false)} />}
-      {readingGuide && task.guide_id && <GuidePanel id={task.guide_id} onClose={() => onGuide(false)} />}
-      {confirming && (
-        <ConfirmDialog
-          title={t("把「{task}」的设置全部恢复默认？", { task: coreText(task.name) })}
-          confirm={t("恢复默认")}
-          onCancel={() => setConfirming(false)}
-          onConfirm={() => {
-            setConfirming(false);
-            void core.act(() => core.resetTask(task.name));
-          }}
-        >
-          {(task.hidden_config_count ?? 0) > 0 && (
-            <p className="why">{t("界面上没有显示的高级参数也会一起恢复默认。")}</p>
-          )}
-          <ul>
-            {changed.map((field) => (
-              <li key={field.key}>
-                {coreText(field.key)}{t("：")}{valueText(field.value)} → {valueText(field.default)}
-              </li>
-            ))}
-          </ul>
-        </ConfirmDialog>
-      )}
-    </section>
+    </div>
   );
 }

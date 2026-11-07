@@ -1,4 +1,4 @@
-// The 今日 page: what each checklist row and the hero card say, before and during a run.
+// 一键完成日常 (the 日常 page): what each run-order row and the progress card say, before and during a run.
 import { durationText, whenText } from "./format.ts";
 import { coreText, t } from "./i18n.ts";
 import { type ChildRun, type Seal, isActive, runOutcome, sealOf } from "./run.ts";
@@ -21,6 +21,13 @@ export interface BatchRun {
   batch: TaskPayload;
   seal: Seal;
   runs: Map<string, ChildRun>;
+}
+
+/** The child the daily run is on now, by task name; null when the run is not active. */
+export function liveChild(summary: TodaySummary | null, run: BatchRun | null): string | null {
+  if (!summary || !run || !isActive(run.seal)) return null;
+  const key = String(run.batch.info["当前子任务"] ?? "");
+  return summary.items.find((item) => item.key === key)?.name ?? null;
 }
 
 /** Participation follows the editable task config, including a just-saved response. */

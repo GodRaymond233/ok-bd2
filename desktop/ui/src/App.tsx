@@ -20,7 +20,7 @@ import { captureSummary, type Notice, noticeFromEvent } from "./state.ts";
 import { TasksPage } from "./TasksPage.tsx";
 import { TemplatesPage } from "./TemplatesPage.tsx";
 import { ToolsPage } from "./ToolsPage.tsx";
-import { TodayPage } from "./TodayPage.tsx";
+import { DailyPage, OVERVIEW } from "./DailyPage.tsx";
 import { type BatchRun, withBatchConfig } from "./today.ts";
 import type {
   CaptureUi,
@@ -42,7 +42,7 @@ declare global {
   }
 }
 
-export type Page = "today" | "tasks" | "records" | "logs" | "scripts" | "templates" | "tools" | "device" | "settings" | "report";
+export type Page = "daily" | "tasks" | "records" | "logs" | "scripts" | "templates" | "tools" | "device" | "settings" | "report";
 
 export interface Core {
   ui: CaptureUi | null;
@@ -95,7 +95,10 @@ export interface Core {
   language: LanguagePreference;
   setLanguage: (language: LanguagePreference) => Promise<void>;
   navigate: (page: Page) => void;
+  /** 任务, showing this task; 一键完成日常 itself opens its own page. */
   openTask: (name: string) => void;
+  /** 一键完成日常, showing this child (by its key), or the run as a whole. */
+  openDaily: (key?: string) => void;
   /** The logs page, showing only this run when given. */
   openLogs: (run: HistoryRun | null) => void;
 }
@@ -107,19 +110,25 @@ const CAPTURE_EVENTS = new Set(["starting_emulator", "starter_wait", "adb_device
 // The run bar already shows what runs and for how long; the details open on request.
 const initialDockExpanded = () => storedDockExpanded() ?? false;
 
+// The sidebar's sections follow ok-script 3's (ok/ui/qt/MainWindow.py): 运行, 游戏, 开发, with
+// 设置 and the report pinned to the bottom.
 const NAV: { page: Page; label: string; icon: string }[] = [
-  { page: "today", label: "今日", icon: "today" },
+  { page: "daily", label: "日常", icon: "bolt" },
   { page: "tasks", label: "任务", icon: "tasks" },
   { page: "records", label: "记录", icon: "history" },
   { page: "logs", label: "日志", icon: "logs" },
-  { page: "tools", label: "工具", icon: "target" },
+];
+const NAV_GAME: typeof NAV = [
+  { page: "device", label: "设备", icon: "device" },
 ];
 const NAV_TOOLS: typeof NAV = [
+  { page: "tools", label: "工具", icon: "target" },
+];
+const NAV_SCRIPTS: typeof NAV = [
   { page: "scripts", label: "脚本", icon: "script" },
   { page: "templates", label: "模板", icon: "image" },
 ];
 const NAV_PINNED: typeof NAV = [
-  { page: "device", label: "设备", icon: "device" },
   { page: "settings", label: "设置", icon: "settings" },
   { page: "report", label: "问题报告", icon: "report" },
 ];
@@ -138,7 +147,7 @@ export function App() {
   const [eventsConnected, setEventsConnected] = useState(false);
   const [everConnected, setEverConnected] = useState(false);
   const [toast, setToast] = useState<Notice | null>(null);
-  const [page, setPage] = useState<Page>("today");
+  const [page, setPage] = useState<Page>("daily");
   const [language, setLanguageChoice] = useState<LanguagePreference>(languagePreference);
   const [shownLanguage, setShownLanguage] = useState<Language>(currentLanguage);
   const rail = useSlider<HTMLElement>('.nav[aria-current="page"]', `${page}:${shownLanguage}`);
@@ -153,6 +162,8 @@ export function App() {
   }, []);
   const [selectedTask, setSelectedTask] = useState<string | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
+  const [dailySelected, setDailySelected] = useState<string | null>(null);
+  const [dailyDetailOpen, setDailyDetailOpen] = useState(false);
   const [now, setNow] = useState(() => Date.now() / 1000);
   const [historyVersion, setHistoryVersion] = useState(0);
   const [dockName, setDockName] = useState<string | null>(null);
@@ -497,11 +508,25 @@ export function App() {
       if (target === "tasks") {
         setDetailOpen(false);
       }
+      if (target === "daily") {
+        setDailyDetailOpen(false);
+      }
     },
     openTask: (name) => {
+      if (name === today?.batch?.name) {
+        setDailySelected(OVERVIEW);
+        setDailyDetailOpen(true);
+        setPage("daily");
+        return;
+      }
       setSelectedTask(name);
       setDetailOpen(true);
       setPage("tasks");
+    },
+    openDaily: (key) => {
+      setDailySelected(key ?? OVERVIEW);
+      setDailyDetailOpen(key !== undefined);
+      setPage("daily");
     },
   };
 
@@ -565,7 +590,18 @@ export function App() {
       content = <SettingsPage core={core} />;
       break;
     default:
-      content = <TodayPage core={core} />;
+      content = (
+        <DailyPage
+          core={core}
+          selected={dailySelected}
+          detailOpen={dailyDetailOpen}
+          onSelect={(key) => {
+            setDailySelected(key);
+            setDailyDetailOpen(true);
+          }}
+          onBack={() => setDailyDetailOpen(false)}
+        />
+      );
   }
 
   return (
@@ -630,8 +666,13 @@ export function App() {
               <div className="ver">{info ? versionText(info.core_version) : "…"}</div>
             </span>
           </div>
+          <div className="nav-sec">{t("运行")}</div>
           {NAV.map(navItem)}
-          {info?.custom_scripts && <div className="nav-group">{NAV_TOOLS.map(navItem)}</div>}
+          <div className="nav-sec">{t("游戏")}</div>
+          {NAV_GAME.map(navItem)}
+          <div className="nav-sec">{t("开发")}</div>
+          {NAV_TOOLS.map(navItem)}
+          {info?.custom_scripts && NAV_SCRIPTS.map(navItem)}
           <div className="foot">{NAV_PINNED.map(navItem)}</div>
         </nav>
         <RailDivider width={visibleRailWidth} maximum={railMaximum} onResize={setRailWidth} onCommit={rememberRailWidth} />
