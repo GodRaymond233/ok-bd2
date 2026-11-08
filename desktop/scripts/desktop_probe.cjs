@@ -47,8 +47,10 @@ function runner() {
     const report = path.join(out, `probe-${mode}.json`);
     const result = fs.existsSync(report) ? JSON.parse(fs.readFileSync(report, "utf8")) : { error: "no report" };
     const passed = run.status === 0 && result.passed === true;
-    results.push({ mode, passed, exitCode: run.status, checks: result.checks?.length ?? 0, error: result.error ?? null });
-    console.log(`${passed ? "ok  " : "FAIL"} ${mode}: ${result.checks?.length ?? 0} checks${result.error ? ` (${result.error})` : ""}`);
+    const skipped = result.skipped ?? [];
+    results.push({ mode, passed, exitCode: run.status, checks: result.checks?.length ?? 0, skipped, error: result.error ?? null });
+    const skippedText = skipped.length ? `, skipped: ${skipped.map((item) => `${item.name} (${item.reason})`).join("; ")}` : "";
+    console.log(`${passed ? "ok  " : "FAIL"} ${mode}: ${result.checks?.length ?? 0} checks${skippedText}${result.error ? ` (${result.error})` : ""}`);
   }
   const passed = results.every((result) => result.passed);
   fs.writeFileSync(path.join(out, "desktop-probe.json"), JSON.stringify({ passed, results }, null, 2));
@@ -73,7 +75,7 @@ function probe() {
     "--core-cwd", ROOT,
     "--user-data", path.join(fixture, "shell-data"),
   );
-  const result = { mode, checks: [] };
+  const result = { mode, checks: [], skipped: [] };
   const callbacks = new Map();
   const delivered = [];
   const dialogs = [];
@@ -152,6 +154,8 @@ function probe() {
     result.checks.push({ name, passed: Boolean(value) });
     assert(value, name);
   };
+  // A check this machine cannot make. The summary lists it, so a pass does not hide it.
+  const skip = (name, reason) => result.skipped.push({ name, reason });
   const api = (url, body) =>
     js(`fetch(${JSON.stringify(url)},${body === undefined ? "{}" : JSON.stringify({
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
@@ -331,7 +335,8 @@ function probe() {
     failToggle = false;
     delivered.length = shown;
 
-    // Window discovery may already find a game; the connection test starts with an idle runner.
+    // The probe core reports no game window even when one is open (desktop_probe_core.py);
+    // the connection test starts with an idle runner.
     await api("/api/probe/current-task", { name: null, running: false });
     await until(() => js("document.querySelector('[data-action=connect-game]')?.disabled===false"), "home connection button");
     fs.writeFileSync(path.join(out, "home-connection.png"), (await win.webContents.capturePage()).toPNG());
@@ -383,21 +388,26 @@ function probe() {
     await delay(400);
 
     // Copy buttons (report, logs, OCR text): the page may write the clipboard, never read it.
+    // Electron's clipboard methods return Promises. Only text is saved and put back.
     const savedClipboard = await clipboard.readText();
     try {
-      clipboard.writeText("okbd2-native-probe");
-      result.nativeClipboardAvailable = clipboard.readText() === "okbd2-native-probe";
+      await clipboard.writeText("okbd2-native-probe");
+      // Where even the shell cannot read back its own write, only the permission is checked.
+      result.nativeClipboardAvailable = (await clipboard.readText()) === "okbd2-native-probe";
       win.webContents.focus();
       // As a button click: with a user gesture, which is what makes Electron ask the shell.
       const written = await win.webContents.executeJavaScript("navigator.clipboard.writeText('okbd2-probe').then(() => 'ok', (error) => String(error))", true);
+      result.clipboardWrite = written;
       check("core pages receive clipboard-write permission", written === "ok");
       if (result.nativeClipboardAvailable) {
-        await until(() => clipboard.readText() === "okbd2-probe", "clipboard write visible", 30);
+        await until(async () => (await clipboard.readText()) === "okbd2-probe", "clipboard write visible", 30);
         check("clipboard contents match the page write", true);
+      } else {
+        skip("clipboard contents match the page write", "the shell cannot read back its own clipboard write");
       }
       check("core pages cannot read the clipboard", await js("navigator.clipboard.readText().then(() => false, () => true)"));
     } finally {
-      clipboard.writeText(savedClipboard);
+      await clipboard.writeText(savedClipboard).catch((error) => console.error("probe: clipboard not restored", error));
     }
 
     await api(`/api/settings/${encodeURIComponent("Notification")}/config`, { key: "System Notification", value: true });
