@@ -405,7 +405,7 @@ async function checkPageInterfaces(): Promise<void> {
 async function checkPageNavigation(): Promise<void> {
   const pages: { page: string; heading: string | null; passed: boolean }[] = [];
   smoke.pages = pages;
-  for (const label of ["任务", "记录", "日志", "设备", "设置", "问题报告", "今日"]) {
+  for (const label of ["任务", "记录", "日志", "设备", "设置", "问题报告", "日常"]) {
     if (!mainWindow || mainWindow.isDestroyed()) {
       throw new Error("Client window disappeared during page checks");
     }
