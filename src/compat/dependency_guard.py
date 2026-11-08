@@ -33,10 +33,8 @@ CORE_MODULE_PACKAGES = {
     "onnxocr": "onnxocr-ppocrv5",
 }
 
-# 只有所选界面模式真正需要的包才算核心依赖：Qt 窗口需要 PySide6，
-# 桌面客户端的服务模式需要本机接口栈，二者互不要求。
+# Electron 的自动化核心只需要本机接口栈。
 UI_MODULE_PACKAGES = {
-    "qt": {"PySide6": "PySide6"},
     "service": {"fastapi": "fastapi", "uvicorn": "uvicorn", "wsproto": "wsproto"},
 }
 

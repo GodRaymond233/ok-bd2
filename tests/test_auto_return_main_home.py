@@ -142,7 +142,7 @@ class AutoReturnMainHomeTest(unittest.TestCase):
         task = object.__new__(BaseBD2Task)
         task.config = {}
         task.info_set = lambda *_args: None
-        task._ocr_boxes = lambda *_args, **_kwargs: []
+        task._bd2_ocr_boxes = lambda *_args, **_kwargs: []
         task._read_home_confirmation_signals = lambda *_args: (False, 0, 0.0, "")
         house = MatchResult(0.95, (40, 20), (20, 20))
         task._match_house_button = lambda _frame: house
@@ -177,7 +177,9 @@ class AutoReturnMainHomeTest(unittest.TestCase):
                         return left if relative_roi == HOME_LEFT_COLUMN_OCR_RELATIVE_ROI else gacha
 
                     task._quick_vision = lambda: SimpleNamespace(ocr_text=read_text)
-                    task._ocr_boxes = Mock(return_value=[SimpleNamespace(name="抽抽乐 我的小屋")])
+                    task._bd2_ocr_boxes = Mock(
+                        return_value=[SimpleNamespace(name="抽抽乐 我的小屋")]
+                    )
                     task._match_house_button = Mock(return_value=None)
                     self.assertEqual((expected, False), task._home_scan(frame))
                     self.assertEqual(HOME_LEFT_COLUMN_OCR_RELATIVE_ROI, reads[0])
@@ -200,7 +202,7 @@ class AutoReturnMainHomeTest(unittest.TestCase):
                     return "抽抽乐"
 
                 task._quick_vision = lambda: SimpleNamespace(ocr_text=read_text)
-                task._ocr_boxes = lambda *_args, **_kwargs: []
+                task._bd2_ocr_boxes = lambda *_args, **_kwargs: []
                 task._sleep_after_recognition = lambda: None
                 self.assertEqual(clears, task.auto_return_main_home())
                 self.assertEqual([HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT], clicks)

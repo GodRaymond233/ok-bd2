@@ -1,4 +1,3 @@
-import threading
 import types
 import unittest
 from dataclasses import replace
@@ -484,29 +483,6 @@ class GameWindowWaitTest(unittest.TestCase):
                 self.assertFalse(result)
                 self.assertLess(elapsed, 11)
                 events.emit.assert_called_with(True, None, 0)
-
-
-class StarterWaitUiTest(unittest.TestCase):
-    def test_update_message_stops_countdown_and_cancel_only_sets_event(self):
-        from src.compat.starter_wait_ui import show_starter_wait_status
-
-        cancel = threading.Event()
-        dialog = Mock(spec=["restart_countdown", "loading_label", "widget", "width"])
-        dialog.width.return_value = 1000
-        dialog.loading_label.heightForWidth.return_value = 76
-        window = types.SimpleNamespace(emulator_starting_dialog=dialog)
-        with patch("qfluentwidgets.PushButton") as button_cls:
-            show_starter_wait_status(window, "游戏正在解压\n已等待 600 秒", cancel)
-            show_starter_wait_status(window, "游戏正在校验", cancel)
-        button_cls.assert_called_once()
-        dialog.restart_countdown.assert_called_with(0)
-        dialog.loading_label.setText.assert_called_with("游戏正在校验")
-        callback = button_cls.return_value.clicked.connect.call_args.args[0]
-        callback()
-        self.assertTrue(cancel.is_set())
-        dialog.loading_label.setText.reset_mock()
-        show_starter_wait_status(window, "过期消息", cancel)
-        dialog.loading_label.setText.assert_not_called()
 
 
 if __name__ == "__main__":

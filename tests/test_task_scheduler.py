@@ -5,7 +5,6 @@ import tempfile
 import unittest
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import patch
 
 from src.tasks import auto_scheduler, scheduler
 from src.tasks.DailyBatchTask import DailyBatchChild, DailyBatchTask
@@ -114,7 +113,6 @@ class TaskScheduleStoreTest(unittest.TestCase):
 
     def test_collection_scope_change_releases_only_success_cooldown(self):
         from src.tasks.map_trade.collection_selection import COLLECTION_CARD_NAMES
-        from src.ui.quest_cards import meta_text, seal_state
 
         now = _beijing_ts(2026, 10, 20, 12)
         history = RunHistoryStore(os.path.join(self.dir, "history.json"))
@@ -137,9 +135,6 @@ class TaskScheduleStoreTest(unittest.TestCase):
         self.assertTrue(auto_scheduler._any_batch_child_due(
             batch, executor, history, reloaded, now=now,
         ))
-        with patch("time.time", return_value=now):
-            self.assertEqual("idle", seal_state(task, store=history))
-            self.assertNotIn("本周跑图已完成", meta_text(task, store=history))
         reloaded.delay_after_record(task.name, False, history, now=now)
         self.assertFalse(reloaded.is_due(task.name, now=now, scope=configuration_scope(task)))
         self.assertTrue(reloaded.is_due(task.name, now=now + 1800,

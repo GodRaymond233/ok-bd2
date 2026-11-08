@@ -1,17 +1,14 @@
 import json
 import unittest
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from src.debug_profile import (
-    DebugGlobals,
     configure_debug_profile,
     fetch_latest_release_tag,
     next_development_version,
     release_version,
     resolve_latest_release_tag,
 )
-from src.globals import Globals
 
 
 class _Response:
@@ -73,24 +70,8 @@ class DebugProfileTest(unittest.TestCase):
         )
         self.assertTrue(config["debug"])
         self.assertEqual("0.1.22", config["version"])
-        self.assertEqual("ok-bd2 0.1.22 开发版", config["debug_window_title"])
-        self.assertEqual(["src.debug_profile", "DebugGlobals"], config["my_app"])
-
-    def test_debug_globals_overrides_ok_script_debug_suffix_title(self):
-        debug_globals = DebugGlobals.__new__(DebugGlobals)
-        titles = []
-        main_window = SimpleNamespace(setWindowTitle=titles.append)
-
-        with (
-            patch.object(Globals, "on_show_main_window"),
-            patch(
-                "ok.og.config",
-                {"debug_window_title": "ok-bd2 0.1.22 开发版"},
-            ),
-        ):
-            DebugGlobals.on_show_main_window(debug_globals, main_window)
-
-        self.assertEqual(["ok-bd2 0.1.22 开发版"], titles)
+        self.assertEqual("ok-bd2 0.1.22 开发版", config["gui_title"])
+        self.assertEqual(["src.globals", "Globals"], config["my_app"])
 
 
 if __name__ == "__main__":

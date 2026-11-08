@@ -47,7 +47,9 @@ class StartApplicationTest(unittest.TestCase):
                 )
                 self.assertIn("start_application(", source)
 
-    def guarded_startup(self, events, *, acquired=True, legacy=None, argv=("main.py",)):
+    def guarded_startup(
+        self, events, *, acquired=True, legacy=None, argv=("main.py", "--headless")
+    ):
         """Patch the executor guard so tests never take a real session lock."""
         legacy_guard = SimpleNamespace(blocking_message=lambda force=False: legacy)
         holder = None if acquired else SimpleNamespace(describe=lambda: "进程 7（qt）")
@@ -104,12 +106,12 @@ class StartApplicationTest(unittest.TestCase):
 
         self.assertEqual(
             [
-                ("lock", "debug"),
+                ("lock", "headless"),
                 "dependencies",
                 "load_config",
                 ("configure", {"debug": False}),
                 "guards",
-                ("ok_init", {"debug": False, "check_mutex": False}),
+                ("ok_init", {"debug": False, "use_gui": False, "check_mutex": False}),
                 "start",
             ],
             events,
@@ -119,7 +121,6 @@ class StartApplicationTest(unittest.TestCase):
 
     def test_refused_lock_stops_before_dependencies_and_runtime(self):
         for argv, mode, dialog in (
-            (("main.py",), "qt", True),
             (("main.py", "--headless", "-t", "1"), "headless", False),
         ):
             with self.subTest(mode=mode):
@@ -137,17 +138,24 @@ class StartApplicationTest(unittest.TestCase):
                 self.assertNotIn("ok_init", kinds)
                 self.assertEqual("dialog" in kinds, dialog)
 
-    def test_running_legacy_instance_is_reported_but_not_terminated(self):
-        events = []
-        self.guarded_startup(events, legacy="检测到正在运行的旧版 ok-bd2（进程 40）。")
-        with patch.dict(sys.modules, {"ok": self.fake_ok(events)}):
-            startup.start_application(lambda: {"debug": False})
-        dialogs = [
-            event[1] for event in events if isinstance(event, tuple) and event[0] == "dialog"
-        ]
-        self.assertEqual(len(dialogs), 1)
-        self.assertIn("不会开始任务", dialogs[0])
-        self.assertEqual(events[-1], "start")
+    def test_graphical_entrypoints_launch_electron_without_loading_the_core(self):
+        for script, configure, expected in (
+            ("main.py", None, []),
+            ("main_debug.py", Mock(), ["--debug"]),
+        ):
+            with self.subTest(script=script):
+                load_config = Mock()
+                with (
+                    patch.object(sys, "argv", [script]),
+                    patch("src.desktop.bootstrap.main", return_value=10) as desktop,
+                    patch("src.executor_guard.acquire_executor_lock") as lock,
+                    self.assertRaises(SystemExit) as raised,
+                ):
+                    startup.start_application(load_config, configure)
+                self.assertEqual(raised.exception.code, 10)
+                desktop.assert_called_once_with(expected)
+                load_config.assert_not_called()
+                lock.assert_not_called()
 
     def test_service_flag_selects_the_desktop_core_without_qt(self):
         events = []
@@ -180,8 +188,8 @@ class StartApplicationTest(unittest.TestCase):
         parsed = startup.parse_entry_arguments(["-h", "-t", "1", "-e"])
         self.assertEqual(startup.entry_mode(parsed, None), "headless")
         parsed = startup.parse_entry_arguments([])
-        self.assertEqual(startup.entry_mode(parsed, None), "qt")
-        self.assertEqual(startup.entry_mode(parsed, lambda config: None), "debug")
+        self.assertEqual(startup.entry_mode(parsed, None), "desktop")
+        self.assertEqual(startup.entry_mode(parsed, lambda config: None), "desktop")
 
 
 if __name__ == "__main__":

@@ -2209,7 +2209,7 @@ class PVPTaskHelperTest(unittest.TestCase):
                 return [SimpleNamespace(name="离开", x=300, y=20, width=80, height=40)]
             return []
 
-        task._ocr_boxes = fake_ocr
+        task._bd2_ocr_boxes = fake_ocr
         task.operate_click = lambda x, y, after_sleep=0.0: clicks.append(
             (x, y, after_sleep)
         )
@@ -2233,7 +2233,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         task.config = {}
         task.info_set = lambda *_args, **_kwargs: None
         task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        task._ocr_boxes = lambda _frame, name, roi=None: (
+        task._bd2_ocr_boxes = lambda _frame, name, roi=None: (
             [SimpleNamespace(name="离开", x=70, y=15, width=100, height=30)]
             if name == "pvp_leave_success"
             else []
@@ -2256,7 +2256,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         task.config = {}
         task.info_set = lambda *_args, **_kwargs: None
         task.capture_frame = lambda: np.zeros((720, 1280, 3), dtype=np.uint8)
-        task._ocr_boxes = lambda _frame, name, roi=None: (
+        task._bd2_ocr_boxes = lambda _frame, name, roi=None: (
             [SimpleNamespace(name="离开", x=200, y=10, width=60, height=20)]
             if name == "pvp_leave_failure"
             else []
@@ -2439,7 +2439,7 @@ class PVPTaskHelperTest(unittest.TestCase):
             ocr_calls.append((name, roi))
             return [SimpleNamespace(name="确认", x=900, y=1000, width=120, height=40)]
 
-        task._ocr_boxes = fake_ocr
+        task._bd2_ocr_boxes = fake_ocr
         task.sleep = lambda *_args, **_kwargs: self.fail("confirm should be immediate")
 
         self.assertEqual(
@@ -2455,7 +2455,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
         task._match = lambda _frame, _spec: SimpleNamespace(score=0.1)
         task._passes = lambda _result, _spec: False
-        task._ocr_boxes = lambda *_args, **_kwargs: [
+        task._bd2_ocr_boxes = lambda *_args, **_kwargs: [
             SimpleNamespace(name="确定", x=850, y=980, width=220, height=60)
         ]
         task.sleep = lambda *_args, **_kwargs: self.fail("determine should be immediate")
@@ -2472,7 +2472,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         task.capture_frame = lambda: np.zeros((1440, 2560, 3), dtype=np.uint8)
         task._match = lambda _frame, _spec: SimpleNamespace(score=0.95)
         task._passes = lambda _result, _spec: True
-        task._ocr_boxes = lambda *_args, **_kwargs: self.fail(
+        task._bd2_ocr_boxes = lambda *_args, **_kwargs: self.fail(
             "confirm OCR should not run after hub is detected"
         )
         task.sleep = lambda *_args, **_kwargs: self.fail("hub should be immediate")
@@ -2495,7 +2495,7 @@ class PVPTaskHelperTest(unittest.TestCase):
                 return [SimpleNamespace(name="离开", x=70, y=15, width=100, height=30)]
             return []
 
-        task._ocr_boxes = fake_ocr
+        task._bd2_ocr_boxes = fake_ocr
         task.sleep = lambda *_args, **_kwargs: self.fail("leave should be immediate")
 
         self.assertEqual(
@@ -2525,7 +2525,7 @@ class PVPTaskHelperTest(unittest.TestCase):
                 return [SimpleNamespace(name="离开", x=70, y=15, width=100, height=30)]
             return []
 
-        task._ocr_boxes = fake_ocr
+        task._bd2_ocr_boxes = fake_ocr
         sleeps = []
         task.sleep = sleeps.append
 
@@ -3224,7 +3224,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         task.config = {}
         task.info_set = lambda *_args, **_kwargs: None
         task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        task._ocr_boxes = lambda *_args, **_kwargs: [
+        task._bd2_ocr_boxes = lambda *_args, **_kwargs: [
             SimpleNamespace(name="自动战斗", x=10, y=20, width=30, height=40)
         ]
         clicks = []

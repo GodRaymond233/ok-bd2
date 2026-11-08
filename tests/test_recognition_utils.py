@@ -296,9 +296,9 @@ class OcrUtilsTest(unittest.TestCase):
         boundaries = (
             (BargainLevelTask._ocr_text, {"name": "取消"}),
             (FreeGachaTask._gacha_ocr_boxes, {"name": "取消"}),
-            (PVPTask._ocr_boxes, {"name": "取消"}),
+            (PVPTask._bd2_ocr_boxes, {"name": "取消"}),
             (QuickSuppressionTask._ocr_text, {"name": "取消"}),
-            (SquareGoddessTask._ocr_boxes, {"name": "取消"}),
+            (SquareGoddessTask._bd2_ocr_boxes, {"name": "取消"}),
             (SquareGoddessTask._observe_goddess_navigation, {}),
             (TaskVisionMixin._ocr_text, {"name": "取消"}),
             (AutoLoginTask._login_page_ocr, {}),

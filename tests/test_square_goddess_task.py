@@ -741,7 +741,7 @@ class SquareGoddessEntryTest(StageHistoryTestCase):
                 x=width * (862 / 1920), y=height * (147 / 1080), width=120, height=30,
             )
             boxes = [task_label, prompt]
-            task._ocr_boxes = lambda *args, **kwargs: boxes
+            task._bd2_ocr_boxes = lambda *args, **kwargs: boxes
             self.assertEqual(
                 (round(prompt.x + 60), round(prompt.y + 15)),
                 task._goddess_prayer_signals(frame)[0],

@@ -1,26 +1,10 @@
-"""Hide maintenance config rows from task cards (script-author tuning knobs).
+"""Hide source-level tuning parameters from desktop task configuration.
 
-User requests (2026-08-24): the daily-use expand views should show
-action-relevant rows only.  Recognition thresholds, wait/retry budgets,
-pixel ratios, keyword hit counts, scroll counts and test-harness toggles are
-tuning the user prefers to change in the source rather than in the UI.
-This hides them through the framework's own channel —
-``config_type[key]['hidden']`` makes ``ConfigCard.__initWidget`` skip the row
-at creation — and additionally strips the key from every ``sub_configs``
-rule, because the framework's recursive sub-config creation path does not
-consult ``hidden``; a key that is no longer a sub-config key falls back to
-the top-level loop, which does.
-
-Nothing is deleted: config values keep their saved or default state and the
-tasks keep reading them.  Removing a token from ``HIDDEN_CONFIG_TOKENS``
-restores the rows on the next start.
+Values remain saved and available to tasks. The service omits fields marked
+``hidden`` and their references in nested configuration rules.
 """
 
 from __future__ import annotations
-
-from ok import Logger
-
-logger = Logger.get_logger(__name__)
 
 # "秒数" covers 等待秒数/确认秒数/间隔秒数/宽限秒数; "次数" covers 重试次数/
 # 滚轮次数/最多点击次数.
@@ -78,24 +62,3 @@ def mark_hidden_config_keys(task) -> int:
             if len(filtered) != len(rule_keys):
                 rules[value] = filtered
     return len(hidden)
-
-
-def install_hide_config_rows() -> bool:
-    """Mark token-matching configs hidden before any TaskCard is built."""
-    from ok.ui.qt.tasks.TaskCard import TaskCard
-
-    if getattr(TaskCard, "_bd2_hidden_config_rows_installed", False):
-        return False
-
-    original_init = TaskCard.__init__
-
-    def hidden_rows_init(self, task, onetime):
-        try:
-            mark_hidden_config_keys(task)
-        except Exception as exc:  # hiding must never break the card
-            logger.info(f"hide config rows skipped: {exc!r}")
-        original_init(self, task, onetime)
-
-    TaskCard.__init__ = hidden_rows_init
-    TaskCard._bd2_hidden_config_rows_installed = True
-    return True

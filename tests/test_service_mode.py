@@ -107,7 +107,7 @@ def run_isolated(script, **env):
 
 class ServiceModeWithoutQtTest(unittest.TestCase):
     def test_every_registered_task_is_created_without_importing_qt(self):
-        result = run_isolated(NO_QT_TASKS_SCRIPT, OK_BD2_UI="service")
+        result = run_isolated(NO_QT_TASKS_SCRIPT)
         self.assertEqual(result.returncode, 0, result.stderr[-4000:])
         line = next(line for line in result.stdout.splitlines() if line.startswith("CREATED "))
         _, count, names = line.split(" ", 2)
@@ -135,16 +135,17 @@ class ServiceModeWithoutQtTest(unittest.TestCase):
         for expected in ("app", "config_store", "events", "protocol", "security", "service"):
             self.assertIn(f"src.desktop.{expected}", imported)
 
-    def test_qt_mode_stays_the_default(self):
+    def test_only_the_electron_service_mode_is_available(self):
         from src.ui_mode import ui_mode
 
         environment = dict(os.environ)
         environment.pop("OK_BD2_UI", None)
         with patch.dict(os.environ, environment, clear=True):
-            self.assertEqual(ui_mode(), "qt")
-        with patch.dict(os.environ, {"OK_BD2_UI": "web"}):
-            with self.assertRaises(ValueError):
-                ui_mode()
+            self.assertEqual(ui_mode(), "service")
+        for mode in ("qt", "web"):
+            with patch.dict(os.environ, {"OK_BD2_UI": mode}):
+                with self.assertRaises(ValueError):
+                    ui_mode()
 
 
 if __name__ == "__main__":

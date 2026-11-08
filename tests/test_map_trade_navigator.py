@@ -1705,33 +1705,38 @@ class NavigatorTest(unittest.TestCase):
         from onnxocr.onnx_paddleocr import ONNXPaddleOcr
 
         from src.tasks.BaseBD2Task import BaseBD2Task
+        from src.tasks.PVPTask import PVPTask
+        from src.tasks.SquareGoddessTask import SquareGoddessTask
 
         engine = ONNXPaddleOcr(use_angle_cls=False, use_npu=False, use_openvino=True)
-        task = object.__new__(BaseBD2Task)
-        task._executor = SimpleNamespace(
-            paused=False, debug=False, config={"ocr": {"default": {"lib": "onnxocr"}}},
-            blocked_by_pause=lambda: False,
-            ocr_lib=lambda _: engine, ocr_po_translation=None, text_fix={},
-        )
-        task.config = {}
-        task.info_set = Mock()
-        task.log_info = task.log_warning = Mock()
-        task.log_debug = None
-        task.ocr_default_threshold = 0.2
-        task.ocr_target_height = 0
-        vision = Vision(task)
-        navigator = Navigator(task, vision)
         source = load_bgr(
             Path(__file__).parent / "fixtures/map_trade/video_fhd/field_retreat_confirm.png",
         )
-        for width, height in ((1280, 720), (1920, 1080), (2560, 1440)):
-            with self.subTest(size=(width, height)):
-                boxes = vision.ocr_boxes(cv2.resize(source, (width, height)), "采集战斗逃跑")
-                self.assertEqual(3, sum(box.name == "逃跑" for box in boxes))
-                stage, point = navigator._field_retreat_action(boxes)
-                self.assertEqual("confirm", stage)
-                self.assertAlmostEqual(1060 / 1920, point[0] / width, delta=0.006)
-                self.assertAlmostEqual(635 / 1080, point[1] / height, delta=0.006)
+        for task_type in (BaseBD2Task, PVPTask, SquareGoddessTask):
+            task = object.__new__(task_type)
+            task._executor = SimpleNamespace(
+                paused=False, debug=False, config={"ocr": {"default": {"lib": "onnxocr"}}},
+                blocked_by_pause=lambda: False,
+                ocr_lib=lambda _: engine, ocr_po_translation=None, text_fix={},
+            )
+            task.config = {}
+            task.info_set = Mock()
+            task.log_info = task.log_warning = Mock()
+            task.log_debug = None
+            task.ocr_default_threshold = 0.2
+            task.ocr_target_height = 0
+            vision = Vision(task)
+            navigator = Navigator(task, vision)
+            for width, height in ((1280, 720), (1920, 1080), (2560, 1440)):
+                with self.subTest(task=task_type.__name__, size=(width, height)):
+                    boxes = vision.ocr_boxes(
+                        cv2.resize(source, (width, height)), "采集战斗逃跑", raise_on_error=True,
+                    )
+                    self.assertEqual(3, sum(box.name == "逃跑" for box in boxes))
+                    stage, point = navigator._field_retreat_action(boxes)
+                    self.assertEqual("confirm", stage)
+                    self.assertAlmostEqual(1060 / 1920, point[0] / width, delta=0.006)
+                    self.assertAlmostEqual(635 / 1080, point[1] / height, delta=0.006)
 
     def test_activity_walk_accepts_alias_and_rechecks_arrival_map(self):
         card = CARD_BY_ID["Q_ep7"]

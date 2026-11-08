@@ -152,8 +152,7 @@ class DailyBatchTaskTest(unittest.TestCase):
         ])
 
     def test_weekly_map_collection_card_is_visible_in_daily_group_in_both_modes(self):
-        from qfluentwidgets import FluentIcon
-
+        from src.icons import TaskIcon as FluentIcon
         from src.tasks.debug_registry import install_debug_tasks
 
         for debug in (False, True):

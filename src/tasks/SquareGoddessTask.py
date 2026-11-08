@@ -732,7 +732,7 @@ class SquareGoddessTask(BaseBD2Task):
         return False
 
     def _goddess_prayer_signals(self, frame) -> tuple[tuple[int, int] | None, bool, str]:
-        boxes = self._ocr_boxes(frame, name="女神像许愿")
+        boxes = self._bd2_ocr_boxes(frame, name="女神像许愿")
         text = " ".join(getattr(box, "name", "") for box in boxes if getattr(box, "name", ""))
         prompts = [
             box for box in boxes
@@ -856,7 +856,7 @@ class SquareGoddessTask(BaseBD2Task):
         roi: tuple[int, int, int, int] | None = None,
         ocr_scale: float = 1.0,
     ) -> list[tuple[str, float]]:
-        boxes = self._ocr_boxes(
+        boxes = self._bd2_ocr_boxes(
             frame,
             name=name,
             roi=roi,
@@ -873,7 +873,7 @@ class SquareGoddessTask(BaseBD2Task):
             entries.append((label, confidence))
         return entries
 
-    def _ocr_boxes(
+    def _bd2_ocr_boxes(
         self,
         frame,
         name: str,

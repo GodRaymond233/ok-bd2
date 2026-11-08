@@ -847,12 +847,21 @@ class EventBackpressureTest(unittest.TestCase):
             return buffer
 
         install_events(app, runtime)
+        disconnected = threading.Event()
+
+        async def observed_app(scope, receive, send):
+            await app(scope, receive, send)
+            if scope["type"] == "websocket":
+                disconnected.set()
+
         with (
             patch("src.desktop.events.EventBuffer", side_effect=flooded_buffer),
-            TestClient(app) as client,
+            TestClient(observed_app) as client,
         ):
             with client.websocket_connect("/api/events?session_key=test") as websocket:
                 messages = [websocket.receive_json() for _ in range(6)]
+                websocket.close()
+                self.assertTrue(disconnected.wait(5), "event stream did not finish closing")
         self.assertTrue(buffers[0].closed)
         self.assertEqual([message["event"] for message in messages], ["log"] * 5 + ["task"])
         self.assertTrue(messages[-1]["resync"])

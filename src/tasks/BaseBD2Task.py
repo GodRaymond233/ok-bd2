@@ -635,7 +635,7 @@ class BaseBD2Task(BaseTask):
             self.log_warning(f"自动返回主页：房子模板匹配失败：{exc}")
             return None
 
-    def _ocr_boxes(self, frame, name: str):
+    def _bd2_ocr_boxes(self, frame, name: str):
         try:
             return list(
                 self.ocr(
@@ -661,7 +661,7 @@ class BaseBD2Task(BaseTask):
         if confirmed:
             return True, False
         frame_h, frame_w = frame.shape[:2]
-        boxes = self._ocr_boxes(frame, "自动返回主页")
+        boxes = self._bd2_ocr_boxes(frame, "自动返回主页")
 
         if self._match_house_button(frame) is not None:
             return False, True

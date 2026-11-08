@@ -15,7 +15,6 @@ from src.compat.windows_graphics import WGC_MIN_CAPTURE_SIZE, enable_windows_10_
 from src.game_path import calculate_pc_exe_path
 from src.interaction.BD2Interaction import BD2Interaction
 from src.process_feature import process_feature
-from src.ui_mode import is_qt_mode
 
 # This marker is replaced with the Git tag when PyAppify creates the update
 # repository.  Source checkouts always read the project version from pyproject.
@@ -35,25 +34,7 @@ def runtime_version(project_file: Path | None = None) -> str:
 enable_executor_cleanup()
 enable_windows_10_wgc()
 enable_starter_launch_uri()
-enable_starter_launch_guard(install_ui=is_qt_mode())
-if is_qt_mode():
-    # Qt window patches only; the service mode used by the desktop client must not
-    # import any Qt module.
-    from src.compat.about_tab_layout import install_about_tab_layout
-    from src.compat.launcher_update_notice import install_launcher_update_notice
-    from src.compat.main_window_geometry import install_main_window_geometry_debounce
-    from src.compat.update_card_ui import install_update_card_ui
-    from src.ui.quest_theme import apply_app_font
-    from src.ui.quest_ui import install_quest_ui
-    from src.ui.responsive_task_config import install_responsive_task_config_ui
-
-    apply_app_font()
-    install_main_window_geometry_debounce()
-    install_launcher_update_notice()
-    install_responsive_task_config_ui()
-    install_quest_ui()
-    install_update_card_ui()
-    install_about_tab_layout()
+enable_starter_launch_guard()
 
 DX11_OPTION = "Launch with DX11"
 
@@ -79,7 +60,7 @@ def blur_area(width, height):
 config = {
     "custom_tasks": True,
     "debug": False,
-    "use_gui": True,
+    "use_gui": False,
     "config_folder": "configs",
     "global_configs": [basic_options],
     "blur_area": blur_area,
@@ -187,10 +168,6 @@ config = {
     ],
     "trigger_tasks": [
         ["src.tasks.trigger.AutoLoginTask", "AutoLoginTask"],
-    ],
-    "custom_tabs": [
-        ["src.ui.BD2StatusTab", "BD2StatusTab"],
-        ["src.ui.AutoLoginStatusTab", "AutoLoginStatusTab"],
     ],
     "scene": ["src.scene.BD2Scene", "BD2Scene"],
     "update_pyappify": {

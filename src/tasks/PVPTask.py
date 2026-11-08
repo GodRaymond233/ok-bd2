@@ -990,7 +990,7 @@ class PVPTask(BaseBD2Task):
         ocr_results = []
         matched_point: tuple[float, float] | None = None
         for page_name, ocr_name, roi in targets:
-            boxes = self._ocr_boxes(frame, ocr_name, roi=roi)
+            boxes = self._bd2_ocr_boxes(frame, ocr_name, roi=roi)
             text = " ".join(
                 str(getattr(box, "name", ""))
                 for box in boxes
@@ -1132,7 +1132,7 @@ class PVPTask(BaseBD2Task):
         self,
         frame,
     ) -> tuple[str, tuple[float, float] | None]:
-        boxes = self._ocr_boxes(frame, "PVP 升降级确认")
+        boxes = self._bd2_ocr_boxes(frame, "PVP 升降级确认")
         text = " ".join(
             str(getattr(box, "name", ""))
             for box in boxes
@@ -1521,7 +1521,7 @@ class PVPTask(BaseBD2Task):
         roi: tuple[int, int, int, int] | None = None,
         ocr_scale: float = 1.0,
     ) -> list[tuple[str, float]]:
-        boxes = self._ocr_boxes(
+        boxes = self._bd2_ocr_boxes(
             frame,
             name=name,
             roi=roi,
@@ -1538,7 +1538,7 @@ class PVPTask(BaseBD2Task):
             entries.append((label, confidence))
         return entries
 
-    def _ocr_boxes(
+    def _bd2_ocr_boxes(
         self,
         frame,
         name: str,
@@ -1579,7 +1579,7 @@ class PVPTask(BaseBD2Task):
     ) -> bool:
         """Click the center of a matching OCR box in the current frame."""
         frame = self.capture_frame()
-        boxes = self._ocr_boxes(frame, name=name, roi=roi)
+        boxes = self._bd2_ocr_boxes(frame, name=name, roi=roi)
         left, top, _ = self._roi_frame(frame, roi)
         frame_height, frame_width = frame.shape[:2]
         for box in boxes:

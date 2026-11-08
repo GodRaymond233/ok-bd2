@@ -35,11 +35,11 @@ class FindMissingModulesTest(unittest.TestCase):
             self.assertEqual(packages["uvicorn"], "uvicorn")
             self.assertEqual(packages["wsproto"], "wsproto")
         with patch.dict("os.environ", {"OK_BD2_UI": "qt"}):
-            packages = guard.core_module_packages()
-            self.assertIn("PySide6", packages)
-            self.assertNotIn("fastapi", packages)
+            with self.assertRaises(ValueError):
+                guard.core_module_packages()
         with patch.dict("os.environ", {}, clear=True):
-            self.assertIn("PySide6", guard.core_module_packages())
+            self.assertIn("fastapi", guard.core_module_packages())
+            self.assertNotIn("PySide6", guard.core_module_packages())
 
 
 class ParseLockedVersionsTest(unittest.TestCase):

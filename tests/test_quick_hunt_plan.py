@@ -1,13 +1,10 @@
 import json
 import logging
-import os
 import re
-import tempfile
 import unittest
-from copy import deepcopy
 from threading import RLock
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import cv2
 import numpy as np
@@ -426,90 +423,6 @@ class HuntPlanTest(StageHistoryTestCase):
                     frame[np.all(frame == 245, axis=2)] = (0, 200, 255)
                     expected_pixels = 0
                     self.assertIsNone(task._quick_hunt_free_resource(resource))
-
-
-class HuntEditorTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-        from PySide6.QtWidgets import QApplication
-
-        cls.app = QApplication.instance() or QApplication([])
-
-    def test_config_widget_releases_editors_after_save_cancel_and_error(self):
-        from PySide6.QtCore import QCoreApplication, QEvent, QTimer
-        from PySide6.QtWidgets import QDialog
-
-        from src.ui.quick_hunt_plan_editor import HuntPlanConfigWidget, HuntPlanDialog
-
-        widget = HuntPlanConfigWidget({PLAN_KEY: ""}, None)
-        self.addCleanup(widget.deleteLater)
-        for result in (QDialog.Accepted, QDialog.Rejected, RuntimeError("editor failed")):
-            for _ in range(2):
-                with self.subTest(result=result):
-                    if isinstance(result, Exception):
-                        with patch.object(HuntPlanDialog, "exec", side_effect=result):
-                            with self.assertRaisesRegex(RuntimeError, "editor failed"):
-                                widget.edit()
-                    else:
-                        with patch.object(HuntPlanDialog, "exec", return_value=result):
-                            widget.edit()
-                    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
-                    self.assertEqual([], widget.findChildren(HuntPlanDialog))
-
-        closing_widget = HuntPlanConfigWidget({PLAN_KEY: ""}, None)
-        QTimer.singleShot(0, closing_widget.deleteLater)
-        closing_widget.edit()
-
-    def test_editor_save_cancel_reset_and_running_guard(self):
-        from ok.util.config import Config
-
-        from src.ui.quick_hunt_plan_editor import HuntPlanConfigWidget, HuntPlanDialog
-
-        with tempfile.TemporaryDirectory() as folder:
-            config = Config("hunt", {PLAN_KEY: ""}, folder=folder)
-            original = deepcopy(dict(config))
-            dialog = HuntPlanDialog(config)
-            dialog.add_preset(1)
-            dialog.reserve.setValue(12)
-            self.assertIn("剩余免费米饭：12", dialog.preview_label.text())
-            dialog.reject()
-            self.assertEqual(original, dict(config))
-            dialog.save()
-            saved = Config("hunt", {PLAN_KEY: ""}, folder=folder)
-            book = load_book(saved)
-            self.assertEqual(12, book["plans"][book["active"]]["reserve"])
-            for owner in ("task", "batch"):
-                for running, enabled in ((True, False), (False, True)):
-                    with self.subTest(owner=owner, running=running, enabled=enabled):
-                        batch = SimpleNamespace(
-                            running=owner == "batch" and running,
-                            enabled=owner == "batch" and enabled,
-                        )
-                        task = SimpleNamespace(
-                            running=owner == "task" and running,
-                            enabled=owner == "task" and enabled,
-                            executor=SimpleNamespace(get_task_by_class=Mock(return_value=batch)),
-                        )
-                        locked = HuntPlanDialog(saved, task)
-                        changed_name = f"修改方案-{owner}-{running}-{enabled}"
-                        locked.rename(changed_name)
-                        before = saved[PLAN_KEY]
-                        locked.save()
-                        self.assertEqual(before, saved[PLAN_KEY])
-                        self.assertIn("停止", locked.error.text())
-                        task.running = task.enabled = batch.running = batch.enabled = False
-                        locked.save()
-                        self.assertEqual(changed_name, load_book(saved)["plans"][-1]["name"])
-                        locked.close()
-                        locked.deleteLater()
-            widget = HuntPlanConfigWidget(saved, None)
-            saved.reset_to_default()
-            widget.update_value()
-            self.assertIn("原有刷取设置", widget.title.text())
-            for item in (dialog, widget):
-                item.close()
-                item.deleteLater()
 
 
 if __name__ == "__main__":

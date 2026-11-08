@@ -6,12 +6,7 @@ logger = Logger.get_logger(__name__)
 
 
 class Globals:
-    """Process-wide runtime services, created by ok-script for both Qt and service mode.
-
-    Everything here must work without a GUI event loop: ok-script builds this object
-    from ``my_app`` in the Qt ``App`` and in the windowless ``HeadlessApp`` alike, after
-    ``og.handler`` and ``og.device_manager`` exist.
-    """
+    """Runtime services created by ok-script after its handler and devices exist."""
 
     def __init__(self, exit_event):
         # Flush the bounded diagnostic evidence queue during application shutdown.
@@ -32,22 +27,3 @@ class Globals:
 
     def stop(self):
         self.diagnostic_evidence.stop()
-
-    def on_show_main_window(self, main_window):
-        from src.ui.feedback_report import install_feedback_report
-        from src.ui.fluent_motion import install_fluent_page_transition, install_start_list_motion
-        from src.ui.live_screenshot import install_live_screenshot
-        from src.ui.nav_sections import install_nav_sections
-        from src.ui.quest_theme import apply_app_font
-        from src.ui.responsive_start_tab import install_responsive_start_tab
-
-        apply_app_font()
-
-        install_live_screenshot(main_window.start_tab)
-        install_feedback_report(main_window.start_tab, evidence=self.diagnostic_evidence)
-        # 响应式重排要在 live_screenshot/feedback_report 之后：前者移动
-        # debug 卡片并创建实时截图行，后者往 debug 行追加按钮。
-        install_responsive_start_tab(main_window.start_tab)
-        install_nav_sections(main_window)
-        install_fluent_page_transition(main_window)
-        install_start_list_motion(main_window.start_tab)

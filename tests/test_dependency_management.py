@@ -15,9 +15,9 @@ class DependencyManagementTest(unittest.TestCase):
 
     def test_ok_script_is_consistently_pinned(self):
         dependencies = self.pyproject["project"]["dependencies"]
-        self.assertIn("ok-script[ocr,qt]==2.0.22", dependencies)
-        self.assertIn("ok-script==2.0.22", self.runtime_requirements)
-        self.assertIn("ok-script==2.0.22", self.dev_requirements)
+        self.assertIn("ok-script[ocr]==3.0.4", dependencies)
+        self.assertIn("ok-script==3.0.4", self.runtime_requirements)
+        self.assertIn("ok-script==3.0.4", self.dev_requirements)
         self.assertNotIn("ok-script==1.0.190", self.runtime_requirements)
 
     def test_msvc_runtime_is_consistently_constrained(self):
@@ -46,13 +46,13 @@ class DependencyManagementTest(unittest.TestCase):
 
     def test_native_runtime_versions_match_the_lock(self):
         dependencies = self.pyproject["project"]["dependencies"]
-        self.assertIn("ok-script[ocr,qt]==2.0.22", dependencies)
+        self.assertIn("ok-script[ocr]==3.0.4", dependencies)
         self.assertIn("pyappify==1.0.13", dependencies)
         self.assertIn("msvc-runtime>=14.44.35112", dependencies)
         self.assertIn("openvino==2026.4.1", dependencies)
 
         for name, version in (
-            ("ok-script", "2.0.22"),
+            ("ok-script", "3.0.4"),
             ("pyappify", "1.0.13"),
             ("msvc-runtime", "14.44.35112"),
             ("openvino", "2026.4.1"),

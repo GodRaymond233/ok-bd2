@@ -12,8 +12,6 @@ import re
 import subprocess
 from urllib.request import Request, urlopen
 
-from src.globals import Globals
-
 LATEST_RELEASE_URL = (
     "https://api.github.com/repos/GodRaymond233/ok-bd2/releases/latest"
 )
@@ -102,20 +100,7 @@ def configure_debug_profile(config: dict, *, release_tag: str | None = None) -> 
         {
             "debug": True,
             "version": development_version,
-            "debug_window_title": title,
-            "my_app": ["src.debug_profile", "DebugGlobals"],
+            "gui_title": title,
         }
     )
     return development_version
-
-
-class DebugGlobals(Globals):
-    """Apply the developer title after ok-script constructs its main window."""
-
-    def on_show_main_window(self, main_window):
-        super().on_show_main_window(main_window)
-
-        from ok import og
-
-        if title := og.config.get("debug_window_title"):
-            main_window.setWindowTitle(title)

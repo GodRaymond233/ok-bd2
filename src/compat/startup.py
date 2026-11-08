@@ -1,8 +1,6 @@
-"""Shared process startup for the production and debug entry points.
+"""Start Electron, its local service, or an explicitly headless task run.
 
-Every entry (Qt window, debug window, headless ``-t`` run and the desktop core
-``--service``) passes through here, so every one of them takes the session-wide
-executor lock (``src.executor_guard``) before ok-script builds an executor.
+Both automation paths take the session-wide executor lock before building the core.
 """
 
 from __future__ import annotations
@@ -81,20 +79,25 @@ def entry_mode(arguments: argparse.Namespace, configure) -> str:
         return "service"
     if arguments.headless:
         return "headless"
-    return "debug" if configure is not None else "qt"
+    return "desktop"
 
 
 def start_application(
     config_loader: Callable[[], dict],
     configure: Callable[[dict], object] | None = None,
 ) -> None:
-    """Run an ok-script application after diagnostics and dependency checks."""
+    """Route graphical launches through Electron before loading the core."""
     arguments = parse_entry_arguments()
-    if arguments.service:
-        from src.ui_mode import UI_MODE_ENV
+    if entry_mode(arguments, configure) == "desktop":
+        from src.desktop.bootstrap import main
 
-        # Must be decided before src.config is imported (no Qt in service mode).
-        os.environ[UI_MODE_ENV] = "service"
+        forwarded = list(sys.argv[1:])
+        if configure is not None and "--debug" not in forwarded:
+            forwarded.append("--debug")
+        raise SystemExit(main(forwarded))
+    from src.ui_mode import UI_MODE_ENV
+
+    os.environ[UI_MODE_ENV] = "service"
     from src.executor_guard import mark_current_process
 
     mark_current_process()
@@ -111,28 +114,24 @@ def start_application(
             if exit_code:
                 raise SystemExit(exit_code)
             return
-        _run_windowed(config_loader, configure, entry_mode(arguments, configure))
+        _run_headless(config_loader, configure)
     finally:
         if fault_handler_enabled:
             faulthandler.disable()
         crash_log.close()
 
 
-def _run_windowed(config_loader, configure, mode: str) -> None:
+def _run_headless(config_loader, configure) -> None:
     from src.compat.dependency_guard import ensure_core_dependencies
     from src.desktop.protocol import EXIT_EXECUTOR_LOCKED, EXIT_STARTUP_FAILED
     from src.executor_guard import (
         acquire_executor_lock,
         install_executor_guards,
         legacy_guard,
-        refusal_message,
-        show_refusal_dialog,
     )
 
-    acquired, holder = acquire_executor_lock(mode)
+    acquired, _holder = acquire_executor_lock("headless")
     if not acquired:
-        if mode != "headless":
-            show_refusal_dialog(refusal_message(holder))
         raise SystemExit(EXIT_EXECUTOR_LOCKED)
     ensure_core_dependencies()
 
@@ -141,19 +140,16 @@ def _run_windowed(config_loader, configure, mode: str) -> None:
     config = config_loader()
     if configure is not None:
         configure(config)
+    config["use_gui"] = False
     from src.desktop.backups import prepare_installed_configs
 
     try:
         prepare_installed_configs(config)
     except (OSError, ValueError, RuntimeError) as error:
-        if mode != "headless":
-            show_refusal_dialog(f"配置备份检查未通过：{error}")
         raise SystemExit(EXIT_STARTUP_FAILED) from error
     # The session-wide executor lock replaces ok-script's per-directory mutex, which
     # would terminate a same-directory older instance after five seconds.
     config["check_mutex"] = False
     install_executor_guards()
-    legacy_message = legacy_guard().blocking_message(force=True)
-    if legacy_message and mode != "headless":
-        show_refusal_dialog(f"{legacy_message}在它退出之前，本程序不会开始任务。")
+    legacy_guard().blocking_message(force=True)
     ok.OK(config).start()

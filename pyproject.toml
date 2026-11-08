@@ -8,7 +8,7 @@ dependencies = [
     "adbutils>=2.8.0",
     "comtypes>=1.4.16",
     "msvc-runtime>=14.44.35112",
-    "ok-script[ocr,qt]==2.0.22",
+    "ok-script[ocr]==3.0.4",
     "numpy>=2.4.0",
     "onnxocr-ppocrv5==0.0.23",
     "opencc>=1.2.0",
@@ -19,8 +19,6 @@ dependencies = [
     "pydirectinput>=1.0.4",
     "pynput>=1.8.1",
     "pyappify==1.0.13",
-    "pyside6==6.9.1",
-    "pyside6-fluent-widgets",
     # Desktop client core service (loopback API for the Electron shell).
     "fastapi==0.143.0",
     "uvicorn==0.54.0",

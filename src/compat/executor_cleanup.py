@@ -1,7 +1,7 @@
-"""Task cleanup for the pinned ok-script 2.0.22 runtime.
+"""Record interrupted runs around ok-script's executor cleanup.
 
-Backported from ok-script cdcdd60a4b5d87dd32fae4564a72de04e9e87434;
-keeping the 2.x Qt runtime requires retaining its executor loop here.
+The framework emits task_done only on normal returns. BD2 also persists stopped
+and failed runs without treating them as completed daily work.
 """
 
 import time
