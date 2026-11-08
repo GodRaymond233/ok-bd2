@@ -96,6 +96,20 @@ class QuickHuntVisionTests(unittest.TestCase):
         ]
         self.assertEqual((1834, 1200, 500000, 25000, 0), parse_stone_rows(reversed(boxes)))
 
+    def test_stone_counts_recover_grouping_punctuation_in_integer_inventory(self):
+        for texts, expected in (
+            (("1.807", "689", "683", "406", "2,120"), (1807, 689, 683, 406, 2120)),
+            (("11,074", "10,206", "9.149", "10,273", "10,235"),
+             (11074, 10206, 9149, 10273, 10235)),
+            (("3.715", "1.001", "1.057", "3,706", "2,049"), (3715, 1001, 1057, 3706, 2049)),
+            (("71.568", "5.735", "4,671", "4,719", "4,601"), (71568, 5735, 4671, 4719, 4601)),
+            (("１．８０７", "1.234.567", "1,234.567", "1.234,567", "1.807K"),
+             (1807, 1234567, 1234567, 1234567, 1807)),
+        ):
+            with self.subTest(texts=texts):
+                boxes = [box(text, y=100 + index * 40) for index, text in enumerate(texts)]
+                self.assertEqual(expected, parse_stone_rows(boxes))
+
     def test_stone_counts_reject_malformed_counts_and_inventory_ambiguity(self):
         baseline = [box(str(index + 1), y=100 + index * 40) for index in range(5)]
         for name, boxes in (
@@ -104,7 +118,12 @@ class QuickHuntVisionTests(unittest.TestCase):
             ("duplicate", baseline + [baseline[0]]),
             ("overlap", baseline + [box("00", x=130)]),
             ("separate_column", baseline + [box("00", x=200)]),
-            ("uncertain_decimal", [box("1.946")] + baseline[1:]),
+            ("uncertain_decimal", [box("1.94")] + baseline[1:]),
+            ("zero_decimal", [box("0.001")] + baseline[1:]),
+            ("ungrouped_decimal", [box("1234.567")] + baseline[1:]),
+            ("bad_dot_grouping", [box("1.234.56")] + baseline[1:]),
+            ("decimal_suffix", [box("1.234.567K")] + baseline[1:]),
+            ("embedded_separator", [box("1:807")] + baseline[1:]),
             ("bad_grouping", [box("1,23")] + baseline[1:]),
             ("unknown_text", [box("库存100")] + baseline[1:]),
             ("fraction", [box("1/2")] + baseline[1:]),

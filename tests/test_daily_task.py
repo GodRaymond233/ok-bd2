@@ -778,33 +778,36 @@ class DailyTaskHelperTest(StageHistoryTestCase):
             calls,
         )
 
-    def test_quick_hunt_stone_counts_follow_top_to_bottom_element_order(self):
+    def test_quick_hunt_stone_counts_require_stable_counts_in_element_order(self):
         task = object.__new__(QuickHuntTask)
         task.config = {"快速狩猎界面等待秒数": 1.0}
-        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task.capture_frame = Mock(return_value=np.zeros((1080, 1920, 3), dtype=np.uint8))
         task.sleep = Mock()
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
         boxes = [
-            SimpleNamespace(name="90", x=1700, y=240, width=40, height=20),
-            SimpleNamespace(name="300", x=1700, y=90, width=40, height=20),
-            SimpleNamespace(name="180", x=1700, y=200, width=40, height=20),
-            SimpleNamespace(name="250", x=1700, y=130, width=40, height=20),
-            SimpleNamespace(name="200", x=1700, y=165, width=40, height=20),
+            SimpleNamespace(name="2,120", x=1700, y=240, width=40, height=20),
+            SimpleNamespace(name="1.808", x=1700, y=90, width=40, height=20),
+            SimpleNamespace(name="406", x=1700, y=200, width=40, height=20),
+            SimpleNamespace(name="689", x=1700, y=130, width=40, height=20),
+            SimpleNamespace(name="683", x=1700, y=165, width=40, height=20),
         ]
+        readings = iter(("1.808", "1.807", "1,807"))
 
         class FakeVision:
             def ocr_boxes(self, _frame, _name, relative_roi=None, ocr_scale=1.0):
                 self.relative_roi = relative_roi
+                boxes[1].name = next(readings)
                 return boxes
 
         vision = FakeVision()
         task._quick_vision = lambda: vision
 
         self.assertEqual(
-            {"火": 300, "水": 250, "风": 200, "光": 180, "暗": 90},
+            {"火": 1807, "水": 689, "风": 683, "光": 406, "暗": 2120},
             task._quick_hunt_stone_counts(),
         )
+        self.assertEqual(3, task.capture_frame.call_count)
         self.assertEqual(QUICK_HUNT_STONE_COUNT_ROI, vision.relative_roi)
 
     def test_quick_hunt_crystal_selects_lowest_stone_and_runs_max(self):

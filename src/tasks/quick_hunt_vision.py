@@ -141,6 +141,9 @@ def parse_free_pool(text, expected_capacity=None) -> tuple[int, int] | None:
 
 def _stock_count(text):
     text = unicodedata.normalize("NFKC", text)
+    # Integer inventory rows may have comma group separators misread as dots.
+    if re.fullmatch(r"[1-9][0-9]{0,2}(?:[,.][0-9]{3})+", text):
+        return int(text.replace(",", "").replace(".", ""))
     match = re.fullmatch(r"([0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(\.[0-9]+)?([kKmM万])?", text)
     if match is None or (match[2] and not match[3]):
         return None

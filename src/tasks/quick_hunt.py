@@ -1668,7 +1668,7 @@ class QuickHuntFeatureMixin:
                 return dict(zip(QUICK_HUNT_STONE_ELEMENTS, values))
             previous = values
             self.sleep(0.3)
-        self.log_info("快速狩猎：未确认五行圣石数量稳定一致，请检查资源列表是否展开。")
+        self.log_info("快速狩猎：未读到稳定有效的五行圣石库存，可能存在数字识别歧义或资源列表未展开。")
         self._save_flow_diagnostic("quick_hunt_stone_count_failed")
         return None
 
