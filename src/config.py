@@ -9,6 +9,7 @@ from ok.util.GlobalConfig import create_basic_options
 
 from src import GAME_EXE, HWND_CLASS
 from src.compat.about_tab_layout import install_about_tab_layout
+from src.compat.executor_cleanup import enable_executor_cleanup
 from src.compat.launcher_update_notice import install_launcher_update_notice
 from src.compat.main_window_geometry import install_main_window_geometry_debounce
 from src.compat.starter_guard import enable_starter_launch_guard
@@ -38,6 +39,7 @@ def runtime_version(project_file: Path | None = None) -> str:
     return version
 
 apply_app_font()
+enable_executor_cleanup()
 enable_windows_10_wgc()
 enable_starter_launch_uri()
 enable_starter_launch_guard()
@@ -87,7 +89,7 @@ config = {
             "params": {
                 "use_openvino": True,
                 # ok-script forwards only use_openvino/use_npu here;
-                # onnxocr 0.0.22 therefore keeps its safe AsyncInferQueue default (1).
+                # onnxocr 0.0.23 therefore keeps its safe AsyncInferQueue default (1).
             },
         },
     },

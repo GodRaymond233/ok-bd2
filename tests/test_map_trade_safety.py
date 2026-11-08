@@ -1,6 +1,7 @@
 """Map-trade safety tests (split from test_map_trade.py)."""
 
 import ast
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,7 +31,13 @@ class MapTradeSafetyTest(unittest.TestCase):
         task.config = {}
         for name in ("info_set", "log_info", "log_warning", "log_error", "log_completion"):
             setattr(task, name, lambda *_args, **_kwargs: None)
-        executor = SimpleNamespace(paused=False, current_task=SimpleNamespace(_enabled=True))
+        executor = object.__new__(TaskExecutor)
+        executor.paused = False
+        executor.debug_mode = False
+        executor.thread = threading.current_thread()
+        executor.current_job = None
+        executor._exclusive_owner = None
+        executor.current_task = SimpleNamespace(_enabled=True)
         clicks = []
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
 

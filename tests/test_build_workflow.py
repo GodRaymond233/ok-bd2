@@ -2,6 +2,9 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+from scripts.install_dependencies import install_requirements
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILD_WORKFLOW = ROOT / ".github" / "workflows" / "build.yml"
@@ -34,8 +37,10 @@ class BuildWorkflowTest(unittest.TestCase):
     def test_compact_mode_keeps_china_and_global_profiles(self):
         self.assertIn("          - profile: China", self.workflow)
         self.assertIn("          - profile: Global", self.workflow)
-        self.assertIn("ok-bd2-win32-China-setup.exe", self.workflow)
-        self.assertIn("ok-bd2-win32-Global-setup.exe", self.workflow)
+        self.assertIn(
+            "ok-bd2-win32-China-setup-${{ needs.prepare.outputs.app_version }}.exe", self.workflow)
+        self.assertIn(
+            "ok-bd2-win32-Global-setup-${{ needs.prepare.outputs.app_version }}.exe", self.workflow)
 
     def test_launcher_reuse_is_guarded_by_launcher_inputs(self):
         self.assertIn("Find reusable launcher", self.workflow)
@@ -47,6 +52,7 @@ class BuildWorkflowTest(unittest.TestCase):
         scripts = (
             "check_commit_attribution.py",
             "check_dependency_exports.ps1",
+            "install_dependencies.py",
             "prepare_pyappify_launcher.ps1",
             "prepare_release_notes.ps1",
             "refresh_dependencies.ps1",
@@ -110,22 +116,22 @@ class BuildWorkflowTest(unittest.TestCase):
         for old_version in ("v1.1.6", "v1.1.7", "v1.1.9"):
             self.assertNotIn(old_version, self.workflow)
             self.assertNotIn(old_version, script)
-        self.assertEqual(6, self.workflow.count("v1.2.3"))
-        self.assertIn('[string]$Version = "v1.2.3"', script)
+        self.assertEqual(6, self.workflow.count("v1.2.4"))
+        self.assertIn('[string]$Version = "v1.2.4"', script)
 
     def test_launcher_checkout_uses_audited_pyappify_commit(self):
         script = (ROOT / "scripts" / "prepare_pyappify_launcher.ps1").read_text(
             encoding="utf-8"
         )
-        commit = "52bc6d986aae93615673960256549f51f13c92b6"
+        commit = "47f086f2a4471265e49c2c431b3f58288c7d94de"
         self.assertIn(f'$pyappifyCommit = "{commit}"', script)
         self.assertIn("checkout --detach $pyappifyCommit", script)
         self.assertNotIn('checkout "tags/$Version"', script)
         self.assertIn(
-            '.\\scripts\\prepare_pyappify_launcher.ps1 -Version v1.2.3',
+            '.\\scripts\\prepare_pyappify_launcher.ps1 -Version v1.2.4',
             self.workflow,
         )
-        self.assertEqual(6, self.workflow.count("v1.2.3"))
+        self.assertEqual(6, self.workflow.count("v1.2.4"))
 
     def test_launcher_build_paths_use_workspace_boundary_checks(self):
         for relative_path in (
@@ -144,6 +150,30 @@ class BuildWorkflowTest(unittest.TestCase):
                     "$resolvedPath.StartsWith($workspacePrefix",
                     script,
                 )
+                self.assertIn('$BuildDir = "p"', script)
+                self.assertIn("Resolve-Path -LiteralPath $env:RUNNER_TEMP", script)
+
+    def test_packaging_requires_the_requested_tag_and_versioned_installers(self):
+        self.assertEqual(2, self.workflow.count("app_version: ${{ github.ref_name }}"))
+        self.assertEqual(2, self.workflow.count("add_version_name: true"))
+        self.assertEqual(2, self.workflow.count(
+            "ok-oldking/pyappify-action@33534434fc01d51039285d3f0c9bd3ab4d952bea"))
+        restore = (ROOT / "scripts" / "restore_pyappify_launcher.ps1").read_text(encoding="utf-8")
+        self.assertIn('[version]"1.2.4.0"', restore)
+        self.assertLess(restore.index('[version]"1.2.4.0"'),
+                        restore.index("Copy-Item -LiteralPath $launcherSource"))
+
+    def test_manual_installer_check_does_not_publish(self):
+        workflow = (ROOT / ".github" / "workflows" / "package-check.yml").read_text(
+            encoding="utf-8")
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("contents: read", workflow)
+        self.assertIn("app_version: ${{ inputs.application_tag }}", workflow)
+        self.assertIn("actions/upload-artifact@", workflow)
+        self.assertIn("inline_ok_requirements", workflow)
+        self.assertNotIn("partial-sync-repo", workflow)
+        self.assertNotIn("action-gh-release", workflow)
+        self.assertNotIn("secrets.", workflow)
 
     def test_launcher_uses_project_icon(self):
         self.assertIn('icon: "icons/icon.png"', self.pyappify_config)
@@ -324,6 +354,55 @@ class BuildWorkflowTest(unittest.TestCase):
                 "### 更新日志 v1.1.1 -> v1.1.2",
                 output_path.read_text(encoding="utf-8-sig"),
             )
+            self.assertIn(
+                "/v1.1.2/ok-bd2-win32-China-setup-1.1.2.exe",
+                output_path.read_text(encoding="utf-8-sig"),
+            )
+
+
+class DependencyInstallTest(unittest.TestCase):
+    def test_transient_failure_retries_then_succeeds(self):
+        results = [
+            subprocess.CompletedProcess([], 1, "ReadTimeoutError: download timed out"),
+            subprocess.CompletedProcess([], 0, "Installed"),
+        ]
+        with patch("scripts.install_dependencies.subprocess.run", side_effect=results) as run, \
+                patch("scripts.install_dependencies.time.sleep") as sleep:
+            self.assertEqual(0, install_requirements("requirements.txt"))
+        self.assertEqual(2, run.call_count)
+        self.assertEqual(["-r", "requirements.txt"], run.call_args.args[0][-2:])
+        sleep.assert_called_once_with(15)
+
+    def test_permanent_and_unknown_failures_are_not_retried(self):
+        for message in (
+            "No matching distribution found for nonexistent==99.0",
+            "ResolutionImpossible: conflicting dependencies; download timed out",
+            "THESE PACKAGES DO NOT MATCH THE HASHES; ConnectionError",
+            "Unexpected build failure",
+        ):
+            with self.subTest(message=message), \
+                    patch("scripts.install_dependencies.subprocess.run", return_value=
+                          subprocess.CompletedProcess([], 7, message)) as run, \
+                    patch("scripts.install_dependencies.time.sleep") as sleep:
+                self.assertEqual(7, install_requirements("requirements.txt"))
+                run.assert_called_once()
+                sleep.assert_not_called()
+
+    def test_transient_retry_budget_preserves_final_exit_code(self):
+        with patch("scripts.install_dependencies.subprocess.run", return_value=
+                   subprocess.CompletedProcess([], 9, "HTTP error 503")) as run, \
+                patch("scripts.install_dependencies.time.sleep") as sleep:
+            self.assertEqual(9, install_requirements("requirements.txt"))
+        self.assertEqual(3, run.call_count)
+        self.assertEqual(2, sleep.call_count)
+
+    def test_installation_timeout_is_not_retried(self):
+        with patch("scripts.install_dependencies.subprocess.run", side_effect=
+                   subprocess.TimeoutExpired("pip", 900)) as run, \
+                patch("scripts.install_dependencies.time.sleep") as sleep:
+            self.assertEqual(124, install_requirements("requirements.txt"))
+        run.assert_called_once()
+        sleep.assert_not_called()
 
 
 if __name__ == "__main__":

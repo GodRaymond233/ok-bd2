@@ -1,6 +1,6 @@
 ﻿param(
-    [string]$Version = "v1.2.3",
-    [string]$BuildDir = "pyappify_build",
+    [string]$Version = "v1.2.4",
+    [string]$BuildDir = "",
     [ValidateSet("zlib", "lzma")]
     [string]$NsisCompression = "lzma",
     [switch]$SkipBuild
@@ -206,7 +206,14 @@ function Assert-UnderWorkspace {
 }
 
 $workspace = (Resolve-Path -LiteralPath ".").Path
-$buildPath = Assert-UnderWorkspace -PathToCheck $BuildDir -Workspace $workspace
+$buildRoot = $workspace
+if ([string]::IsNullOrWhiteSpace($BuildDir)) {
+    if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
+        $buildRoot = (Resolve-Path -LiteralPath $env:RUNNER_TEMP).Path
+    }
+    $BuildDir = "p"
+}
+$buildPath = Assert-UnderWorkspace -PathToCheck $BuildDir -Workspace $buildRoot
 
 $configPath = Join-Path $workspace "pyappify.yml"
 if (-not (Test-Path -LiteralPath $configPath)) {
@@ -228,7 +235,7 @@ if (Test-Path -LiteralPath $buildPath) {
     Remove-Item -LiteralPath $buildPath -Recurse -Force
 }
 
-$pyappifyCommit = "52bc6d986aae93615673960256549f51f13c92b6"
+$pyappifyCommit = "47f086f2a4471265e49c2c431b3f58288c7d94de"
 git clone https://github.com/ok-oldking/pyappify.git $buildPath
 if ($LASTEXITCODE -ne 0) {
     throw "Failed to clone pyappify."
@@ -320,9 +327,18 @@ Set-Content -LiteralPath $appServicePath -Value $appService -Encoding UTF8
 Update-InstallerNsiTemplate -BuildDirPath $buildPath
 
 pnpm install --dir $buildPath
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to install launcher build dependencies."
+}
 if ($SkipBuild) {
     Write-Host "PyAppify source prepared without compiling the launcher."
 } else {
     pnpm --dir $buildPath exec cargo fmt --manifest-path (Join-Path $buildPath "src-tauri\Cargo.toml")
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to format launcher sources."
+    }
     pnpm --dir $buildPath tauri build
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to build launcher."
+    }
 }

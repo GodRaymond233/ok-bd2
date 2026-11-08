@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 import cv2
 import numpy as np
 
-from src.utils import task_vision
+from src.utils import image_utils, task_vision
 from src.utils.image_utils import (
     StableMatchObservation,
     best_pixel_valid_match,
@@ -98,6 +98,43 @@ class ImageRecognitionUtilsTest(unittest.TestCase):
         mask = np.array([[0, 255], [255, 0]], dtype=np.uint8)
         resized = resize_mask(mask, 2.0)
         self.assertEqual(set(np.unique(resized)), {0, 255})
+
+    def test_resized_templates_preserve_pixels_after_input_and_output_changes(self):
+        for dtype in (np.uint8, np.float32):
+            source = np.arange(144, dtype=dtype).reshape(12, 12)
+            for template in (source, source[::2, 1::2]):
+                for scale in (0.75, 1.25, 2.5):
+                    for interpolation in (cv2.INTER_AREA, cv2.INTER_CUBIC, cv2.INTER_NEAREST):
+                        with self.subTest(shape=template.shape, scale=scale,
+                                          interpolation=interpolation, dtype=dtype):
+                            def resize():
+                                return image_utils.resize_template_with_interpolation(
+                                    template, scale, interpolation,
+                                )
+
+                            expected = cv2.resize(template, None, fx=scale, fy=scale,
+                                                  interpolation=interpolation)
+                            np.testing.assert_array_equal(resize(), expected)
+                            resized = resize()
+                            resized[:] = 0
+                            np.testing.assert_array_equal(resize(), expected)
+                            template[:] = template + 1
+                            expected = cv2.resize(template, None, fx=scale, fy=scale,
+                                                  interpolation=interpolation)
+                            np.testing.assert_array_equal(resize(), expected)
+
+    def test_resize_cache_has_bounded_entries_and_bypasses_large_images(self):
+        cache = image_utils._cached_template_resize
+        cache.cache_clear()
+        self.addCleanup(cache.cache_clear)
+        for index in range(image_utils.RESIZED_TEMPLATE_CACHE_ENTRIES + 1):
+            image_utils.resize_template(np.full((2, 2), index, dtype=np.uint8), 2.0)
+        self.assertEqual(image_utils.RESIZED_TEMPLATE_CACHE_ENTRIES, cache.cache_info().currsize)
+        before = cache.cache_info()
+        large = np.zeros((512, 512), dtype=np.uint8)
+        np.testing.assert_array_equal(image_utils.resize_template(large, 2.0),
+                                      np.zeros((1024, 1024), dtype=np.uint8))
+        self.assertEqual(before, cache.cache_info())
 
     def test_to_gray_accepts_gray_bgr_and_bgra(self):
         gray = np.array([[10, 20]], dtype=np.uint8)

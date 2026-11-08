@@ -848,6 +848,58 @@ class NavigatorTest(unittest.TestCase):
                     self.assertEqual(expected, navigator._wait_auto_move_finished(1))
                     self.assertEqual(expected == "done", navigator._wait_resuming_walk(1))
 
+    def test_inventory_full_walk_confirms_once_and_stops_before_retry(self):
+        for width, height, left, top in ((1920, 1080, 560, 80), (1280, 720, 373, 53)):
+            for mode in (
+                "paired", "missing_confirm", "ambiguous", "title_only", "body_only", "changed_pair",
+            ):
+                with self.subTest(size=(width, height), mode=mode):
+                    frame = np.full((height, width, 3), 120, dtype=np.uint8)
+                    clock, clicks = [0.0], []
+
+                    def box(name):
+                        return SimpleNamespace(
+                            name=name, x=width * .5 - left - 20,
+                            y=height * .57 - top - 10, width=40, height=20,
+                        )
+
+                    def ocr(*, name, **_kwargs):
+                        texts = ["无法移动", "消耗品背包需有空位，才能前往战斗区域。", "自动移动中"]
+                        if mode == "title_only":
+                            del texts[1]
+                        elif mode == "body_only":
+                            del texts[0]
+                        if mode == "changed_pair" and name == "出口自动移动确认窗":
+                            texts = []
+                        texts += ["确认"] * (
+                            0 if mode == "missing_confirm" else 2 if mode == "ambiguous" else 1
+                        )
+                        return [box(text) for text in texts]
+
+                    task = SimpleNamespace(
+                        config={}, info_set=Mock(), log_warning=Mock(), ocr=ocr,
+                        capture_frame=lambda: frame,
+                        sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+                    )
+                    task.operate_click = lambda x, y, after_sleep: (
+                        clicks.append((x, y)), task.sleep(after_sleep),
+                    )
+                    navigator = Navigator(task, Vision(task))
+                    navigator.classify = Mock(return_value=ScreenState.SANDBOX)
+                    with patch("src.tasks.map_trade.navigator_sandbox.monotonic",
+                               side_effect=lambda: clock[0]):
+                        if mode in {"title_only", "body_only"}:
+                            self.assertFalse(navigator._wait_resuming_walk(1))
+                        else:
+                            with self.assertRaisesRegex(RuntimeError, "消耗品背包已满.*清理背包"):
+                                navigator._wait_resuming_walk(30)
+                            self.assertLessEqual(clock[0], .8)
+                            task.log_warning.assert_called_once()
+                    self.assertEqual(1 if mode == "paired" else 0, len(clicks))
+                    if clicks:
+                        self.assertAlmostEqual(.5, clicks[0][0])
+                        self.assertAlmostEqual(.57, clicks[0][1], delta=1 / height)
+
     def test_portal_walk_leaves_victory_and_requires_confirmed_idle(self):
         frame = np.full((108, 192, 3), 120, dtype=np.uint8)
         for leave_count, expected in ((1, "done"), (0, "timeout"), (2, "timeout")):
@@ -1658,6 +1710,7 @@ class NavigatorTest(unittest.TestCase):
         task = object.__new__(BaseBD2Task)
         task._executor = SimpleNamespace(
             paused=False, debug=False, config={"ocr": {"default": {"lib": "onnxocr"}}},
+            blocked_by_pause=lambda: False,
             ocr_lib=lambda _: engine, ocr_po_translation=None, text_fix={},
         )
         task.config = {}
@@ -3591,27 +3644,85 @@ class NavigatorTest(unittest.TestCase):
         self.assertEqual([(10.0, 1.0)], template_clicks)
 
     def test_current_sandbox_confirmation_requires_consecutive_frames(self):
-        frame = np.full((1080, 1920, 3), 100, dtype=np.uint8)
-        states = iter(
-            (
-                ScreenState.SANDBOX,
-                ScreenState.UNKNOWN,
-                ScreenState.SANDBOX,
-                ScreenState.SANDBOX,
-            )
-        )
-        captures = []
-        navigator = Navigator(
-            SimpleNamespace(sleep=lambda *_args: None),
-            SimpleNamespace(capture=lambda: captures.append(frame) or frame),
-        )
-        navigator.classify = lambda _frame=None: next(states)
+        field, unknown = ScreenState.SANDBOX, ScreenState.UNKNOWN
+        for states, first_capture, read_time, timeout, success, samples in (
+            ((field, unknown, field, field), 0.0, 0.1, 3.0, True, 4),
+            ((field, field), 0.0, 1.498, 1.984, True, 2),
+            ((field, field), 4.206, 0.438, 3.0, True, 2),
+            ((field, unknown), 4.206, 0.438, 3.0, False, None),
+            ((unknown,), 4.206, 0.438, 3.0, False, 1),
+            ((ScreenState.SANDBOX_MAP,), 0.0, 0.1, 3.0, False, None),
+            ((field, unknown, field, unknown), 0.0, 0.6, 3.0, False, None),
+        ):
+            with self.subTest(states=states, first_capture=first_capture, read_time=read_time):
+                clock = FakeClock()
+                captures = []
+                frame = np.full((8, 8, 3), 100, dtype=np.uint8)
 
-        result = navigator._wait_for_current_sandbox(timeout=2.0, interval=0.0)
+                def capture():
+                    if not captures:
+                        clock.sleep(first_capture)
+                    captures.append(frame.copy())
+                    return captures[-1]
 
-        self.assertTrue(result.success)
-        self.assertEqual(ScreenState.SANDBOX, result.state)
-        self.assertEqual(4, len(captures))
+                def classify(_frame):
+                    clock.sleep(read_time)
+                    return states[min(len(captures) - 1, len(states) - 1)]
+
+                navigator = Navigator(
+                    SimpleNamespace(info_set=Mock(), sleep=clock.sleep),
+                    SimpleNamespace(capture=capture),
+                )
+                navigator.classify = classify
+                navigator._auto_moving = Mock(return_value=False)
+                with patch("src.tasks.map_trade.navigator_sandbox.monotonic", clock):
+                    result = navigator._wait_for_current_sandbox(timeout=timeout)
+
+                self.assertEqual(success, result.success)
+                if samples is not None:
+                    self.assertEqual(samples, len(captures))
+                if success:
+                    self.assertEqual(ScreenState.SANDBOX, result.state)
+                else:
+                    self.assertIn("连续箱庭=", result.message)
+                self.assertLess(clock(), 9.0)
+                self.assertTrue(all(a is not b for a, b in zip(captures, captures[1:])))
+
+    def test_map_close_confirms_slow_field_and_refuses_expired_click(self):
+        for identity_seconds, capture_seconds, success, clicks in (
+            (0.322, 0.0, True, 1),
+            (0.322, 4.206, True, 1),
+            (8.1, 0.0, False, 0),
+        ):
+            with self.subTest(identity_seconds=identity_seconds, capture_seconds=capture_seconds):
+                clock = FakeClock()
+                frame = np.full((8, 8, 3), 100, dtype=np.uint8)
+                task = SimpleNamespace(config={}, info_set=Mock(), sleep=clock.sleep)
+                captures = []
+
+                def capture():
+                    if len(captures) == 1:
+                        clock.sleep(capture_seconds)
+                    captures.append(frame.copy())
+                    return captures[-1]
+
+                def detect(_frame):
+                    clock.sleep(identity_seconds)
+                    return SimpleNamespace(mode=MapPageMode.SANDBOX_LARGE_MAP)
+
+                def classify(_frame):
+                    clock.sleep(1.55)
+                    return ScreenState.SANDBOX
+
+                navigator = Navigator(task, SimpleNamespace(capture=capture))
+                navigator._detect_map_page_mode = Mock(side_effect=detect)
+                navigator._click_map_return = Mock(side_effect=lambda *_: clock.sleep(0.694))
+                navigator.classify = Mock(side_effect=classify)
+                with patch("src.tasks.map_trade.navigator_sandbox.monotonic", clock):
+                    self.assertEqual(success, navigator._close_field_map())
+                self.assertEqual(clicks, navigator._click_map_return.call_count)
+                self.assertEqual(2 if success else 0, navigator.classify.call_count)
+                navigator._detect_map_page_mode.assert_called_once()
 
     def test_interaction_button_template_uses_strict_three_score_gates(self):
         self.assertEqual("image/green/IcoHand.png", HAND_TEMPLATE.file_name)

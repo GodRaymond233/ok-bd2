@@ -1,5 +1,7 @@
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
+from functools import lru_cache
+from math import ceil, isfinite, prod
 from pathlib import Path
 from statistics import fmean, median
 
@@ -7,6 +9,9 @@ import cv2
 import numpy as np
 
 from src.utils.calibration import FHD_1080
+
+RESIZED_TEMPLATE_CACHE_ENTRIES = 128
+RESIZED_TEMPLATE_CACHE_MAX_ENTRY_BYTES = 128 * 1024
 
 
 def read_template_image(path: str | Path) -> np.ndarray | None:
@@ -291,14 +296,36 @@ def resize_template_with_interpolation(
         return template
     if interpolation is None:
         interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC
-    return cv2.resize(template, None, fx=scale, fy=scale, interpolation=interpolation)
+    return _resize_template_image(template, scale, interpolation)
 
 
 def resize_mask(mask: np.ndarray | None, scale: float) -> np.ndarray | None:
     """Resize a template mask without introducing interpolated mask values."""
     if mask is None or abs(float(scale) - 1.0) < 0.001:
         return mask
-    return cv2.resize(mask, None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST)
+    return _resize_template_image(mask, scale, cv2.INTER_NEAREST)
+
+
+def _resize_template_image(image: np.ndarray, scale: float, interpolation: int) -> np.ndarray:
+    if isfinite(scale) and scale > 0:
+        height, width = image.shape[:2]
+        output_bytes = (ceil(height * scale) * ceil(width * scale)
+                        * prod(image.shape[2:]) * image.dtype.itemsize)
+        if image.nbytes + output_bytes <= RESIZED_TEMPLATE_CACHE_MAX_ENTRY_BYTES:
+            # Content keys also handle mutable templates and non-contiguous crops.
+            # Return an owned result so consumers cannot change a cached match input.
+            return _cached_template_resize(
+                image.tobytes(), image.shape, image.dtype.str, scale, interpolation,
+            ).copy()
+    return cv2.resize(image, None, fx=scale, fy=scale, interpolation=interpolation)
+
+
+@lru_cache(maxsize=RESIZED_TEMPLATE_CACHE_ENTRIES)
+def _cached_template_resize(
+    data: bytes, shape: tuple[int, ...], dtype: str, scale: float, interpolation: int,
+) -> np.ndarray:
+    image = np.frombuffer(data, dtype=dtype).reshape(shape)
+    return cv2.resize(image, None, fx=scale, fy=scale, interpolation=interpolation)
 
 
 def to_gray(image: np.ndarray) -> np.ndarray:

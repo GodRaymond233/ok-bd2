@@ -96,6 +96,7 @@ if ([string]::IsNullOrWhiteSpace($normalizedChangelog)) {
     throw "The synchronized changelog is empty."
 }
 
+$installerVersion = $ReleaseTag -replace '^v', ''
 $releaseNotes = @(
     if ($nonEmptyDetails[0] -match '^[a-z]+(?:\([^)]+\))?:\s+(\*\*.+\*\*)$') {
         "## $($Matches[1])"
@@ -111,9 +112,9 @@ $releaseNotes = @(
     ""
     "### 下载包说明"
     ""
-    "- [ok-bd2-win32-China-setup.exe](https://github.com/GodRaymond233/ok-bd2/releases/download/$ReleaseTag/ok-bd2-win32-China-setup.exe) 完整安装包，更新使用 CNB。"
-    "- [ok-bd2-win32-online-setup.exe](https://github.com/GodRaymond233/ok-bd2/releases/download/$ReleaseTag/ok-bd2-win32-online-setup.exe) 在线安装包，首次安装时需要联网下载依赖。"
-    "- [ok-bd2-win32-Global-setup.exe](https://github.com/GodRaymond233/ok-bd2/releases/download/$ReleaseTag/ok-bd2-win32-Global-setup.exe) full package with dependencies, using GitHub and PyPI as update source."
+    "- [ok-bd2-win32-China-setup-$installerVersion.exe](https://github.com/GodRaymond233/ok-bd2/releases/download/$ReleaseTag/ok-bd2-win32-China-setup-$installerVersion.exe) 完整安装包，更新使用 CNB。"
+    "- [ok-bd2-win32-online-setup-$installerVersion.exe](https://github.com/GodRaymond233/ok-bd2/releases/download/$ReleaseTag/ok-bd2-win32-online-setup-$installerVersion.exe) 在线安装包，首次安装时需要联网下载依赖。"
+    "- [ok-bd2-win32-Global-setup-$installerVersion.exe](https://github.com/GodRaymond233/ok-bd2/releases/download/$ReleaseTag/ok-bd2-win32-Global-setup-$installerVersion.exe) full package with dependencies, using GitHub and PyPI as update source."
     "- 不要下载 ok-bd2-win32.zip 或 Source code 压缩包。"
     ""
     "### 其他下载源"

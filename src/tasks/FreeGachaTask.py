@@ -5,17 +5,26 @@ from time import monotonic
 from ok.task.exceptions import FinishedException, TaskDisabledException
 from qfluentwidgets import FluentIcon
 
+from src.diagnostics.runtime import capture_failure_frame
 from src.tasks.BaseBD2Task import BaseBD2Task
-from src.tasks.task_vision_mixin import LOADING_TEMPLATE, TaskVisionMixin
+from src.tasks.map_trade.models import TemplateSpec
+from src.tasks.task_vision_mixin import (
+    LOADING_TEMPLATE,
+    REFERENCE_HEIGHT,
+    REFERENCE_WIDTH,
+    TaskVisionMixin,
+)
 from src.utils.ocr_utils import keyword_match_count, normalize_ocr_text
 
 KEYWORD_MATCH_RATIO = 0.9
 
-# 免费入口重试前对同一新帧的状态判定结果（BUG-20260913-01）。
+# 免费入口与耗尽复核共用的单帧状态。
 FREE_ENTRY_RETRY_READY = "ready"
 FREE_ENTRY_RETRY_DIALOG = "dialog"
 FREE_ENTRY_RETRY_LOADING = "loading"
-FREE_ENTRY_RETRY_CHANGED = "changed"
+FREE_ENTRY_RETRY_UNKNOWN = "unknown"
+FREE_ENTRY_RETRY_BLOCKED = "blocked"
+FREE_ENTRY_RETRY_NO_FREE = "no_free"
 
 # 以下点击点均为 1920×1080 参考（_click_reference 按当前客户区归一）。
 GACHA_ENTRY_REFERENCE_POINT = (162, 986)
@@ -23,12 +32,31 @@ EQUIPMENT_TAB_REFERENCE_POINT = (175, 432)
 BACK_BUTTON_REFERENCE_POINT = (105, 51)
 RESULT_PAGE_CLOSE_REFERENCE_POINT = (1420, 326)
 SKIP_BUTTON_REFERENCE_POINT = (1770, 60)
+RESULT_RETURN_ATTEMPTS = 3
+RESULT_RETURN_RETRY_INTERVAL = 2.0
+RESULT_BACK_TEMPLATE = TemplateSpec(
+    "抽抽乐结果返回", "back_return_bar_arrow.png", 0.88,
+    relative_roi=(0.03, 0.0, 0.13, 0.12),
+    # Keep the arrow's surrounding contrast; a white-only mask also matches bright backgrounds.
+    crop=(0.72, 0.16, 0.88, 0.84), scale_ratios=(0.95, 1.0, 1.05),
+    min_zncc_score=0.88, minimum_safe_threshold=0.88,
+)
 
 
 @dataclass(frozen=True)
 class FreeDrawConfirmation:
     count: int
     point: tuple[float, float]
+
+
+@dataclass(frozen=True)
+class FreePoolObservation:
+    state: str
+    reason: str
+    text: str
+    point: tuple[float, float] | None = None
+    pool_confirmed: bool = False
+    free_hint: bool = False
 
 
 class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
@@ -87,6 +115,7 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
         )
 
     def run(self):
+        self._gacha_evidence = None
         if not bool(self.config.get("启用", True)):
             self.info_set("状态", "白嫖抽抽乐已禁用。")
             self.log_info("白嫖抽抽乐已禁用。")
@@ -153,6 +182,12 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
         self.info_set("状态", f"白嫖抽抽乐{stage}失败。")
         if section_name is not None:
             self.info_set(f"{section_name} 结果", f"未完成：{stage}")
+            evidence = getattr(self, "_gacha_evidence", None)
+            if evidence is not None and evidence[1]["pool"] == section_name:
+                capture_failure_frame(self, stage, evidence[0], lossless=True,
+                                      recognition=evidence[1])
+            else:
+                capture_failure_frame(self, stage)
         return False
 
     def _run_free_section(
@@ -175,7 +210,8 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
             return self._fail_run(f"{section_name}免费入口判断", section_name)
 
         if not self._open_confirm_dialog_with_retry(section_name):
-            return self._fail_run(f"{section_name}确认弹窗", section_name)
+            return self._fail_run(f"{section_name}免费入口复核或开框", section_name)
+        self._gacha_evidence = None
         if not self._confirm_dialog_submission(section_name):
             return self._fail_run(f"{section_name}确认提交", section_name)
 
@@ -346,66 +382,122 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
             if timeout is not None
             else float(self.config.get("免费抽按钮等待秒数", 3.0))
         ))
+        settle_at = monotonic() + window
+        end_at = settle_at + window
         last_text = ""
-        for _ in range(2):
-            end_at = monotonic() + window
-            no_free_frames = 0
-            while monotonic() < end_at:
-                frame = self.capture_frame()
-                boxes = self._gacha_ocr_boxes(frame, name)
-                last_text = " ".join(box.name for box in boxes)
-                loading = self._passes(self._match(frame, LOADING_TEMPLATE), LOADING_TEMPLATE)
-                single = None if loading else self._pool_controls(boxes, section_name)
-                if single is not None and self._free_entry_point(frame, boxes, single) is not None:
-                    self.info_set(f"{section_name} 免费抽 OCR", last_text)
-                    return True, last_text, True
-                free_hint = single is not None and any(
-                    "免费" in normalize_ocr_text(box.name)
-                    and box.y + box.height / 2 >= single.y - single.height * 2
-                    for box in boxes
-                )
-                no_free_frames = no_free_frames + 1 if single is not None and not free_hint else 0
-                self.sleep(min(0.5, max(0.0, end_at - monotonic())))
+        no_free_frames = 0
+        while monotonic() < end_at:
+            observation = self._observe_free_pool(section_name, name)
+            last_text = observation.text
+            if observation.state == FREE_ENTRY_RETRY_READY:
+                self.info_set(f"{section_name} 免费抽 OCR", last_text)
+                return True, last_text, True
+            if observation.state in (FREE_ENTRY_RETRY_BLOCKED, FREE_ENTRY_RETRY_DIALOG):
+                break
+            # Observe the full settling window, then accept two consecutive current frames.
+            # A later unrelated OCR miss must not undo an already confirmed exhaustion.
+            no_free_frames = (no_free_frames + 1
+                              if monotonic() >= settle_at
+                              and observation.state == FREE_ENTRY_RETRY_NO_FREE else 0)
+            if no_free_frames >= 2:
+                self.info_set(f"{section_name} 免费抽 OCR", last_text)
+                return False, last_text, True
+            self.sleep(min(0.5, max(0.0, end_at - monotonic())))
         self.info_set(f"{section_name} 免费抽 OCR", last_text or "-")
-        return False, last_text, no_free_frames >= 2
+        return False, last_text, False
 
     @staticmethod
-    def _pool_controls(boxes, section_name: str):
-        """Require a loaded pool's header and action row, excluding covering dialogs."""
+    def _pool_observation(frame, boxes, section_name: str):
+        """Classify one complete OCR view; never join controls from different views."""
+        text = " ".join(box.name for box in boxes)
         labels = [normalize_ocr_text(box.name, alnum_only=True) for box in boxes]
-        if any(word in label for label in labels
-               for word in ("确认", "取消", "抽抽乐券", "查看获取途径")):
-            return None
         other_pool = "装备抽抽乐" if section_name == "服装抽抽乐" else "服装抽抽乐"
         if any(label in (other_pool, other_pool + "抽抽乐记录") for label in labels):
-            return None
+            return FreePoolObservation(FREE_ENTRY_RETRY_BLOCKED, "出现另一池标题", text)
+        if ("确认抽抽乐" in labels and any("是否全部进行" in label for label in labels)):
+            return FreePoolObservation(FREE_ENTRY_RETRY_DIALOG, "确认框，待免费核验", text)
+        if any(word in label for label in labels
+               for word in ("确认", "取消", "抽抽乐券", "查看获取途径")):
+            return FreePoolObservation(FREE_ENTRY_RETRY_BLOCKED, "存在覆盖弹窗", text)
+        free_hint = any(FREE_GACHA_KEYWORDS[0] in label or "免费1次" in label
+                        for label in labels)
         # OCR may combine the adjacent pool title and record label into one header box.
         header = section_name + "抽抽乐记录"
         controls = [[box for box, label in zip(boxes, labels) if label in accepted]
                     for accepted in ((section_name, header), ("抽抽乐记录", header), ("抽1次",))]
         if any(len(group) != 1 for group in controls):
-            return None
+            reason = "、".join(f"{name}数量={len(group)}" for name, group
+                              in zip(("池标题", "记录标签", "单抽按钮"), controls)
+                              if len(group) != 1)
+            return FreePoolObservation(FREE_ENTRY_RETRY_UNKNOWN, reason, text, free_hint=free_hint)
         title, record, single = (group[0] for group in controls)
         if not (all(box.width > 0 and box.height > 0 for box in (title, record, single))
                 and (title is record or title.x + title.width <= record.x)
                 and abs(title.y - record.y) <= max(title.height, record.height)
                 and max(title.y + title.height, record.y + record.height) < single.y):
-            return None
-        return single
-
-    @staticmethod
-    def _free_entry_point(frame, boxes, single):
+            return FreePoolObservation(FREE_ENTRY_RETRY_UNKNOWN, "标题栏/单抽布局未通过",
+                                       text, free_hint=free_hint)
+        free_hint = free_hint or any(
+            "免费" in label and box.y + box.height / 2 >= single.y - single.height * 2
+            for box, label in zip(boxes, labels))
         entries = [box for box in boxes
                    if normalize_ocr_text(box.name, alnum_only=True) == FREE_GACHA_KEYWORDS[0]]
         if len(entries) != 1:
-            return None
+            state = FREE_ENTRY_RETRY_UNKNOWN if free_hint else FREE_ENTRY_RETRY_NO_FREE
+            return FreePoolObservation(state, f"免费入口数量={len(entries)}，免费信号={free_hint}",
+                                       text, pool_confirmed=True, free_hint=free_hint)
         entry = entries[0]
         if not (entry.width > 0 and entry.height > 0 and entry.x + entry.width < single.x
                 and abs(entry.y - single.y) <= max(entry.height, single.height) * 3):
-            return None
+            return FreePoolObservation(FREE_ENTRY_RETRY_UNKNOWN, "免费入口与单抽行布局未通过",
+                                       text, pool_confirmed=True, free_hint=True)
         point = ((entry.x + entry.width / 2) / frame.shape[1],
                  (entry.y + entry.height / 2) / frame.shape[0])
-        return point if all(0 < value < 1 for value in point) else None
+        if not all(0 < value < 1 for value in point):
+            return FreePoolObservation(FREE_ENTRY_RETRY_UNKNOWN, "免费入口坐标越界",
+                                       text, free_hint=True)
+        return FreePoolObservation(FREE_ENTRY_RETRY_READY, "同池免费入口确认", text,
+                                   point, pool_confirmed=True, free_hint=True)
+
+    def _observe_free_pool(self, section_name: str, name: str):
+        frame = self.capture_frame()
+        loading = self._match(frame, LOADING_TEMPLATE)
+        evidence = {"pool": section_name, "loading": str(loading)}
+        if self._passes(loading, LOADING_TEMPLATE):
+            observation = FreePoolObservation(FREE_ENTRY_RETRY_LOADING, "加载中", "")
+        else:
+            boxes = self._gacha_ocr_boxes(frame, name)
+            observation = self._pool_observation(frame, boxes, section_name)
+            evidence["720"] = self._pool_box_evidence(boxes)
+            evidence["720判断"] = observation.reason
+            labels = [normalize_ocr_text(box.name, alnum_only=True) for box in boxes]
+            anchors = (any(label in (section_name, "抽抽乐记录", section_name + "抽抽乐记录")
+                           for label in labels)
+                       and any(label in ("抽1次", FREE_GACHA_KEYWORDS[0]) for label in labels))
+            if anchors and observation.state in (
+                    FREE_ENTRY_RETRY_UNKNOWN, FREE_ENTRY_RETRY_NO_FREE):
+                # Re-read this same frame at a second scale; replace the entire view.
+                # A free hint in either view forbids declaring exhaustion.
+                boxes = self._gacha_ocr_boxes(frame, name + "_1080", target_height=1080)
+                refined = self._pool_observation(frame, boxes, section_name)
+                evidence["1080"] = self._pool_box_evidence(boxes)
+                evidence["1080判断"] = refined.reason
+                if refined.state == FREE_ENTRY_RETRY_NO_FREE and observation.free_hint:
+                    refined = FreePoolObservation(FREE_ENTRY_RETRY_UNKNOWN,
+                                                  "两次识别存在免费信号冲突", refined.text,
+                                                  pool_confirmed=True, free_hint=True)
+                observation = refined
+        evidence.update(state=observation.state, reason=observation.reason)
+        self._gacha_evidence = (frame, evidence)
+        self.info_set(f"{section_name} 识别复核", f"{observation.state}: {observation.reason}")
+        return observation
+
+    @staticmethod
+    def _pool_box_evidence(boxes):
+        return "; ".join(
+            f"{box.name}@({box.x},{box.y},{box.width},{box.height})" for box in boxes
+            if any(word in normalize_ocr_text(box.name)
+                   for word in ("抽抽乐", "抽1次", "免费", "确认", "取消")))[:1000]
 
     def _free_confirmation_in_frame(self, frame, section_name: str):
         if self._passes(self._match(frame, LOADING_TEMPLATE), LOADING_TEMPLATE):
@@ -455,10 +547,11 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
             self.sleep(0.25)
         return None
 
-    def _wait_for_confirm_dialog(self, section_name: str) -> bool:
+    def _wait_for_confirm_dialog(self, section_name: str, timeout=None) -> bool:
         found, text = self._wait_for_ocr_keywords(
             CONFIRM_DIALOG_KEYWORDS,
-            timeout=float(self.config.get("确认弹窗等待秒数", 8.0)),
+            timeout=(float(self.config.get("确认弹窗等待秒数", 8.0))
+                     if timeout is None else timeout),
             minimum_matches=int(self.config.get("确认弹窗关键词最低命中数", 2)),
             name=f"{section_name}_confirm",
         )
@@ -470,25 +563,45 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
         return False
 
     def _open_confirm_dialog_with_retry(self, section_name: str) -> bool:
-        """点击免费入口并等待确认弹窗；首击被吞时仅按同帧门禁有界重试。"""
+        """Recover uncertain observations within fixed budgets; count only actual clicks."""
         retries = max(0, int(self.config.get("确认弹窗重试次数", 2)))
-        for attempt in range(1, retries + 2):
-            self._sleep_after_recognition()
+        window = max(0.0, float(self.config.get("免费抽按钮等待秒数", 3.0)))
+        end_at = monotonic() + max(0.0, float(self.config.get("loading 消失等待秒数", 35.0)))
+        self._sleep_after_recognition()
+        observe_until = min(end_at, monotonic() + window)
+        clicks = 0
+        while monotonic() < end_at and clicks <= retries:
             state, point = self._free_entry_retry_state(section_name)
             if state == FREE_ENTRY_RETRY_DIALOG:
                 self.log_info(f"{section_name}：已检测到确认抽抽乐弹窗，转入免费核验。")
                 return True
-            if state != FREE_ENTRY_RETRY_READY:
+            if state == FREE_ENTRY_RETRY_BLOCKED:
                 self.log_info(f"{section_name}：当前未确认原池免费入口（状态 {state}），停止点击。")
                 return False
-            if attempt > 1:
-                self.log_info(
-                    f"{section_name}：确认弹窗未出现且免费入口仍可见，"
-                    f"重试免费入口点击（{attempt - 1}/{retries}）。"
-                )
-            self.operate_click(*point, after_sleep=0.5)
-            if self._wait_for_confirm_dialog(section_name):
-                return True
+            if state == FREE_ENTRY_RETRY_LOADING:
+                observe_until = min(end_at, monotonic() + window)
+            elif monotonic() >= observe_until:
+                break
+            elif state == FREE_ENTRY_RETRY_READY:
+                if monotonic() >= end_at:
+                    break
+                if clicks:
+                    self.log_info(f"{section_name}：免费入口仍可见，重试点击（{clicks}/{retries}）。")
+                self._gacha_evidence = None
+                self.operate_click(*point, after_sleep=0.5)
+                clicks += 1
+                remaining = end_at - monotonic()
+                if remaining <= 0:
+                    break
+                if self._wait_for_confirm_dialog(section_name, timeout=min(
+                        remaining, max(0.0, float(self.config.get("确认弹窗等待秒数", 8.0))))):
+                    return True
+                self._sleep_after_recognition()
+                observe_until = min(end_at, monotonic() + window)
+                continue
+            wait_until = end_at if state == FREE_ENTRY_RETRY_LOADING else observe_until
+            self.sleep(min(0.25, max(0.0, wait_until - monotonic())))
+        self.log_info(f"{section_name}：免费入口复核或开框预算耗尽，实际点击{clicks}次。")
         return False
 
     def _confirm_dialog_submission(self, section_name: str) -> bool:
@@ -525,23 +638,9 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
         return dialog_hits >= int(self.config.get("确认弹窗关键词最低命中数", 2))
 
     def _free_entry_retry_state(self, section_name: str):
-        """同一新帧判定能否重试免费入口，四路信号不得跨帧拼接。"""
-        frame = self.capture_frame()
-        loading = self._match(frame, LOADING_TEMPLATE)
-        self.info_set(f"{section_name}_retry_loading", f"{loading.score:.3f}")
-        if self._passes(loading, LOADING_TEMPLATE):
-            return FREE_ENTRY_RETRY_LOADING, None
-        boxes = self._gacha_ocr_boxes(frame, name=f"{section_name}_retry")
-        text = " ".join(box.name for box in boxes)
-        dialog_hits = self._keyword_match_count(text, CONFIRM_DIALOG_KEYWORDS)
-        self.info_set(f"{section_name}_retry OCR", text or "-")
-        if dialog_hits >= int(self.config.get("确认弹窗关键词最低命中数", 2)):
-            return FREE_ENTRY_RETRY_DIALOG, None
-        single = self._pool_controls(boxes, section_name)
-        point = self._free_entry_point(frame, boxes, single) if single is not None else None
-        if point is not None:
-            return FREE_ENTRY_RETRY_READY, point
-        return FREE_ENTRY_RETRY_CHANGED, None
+        observation = self._observe_free_pool(section_name, f"{section_name}_retry")
+        self.info_set(f"{section_name}_retry OCR", observation.text or "-")
+        return observation.state, observation.point
 
     def _wait_for_equipment_pool_page(self, name: str) -> bool:
         return self._wait_for_pool_page("装备抽抽乐", name)
@@ -552,13 +651,11 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
     def _wait_for_pool_page(self, section_name: str, name: str) -> bool:
         end_at = monotonic() + float(self.config.get("抽卡页面等待秒数", 12.0))
         while monotonic() <= end_at:
-            frame = self.capture_frame()
-            if not self._passes(self._match(frame, LOADING_TEMPLATE), LOADING_TEMPLATE):
-                boxes = self._gacha_ocr_boxes(frame, name)
-                self.info_set(f"{name} OCR", " ".join(box.name for box in boxes) or "-")
-                if self._pool_controls(boxes, section_name) is not None:
-                    self.log_info(f"{name}：已确认{section_name}页面。")
-                    return True
+            observation = self._observe_free_pool(section_name, name)
+            self.info_set(f"{name} OCR", observation.text or "-")
+            if observation.pool_confirmed:
+                self.log_info(f"{name}：已确认{section_name}页面。")
+                return True
             self.sleep(0.5)
         self.log_info(f"{name}：未确认可操作的{section_name}页面。")
         return False
@@ -567,17 +664,75 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
         found, text = self._click_skip_until_back_page(section_name)
         self.info_set(f"{section_name} 结果 OCR", text or "-")
         if not found:
-            self.log_info(f"{section_name}：连续点击跳过并持续 OCR 后未检测到抽抽乐券详情页。")
-            return False
+            self.log_info(f"{section_name}：券详情尚未确认，继续有界观察结果和原卡池。")
+        end_at = monotonic() + max(0.0, float(self.config.get("抽卡页面等待秒数", 12.0)))
+        clicks = {"detail": 0, "result": 0}
+        previous, hits = None, 0
+        ready_at = next_click = 0.0
+        while monotonic() < end_at:
+            frame = self.capture_frame()
+            state, point = self._result_return_state(frame, section_name)
+            now = monotonic()
+            if now >= end_at:
+                break
+            if state == "pool":
+                self.log_info(f"{section_name}：结果收尾已确认原卡池。")
+                return True
+            if state == "blocked":
+                break
+            if state != previous:
+                hits = 0
+                delay_key = ("结果页关闭前等待秒数" if state == "detail"
+                             else "结果页返回前等待秒数")
+                ready_at = now + max(0.0, float(self.config.get(delay_key, 1.0)))
+            previous, hits = state, hits + 1
+            # Retry only on fresh, stable evidence; never back out of a returned pool.
+            if (point is not None and hits >= 2 and now >= max(ready_at, next_click)
+                    and clicks[state] < RESULT_RETURN_ATTEMPTS):
+                self.operate_click(*point, after_sleep=0.0)
+                clicks[state] += 1
+                action = "关闭券详情" if state == "detail" else "返回卡池"
+                self.info_set(f"{section_name} 结果收尾", f"{action} {clicks[state]}/3")
+                next_click = monotonic() + RESULT_RETURN_RETRY_INTERVAL
+                hits = 0
+            self.sleep(min(0.25, max(0.0, end_at - monotonic())))
+        self.log_info(f"{section_name}：结果收尾未确认原卡池，关闭详情{clicks['detail']}次、"
+                      f"返回{clicks['result']}次。")
+        self._save_flow_diagnostic("gacha_result_return_failed")
+        return False
 
-        self.log_info(f"{section_name}：已确认抽抽乐券详情页，等待后关闭并返回抽卡页面。")
-        self.sleep(max(0.0, float(self.config.get("结果页关闭前等待秒数", 1.0))))
-        self._click_reference(
-            *RESULT_PAGE_CLOSE_REFERENCE_POINT,
-            after_sleep=max(0.0, float(self.config.get("结果页返回前等待秒数", 1.0))),
-        )
-        self._click_reference(*BACK_BUTTON_REFERENCE_POINT, after_sleep=0.0)
-        return self._wait_for_gacha_page(f"{section_name} 返回抽卡页")
+    def _result_return_state(self, frame, section_name: str):
+        if self._passes(self._match(frame, LOADING_TEMPLATE), LOADING_TEMPLATE):
+            return "loading", None
+        boxes = self._gacha_ocr_boxes(frame, f"{section_name} 结果收尾")
+        text = " ".join(box.name for box in boxes)
+        self.info_set(f"{section_name} 结果收尾 OCR", text or "-")
+        if self._keyword_match_count(text, BACK_PAGE_KEYWORDS) == len(BACK_PAGE_KEYWORDS):
+            return "detail", (RESULT_PAGE_CLOSE_REFERENCE_POINT[0] / REFERENCE_WIDTH,
+                              RESULT_PAGE_CLOSE_REFERENCE_POINT[1] / REFERENCE_HEIGHT)
+        if self._pool_observation(frame, boxes, section_name).pool_confirmed:
+            return "pool", None
+        other_pool = "装备抽抽乐" if section_name == "服装抽抽乐" else "服装抽抽乐"
+        normalized = normalize_ocr_text(text)
+        if other_pool in normalized or "确认抽抽乐" in normalized:
+            return "blocked", None
+        # The result has balances and a /100 counter, but no pool controls or covering dialog.
+        if (any(word in normalized for word in ("抽抽乐", "抽1次", "抽10次", "查看概率",
+                                                "兑换", "确认", "取消", "获取途径"))
+                or not all(word in normalized for word in ("付费", "免费"))):
+            return "unknown", None
+        counters = [(box, value) for box in boxes for value in re.findall(
+            r"(?<!\d)(\d{1,3})/100(?!\d)", normalize_ocr_text(box.name))]
+        height, width = frame.shape[:2]
+        if (len(counters) != 1 or int(counters[0][1]) > 100
+                or counters[0][0].x + counters[0][0].width >= width / 2
+                or counters[0][0].y < height * 0.8):
+            return "unknown", None
+        back = self._match(frame, RESULT_BACK_TEMPLATE)
+        if not self._passes(back, RESULT_BACK_TEMPLATE):
+            return "unknown", None
+        return "result", ((back.position[0] + back.size[0] / 2) / width,
+                          (back.position[1] + back.size[1] / 2) / height)
 
     def _click_skip_until_back_page(self, section_name: str) -> tuple[bool, str]:
         duration = max(0.0, float(self.config.get("结果跳过连续点击秒数", 3.0)))
@@ -651,12 +806,12 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
     def _ocr_text(self, frame, name: str) -> str:
         return " ".join(box.name for box in self._gacha_ocr_boxes(frame, name))
 
-    def _gacha_ocr_boxes(self, frame, name: str):
+    def _gacha_ocr_boxes(self, frame, name: str, *, target_height=720):
         try:
             boxes = self.ocr(
                 frame=frame,
                 threshold=float(self.config.get("抽卡 OCR 阈值", 0.2)),
-                target_height=720,
+                target_height=target_height,
                 log=False,
                 name=name,
             )

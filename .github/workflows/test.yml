@@ -7,6 +7,7 @@ on:
 jobs:
   test:
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -23,7 +24,7 @@ jobs:
       - name: Validate dependency lock and exports
         shell: pwsh
         run: .\scripts\check_dependency_exports.ps1
-      - run: python -m pip install -r requirements-dev.txt
+      - run: python scripts/install_dependencies.py requirements-dev.txt
       - name: Run final quality checks
         shell: pwsh
         run: .\scripts\run_checks.ps1 -Mode Final
