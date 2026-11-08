@@ -372,5 +372,30 @@ class RunHistoryStoreTest(unittest.TestCase):
         self.assertIsNone(store.last_run("快速狩猎"))
 
 
+    def test_aborted_status_marks_run_failed(self):
+        task = _TaskStub("一键完成日常", info={"状态": "一键完成日常中止。"})
+        self.store.record_task_done(task, finished=2000.0)
+        self.assertFalse(self.store.last_run("一键完成日常")["ok"])
+
+    def test_neutral_status_with_failed_phase_names_marks_run_failed(self):
+        # MapTradeTask/MapCollectionTask report "…部分流程未完成。" with the
+        # failed phase names in the 失败 key.
+        task = _TaskStub(
+            "每日跑商",
+            info={"状态": "跑商部分流程未完成。", "完成": "-", "失败": "跑商买入", "跳过": "-"},
+        )
+        self.store.record_task_done(task, finished=2000.0)
+        self.assertFalse(self.store.last_run("每日跑商")["ok"])
+
+    def test_result_key_failure_marks_run_failed(self):
+        # BargainLevelTask writes the verdict into 结果 instead of 状态.
+        task = _TaskStub(
+            "刷砍价等级",
+            info={"状态": "页面文字确认超时，任务结束。", "结果": "失败"},
+        )
+        self.store.record_task_done(task, finished=2000.0)
+        self.assertFalse(self.store.last_run("刷砍价等级")["ok"])
+
+
 if __name__ == "__main__":
     unittest.main()

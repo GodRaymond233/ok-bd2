@@ -2732,3 +2732,218 @@ class CollectorSkillTest(unittest.TestCase):
                 "armed",
                 progress.get_action_record("Q_sp1", CollectionMapRole.MAIN_AREA, "吸收")["state"],
             )
+
+
+    def test_formal_single_outlier_post_count_stays_pending_without_absolute_update(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            progress = ProgressStore(
+                Path(temp_dir) / "progress.json",
+                lambda: datetime(2026, 8, 11, 12, tzinfo=UTC_PLUS_8),
+            )
+            progress.load()
+            frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+            clicks = []
+            detections = iter(
+                (
+                    ActionIconDetection(
+                        ActionIconState.AVAILABLE,
+                        MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
+                        0.95,
+                    ),
+                    ActionIconDetection(
+                        ActionIconState.AVAILABLE,
+                        MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
+                        0.95,
+                    ),
+                    ActionIconDetection(
+                        ActionIconState.AVAILABLE,
+                        MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
+                        0.95,
+                    ),
+                    ActionIconDetection(
+                        ActionIconState.USED,
+                        MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
+                        0.65,
+                    ),
+                    ActionIconDetection(
+                        ActionIconState.USED,
+                        MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
+                        0.65,
+                    ),
+                    ActionIconDetection(
+                        ActionIconState.USED,
+                        MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
+                        0.65,
+                    ),
+                )
+            )
+            collector = Collector(
+                SimpleNamespace(
+                    config={},
+                    sleep=lambda *_args: None,
+                    info_set=lambda *_args: None,
+                ),
+                SimpleNamespace(
+                    capture=lambda: frame,
+                    click_client=lambda center, _shape, after_sleep=0: clicks.append(center),
+                ),
+                SimpleNamespace(wait_for_collection_field=lambda frame: frame),
+                progress,
+            )
+            collector.action_icons = SimpleNamespace(detect=lambda *_args: next(detections))
+            count_values = iter(((0, 21), (17, 21)))
+            def read_count_window(_action, _detection=None, **kwargs):
+                return CountWindowObservation(next(count_values), not kwargs.get("allow_single"))
+
+            collector._read_count_window = read_count_window
+            collector._read_action_feedback = lambda _action: SkillFeedbackObservation(
+                "吸收周围的拾取物", "success", 1.0
+            )
+
+            self._with_running_search(collector)
+            result = collector._use_action(
+                ABSORB_ACTION,
+                card_id="Q_sp1",
+                map_role=CollectionMapRole.MAIN_AREA,
+            )
+
+            self.assertTrue(result.completed)
+            self.assertEqual(1, len(clicks))
+            self.assertEqual({"吸收": (0, 21)}, progress.state.observed_counts)
+            self.assertFalse(progress.state.depleted_today)
+            self.assertEqual(1, progress.effective_used("吸收"))
+            record = progress.get_action_record("Q_sp1", CollectionMapRole.MAIN_AREA, "吸收")
+            self.assertEqual(CollectionActionState.PENDING.value, record["state"])
+            self.assertNotIn("observed", record)
+
+    def test_preexisting_used_keeps_older_pending_for_a_bright_checkpoint(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            progress = ProgressStore(
+                Path(temp_dir) / "progress.json",
+                lambda: datetime(2026, 8, 11, 12, tzinfo=UTC_PLUS_8),
+            )
+            progress.load()
+            progress.arm_action(
+                "Q_sp1",
+                CollectionMapRole.BATTLE_AREA_1,
+                "吸收",
+                baseline=(0, 21),
+            )
+            progress.mark_action_local_done(
+                "Q_sp1", CollectionMapRole.BATTLE_AREA_1, "吸收", pending=True
+            )
+            _seed_battle_supplements(
+                progress,
+                "Q_sp1",
+                CollectionMapRole.BATTLE_AREA_1,
+            )
+            progress.mark_target("Q_sp1", CollectionMapRole.BATTLE_AREA_1.value)
+            frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+            used = ActionIconDetection(
+                ActionIconState.USED,
+                MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
+                0.65,
+            )
+            collector = Collector(
+                SimpleNamespace(
+                    config={},
+                    info_set=lambda *_args: None,
+                    sleep=lambda *_args: None,
+                ),
+                SimpleNamespace(capture=lambda: frame),
+                SimpleNamespace(wait_for_collection_field=lambda frame: frame),
+                progress,
+            )
+            collector.action_icons = SimpleNamespace(detect=lambda *_args: used)
+
+            def stable_checkpoint(_action, _detection=None, **_kwargs):
+                self.fail("dim counts must not reconcile older pending actions")
+
+            collector._read_count_window = stable_checkpoint
+            result = collector._use_action(
+                ABSORB_ACTION,
+                card_id="Q_sp1",
+                map_role=CollectionMapRole.BATTLE_AREA_2,
+            )
+
+            self.assertTrue(result.completed)
+            self.assertEqual((), result.pending_actions)
+            self.assertIn("本次未点击", result.message)
+            self.assertEqual(1, progress.pending_count("吸收"))
+            self.assertNotIn("吸收", progress.state.observed_counts)
+            old = progress.get_action_record("Q_sp1", CollectionMapRole.BATTLE_AREA_1, "吸收")
+            current = progress.get_action_record("Q_sp1", CollectionMapRole.BATTLE_AREA_2, "吸收")
+            self.assertEqual(CollectionActionState.PENDING.value, old["state"])
+            self.assertEqual(CollectionActionState.PREEXISTING_USED.value, current["state"])
+            self.assertNotIn("baseline", current)
+            self.assertFalse(current["pending"])
+            self.assertEqual(1, progress.effective_used("吸收"))
+            _seed_battle_supplements(
+                progress,
+                "Q_sp1",
+                CollectionMapRole.BATTLE_AREA_2,
+            )
+            progress.mark_target("Q_sp1", CollectionMapRole.BATTLE_AREA_2.value)
+            self.assertEqual(1, progress.effective_used("吸收"))
+            self.assertEqual(1, progress.reconcile_pending("吸收", (2, 21)))
+            self.assertEqual(0, progress.reconcile_pending("吸收", (2, 21)))
+
+    def test_used_single_checkpoint_preserves_pending_and_records_only_map_state(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            progress = ProgressStore(
+                Path(temp_dir) / "progress.json",
+                lambda: datetime(2026, 8, 11, 12, tzinfo=UTC_PLUS_8),
+            )
+            progress.load()
+            progress.arm_action(
+                "Q_sp1",
+                CollectionMapRole.BATTLE_AREA_1,
+                "吸收",
+                baseline=(0, 21),
+            )
+            progress.mark_action_local_done(
+                "Q_sp1", CollectionMapRole.BATTLE_AREA_1, "吸收", pending=True
+            )
+            before_observed = dict(progress.state.observed_counts)
+            frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+            used = ActionIconDetection(
+                ActionIconState.USED,
+                MatchResult(0.98, (900, 420), (44, 43), 0.95, 0.92),
+                0.65,
+            )
+            clicks = []
+            collector = Collector(
+                SimpleNamespace(
+                    config={},
+                    info_set=lambda *_args: None,
+                    sleep=lambda *_args: None,
+                ),
+                SimpleNamespace(
+                    capture=lambda: frame,
+                    click_client=lambda *args, **kwargs: clicks.append((args, kwargs)),
+                ),
+                SimpleNamespace(wait_for_collection_field=lambda frame: frame),
+                progress,
+            )
+            collector.action_icons = SimpleNamespace(detect=lambda *_args: used)
+
+            collector._read_count_window = Mock(
+                side_effect=AssertionError("USED does not read counts"),
+            )
+
+            result = collector._use_action(
+                ABSORB_ACTION,
+                card_id="Q_sp1",
+                map_role=CollectionMapRole.BATTLE_AREA_2,
+            )
+
+            self.assertTrue(result.completed)
+            self.assertIn("本次未点击", result.message)
+            self.assertEqual([], clicks)
+            self.assertEqual(before_observed, progress.state.observed_counts)
+            self.assertEqual(1, progress.pending_count("吸收"))
+            self.assertFalse(
+                progress.get_action_record(
+                    "Q_sp1", CollectionMapRole.BATTLE_AREA_2, "吸收",
+                )["pending"]
+            )

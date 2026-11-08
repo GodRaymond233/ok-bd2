@@ -169,6 +169,27 @@ class TaskScheduleStoreTest(unittest.TestCase):
         self.assertIsNone(scheduler.TaskScheduleStore(self.path).next_run("a"))
 
 
+    def test_success_weekly_delay_lands_on_next_monday(self):
+        next_run = self.store.delay_after_run(
+            "每周跑图", ok=True, now=_beijing_ts(2026, 8, 19, 12, 0)
+        )
+        self.assertEqual(next_run, _beijing_ts(2026, 8, 24, 8, 0))
+        for hour, minute in ((4, 0), (7, 59), (8, 0)):
+            with self.subTest(hour=hour, minute=minute):
+                moment = _beijing_ts(2026, 8, 24, hour, minute)
+                self.assertEqual(
+                    self.store.delay_after_run("每周跑图", ok=True, now=moment),
+                    _beijing_ts(2026, 8, 31 if hour == 8 else 24, 8),
+                )
+                self.assertEqual(
+                    self.store.delay_after_run(
+                        "每周跑图", ok=True, now=moment,
+                        policy=scheduler.SchedulePolicy("daily", refresh_hour=8),
+                    ),
+                    _beijing_ts(2026, 8, 25 if hour == 8 else 24, 8),
+                )
+
+
 class _FakeStartController:
     def __init__(self):
         self.started = []
@@ -319,6 +340,18 @@ class RunDueTasksOnceTest(unittest.TestCase):
         og = _FakeOg(executor)
         self.assertIsNone(auto_scheduler.run_due_tasks_once(og))
         self.assertEqual([], og.app.start_controller.started)
+
+
+    def test_auto_start_proceeds_when_login_task_disabled(self):
+        # 停用自动登录的用户不能被登录等待卡死；未就绪场景由主页确认与
+        # 退避兜底。
+        batch, executor = self._build_with_login(False, False)
+        og = _FakeOg(executor)
+        self.assertEqual(
+            "一键完成日常（仅执行今日未完成）",
+            auto_scheduler.run_due_tasks_once(og),
+        )
+        self.assertEqual(og.app.start_controller.started, [batch])
 
 
 class InstallAutoSchedulerTest(unittest.TestCase):

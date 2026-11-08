@@ -838,5 +838,179 @@ class ProgressTest(unittest.TestCase):
             self.assertFalse(archived["reservation"])
 
 
+    def test_schema_one_collection_progress_resets_without_losing_other_progress(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "progress.json"
+            now = datetime(2026, 7, 13, 12, tzinfo=UTC_PLUS_8)
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "weekly_key": weekly_cycle_key(now),
+                        "daily_key": daily_cycle_key(now),
+                        "cards": {"Q_sp1": [0, 1]},
+                        "daily_submaps": 5,
+                        "depleted_today": False,
+                        "favorite_week": weekly_cycle_key(now),
+                        "favorite_cards": ["S1"],
+                        "cooking_week": weekly_cycle_key(now),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            state = ProgressStore(path, lambda: now).load()
+            saved = json.loads(path.read_text(encoding="utf-8"))
+
+            self.assertEqual({}, state.cards)
+            self.assertEqual(0, state.daily_submaps)
+            self.assertEqual(0, state.daily_summons)
+            self.assertEqual(0, state.daily_suppressions)
+            self.assertEqual({"S1"}, state.completed_favorite_cards)
+            self.assertEqual(weekly_cycle_key(now), state.cooking_week)
+            self.assertEqual(set(DEFAULT_RECIPES), state.completed_cooking_recipes)
+            self.assertEqual(STATE_SCHEMA_VERSION, saved["schema_version"])
+
+    def test_schema_two_collection_progress_resets_for_role_specific_flow(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "progress.json"
+            now = datetime(2026, 8, 3, 12, tzinfo=UTC_PLUS_8)
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "weekly_key": weekly_cycle_key(now),
+                        "daily_key": daily_cycle_key(now),
+                        "cards": {
+                            "Q_sp1": [
+                                "main_area",
+                                "battle_area_1",
+                                "battle_area_2",
+                            ]
+                        },
+                        "daily_submaps": 3,
+                        "depleted_today": False,
+                        "favorite_week": weekly_cycle_key(now),
+                        "favorite_cards": ["S1"],
+                        "cooking_week": weekly_cycle_key(now),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            state = ProgressStore(path, lambda: now).load()
+
+            self.assertEqual({}, state.cards)
+            self.assertEqual(0, state.daily_absorbs)
+            self.assertEqual([], state.verified_cards)
+            self.assertEqual({"S1"}, state.completed_favorite_cards)
+
+    def test_schema_four_whole_week_cooking_marker_migrates_to_all_recipes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "progress.json"
+            now = datetime(2026, 8, 10, 12, tzinfo=UTC_PLUS_8)
+            week = weekly_cycle_key(now)
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 4,
+                        "weekly_key": week,
+                        "daily_key": daily_cycle_key(now),
+                        "cooking_week": week,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            store = ProgressStore(path, lambda: now)
+            state = store.load()
+            saved = json.loads(path.read_text(encoding="utf-8"))
+
+            self.assertEqual(set(DEFAULT_RECIPES), state.completed_cooking_recipes)
+            self.assertFalse(store.should_cook(recipes=DEFAULT_RECIPES))
+            self.assertEqual(list(DEFAULT_RECIPES), saved["cooking_recipes"])
+            self.assertEqual(STATE_SCHEMA_VERSION, saved["schema_version"])
+
+    def test_schema_four_sanitizes_action_keys_and_quarantines_stale_records(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "progress.json"
+            now = datetime(2026, 8, 10, 12, tzinfo=UTC_PLUS_8)
+            day = daily_cycle_key(now)
+            week = weekly_cycle_key(now)
+
+            def record(daily, card, role, action, *, key=None):
+                canonical = "|".join((daily, card, role, action))
+                return key or canonical, {
+                    "daily_key": daily,
+                    "card_id": card,
+                    "map_role": role,
+                    "action": action,
+                    "state": "pending",
+                    "local_done": True,
+                    "reservation": True,
+                }
+
+            valid_key, valid = record(day, "Q_sp1", CollectionMapRole.MAIN_AREA.value, "吸收")
+            stale_key, stale = record(
+                "2026-08-09", "Q_sp1", CollectionMapRole.MAIN_AREA.value, "吸收"
+            )
+            malformed_key, malformed = record(
+                day, "Q_sp1", CollectionMapRole.MAIN_AREA.value, "吸收", key="not-canonical"
+            )
+            invalid_action_key, invalid_action = record(
+                day, "Q_sp1", CollectionMapRole.MAIN_AREA.value, "探查"
+            )
+            invalid_role_key, invalid_role = record(day, "Q_sp1", "main", "吸收")
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": STATE_SCHEMA_VERSION,
+                        "weekly_key": week,
+                        "daily_key": day,
+                        "action_records": {
+                            valid_key: valid,
+                            stale_key: stale,
+                            malformed_key: malformed,
+                            invalid_action_key: invalid_action,
+                            invalid_role_key: invalid_role,
+                            "broken-value": "not-a-record",
+                        },
+                        "observed_counts": {
+                            "吸收": [1, 21],
+                            "探查": [99, 99],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            state = ProgressStore(path, lambda: now).load()
+
+            self.assertEqual({valid_key}, set(state.action_records))
+            self.assertEqual((1, 21), state.observed_counts["吸收"])
+            self.assertNotIn("探查", state.observed_counts)
+            self.assertGreaterEqual(len(state.archived_action_records), 5)
+            self.assertTrue(
+                all(
+                    record.get("state") == CollectionActionState.ARCHIVED.value
+                    and record.get("reservation") is False
+                    for record in state.archived_action_records.values()
+                )
+            )
+            resumed_store = ProgressStore(path, lambda: now)
+            resumed_store.load()
+            self.assertEqual(2, resumed_store.effective_used("吸收"))
+            # Both raw malformed entries and already isolated evidence survive rollover.
+            before_rollover = ProgressStore(
+                path, lambda: datetime(2026, 8, 17, 12, tzinfo=UTC_PLUS_8),
+            )
+            rolled = before_rollover.load()
+            self.assertIn("quarantine|broken-value", rolled.archived_action_records)
+            self.assertIn(f"quarantine|{invalid_action_key}", rolled.archived_action_records)
+            evidence = dict(rolled.archived_action_records)
+            self.assertEqual(evidence, before_rollover.load().archived_action_records)
+            self.assertEqual(0, before_rollover.effective_used("吸收"))
+
+
 if __name__ == "__main__":
     unittest.main()

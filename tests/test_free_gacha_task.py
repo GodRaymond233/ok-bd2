@@ -688,5 +688,81 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
         self.assertEqual(2, len(clicks))
 
 
+    def test_free_entry_retry_state_ready_requires_pool_and_free_entry(self):
+        task = object.__new__(FreeGachaTask)
+        task.config = {}
+        task.info_set = lambda *_args, **_kwargs: None
+        task._match = lambda _frame, _spec: MatchResult(-1.0, (0, 0), (0, 0))
+        task._passes = lambda _result, _spec: False
+        task._sleep_after_recognition = Mock()
+        task.log_info = Mock()
+        task.operate_click = Mock()
+        task._wait_for_confirm_dialog = Mock(return_value=True)
+        for pool in ("服装", "装备"):
+            for merged in (False, True):
+                for scale in (1, .72, 2):
+                    with self.subTest(pool=pool, merged=merged, scale=scale):
+                        task.capture_frame = lambda: np.zeros(
+                            (round(800 * scale), round(1000 * scale), 3), dtype=np.uint8)
+                        task._gacha_ocr_boxes = Mock(return_value=pool_boxes(
+                            pool, free=True, scale=scale, merged_header=merged))
+                        task.operate_click.reset_mock()
+                        self.assertTrue(task._open_confirm_dialog_with_retry(pool + "抽抽乐"))
+                        task.operate_click.assert_called_once()
+                        x, y = task.operate_click.call_args.args
+                        self.assertAlmostEqual(.2, x)
+                        self.assertAlmostEqual(.91875, y)
+                        self.assertEqual({"after_sleep": 0.5}, task.operate_click.call_args.kwargs)
+        task._gacha_ocr_boxes.return_value = pool_boxes(
+            pool="服装", free=True, merged_header=True)
+        task.operate_click.reset_mock()
+        self.assertFalse(task._open_confirm_dialog_with_retry("装备抽抽乐"))
+        task.operate_click.assert_not_called()
+
+    def test_run_free_section_fails_when_free_entry_ocr_is_empty(self):
+        task = object.__new__(FreeGachaTask)
+        task.config = {}
+        statuses = []
+        task.info_set = lambda key, value: statuses.append((key, value))
+        task.log_info = lambda *_args, **_kwargs: None
+        task._wait_for_free_gacha = lambda *_args, **_kwargs: (False, "", False)
+        task._open_confirm_dialog_with_retry = lambda *_args, **_kwargs: self.fail(
+            "OCR 全程无文本时不得进入免费入口点击"
+        )
+
+        self.assertFalse(FreeGachaTask._run_free_section(task, "装备抽抽乐", True))
+        self.assertIn(("状态", "白嫖抽抽乐装备抽抽乐免费入口判断失败。"), statuses)
+
+    def test_run_free_section_fails_when_completion_recheck_is_unjudged(self):
+        task = object.__new__(FreeGachaTask)
+        task.config = {}
+        statuses = []
+        task.info_set = lambda key, value: statuses.append((key, value))
+        task.log_info = lambda *_args, **_kwargs: None
+        task._wait_for_free_gacha = Mock(side_effect=[
+            (True, "所有免费抽抽乐", True), (False, "", False)])
+        task._open_confirm_dialog_with_retry = lambda *_args, **_kwargs: True
+        task._wait_for_free_confirmation = lambda *_args: FreeDrawConfirmation(3, (.7, .6))
+        task._confirm_dialog_submission = lambda *_args, **_kwargs: True
+        task._handle_result_until_back = lambda *_args, **_kwargs: True
+
+        self.assertFalse(FreeGachaTask._run_free_section(task, "装备抽抽乐", True))
+        self.assertIn(("状态", "白嫖抽抽乐装备抽抽乐领取复核失败。"), statuses)
+
+    def test_confirm_submission_stops_when_dialog_closes(self):
+        task = object.__new__(FreeGachaTask)
+        task.config = {"确认提交重试次数": 2}
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task._sleep_after_recognition = lambda: None
+        clicks = []
+        task.operate_click = lambda *_args, **_kwargs: clicks.append(1)
+        task._wait_for_free_confirmation = lambda *_args: FreeDrawConfirmation(3, (.7, .6))
+        task._confirm_dialog_still_open = lambda _section_name: False
+
+        self.assertTrue(FreeGachaTask._confirm_dialog_submission(task, "服装抽抽乐"))
+        self.assertEqual(1, len(clicks))
+
+
 if __name__ == "__main__":
     unittest.main()

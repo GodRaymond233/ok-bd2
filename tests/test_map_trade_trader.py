@@ -58,6 +58,8 @@ from src.tasks.map_trade.trader import (
 from src.tasks.map_trade.trader_constants import (
     BUY_ALL_FAVORITES_KEYWORD,
     BUY_ALL_FAVORITES_STABLE_HITS,
+    BUY_CONFIRM_DIALOG_REGION,
+    BUY_CONFIRM_KEYWORDS,
     BUY_TO_SELL_POST_CLICK_DELAY,
     BUY_TO_SELL_PRE_CLICK_DELAY,
     BUY_TO_SELL_SOLD_OUT_STABLE_HITS,
@@ -69,6 +71,7 @@ from src.tasks.map_trade.trader_constants import (
     SALE_CLOSE_POINT,
     SALE_CONFIRM_POINT,
     SALE_DIALOG_OPEN_MAX_CLICKS,
+    SALE_DIALOG_REGION,
     SALE_EMPTY_NAME_STABLE_HITS,
     SALE_MAX_POINT,
     SALE_MIN_POINT,
@@ -1464,6 +1467,44 @@ class SellFlowTest(StageHistoryTestCase):
         self.assertEqual("未出售：前序商品出售失败，未执行", trader._sale_not_sold[entries[1]])
 
 
+    def test_sale_dialog_empty_title_resets_consecutive_confirmation(self):
+        trader, calls, _warnings, clock = self._title_trader([
+            ("白糖", "白糖", "白糖"),
+            ("", "", ""),
+            ("白糖", "白糖", "白糖"),
+            ("白糖", "白糖", "白糖"),
+        ])
+        with patch("src.tasks.map_trade.trader_sell.monotonic", lambda: clock[0]):
+            self.assertTrue(trader._wait_sale_dialog_item(CalendarEntry("白糖", "S2")))
+        self.assertEqual([0, 1, 1, 1, 2, 3], [c[0] for c in calls])
+
+    def test_sale_dialog_separates_owned_and_available_quantities(self):
+        calls = []
+        trader = create_trader()
+        trader.task = SimpleNamespace(sleep=lambda *_args: None)
+        trader.vision = SimpleNamespace(
+            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
+            ocr_text=lambda _frame, name, relative_roi: (
+                calls.append((name, relative_roi)) or "兽肉 拥有335,005个 1个 可购买94,481个"
+            ),
+            simplify=lambda value: value,
+        )
+
+        self.assertEqual(335005, trader._wait_owned_quantity(timeout=0.0))
+        self.assertEqual(94481, trader._wait_available_quantity(timeout=0.0))
+        self.assertEqual(
+            94481,
+            Trader._selected_quantity_from_text("兽肉 拥有335,005个 94481个 可购买94481个"),
+        )
+        self.assertEqual(
+            [
+                ("出售弹窗库存", SALE_DIALOG_REGION),
+                ("出售弹窗可购买数量", SALE_DIALOG_REGION),
+            ],
+            calls,
+        )
+
+
 class TradeAssetsTest(unittest.TestCase):
 
     def test_sale_120_marker_template_matches_all_real_fixture_markers_at_fhd(self):
@@ -2437,6 +2478,35 @@ class PurchaseFlowTest(StageHistoryTestCase):
         self.assertFalse(trader.buy_all_favorites())
         self.assertEqual(2, len(clicks))
         self.assertIn("未观察到售罄模板", warnings[0])
+
+
+    def test_purchase_confirmation_requires_both_texts_in_given_region(self):
+        ocr_calls = []
+        warnings = []
+        text = {"value": "一键购买全部收藏"}
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        trader = create_trader()
+        trader.task = SimpleNamespace(
+            sleep=lambda *_args: None,
+            log_warning=warnings.append,
+            info_set=lambda *_args: None,
+        )
+        trader.vision = SimpleNamespace(
+            capture=lambda: frame,
+            ocr_text=lambda captured, name, relative_roi: (
+                ocr_calls.append((captured.shape, name, relative_roi)) or text["value"]
+            ),
+            simplify=lambda value: value,
+        )
+
+        self.assertFalse(trader._wait_for_purchase_confirmation(timeout=0.0))
+        text["value"] = "一键购买全部收藏 是否购买所有加入收藏的商品？"
+        self.assertTrue(trader._wait_for_purchase_confirmation(timeout=0.0))
+        self.assertEqual(
+            ("一键购买全部收藏", "是否购买所有加入收藏的商品"),
+            BUY_CONFIRM_KEYWORDS,
+        )
+        self.assertTrue(all(call[2] == BUY_CONFIRM_DIALOG_REGION for call in ocr_calls))
 
 class TradeHomeConfirmationTest(unittest.TestCase):
 
