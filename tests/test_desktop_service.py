@@ -66,6 +66,29 @@ class HandshakeTest(unittest.TestCase):
 
 
 class ProtocolPiecesTest(unittest.TestCase):
+    def test_loopback_binding_skips_browser_blocked_ports_and_closes_failures(self):
+        sockets = [Mock() for _ in range(4)]
+        for server, port in zip(sockets, (80, 6697, 10080, 49152)):
+            server.getsockname.return_value = ("127.0.0.1", port)
+        with patch.object(service.socket, "socket", side_effect=sockets):
+            self.assertIs(service.bind_loopback(), sockets[-1])
+        for server in sockets:
+            server.bind.assert_called_once_with(("127.0.0.1", 0))
+        for server in sockets[:-1]:
+            server.close.assert_called_once_with()
+            server.listen.assert_not_called()
+        sockets[-1].close.assert_not_called()
+        sockets[-1].listen.assert_called_once_with(128)
+        for blocked in (True, False):
+            server = Mock()
+            server.getsockname.return_value = ("127.0.0.1", 6697)
+            if not blocked:
+                server.bind.side_effect = OSError("bind failed")
+            with patch.object(service.socket, "socket", return_value=server), \
+                    self.assertRaises(OSError):
+                service.bind_loopback()
+            self.assertEqual(server.close.call_count, 32 if blocked else 1)
+
     def test_channel_writes_prefixed_ascii_json_and_survives_closed_stream(self):
         stream = io.StringIO()
         channel = service.ProtocolChannel(stream)

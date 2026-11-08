@@ -29,6 +29,11 @@ from dataclasses import dataclass
 from src.desktop import protocol
 
 TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+# Chromium's net/base/port_util.cc also blocks these ports above the well-known range.
+BLOCKED_BROWSER_PORTS = frozenset({
+    1719, 1720, 1723, 2049, 3659, 4045, 5060, 5061, 6000, 6566,
+    6665, 6666, 6667, 6668, 6669, 6697, 10080,
+})
 
 
 class HandshakeError(Exception):
@@ -407,10 +412,20 @@ def route_console_logs(original, replacement) -> int:
 
 
 def bind_loopback():
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.bind(("127.0.0.1", 0))
-    server_socket.listen(128)
-    return server_socket
+    for _ in range(32):
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            server_socket.bind(("127.0.0.1", 0))
+            port = server_socket.getsockname()[1]
+            if port < 1024 or port in BLOCKED_BROWSER_PORTS:
+                server_socket.close()
+                continue
+            server_socket.listen(128)
+            return server_socket
+        except BaseException:
+            server_socket.close()
+            raise
+    raise OSError("Could not allocate a browser-accessible loopback port")
 
 
 def service_config(config: dict) -> dict:
