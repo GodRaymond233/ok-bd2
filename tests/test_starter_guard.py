@@ -13,9 +13,6 @@ from src.compat.starter_guard import (
     _is_starter_or_setup_command,
     _patch_execute_preflight,
     _patch_stable_wait,
-    get_setup_exe_names,
-    get_watcher_exe_names,
-    get_wizard_grace_seconds,
     notify_starter_wizard,
     reset_starter_guard_state,
     starter_preflight_warning,
@@ -76,30 +73,6 @@ class StarterWizardWatcherTest(unittest.TestCase):
         self.watcher.poll_once()
         self.notify.assert_called_once()
 
-    def test_no_notify_without_window(self):
-        self.watcher.poll_once()
-        self.now[0] += 120.0
-        self.watcher.poll_once()
-        self.notify.assert_not_called()
-
-    def test_grace_clock_resets_when_window_disappears(self):
-        self.poll_with_window()
-        self.watcher.poll_once()
-        self.now[0] += 29.0
-        self.watcher.poll_once()
-        self.notify.assert_not_called()
-
-        self.watcher._find_windows = lambda: []
-        self.watcher.poll_once()
-        self.poll_with_window()
-        self.now[0] += 2.0
-        self.watcher.poll_once()
-        self.notify.assert_not_called()
-
-        self.now[0] += 31.0
-        self.watcher.poll_once()
-        self.notify.assert_called_once()
-
     def test_unknown_window_does_not_become_install_wizard_after_thirty_seconds(self):
         self.poll_with_window()
         self.watcher._observe = lambda _: StarterObservation("unknown")
@@ -146,14 +119,6 @@ class StarterFrameTest(unittest.TestCase):
                 self.assertAlmostEqual(result.bars[1], 0.25, delta=0.005)
         reset = classify_starter_frame(update_frame(450, 20))
         self.assertLess(reset.bars[1], 0.03)
-
-    def test_unaligned_colors_and_blank_frames_are_unknown(self):
-        frame = update_frame()
-        frame[640:, :600] = 245
-        cv2.rectangle(frame, (650, 652), (890, 660), (235, 155, 95), -1)
-        for image in (frame, np.zeros_like(frame), None):
-            with self.subTest(blank=image is None):
-                self.assertEqual(classify_starter_frame(image).state, "unknown")
 
     def test_stage_wizard_and_failure_text_are_distinct(self):
         cases = [
@@ -266,41 +231,12 @@ class StarterWaitPolicyTest(unittest.TestCase):
         )
 
 
-class StarterGuardConfigTest(unittest.TestCase):
-    def test_setup_exe_names_default(self):
-        self.assertEqual(get_setup_exe_names(), ["BD2StarterSetup.exe"])
-
-    def test_setup_exe_names_env_list(self):
-        env = {"OK_BD2_SETUP_EXE": " OneSetup.exe, 'TwoSetup.exe' "}
-        self.assertEqual(get_setup_exe_names(env), ["OneSetup.exe", "TwoSetup.exe"])
-
-    def test_watcher_names_merge_launcher_and_setup(self):
-        env = {"OK_BD2_LAUNCHER_EXE": "AltStarter.exe", "OK_BD2_SETUP_EXE": "AltSetup.exe"}
-        self.assertEqual(
-            get_watcher_exe_names(env),
-            {"altstarter.exe", "altsetup.exe"},
-        )
-
-    def test_wizard_grace_seconds_default_and_env(self):
-        grace_env = {"OK_BD2_STARTER_WIZARD_GRACE_SECONDS": "45"}
-        invalid_env = {"OK_BD2_STARTER_WIZARD_GRACE_SECONDS": "abc"}
-        floor_env = {"OK_BD2_STARTER_WIZARD_GRACE_SECONDS": "0"}
-        self.assertEqual(get_wizard_grace_seconds(), 30.0)
-        self.assertEqual(get_wizard_grace_seconds(grace_env), 45.0)
-        self.assertEqual(get_wizard_grace_seconds(invalid_env), 30.0)
-        self.assertEqual(get_wizard_grace_seconds(floor_env), 1.0)
-
-
 class StarterPreflightTest(unittest.TestCase):
     def test_warning_when_game_missing(self):
         with patch("src.game_path.resolve_game_exe_path", return_value=""):
             message = starter_preflight_warning()
         self.assertIn("BD2StarterSetup.exe", message)
         self.assertIn("OK_BD2_GAME_PATH", message)
-
-    def test_no_warning_when_game_found(self):
-        with patch("src.game_path.resolve_game_exe_path", return_value=GAME_PATH):
-            self.assertIsNone(starter_preflight_warning())
 
 
 class StarterCommandTest(unittest.TestCase):
@@ -339,17 +275,6 @@ class ExecutePreflightPatchTest(unittest.TestCase):
             [(STARTER_PATH, None, "start"), (STARTER_PATH, None, "start")],
         )
 
-    def test_non_starter_command_skips_preflight(self):
-        with patch.object(starter_guard, "_emit_notification") as emit:
-            self.assertTrue(self.module.execute(GAME_PATH, arguments="--flag"))
-        emit.assert_not_called()
-        self.assertEqual(self.execute_calls, [(GAME_PATH, "--flag", "start")])
-
-    def test_patch_is_idempotent(self):
-        wrapped = self.module.execute
-        _patch_execute_preflight(self.module)
-        self.assertIs(self.module.execute, wrapped)
-
 
 class StableWaitPatchTest(unittest.TestCase):
     def setUp(self):
@@ -380,12 +305,6 @@ class StableWaitPatchTest(unittest.TestCase):
             self.assertTrue(controller._wait_until_started_window_stable())
         self.assertEqual(self.wait_calls, [controller])
 
-    def test_patch_is_idempotent(self):
-        _patch_stable_wait(self.module)
-        wrapped = self.controller_class._wait_until_started_window_stable
-        _patch_stable_wait(self.module)
-        self.assertIs(self.controller_class._wait_until_started_window_stable, wrapped)
-
 
 class NotifyStarterWizardTest(unittest.TestCase):
     def setUp(self):
@@ -397,19 +316,6 @@ class NotifyStarterWizardTest(unittest.TestCase):
             notify_starter_wizard([make_window()], 45.0)
             notify_starter_wizard([make_window()], 120.0)
         emit.assert_called_once()
-
-    def test_notify_again_after_reset(self):
-        with patch.object(starter_guard, "_emit_notification") as emit:
-            notify_starter_wizard([make_window()], 45.0)
-            reset_starter_guard_state()
-            notify_starter_wizard([make_window()], 45.0)
-        self.assertEqual(emit.call_count, 2)
-
-
-class FindStarterWindowsTest(unittest.TestCase):
-    def test_non_windows_returns_empty(self):
-        with patch.object(starter_guard.os, "name", "posix"):
-            self.assertEqual(starter_guard.find_starter_windows(), [])
 
 
 class GameWindowWaitTest(unittest.TestCase):

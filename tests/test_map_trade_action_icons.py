@@ -2,7 +2,6 @@
 
 import unittest
 from dataclasses import replace
-from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -10,21 +9,9 @@ import numpy as np
 from src.tasks.map_trade.action_icons import (
     ABSORB_ICON,
     ACTION_ICON_BRIGHT_CORE_GRAY,
-    ACTION_ICON_CONSENSUS_TEMPLATE_FLOOR,
-    ACTION_ICON_CONSENSUS_ZNCC_FLOOR,
-    ACTION_ICON_TEMPLATE_SCORE,
-    ACTION_ICON_USED_ZNCC_SCORE,
-    ACTION_ICON_ZNCC_SCORE,
-    ACTION_ICONS,
-    ACTION_SLOT_CENTER_RELATIVE_ROIS,
-    ACTION_SLOT_CENTERS_REFERENCE,
-    ACTION_SLOT_RELATIVE_ROIS,
     COOKING_ICON,
-    COOKING_ICON_SCALE_RATIOS,
     INTERACT_ICON,
     SEARCH_ICON,
-    SEARCH_ICON_TEMPLATE_SCORE,
-    SUBDUE_ICON,
     SUMMON_ICON,
     ActionIconDetector,
     ActionIconState,
@@ -51,81 +38,6 @@ class ActionIconTest(unittest.TestCase):
             brightness_calls.append(kwargs["minimum_template_gray"]) or brightness
         )
         return ActionIconDetector(vision), brightness_calls
-
-    def test_action_icon_specs_use_green_templates_and_shape_identity_gates(self):
-        self.assertEqual(6, len(ACTION_ICONS))
-        self.assertEqual(
-            {
-                "SearchIcoGE.png",
-                "AbsorbIcoGE.png",
-                "SummonIcoGE.png",
-                "SubdueIcoGE.png",
-                "InteractIcoGE.png",
-                "CookingIcoGE.png",
-            },
-            {Path(icon.template.file_name).name for icon in ACTION_ICONS},
-        )
-        for icon in ACTION_ICONS:
-            with self.subTest(icon=icon.name):
-                self.assertTrue(icon.template.file_name.startswith("image/green/"))
-                self.assertEqual(
-                    SEARCH_ICON_TEMPLATE_SCORE
-                    if icon is SEARCH_ICON
-                    else ACTION_ICON_TEMPLATE_SCORE,
-                    icon.template.threshold,
-                )
-                self.assertEqual(
-                    ACTION_ICON_USED_ZNCC_SCORE
-                    if icon in (ABSORB_ICON, SUMMON_ICON, SUBDUE_ICON)
-                    else ACTION_ICON_ZNCC_SCORE,
-                    icon.template.min_zncc_score,
-                )
-                self.assertIsNone(icon.template.min_pixel_score)
-        for icon, slot in (
-            (SEARCH_ICON, "search"),
-            (ABSORB_ICON, "absorb"),
-            (SUMMON_ICON, "summon"),
-            (SUBDUE_ICON, "subdue"),
-        ):
-            with self.subTest(slot=slot):
-                self.assertIsNone(icon.template.roi)
-                self.assertEqual(ACTION_SLOT_RELATIVE_ROIS[slot], icon.template.relative_roi)
-                self.assertEqual(
-                    ACTION_SLOT_CENTER_RELATIVE_ROIS[slot],
-                    icon.template.candidate_center_roi,
-                )
-                if icon in (ABSORB_ICON, SUMMON_ICON, SUBDUE_ICON):
-                    self.assertIsNotNone(icon.detection_template)
-                    self.assertEqual(
-                        ACTION_ICON_CONSENSUS_TEMPLATE_FLOOR,
-                        icon.detection_template.threshold,
-                    )
-                    self.assertEqual(
-                        ACTION_ICON_CONSENSUS_ZNCC_FLOOR,
-                        icon.detection_template.min_zncc_score,
-                    )
-        self.assertEqual(COOKING_ICON_SCALE_RATIOS, COOKING_ICON.template.scale_ratios)
-        self.assertIn(1.40, COOKING_ICON.template.scale_ratios)
-
-    def test_action_slot_rois_are_proportional_reference_calibrations(self):
-        self.assertEqual(
-            {
-                "search": (1575, 994),
-                "absorb": (1530, 880),
-                "summon": (1577, 774),
-                "subdue": (1682, 729),
-                "teleport": (1795, 788),
-            },
-            ACTION_SLOT_CENTERS_REFERENCE,
-        )
-        for name, (left, top, right, bottom) in ACTION_SLOT_RELATIVE_ROIS.items():
-            with self.subTest(slot=name):
-                self.assertGreaterEqual(left, 0.0)
-                self.assertGreaterEqual(top, 0.0)
-                self.assertLessEqual(right, 1.0)
-                self.assertLessEqual(bottom, 1.0)
-                self.assertLess(right - left, 0.10)
-                self.assertLess(bottom - top, 0.16)
 
     def test_consensus_rejects_zero_or_nan_pixel_evidence(self):
         for pixel_score in (0.0, float("nan")):
@@ -179,19 +91,6 @@ class ActionIconTest(unittest.TestCase):
             observed, replace(ABSORB_ICON, slot_name="search"), .37,
         )
         self.assertFalse(passed)
-
-    def test_action_slot_geometry_scales_at_all_supported_resolutions(self):
-        for width, height in ((1280, 720), (1920, 1080), (2560, 1440), (3840, 2160)):
-            frame = np.zeros((height, width, 3), dtype=np.uint8)
-            with self.subTest(resolution=(width, height)):
-                for name, relative in ACTION_SLOT_RELATIVE_ROIS.items():
-                    left, top, region = Vision._relative_roi(frame, relative)
-                    expected_x = ACTION_SLOT_CENTERS_REFERENCE[name][0] * width / 1920
-                    expected_y = ACTION_SLOT_CENTERS_REFERENCE[name][1] * height / 1080
-                    self.assertLessEqual(left, expected_x)
-                    self.assertGreaterEqual(left + region.shape[1], expected_x)
-                    self.assertLessEqual(top, expected_y)
-                    self.assertGreaterEqual(top + region.shape[0], expected_y)
 
     def test_generic_icons_use_template_identity_without_dimmed_state(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)

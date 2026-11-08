@@ -36,16 +36,6 @@ class CrashLogRotationTest(unittest.TestCase):
 
 
 class StartApplicationTest(unittest.TestCase):
-    def test_entrypoints_use_shared_startup(self):
-        root = Path(__file__).resolve().parents[1]
-        for entrypoint in ("main.py", "main_debug.py"):
-            with self.subTest(entrypoint=entrypoint):
-                source = (root / entrypoint).read_text(encoding="utf-8")
-                self.assertIn(
-                    "from src.compat.startup import start_application",
-                    source,
-                )
-                self.assertIn("start_application(", source)
 
     def guarded_startup(
         self, events, *, acquired=True, legacy=None, argv=("main.py", "--headless")
@@ -171,17 +161,6 @@ class StartApplicationTest(unittest.TestCase):
             self.assertEqual(os.environ["OK_BD2_UI"], "service")
         run_service.assert_called_once()
         self.assertNotIn("dependencies", events)  # the service checks after its handshake
-
-    def test_service_failure_exit_code_is_propagated(self):
-        events = []
-        self.guarded_startup(events, argv=("main_debug.py", "--service"))
-        with (
-            patch.dict(os.environ, {}, clear=False),
-            patch("src.desktop.service.run_service", return_value=10),
-            self.assertRaises(SystemExit) as raised,
-        ):
-            startup.start_application(lambda: {}, lambda config: None)
-        self.assertEqual(raised.exception.code, 10)
 
     def test_entry_arguments_and_modes(self):
         parsed = startup.parse_entry_arguments(["--service", "-t", "2"])

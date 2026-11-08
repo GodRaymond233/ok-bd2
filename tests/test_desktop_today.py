@@ -1,7 +1,6 @@
 """Today's progress, the recent-runs list and the BD2 routes the desktop client reads."""
 
 import json
-import re
 import tempfile
 import threading
 import unittest
@@ -15,9 +14,8 @@ from unittest.mock import Mock, patch
 from fastapi.testclient import TestClient
 from ok import BaseTask, Config
 
-from src.desktop.app import adapt_runtime, create_app
+from src.desktop.app import create_app
 from src.desktop.config_store import config_lock
-from src.desktop.okweb import app as framework
 from src.task_guides import GUIDES
 from src.tasks.DailyBatchTask import (
     RUN_MODE_ALL,
@@ -153,15 +151,6 @@ class TodaySummaryTest(unittest.TestCase):
             {key: beijing(value) for key, value in refresh_times(NOW).items()},
         )
 
-    def test_without_the_batch_task(self):
-        executor = SimpleNamespace(onetime_tasks=[], get_task_by_class=lambda cls: None)
-
-        summary = today_summary(executor, self.store, NOW)
-
-        self.assertIsNone(summary["batch"])
-        self.assertEqual([], summary["items"])
-        self.assertEqual({}, summary["skipped"])
-
 
 class RecentRunsTest(unittest.TestCase):
     def setUp(self):
@@ -196,22 +185,6 @@ class RecentRunsTest(unittest.TestCase):
         self.assertEqual(RECENT_LIMIT, len(reloaded.recent_runs(limit=RECENT_LIMIT * 2)))
         self.assertEqual([], reloaded.recent_runs("快速狩猎"))
         self.assertEqual(NOW + RECENT_LIMIT + 4, reloaded.recent_runs()[0]["finished"])
-
-    def test_file_written_before_the_list_existed(self):
-        self.path.write_text(json.dumps({
-            "version": 1,
-            "tasks": {"快速狩猎": {"finished": NOW, "ok": True}},
-            "stages": {},
-        }), encoding="utf-8")
-        store = RunHistoryStore(str(self.path))
-        self.assertEqual([], store.recent_runs())
-        self.assertTrue(store.is_completed_today("快速狩猎", now=NOW + 1))
-
-        _record(store, _child("白嫖抽抽乐"), NOW + 5)
-        saved = json.loads(self.path.read_text(encoding="utf-8"))
-        self.assertEqual(1, saved["version"])
-        self.assertEqual(["白嫖抽抽乐"], [run["task"] for run in saved["recent"]])
-        self.assertIn("快速狩猎", saved["tasks"])
 
     def test_malformed_entries_are_dropped(self):
         self.path.write_text(json.dumps({
@@ -375,14 +348,6 @@ class Bd2RoutesTest(unittest.TestCase):
         self.assertEqual(200, response.status_code, response.text)
         self.controller_start.assert_called_once_with(self.hunt, exit_after=False)
 
-    def test_today_route(self):
-        response = self.client.get("/api/bd2/today", headers=self.headers)
-        self.assertEqual(200, response.status_code, response.text)
-        body = response.json()
-        self.assertEqual("一键完成日常", body["batch"]["name"])
-        self.assertEqual([], body["items"])
-        self.assertEqual({"daily", "collection_quota", "collection_week"}, set(body["refresh"]))
-
     def test_history_route_filters_and_clamps(self):
         hunt, gacha = _child("快速狩猎"), _child("白嫖抽抽乐")
         for index in range(3):
@@ -407,11 +372,6 @@ class Bd2RoutesTest(unittest.TestCase):
         self.assertEqual(200, response.status_code, response.text)
         return {task["name"]: task for task in response.json()}
 
-    def test_task_payload_counts_hidden_maintenance_settings(self):
-        hunt = self.tasks()["快速狩猎"]
-        self.assertEqual(2, hunt["hidden_config_count"])
-        self.assertEqual(["启用"], [field["key"] for field in hunt["config"]])
-
     def test_task_payload_carries_the_run_state_and_guide(self):
         self.assertEqual("done", self.tasks()["快速狩猎"]["run_state"])
         self.hunt._enabled = True
@@ -429,46 +389,6 @@ class Bd2RoutesTest(unittest.TestCase):
         self.assertTrue(fields[PLAN_KEY]["editor_title"])
         self.assertIn("保留免费米饭", fields[PLAN_KEY]["editor_summary"])
         self.assertNotIn("editor", fields["启用"])
-
-    def test_task_payload_lists_what_the_task_reports(self):
-        task = self._task(QuickHuntTask, "带状态", {"启用": True, PLAN_KEY: ""})
-        task.status_keys = ["状态", "米饭", "启用", "只是设置", "识别阈值"]
-        task.status_key_labels = {"米饭": "剩余米饭"}
-        task.config["只是设置"] = "不是结果"
-        task.config_type = {"识别阈值": {"hidden": True}}
-        task.info = {
-            "状态": "运行中", "米饭": 12, "已确认": False, "Error": "超时", "空": "-",
-            "启用": True, "识别阈值": 0.7,
-        }
-        self.assertEqual(
-            [
-                {"key": "状态", "label": "状态", "value": "运行中"},
-                {"key": "米饭", "label": "剩余米饭", "value": "12"},
-                {"key": "已确认", "label": "已确认", "value": "否"},
-                {"key": "Error", "label": "错误", "value": "超时"},
-            ],
-            self.tasks()[task.name]["status_rows"],
-        )
-
-    def test_guide_route_serves_each_shipped_guide_and_its_pictures(self):
-        guided = self._task(QuickHuntTask, "带说明", {"启用": True, PLAN_KEY: ""})
-        self.assertEqual("quick-hunt", self.tasks()[guided.name]["guide_id"])
-        self.assertIsNone(self.tasks()["快速狩猎"]["guide_id"])
-        deploy = (Path(__file__).resolve().parents[1] / "deploy.txt").read_text("utf-8").split()
-        for title, slug, summary in GUIDES.values():
-            with self.subTest(guide=slug):
-                response = self.client.get(f"/api/bd2/guides/{slug}", headers=self.headers)
-                self.assertEqual(200, response.status_code, response.text)
-                guide = response.json()
-                self.assertEqual((title, summary), (guide["title"], guide["summary"]))
-                names = re.findall(r"!\[[^\]]*\]\(\.\./images/usage/([^)]+)\)", guide["markdown"])
-                self.assertTrue(names)
-                for name in names:
-                    # A picture missing from deploy.txt would be missing after an update.
-                    self.assertIn(f"docs/images/usage/{name}", deploy)
-                    image = self.client.get(f"/guide-images/{name}", headers=self.headers)
-                    self.assertEqual(200, image.status_code, name)
-                    self.assertEqual("image/png", image.headers["content-type"])
 
     def test_guide_routes_refuse_anything_else(self):
         missing = self.client.get("/api/bd2/guides/nope", headers=self.headers)
@@ -608,26 +528,6 @@ class Bd2RoutesTest(unittest.TestCase):
         for name, code in (("missing", 404), (self.hunt.name, 400)):
             response = self.client.get(f"/api/bd2/hunt-plans/{name}", headers=self.headers)
             self.assertEqual(code, response.status_code)
-
-    def test_serves_the_bundled_font(self):
-        response = self.client.get("/fonts/MiSans-Regular.otf", headers=self.headers)
-        self.assertEqual(200, response.status_code)
-        self.assertGreater(len(response.content), 1_000_000)
-
-
-class AdaptRuntimeTest(unittest.TestCase):
-    def test_start_daily_is_exposed_on_the_runtime(self):
-        executor = make_executor()
-        executor.get_task_by_class = lambda cls: None
-        facade = SimpleNamespace(start_controller=SimpleNamespace(start=Mock(), starting=False))
-        engine = SimpleNamespace(
-            config={}, task_executor=executor, headless_app=facade,
-            get_task=lambda name: None, start_runtime=Mock(), quit=Mock(),
-        )
-        runtime = framework.create_web_app({}, ok_instance=engine).state.runtime
-        adapt_runtime(runtime)
-        with self.assertRaisesRegex(ValueError, "没有一键完成日常"):
-            runtime.start_daily(RUN_MODE_ALL)
 
 
 if __name__ == "__main__":

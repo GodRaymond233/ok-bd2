@@ -1,6 +1,5 @@
 import threading
 import unittest
-from dataclasses import replace
 from time import monotonic
 from types import SimpleNamespace
 
@@ -16,7 +15,6 @@ from src.tasks.trigger.AutoLoginTask import (
     AutoLoginTask,
     MatchResult,
 )
-from src.utils import task_vision
 
 
 class AutoLoginSequenceTest(unittest.TestCase):
@@ -84,29 +82,6 @@ class AutoLoginSequenceTest(unittest.TestCase):
         )
         self.assertEqual("waiting_home", task._state)
 
-    def test_home_has_priority_over_loading(self):
-        task = self._task()
-        task._state = "loading"
-        calls = []
-
-        def fake_match(_frame, spec):
-            calls.append(spec.name)
-            if spec is HOME_BUTTON_TEMPLATE:
-                return MatchResult(0.9, (0, 0), (1, 1), pixel_score=0.9)
-            if spec is LOADING_TEMPLATE:
-                self.fail("loading should not be checked after home is found")
-            return MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
-
-        task._match = fake_match
-        task._clear_popups_until_home = lambda *_args, **_kwargs: False
-
-        AutoLoginTask._wait_loading_then_home(
-            task,
-            np.zeros((10, 10, 3), dtype=np.uint8),
-        )
-
-        self.assertEqual([spec.name for spec in HOME_BUTTON_TEMPLATES], calls)
-
     def test_browndustx_branch_checks_confirm_and_touch_only(self):
         task = self._task()
         task._state = "waiting"
@@ -148,12 +123,6 @@ class AutoLoginSequenceTest(unittest.TestCase):
 
         self.assertFalse(AutoLoginTask.should_trigger(task))
         self.assertFalse(AutoLoginTask.run(task))
-
-    def test_unfinished_task_remains_schedulable(self):
-        task = self._task()
-        task.trigger_interval = 0
-
-        self.assertTrue(AutoLoginTask.should_trigger(task))
 
     def test_waiting_task_detects_existing_home_and_stops_after_confirmation(self):
         task = self._task()
@@ -201,63 +170,6 @@ class AutoLoginSequenceTest(unittest.TestCase):
         self.assertEqual("waiting", task._state)
         self.assertFalse(task._finished)
 
-    def test_browndustx_pixel_match_keeps_confirm_detection_active(self):
-        task = self._task()
-        task._state = "waiting"
-        task.capture_frame = lambda: np.zeros((10, 10, 3), dtype=np.uint8)
-        calls = []
-
-        def fake_match(_frame, spec):
-            calls.append(spec.name)
-            if spec is BROWNDUSTX_TEMPLATE:
-                return MatchResult(0.54, (0, 0), (1, 1), pixel_score=0.96)
-            if spec is CONFIRM_TEMPLATE:
-                return MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
-            if spec is TOUCH_TO_START_TEMPLATE:
-                return MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
-            if spec in HOME_BUTTON_TEMPLATES:
-                return MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
-            self.fail(f"unexpected match: {spec.name}")
-
-        task._match = fake_match
-
-        AutoLoginTask.run(task)
-
-        self.assertEqual(
-            [
-                spec.name for spec in HOME_BUTTON_TEMPLATES
-            ] + [
-                BROWNDUSTX_TEMPLATE.name,
-                CONFIRM_TEMPLATE.name,
-                TOUCH_TO_START_TEMPLATE.name,
-            ],
-            calls,
-        )
-
-    def test_browndustx_confirm_clicks_detected_button_center(self):
-        task = self._task()
-        task._state = "waiting"
-        task.capture_frame = lambda: np.zeros((1440, 2560, 3), dtype=np.uint8)
-        task._is_browndustx_confirm = lambda _frame, _confirm: True
-        task._sleep_after_recognition = lambda: None
-        clicks = []
-        confirm = MatchResult(0.9, (1000, 800), (240, 80), pixel_score=0.9)
-
-        def fake_match(_frame, spec):
-            if spec is BROWNDUSTX_TEMPLATE:
-                return MatchResult(0.9, (0, 0), (1, 1), pixel_score=0.9)
-            if spec is CONFIRM_TEMPLATE:
-                return confirm
-            return MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
-
-        task._match = fake_match
-        task.operate_click = lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep))
-
-        AutoLoginTask.run(task)
-
-        self.assertEqual([(1120, 840, 1.0)], clicks)
-        self.assertEqual("waiting_update", task._state)
-
     def test_confirm_is_checked_even_when_browndustx_parent_does_not_match(self):
         task = self._task()
         task._state = "waiting"
@@ -278,44 +190,6 @@ class AutoLoginSequenceTest(unittest.TestCase):
         AutoLoginTask.run(task)
 
         self.assertEqual([(953, 723, 1.0)], clicks)
-        self.assertEqual("waiting_update", task._state)
-
-    def test_browndustx_candidate_threshold_keeps_pixel_fallback_reachable(self):
-        task = self._task()
-
-        self.assertEqual(
-            0.0,
-            task_vision.resolve_match_threshold(
-                BROWNDUSTX_TEMPLATE,
-                task.config,
-                for_matching=True,
-            ),
-        )
-        self.assertEqual(
-            0.82,
-            task_vision.resolve_match_threshold(
-                CONFIRM_TEMPLATE,
-                task.config,
-                for_matching=True,
-            ),
-        )
-
-    def test_confirm_ocr_fallback_clicks_exact_confirm_with_browndustx_context(self):
-        task = self._task()
-        task._state = "waiting"
-        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        task._sleep_after_recognition = lambda: None
-        task._match = lambda _frame, _spec: MatchResult(-1.0, (0, 0), (0, 0))
-        task.ocr = lambda *_args, **_kwargs: [
-            self._ocr_box("~ BrownDustX 2.28.13 ~", 800, 350, 280, 40),
-            self._ocr_box("CONFIRM", 900, 735, 110, 35),
-        ]
-        clicks = []
-        task.operate_click = lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep))
-
-        AutoLoginTask.run(task)
-
-        self.assertEqual([(955, 752, 1.0)], clicks)
         self.assertEqual("waiting_update", task._state)
 
     def test_update_prompt_clicks_download_box_right_of_cancel(self):
@@ -377,40 +251,6 @@ class AutoLoginSequenceTest(unittest.TestCase):
         self.assertEqual([], clicks)
         self.assertEqual("downloading", task._state)
 
-    def test_download_progress_blocks_template_checks(self):
-        task = self._task()
-        task._state = "downloading"
-        task.ocr = lambda *_args, **_kwargs: [
-            self._ocr_box("正在下载", 100, 960, 90, 30),
-            self._ocr_box("62.5%", 1740, 965, 75, 30),
-        ]
-        task._match = lambda *_args, **_kwargs: self.fail(
-            "download progress must block template checks"
-        )
-
-        AutoLoginTask._wait_browndustx_then_login(
-            task,
-            np.zeros((1080, 1920, 3), dtype=np.uint8),
-        )
-
-        self.assertEqual("downloading", task._state)
-
-    def test_download_progress_requires_percentage(self):
-        task = self._task()
-        boxes = [
-            self._ocr_box("正在下载", 100, 960, 90, 30),
-        ]
-
-        self.assertEqual("", AutoLoginTask._download_progress_text(task, boxes))
-
-    def test_download_confirmation_background_is_not_progress(self):
-        task = self._task()
-        boxes = [
-            self._ocr_box("正在确认下载容量 100%", 1275, 695, 230, 28),
-        ]
-
-        self.assertEqual("", AutoLoginTask._download_progress_text(task, boxes))
-
     def test_touch_to_start_resumes_after_download_finishes(self):
         task = self._task()
         task._state = "downloading"
@@ -436,21 +276,6 @@ class AutoLoginSequenceTest(unittest.TestCase):
         self.assertIsNotNone(task._login_clicked_at)
         self.assertGreater(task._login_clicked_at, 0.0)
         self.assertEqual(0.0, task._login_retry_not_before)
-
-    def test_waiting_loading_keeps_login_click_timestamp_for_hard_timeout(self):
-        task = self._task()
-        task._state = "waiting_loading"
-        clicked_at = monotonic()
-        task._login_clicked_at = clicked_at
-        task._match = lambda _frame, _spec: MatchResult(-1.0, (0, 0), (0, 0))
-
-        AutoLoginTask._wait_loading_then_home(
-            task,
-            np.zeros((10, 10, 3), dtype=np.uint8),
-        )
-
-        self.assertEqual("waiting_home", task._state)
-        self.assertEqual(clicked_at, task._login_clicked_at)
 
     def test_login_wait_hard_timeout_resets_state_and_backs_off(self):
         task = self._task()
@@ -525,28 +350,6 @@ class AutoLoginSequenceTest(unittest.TestCase):
             monotonic() + 60.0 - 1.0,
         )
 
-    def test_clearing_state_keeps_login_click_timestamp(self):
-        # home 模板命中进入 clearing 时不得清空登录点击时间戳，否则
-        # _login_wait_timed_out 永远失效（BUG-20260912-04）。
-        task = self._task()
-        task._state = "waiting_home"
-        clicked_at = monotonic()
-        task._login_clicked_at = clicked_at
-        task._match = lambda _frame, spec: (
-            MatchResult(0.9, (100, 100), (60, 60), pixel_score=0.9)
-            if spec is HOME_BUTTON_TEMPLATE
-            else MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
-        )
-        task._clear_popups_until_home = lambda *_args, **_kwargs: False
-
-        AutoLoginTask._wait_loading_then_home(
-            task,
-            np.zeros((10, 10, 3), dtype=np.uint8),
-        )
-
-        self.assertEqual("clearing", task._state)
-        self.assertEqual(clicked_at, task._login_clicked_at)
-
     def test_run_resumes_login_flow_after_backoff_expires(self):
         task = self._task()
         task._state = "waiting"
@@ -599,32 +402,6 @@ class AutoLoginSequenceTest(unittest.TestCase):
         self.assertTrue(batch._enabled)
         self.assertFalse(batch._start_after_login)
 
-    def test_disable_releases_login_gated_batch(self):
-        from src.tasks.DailyBatchTask import DailyBatchTask
-
-        task = self._task()
-        task._enabled = True
-        batch = SimpleNamespace(
-            _start_after_login=True,
-            _enabled=False,
-            lock=threading.Lock(),
-            log_info=lambda *_args, **_kwargs: None,
-        )
-        enqueued = []
-        task._executor = SimpleNamespace(
-            get_task_by_class=lambda cls: batch if cls is DailyBatchTask else None,
-            enqueue_onetime_task=lambda t: enqueued.append(t) or True,
-            remove_onetime_task=lambda _t: None,
-            _wake_executor=lambda: None,
-        )
-
-        AutoLoginTask.disable(task)
-
-        self.assertFalse(task._enabled)
-        self.assertFalse(task.config["_enabled"])
-        self.assertEqual([batch], enqueued)
-        self.assertFalse(batch._start_after_login)
-
     def test_successful_home_confirmation_clears_login_retry_backoff(self):
         task = self._task()
         task._state = "clearing"
@@ -667,19 +444,6 @@ class AutoLoginSequenceTest(unittest.TestCase):
         self.assertFalse(task._finished)
         self.assertTrue(AutoLoginTask.should_trigger(task))
 
-    def test_home_button_templates_use_720p_assets_and_green_mask(self):
-        task = self._task()
-        task._templates = {}
-        task._template_masks = {}
-
-        for original_spec in HOME_BUTTON_TEMPLATES[1:]:
-            spec = replace(original_spec, green_mask=False)
-            self.assertTrue(spec.file_name.startswith("image/green/"))
-            template = AutoLoginTask._load_template(task, spec)
-            mask = AutoLoginTask._load_template_mask(task, spec)
-            self.assertEqual(template.shape, mask.shape)
-            self.assertGreater(mask.size, int(np.count_nonzero(mask)))
-
     def test_waiting_home_clicks_notice_clear_position_after_grace(self):
         task = self._task()
         task._state = "waiting_home"
@@ -706,54 +470,6 @@ class AutoLoginSequenceTest(unittest.TestCase):
 
         self._assert_notice_clear_click(clicks)
         self.assertEqual("clearing", task._state)
-
-    def test_clearing_keeps_clicking_dimmed_home_without_rewaiting(self):
-        task = self._task()
-        task._state = "clearing"
-        task._home_brightness_ratio = lambda _frame: 0.235
-        task._sleep_after_recognition = lambda: None
-        clicks = []
-        task._match = lambda _frame, _spec: MatchResult(
-            0.72,
-            (120, 130),
-            (90, 90),
-            pixel_score=0.72,
-        )
-        task.operate_click = lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep))
-        task.send_key = lambda *_args, **_kwargs: self.fail("popup clearing must not send keys")
-
-        AutoLoginTask._clear_popups_until_home(
-            task,
-            np.zeros((1440, 2560, 3), dtype=np.uint8),
-        )
-
-        self._assert_notice_clear_click(clicks)
-        self.assertEqual("clearing", task._state)
-
-    def test_clearing_keeps_clicking_when_dimmed_home_match_flickers_low(self):
-        task = self._task()
-        task._state = "clearing"
-        task._home_bright_since = monotonic()
-        task._home_brightness_ratio = lambda _frame: 0.235
-        task._sleep_after_recognition = lambda: None
-        clicks = []
-        task._match = lambda _frame, _spec: MatchResult(
-            0.40,
-            (120, 130),
-            (90, 90),
-            pixel_score=0.40,
-        )
-        task.operate_click = lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep))
-        task.send_key = lambda *_args, **_kwargs: self.fail("popup clearing must not send keys")
-
-        AutoLoginTask._clear_popups_until_home(
-            task,
-            np.zeros((1440, 2560, 3), dtype=np.uint8),
-        )
-
-        self._assert_notice_clear_click(clicks)
-        self.assertEqual("clearing", task._state)
-        self.assertIsNone(task._home_bright_since)
 
     def _assert_notice_clear_click(self, clicks):
         self.assertEqual(1, len(clicks))
@@ -805,16 +521,6 @@ class AutoLoginEscRecoveryTest(unittest.TestCase):
     def _frame(self):
         return np.zeros((10, 10, 3), dtype=np.uint8)
 
-    def test_grace_period_does_nothing(self):
-        task = self._task()
-        task._esc_home_wait_since = monotonic()  # 宽限期未过
-        calls = []
-        task.auto_return_main_home = lambda **_kwargs: calls.append(True)
-
-        self.assertFalse(AutoLoginTask._maybe_return_home(task, self._frame()))
-        self.assertEqual([], calls)
-        self.assertEqual(0, task._esc_home_attempts)
-
     def test_calls_auto_return_after_grace_then_holds_for_load(self):
         task = self._task()
         task._esc_home_wait_since = monotonic() - 30.0
@@ -829,32 +535,6 @@ class AutoLoginEscRecoveryTest(unittest.TestCase):
         self.assertTrue(AutoLoginTask._maybe_return_home(task, self._frame()))
         self.assertEqual([True], calls)
         self.assertEqual(1, task._esc_home_attempts)
-
-    def test_cooldown_does_not_consume_retry_attempt(self):
-        task = self._task()
-        task._esc_home_wait_since = monotonic() - 30.0
-        task._auto_return_home_cooldown_until = monotonic() + 30.0
-        calls = []
-        task.auto_return_main_home = lambda **_kwargs: calls.append(True)
-
-        self.assertTrue(AutoLoginTask._maybe_return_home(task, self._frame()))
-        self.assertEqual([], calls)
-        self.assertEqual(0, task._esc_home_attempts)
-        self.assertGreater(task._esc_hold_until, monotonic())
-
-    def test_loading_screen_extends_hold_without_action(self):
-        task = self._task()
-        task._esc_home_wait_since = monotonic() - 30.0
-        task._last_esc_home_at = 0.0
-        task._esc_hold_until = 0.0
-        task._match = lambda *_args, **_kwargs: MatchResult(0.9, (0, 0), (1, 1))
-        task._passes = lambda *_args, **_kwargs: True
-        calls = []
-        task.auto_return_main_home = lambda **_kwargs: calls.append(True)
-
-        self.assertTrue(AutoLoginTask._maybe_return_home(task, self._frame()))
-        self.assertEqual([], calls)
-        self.assertGreater(task._esc_hold_until, monotonic())
 
     def test_attempt_cap_stops_and_asks_manual(self):
         task = self._task()

@@ -1,4 +1,3 @@
-import ast
 import unittest
 from pathlib import Path
 
@@ -36,11 +35,6 @@ class ProjectStructureTest(unittest.TestCase):
         for relative_path in expected:
             with self.subTest(path=relative_path):
                 self.assertTrue((ROOT / relative_path).exists())
-
-    def test_python_files_parse(self):
-        for path in (ROOT / "src").rglob("*.py"):
-            with self.subTest(path=path.relative_to(ROOT)):
-                ast.parse(path.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

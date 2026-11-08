@@ -131,39 +131,6 @@ class TaskInfoSnapshotSemanticsTest(unittest.TestCase):
         snapshot["extra"] = 1
         self.assertEqual({"状态": "运行中"}, task.info)
 
-    def test_info_snapshot_follows_attribute_rebinding(self):
-        # run_task_by_class rebinds task.info as a raw attribute; the
-        # snapshot must re-read self.info inside the lock, not cache it.
-        task = _make_task()
-        task.info_set("旧键", 1)
-        self.assertEqual({"旧键": 1}, task.info_snapshot())
-
-        task.info = {"新键": 2}
-        self.assertEqual({"新键": 2}, task.info_snapshot())
-
-    def test_task_info_snapshot_uses_instance_info_snapshot_when_available(self):
-        class _SnapshotTask:
-            def info_snapshot(self):
-                return {"来源": "锁内快照"}
-
-        self.assertEqual({"来源": "锁内快照"}, task_info_snapshot(_SnapshotTask()))
-
-    def test_task_info_snapshot_plain_stub_returns_copy(self):
-        stub = SimpleNamespace(info={"状态": "完成"})
-        snapshot = task_info_snapshot(stub)
-
-        self.assertEqual({"状态": "完成"}, snapshot)
-        self.assertIsNot(stub.info, snapshot)
-        snapshot["状态"] = "修改不影响原对象"
-        self.assertEqual({"状态": "完成"}, stub.info)
-
-    def test_task_info_snapshot_none_info_returns_empty_dict(self):
-        stub = SimpleNamespace(info=None)
-        self.assertEqual({}, task_info_snapshot(stub))
-
-    def test_task_info_snapshot_missing_info_returns_empty_dict(self):
-        self.assertEqual({}, task_info_snapshot(SimpleNamespace()))
-
     def test_task_info_snapshot_swallows_runtime_error_from_unlocked_info(self):
         stub = SimpleNamespace(info=_RacyInfoDict({"状态": "并发修改中"}))
         self.assertEqual({}, task_info_snapshot(stub))

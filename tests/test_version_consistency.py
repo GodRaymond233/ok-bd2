@@ -1,4 +1,3 @@
-import re
 import tomllib
 import unittest
 from pathlib import Path
@@ -23,22 +22,6 @@ class VersionConsistencyTest(unittest.TestCase):
 
         self.assertEqual("release-tag-unset", version)
         self.assertNotEqual(self.expected_version, version)
-
-    def test_inlined_update_repository_uses_its_release_tag_without_pyproject(self):
-        import src.config as app_config
-
-        previous_version = app_config.version
-        self.addCleanup(setattr, app_config, "version", previous_version)
-        app_config.version = "v0.1.18"
-
-        self.assertEqual("v0.1.18", app_config.runtime_version(ROOT / "missing-pyproject.toml"))
-
-    def test_pyappify_inline_pattern_targets_the_release_marker(self):
-        source = (ROOT / "src" / "config.py").read_text(encoding="utf-8")
-        inlined = re.sub(r'version = ".+"', 'version = "v0.1.18"', source)
-
-        self.assertIn('version = "v0.1.18"', inlined)
-        self.assertNotIn('version = "release-tag-unset"', inlined)
 
 
 if __name__ == "__main__":

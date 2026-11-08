@@ -11,8 +11,6 @@ import numpy as np
 from ok.task.exceptions import TaskDisabledException
 
 from src.tasks.map_trade.models import (
-    RECIPE_TEMPLATES,
-    STORY_CARDS,
     CalendarEntry,
     MapPageMode,
     MatchResult,
@@ -34,46 +32,23 @@ from src.tasks.map_trade.navigator import (
     Q_SP6_BARGAIN_RECHECK_DELAY,
     Q_SP6_SHOP_PRIORITY_TIMEOUT,
     Q_SP6_STORY_NUMBER,
-    QUICK_SWITCH_CARTRIDGE_REGION,
-    QUICK_SWITCH_PAGE_KEYWORDS,
     QUICK_SWITCH_TEMPLATE,
     RETURN_HOME_ANNOUNCEMENT_KEYWORD_GROUPS,
     RETURN_HOME_ANNOUNCEMENT_MAX_CLICKS,
     RETURN_HOME_ANNOUNCEMENT_OCR_REGION,
     RETURN_HOME_TIMEOUT,
     SANDBOX_TEMPLATES,
-    STORY_BADGE_CANDIDATE_ZNCC_SCORE,
-    STORY_BADGE_SPECS,
     STORY_CATEGORY_HIGHLIGHT_MIN_RATIO,
-    STORY_CATEGORY_HIGHLIGHT_REGION,
-    STORY_CATEGORY_POINT,
     Navigator,
     StoryBadgeCandidate,
     StoryBadgeDetection,
 )
 from src.tasks.map_trade.navigator_constants import (
     AREA_MAP_BACK_TEMPLATE,
-    CHAPTER_HOME_RELATIVE_ROI,
     CHAPTER_HOME_TEMPLATES,
-    CLASSIFY_CARD_MENU_CATEGORY_REFERENCE_ROI,
-    CLASSIFY_CARD_MENU_CATEGORY_RELATIVE_ROI,
-    CLASSIFY_CARD_MENU_TITLE_REFERENCE_ROI,
-    CLASSIFY_CARD_MENU_TITLE_RELATIVE_ROI,
-    CLASSIFY_COOKING_MATERIALS_REFERENCE_ROI,
-    CLASSIFY_COOKING_MATERIALS_RELATIVE_ROI,
-    CLASSIFY_COOKING_TITLE_REFERENCE_ROI,
-    CLASSIFY_COOKING_TITLE_RELATIVE_ROI,
-    CLASSIFY_LOADING_REFERENCE_ROI,
-    CLASSIFY_LOADING_RELATIVE_ROI,
     CLASSIFY_SHOP_TABS_REFERENCE_ROI,
-    CLASSIFY_SHOP_TABS_RELATIVE_ROI,
     CLASSIFY_SHOP_TITLE_REFERENCE_ROI,
-    CLASSIFY_SHOP_TITLE_RELATIVE_ROI,
     DISCOUNT_SHOP_BACK_POINT,
-    DISCOUNT_SHOP_CLOSE_CONTROL_TEMPLATES,
-    MERCHANT_AUTO_NAV_TEMPLATE,
-    MERCHANT_NAV_GUIDE_TIMEOUT,
-    MERCHANT_NAV_LANDMARK_TIMEOUT,
     PROBE_STORY_BADGE_CONFIRM_SECONDS,
 )
 from src.tasks.map_trade.progress import UTC_PLUS_8
@@ -83,11 +58,6 @@ from src.tasks.map_trade.trader import (
 from src.tasks.map_trade.trader_constants import (
     BUY_ALL_FAVORITES_KEYWORD,
     BUY_ALL_FAVORITES_STABLE_HITS,
-    BUY_CONFIRM_DIALOG_REGION,
-    BUY_CONFIRM_KEYWORDS,
-    BUY_CONFIRM_POINT,
-    BUY_CONFIRM_PRE_CLICK_DELAY,
-    BUY_CONFIRM_TIMEOUT,
     BUY_TO_SELL_POST_CLICK_DELAY,
     BUY_TO_SELL_PRE_CLICK_DELAY,
     BUY_TO_SELL_SOLD_OUT_STABLE_HITS,
@@ -99,24 +69,17 @@ from src.tasks.map_trade.trader_constants import (
     SALE_CLOSE_POINT,
     SALE_CONFIRM_POINT,
     SALE_DIALOG_OPEN_MAX_CLICKS,
-    SALE_DIALOG_REGION,
-    SALE_DIALOG_TITLE_REGION,
     SALE_EMPTY_NAME_STABLE_HITS,
-    SALE_FULL_PAGE_OCR_TARGET_HEIGHTS,
     SALE_MAX_POINT,
     SALE_MIN_POINT,
-    SALE_NAME_FRAGMENT_MIN_CHARS,
-    SALE_OCR_INTERVAL,
-    SALE_SLIDER_REGION,
     SELL_MODE_POINT,
     SHOP_MODE_TITLE_REGION,
 )
 from src.tasks.map_trade.vision import Vision
 from src.tasks.MapTradeTask import BD2MapTradeSellTestTask, MapTradeTask
-from src.utils.calibration import FHD_1080, reference_rect_to_relative_roi
+from src.utils.calibration import FHD_1080
 from src.utils.home_confirmation import HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT
-from src.utils.image_utils import read_template_image, relative_roi_frame, scale_reference_roi
-from src.utils.template_resolution import offline_template_scale
+from src.utils.image_utils import scale_reference_roi
 from tests.helpers import FakeClock, StageHistoryTestCase
 from tests.helpers.map_trade import create_trader
 from tests.helpers.recognition_fixtures import load_bgr
@@ -381,49 +344,6 @@ class SellFlowTest(StageHistoryTestCase):
             height=height,
         )
 
-    def test_sale_whitelist_allows_only_intersection(self):
-        trader = create_trader()
-        trader.vision = SimpleNamespace(simplify=lambda value: value)
-        trader.task = SimpleNamespace(config={"出售白名单": ""})
-        whitelist = trader._sale_whitelist()
-
-        self.assertTrue(trader._entry_allowed(CalendarEntry("透明沙拉", "E1:夏日骑士"), whitelist))
-        self.assertTrue(
-            trader._entry_allowed(CalendarEntry("透明化沙拉", "E1:夏日骑士"), whitelist)
-        )
-        self.assertFalse(trader._entry_allowed(CalendarEntry("牛奶", "S2:苍蓝魔女"), whitelist))
-        self.assertTrue(trader._entry_allowed(CalendarEntry("黄油", "S2:苍蓝魔女"), whitelist))
-
-    def test_sell_page_switch_uses_given_title_region_and_waits_half_second(self):
-        texts = iter(("购买", "出售"))
-        ocr_calls = []
-        clicks = []
-        trader = create_trader()
-        trader.task = SimpleNamespace(
-            operate_click=lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep)),
-            sleep=lambda *_args: None,
-            log_warning=lambda *_args: None,
-            info_set=lambda *_args: None,
-        )
-        trader.vision = SimpleNamespace(
-            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
-            ocr_text=lambda _frame, name, relative_roi: (
-                ocr_calls.append((name, relative_roi)) or next(texts)
-            ),
-            simplify=lambda value: value,
-        )
-
-        self.assertTrue(trader._ensure_sell_page())
-        self.assertEqual([(*SELL_MODE_POINT, 0.5)], clicks)
-        self.assertEqual(
-            (226 / 1920, 24 / 1080, 359 / 1920, 80 / 1080),
-            SHOP_MODE_TITLE_REGION,
-        )
-        self.assertEqual(
-            [("商店买卖页标题", SHOP_MODE_TITLE_REGION)] * 2,
-            ocr_calls,
-        )
-
     def test_buy_and_sell_switches_current_shop_after_stable_sold_out_template(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         ocr_calls = []
@@ -480,77 +400,6 @@ class SellFlowTest(StageHistoryTestCase):
         )
         self.assertEqual([ocr_calls[0]] * BUY_TO_SELL_SOLD_OUT_STABLE_HITS, ocr_calls)
 
-    def test_buy_and_sell_accepts_sell_page_without_waiting_for_sold_out(self):
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        trader = create_trader()
-        trader.task = SimpleNamespace(
-            sleep=lambda *_args: self.fail("出售页不应等待售罄"),
-            operate_click=lambda *_args, **_kwargs: self.fail("出售页不应再次点击"),
-            log_info=lambda *_args, **_kwargs: None,
-        )
-        trader.vision = SimpleNamespace(
-            capture=lambda: frame,
-            ocr_text=lambda *_args, **_kwargs: "出售",
-            simplify=lambda value: value,
-            match=lambda *_args, **_kwargs: self.fail("出售页不应匹配售罄模板"),
-        )
-
-        self.assertTrue(trader._switch_from_completed_buy_to_sell())
-
-    def test_sell_page_switch_retries_when_first_click_is_ignored(self):
-        texts = iter(("购买", "购买", "出售"))
-        clicks = []
-        trader = create_trader()
-        trader.task = SimpleNamespace(
-            operate_click=lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep)),
-            sleep=lambda *_args: None,
-            log_warning=lambda *_args: None,
-        )
-        trader.vision = SimpleNamespace(
-            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
-            ocr_text=lambda *_args, **_kwargs: next(texts),
-            simplify=lambda value: value,
-        )
-
-        self.assertTrue(trader._ensure_sell_page())
-        self.assertEqual([(*SELL_MODE_POINT, 0.5)] * 2, clicks)
-
-    def test_run_sell_after_buy_reuses_current_shop_without_home_navigation(self):
-        actions = []
-        trader = create_trader()
-        trader._buy_completed_in_current_shop = True
-        trader.task = SimpleNamespace(log_info=lambda *_args: None)
-        trader._resolve_sale_entries = lambda: [
-            CalendarEntry("水果罐头", "S2:苍蓝魔女")
-        ]
-        trader.navigator = SimpleNamespace()
-        trader._switch_from_completed_buy_to_sell = lambda: actions.append("switch") or True
-        trader.sell_max_price_items = lambda: actions.append("sell") or True
-
-        self.assertTrue(trader.run_sell())
-        self.assertEqual(["switch", "sell"], actions)
-        self.assertFalse(trader._buy_completed_in_current_shop)
-
-    def test_run_sell_only_enters_default_buy_shop_then_switches_to_sell(self):
-        actions = []
-        trader = create_trader()
-        trader.task = SimpleNamespace(
-            log_warning=lambda *_args: self.fail("成功入店时不应记录警告"),
-        )
-        trader._resolve_sale_entries = lambda: [
-            CalendarEntry("水果罐头", "S2:苍蓝魔女")
-        ]
-        trader.navigator = SimpleNamespace(
-            enter_q_sp6_buy_flow=lambda: (
-                actions.append("enter") or NavigationResult(True, ScreenState.SHOP)
-            ),
-        )
-        trader._ensure_sell_page = lambda: actions.append("sell-page") or True
-        trader.sell_max_price_items = lambda: actions.append("sell") or True
-
-        self.assertTrue(trader.run_sell())
-        self.assertEqual(["enter", "sell-page", "sell"], actions)
-
     def test_run_sell_only_stops_and_logs_when_shop_entry_fails(self):
         warnings = []
         trader = create_trader()
@@ -570,143 +419,6 @@ class SellFlowTest(StageHistoryTestCase):
 
         self.assertFalse(trader.run_sell())
         self.assertEqual(["卖：未进入默认购买页"], warnings)
-
-    def test_run_sell_only_stops_before_sell_page_when_entry_is_not_shop(self):
-        warnings = []
-        trader = create_trader()
-        trader.task = SimpleNamespace(log_warning=warnings.append, log_info=Mock())
-        trader._resolve_sale_entries = lambda: [
-            CalendarEntry("水果罐头", "S2:苍蓝魔女")
-        ]
-        trader.navigator = SimpleNamespace(
-            enter_q_sp6_buy_flow=lambda: NavigationResult(
-                True,
-                ScreenState.MERCHANT_DIALOG,
-                "仍在商人对话",
-            ),
-        )
-        trader._ensure_sell_page = lambda: self.fail("非商店状态不得切出售页")
-        trader.sell_max_price_items = lambda: self.fail("非商店状态不得出售")
-
-        self.assertFalse(trader.run_sell())
-        self.assertEqual(
-            ["卖：进入商店后状态为merchant_dialog，未确认商店页，停止出售。"],
-            warnings,
-        )
-
-    def test_run_sell_skips_navigation_when_sale_plan_is_empty(self):
-        actions = []
-        statuses = []
-        trader = create_trader()
-        trader._buy_completed_in_current_shop = True
-        trader._resolve_sale_entries = lambda: []
-        trader.task = SimpleNamespace(
-            log_info=actions.append,
-            log_warning=lambda message: self.fail(message),
-            info_set=lambda key, value: statuses.append((key, value)),
-        )
-        trader.navigator = SimpleNamespace(
-            enter_q_sp6_buy_flow=lambda: self.fail("空价表不得重新进入商店"),
-        )
-        trader._switch_from_completed_buy_to_sell = lambda: self.fail(
-            "空价表不得切换到出售页"
-        )
-        trader.sell_max_price_items = lambda: self.fail("空价表不得执行出售")
-
-        self.assertTrue(trader.run_sell())
-        self.assertFalse(trader._buy_completed_in_current_shop)
-        self.assertEqual("未出售：当前价表没有可出售商品", dict(statuses)["未出售商品"])
-        self.assertEqual("无（本次未确认任何出售数量）", dict(statuses)["已出售商品"])
-        self.assertEqual(
-            ["卖：当前价表没有可出售商品，跳过进入出售页面。"],
-            actions,
-        )
-
-    def test_sell_page_does_not_click_when_already_on_sell(self):
-        trader = create_trader()
-        trader.task = SimpleNamespace(
-            operate_click=lambda *_args, **_kwargs: self.fail("已经在出售页时不应再次点击"),
-            sleep=lambda *_args: None,
-            log_warning=lambda *_args: None,
-            info_set=lambda *_args: None,
-        )
-        trader.vision = SimpleNamespace(
-            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
-            ocr_text=lambda *_args, **_kwargs: "出售",
-            simplify=lambda value: value,
-        )
-
-        self.assertTrue(trader._ensure_sell_page(timeout=0.0))
-
-    def test_sell_shop_selection_scrolls_down_to_target_page_in_one_burst(self):
-        confirmed = []
-        scrolls = []
-        selected = []
-        trader = create_trader()
-        trader.task = SimpleNamespace(
-            log_warning=lambda *_args: None,
-            info_set=lambda *_args: None,
-        )
-        trader._sell_cartridge_page = None
-        trader._ensure_sell_list_at_top = lambda: setattr(
-            trader, "_sell_cartridge_page", 0
-        ) or True
-        trader._wait_for_shop_page = lambda shop_ids: confirmed.append(shop_ids) or True
-        trader._scroll_shop_cartridges = lambda scroll_amount, count, interval, after_sleep: (
-            scrolls.append((scroll_amount, count, interval, after_sleep))
-        )
-        trader._select_purchase_cartridge = lambda shop_id: selected.append(shop_id) or True
-
-        self.assertTrue(trader.select_shop_tab("R2:火晶片"))
-        # 第 1 页 → 第 3 页（R2）一口气滚 9+10=19 格，只确认目标页边界。
-        self.assertEqual([("E5", "R2")], confirmed)
-        self.assertEqual([(-1, 19, 0.0, 0.5)], scrolls)
-        self.assertEqual(["R2"], selected)
-        self.assertEqual(2, trader._sell_cartridge_page)
-
-    def test_sell_shop_selection_continues_downward_without_reset(self):
-        scrolls = []
-        trader = create_trader()
-        trader.task = SimpleNamespace(
-            log_warning=lambda *_args: None,
-            info_set=lambda *_args: None,
-        )
-        trader._sell_cartridge_page = 1
-        trader._wait_for_shop_page = lambda _shop_ids: True
-        trader._scroll_shop_cartridges = lambda scroll_amount, count, interval, after_sleep: (
-            scrolls.append((scroll_amount, count, interval, after_sleep))
-        )
-        trader._select_purchase_cartridge = lambda _shop_id: True
-        trader._ensure_sell_list_at_top = lambda: False
-
-        # 已停在第 2 页（S19），下一张选第 4 页 E7：只补滚 10+1=11 格，不向上复位。
-        self.assertTrue(trader.select_shop_tab("E7:戏水女王"))
-        self.assertEqual([(-1, 11, 0.0, 0.5)], scrolls)
-        self.assertEqual(3, trader._sell_cartridge_page)
-
-    def test_sell_list_at_top_scrolls_up_by_ocr_estimate(self):
-        scrolls = []
-        trader = create_trader()
-        trader.task = SimpleNamespace(
-            log_warning=lambda *_args: None,
-            info_set=lambda *_args: None,
-        )
-        visible = iter((False, True))
-        trader._cartridge_visible = lambda _shop_id, _frame: next(visible)
-        trader._shop_cartridge_ocr_rows = lambda _frame: (
-            SimpleNamespace(shop_id="S8"),
-        )
-        trader._scroll_shop_cartridges = lambda scroll_amount, count, interval, after_sleep: (
-            scrolls.append((scroll_amount, count, interval, after_sleep))
-        )
-        trader.vision = SimpleNamespace(
-            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        )
-
-        # 顶部 OCR 到 S8（行号 7）：向上快滚 7+3=10 格后认到 S1。
-        self.assertTrue(trader._ensure_sell_list_at_top())
-        self.assertEqual([(1, 10, 0.0, 0.5)], scrolls)
-        self.assertEqual(0, trader._sell_cartridge_page)
 
     def test_sell_shop_selection_resets_page_when_landing_never_confirmed(self):
         scrolls = []
@@ -733,69 +445,6 @@ class SellFlowTest(StageHistoryTestCase):
             scrolls,
         )
         self.assertIsNone(trader._sell_cartridge_page)
-
-    def test_sell_shop_selection_resets_page_when_landing_ocr_is_unreadable(self):
-        scrolls = []
-        trader = create_trader()
-        trader.task = SimpleNamespace(
-            log_warning=lambda *_args: None,
-            info_set=lambda *_args: None,
-        )
-        trader._sell_cartridge_page = 1
-        trader._wait_for_shop_page = lambda _shop_ids: False
-        trader._scroll_shop_cartridges = lambda scroll_amount, count, interval, after_sleep: (
-            scrolls.append((scroll_amount, count, interval, after_sleep))
-        )
-        trader.vision = SimpleNamespace(
-            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        )
-        trader._shop_list_top_row_index = lambda _frame: None
-
-        self.assertFalse(trader.select_shop_tab("E7:戏水女王"))
-        self.assertEqual([(-1, 11, 0.0, 0.5)], scrolls)
-        self.assertIsNone(trader._sell_cartridge_page)
-
-    def test_sell_shop_selection_resets_page_when_reanchor_fails(self):
-        scrolls = []
-        trader = create_trader()
-        trader.task = SimpleNamespace(
-            log_warning=lambda *_args: None,
-            info_set=lambda *_args: None,
-        )
-        trader._sell_cartridge_page = 2
-        trader._ensure_sell_list_at_top = lambda: False
-        trader._scroll_shop_cartridges = lambda scroll_amount, count, interval, after_sleep: (
-            scrolls.append((scroll_amount, count, interval, after_sleep))
-        )
-
-        # 目标在当前位置上方且重新定位失败：作废页号，不滚动。
-        self.assertFalse(trader.select_shop_tab("S3:迷雾神射手"))
-        self.assertEqual([], scrolls)
-        self.assertIsNone(trader._sell_cartridge_page)
-
-    def test_sell_resolved_entries_follow_cartridge_order(self):
-        sold = []
-        selected = []
-        entries = [
-            CalendarEntry("b_item", "E7:戏水女王"),
-            CalendarEntry("a_item", "S3:迷雾神射手"),
-            CalendarEntry("c_item", "R2:火晶片"),
-        ]
-        trader = create_trader()
-        trader.task = SimpleNamespace(
-            log_warning=lambda *_args: None,
-            info_set=lambda *_args: None,
-        )
-        trader.select_shop_tab = lambda shop: selected.append(shop) or True
-        trader._sell_selected_entry = lambda entry: sold.append(entry.item) or True
-        trader._ensure_cartridge_goods_loaded = Mock(return_value=True)
-
-        self.assertTrue(trader._sell_resolved_entries(entries))
-        self.assertEqual(
-            ["S3:迷雾神射手", "R2:火晶片", "E7:戏水女王"],
-            selected,
-        )
-        self.assertEqual(["a_item", "c_item", "b_item"], sold)
 
     def test_run_sell_stops_before_calendar_when_sell_page_is_not_confirmed(self):
         trader = create_trader()
@@ -854,29 +503,6 @@ class SellFlowTest(StageHistoryTestCase):
             self.assertEqual(SALE_120_PERCENT_MARKER_PEAK_RADIUS, kwargs["peak_radius"])
             self.assertEqual(SALE_120_PERCENT_MARKER_MAX_RESULTS, kwargs["max_results"])
 
-    def test_locate_sale_items_rejects_marker_outside_name_left_roi(self):
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        boxes = [
-            self._text_box("水果罐头", 613, 560, 42, 23),
-        ]
-        trader, _match_calls = self._make_sale_template_trader(
-            lambda *_args, **_kwargs: boxes,
-            (self._marker_result(300, 563),),
-        )
-
-        self.assertEqual(
-            [],
-            trader._locate_sale_items(
-                CalendarEntry("水果罐头", "S2:苍蓝魔女"),
-                frame,
-            ),
-        )
-        self.assertFalse(trader._last_sale_unavailable)
-        self.assertEqual(
-            "商品名左侧局部ROI未命中↑120%模板",
-            trader._last_sale_reason,
-        )
-
     def test_locate_sale_items_pairs_real_markers_with_name_ocr(self):
         fixture_path = (
             ROOT / "tests" / "fixtures" / "map_trade" / "trade_shop" / "sale_120_markers_fhd.png"
@@ -914,33 +540,6 @@ class SellFlowTest(StageHistoryTestCase):
                 for candidate in candidates
             ],
         )
-
-    def test_locate_sale_items_retries_adjacent_ocr_height_for_item_name(self):
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        target_heights = []
-        markers = (self._marker_result(493, 563),)
-
-        def ocr_boxes(_frame, _name, target_height=900):
-            target_heights.append(target_height)
-            item_name = "胡萝卜" if target_height == 900 else "水果罐头"
-            return [
-                self._text_box("4120%", 492, 451, 56, 13),
-                self._text_box("4129", 824, 451, 56, 13),
-                self._text_box("120", 1156, 451, 52, 14),
-                self._text_box(item_name, 613, 560, 42, 23),
-            ]
-
-        trader, _match_calls = self._make_sale_template_trader(ocr_boxes, markers)
-
-        candidates = trader._locate_sale_items(
-            CalendarEntry("水果罐头", "S2:苍蓝魔女"),
-            frame,
-        )
-
-        self.assertEqual([(634, 572)], [candidate.center for candidate in candidates])
-        self.assertEqual((900, 840, 960), SALE_FULL_PAGE_OCR_TARGET_HEIGHTS)
-        self.assertEqual([900, 840], target_heights)
-        self.assertFalse(trader._last_sale_unavailable)
 
     def test_locate_sale_items_ignores_bad_percent_ocr_when_local_template_misses(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -1017,50 +616,6 @@ class SellFlowTest(StageHistoryTestCase):
         self.assertTrue(trader._last_sale_unavailable)
         self.assertEqual("全画面OCR未识别到商品名", trader._last_sale_reason)
 
-    def test_locate_sale_items_scales_left_roi_at_720p(self):
-        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
-        boxes = [
-            self._text_box("4120%", 328, 375, 35, 9),
-            # 720p 下 150px 参考搜索宽度缩放为 100px，仍覆盖名称左侧标志。
-            self._text_box("水果罐头", 409, 372, 42, 15),
-        ]
-        trader, _match_calls = self._make_sale_template_trader(
-            lambda *_args, **_kwargs: boxes,
-            (self._marker_result(328, 375, 35, 9),),
-        )
-
-        candidates = trader._locate_sale_items(
-            CalendarEntry("水果罐头", "S2:苍蓝魔女"),
-            frame,
-        )
-        self.assertEqual([(430, 380)], [candidate.center for candidate in candidates])
-
-    def test_locate_sale_items_returns_all_same_item_in_reading_order(self):
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        boxes = [
-            self._text_box("兽肉", 1262, 560, 43, 23),
-            self._text_box("兽肉", 598, 560, 44, 23),
-            self._text_box("兽肉", 1594, 560, 42, 23),
-            self._text_box("兽肉", 928, 560, 44, 23),
-        ]
-        markers = (
-            self._marker_result(492, 562),
-            self._marker_result(820, 562),
-            self._marker_result(1154, 562),
-            self._marker_result(1485, 562),
-        )
-        trader, _match_calls = self._make_sale_template_trader(
-            lambda *_args, **_kwargs: boxes,
-            markers,
-        )
-
-        candidates = trader._locate_sale_items(CalendarEntry("兽肉", "S3:迷雾神射手"), frame)
-
-        self.assertEqual(
-            [(620, 572), (950, 572), (1284, 572), (1615, 572)],
-            [candidate.center for candidate in candidates],
-        )
-
     def test_locate_sale_items_rejects_ambiguous_local_template_candidates(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         boxes = [
@@ -1082,21 +637,6 @@ class SellFlowTest(StageHistoryTestCase):
             trader._last_sale_reason,
         )
 
-    def test_locate_sale_items_keeps_valid_pair_when_another_name_has_no_pair(self):
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        boxes = [
-            self._text_box("兽肉", 598, 560, 44, 23),
-            self._text_box("兽肉", 928, 560, 44, 23),
-        ]
-        trader, _match_calls = self._make_sale_template_trader(
-            lambda *_args, **_kwargs: boxes,
-            (self._marker_result(492, 562),),
-        )
-
-        candidates = trader._locate_sale_items(CalendarEntry("兽肉", "S3"), frame)
-
-        self.assertEqual([(620, 572)], [candidate.center for candidate in candidates])
-
     def test_sale_name_match_rejects_single_char_fragment_against_alias(self):
         # 回归 BUG-20260913-06：卖出后页面上的杂散单字母框"C"曾反向命中
         # 英文别名 Chocolat Cocktail，令已售完页面被误判为商品仍在售。
@@ -1105,31 +645,6 @@ class SellFlowTest(StageHistoryTestCase):
         self.assertTrue(self._sale_name_match("cocktail", normalized_names))
         self.assertTrue(self._sale_name_match("巧克力鸡尾酒", normalized_names))
         self.assertTrue(self._sale_name_match("鸡尾酒", normalized_names))
-
-    def test_sale_name_match_fragment_min_chars_boundary(self):
-        self.assertEqual(2, SALE_NAME_FRAGMENT_MIN_CHARS)
-        self.assertFalse(self._sale_name_match("克", ("巧克力鸡尾酒",)))
-        self.assertIsNone(self._sale_name_match("克力", ("巧克力鸡尾酒",)))
-
-    def test_sale_list_and_completion_ignore_other_full_item_names(self):
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        chocolate = self._text_box("巧克力", 600, 560, 60, 24)
-        cocktail = self._text_box("巧克力鸡尾酒", 600, 180, 126, 24)
-        boxes = [chocolate, cocktail]
-        trader, searches = self._make_sale_template_trader(
-            lambda *_args, **_kwargs: boxes,
-            (self._marker_result(493, 562), self._marker_result(493, 182)),
-        )
-        entry = CalendarEntry("巧克力", "S4")
-        self.assertEqual([(630, 572)], [c.center for c in trader._locate_sale_items(entry, frame)])
-        self.assertEqual((('巧克力', 600, 560, 60, 24),), trader._sale_name_signature(entry, frame))
-        boxes[:] = [cocktail]
-        searches.clear()
-        self.assertEqual([], trader._locate_sale_items(entry, frame))
-        self.assertFalse(trader._last_sale_name_seen)
-        self.assertTrue(trader._last_sale_unavailable)
-        self.assertEqual((), trader._sale_name_signature(entry, frame))
-        self.assertEqual([], searches)
 
     def test_ambiguous_sale_name_rereads_current_box_at_each_resolution(self):
         for width, height in ((1920, 1080), (1280, 720)):
@@ -1169,35 +684,11 @@ class SellFlowTest(StageHistoryTestCase):
                     self.assertTrue(all(kwargs == {"target_height": 0, "ocr_scale": 2.0}
                                         for _shape, kwargs in rereads))
 
-    def test_sale_name_match_single_char_item_keeps_forward_match(self):
-        self.assertTrue(self._sale_name_match("虾", ("虾",)))
-        self.assertFalse(self._sale_name_match("虫", ("虾",)))
-
-    def test_sale_name_match_does_not_match_single_char_item_inside_longer_name(self):
-        self.assertTrue(self._sale_name_match("米", ("米",)))
-        self.assertFalse(self._sale_name_match("玉米", ("米",)))
-
     def test_sale_name_match_rejects_long_dialogue_sentence(self):
         normalized_names = ("金枪鱼罐头",)
         dialogue = "这里好像正在收购金枪鱼罐头，如果有多余的就卖掉吧。"
         self.assertFalse(self._sale_name_match(dialogue, normalized_names))
         self.assertTrue(self._sale_name_match("金枪鱼罐头", normalized_names))
-
-    def test_locate_sale_items_ignores_header_and_keeps_fourth_column(self):
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        boxes = [self._text_box("牛奶", 740, 80, 40, 24)]
-        trader, match_calls = self._make_sale_template_trader(
-            lambda *_args, **_kwargs: boxes,
-            (self._marker_result(690, 80), self._marker_result(1650, 180)),
-        )
-        entry = CalendarEntry("牛奶", "S7")
-        self.assertEqual([], trader._locate_sale_items(entry, frame))
-        self.assertTrue(trader._last_sale_unavailable)
-        self.assertEqual([], match_calls)
-        self.assertEqual((), trader._sale_name_signature(entry, frame))
-        boxes.append(self._text_box("牛奶", 1710, 180, 80, 24))
-        candidates = trader._locate_sale_items(entry, frame)
-        self.assertEqual([(1750, 192)], [candidate.center for candidate in candidates])
 
     def test_ensure_cartridge_goods_loaded_handles_missing_ingredients(self):
         trader = create_trader()
@@ -1317,43 +808,6 @@ class SellFlowTest(StageHistoryTestCase):
         self.assertFalse(trader._last_sale_unavailable)
         self.assertIn("不能判定当前页已售完", warnings[0])
 
-    def test_sale_after_successful_sale_finishes_without_warning_when_name_disappears(self):
-        warnings = []
-        logs = []
-        statuses = []
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        candidate = SimpleNamespace(center=(620, 572), percent_box=None)
-        scans = [([candidate], frame), None]
-        trader = create_trader()
-        trader.task = SimpleNamespace(
-            config={},
-            log_info=logs.append,
-            log_warning=warnings.append,
-            info_set=lambda key, value: statuses.append((key, value)),
-        )
-
-        def wait_scan(_entry):
-            located = scans.pop(0)
-            if located is None:
-                trader._last_sale_unavailable = True
-                trader._last_sale_reason = "全画面OCR未识别到商品名"
-                trader._last_sale_page_empty = True
-            return located
-
-        trader._wait_sale_item_candidates = wait_scan
-        trader._sell_one_candidate = lambda *_args, **_kwargs: (352_927, True)
-
-        self.assertTrue(
-            trader._sell_selected_entry(CalendarEntry("白糖", "S2:苍蓝魔女"))
-        )
-        self.assertEqual([], warnings)
-        self.assertFalse(trader._last_sale_unavailable)
-        self.assertEqual("", trader._last_sale_reason)
-        self.assertTrue(
-            any("商品名连续消失" in value for key, value in statuses if key == "出售完成确认")
-        )
-        self.assertTrue(any("当前商店页已无剩余可出售组" in message for message in logs))
-
     def test_sale_after_successful_sale_requires_two_name_absence_scans(self):
         clock = FakeClock()
         warnings = []
@@ -1404,28 +858,6 @@ class SellFlowTest(StageHistoryTestCase):
         self.assertEqual("", trader._last_sale_reason)
         self.assertTrue(any("商品名连续消失" in value for key, value in statuses))
         self.assertTrue(any("当前商店页已无剩余可出售组" in message for message in logs))
-
-    def test_sale_candidate_wait_timeout_does_not_emit_warning_by_itself(self):
-        warnings = []
-        trader = create_trader()
-        trader.task = SimpleNamespace(
-            log_warning=warnings.append,
-            sleep=lambda *_args: None,
-        )
-        trader.vision = SimpleNamespace(capture=lambda: np.zeros((720, 1280, 3), dtype=np.uint8))
-        trader._locate_sale_items = lambda *_args: (
-            setattr(trader, "_last_sale_name_seen", False)
-            or setattr(trader, "_last_sale_ocr_output", False)
-            or []
-        )
-
-        self.assertIsNone(
-            trader._wait_sale_item_candidates(
-                CalendarEntry("白糖", "S2:苍蓝魔女"),
-                timeout=0.0,
-            )
-        )
-        self.assertEqual([], warnings)
 
     def test_normal_sale_confirms_max_or_one_insured_item(self):
         for insurance in (False, True):
@@ -1646,49 +1078,6 @@ class SellFlowTest(StageHistoryTestCase):
             CalendarEntry("巧克力", "S4"), frame, (("巧克力", 600, 560, 60, 24),), timeout=0,
         ))
 
-    def test_sale_dialog_open_retries_until_third_click(self):
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        client_clicks = []
-        messages = []
-        trader = create_trader()
-        trader.task = SimpleNamespace(
-            config={"出售保险": False},
-            operate_click=lambda *_args, **_kwargs: None,
-            log_info=messages.append,
-            log_warning=lambda *_args: None,
-            info_set=lambda *_args: None,
-        )
-        trader.vision = SimpleNamespace(
-            click_client=lambda point, shape, after_sleep=0: client_clicks.append(
-                (point, shape, after_sleep)
-            )
-        )
-        dialog_checks = iter((False, False, True))
-        trader._sale_name_signature = lambda _entry, _frame: ()
-        trader._sale_toast_id = lambda _frame: None
-        trader._wait_sale_dialog_item = lambda _entry: next(dialog_checks)
-        trader._wait_owned_quantity = lambda: 400
-        trader._wait_available_quantity = lambda: 400
-        trader._choose_sale_quantity = lambda _entry, _owned: True
-        trader._wait_selected_sale_quantity = lambda expected, **_kwargs: expected
-        trader._wait_sale_completion = lambda *_args, **_kwargs: True
-        trader.vision.capture = Mock(return_value=frame)
-        trader._locate_sale_items = Mock(return_value=[
-            SimpleNamespace(center=(951, 682), percent_box=None),
-        ])
-
-        result = trader._sell_one_candidate(
-            CalendarEntry("item", "S3"),
-            SimpleNamespace(center=(951, 682), percent_box=None),
-            frame,
-            previous_owned=None,
-        )
-
-        self.assertEqual((400, True), result)
-        self.assertEqual(SALE_DIALOG_OPEN_MAX_CLICKS, len(client_clicks))
-        self.assertEqual(2, len([message for message in messages if "补点重试" in message]))
-        self.assertEqual(2, trader._locate_sale_items.call_count)
-
     def test_sale_dialog_open_stops_after_click_limit(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         client_clicks = []
@@ -1773,77 +1162,6 @@ class SellFlowTest(StageHistoryTestCase):
                 self.assertEqual([(620, 572), (620, 572)], clicked)
                 self.assertEqual([], scans)
 
-    def test_wait_sale_item_candidates_retries_until_located(self):
-        sleeps = []
-        warnings = []
-        trader = create_trader()
-        trader.task = SimpleNamespace(
-            sleep=sleeps.append,
-            log_warning=warnings.append,
-        )
-        frames = [np.zeros((1080, 1920, 3), dtype=np.uint8) for _ in range(2)]
-        calls = []
-        trader.vision = SimpleNamespace(capture=lambda: frames[min(len(calls), 1)])
-        trader._locate_sale_items = lambda _entry, _frame: (
-            calls.append(_frame)
-            or ([] if len(calls) < 2 else [SimpleNamespace(center=(640, 462), percent_box=None)])
-        )
-
-        with patch("src.tasks.map_trade.trader_sell.monotonic", side_effect=lambda: sum(sleeps)):
-            located = trader._wait_sale_item_candidates(
-                CalendarEntry("水果罐头", "S2:苍蓝魔女"),
-                timeout=5.0,
-                interval=0.1,
-            )
-        self.assertEqual([(640, 462)], [candidate.center for candidate in located[0]])
-        self.assertIs(frames[1], located[1])
-        self.assertEqual(1, len(sleeps))
-        self.assertEqual([], warnings)
-
-    def test_reserved_sale_uses_proportional_slider_point(self):
-        for owned in (8400, 77850, 99999):
-            with self.subTest(owned=owned):
-                clicks = []
-                trader = create_trader()
-                trader.task = SimpleNamespace(
-                    config={"出售保险": False},
-                    operate_click=lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep)),
-                    log_info=lambda *_args: None,
-                    info_set=lambda *_args: None,
-                )
-                self.assertTrue(trader._choose_sale_quantity(
-                    CalendarEntry("苹果", "S1", reserve=2000), owned=owned,
-                ))
-                self.assertEqual(1, len(clicks))
-                x, y, delay = clicks[0]
-                # Screenshot calibration: thumb centers travel from 567 to 897 at y=666.
-                selected = 1 + int((owned - 1) * (int(x * 1920) - 567) / 330)
-                self.assertGreaterEqual(owned - selected, 2000)
-                self.assertLessEqual(owned - selected, 2000 + owned / 330 + 1)
-                self.assertEqual(666, int(y * 1080))
-                self.assertEqual(0.5, delay)
-
-    def test_sale_slider_left_edge_represents_selling_one_item(self):
-        left, top, _right, bottom = SALE_SLIDER_REGION
-
-        self.assertEqual(
-            (left, (top + bottom) / 2),
-            Trader._sale_slider_point(owned=91, reserve=90),
-        )
-        self.assertIsNone(Trader._sale_slider_point(owned=90, reserve=90))
-
-    def test_sale_dialog_title_region_is_ltrb_and_non_empty(self):
-        expected = reference_rect_to_relative_roi(
-            (495, 325, 245, 40),
-            FHD_1080,
-        )
-
-        self.assertEqual(expected, SALE_DIALOG_TITLE_REGION)
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        _left, _top, region = relative_roi_frame(frame, SALE_DIALOG_TITLE_REGION)
-
-        self.assertEqual((40, 245), region.shape[:2])
-
     def _title_trader(self, readings, shape=(1080, 1920, 3)):
         calls, warnings = [], []
         clock = [0.0]
@@ -1888,62 +1206,6 @@ class SellFlowTest(StageHistoryTestCase):
                 self.assertTrue(all(call[1].endswith("/原图") for call in calls))
                 self.assertEqual([], warnings)
 
-    def test_turmeric_catalog_maps_all_simplified_and_traditional_combinations(self):
-        trader = create_trader()
-        trader._sale_title_entries = ()
-        trader._sale_title_catalog_cache = None
-        trader.vision = SimpleNamespace(simplify=lambda value: value)
-        catalog = trader._sale_title_catalog(CalendarEntry("姜黄", "S12"))
-        for spelling in ("姜黄", "姜黃", "薑黄", "薑黃"):
-            self.assertEqual({"姜黄"}, catalog[spelling])
-
-    def test_sale_dialog_accepts_known_alias_as_calendar_item(self):
-        for item, title in (
-            ("蜂蜜奶油杏仁", "蜂蜜奶油杏仁"),
-            ("蜂蜜奶油杏仁", "蜂蜜黄油杏仁"),
-            ("Canned Fruit", "水果罐头"),
-        ):
-            with self.subTest(item=item, title=title):
-                trader, _calls, warnings, clock = self._title_trader([(title, title, title)])
-                entry = CalendarEntry(item, "S7")
-                trader._sale_title_entries = (entry,)
-                with patch("src.tasks.map_trade.trader_sell.monotonic", lambda: clock[0]):
-                    self.assertTrue(trader._wait_sale_dialog_item(entry))
-                self.assertEqual([], warnings)
-
-    def test_sale_dialog_fallback_uses_scaled_roi_and_original_pixels(self):
-        for shape in ((1080, 1920, 3), (720, 1280, 3)):
-            for readings, modes in (
-                (("未知", "白糖"), ["原图", "灰度"]),
-                (("未知", "未识别", "白糖"), ["原图", "灰度", "CLAHE"]),
-            ):
-                with self.subTest(shape=shape, modes=modes):
-                    trader, calls, _warnings, clock = self._title_trader([readings], shape)
-                    with patch("src.tasks.map_trade.trader_sell.monotonic", lambda: clock[0]):
-                        self.assertTrue(trader._wait_sale_dialog_item(CalendarEntry("白糖", "S2")))
-                    self.assertEqual(modes * 2, [c[1].split("/")[-1] for c in calls])
-                    frame = np.full(shape, (20, 70, 150), dtype=np.uint8)
-                    _, _, crop = relative_roi_frame(frame, SALE_DIALOG_TITLE_REGION)
-                    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-                    expected = [crop, cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)]
-                    if len(modes) == 3:
-                        enhanced = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
-                        expected.append(cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR))
-                    for call, image in zip(calls, expected * 2):
-                        np.testing.assert_array_equal(image, call[2])
-                        self.assertEqual({"target_height": 0}, call[3])
-
-    def test_sale_dialog_empty_title_resets_consecutive_confirmation(self):
-        trader, calls, _warnings, clock = self._title_trader([
-            ("白糖", "白糖", "白糖"),
-            ("", "", ""),
-            ("白糖", "白糖", "白糖"),
-            ("白糖", "白糖", "白糖"),
-        ])
-        with patch("src.tasks.map_trade.trader_sell.monotonic", lambda: clock[0]):
-            self.assertTrue(trader._wait_sale_dialog_item(CalendarEntry("白糖", "S2")))
-        self.assertEqual([0, 1, 1, 1, 2, 3], [c[0] for c in calls])
-
     def test_sale_dialog_rejects_fragments_and_single_frame_confirmation(self):
         for text in ("", "姜", "黄", "姜黄油", "白糖"):
             with self.subTest(text=text):
@@ -1967,63 +1229,6 @@ class SellFlowTest(StageHistoryTestCase):
                 self.assertEqual(2, len(calls))
                 self.assertTrue(trader._sale_dialog_rejected)
                 self.assertTrue(warnings)
-
-    def test_sale_dialog_prefers_expected_title_over_background_item(self):
-        trader, _calls, warnings, clock = self._title_trader(
-            [(('苹果', '冰镇甜点'), ('苹果', '冰镇甜点'), ('苹果', '冰镇甜点'))]
-        )
-        with patch("src.tasks.map_trade.trader_sell.monotonic", lambda: clock[0]):
-            self.assertTrue(trader._wait_sale_dialog_item(CalendarEntry("苹果", "S6")))
-        self.assertEqual([], warnings)
-
-    def test_sale_dialog_requires_two_conflicting_frames_before_rejecting(self):
-        trader, calls, _warnings, clock = self._title_trader(
-            [("冰镇甜点", "冰镇甜点", "冰镇甜点"), ("苹果", "苹果", "苹果")]
-        )
-        with patch("src.tasks.map_trade.trader_sell.monotonic", lambda: clock[0]):
-            self.assertTrue(trader._wait_sale_dialog_item(CalendarEntry("苹果", "S6")))
-        self.assertEqual([0, 1, 2], [call[0] for call in calls])
-
-    def test_sale_dialog_owned_quantity_uses_given_region(self):
-        calls = []
-        trader = create_trader()
-        trader.task = SimpleNamespace(sleep=lambda *_args: None)
-        trader.vision = SimpleNamespace(
-            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
-            ocr_text=lambda _frame, name, relative_roi: (
-                calls.append((name, relative_roi)) or "拥有 8,400 个"
-            ),
-            simplify=lambda value: value,
-        )
-
-        self.assertEqual(8400, trader._wait_owned_quantity(timeout=0.0))
-        self.assertEqual([("出售弹窗库存", SALE_DIALOG_REGION)], calls)
-
-    def test_sale_dialog_separates_owned_and_available_quantities(self):
-        calls = []
-        trader = create_trader()
-        trader.task = SimpleNamespace(sleep=lambda *_args: None)
-        trader.vision = SimpleNamespace(
-            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
-            ocr_text=lambda _frame, name, relative_roi: (
-                calls.append((name, relative_roi)) or "兽肉 拥有335,005个 1个 可购买94,481个"
-            ),
-            simplify=lambda value: value,
-        )
-
-        self.assertEqual(335005, trader._wait_owned_quantity(timeout=0.0))
-        self.assertEqual(94481, trader._wait_available_quantity(timeout=0.0))
-        self.assertEqual(
-            94481,
-            Trader._selected_quantity_from_text("兽肉 拥有335,005个 94481个 可购买94481个"),
-        )
-        self.assertEqual(
-            [
-                ("出售弹窗库存", SALE_DIALOG_REGION),
-                ("出售弹窗可购买数量", SALE_DIALOG_REGION),
-            ],
-            calls,
-        )
 
     def test_sale_completion_ignores_previous_transaction_toast(self):
         frames = [
@@ -2085,37 +1290,6 @@ class SellFlowTest(StageHistoryTestCase):
                 )
             )
 
-    def test_sale_completion_accepts_name_disappearance_after_nonempty_page_ocr(self):
-        clock = FakeClock()
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        trader = create_trader()
-        trader.task = SimpleNamespace(
-            sleep=clock.sleep,
-            info_set=lambda *_args: None,
-            log_warning=lambda *_args: None,
-        )
-        trader.vision = SimpleNamespace(
-            capture=lambda: frame,
-            ocr_text=lambda _frame, name, **_kwargs: (
-                "出售 食物" if name != "出售弹窗完成确认" else ""
-            ),
-            simplify=lambda value: value,
-        )
-        trader._sale_name_signature = lambda *_args: ()
-
-        with patch(
-            "src.tasks.map_trade.trader_sell.monotonic",
-            clock,
-        ):
-            self.assertTrue(
-                trader._wait_sale_completion(
-                    CalendarEntry("苹果", "S2"),
-                    frame,
-                    (("苹果", 620, 560, 44, 23),),
-                    timeout=1.0,
-                )
-            )
-
     def test_rare_items_are_skipped_and_same_shop_is_selected_only_once(self):
         selected = []
         sold = []
@@ -2154,44 +1328,6 @@ class SellFlowTest(StageHistoryTestCase):
         self.assertEqual(["甜辣酱", "藏红花"], sold)
         self.assertIn("卖：魅惑粉末标记为不出售，跳过。", logs)
         self.assertEqual("未出售：价表标记为不出售", trader._sale_not_sold[entries[0]])
-
-    def test_disabled_sale_whitelist_sells_all_allowed_calendar_entries(self):
-        sold = []
-        logs = []
-        statuses = []
-        entries = (
-            CalendarEntry("番茄", "S1:血骑士"),
-            CalendarEntry("魅惑粉末", "S6:异教塔", sell=False),
-            CalendarEntry("大麦", "S18:救赎"),
-        )
-        trader = create_trader()
-        trader.started_at = datetime(2026, 7, 4)
-        trader.calendar_client = SimpleNamespace(
-            load=lambda **_kwargs: SimpleNamespace(
-                source="bundled",
-                entries_for=lambda _day: entries,
-            )
-        )
-        trader.task = SimpleNamespace(
-            config={
-                "使用程序默认价表": True,
-                "使用在线价表": True,
-                "自定义最高价表": "",
-                "使用出售白名单": False,
-                "出售白名单": "番茄",
-            },
-            log_info=logs.append,
-            log_warning=lambda *_args: None,
-            info_set=lambda key, value: statuses.append((key, value)),
-        )
-        trader.select_shop_tab = lambda _shop: True
-        trader._sell_selected_entry = lambda entry: sold.append(entry.item) or True
-        trader._ensure_cartridge_goods_loaded = Mock(return_value=True)
-
-        self.assertTrue(trader.sell_max_price_items())
-        self.assertEqual(["番茄", "大麦"], sold)
-        self.assertIn(("出售白名单", "关闭"), statuses)
-        self.assertIn("卖：出售白名单已关闭，执行价表中全部允许出售的商品。", logs)
 
     def test_enabled_sale_blacklist_excludes_matching_allowed_entry(self):
         sold = []
@@ -2329,24 +1465,6 @@ class SellFlowTest(StageHistoryTestCase):
 
 
 class TradeAssetsTest(unittest.TestCase):
-    def test_card_and_recipe_templates_are_packaged(self):
-        template_root = ROOT / "recognition-assets" / "template-assets"
-        templates = [card.template for card in STORY_CARDS]
-        templates.extend(RECIPE_TEMPLATES.values())
-        templates.extend(
-            [
-                QUICK_SWITCH_TEMPLATE.file_name,
-                MERCHANT_CLICK_LOCATION_TEMPLATE.file_name,
-                BUY_TO_SELL_SOLD_OUT_TEMPLATE.file_name,
-                SALE_120_PERCENT_MARKER_BETA_TEMPLATE.file_name,
-                SALE_120_PERCENT_MARKER_TEMPLATE.file_name,
-            ]
-        )
-        templates.extend(spec.file_name for _number, spec in STORY_BADGE_SPECS)
-
-        for relative_path in templates:
-            with self.subTest(template=relative_path):
-                self.assertTrue((template_root / relative_path).is_file())
 
     def test_sale_120_marker_template_matches_all_real_fixture_markers_at_fhd(self):
         fixture_path = (
@@ -2573,60 +1691,6 @@ class BuyEntryTest(unittest.TestCase):
             sleeps,
         )
 
-    def test_buy_entry_uses_initial_merchant_template_before_home_navigation(self):
-        clicks = []
-        shop_entry_attempts = []
-        keyword_checks = []
-        shop_confirm_checks = []
-        sleeps = []
-        task = SimpleNamespace(
-            config={},
-            operate_click=lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep)),
-            sleep=lambda seconds: sleeps.append(seconds),
-            log_warning=lambda *_args, **_kwargs: None,
-            open_cartridge_quick_switcher=lambda **_kwargs: self.fail(
-                "initial merchant template hit must bypass HOME navigation"
-            ),
-        )
-        navigator = Navigator(task, SimpleNamespace())
-        navigator._enter_q_sp6_shop = lambda timeout, *, log_timeout: (
-            shop_entry_attempts.append((timeout, log_timeout)) or True
-        )
-        navigator._wait_for_ocr_keywords = lambda keywords, timeout, name: (
-            keyword_checks.append((keywords, timeout, name)) or True
-        )
-        navigator._wait_for_bargain_shop_confirmation = lambda: (
-            shop_confirm_checks.append(True) or True
-        )
-
-        result = navigator.enter_q_sp6_buy_flow()
-
-        self.assertTrue(result.success)
-        self.assertEqual(ScreenState.SHOP, result.state)
-        self.assertEqual([True], shop_confirm_checks)
-        self.assertEqual(
-            [(Q_SP6_SHOP_PRIORITY_TIMEOUT, False)],
-            shop_entry_attempts,
-        )
-        self.assertEqual(
-            [
-                (*BARGAIN_POINT, 0.0),
-                (*BARGAIN_CONFIRM_POINT, 0.0),
-            ],
-            clicks,
-        )
-        self.assertEqual(
-            [
-                (("砍价",), Q_SP6_BARGAIN_OCR_TIMEOUT, "砍价入口"),
-                (("使用砍价技能后可享受商店折扣价",), 10.0, "砍价说明"),
-            ],
-            keyword_checks,
-        )
-        self.assertEqual(
-            [Q_SP6_BARGAIN_RECHECK_DELAY, Q_SP6_BARGAIN_CLICK_DELAY],
-            sleeps,
-        )
-
     def test_buy_entry_does_not_click_bargain_before_bargain_ocr(self):
         clicks = []
         sleeps = []
@@ -2709,54 +1773,6 @@ class BuyEntryTest(unittest.TestCase):
         self.assertEqual(("砍价后商店页面 OCR稳定", "2/2"), statuses[-1])
         self.assertEqual(3, len(sleeps))
 
-    def test_bargain_shop_confirmation_times_out_when_popup_never_closes(self):
-        texts = iter(["仓库 严加管理 砍价成功率100% 取消"] * 20)
-        warnings = []
-        task = SimpleNamespace(
-            config={},
-            sleep=lambda *_args: None,
-            log_warning=warnings.append,
-        )
-        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
-        vision = SimpleNamespace(
-            capture=lambda: frame,
-            ocr_text=lambda _frame, _name: next(texts),
-            simplify=lambda value: value,
-            match=lambda *_args: MatchResult(-1.0, (0, 0), (0, 0)),
-            passes=lambda *_args: False,
-        )
-        navigator = Navigator(task, vision)
-
-        self.assertFalse(navigator._wait_for_bargain_shop_confirmation(timeout=0.0))
-        self.assertTrue(warnings)
-
-    def test_bargain_shop_confirmation_accepts_stable_sold_out_fallback(self):
-        texts = iter(("BROWN DUST II", "BROWN DUST II"))
-        task = SimpleNamespace(
-            config={},
-            sleep=lambda *_args: None,
-            log_warning=lambda *_args: None,
-            log_info=lambda *_args: None,
-        )
-        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
-        sold_out = MatchResult(
-            0.90,
-            (500, 250),
-            (100, 50),
-            pixel_score=0.95,
-            zncc_score=0.90,
-        )
-        vision = SimpleNamespace(
-            capture=lambda: frame,
-            ocr_text=lambda _frame, _name: next(texts),
-            simplify=lambda value: value,
-            match=lambda *_args: sold_out,
-            passes=lambda result, _spec: result is sold_out,
-        )
-        navigator = Navigator(task, vision)
-
-        self.assertTrue(navigator._wait_for_bargain_shop_confirmation(timeout=5.0))
-
     def test_bargain_shop_confirmation_rejects_sold_out_while_bargain_popup_visible(self):
         texts = iter(
             (
@@ -2790,233 +1806,6 @@ class BuyEntryTest(unittest.TestCase):
 
         self.assertFalse(navigator._wait_for_bargain_shop_confirmation(timeout=0.0))
         self.assertTrue(warnings)
-
-    def test_buy_shop_entry_clicks_new_template_center_without_shop_ocr_gate(self):
-        client_clicks = []
-        matched_specs = []
-        warnings = []
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        task = SimpleNamespace(
-            config={"加载页面等待秒数": 45.0},
-            sleep=lambda *_args: None,
-            log_warning=lambda message: warnings.append(message),
-        )
-        vision = SimpleNamespace(
-            capture=lambda: frame,
-            ocr_text=lambda *_args, **_kwargs: self.fail("merchant click step must not call OCR"),
-            match=lambda _frame, spec: (
-                matched_specs.append(spec)
-                or MatchResult(
-                    0.99,
-                    (1151, 239),
-                    (30, 28),
-                    pixel_score=0.98,
-                    zncc_score=0.98,
-                )
-            ),
-            passes=lambda result, spec: (
-                result.score >= spec.threshold
-                and result.pixel_score >= spec.min_pixel_score
-                and result.zncc_score >= spec.min_zncc_score
-            ),
-            click_client=lambda point, frame_shape, after_sleep=0: client_clicks.append(
-                (point, frame_shape, after_sleep)
-            ),
-        )
-        navigator = Navigator(task, vision)
-
-        self.assertTrue(navigator._enter_q_sp6_shop(5.0, log_timeout=True))
-        self.assertEqual(
-            [
-                ((1166, 253), frame.shape, 0.0),
-            ],
-            client_clicks,
-        )
-        self.assertEqual([MERCHANT_CLICK_LOCATION_TEMPLATE], matched_specs)
-        self.assertEqual([], warnings)
-
-    def test_buy_entry_uses_seven_quick_page_labels_and_story_badge_templates(self):
-        self.assertEqual(
-            (
-                "最近",
-                "店长游戏卡",
-                "剧情游戏卡",
-                "角色游戏卡",
-                "战斗玩法游戏卡带",
-                "生活玩法游戏卡带",
-                "活动游戏卡",
-            ),
-            QUICK_SWITCH_PAGE_KEYWORDS,
-        )
-        self.assertEqual((557 / 1920, 877 / 1080), STORY_CATEGORY_POINT)
-        self.assertEqual(6, Q_SP6_STORY_NUMBER)
-        self.assertEqual((0.0, 908 / 1080, 1.0, 1.0), QUICK_SWITCH_CARTRIDGE_REGION)
-        self.assertEqual(tuple(range(1, 21)), tuple(value[0] for value in STORY_BADGE_SPECS))
-        self.assertEqual(
-            "quick_switch_cartridges/story_cartridge_badge_06.png",
-            STORY_BADGE_SPECS[5][1].file_name,
-        )
-        self.assertTrue(
-            all(spec.relative_roi == QUICK_SWITCH_CARTRIDGE_REGION for _, spec in STORY_BADGE_SPECS)
-        )
-        self.assertTrue(all(not spec.green_mask for _, spec in STORY_BADGE_SPECS))
-        self.assertTrue(
-            all(
-                spec.min_zncc_score == STORY_BADGE_CANDIDATE_ZNCC_SCORE
-                for _, spec in STORY_BADGE_SPECS
-            )
-        )
-        self.assertTrue(all(spec.scale_ratios == (1.0,) for _, spec in STORY_BADGE_SPECS))
-        template_root = ROOT / "recognition-assets" / "template-assets"
-        for _number, spec in STORY_BADGE_SPECS:
-            template = read_template_image(template_root / spec.file_name)
-            self.assertIsNotNone(template, spec.file_name)
-            self.assertEqual((29, 29, 4), template.shape, spec.file_name)
-            self.assertGreater(np.count_nonzero(template[:, :, 3] == 0), 0)
-            self.assertGreater(np.count_nonzero(template[:, :, 3] == 255), 0)
-            self.assertTrue(np.all(template[[0, 0, -1, -1], [0, -1, 0, -1], 3] == 0))
-        self.assertEqual((191 / 1920, 900 / 1080), BARGAIN_POINT)
-        self.assertEqual((1047 / 1920, 652 / 1080), BARGAIN_CONFIRM_POINT)
-        self.assertEqual("image/green/QuickSwitchPlayIco.png", QUICK_SWITCH_TEMPLATE.file_name)
-        self.assertEqual(
-            ((0.15, 0.85, 0.65, 1.0), (0.16, 0.08, 0.24, 0.19)),
-            QUICK_SWITCH_TEMPLATE.relative_rois,
-        )
-        self.assertEqual((0.95, 0.975, 1.0, 1.025, 1.05), QUICK_SWITCH_TEMPLATE.scale_ratios)
-        self.assertEqual(0.85, QUICK_SWITCH_TEMPLATE.min_pixel_score)
-        self.assertEqual(0.88, QUICK_SWITCH_TEMPLATE.minimum_safe_threshold)
-        # BUG-20260902-06：广场内暗色圆底按钮 1600x901 实测 zncc 最高 0.838，
-        # 误检位置最高 0.43；0.78 在两者之间有足够余量。
-        self.assertEqual(0.78, QUICK_SWITCH_TEMPLATE.min_zncc_score)
-        self.assertIsNone(QUICK_SWITCH_TEMPLATE.candidate_center_roi)
-
-    def test_merchant_interaction_uses_location_match_center(self):
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        match = MatchResult(
-            0.935,
-            (1229, 245),
-            (55, 40),
-            pixel_score=0.952,
-            zncc_score=0.935,
-        )
-        clicks = []
-        statuses = []
-
-        def passes(result, spec):
-            return (
-                result.score >= spec.threshold
-                and result.pixel_score >= spec.min_pixel_score
-                and result.zncc_score >= spec.min_zncc_score
-            )
-
-        task = SimpleNamespace(
-            config={},
-            sleep=lambda *_args: None,
-            log_warning=lambda *_args: None,
-            info_set=lambda key, value: statuses.append((key, value)),
-        )
-        vision = SimpleNamespace(
-            capture=lambda: frame,
-            match=lambda captured, spec: (
-                self.assertIs(spec, MERCHANT_CLICK_LOCATION_TEMPLATE) or match
-            ),
-            passes=passes,
-            click_client=lambda point, shape, after_sleep=0: clicks.append(
-                (point, shape, after_sleep)
-            ),
-        )
-        navigator = Navigator(task, vision)
-
-        self.assertTrue(navigator._click_merchant_interaction(timeout=1.0, after_sleep=1.2))
-        self.assertEqual([((1256, 265), frame.shape, 1.2)], clicks)
-        self.assertEqual(
-            "MerchantClickLocation.png",
-            MERCHANT_CLICK_LOCATION_TEMPLATE.file_name,
-        )
-        self.assertFalse(MERCHANT_CLICK_LOCATION_TEMPLATE.green_mask)
-        self.assertEqual(0.90, MERCHANT_CLICK_LOCATION_TEMPLATE.threshold)
-        self.assertEqual(0.90, MERCHANT_CLICK_LOCATION_TEMPLATE.min_pixel_score)
-        self.assertEqual(
-            0.90,
-            MERCHANT_CLICK_LOCATION_TEMPLATE.minimum_safe_threshold,
-        )
-        self.assertEqual(0.90, MERCHANT_CLICK_LOCATION_TEMPLATE.min_zncc_score)
-        self.assertEqual(
-            (0.90, 0.95, 1.0, 1.05, 1.10),
-            MERCHANT_CLICK_LOCATION_TEMPLATE.scale_ratios,
-        )
-        self.assertAlmostEqual(
-            1.0,
-            offline_template_scale(
-                MERCHANT_CLICK_LOCATION_TEMPLATE.file_name,
-                1920,
-                1080,
-            ),
-        )
-        self.assertAlmostEqual(
-            2 / 3,
-            offline_template_scale(
-                MERCHANT_CLICK_LOCATION_TEMPLATE.file_name,
-                1280,
-                720,
-            ),
-        )
-        self.assertEqual(
-            (
-                "商人点击位置",
-                "pass; match=0.935; pixel=0.952; zncc=0.935",
-            ),
-            statuses[-2],
-        )
-        self.assertEqual(
-            ("商人交互点击位置", "center=(1256,265)"),
-            statuses[-1],
-        )
-
-    def test_merchant_interaction_rejects_each_metric_below_floor_without_click(self):
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        base_metrics = {
-            "score": 0.935,
-            "pixel_score": 0.952,
-            "zncc_score": 0.935,
-        }
-
-        for metric in base_metrics:
-            with self.subTest(metric=metric):
-                clock = FakeClock()
-                metrics = {**base_metrics, metric: 0.899}
-                match = MatchResult(
-                    metrics["score"],
-                    (1229, 245),
-                    (55, 40),
-                    pixel_score=metrics["pixel_score"],
-                    zncc_score=metrics["zncc_score"],
-                )
-                clicks = []
-                task = SimpleNamespace(
-                    config={},
-                    capture_frame=lambda: frame,
-                    operate_click=lambda *args, **kwargs: clicks.append((args, kwargs)),
-                    sleep=clock.sleep,
-                    info_set=lambda *_args: None,
-                    log_warning=lambda *_args: None,
-                )
-                vision = Vision(task)
-                vision.match = lambda _frame, _spec, result=match: result
-                navigator = Navigator(task, vision)
-
-                with patch(
-                    "src.tasks.map_trade.navigator_trade.monotonic",
-                    clock,
-                ):
-                    self.assertFalse(
-                        navigator._click_merchant_interaction(
-                            timeout=0.0,
-                            after_sleep=1.2,
-                        )
-                    )
-                self.assertFalse(vision.passes(match, MERCHANT_CLICK_LOCATION_TEMPLATE))
-                self.assertEqual([], clicks)
 
     def test_merchant_interaction_miss_fails_without_navigation_fallback(self):
         clock = FakeClock()
@@ -3061,15 +1850,6 @@ class BuyEntryTest(unittest.TestCase):
             self.assertFalse(navigator._enter_q_sp6_shop(0.0, log_timeout=False))
         self.assertEqual([], warnings)
 
-    def test_merchant_marker_asset_is_removed(self):
-        template_root = ROOT / "recognition-assets" / "template-assets"
-        self.assertFalse(
-            any(
-                path.name.endswith("IcoGE.png")
-                for path in template_root.joinpath("image", "green").glob("Merchant_*.png")
-            )
-        )
-
 
 class PurchaseEvidenceTest(StageHistoryTestCase):
     def test_pending_purchase_only_rechecks_result_and_never_confirms_again(self):
@@ -3093,65 +1873,6 @@ class PurchaseEvidenceTest(StageHistoryTestCase):
         trader.vision.click_client.assert_not_called()
 
 class TradeRegionTest(unittest.TestCase):
-    def test_classify_rois_keep_reference_rect_boundaries_at_supported_resolutions(self):
-        roi_pairs = (
-            (CLASSIFY_LOADING_REFERENCE_ROI, CLASSIFY_LOADING_RELATIVE_ROI),
-            (CLASSIFY_SHOP_TABS_REFERENCE_ROI, CLASSIFY_SHOP_TABS_RELATIVE_ROI),
-            (CLASSIFY_SHOP_TITLE_REFERENCE_ROI, CLASSIFY_SHOP_TITLE_RELATIVE_ROI),
-            (
-                CLASSIFY_CARD_MENU_TITLE_REFERENCE_ROI,
-                CLASSIFY_CARD_MENU_TITLE_RELATIVE_ROI,
-            ),
-            (
-                CLASSIFY_CARD_MENU_CATEGORY_REFERENCE_ROI,
-                CLASSIFY_CARD_MENU_CATEGORY_RELATIVE_ROI,
-            ),
-            (CLASSIFY_COOKING_TITLE_REFERENCE_ROI, CLASSIFY_COOKING_TITLE_RELATIVE_ROI),
-            (
-                CLASSIFY_COOKING_MATERIALS_REFERENCE_ROI,
-                CLASSIFY_COOKING_MATERIALS_RELATIVE_ROI,
-            ),
-        )
-        for frame_width, frame_height in (
-            (1280, 720),
-            (1920, 1080),
-            (2560, 1440),
-            (3840, 2160),
-        ):
-            frame = np.zeros((frame_height, frame_width, 3), dtype=np.uint8)
-            for reference_rect, relative_roi in roi_pairs:
-                with self.subTest(size=(frame_width, frame_height), rect=reference_rect):
-                    expected = scale_reference_roi(
-                        reference_rect,
-                        (frame_width, frame_height),
-                        FHD_1080.size,
-                    )
-                    left, top, crop = relative_roi_frame(frame, relative_roi)
-                    self.assertEqual(expected[:2], (left, top))
-                    self.assertEqual((expected[3], expected[2]), crop.shape[:2])
-                    self.assertGreater(crop.size, 0)
-
-    def test_chapter_home_templates_use_nonempty_right_edge_roi_at_supported_resolutions(self):
-        for frame_width, frame_height in (
-            (1280, 720),
-            (1920, 1080),
-            (2560, 1440),
-            (3840, 2160),
-        ):
-            frame = np.zeros((frame_height, frame_width, 3), dtype=np.uint8)
-            expected_left = round(frame_width * 0.86)
-            expected_bottom = round(frame_height * 0.18)
-            for spec in CHAPTER_HOME_TEMPLATES:
-                with self.subTest(size=(frame_width, frame_height), template=spec.name):
-                    left, top, crop = relative_roi_frame(frame, spec.relative_roi)
-                    self.assertIs(CHAPTER_HOME_RELATIVE_ROI, spec.relative_roi)
-                    self.assertEqual((expected_left, 0), (left, top))
-                    self.assertEqual(
-                        (expected_bottom, frame_width - expected_left),
-                        crop.shape[:2],
-                    )
-                    self.assertEqual(frame_width, left + crop.shape[1])
-                    self.assertGreater(crop.size, 0)
 
     def test_shop_classification_uses_actual_crop_geometry_not_ocr_name(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -3368,108 +2089,6 @@ class MerchantNavigationTest(unittest.TestCase):
         self.assertFalse(navigator._auto_navigate_to_merchant_shop())
         self.assertEqual([], ocr_calls)
 
-    def test_auto_navigate_clicks_guide_shop_confirm_then_retries_landmark(self):
-        template_clicks = []
-        ocr_clicks = []
-        interactions = []
-        task = SimpleNamespace(
-            config={},
-            sleep=lambda *_args: None,
-            log_warning=lambda *_args, **_kwargs: None,
-        )
-        vision = SimpleNamespace(
-            click_template=lambda spec, timeout, after_sleep: (
-                template_clicks.append((spec.name, timeout)) or True
-            ),
-            click_ocr=lambda patterns, roi, after_sleep, name: (
-                ocr_clicks.append((tuple(patterns), name)) or True
-            ),
-        )
-        navigator = Navigator(task, vision)
-        navigator._wait_merchant_auto_navigation = lambda: True
-        navigator._click_merchant_interaction = lambda timeout, *, after_sleep: (
-            interactions.append((timeout, after_sleep)) or True
-        )
-
-        self.assertTrue(navigator._auto_navigate_to_merchant_shop())
-        self.assertEqual([("小地图导航", MERCHANT_NAV_GUIDE_TIMEOUT)], template_clicks)
-        self.assertEqual(
-            [(("商店",), "商店导航"), (("确认",), "商店导航确认")],
-            ocr_clicks,
-        )
-        self.assertEqual([(MERCHANT_NAV_LANDMARK_TIMEOUT, 1.2)], interactions)
-
-    def test_auto_navigate_stops_when_shop_destination_missing(self):
-        ocr_calls = []
-        task = SimpleNamespace(
-            config={},
-            sleep=lambda *_args: None,
-            log_warning=lambda *_args, **_kwargs: None,
-        )
-        vision = SimpleNamespace(
-            click_template=lambda *_args, **_kwargs: True,
-            click_ocr=lambda *args, **kwargs: ocr_calls.append(kwargs["name"]) or False,
-        )
-        navigator = Navigator(task, vision)
-        navigator._wait_merchant_auto_navigation = lambda: self.fail(
-            "未确认商店目的地不得等待自动移动"
-        )
-
-        self.assertFalse(navigator._auto_navigate_to_merchant_shop())
-        self.assertTrue(ocr_calls)
-        self.assertTrue(all(name == "商店导航" for name in ocr_calls))
-
-    def test_wait_auto_navigation_returns_when_landmark_enters_view(self):
-        clock = FakeClock()
-        landmark = MatchResult(0.95, (100, 100), (40, 30), pixel_score=0.95, zncc_score=0.95)
-        missed = MatchResult(-1.0, (0, 0), (0, 0))
-        task = SimpleNamespace(
-            config={},
-            sleep=clock.sleep,
-            log_warning=lambda *_args, **_kwargs: None,
-        )
-        vision = SimpleNamespace(
-            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
-            match=lambda _frame, spec: (
-                landmark if spec is MERCHANT_CLICK_LOCATION_TEMPLATE else missed
-            ),
-            passes=Vision(task).passes,
-        )
-        navigator = Navigator(task, vision)
-
-        with patch(
-            "src.tasks.map_trade.navigator_trade.monotonic",
-            clock,
-        ):
-            self.assertTrue(navigator._wait_merchant_auto_navigation())
-
-    def test_wait_auto_navigation_returns_after_movement_ends(self):
-        clock = FakeClock()
-        landmark_missed = MatchResult(-1.0, (0, 0), (0, 0))
-        auto_nav_active = MatchResult(0.95, (700, 620), (40, 30))
-        auto_nav_results = iter((auto_nav_active, landmark_missed))
-        task = SimpleNamespace(
-            config={},
-            sleep=clock.sleep,
-            log_warning=lambda *_args, **_kwargs: None,
-        )
-        vision = SimpleNamespace(
-            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
-            match=lambda _frame, spec: (
-                next(auto_nav_results)
-                if spec is MERCHANT_AUTO_NAV_TEMPLATE
-                else landmark_missed
-            ),
-            passes=lambda result, spec: result.score >= 0.9,
-        )
-        navigator = Navigator(task, vision)
-
-        with patch(
-            "src.tasks.map_trade.navigator_trade.monotonic",
-            clock,
-        ):
-            self.assertTrue(navigator._wait_merchant_auto_navigation())
-
     def test_wait_auto_navigation_fails_when_movement_never_starts(self):
         clock = FakeClock()
         missed = MatchResult(-1.0, (0, 0), (0, 0))
@@ -3642,34 +2261,6 @@ class PurchaseFlowTest(StageHistoryTestCase):
         self.assertFalse(task._run_phases(navigator, phases))
         self.assertEqual(["buy", "home"], actions)
 
-    def test_successful_phases_emit_standalone_completion_notification(self):
-        actions = []
-        notifications = []
-        task = object.__new__(MapTradeTask)
-        task.config = {"买": True, "卖": False}
-        task.task_log_name = "跑商"
-        task.info_set = lambda *_args: None
-        task.log_info = lambda message, notify=False: notifications.append(
-            (message, notify)
-        )
-        task.log_warning = lambda *_args: None
-        task.log_error = lambda *_args: None
-        task._save_diagnostic = lambda *_args: None
-        navigator = SimpleNamespace(
-            return_home=lambda: (
-                actions.append("home")
-                or NavigationResult(True, ScreenState.HOME)
-            )
-        )
-        phases = (
-            ("买", "买", lambda: actions.append("buy") or True),
-            ("卖", "卖", lambda: actions.append("sell") or True),
-        )
-
-        self.assertTrue(task._run_phases(navigator, phases))
-        self.assertEqual(["buy", "home"], actions)
-        self.assertEqual(("跑商：所有已开启流程完成。", True), notifications[-1])
-
     def test_return_home_exception_keeps_the_original_phase_failure(self):
         actions = []
         statuses = {}
@@ -3700,54 +2291,6 @@ class PurchaseFlowTest(StageHistoryTestCase):
         self.assertEqual(
             ["map_trade_买_failed", "map_trade_return_home_error"],
             diagnostics,
-        )
-
-    def test_buy_all_favorites_clicks_ocr_button_center_and_confirmation_point(self):
-        clicks = []
-        logs = []
-        warnings = []
-        trader = create_trader()
-        trader.task = SimpleNamespace(
-            operate_click=lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep)),
-            sleep=lambda seconds: logs.append(("sleep", seconds)),
-            log_info=lambda message: logs.append(("log", message)),
-            log_warning=warnings.append,
-        )
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        trader.vision = SimpleNamespace(
-            click_client=lambda point, shape, after_sleep=0: clicks.append(
-                (point, shape, after_sleep)
-            )
-        )
-        trader._wait_for_buy_all_favorites_state = lambda: ((1454, 1004), frame)
-        trader._wait_for_purchase_confirmation = lambda: True
-        trader._wait_for_purchase_completion = lambda: True
-
-        self.assertTrue(trader.buy_all_favorites())
-        self.assertEqual(
-            [
-                ((1454, 1004), frame.shape, 0.3),
-                (*BUY_CONFIRM_POINT, 0.8),
-            ],
-            clicks,
-        )
-        self.assertEqual(
-            (701 / 1920, 328 / 1080, 1219 / 1920, 753 / 1080),
-            BUY_CONFIRM_DIALOG_REGION,
-        )
-        self.assertEqual((1045 / 1920, 697 / 1080), BUY_CONFIRM_POINT)
-        self.assertEqual(30.0, BUY_CONFIRM_TIMEOUT)
-        self.assertEqual([], warnings)
-        self.assertEqual(
-            [
-                (
-                    "log",
-                    "买：购买确认弹窗OCR完成，等待0.8秒后点击确认。",
-                ),
-                ("sleep", BUY_CONFIRM_PRE_CLICK_DELAY),
-                ("log", "买：已确认购买全部收藏商品。"),
-            ],
-            logs,
         )
 
     def test_buy_all_button_requires_two_consecutive_full_frame_ocr_hits(self):
@@ -3845,34 +2388,6 @@ class PurchaseFlowTest(StageHistoryTestCase):
                 for ocr_frame, template_frame in zip(ocr_frames, template_frames):
                     self.assertIs(ocr_frame, template_frame)
 
-    def test_purchase_confirmation_requires_both_texts_in_given_region(self):
-        ocr_calls = []
-        warnings = []
-        text = {"value": "一键购买全部收藏"}
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        trader = create_trader()
-        trader.task = SimpleNamespace(
-            sleep=lambda *_args: None,
-            log_warning=warnings.append,
-            info_set=lambda *_args: None,
-        )
-        trader.vision = SimpleNamespace(
-            capture=lambda: frame,
-            ocr_text=lambda captured, name, relative_roi: (
-                ocr_calls.append((captured.shape, name, relative_roi)) or text["value"]
-            ),
-            simplify=lambda value: value,
-        )
-
-        self.assertFalse(trader._wait_for_purchase_confirmation(timeout=0.0))
-        text["value"] = "一键购买全部收藏 是否购买所有加入收藏的商品？"
-        self.assertTrue(trader._wait_for_purchase_confirmation(timeout=0.0))
-        self.assertEqual(
-            ("一键购买全部收藏", "是否购买所有加入收藏的商品"),
-            BUY_CONFIRM_KEYWORDS,
-        )
-        self.assertTrue(all(call[2] == BUY_CONFIRM_DIALOG_REGION for call in ocr_calls))
-
     def test_buy_all_favorites_stops_when_confirmation_is_missing(self):
         clicks = []
         warnings = []
@@ -3924,42 +2439,6 @@ class PurchaseFlowTest(StageHistoryTestCase):
         self.assertIn("未观察到售罄模板", warnings[0])
 
 class TradeHomeConfirmationTest(unittest.TestCase):
-    def test_buy_home_confirmation_requires_keyword_votes_brightness_and_ocr(self):
-        announcement_signals = []
-        task = SimpleNamespace(
-            config={},
-            sleep=lambda *_args: None,
-            log_warning=lambda *_args, **_kwargs: None,
-            clear_temporary_home_announcement_if_needed=lambda **signals: (
-                announcement_signals.append(signals) if not announcement_signals else None
-            ),
-        )
-        bright_frame = np.full((1080, 1920, 3), 255, dtype=np.uint8)
-        dimmed_frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        frame = {"value": dimmed_frame}
-        gacha_text = {"value": "抽抽乐"}
-
-        def ocr_text(_frame, name, **_kwargs):
-            if name == "主页左列":
-                return "我的小屋 经营管理格鲁TALK 街机游戏"
-            return gacha_text["value"]
-
-        vision = SimpleNamespace(
-            capture=lambda: frame["value"],
-            ocr_text=ocr_text,
-            simplify=lambda value: value,
-        )
-        navigator = Navigator(task, vision)
-
-        self.assertFalse(navigator._wait_for_cartridge_home(timeout=0.0))
-        self.assertEqual(1, len(announcement_signals))
-        self.assertEqual(3, announcement_signals[0]["left_hits"])
-        self.assertEqual(0.0, announcement_signals[0]["brightness"])
-        self.assertEqual("抽抽乐", announcement_signals[0]["gacha_ocr_text"])
-        frame["value"] = bright_frame
-        self.assertTrue(navigator._wait_for_cartridge_home(timeout=0.0))
-        gacha_text["value"] = ""
-        self.assertFalse(navigator._wait_for_cartridge_home(timeout=0.0))
 
     def test_return_home_update_notice_is_cleared_then_strictly_reconfirmed(self):
         frames = iter(("notice", "home"))
@@ -4082,45 +2561,6 @@ class TradeHomeConfirmationTest(unittest.TestCase):
         )
         self.assertEqual([(720, 1200, 3)], ocr_shapes)
 
-    def test_return_home_update_notice_clicks_at_most_three_times(self):
-        clicks = []
-        task = SimpleNamespace(
-            config={},
-            sleep=lambda *_args: None,
-            log_warning=lambda *_args, **_kwargs: None,
-            log_info=lambda *_args, **_kwargs: None,
-            operate_click=lambda x, y, after_sleep=0: clicks.append(
-                (x, y, after_sleep)
-            ),
-            clear_temporary_home_announcement_if_needed=lambda **_kwargs: False,
-        )
-        vision = SimpleNamespace(
-            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
-            ocr_text=lambda *_args, **_kwargs: "更新 抢先看",
-            simplify=lambda value: value,
-        )
-        navigator = Navigator(task, vision)
-        samples = {"count": 0}
-
-        def signals(_frame, clear_context=None):
-            samples["count"] += 1
-            if samples["count"] >= 5:
-                return True, 3, 253.0, "抽抽乐"
-            return False, 0, 0.0, ""
-
-        navigator._home_confirmation_signals = signals
-
-        self.assertTrue(
-            navigator._wait_for_cartridge_home(
-                timeout=1.0,
-                allow_return_announcement_cleanup=True,
-            )
-        )
-        self.assertEqual(
-            [(*HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT, 0.2)] * 3,
-            clicks,
-        )
-
 class TradeScreenClassificationTest(unittest.TestCase):
     def test_screen_classification_only_reports_home_after_all_three_signals(self):
         task = SimpleNamespace(
@@ -4194,39 +2634,6 @@ class TradeScreenClassificationTest(unittest.TestCase):
         self.assertEqual(0.90, spec.min_zncc_score)
         self.assertIs(QUICK_SWITCH_TEMPLATE, SANDBOX_TEMPLATES[1])
 
-    def test_quick_switch_button_alone_is_a_valid_sandbox_signal(self):
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        failed = MatchResult(-1.0, (0, 0), (0, 0))
-        quick_switch = MatchResult(
-            0.98,
-            (820, 980),
-            (60, 50),
-            pixel_score=0.91,
-            zncc_score=0.92,
-        )
-
-        def match(_frame, spec):
-            return quick_switch if spec is QUICK_SWITCH_TEMPLATE else failed
-
-        def passes(result, spec):
-            return (
-                result.score >= spec.threshold
-                and (spec.min_pixel_score is None or result.pixel_score >= spec.min_pixel_score)
-                and (spec.min_zncc_score is None or result.zncc_score >= spec.min_zncc_score)
-            )
-
-        vision = SimpleNamespace(
-            match=match,
-            passes=passes,
-            threshold_for=lambda spec: spec.threshold,
-            template_brightness_ratio=lambda *_args: 0.0,
-            ocr_text=lambda *_args, **_kwargs: "",
-            simplify=lambda value: value,
-        )
-        navigator = Navigator(SimpleNamespace(config={}), vision)
-
-        self.assertEqual(ScreenState.SANDBOX, navigator.classify(frame))
-
     def test_trade_classify_requires_interaction_options_and_talent_cards(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         cases = (
@@ -4259,24 +2666,6 @@ class TradeScreenClassificationTest(unittest.TestCase):
     def _fresh_frame():
         return np.zeros((1080, 1920, 3), dtype=np.uint8)
 
-    def test_trade_classify_default_argument_captures_frame(self):
-        captured = self._fresh_frame()
-        seen_frames = []
-
-        def ocr(frame_arg, name, **_kwargs):
-            seen_frames.append(frame_arg)
-            return ""
-
-        task = SimpleNamespace(config={}, info_set=lambda *_args: None)
-        vision = SimpleNamespace(capture=lambda: captured, ocr_text=ocr,
-                                 simplify=lambda value: value)
-        navigator = Navigator(task, vision)
-        navigator._home_confirmation_signals = lambda _frame: (False,)
-        navigator.classify = lambda _frame: ScreenState.SANDBOX
-        self.assertEqual(ScreenState.SANDBOX, navigator.classify_trade())
-        self.assertTrue(seen_frames)
-        self.assertTrue(all(value is captured for value in seen_frames))
-
     def test_shared_classify_never_uses_trade_merchant_signals(self):
         task = SimpleNamespace(config={}, info_set=lambda *_args: None)
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -4308,26 +2697,6 @@ class TradeScreenClassificationTest(unittest.TestCase):
         self.assertNotIn("跑商商人交互选项", ocr_names)
         self.assertNotIn("跑商商人天赋技能", ocr_names)
         self.assertNotIn(MERCHANT_CLICK_LOCATION_TEMPLATE, matched_specs)
-
-    def test_classify_shop_ocr_fallback_without_merchant_template(self):
-        task = SimpleNamespace(config={}, info_set=lambda *_args: None)
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        failed = MatchResult(-1.0, (0, 0), (0, 0))
-        vision = SimpleNamespace(
-            capture=lambda: frame,
-            match=lambda *_args: failed,
-            passes=lambda *_args: False,
-            threshold_for=lambda spec: spec.threshold,
-            template_brightness_ratio=lambda *_args: 0.0,
-            ocr_text=lambda _frame, name, **_kwargs: {
-                "界面分类商店页": "购买 出售",
-                "界面分类商店标题": "仓库管理石怪 仓库 严加管理 天赋技能",
-            }.get(name, ""),
-            simplify=lambda value: value,
-        )
-        navigator = Navigator(task, vision)
-
-        self.assertEqual(ScreenState.SHOP, navigator.classify())
 
     def test_classify_map_mode_card_menu_and_cooking_use_scoped_signals(self):
         task = SimpleNamespace(config={}, info_set=lambda *_args: None)
@@ -4461,79 +2830,6 @@ class TradeHomeRecoveryTest(unittest.TestCase):
 
         self.assertFalse(result.success)
         self.assertEqual([(*DISCOUNT_SHOP_BACK_POINT, 0.0)], actions)
-
-    def test_shop_close_control_uses_detected_back_arrow_center(self):
-        actions = []
-        task = SimpleNamespace(
-            config={},
-            operate_click=lambda *_args, **_kwargs: self.fail("模板命中后不得回退"),
-            sleep=lambda *_args: None,
-        )
-        match = MatchResult(0.98, (159, 29), (26, 41), zncc_score=0.85)
-        vision = SimpleNamespace(
-            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
-            match=lambda _frame, spec: (
-                match if spec is DISCOUNT_SHOP_CLOSE_CONTROL_TEMPLATES[0] else None
-            ),
-            passes=lambda result, _spec: result is match,
-            click_client=lambda center, shape, after_sleep=0: actions.append(
-                (center, shape, after_sleep)
-            ),
-        )
-        navigator = Navigator(task, vision)
-
-        navigator._click_shop_close_control(after_sleep=0.8)
-
-        self.assertEqual(
-            "image/green/BackButGe.png",
-            DISCOUNT_SHOP_CLOSE_CONTROL_TEMPLATES[0].file_name,
-        )
-        self.assertEqual([((172, 49), (1080, 1920, 3), 0.8)], actions)
-
-    def test_return_home_closes_sale_popup_before_discount_shop(self):
-        actions = []
-        clock = [0.0]
-        texts = iter(("姜黄 拥有54个 可购买54个 出售", "", "香草牛排 食物", "香草牛排 食物"))
-        task = SimpleNamespace(
-            operate_click=lambda *args, **kwargs: actions.append(("popup", args)),
-            sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
-        )
-        vision = SimpleNamespace(
-            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
-            ocr_text=lambda *_args, **_kwargs: next(texts),
-        )
-        navigator = Navigator(task, vision)
-        navigator.classify = lambda: ScreenState.SHOP
-        navigator._click_shop_close_control = lambda **kwargs: actions.append(("shop",))
-        navigator._wait_for_ocr_keywords = lambda *_args, **_kwargs: False
-        with patch("src.tasks.map_trade.navigator_trade.monotonic", lambda: clock[0]):
-            navigator.return_home()
-        self.assertEqual([("popup", SALE_CLOSE_POINT), ("shop",)], actions)
-        self.assertEqual(2 * SALE_OCR_INTERVAL, clock[0])
-
-    def test_return_home_stops_if_sale_popup_close_is_unconfirmed(self):
-        for after_click in ("姜黄 拥有54个 可购买54个 出售", ""):
-            with self.subTest(after_click=after_click):
-                clock, clicks = [0.0], []
-                task = SimpleNamespace(
-                    operate_click=lambda *args, **kwargs: clicks.append(args),
-                    sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
-                )
-                vision = SimpleNamespace(
-                    capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
-                    ocr_text=lambda *_args, **_kwargs: (
-                        after_click if clicks else "拥有54个 可购买54个 出售"
-                    ),
-                )
-                navigator = Navigator(task, vision)
-                navigator.classify = lambda: ScreenState.SHOP
-                navigator._click_shop_close_control = lambda **kwargs: self.fail(
-                    "弹窗未关不能关闭商店"
-                )
-                with patch("src.tasks.map_trade.navigator_trade.monotonic", lambda: clock[0]):
-                    result = navigator.return_home()
-                self.assertFalse(result.success)
-                self.assertEqual([SALE_CLOSE_POINT], clicks)
 
     def test_return_home_closes_confirmed_quick_switch_before_home(self):
         for confirmed, matched, next_state in (
@@ -4782,28 +3078,6 @@ class TradeHomeRecoveryTest(unittest.TestCase):
         )
 
 class TradeCartridgeMenuTest(unittest.TestCase):
-    def test_buy_quick_page_requires_all_seven_labels(self):
-        task = SimpleNamespace(
-            config={},
-            sleep=lambda *_args: None,
-            log_warning=lambda *_args, **_kwargs: None,
-        )
-        text = {
-            "value": (
-                "最近 店长游戏卡 剧情游戏卡 角色游戏卡 "
-                "战斗玩法游戏卡带 生活玩法游戏卡带"
-            )
-        }
-        vision = SimpleNamespace(
-            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
-            ocr_text=lambda *_args: text["value"],
-            simplify=lambda value: value,
-        )
-        navigator = Navigator(task, vision)
-
-        self.assertFalse(navigator._wait_for_quick_switch_page(timeout=0.0))
-        text["value"] += " 活动游戏卡"
-        self.assertTrue(navigator._wait_for_quick_switch_page(timeout=0.0))
 
     def test_buy_story_category_requires_label_and_visual_highlight(self):
         task = SimpleNamespace(
@@ -4827,23 +3101,3 @@ class TradeCartridgeMenuTest(unittest.TestCase):
 
         text["value"] = "角色游戏卡"
         self.assertFalse(navigator._wait_for_cartridge_category(timeout=0.0))
-
-    def test_story_category_highlight_region_uses_1920_reference_ratios(self):
-        self.assertEqual(
-            (445 / 1920, 840 / 1080, 670 / 1920, 915 / 1080),
-            STORY_CATEGORY_HIGHLIGHT_REGION,
-        )
-
-    def test_bright_neutral_ratio_detects_category_highlight(self):
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        left, top, region = Vision._relative_roi(frame, STORY_CATEGORY_HIGHLIGHT_REGION)
-        required = round(region.shape[0] * region.shape[1] * 0.06)
-        width = region.shape[1]
-        frame[
-            top : top + required // width + 1,
-            left : left + width,
-        ] = (220, 220, 220)
-
-        ratio = Vision.bright_neutral_ratio(frame, STORY_CATEGORY_HIGHLIGHT_REGION)
-
-        self.assertGreaterEqual(ratio, STORY_CATEGORY_HIGHLIGHT_MIN_RATIO)

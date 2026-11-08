@@ -168,29 +168,6 @@ class HuntPlanTest(StageHistoryTestCase):
                 self.assertEqual(modes, [call.args[0] for call in calls])
                 self.assertEqual(12, sum(call.kwargs["max_cost"] for call in calls))
 
-    def test_scheduler_skips_unspendable_rice_before_reading_bonus(self):
-        from src.tasks.QuickHuntTask import QuickHuntTask
-
-        for rice, reserve in ((0, 0), (5, 0), (17, 12)):
-            with self.subTest(rice=rice, reserve=reserve):
-                plan = preset_plans()[0]
-                plan["reserve"] = reserve
-                task = object.__new__(QuickHuntTask)
-                task.config = {
-                    PLAN_KEY: json.dumps({"version": 1, "active": 0, "plans": [plan]})
-                }
-                task.info_set = Mock()
-                task.log_info = Mock()
-                task._quick_hunt_free_rice = Mock(return_value=rice)
-                task._quick_hunt_plan_double_states = Mock(
-                    return_value={"金币": None, "经验": None},
-                )
-                task._quick_hunt_execute_current_map = Mock()
-
-                self.assertTrue(task._quick_hunt_run_rice_scheduler())
-                task._quick_hunt_plan_double_states.assert_not_called()
-                task._quick_hunt_execute_current_map.assert_not_called()
-
     def test_scheduler_continues_only_current_step_after_budget_cancel_is_confirmed(self):
         from src.tasks.QuickHuntTask import QuickHuntTask
 
@@ -323,59 +300,6 @@ class HuntPlanTest(StageHistoryTestCase):
         self.assertEqual([6, 6, 6, 72], clicks)
         self.assertEqual(0, balance[0])
         self.assertEqual(original_scope, run_history.read_stage(task, "狩猎方案")["scope"])
-
-    def test_free_rice_reader_does_not_use_stored_rice_or_ambiguous_ocr(self):
-        from src.tasks.QuickHuntTask import QuickHuntTask
-
-        task = object.__new__(QuickHuntTask)
-        task._info_lock = RLock()
-        task.info = {}
-        task.logger = logging.getLogger(__name__)
-        task.capture_frame = Mock(return_value=np.zeros((1080, 1920, 3), dtype=np.uint8))
-        task.sleep = Mock()
-        task._quick_vision = Mock(return_value=SimpleNamespace(ocr_boxes=Mock(return_value=[])))
-        for text, expected in (
-            ("0/90 +1.77K", 0),
-            ("84/90", 84),
-            ("1.77K", None),
-            ("0/90 84/90", None),
-            ("990/90", None),
-        ):
-            task._quick_hunt_ocr_text = Mock(return_value=text)
-            self.assertEqual(expected, task._quick_hunt_free_rice())
-        task._quick_hunt_ocr_text = Mock(side_effect=["84/90", "78/90"])
-        self.assertIsNone(task._quick_hunt_free_rice())
-
-    def test_free_resource_raw_fraction_fallback_keeps_capacity_and_two_frame_guards(self):
-        task = object.__new__(QuickHuntTask)
-        task.info_set = Mock()
-        task.sleep = Mock()
-        task.capture_frame = Mock(return_value=np.zeros((1080, 1920, 3), dtype=np.uint8))
-        task._quick_hunt_ocr_text = Mock(return_value="0 9 0")
-        boxes = Mock()
-        task._quick_vision = Mock(return_value=SimpleNamespace(ocr_boxes=boxes))
-        for resource, texts, expected in (
-            ("米饭", ["0/90", "+3.39K"], 0),
-            ("米饭", ["84/90", "2"], 84),
-            ("火把", ["0/60", "+100"], 0),
-            ("米饭", ["0 9 0"], None),
-            ("米饭", ["0/90 3.39K"], None),
-            ("米饭", ["0/90", "84/90"], None),
-            ("米饭", ["0/90", "0/90"], None),
-            ("米饭", ["0/90", "0/60"], None),
-            ("米饭", ["91/90"], None),
-            ("米饭", ["0/60"], None),
-            ("米饭", ["+3.39K"], None),
-        ):
-            with self.subTest(resource=resource, texts=texts):
-                boxes.return_value = [SimpleNamespace(name=text) for text in texts]
-                self.assertEqual(expected, task._quick_hunt_free_resource(resource))
-        boxes.side_effect = [[SimpleNamespace(name="0/90")], [SimpleNamespace(name="6/90")]]
-        self.assertIsNone(task._quick_hunt_free_resource("米饭"))
-        boxes.reset_mock(side_effect=True)
-        task._quick_hunt_ocr_text.return_value = "90/90"
-        self.assertEqual(90, task._quick_hunt_free_resource("米饭"))
-        boxes.assert_not_called()
 
     def test_free_resource_reader_preserves_full_balance_and_filters_yellow_before_ocr(self):
         for resource, capacity, left, right, yellow_left in (

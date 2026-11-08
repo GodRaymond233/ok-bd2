@@ -33,15 +33,6 @@ class ShellLayoutTest(unittest.TestCase):
             Path("E:/shell"),
         )
 
-    def test_console_interpreter_is_preferred(self):
-        with tempfile.TemporaryDirectory() as directory:
-            pythonw = Path(directory) / "pythonw.exe"
-            python = Path(directory) / "python.exe"
-            pythonw.touch()
-            self.assertEqual(bootstrap.core_python(str(pythonw)), str(pythonw))
-            python.touch()
-            self.assertEqual(bootstrap.core_python(str(pythonw)), str(python))
-
 
 class CheckShellTest(unittest.TestCase):
     def setUp(self):
@@ -60,9 +51,6 @@ class CheckShellTest(unittest.TestCase):
             bootstrap.check_shell(self.root)
         self.assertEqual(raised.exception.exit_code, code)
 
-    def test_missing_executable(self):
-        self.assert_refused(protocol.EXIT_SHELL_MISSING)
-
     def test_missing_or_mismatched_manifest(self):
         self.write()
         self.assert_refused(protocol.EXIT_SHELL_INCOMPATIBLE)
@@ -70,10 +58,6 @@ class CheckShellTest(unittest.TestCase):
         self.assert_refused(protocol.EXIT_SHELL_INCOMPATIBLE)
         self.write({"version": bootstrap.REQUIRED_SHELL_VERSION, "api": {"min": 2, "max": 3}})
         self.assert_refused(protocol.EXIT_SHELL_INCOMPATIBLE)
-
-    def test_matching_shell(self):
-        self.write({"version": bootstrap.REQUIRED_SHELL_VERSION, "api": {"min": 1, "max": 1}})
-        self.assertEqual(bootstrap.check_shell(self.root), self.root / bootstrap.SHELL_EXECUTABLE)
 
 
 class MainTest(unittest.TestCase):

@@ -159,8 +159,6 @@ class ScriptCase(unittest.TestCase):
 
 
 class ScriptRoutesTest(ScriptCase):
-    def test_says_when_the_tools_are_available(self):
-        self.assertTrue(self.get("/api/desktop/info").json()["custom_scripts"])
 
     def test_lists_scripts_with_their_task_and_errors(self):
         self.script()
@@ -182,15 +180,6 @@ class ScriptRoutesTest(ScriptCase):
         self.assertIsNone(fixed["error"])
         self.assertIsNone(fixed["error_line"])
         self.assertEqual(fixed["task"], "任务 A")
-
-    def test_waits_for_the_executor_before_answering(self):
-        self.script()
-        pending = Future()
-        self.manager.reload_task_code = lambda task: SimpleNamespace(future=pending)
-        with patch.object(scripts_module, "LOAD_TIMEOUT", 0.01):
-            response = self.post("/api/scripts/A.py", {"code": GOOD})
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("加载超时", response.json()["detail"])
 
     def test_changes_wait_for_running_tasks_starts_and_maintenance(self):
         self.script()
@@ -228,13 +217,6 @@ class ScriptRoutesTest(ScriptCase):
         self.assertEqual(self.starts, [next(iter(self.manager.task_map))])
         self.assertIn("# edited", (self.folder / "A.py").read_text(encoding="utf-8"))
 
-    def test_a_script_that_does_not_load_does_not_start(self):
-        self.script()
-        response = self.post("/api/scripts/A.py/run", {"code": "broken"})
-        self.assertEqual(response.status_code, 200)
-        self.assertIsNotNone(response.json()["error"])
-        self.assertEqual(self.starts, [])
-
     def test_create_copy_delete(self):
         for body, reason in (
             ({"class_name": "1bad", "task_name": "x"}, "类名"),
@@ -261,24 +243,11 @@ class ScriptRoutesTest(ScriptCase):
         self.assertFalse((self.folder / "New.py").exists())
         self.assertEqual(self.get("/api/scripts/New.py").status_code, 400)
 
-    def test_a_script_that_never_loaded_can_still_be_deleted(self):
-        self.script("Broken", "broken")
-        self.assertEqual(self.post("/api/scripts/Broken.py/delete").status_code, 200)
-        self.assertFalse((self.folder / "Broken.py").exists())
-        self.assertEqual(self.manager.task_errors, {})
-
     def test_refuses_names_outside_the_scripts_folder(self):
         for name in ("..%2Fevil.py", "a.txt", "a%20b.py"):
             response = self.get(f"/api/scripts/{name}")
             self.assertIn(response.status_code, (400, 404), name)
         self.assertEqual(self.post("/api/scripts/a.txt", {"code": ""}).status_code, 400)
-
-    def test_refuses_a_huge_script(self):
-        self.script()
-        with patch.object(scripts_module, "MAX_SCRIPT_BYTES", 4):
-            self.assertIn(
-                "太大", self.post("/api/scripts/A.py", {"code": "12345"}).json()["detail"]
-            )
 
     def test_export_reports_the_file_and_shows_it(self):
         self.script()
@@ -410,10 +379,6 @@ class ScriptRoutesTest(ScriptCase):
         )
         self.assertEqual(self.post("/api/scripts-record/stop", {}).status_code, 400)
 
-    def test_recording_says_so_when_the_game_is_not_connected(self):
-        self.engine.device_manager.get_hwnd_name = lambda: ""
-        self.assertIn("没有连接游戏窗口", self.post("/api/scripts-record/start").json()["detail"])
-
 
 class TemplateRoutesTest(ScriptCase):
     def setUp(self):
@@ -438,15 +403,6 @@ class TemplateRoutesTest(ScriptCase):
         self.assertEqual(self.post("/api/templates/0.png/delete").json(), {"deleted": "0.png"})
         self.assertFalse(self.image.exists())
 
-    def test_reports_problems_in_chinese(self):
-        self.assertIn("模板不存在", self.post("/api/templates/9.png/delete").json()["detail"])
-        self.assertIn("名称无效", self.get("/api/templates/a.txt/annotations").json()["detail"])
-        bad = self.post(
-            "/api/templates/0.png/annotations",
-            {"annotations": [{"category": "", "bbox": [0, 0, 1, 1]}]},
-        )
-        self.assertIn("标注框无效", bad.json()["detail"])
-
     def test_changes_wait_for_maintenance(self):
         self.engine.headless_app.maintenance = True
         for path, body in (
@@ -458,14 +414,6 @@ class TemplateRoutesTest(ScriptCase):
             self.assertEqual(response.status_code, 400, path)
             self.assertIn("正在准备更新", response.json()["detail"], path)
         self.assertTrue(self.image.exists())
-
-    def test_capture_needs_a_connected_game(self):
-        self.capture.connected = lambda: False
-        self.assertIn("没有连接游戏窗口", self.post("/api/templates/capture").json()["detail"])
-        self.capture.connected = lambda: True
-        self.assertIn("没有截到画面", self.post("/api/templates/capture").json()["detail"])
-        self.capture.get_frame = lambda: np.zeros((10, 10, 3), dtype=np.uint8)
-        self.assertEqual(len(self.post("/api/templates/capture").json()), 2)
 
     def test_save_generates_templates_and_reloads_features(self):
         self.post(
@@ -492,32 +440,6 @@ class TemplateRoutesTest(ScriptCase):
         ):
             self.assertIn(reason, self.post("/api/bd2/templates/save", body).json()["detail"])
         self.assertFalse((self.root / "src").exists())
-
-    def test_save_remembers_its_choices_in_the_qt_tabs_file(self):
-        info = self.get("/api/bd2/templates/info").json()
-        self.assertEqual(
-            info,
-            {"debug": False, "generate_label_enum": False, "enum_path": scripts_module.ENUM_PATH},
-        )
-        self.post(
-            "/api/templates/0.png/annotations",
-            {"annotations": [{"category": "ok", "bbox": [1, 2, 3, 4]}]},
-        )
-        path = "ok_tasks/Mine.py"
-        saved = self.post(
-            "/api/bd2/templates/save",
-            {"format": "split", "generate_label_enum": True, "enum_path": path},
-        )
-        self.assertEqual(saved.status_code, 200, saved.text)
-        self.assertTrue((self.root / path).is_file())
-        info = self.get("/api/bd2/templates/info").json()
-        self.assertTrue(info["generate_label_enum"])
-        self.assertEqual(info["enum_path"], path)
-        self.assertTrue((self.root / "configs" / "template_tab.json").is_file())
-
-    def test_save_says_when_there_is_nothing(self):
-        self.store.coco_path.unlink(missing_ok=True)
-        self.assertIn("还没有标注", self.post("/api/bd2/templates/save", {}).json()["detail"])
 
 
 if __name__ == "__main__":

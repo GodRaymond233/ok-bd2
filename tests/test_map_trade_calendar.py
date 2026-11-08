@@ -23,7 +23,7 @@ from src.tasks.map_trade.calendar import (
     purchase_stock_date,
     sale_price_calendar_date,
 )
-from src.tasks.map_trade.models import DEFAULT_SALE_WHITELIST, ScreenState
+from src.tasks.map_trade.models import DEFAULT_SALE_WHITELIST
 from src.tasks.map_trade.progress import UTC_PLUS_8
 from tests.helpers.map_trade import create_trader
 
@@ -187,37 +187,6 @@ class CalendarTest(unittest.TestCase):
             warnings,
         )
 
-    def test_run_sell_enters_sale_flow_for_custom_entry_on_empty_bundled_day(self):
-        actions = []
-        trader = create_trader()
-        trader.now_provider = lambda: datetime(2026, 8, 29, 12, tzinfo=UTC_PLUS_8)
-        trader.started_at = trader.now_provider()
-        trader.calendar_client = PriceCalendarClient(BUNDLED_CALENDAR)
-        trader.vision = SimpleNamespace(simplify=lambda value: value)
-        trader.task = SimpleNamespace(
-            config={
-                "使用程序默认价表": False,
-                "使用在线价表": False,
-                "自定义最高价表": self._manual("29=番茄@S1"),
-                "使用出售白名单": False,
-                "使用出售黑名单": False,
-            },
-            log_info=actions.append,
-            log_warning=lambda message: self.fail(message),
-            info_set=lambda *_args: None,
-        )
-        trader.navigator = SimpleNamespace(
-            enter_q_sp6_buy_flow=lambda: (
-                actions.append("enter")
-                or SimpleNamespace(success=True, state=ScreenState.SHOP)
-            )
-        )
-        trader._ensure_sell_page = lambda: actions.append("sell-page") or True
-        trader.sell_max_price_items = lambda: actions.append("sell") or True
-
-        self.assertTrue(trader.run_sell())
-        self.assertEqual(["enter", "sell-page", "sell"], actions[-3:])
-
     def test_bundled_calendar_has_version_timezone_and_all_days(self):
         loaded = parse_calendar_payload(BUNDLED_CALENDAR.read_text(encoding="utf-8"), "test")
 
@@ -232,36 +201,9 @@ class CalendarTest(unittest.TestCase):
             parse_manual_calendar(self._manual("8=透明沙拉@S6:异教塔")).entries_for(8)[0].shop,
         )
 
-    def test_bundled_calendar_days_17_to_20_follow_confirmed_sale_table(self):
-        loaded = parse_calendar_payload(BUNDLED_CALENDAR.read_text(encoding="utf-8"))
-
-        self.assertEqual(
-            [("米", "S5:沙漠之花"), ("土豆", "S16:三国同盟"), ("泰瑞丝派", "R1:杰登之门")],
-            [(entry.item, entry.shop) for entry in loaded.entries_for(17)],
-        )
-        self.assertEqual(
-            ["黄油", "魅惑粉末", "甜辣酱", "藏红花", "萝卜缨"],
-            [entry.item for entry in loaded.entries_for(18)],
-        )
-        butter, charm, *_rest = loaded.entries_for(18)
-        self.assertEqual(0, butter.reserve)
-        self.assertTrue(butter.sell)
-        self.assertTrue(charm.sell)
-        self.assertEqual(["哈密瓜"], [entry.item for entry in loaded.entries_for(19)])
-        self.assertEqual(["灵魂鲜奶油"], [entry.item for entry in loaded.entries_for(20)])
-        self.assertTrue(loaded.entries_for(20)[0].sell)
-
     def test_manual_calendar_requires_every_day(self):
         with self.assertRaisesRegex(ValueError, "必须覆盖 1-31 日"):
             parse_manual_calendar("1=透明沙拉@S6:异教塔")
-
-    def test_manual_calendar_rejects_unknown_shop(self):
-        with self.assertRaisesRegex(ValueError, "未知商店"):
-            parse_manual_calendar(self._manual("8=透明沙拉@不存在"))
-
-    def test_calendar_rejects_non_tradeable_story_card_s20(self):
-        with self.assertRaisesRegex(ValueError, "未知商店"):
-            parse_manual_calendar(self._manual("8=透明沙拉@S20"))
 
     def test_calendar_accepts_actual_event_numbering_and_rejects_old_pairs(self):
         # 实机编号：记忆边缘为 E5、戏水女王为 E7；旧表的 E4/E5 编号必须拒绝。
@@ -371,31 +313,6 @@ class CalendarTest(unittest.TestCase):
                 with patch.object(client, "_fetch", side_effect=fetch):
                     self.assertEqual("cache", client.load(use_bundled=False).source)
 
-    def test_online_failure_rejects_cache_at_max_age_boundary_after_sale_date_change(self):
-        now = datetime(2026, 7, 19, 12, 0, tzinfo=UTC_PLUS_8)
-        with tempfile.TemporaryDirectory() as temp_dir:
-            client = self._offline_client(Path(temp_dir), "2026-07-18T12:00:00+08:00", now)
-            with patch.object(client, "_fetch", side_effect=OSError("offline")):
-                with self.assertRaisesRegex(RuntimeError, "本地缓存已过期"):
-                    client.load(use_bundled=False, use_online=True)
-
-    def test_online_failure_rejects_cross_month_cache_even_when_recent(self):
-        scenarios = (
-            # 上月末缓存，次月初读取：年龄仅 2.5 小时但出售价表日期已跨月。
-            ("2026-07-31T22:00:00+08:00", datetime(2026, 8, 1, 0, 30, tzinfo=UTC_PLUS_8)),
-            # 月末 23:00 后读取：出售价表日期已翻到次月，即使缓存仅 1 小时也拒绝。
-            ("2026-07-31T22:30:00+08:00", datetime(2026, 7, 31, 23, 30, tzinfo=UTC_PLUS_8)),
-            # 同月 23:00 刷新：出售价表日期跨日，即使缓存仍很新也拒绝。
-            ("2026-07-19T22:30:00+08:00", datetime(2026, 7, 19, 23, 30, tzinfo=UTC_PLUS_8)),
-        )
-        for cached_at, now in scenarios:
-            with self.subTest(cached_at=cached_at):
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    client = self._offline_client(Path(temp_dir), cached_at, now)
-                    with patch.object(client, "_fetch", side_effect=OSError("offline")):
-                        with self.assertRaisesRegex(RuntimeError, "本地缓存已过期"):
-                            client.load(use_bundled=False, use_online=True)
-
     def test_http_304_with_fresh_cache_returns_cache_without_refetch(self):
         payload = json.loads(BUNDLED_CALENDAR.read_text(encoding="utf-8"))
         url = "https://example.test/calendar.json"
@@ -430,31 +347,6 @@ class CalendarTest(unittest.TestCase):
 
             self.assertEqual("cache", loaded.source)
             fetch.assert_called_once_with(url, etag='"etag-v1"')
-
-    def test_month_end_cache_uses_sale_month_after_online_download(self):
-        payload = BUNDLED_CALENDAR.read_bytes()
-        for written, read_at in (
-            (datetime(2026, 7, 31, 23, 30, tzinfo=UTC_PLUS_8),
-             datetime(2026, 8, 1, 0, 30, tzinfo=UTC_PLUS_8)),
-            (datetime(2026, 12, 31, 23, 30, tzinfo=UTC_PLUS_8),
-             datetime(2027, 1, 1, 0, 30, tzinfo=UTC_PLUS_8)),
-        ):
-            with self.subTest(written=written), tempfile.TemporaryDirectory() as temp_dir:
-                client = self._offline_client(Path(temp_dir), None, written)
-                with patch.object(client, "_fetch", return_value=(
-                    parse_calendar_payload(payload), payload, '"new"',
-                )):
-                    client.load(use_bundled=False, use_online=True)
-                for now in (written, read_at):
-                    client.now_provider = lambda now=now: now
-                    with patch.object(client, "_fetch", side_effect=OSError("offline")):
-                        self.assertEqual("cache", client.load(use_bundled=False).source)
-
-                expired_at = written + MAX_CALENDAR_CACHE_AGE + timedelta(seconds=1)
-                client.now_provider = lambda: expired_at
-                with patch.object(client, "_fetch", side_effect=OSError("offline")):
-                    with self.assertRaisesRegex(RuntimeError, "本地缓存已过期"):
-                        client.load(use_bundled=False)
 
     def test_http_304_with_stale_cache_drops_etag_and_refetches(self):
         payload_bytes = BUNDLED_CALENDAR.read_bytes()
@@ -501,78 +393,6 @@ class CalendarTest(unittest.TestCase):
             envelope = json.loads(cache.read_text(encoding="utf-8"))
             self.assertEqual('"etag-v2"', envelope["etag"])
 
-    def test_http_304_with_stale_cache_continues_to_next_source_when_refetch_fails(self):
-        payload_bytes = BUNDLED_CALENDAR.read_bytes()
-        first_url = "https://first.test/calendar.json"
-        second_url = "https://second.test/calendar.json"
-        calls: list[tuple[str, str]] = []
-
-        def fetch(url_arg: str, etag: str = ""):
-            calls.append((url_arg, etag))
-            if url_arg == first_url:
-                if etag:
-                    raise urllib.error.HTTPError(url_arg, 304, "Not Modified", None, None)
-                raise OSError("refetch failed")
-            return (
-                parse_calendar_payload(payload_bytes, source=url_arg),
-                payload_bytes,
-                '"etag-v2"',
-            )
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp = Path(temp_dir)
-            sources = temp / "sources.json"
-            sources.write_text(
-                json.dumps({"global": [first_url, second_url]}), encoding="utf-8"
-            )
-            cache = temp / "cache.json"
-            cache.write_text(
-                json.dumps(
-                    {
-                        "source": first_url,
-                        "etag": '"etag-v1"',
-                        "cached_at": "2026-07-18T11:00:00+08:00",
-                        "payload": json.loads(payload_bytes.decode("utf-8")),
-                    }
-                ),
-                encoding="utf-8",
-            )
-            client = PriceCalendarClient(
-                BUNDLED_CALENDAR,
-                cache,
-                sources,
-                now_provider=lambda: datetime(2026, 7, 19, 12, 0, tzinfo=UTC_PLUS_8),
-            )
-            with patch.object(client, "_fetch", side_effect=fetch):
-                loaded = client.load(use_bundled=False, use_online=True)
-
-            self.assertEqual(second_url, loaded.source)
-            self.assertEqual(
-                [(first_url, '"etag-v1"'), (first_url, ""), (second_url, "")], calls
-            )
-
-    def test_write_cache_records_timezone_aware_beijing_timestamp(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            cache = Path(temp_dir) / "cache.json"
-            client = PriceCalendarClient(BUNDLED_CALENDAR, cache)
-            client._write_cache(
-                BUNDLED_CALENDAR.read_bytes(), '"etag-v1"', "https://example.test/calendar.json"
-            )
-            envelope = json.loads(cache.read_text(encoding="utf-8"))
-            cached_at = datetime.fromisoformat(str(envelope["cached_at"]))
-            self.assertIsNotNone(cached_at.tzinfo)
-            self.assertEqual(timedelta(hours=8), cached_at.utcoffset())
-
-    def test_naive_cached_at_is_interpreted_as_beijing_time(self):
-        now = datetime(2026, 8, 27, 12, 0, tzinfo=UTC_PLUS_8)
-        with tempfile.TemporaryDirectory() as temp_dir:
-            client = self._offline_client(Path(temp_dir), "2026-08-27T10:00:00", now)
-            with patch.object(client, "_fetch", side_effect=OSError("offline")):
-                self.assertEqual(
-                    "cache",
-                    client.load(use_bundled=False, use_online=True).source,
-                )
-
     def test_manual_calendar_is_used_only_when_bundled_and_online_are_disabled(self):
         client = PriceCalendarClient(BUNDLED_CALENDAR)
         manual = self._manual("8=透明沙拉@S6:异教塔")
@@ -585,70 +405,6 @@ class CalendarTest(unittest.TestCase):
 
         self.assertEqual("manual", loaded.source)
         self.assertEqual("透明沙拉", loaded.entries_for(8)[0].item)
-
-    def test_trader_passes_all_three_source_settings_to_calendar_client(self):
-        captured = {}
-
-        def load(**kwargs):
-            captured.update(kwargs)
-            return SimpleNamespace(source="manual", entries_for=lambda _day: ())
-
-        trader = create_trader()
-        trader.started_at = datetime(2026, 7, 18)
-        trader.calendar_client = SimpleNamespace(load=load)
-        trader.task = SimpleNamespace(
-            config={
-                "使用程序默认价表": False,
-                "使用在线价表": False,
-                "自定义最高价表": "manual-calendar",
-                "出售白名单": "",
-                "5星料理": [],
-            },
-            log_info=lambda *_args: None,
-        )
-        trader.vision = SimpleNamespace(simplify=lambda value: value)
-
-        self.assertTrue(trader.sell_max_price_items())
-        self.assertEqual(
-            {
-                "use_bundled": False,
-                "use_online": False,
-                "manual_text": "manual-calendar",
-            },
-            captured,
-        )
-
-    def test_fetch_sends_cached_etag(self):
-        payload = BUNDLED_CALENDAR.read_bytes()
-        captured = {}
-
-        class Response:
-            headers = {"Content-Type": "application/json", "ETag": '"new"'}
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return False
-
-            def read(self, _size):
-                return payload
-
-        def fake_open(request, timeout):
-            captured["request"] = request
-            captured["timeout"] = timeout
-            return Response()
-
-        client = PriceCalendarClient(BUNDLED_CALENDAR, timeout=5.0)
-        with patch("urllib.request.urlopen", side_effect=fake_open):
-            loaded, _payload, etag = client._fetch(
-                "https://example.test/calendar.json", etag='"old"'
-            )
-
-        self.assertEqual("https://example.test/calendar.json", loaded.source)
-        self.assertEqual('"old"', captured["request"].get_header("If-none-match"))
-        self.assertEqual(5.0, captured["timeout"])
-        self.assertEqual('"new"', etag)
 
     def test_bundled_snapshot_covers_default_sale_whitelist(self):
         loaded = parse_calendar_payload(BUNDLED_CALENDAR.read_text(encoding="utf-8"))

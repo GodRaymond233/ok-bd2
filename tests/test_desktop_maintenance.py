@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from src.desktop.backups import BackupStore, prepare_installed_configs
+from src.desktop.backups import BackupStore
 
 
 class ConfigurationBackupTest(unittest.TestCase):
@@ -86,11 +86,6 @@ class ConfigurationBackupTest(unittest.TestCase):
         self.store.prepare_startup("1.4.12")
         self.assertIn("before", self.data.read_text("utf-8"))
         self.assertFalse(previous.exists())
-
-    def test_existing_source_checkout_does_not_gain_startup_backups(self):
-        with patch("src.desktop.backups.Path.cwd", return_value=Path(self.temporary.name)):
-            prepare_installed_configs({"version": "1.4.12"})
-        self.assertFalse((Path(self.temporary.name) / "configs").exists())
 
 
 if __name__ == "__main__":

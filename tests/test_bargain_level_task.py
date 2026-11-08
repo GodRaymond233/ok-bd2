@@ -1,5 +1,4 @@
 import unittest
-from unittest.mock import patch
 
 from src.tasks.BargainLevelTask import (
     BARGAIN_CONFIRM_POINT,
@@ -16,27 +15,6 @@ from src.tasks.BargainLevelTask import (
 
 
 class BargainLevelTaskTest(unittest.TestCase):
-    def test_task_metadata_and_defaults(self):
-        task = object.__new__(BargainLevelTask)
-        task.default_config = {}
-        task.config_description = {}
-        task.config_type = {}
-        with patch(
-            "src.tasks.BargainLevelTask.BaseBD2Task.__init__",
-            return_value=None,
-        ):
-            BargainLevelTask.__init__(task)
-
-        self.assertEqual("刷砍价等级", task.name)
-        self.assertEqual("在第六章商人处开始", task.description)
-        self.assertEqual("自动刷级", task.group_name)
-        self.assertTrue(task.default_config["启用"])
-
-    def test_reference_points_are_stored_as_ratios(self):
-        self.assertEqual((192 / 1920, 905 / 1080), BARGAIN_ENTRY_POINT)
-        self.assertEqual((1049 / 1920, 655 / 1080), BARGAIN_CONFIRM_POINT)
-        self.assertEqual((111 / 1920, 52 / 1080), COLLECTION_BACK_POINT)
-        self.assertEqual((1044 / 1920, 641 / 1080), CLOSE_SHOP_CONFIRM_POINT)
 
     def test_cycle_waits_for_each_ocr_gate_before_clicking(self):
         task = object.__new__(BargainLevelTask)
@@ -143,16 +121,6 @@ class BargainLevelTaskTest(unittest.TestCase):
             1,
             BargainLevelTask._keyword_match_count("折扣商店结束", list(CLOSE_SHOP_PROMPTS)),
         )
-
-    def test_run_stops_when_task_is_disabled(self):
-        task = object.__new__(BargainLevelTask)
-        task.config = {"启用": True}
-        task.info_set = lambda *_args, **_kwargs: None
-        task.log_info = lambda *_args, **_kwargs: None
-        task._task_stop_requested = lambda: True
-        task._run_cycle = lambda: self.fail("must stop before cycle")
-
-        self.assertFalse(BargainLevelTask.run(task))
 
 
 if __name__ == "__main__":

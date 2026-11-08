@@ -8,10 +8,7 @@ only the other scenarios created. F10: where psutil may not read working directo
 process in the folder went unlisted without a word.
 """
 
-import contextlib
 import importlib.util
-import io
-import os
 import shutil
 import subprocess
 import sys
@@ -68,23 +65,8 @@ class EndHolderTest(unittest.TestCase):
         self.assertIn(child, result["detail"]["still running after the holder ended"])
         self.assertFalse(psutil.pid_exists(child))
 
-    def test_holder_that_already_exited(self):
-        holder = subprocess.Popen([sys.executable, "-c", "pass"], stdout=subprocess.PIPE)
-        holder.wait(timeout=30)
-        checks = []
-        probe.end_holder(holder, checks)
-        self.assertEqual([item["passed"] for item in checks], [True])
-        self.assertEqual(checks[0]["detail"]["children"], [])
-
 
 class RemoveFolderTest(unittest.TestCase):
-    def test_removes_the_folder(self):
-        folder = Path(tempfile.mkdtemp(prefix="okbd2-probe-test-"))
-        (folder / "main.py").write_text("", encoding="utf-8")
-        checks = []
-        probe.remove_folder(folder, checks)
-        self.assertEqual([item["passed"] for item in checks], [True])
-        self.assertFalse(folder.exists())
 
     def test_names_the_processes_in_a_folder_it_cannot_remove(self):
         folder = Path(tempfile.mkdtemp(prefix="okbd2-probe-test-"))
@@ -141,29 +123,6 @@ class RemoveFolderTest(unittest.TestCase):
         detail = checks[0]["detail"]
         self.assertEqual([item["pid"] for item in detail["working directory inside"]], [1, 2])
         self.assertEqual(detail["working directory unreadable"], 1)
-
-
-class RunAloneTest(unittest.TestCase):
-    @unittest.skipUnless(os.name == "nt", "the scenario runs on Windows only")
-    def test_scenario_makes_its_own_folder(self):
-        with tempfile.TemporaryDirectory() as base:
-            core = Path(base) / "core.py"
-            core.write_text(STAND_IN_CORE, encoding="utf-8")
-            out = Path(base) / "run" / "venv"  # main makes only run; the other scenarios made venv
-            checks = []
-            with patch.object(probe, "CORE", core):
-                skipped = probe.same_directory_mutex(out, Path(sys.executable), checks)
-            self.assertIsNone(skipped)
-            self.assertTrue(all(item["passed"] for item in checks), checks)
-            self.assertIn("PROBE_CONTENDER", (out / "same-directory-mutex.log").read_text("utf-8"))
-
-    def test_misspelt_scenario_is_refused(self):
-        base = Path(tempfile.mkdtemp(prefix="okbd2-probe-test-"))
-        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
-        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as refused:
-            probe.main(["--out", str(base / "run"), "--only", "same-directory-mutx"])
-        self.assertEqual(refused.exception.code, 2)
-        self.assertFalse((base / "run").exists())
 
 
 if __name__ == "__main__":

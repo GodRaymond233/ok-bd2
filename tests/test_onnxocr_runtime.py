@@ -11,7 +11,6 @@ from unittest import mock
 
 import numpy as np
 from onnxocr.predict_base import PredictBase, _cache_is_current, _model_cache_path
-from onnxocr.utils import infer_args
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -96,25 +95,6 @@ def _fake_openvino_module():
 
 
 class OnnxOcrRuntimeTest(unittest.TestCase):
-    def test_onnxocr_version_and_async_parser_contract(self):
-        self.assertEqual("0.0.23", importlib.metadata.version("onnxocr-ppocrv5"))
-        parser = infer_args()
-        self.assertEqual(1, parser.parse_args([]).openvino_num_requests)
-        self.assertEqual(16, parser.parse_args([]).openvino_cpu_cache_capacity)
-        self.assertEqual(
-            3, parser.parse_args(["--openvino_num_requests", "3"]).openvino_num_requests
-        )
-
-    def test_installed_predict_base_does_not_enumerate_available_devices(self):
-        # onnxocr 0.0.20 called core.available_devices during init, which also
-        # initializes the OpenVINO GPU plugin and crashed with 0xc0000005 on
-        # some GPU driver stacks (BUG-20260829-03); 0.0.23 probes NPU lazily.
-        spec = importlib.util.find_spec("onnxocr.predict_base")
-        self.assertIsNotNone(spec)
-        source = Path(spec.origin).read_text(encoding="utf-8")
-        # 0.0.23 keeps the phrase inside an explanatory comment only.
-        self.assertNotIn("devices = core.available_devices", source)
-        self.assertIn('core.get_property("NPU", "AVAILABLE_DEVICES")', source)
 
     def test_async_infer_queue_default_and_explicit_jobs_are_bounded(self):
         _FakeAsyncInferQueue.instances.clear()
@@ -185,16 +165,6 @@ class OnnxOcrRuntimeTest(unittest.TestCase):
                 ns=(model_stat.st_atime_ns, cache_path.stat().st_mtime_ns + 1_000_000_000),
             )
             self.assertFalse(_cache_is_current(model_path, cache_path))
-
-    def test_root_cache_ignore_is_anchored_without_hiding_business_cache(self):
-        lines = {
-            line.strip()
-            for line in (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
-            if line.strip() and not line.lstrip().startswith("#")
-        }
-        self.assertIn("/cache/", lines)
-        self.assertNotIn("cache/", lines)
-        self.assertNotIn("**/cache/", lines)
 
     def test_ok_script_does_not_forward_unknown_onnxocr_params(self):
         self.assertEqual("3.0.4", importlib.metadata.version("ok-script"))

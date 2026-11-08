@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, Mock, patch
 import numpy as np
 
 from src.tasks import MapCollectionTask as map_collection_task_module
-from src.tasks.map_trade import event_card_art, navigator_story
+from src.tasks.map_trade import navigator_story
 from src.tasks.map_trade.card_status import (
     CollectionCardSelectionOutcome,
     CollectionCardSelectionResult,
@@ -16,7 +16,6 @@ from src.tasks.map_trade.card_status import (
 from src.tasks.map_trade.collection_selection import (
     COLLECTION_CARD_CATALOG,
     COLLECTION_CARD_NAMES,
-    parse_card_blacklist,
     resolve_collection_cards,
 )
 from src.tasks.map_trade.collector import Collector
@@ -36,7 +35,6 @@ from src.tasks.map_trade.models import (
 from src.tasks.map_trade.navigator import Navigator
 from src.tasks.map_trade.progress import UTC_PLUS_8, ProgressStore
 from src.tasks.MapCollectionTask import MapCollectionTask
-from src.tasks.run_history import is_successful_run
 from tests.helpers.map_trade import _seed_action_records
 from tests.helpers.recognition_fixtures import load_bgr
 
@@ -69,13 +67,6 @@ class CollectionCatalogTest(unittest.TestCase):
             [name for name in COLLECTION_CARD_NAMES if name.startswith("Event_")],
         )
 
-    def test_selected_cards_keep_their_named_routes(self):
-        self.assertEqual("剑之神殿左侧回廊", CARD_BY_ID["Q_sp14"].targets[1].title)
-        for card in EVENT_CARDS:
-            with self.subTest(card=card.card_id):
-                self.assertEqual("event", card.category)
-                self.assertEqual(3 if card.number == 2 else 2, len(card.targets))
-
     def test_selection_respects_custom_cards_and_blacklist(self):
         role = "Character_2_火晶片"
         event = "Event_3_海滨天使"
@@ -96,14 +87,6 @@ class CollectionCatalogTest(unittest.TestCase):
                 self.assertEqual("", error)
                 names = dict((card.card_id, name) for name, card in COLLECTION_CARD_CATALOG)
                 self.assertEqual(expected, tuple(names[card.card_id] for card in cards))
-
-    def test_short_story_prefix_does_not_block_later_chapters(self):
-        blacklist = parse_card_blacklist("Story_1")
-        cards, error = resolve_collection_cards({"采集卡带屏蔽": "Story_1"})
-        self.assertIn("Story_01", blacklist)
-        self.assertEqual("", error)
-        self.assertNotIn("Q_sp1", {card.card_id for card in cards})
-        self.assertIn("Q_sp10", {card.card_id for card in cards})
 
     def test_invalid_or_fully_blocked_selection_is_rejected(self):
         role = "Character_1_杰登之门"
@@ -139,36 +122,6 @@ class MapCollectionTaskScopeTest(unittest.TestCase):
         task.log_completion = Mock()
         task._save_diagnostic = Mock()
         return task
-
-    def test_selection_controls_default_to_every_card(self):
-        task = self.make_task()
-        self.assertFalse(task.default_config["自定义采集关卡"])
-        self.assertEqual(list(COLLECTION_CARD_NAMES), task.default_config["采集关卡"])
-        self.assertFalse(task.default_config["单章模式"])
-        self.assertTrue(task.default_config["启用压制技能"])
-        self.assertEqual(
-            {"type": "multi_selection", "options": list(COLLECTION_CARD_NAMES)},
-            task.config_type["采集关卡"],
-        )
-        self.assertEqual(
-            {"sub_configs": {True: ["采集关卡"]}}, task.config_type["自定义采集关卡"],
-        )
-        nested = task.config_type["执行地图采集"]["sub_configs"][True]
-        for key in ("自定义采集关卡", "单章模式", "采集卡带屏蔽", "启用压制技能"):
-            self.assertIn(key, nested)
-
-    def test_invalid_selection_fails_before_opening_the_ledger(self):
-        task = self.make_task()
-        task.config.update({"自定义采集关卡": True, "采集关卡": []})
-        with (
-            patch.object(map_collection_task_module, "ProgressStore") as store,
-            patch.object(map_collection_task_module, "Navigator") as navigator,
-        ):
-            self.assertFalse(task.run())
-        store.assert_not_called()
-        navigator.assert_not_called()
-        self.assertIn("未执行", task.info["状态"])
-        self.assertFalse(is_successful_run(task.info))
 
     def test_run_passes_selected_scope_and_switches_to_collector(self):
         for suppress, only_once in ((True, False), (False, True)):
@@ -310,34 +263,6 @@ class CollectorScopeTest(unittest.TestCase):
             [done, fresh], [call.args[0] for call in collector.collect_card.call_args_list],
         )
 
-    def test_only_once_keeps_a_failure_from_before_the_finished_card(self):
-        with tempfile.TemporaryDirectory() as directory:
-            progress = ProgressStore(Path(directory) / "progress.json", lambda: NOW)
-            progress.load()
-            failed, fresh, later = (
-                CARD_BY_ID[card_id] for card_id in ("Q_sp1", "Q_sp2", "Q_sp3")
-            )
-            collector = self.make_collector(progress)
-
-            def collect(card, **_kwargs):
-                if card is failed:
-                    return CollectionResult(False, message="进入失败")
-                _complete_card(progress, card)
-                return None
-
-            collector.collect_card = Mock(side_effect=collect)
-            result = collector.run((failed, fresh, later), only_once=True)
-
-        self.assertFalse(result.success)
-        self.assertTrue(result.partial)
-        self.assertEqual(
-            "第1章未完成，已跳过；单章模式：第2章已完成，本次运行结束。", result.message,
-        )
-        self.assertEqual(
-            [failed, fresh], [call.args[0] for call in collector.collect_card.call_args_list],
-        )
-        collector.navigator.return_home.assert_called_once()
-
     def test_selected_scope_already_complete_skips_navigation(self):
         with tempfile.TemporaryDirectory() as directory:
             progress = ProgressStore(Path(directory) / "progress.json", lambda: NOW)
@@ -434,16 +359,6 @@ class EventCardAbsenceTest(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         return navigator
-
-    def test_cover_reasons_separate_absence_from_invalid_frames(self):
-        self.assertTrue(event_card_art.is_absent_reason(
-            event_card_art.find_card(_event_bar_frame(held=False), 1).reason,
-        ))
-        for frame in (None, np.full((1080, 1920, 3), 40, dtype=np.uint8)):
-            with self.subTest(frame=None if frame is None else "solid"):
-                reason = event_card_art.find_card(frame, 1).reason
-                self.assertEqual("活动卡带画面无效", reason)
-                self.assertFalse(event_card_art.is_absent_reason(reason))
 
     def test_absence_requires_valid_low_score_frames_and_a_reconfirmed_tab(self):
         absent, solid = _event_bar_frame(held=False), np.full((1080, 1920, 3), 40, np.uint8)

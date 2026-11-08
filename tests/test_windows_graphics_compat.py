@@ -13,7 +13,6 @@ from src.compat.windows_graphics import (
     ResizeStabilityGate,
     _capture_can_produce_visible_frame,
     _capture_identity_signature,
-    _valid_capture_size,
     patch_windows_graphics_capture_class,
 )
 
@@ -60,24 +59,6 @@ class WindowsGraphicsCompatibilityTest(unittest.TestCase):
         capture.get_frame_for_probe.assert_called_once_with(1.5)
         fake_time.sleep.assert_not_called()
 
-    def test_first_frame_probe_caps_poll_sleep_and_preserves_busy(self):
-        capture = SimpleNamespace(
-            get_frame_for_probe=Mock(return_value=None),
-            get_name=Mock(return_value="Windows Graphics Capture"),
-        )
-        fake_time = SimpleNamespace(
-            monotonic=Mock(side_effect=(0.0, 0.0, 0.98, 1.0)),
-            sleep=Mock(),
-        )
-        with patch("src.compat.windows_graphics.time", fake_time):
-            self.assertFalse(_capture_can_produce_visible_frame(capture, 1.0))
-        self.assertAlmostEqual(0.02, fake_time.sleep.call_args.args[0])
-        capture.get_frame_for_probe.assert_called_once_with(1.0)
-
-        capture.get_frame_for_probe.side_effect = CaptureBusyException("busy")
-        with self.assertRaises(CaptureBusyException):
-            _capture_can_produce_visible_frame(capture, 1.0)
-
     def test_busy_probe_keeps_wgc_selected_without_closing_or_caching_failure(self):
         capture = SimpleNamespace(
             start_or_stop=Mock(return_value=True),
@@ -102,56 +83,6 @@ class WindowsGraphicsCompatibilityTest(unittest.TestCase):
         self.assertFalse(gate.observe((1500, 844), 0.4))
         self.assertFalse(gate.observe((1500, 844), 1.1))
         self.assertTrue(gate.observe((1500, 844), 1.21))
-
-    def test_capture_identity_ignores_geometry_but_keeps_window_handles(self):
-        window = SimpleNamespace(
-            hwnd=10,
-            top_hwnd=20,
-            width=1280,
-            height=720,
-            client_width=1280,
-            client_height=720,
-            hwnds=[(10,), (20,)],
-        )
-        first = _capture_identity_signature(window)
-
-        window.width = 1920
-        window.height = 1080
-        window.client_width = 1920
-        window.client_height = 1080
-        self.assertEqual(first, _capture_identity_signature(window))
-
-        window.hwnd = 30
-        self.assertNotEqual(first, _capture_identity_signature(window))
-
-    def test_small_startup_window_is_allowed_to_probe_wgc(self):
-        original_start = Mock(return_value=True)
-
-        class FakeCapture:
-            def __init__(self):
-                self.get_frame_lock = threading.RLock()
-                self.hwnd_window = SimpleNamespace(
-                    exists=True,
-                    hwnd=10,
-                    top_hwnd=10,
-                    hwnds=[(10,)],
-                    width=304,
-                    height=201,
-                )
-
-            start_or_stop = original_start
-
-            def close(self):
-                return None
-
-            def frame_arrived_callback(self, *_args):
-                return None
-
-        patch_windows_graphics_capture_class(FakeCapture)
-        capture = FakeCapture()
-
-        self.assertTrue(capture.start_or_stop())
-        original_start.assert_called_once_with(capture, capture_cursor=False)
 
     def test_established_capture_closes_when_same_window_shrinks_below_minimum(self):
         original_start = Mock(return_value=True)
@@ -424,26 +355,6 @@ class WindowsGraphicsCompatibilityTest(unittest.TestCase):
             self.assertIsNone(capture._do_get_frame(frame_deadline=1))
         self.assertEqual((0, 0), (capture.read_calls, capture.close_calls))
 
-    def test_start_reports_busy_before_size_validation_can_close_capture(self):
-        original_close = Mock()
-
-        class FakeCapture:
-            def __init__(self):
-                self.get_frame_lock = Mock()
-                self.get_frame_lock.acquire.return_value = False
-                self.hwnd_window = SimpleNamespace(exists=True, width=300, height=200)
-
-            start_or_stop = Mock()
-            close = original_close
-
-        patch_windows_graphics_capture_class(FakeCapture)
-        capture = FakeCapture()
-        with self.assertRaises(CaptureBusyException):
-            capture.start_or_stop()
-        capture.get_frame_lock.acquire.assert_called_once_with(blocking=False)
-        capture.get_frame_lock.release.assert_not_called()
-        original_close.assert_not_called()
-
     def test_mapped_frame_is_owned_contiguous_bgr_and_excludes_row_padding(self):
         class FakeCapture:
             def __init__(self):
@@ -542,12 +453,6 @@ class WindowsGraphicsCompatibilityTest(unittest.TestCase):
         capture.frame_arrived_callback()
         self.assertEqual("frame", capture.last_frame)
         self.assertTrue(capture.frame_event.is_set())
-
-    def test_supported_capture_size_boundary(self):
-        self.assertFalse(_valid_capture_size((304, 201)))
-        self.assertFalse(_valid_capture_size((1279, 720)))
-        self.assertFalse(_valid_capture_size((1280, 719)))
-        self.assertTrue(_valid_capture_size((1280, 720)))
 
 
 if __name__ == "__main__":

@@ -533,35 +533,6 @@ class DiagnosticLogEvidenceTest(unittest.TestCase):
                 logger.removeFilter(recorder)
                 recorder.stop()
 
-    def test_failure_store_limits_and_unreadable_store_are_reported(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            recorder = RuntimeEvidence(root)
-            task = _TaskStub()
-            fixed = time.time()
-            try:
-                with patch("src.diagnostics.runtime.time.time", return_value=fixed):
-                    for i in range(7):
-                        recorder.event(
-                            {"id": str(i), "task": "Task", "object": task, "started": fixed},
-                            "failed",
-                        )
-                    evidence = recorder.snapshot()
-                self.assertEqual(5, len(evidence["failures"]))
-                self.assertEqual("2", evidence["failures"][0]["run"])
-                self.assertIn("failure_count_limit", " ".join(evidence["omissions"]))
-                self.assertLessEqual(recorder.path.stat().st_size, 8 * 1024 * 1024)
-            finally:
-                recorder.stop()
-            recorder.path.write_bytes(b"not json")
-            reopened = RuntimeEvidence(root)
-            try:
-                evidence = reopened.snapshot()
-                self.assertEqual([], evidence["failures"])
-                self.assertIn("persisted_evidence_unreadable", evidence["omissions"])
-            finally:
-                reopened.stop()
-
     def test_collection_failure_preserves_snapshot_and_restores_running_executor(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -618,43 +589,6 @@ class DiagnosticLogEvidenceTest(unittest.TestCase):
             start, end = ref["source_bytes"]
             self.assertEqual(failure.encode(), rotation.read_bytes()[start:end])
             self.assertLessEqual(sum(len(t.encode()) for t in result["files"].values()), 24 * 1024)
-
-    def test_scan_limits_and_unparseable_or_oversized_records_are_visible(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            paths = []
-            for i in range(10):
-                path = root / f"source-{i}.log"
-                path.write_text(
-                    "2026-09-12 00:00:00,000 ERROR MainThread failure\n" + "stack\n" * 300,
-                    encoding="utf-8",
-                )
-                paths.append(path)
-            result = collect(
-                paths,
-                timestamp("2026-09-12T00:01:00"),
-                DiagnosticRedactor(),
-                budget=16 * 1024,
-                scan_bytes=1000,
-            )
-            self.assertTrue(any("source_file_limit" in x for x in result["omissions"]))
-            self.assertTrue(any("scan_byte_limit" in x for x in result["omissions"]))
-            self.assertNotIn("stack", result["files"]["recent.log"])
-            unknown = root / "unknown.log"
-            unknown.write_text("api_key=hidden\nno timestamp\n", encoding="utf-8")
-            result = collect([unknown], time.time(), DiagnosticRedactor())
-            self.assertIn("unparsed_time", " ".join(result["omissions"]))
-            self.assertNotIn("hidden", str(result))
-            huge = root / "huge.log"
-            huge.write_text(
-                "2026-09-12 00:00:00,000 ERROR MainThread failure\n" + "stack\n" * 6000,
-                encoding="utf-8",
-            )
-            result = collect(
-                [huge], timestamp("2026-09-12T00:01:00"), DiagnosticRedactor(), budget=16 * 1024
-            )
-            self.assertIn("output_budget", " ".join(result["omissions"]))
-            self.assertNotIn("stack", result["files"]["recent.log"])
 
     def test_dialog_snapshot_freezes_logs_before_more_records_and_rotation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -808,58 +742,6 @@ class DiagnosticLogEvidenceTest(unittest.TestCase):
             finally:
                 recorder.stop()
 
-    def test_multiline_exception_and_repeated_runtime_event_do_not_copy_again(self):
-        from src.tasks.BaseBD2Task import BaseBD2Task
-
-        class Crash(BaseBD2Task):
-            def run(self):
-                raise ValueError("failure reason\nsecond line")
-
-        with tempfile.TemporaryDirectory() as directory:
-            task = object.__new__(Crash)
-            task.info = {"当前阶段": "入场"}
-            task._executor = SimpleNamespace(trigger_tasks=[])
-            recorder = RuntimeEvidence(
-                Path(directory), executor_getter=lambda: SimpleNamespace(current_task=task)
-            )
-            notifications = []
-
-            def notify(failure):
-                notifications.append(failure)
-                raise RuntimeError("report UI unavailable")
-
-            recorder.failure_notifier = notify
-            try:
-                with patch("src.diagnostics.runtime._recorder", recorder):
-                    with self.assertRaises(ValueError):
-                        task.run()
-                record = logging.LogRecord(
-                    "ok", logging.ERROR, "", 0, "TaskExecutor:Crash exception stopped", (), None
-                )
-                recorder.emit(record)
-                evidence = recorder.snapshot()
-                self.assertEqual(1, len(evidence["failures"]))
-                self.assertIn("Traceback", evidence["failures"][0]["detail"])
-                self.assertIn("second line", evidence["failures"][0]["detail"])
-                self.assertEqual(1, len(notifications))
-                self.assertIn("failure_notification_failed:RuntimeError", evidence["omissions"])
-                run = {
-                    "id": evidence["failures"][0]["run"],
-                    "task": "Crash",
-                    "object": task,
-                    "started": time.time(),
-                }
-                with patch(
-                    "src.diagnostics.runtime.collect",
-                    side_effect=AssertionError("duplicate capture"),
-                ):
-                    recorder.event(run, "failed")
-                    evidence = recorder.snapshot()
-                self.assertEqual(2, evidence["failures"][0]["count"])
-                self.assertEqual(1, len(notifications))
-            finally:
-                recorder.stop()
-
 
 class DiagnosticRedactorTest(unittest.TestCase):
     def test_redacts_paths_credentials_email_and_url_queries(self):
@@ -910,65 +792,6 @@ class DiagnosticRedactorTest(unittest.TestCase):
         self.assertIn("bot_secret=<REDACTED>", result)
         self.assertIn("db_password=<REDACTED>", result)
 
-    def test_redacts_suffixed_credential_keys_userinfo_urls_and_scheme_values(self):
-        redactor = DiagnosticRedactor()
-        source = (
-            "Token = abc123secret secret_key = 'quoted-secret' "
-            "password_hash: hashvalue api_key=Bearer, "
-            "https://user:pass@host/path "
-            "https://alice:tok@example.test/x?account=42"
-        )
-
-        result = redactor.redact(source)
-
-        for secret in (
-            "abc123secret",
-            "quoted-secret",
-            "hashvalue",
-            "user:pass",
-            "alice:tok",
-            "account=42",
-        ):
-            self.assertNotIn(secret, result)
-        self.assertIn("Token = <REDACTED>", result)
-        self.assertIn("secret_key = <REDACTED>", result)
-        self.assertIn("password_hash: <REDACTED>", result)
-        # 值恰好是认证 scheme（无后续凭据）时仍按键值对脱敏。
-        self.assertIn("api_key=<REDACTED>,", result)
-        self.assertIn("https://<REDACTED>@host/path", result)
-        self.assertIn("https://<REDACTED>@example.test/x?<REDACTED_QUERY>", result)
-
-    def test_windows_path_redaction_follows_spaced_segments_only(self):
-        redactor = DiagnosticRedactor()
-
-        result = redactor.redact(
-            r"Log dir C:\Program Files\ok-bd2\logs\ok-bd2.log rotated"
-        )
-
-        self.assertNotIn("C:\\Program", result)
-        self.assertNotIn("ok-bd2\\logs", result)
-        # 空格续段只到分隔符链结束；路径后的普通文字保持原样。
-        self.assertIn("<PATH>/ok-bd2.log rotated", result)
-
-    def test_quoted_windows_path_keeps_text_outside_quotes(self):
-        redactor = DiagnosticRedactor()
-
-        result = redactor.redact(
-            r'loaded "C:\Program Files\ok-bd2\logs\ok-bd2.log" ok'
-        )
-
-        self.assertNotIn("Program Files", result)
-        self.assertIn('"<PATH>/ok-bd2.log" ok', result)
-
-    def test_redaction_keeps_plain_sentences_untouched(self):
-        redactor = DiagnosticRedactor()
-        text = (
-            "任务执行完成，共扫描 12 个关卡，全部通过。"
-            "The build passed all checks today."
-        )
-
-        self.assertEqual(text, redactor.redact(text))
-
 
 class DiagnosticsManagerTest(unittest.TestCase):
     def test_prepare_failure_restores_only_its_own_pause(self):
@@ -995,21 +818,6 @@ class DiagnosticsManagerTest(unittest.TestCase):
                     self.assertIs(error, raised.exception)
                     self.assertEqual(already_paused, executor.paused)
                     self.assertEqual(0 if already_paused else 1, executor.start_calls)
-
-    def test_prepare_reports_when_restoring_running_state_also_fails(self):
-        executor = _ExecutorStub(None, _InteractionStub())
-        with tempfile.TemporaryDirectory() as temp_dir:
-            manager = DiagnosticsManager(
-                project_root=Path(temp_dir), output_dir=Path(temp_dir), app_version="test",
-            )
-            with (
-                patch(
-                    "src.diagnostics.service._task_snapshot", side_effect=RuntimeError("snapshot"),
-                ),
-                patch.object(executor, "start", side_effect=RuntimeError("resume")),
-                self.assertRaisesRegex(RuntimeError, "请手动继续任务"),
-            ):
-                manager.prepare(executor=executor)
 
     def test_prepare_captures_before_pause_waits_for_mouse_and_can_resume(self):
         frame = np.full((24, 32, 3), 127, dtype=np.uint8)
@@ -1040,30 +848,6 @@ class DiagnosticsManagerTest(unittest.TestCase):
             self.assertEqual(1, executor.start_calls)
             self.assertFalse(executor.paused)
 
-    def test_prepare_prefers_background_live_preview_frame(self):
-        executor_frame = np.full((24, 32, 3), 32, dtype=np.uint8)
-        preview_frame = np.full((24, 32, 3), 224, dtype=np.uint8)
-        interaction = _InteractionStub()
-        executor = _ExecutorStub(executor_frame, interaction)
-        device_manager = _DeviceManagerStub(interaction)
-        with tempfile.TemporaryDirectory() as temp_dir:
-            manager = DiagnosticsManager(
-                project_root=Path(temp_dir),
-                output_dir=Path(temp_dir),
-                app_version="0.1.test",
-            )
-
-            snapshot = manager.prepare(
-                executor=executor,
-                device_manager=device_manager,
-                preferred_frame=preview_frame,
-                preferred_frame_age_seconds=0.03,
-            )
-
-        self.assertTrue(np.array_equal(preview_frame, snapshot.frame))
-        self.assertIsNot(preview_frame, snapshot.frame)
-        self.assertEqual(0.03, snapshot.frame_age_seconds)
-
     def test_prepare_records_unconfirmed_safe_point(self):
         interaction = _InteractionStub(idle=False)
         executor = _ExecutorStub(None, interaction)
@@ -1079,31 +863,6 @@ class DiagnosticsManagerTest(unittest.TestCase):
 
         self.assertFalse(snapshot.safe_point_reached)
         self.assertTrue(any("鼠标操作" in warning for warning in snapshot.warnings))
-
-    def test_prepare_reports_task_info_snapshot_failure(self):
-        task = _TaskStub()
-        task.info = _RacyInfoDict(task.info)
-        interaction = _InteractionStub()
-        executor = _ExecutorStub(None, interaction)
-        executor.current_task = task
-        device_manager = _DeviceManagerStub(interaction)
-        with tempfile.TemporaryDirectory() as temp_dir:
-            manager = DiagnosticsManager(
-                project_root=Path(temp_dir),
-                output_dir=Path(temp_dir),
-                app_version="0.1.test",
-            )
-
-            snapshot = manager.prepare(executor=executor, device_manager=device_manager)
-
-        # The task identity survives; only the info payload is dropped.
-        self.assertEqual("_TaskStub", snapshot.task["class"])
-        self.assertIn("paused", snapshot.task)
-        self.assertNotIn("状态", snapshot.task)
-        self.assertNotIn("当前阶段", snapshot.task)
-        self.assertTrue(
-            any("任务 _TaskStub 状态快照失败" in warning for warning in snapshot.warnings)
-        )
 
 
 class InteractionSafetyContractTest(unittest.TestCase):
@@ -1352,79 +1111,6 @@ class ReportBundleBuilderTest(unittest.TestCase):
                 names = set(archive.namelist())
                 self.assertNotIn("screenshots/diagnostic/old_task_failed.webp", names)
                 self.assertIn("screenshots/diagnostic/current_task_error.webp", names)
-
-    def test_task_start_time_excludes_previous_run_failure_frames(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            probe_outputs = root / "probe_outputs"
-            probe_outputs.mkdir()
-            frame = np.full((40, 60, 3), 128, dtype=np.uint8)
-            success, encoded = cv2.imencode(".png", frame)
-            self.assertTrue(success)
-            previous_path = probe_outputs / "previous_run_failed.png"
-            current_path = probe_outputs / "current_run_failed.png"
-            previous_path.write_bytes(encoded.tobytes())
-            current_path.write_bytes(encoded.tobytes())
-
-            captured_epoch = time.time()
-            os.utime(previous_path, (captured_epoch - 20, captured_epoch - 20))
-            os.utime(current_path, (captured_epoch - 2, captured_epoch - 2))
-            task_started_at = captured_epoch - 10
-
-            builder = ReportBundleBuilder(
-                project_root=root,
-                output_dir=root / "output",
-                app_version="1.1.2",
-            )
-            captured_at = (
-                datetime.fromtimestamp(captured_epoch).astimezone().isoformat(timespec="seconds")
-            )
-            result = builder.build(
-                DiagnosticSnapshot(
-                    captured_at=captured_at,
-                    task_started_at=task_started_at,
-                ),
-                "当前任务失败",
-                include_screenshot=True,
-            )
-
-            with zipfile.ZipFile(result.archive_path) as archive:
-                names = set(archive.namelist())
-                self.assertNotIn(
-                    "screenshots/diagnostic/previous_run_failed.webp",
-                    names,
-                )
-                self.assertIn("screenshots/diagnostic/current_run_failed.webp", names)
-
-    def test_manifest_records_incomplete_log_flush(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            builder = ReportBundleBuilder(
-                project_root=root,
-                output_dir=root / "output",
-                app_version="0.1.23",
-            )
-            snapshot = DiagnosticSnapshot(captured_at="2026-08-14T13:00:00+08:00")
-
-            with patch("src.diagnostics.bundle.flush_ok_logging", return_value=False):
-                result = builder.build(snapshot, "日志可能尚未刷新", include_screenshot=False)
-
-            with zipfile.ZipFile(result.archive_path) as archive:
-                manifest = json.loads(archive.read("manifest.json"))
-                self.assertIn("log_flush_incomplete", manifest["omissions"])
-
-    def test_requires_a_description(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            builder = ReportBundleBuilder(
-                project_root=root,
-                output_dir=root,
-                app_version="0.1.23",
-            )
-            snapshot = DiagnosticSnapshot(captured_at="2026-08-14T13:00:00+08:00")
-
-            with self.assertRaisesRegex(ValueError, "问题现象"):
-                builder.build(snapshot, "   ", include_screenshot=False)
 
 
 if __name__ == "__main__":

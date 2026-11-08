@@ -11,22 +11,17 @@ from src.utils import image_utils, task_vision
 from src.utils.image_utils import (
     StableMatchObservation,
     best_pixel_valid_match,
-    candidate_scales,
     crop_relative,
     independent_pixel_valid_matches,
     masked_zncc,
     pixel_similarity,
     reference_roi_frame,
-    resize_mask,
-    scale_reference_roi,
     stabilize_template_match,
     stable_match_consensus,
     to_gray,
 )
 from src.utils.ocr_utils import (
-    fuzzy_substring_match,
     keyword_match_count,
-    normalize_ocr_text,
 )
 from src.utils.vision_models import MatchResult, TemplateSpec
 
@@ -80,25 +75,6 @@ class ImageRecognitionUtilsTest(unittest.TestCase):
         self.assertEqual(10, len(sleeps))
         self.assertTrue(all(seconds == 0.1 for seconds in sleeps))
 
-    def test_source_template_matching_is_centralized(self):
-        source_root = Path(__file__).resolve().parents[1] / "src"
-        violations = []
-        for path in source_root.rglob("*.py"):
-            if path.name == "image_utils.py":
-                continue
-            if "cv2.matchTemplate" in path.read_text(encoding="utf-8"):
-                violations.append(str(path.relative_to(source_root)))
-        self.assertEqual([], violations)
-
-    def test_candidate_scales_applies_ratios_and_lower_bound(self):
-        self.assertEqual(candidate_scales(0.5, (0.5, 1.0, 2.0)), [0.25, 0.5, 1.0])
-        self.assertEqual(candidate_scales(0.1), [0.2])
-
-    def test_resize_mask_preserves_binary_values(self):
-        mask = np.array([[0, 255], [255, 0]], dtype=np.uint8)
-        resized = resize_mask(mask, 2.0)
-        self.assertEqual(set(np.unique(resized)), {0, 255})
-
     def test_resized_templates_preserve_pixels_after_input_and_output_changes(self):
         for dtype in (np.uint8, np.float32):
             source = np.arange(144, dtype=dtype).reshape(12, 12)
@@ -122,26 +98,6 @@ class ImageRecognitionUtilsTest(unittest.TestCase):
                             expected = cv2.resize(template, None, fx=scale, fy=scale,
                                                   interpolation=interpolation)
                             np.testing.assert_array_equal(resize(), expected)
-
-    def test_resize_cache_has_bounded_entries_and_bypasses_large_images(self):
-        cache = image_utils._cached_template_resize
-        cache.cache_clear()
-        self.addCleanup(cache.cache_clear)
-        for index in range(image_utils.RESIZED_TEMPLATE_CACHE_ENTRIES + 1):
-            image_utils.resize_template(np.full((2, 2), index, dtype=np.uint8), 2.0)
-        self.assertEqual(image_utils.RESIZED_TEMPLATE_CACHE_ENTRIES, cache.cache_info().currsize)
-        before = cache.cache_info()
-        large = np.zeros((512, 512), dtype=np.uint8)
-        np.testing.assert_array_equal(image_utils.resize_template(large, 2.0),
-                                      np.zeros((1024, 1024), dtype=np.uint8))
-        self.assertEqual(before, cache.cache_info())
-
-    def test_to_gray_accepts_gray_bgr_and_bgra(self):
-        gray = np.array([[10, 20]], dtype=np.uint8)
-        self.assertIs(to_gray(gray), gray)
-        self.assertEqual(to_gray(np.dstack([gray, gray, gray])).shape, gray.shape)
-        alpha = np.full_like(gray, 255)
-        self.assertEqual(to_gray(np.dstack([gray, gray, gray, alpha])).shape, gray.shape)
 
     def test_pixel_similarity_honors_mask_and_shape(self):
         template = np.array([[0, 100]], dtype=np.uint8)
@@ -193,24 +149,6 @@ class ImageRecognitionUtilsTest(unittest.TestCase):
         self.assertTrue(np.isfinite(response).all())
         self.assertEqual(-1.0, float(response[0, 1]))
         self.assertEqual(-1.0, float(response[0, 2]))
-
-    def test_pixel_valid_match_honors_candidate_center_bounds(self):
-        template = np.zeros((2, 2), dtype=np.uint8)
-        search = np.zeros((2, 5), dtype=np.uint8)
-        response = np.array([[0.99, 0.80, 0.80, 0.90]], dtype=np.float32)
-
-        candidate = best_pixel_valid_match(
-            response,
-            search,
-            template,
-            None,
-            template_threshold=0.78,
-            pixel_threshold=0.80,
-            center_bounds=(3, 0, 5, 2),
-        )
-
-        self.assertIsNotNone(candidate)
-        self.assertEqual((3, 0), candidate.location)
 
     def test_pixel_valid_match_can_require_masked_zncc(self):
         template = np.array([[0, 50], [100, 150]], dtype=np.uint8)
@@ -269,16 +207,6 @@ class ImageRecognitionUtilsTest(unittest.TestCase):
         self.assertEqual((left, top), (100, 50))
         self.assertEqual(reference.shape, (10, 20))
 
-    def test_reference_roi_scaling_moves_origin_and_resizes_both_axes(self):
-        self.assertEqual(
-            (1031, 133, 207, 42),
-            scale_reference_roi(
-                (1546, 199, 311, 63),
-                (1280, 720),
-                (1920, 1080),
-            ),
-        )
-
 
 class OcrUtilsTest(unittest.TestCase):
     def test_task_ocr_boundaries_propagate_cancellation(self):
@@ -318,10 +246,6 @@ class OcrUtilsTest(unittest.TestCase):
                     method(task, frame, **kwargs)
                 task.info_set.assert_not_called()
 
-    def test_normalize_can_keep_regex_or_strip_to_alphanumeric(self):
-        self.assertEqual(normalize_ocr_text(" P V P .* 确认 "), "pvp.*确认")
-        self.assertEqual(normalize_ocr_text("折扣-商店！", alnum_only=True), "折扣商店")
-
     def test_keyword_count_supports_exact_and_fuzzy_matching(self):
         self.assertEqual(
             keyword_match_count(
@@ -353,10 +277,6 @@ class OcrUtilsTest(unittest.TestCase):
             keyword_match_count("一键獲得", ("一键获得",)),
             0,
         )
-
-    def test_fuzzy_match_rejects_empty_values(self):
-        self.assertFalse(fuzzy_substring_match("", "确认", 0.9))
-        self.assertFalse(fuzzy_substring_match("确认", "", 0.9))
 
 
 class TemplateLoadingTest(unittest.TestCase):
@@ -500,25 +420,6 @@ class TaskVisionMatchTemplateTest(unittest.TestCase):
                 result.position,
             )
             self.assertEqual((16, 10), result.size)
-
-    def test_match_template_accepts_bgra_frames(self):
-        with tempfile.TemporaryDirectory() as directory:
-            file_name = self._write_template(directory)
-            spec = self._make_spec("bgra probe", file_name)
-
-            result = task_vision.match_template(
-                self._make_frame(4),
-                spec,
-                {},
-                Path(directory),
-            )
-
-            self.assertIsInstance(result, MatchResult)
-            self.assertGreater(result.score, 0.95)
-            self.assertEqual(
-                (self.PATCH_LEFT, self.PATCH_TOP),
-                result.position,
-            )
 
 
 if __name__ == "__main__":

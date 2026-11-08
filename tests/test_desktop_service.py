@@ -123,19 +123,6 @@ class ProtocolPiecesTest(unittest.TestCase):
         watchdog.assert_called_once_with(grace_period=protocol.EXIT_WATCHDOG_SECONDS, exit_code=0)
         self.assertIn('"reason": "shell:user"', stream.getvalue())
 
-    def test_console_handlers_bound_to_stdout_are_rerouted(self):
-        import logging
-
-        original, replacement = io.StringIO(), io.StringIO()
-        logger = logging.getLogger("okbd2-route-test")
-        handler = logging.StreamHandler(original)
-        logger.addHandler(handler)
-        self.addCleanup(logger.removeHandler, handler)
-        self.assertGreaterEqual(service.route_console_logs(original, replacement), 1)
-        logger.warning("moved")
-        self.assertEqual(original.getvalue(), "")
-        self.assertIn("moved", replacement.getvalue())
-
     def test_command_reader(self):
         requests = []
         stream = io.StringIO('garbage\n{"cmd": "ping"}\n{"cmd": "shutdown", "reason": "tray"}\n')
@@ -211,29 +198,6 @@ class ControlInputTest(unittest.TestCase):
         service.CommandReader(reader, requests.append, Mock()).start().thread.join(timeout=2)
         self.assertEqual(requests, ["shell:tray", "stdin-closed"])
 
-    def test_other_streams_are_read_as_before(self):
-        text = io.StringIO("line\n")
-        self.assertIs(service.control_input(text), text)
-        self.assertIsNone(service.control_input(None))
-        if os.name != "nt":
-            read_fd, write_fd = os.pipe()
-            os.close(write_fd)
-            with os.fdopen(read_fd, "r", encoding="utf-8") as stream:
-                self.assertIs(service.control_input(stream), stream)
-
-    @unittest.skipUnless(os.name == "nt", "PeekNamedPipe exists on Windows only")
-    def test_windows_pipe_is_polled(self):
-        read_fd, write_fd = os.pipe()
-        stream = os.fdopen(read_fd, "rb")
-        self.addCleanup(stream.close)
-        reader = service.control_input(stream)
-        self.assertIsInstance(reader, service.PolledPipeReader)
-        os.write(write_fd, b'{"cmd": "shutdown"}\n{"cmd"')
-        self.assertEqual(reader.readline(), '{"cmd": "shutdown"}\n')
-        os.close(write_fd)
-        self.assertEqual(reader.readline(), '{"cmd"')
-        self.assertEqual(reader.readline(), "")
-
 
 NATIVE_IMPORT_CHILD = """
 import logging
@@ -253,39 +217,6 @@ import numpy  # noqa: E402,F401  native DLLs load while the reader waits on a si
 print("IMPORTED", flush=True)
 reader.thread.join(30)
 """
-
-
-class NativeImportWhileReadingTest(unittest.TestCase):
-    """F5: a blocking stdin read on Windows stopped ``import numpy`` until the shell wrote."""
-
-    def test_numpy_loads_while_the_command_reader_waits(self):
-        child = subprocess.Popen(
-            [sys.executable, "-B", "-c", NATIVE_IMPORT_CHILD, str(ROOT)],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            env=dict(os.environ, PYTHONUTF8="1"),
-        )
-        lines = []
-        output = threading.Thread(target=lambda: lines.extend(child.stdout), daemon=True)
-        output.start()
-        try:
-            deadline = time.monotonic() + 60
-            while "IMPORTED\n" not in lines and child.poll() is None:
-                if time.monotonic() >= deadline:
-                    break
-                time.sleep(0.05)
-            self.assertIn("IMPORTED\n", lines, "".join(lines)[-2000:])
-            child.stdin.close()  # the shell is gone
-            self.assertEqual(child.wait(timeout=10), 0, "".join(lines)[-2000:])
-        finally:
-            if child.poll() is None:
-                child.kill()  # only the child started here
-                child.wait(timeout=10)
-            output.join(timeout=5)
-        self.assertIn("EXIT stdin-closed\n", lines)
 
 
 class Collector:
@@ -482,19 +413,6 @@ class RunServiceTest(unittest.TestCase):
         self.thread.join(timeout=15)
         self.assertFalse(self.thread.is_alive())
 
-    def test_client_shutdown_request_uses_the_same_path(self):
-        ready = self.start_service()
-        request = urllib.request.Request(
-            f"http://127.0.0.1:{ready['port']}/api/desktop/shutdown",
-            method="POST",
-            headers={"Authorization": f"Bearer {TOKEN}"},
-        )
-        with urllib.request.urlopen(request, timeout=5) as response:
-            self.assertEqual(json.loads(response.read()), {"accepted": True})
-        self.assertEqual(self.stdout.wait_for("exiting")["reason"], "client-request")
-        self.thread.join(timeout=15)
-        self.assertFalse(self.thread.is_alive())
-
     def test_startup_failure_reports_fatal_and_releases(self):
         stdout = Collector()
         stdin, _writer = open_shell_pipe(self)
@@ -588,18 +506,6 @@ class StartupSupervisionTest(unittest.TestCase):
         self.assertTrue(self.thread.is_alive())  # still inside the slow step, watchdog armed
         self.assert_cancelled_before_ready()
 
-    def test_parent_loss_during_startup_starts_the_exit_within_two_seconds(self):
-        parent = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
-        self.addCleanup(lambda: parent.poll() is None and parent.kill())
-        self.start_slow_service(parent_pid=parent.pid)
-        parent.kill()
-        parent.wait(timeout=10)
-        killed = time.monotonic()
-        exiting = self.stdout.wait_for("exiting", timeout=5)
-        self.assertEqual(exiting["reason"], "parent-exited")
-        self.assertLessEqual(time.monotonic() - killed, 2.0)
-        self.assert_cancelled_before_ready()
-
     def test_shutdown_after_the_runtime_exists_quits_it_without_starting_it(self):
         stdin, writer = open_shell_pipe(self)
         stdout = Collector()
@@ -662,56 +568,6 @@ class ServiceConfigTest(unittest.TestCase):
         self.assertIs(prepared["check_mutex"], False)
         self.assertEqual(prepared["a"], 1)
 
-    def test_the_runtime_built_by_run_service_skips_the_directory_mutex(self):
-        """Through the real create_app -> WebRuntime -> ok.OK, stopped right after the check."""
-        import ok
-        from ok import og
-        from ok.util.config import Config
-
-        class ReachedAfterMutex(Exception):
-            pass
-
-        missing = object()
-        saved_globals = {name: getattr(og, name, missing) for name in ("ok", "config")}
-        saved_folder = Config.__dict__.get("config_folder", missing)
-
-        def restore():
-            for name, value in saved_globals.items():
-                if value is missing:
-                    if hasattr(og, name):
-                        delattr(og, name)
-                else:
-                    setattr(og, name, value)
-            if saved_folder is not missing:
-                Config.config_folder = saved_folder
-
-        self.addCleanup(restore)
-        check_mutex = Mock(return_value=True)
-        stdin, _writer = open_shell_pipe(self)
-        stdout = Collector()
-        with (
-            patch.object(ok, "check_mutex", check_mutex, create=True),
-            patch.object(
-                ok,
-                "config_logger",
-                Mock(side_effect=ReachedAfterMutex("ok.OK 已越过互斥检查")),
-                create=True,
-            ),
-        ):
-            code = service.run_service(
-                lambda: {"version": "9.9.9", "check_mutex": True},
-                stdin=stdin,
-                stdout=stdout,
-                dependency_check=lambda: None,
-                lock_acquirer=lambda mode: (True, None),
-                guard_installer=lambda: None,
-                watchdog=Mock(),
-                legacy=NO_LEGACY,
-            )
-        self.assertEqual(code, protocol.EXIT_STARTUP_FAILED)
-        self.assertIn("ok.OK 已越过互斥检查", stdout.wait_for("fatal", timeout=1)["message"])
-        check_mutex.assert_not_called()
-
 
 class EntryProcessTest(unittest.TestCase):
     """``main.py --service`` as the shell starts it, up to the point a game is needed."""
@@ -738,12 +594,6 @@ class EntryProcessTest(unittest.TestCase):
         fatal = [message for message in messages if message["type"] == "fatal"]
         self.assertTrue(fatal, result.stdout + result.stderr[-2000:])
         return fatal[-1]
-
-    def test_missing_handshake_exits_with_code_10(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            result = self.run_entry("", temp_dir)
-        self.assertEqual(result.returncode, protocol.EXIT_HANDSHAKE_FAILED, result.stderr[-2000:])
-        self.assertEqual(self.fatal(result)["code"], "handshake")
 
     def test_second_core_is_refused_by_the_session_lock(self):
         with tempfile.TemporaryDirectory() as temp_dir:

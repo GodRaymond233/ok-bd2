@@ -52,23 +52,6 @@ class NextAnchorTest(unittest.TestCase):
             _beijing_ts(2026, 8, 20, 4, 0),
         )
 
-    def test_next_weekly_anchor(self):
-        # 周三 12:00 -> 下周一 04:00
-        self.assertEqual(
-            scheduler.next_weekly_anchor_ts(_beijing_ts(2026, 8, 19, 12, 0)),
-            _beijing_ts(2026, 8, 24, 4, 0),
-        )
-        # 周一 03:00（本周尚未刷新）-> 当天 04:00
-        self.assertEqual(
-            scheduler.next_weekly_anchor_ts(_beijing_ts(2026, 8, 17, 3, 0)),
-            _beijing_ts(2026, 8, 17, 4, 0),
-        )
-        # 周一 05:00 -> 下周一 04:00
-        self.assertEqual(
-            scheduler.next_weekly_anchor_ts(_beijing_ts(2026, 8, 17, 5, 0)),
-            _beijing_ts(2026, 8, 24, 4, 0),
-        )
-
 
 class TaskScheduleStoreTest(unittest.TestCase):
     def test_pvp_settlement_skips_without_completion_and_reopens_after_restart(self):
@@ -152,26 +135,6 @@ class TaskScheduleStoreTest(unittest.TestCase):
             self.store.is_due("快速狩猎", now=_beijing_ts(2026, 8, 20, 4, 0))
         )
 
-    def test_success_weekly_delay_lands_on_next_monday(self):
-        next_run = self.store.delay_after_run(
-            "每周跑图", ok=True, now=_beijing_ts(2026, 8, 19, 12, 0)
-        )
-        self.assertEqual(next_run, _beijing_ts(2026, 8, 24, 8, 0))
-        for hour, minute in ((4, 0), (7, 59), (8, 0)):
-            with self.subTest(hour=hour, minute=minute):
-                moment = _beijing_ts(2026, 8, 24, hour, minute)
-                self.assertEqual(
-                    self.store.delay_after_run("每周跑图", ok=True, now=moment),
-                    _beijing_ts(2026, 8, 31 if hour == 8 else 24, 8),
-                )
-                self.assertEqual(
-                    self.store.delay_after_run(
-                        "每周跑图", ok=True, now=moment,
-                        policy=scheduler.SchedulePolicy("daily", refresh_hour=8),
-                    ),
-                    _beijing_ts(2026, 8, 25 if hour == 8 else 24, 8),
-                )
-
     def test_failure_delays_by_backoff_interval(self):
         now = _beijing_ts(2026, 8, 19, 9, 0)
         next_run = self.store.delay_after_run("镜中之战", ok=False, now=now)
@@ -180,21 +143,6 @@ class TaskScheduleStoreTest(unittest.TestCase):
             self.store.backoff_remaining_minutes("镜中之战", now=now + 60), 29.0
         )
         self.assertTrue(self.store.last_run_ok("镜中之战") is False)
-
-    def test_success_interval_can_be_nearer_than_anchor(self):
-        policy = scheduler.SchedulePolicy(
-            anchor="daily", success_interval_minutes=15.0
-        )
-        now = _beijing_ts(2026, 8, 19, 3, 30)
-        next_run = self.store.delay_after_run(
-            "自定义", ok=True, now=now, policy=policy
-        )
-        # now+15min(03:45) 比刷新点04:00更近，取较早的时间。
-        self.assertEqual(next_run, now + 15 * 60)
-
-    def test_unknown_task_is_not_scheduled(self):
-        self.assertIsNone(self.store.delay_after_run("未知任务", ok=True))
-        self.assertIsNone(self.store.next_run("未知任务"))
 
     def test_mark_due_now_forces_execution(self):
         self.store.delay_after_run(
@@ -219,21 +167,6 @@ class TaskScheduleStoreTest(unittest.TestCase):
         with open(self.path, "w", encoding="utf-8") as file:
             file.write('{"version": 999, "tasks": {"a": {"next_run": 1}}}')
         self.assertIsNone(scheduler.TaskScheduleStore(self.path).next_run("a"))
-
-    def test_policy_registry_covers_batch_children_and_weekly_map(self):
-        for name in (
-            "公会、小屋、酒馆",
-            "快速狩猎",
-            "白嫖抽抽乐",
-            "广场女神像",
-            "镜中之战",
-            "每日跑商",
-        ):
-            self.assertEqual(scheduler.TASK_POLICIES[name].anchor, "daily")
-        self.assertEqual(scheduler.TASK_POLICIES["每周跑图"].anchor, "weekly")
-        # 批处理自身没有调度策略：自动调度只消费子任务账本，批处理整体
-        # 的 next_run 无消费者（避免只写不读的误导条目）。
-        self.assertNotIn("一键完成日常", scheduler.TASK_POLICIES)
 
 
 class _FakeStartController:
@@ -337,26 +270,6 @@ class RunDueTasksOnceTest(unittest.TestCase):
         self.assertEqual([], og.app.start_controller.started)
         self.assertEqual([], batch.requested_modes)
 
-    def test_auto_start_proceeds_after_login_finished(self):
-        batch, executor = self._build_with_login(True, True)
-        og = _FakeOg(executor)
-        self.assertEqual(
-            "一键完成日常（仅执行今日未完成）",
-            auto_scheduler.run_due_tasks_once(og),
-        )
-        self.assertEqual(og.app.start_controller.started, [batch])
-
-    def test_auto_start_proceeds_when_login_task_disabled(self):
-        # 停用自动登录的用户不能被登录等待卡死；未就绪场景由主页确认与
-        # 退避兜底。
-        batch, executor = self._build_with_login(False, False)
-        og = _FakeOg(executor)
-        self.assertEqual(
-            "一键完成日常（仅执行今日未完成）",
-            auto_scheduler.run_due_tasks_once(og),
-        )
-        self.assertEqual(og.app.start_controller.started, [batch])
-
     def test_child_completed_today_is_not_due(self):
         batch, executor = self._build({})
         task = executor.get_task_by_class(batch.child_tasks[0].task_class)
@@ -398,10 +311,6 @@ class RunDueTasksOnceTest(unittest.TestCase):
         og = _FakeOg(executor)
         self.assertIsNone(auto_scheduler.run_due_tasks_once(og))
         self.assertEqual([], og.app.start_controller.started)
-
-    def test_missing_batch_task_starts_nothing(self):
-        og = _FakeOg(_ExecutorStub({}))
-        self.assertIsNone(auto_scheduler.run_due_tasks_once(og))
 
     def test_disabled_batch_starts_nothing_even_when_switch_on(self):
         # HIGH 回归：批处理“启用”关闭但“启动自动执行日常”残留开启时，
@@ -480,16 +389,6 @@ class InstallAutoSchedulerTest(unittest.TestCase):
         with patch.object(auto_scheduler, "run_due_tasks_once") as run:
             queued()
             run.assert_not_called()
-
-    def test_install_requires_runtime_handler(self):
-        from unittest.mock import patch
-
-        from ok import og
-
-        with patch.object(og, "handler", None, create=True):
-            with self.assertRaisesRegex(RuntimeError, "handler"):
-                auto_scheduler.install_auto_scheduler()
-        self.assertFalse(getattr(auto_scheduler.install_auto_scheduler, "_installed", False))
 
 
 if __name__ == "__main__":

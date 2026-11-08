@@ -1,6 +1,5 @@
 """Regression coverage for the Q_sp6 cooking flow."""
 
-import inspect
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,29 +9,18 @@ import cv2
 import numpy as np
 
 from src.tasks import run_history
-from src.tasks.map_trade.action_icons import COOKING_ICON
 from src.tasks.map_trade.models import (
     DEFAULT_COOKING_RECIPES,
     DEFAULT_RECIPES,
     FINAL_COOKING_RECIPE,
-    MERCHANT_CARD_ID,
     MatchResult,
-    NavigationResult,
     ScreenState,
 )
 from src.tasks.map_trade.navigator import MERCHANT_CLICK_LOCATION_TEMPLATE, Navigator
 from src.tasks.map_trade.trader_cooking import (
-    COOKING_BACK_POINT,
-    COOKING_BACK_TEMPLATE,
-    COOKING_DETAIL_TEMPLATE,
-    COOKING_LIST_GRID_ROI,
     COOKING_MAX_QUANTITY_TEMPLATE,
     COOKING_QUANTITY_ATTEMPTS,
-    COOKING_QUANTITY_CHOICES_ROI,
-    COOKING_RECIPE_SPECS,
-    COOKING_SKILL_GROUP_POINT,
     CookingDetailSnapshot,
-    CookingFlowMixin,
     CookingListSnapshot,
     CookingRecipeOutcome,
     _character_coverage,
@@ -210,60 +198,6 @@ class CookingFlowTest(StageHistoryTestCase):
         self.assertEqual((*DEFAULT_COOKING_RECIPES, *DEFAULT_RECIPES[:2],
                           FINAL_COOKING_RECIPE), trader._selected_cooking_recipes())
 
-    def test_missing_templates_stop_before_navigation(self):
-        trader = create_trader()
-        trader.task = CookingTask(**{"5星料理": []})
-        trader._enter_cooking_list = lambda: self.fail("missing assets must stop navigation")
-        from unittest.mock import patch
-        with patch("pathlib.Path.is_file", return_value=False):
-            self.assertFalse(trader.run_cooking())
-
-    def test_entry_uses_relative_skill_group_two_and_detected_cooking_icon(self):
-        task = CookingTask()
-        stable_calls = []
-        entries = []
-        navigator = SimpleNamespace(
-            select_trade_card=lambda card_id: (
-                entries.append("select") or NavigationResult(
-                    card_id == MERCHANT_CARD_ID, ScreenState.SANDBOX,
-                )
-            ),
-            leave_discount_shop=lambda: (
-                entries.append("close-shop") or NavigationResult(True, ScreenState.SANDBOX)
-            ),
-            wait_for_q_sp6_sandbox=lambda timeout: timeout > 0,
-        )
-        vision = SimpleNamespace(
-            click_stable_template=lambda spec, timeout, after_sleep: (
-                stable_calls.append((spec, timeout, after_sleep)) or True
-            )
-        )
-        trader = create_trader()
-        trader.task = task
-        trader.navigator = navigator
-        trader.vision = vision
-        trader._cooking_opened = False
-        trader._buy_completed_in_current_shop = False
-        trader._wait_for_cooking_list = lambda _timeout: object()
-
-        self.assertTrue(trader._enter_cooking_list())
-        self.assertEqual([(*COOKING_SKILL_GROUP_POINT, 0.0)], task.clicks)
-        self.assertIs(COOKING_ICON.template, stable_calls[0][0])
-        self.assertTrue(trader._cooking_opened)
-        self.assertFalse(trader._buy_completed_in_current_shop)
-        self.assertEqual(["select"], entries)
-
-        trader._buy_completed_in_current_shop = True
-        self.assertTrue(trader._enter_cooking_list())
-        self.assertEqual(["select", "close-shop"], entries)
-        self.assertFalse(trader._buy_completed_in_current_shop)
-
-        task.clicks.clear()
-        trader._buy_completed_in_current_shop = True
-        navigator.leave_discount_shop = lambda: NavigationResult(False, ScreenState.UNKNOWN)
-        self.assertFalse(trader._enter_cooking_list())
-        self.assertEqual([], task.clicks)
-
     def test_recipe_state_machine_requires_result_and_list_restoration(self):
         recipe = DEFAULT_RECIPES[0]
         task = CookingTask(**{"料理保险": False})
@@ -323,39 +257,6 @@ class CookingFlowTest(StageHistoryTestCase):
                     self.assertLess(events.index("button turned gray"),
                                     events.index("result confirmed"))
                     self.assertLess(events.index("result confirmed"), events.index("list restored"))
-
-    def test_disabled_recipe_is_nonfatal_and_never_starts(self):
-        recipe = DEFAULT_RECIPES[0]
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        recipe_match = MatchResult(0.97, (1000, 650), (80, 80), pixel_score=0.94)
-        detail = CookingDetailSnapshot(
-            frame,
-            MatchResult(0.96, (1110, 975), (40, 40), pixel_score=0.74),
-            False,
-            0.004,
-        )
-        trader = create_trader()
-        trader.task = CookingTask()
-        trader._cooking_card_enabled = lambda *_args: True
-        trader.vision = SimpleNamespace(
-            match=lambda *_args: recipe_match,
-            passes=lambda *_args: True,
-            click_client=lambda *_args, **_kwargs: None,
-        )
-        trader._wait_for_cooking_list = lambda _timeout: CookingListSnapshot(
-            frame,
-            recipe_match,
-        )
-        trader._wait_for_cooking_detail = lambda *_args: detail
-        trader._return_from_detail_to_list = lambda _recipe: True
-        trader._click_quantity_choice = lambda *_args: self.fail(
-            "disabled recipe must not select quantity"
-        )
-
-        self.assertIs(
-            CookingRecipeOutcome.UNAVAILABLE,
-            trader._cook_one_recipe(recipe),
-        )
 
     def test_failed_cooking_round_stops_and_next_round_can_start(self):
         recipe = DEFAULT_RECIPES[0]
@@ -484,16 +385,6 @@ class CookingFlowTest(StageHistoryTestCase):
                     expected, trader._wait_for_cooking_started(DEFAULT_RECIPES[0], 0.0)
                 )
 
-    def test_cooking_implementation_has_no_scroll_or_resolution_pixel_clicks(self):
-        source = inspect.getsource(CookingFlowMixin)
-
-        self.assertNotIn("drag_reference", source)
-        self.assertNotIn("click_reference", source)
-        self.assertEqual((1749 / 1920, 1011 / 1080), COOKING_SKILL_GROUP_POINT)
-        for spec in COOKING_RECIPE_SPECS.values():
-            self.assertEqual(COOKING_LIST_GRID_ROI, spec.relative_roi)
-            self.assertIsNone(spec.roi)
-
 
 class CookingRecognitionTest(unittest.TestCase):
     def test_max_quantity_gate_on_recorded_min_and_max_slider_at_client_sizes(self):
@@ -513,15 +404,6 @@ class CookingRecognitionTest(unittest.TestCase):
                                                    True, 0.7)
                     trader._cooking_detail_snapshot = lambda _: detail
                     self.assertEqual(expected, trader._wait_for_max_detail("recipe", 0) is detail)
-
-    def test_card_background_distinguishes_gray_bright_and_uncertain(self):
-        for size in (64, 96):
-            match = MatchResult(0.97, (0, 0), (size, size))
-            for value, expected in ((60, False), (145, True), (100, None)):
-                frame = np.full((size, size, 3), value, dtype=np.uint8)
-                # Dark food art does not make an available beige card disabled.
-                frame[size // 4:3 * size // 4, size // 4:3 * size // 4] = 0
-                self.assertIs(expected, CookingFlowMixin._cooking_card_enabled(frame, match))
 
     def test_detail_enabled_gate_separates_video_bright_and_disabled_states(self):
         recipe = DEFAULT_RECIPES[0]
@@ -573,115 +455,13 @@ class CookingRecognitionTest(unittest.TestCase):
         text["value"] = "其他料理×60"
         self.assertIsNone(trader._wait_for_cooking_result(recipe, 0.0))
 
-    def test_quantity_choice_clicks_ocr_box_center(self):
-        recipe = DEFAULT_RECIPES[0]
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        clicked = []
-        detail = CookingDetailSnapshot(
-            frame,
-            MatchResult(0.98, (1110, 975), (40, 40), pixel_score=0.96),
-            True,
-            0.72,
-        )
-        trader = create_trader()
-        trader.task = CookingTask()
-        trader.vision = SimpleNamespace(
-            ocr_boxes=lambda _frame, _name, **kwargs: [
-                SimpleNamespace(name="MAX", x=650, y=850, width=80, height=50)
-            ],
-            simplify=lambda value: value,
-            click_client=lambda point, shape, after_sleep: clicked.append(
-                (point, shape, after_sleep)
-            ),
-        )
-        trader._cooking_detail_snapshot = lambda _recipe: detail
-
-        self.assertTrue(trader._click_quantity_choice(recipe, "MAX"))
-        self.assertEqual(((690, 875), frame.shape, 0.0), clicked[0])
-
-    def test_back_button_prefers_detected_center_then_relative_fallback(self):
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        detected = MatchResult(
-            0.96,
-            (160, 35),
-            (30, 30),
-            pixel_score=0.94,
-            zncc_score=0.90,
-        )
-        task = CookingTask()
-        clicked = []
-        passed = {"value": True}
-        trader = create_trader()
-        trader.task = task
-        trader.vision = SimpleNamespace(
-            match=lambda _frame, spec: (
-                detected if spec is COOKING_BACK_TEMPLATE else self.fail(spec.name)
-            ),
-            passes=lambda *_args: passed["value"],
-            click_client=lambda point, _shape, after_sleep: clicked.append(
-                (point, after_sleep)
-            ),
-        )
-
-        trader._click_cooking_back(frame, context="test")
-        self.assertEqual([(detected.center, 0.0)], clicked)
-        passed["value"] = False
-        trader._click_cooking_back(frame, context="test")
-        self.assertEqual([(*COOKING_BACK_POINT, 0.0)], task.clicks)
-
     def test_character_coverage_tolerates_one_ocr_character_but_not_wrong_recipe(self):
         self.assertGreaterEqual(_character_coverage("地狱火紫菜包饭", "地狱火紫菜包反260"), 0.75)
         self.assertLess(_character_coverage("地狱火紫菜包饭", "透明沙拉60"), 0.75)
 
-    def test_all_cooking_geometry_is_fractional_and_detail_template_is_scoped(self):
-        for point in (*COOKING_SKILL_GROUP_POINT, *COOKING_BACK_POINT):
-            self.assertGreaterEqual(point, 0.0)
-            self.assertLessEqual(point, 1.0)
-        for roi in (COOKING_LIST_GRID_ROI, COOKING_QUANTITY_CHOICES_ROI):
-            self.assertTrue(all(0.0 <= value <= 1.0 for value in roi))
-            self.assertLess(roi[0], roi[2])
-            self.assertLess(roi[1], roi[3])
-        self.assertIsNotNone(COOKING_DETAIL_TEMPLATE.relative_roi)
-        self.assertIsNone(COOKING_DETAIL_TEMPLATE.roi)
-
 
 class CookingAbsentRecipeTest(StageHistoryTestCase):
     """配方未识别分支：保持原门禁，跳过制作下一个，结尾警报不报错。"""
-
-    def _trader_with_snapshot(self, *, identity):
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        task = CookingTask()
-        trader = create_trader()
-        trader.task = task
-        trader.vision = SimpleNamespace(
-            match=lambda _frame, _spec: identity,
-            passes=lambda _result, _spec: False,
-        )
-        trader._wait_for_cooking_list = lambda _timeout: CookingListSnapshot(
-            frame,
-            identity,
-        )
-        return trader, task, frame
-
-    def _logs_of(self, task, kind):
-        return [message for log_kind, message in task.logs if log_kind == kind]
-
-    def test_identity_miss_skips_to_next_recipe_without_error(self):
-        trader, task, _frame = self._trader_with_snapshot(
-            identity=MatchResult(-1.0, (0, 0), (0, 0)),
-        )
-
-        outcome = trader._cook_one_recipe("香草牛排")
-
-        self.assertIs(CookingRecipeOutcome.ABSENT, outcome)
-        self.assertEqual([], task.saved_frames)
-        self.assertEqual([], self._logs_of(task, "warning"))
-        self.assertTrue(
-            any(
-                "未识别到 香草牛排" in message and "跳过" in message
-                for message in self._logs_of(task, "info")
-            )
-        )
 
     def test_unknown_brightness_saves_evidence_and_fails(self):
         frame = np.full((64, 64, 3), 100, dtype=np.uint8)

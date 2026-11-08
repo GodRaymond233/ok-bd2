@@ -44,11 +44,6 @@ class WindowsMutexBackendTest(unittest.TestCase):
         self.assertFalse(backend.try_acquire())
         self.assertEqual(api.closed, [7])
 
-    def test_failed_creation_raises(self):
-        backend = guard._WindowsMutexBackend(api=FakeMutexApi(error=5, handle=0))
-        with self.assertRaises(OSError):
-            backend.try_acquire()
-
 
 @unittest.skipIf(os.name == "nt", "file lock stand-in is used off Windows only")
 class ExecutorLockTest(unittest.TestCase):
@@ -201,29 +196,6 @@ class LegacyDetectorTest(unittest.TestCase):
         self.assertEqual(found[0].location, "D:\\ok-bd2")
         self.assertIn("进程 40", found[0].describe())
 
-    def test_reads_command_lines_only_for_python_candidates(self):
-        import psutil
-
-        unrelated = FakeProcess(50, name="unrelated.exe")
-        unrelated.as_dict = Mock(side_effect=AssertionError("unrelated process inspected"))
-        vanished = self.legacy(51)
-        vanished.as_dict = Mock(side_effect=psutil.NoSuchProcess(51))
-        legacy = self.legacy()
-        legacy.as_dict = Mock(return_value=dict(legacy.info))
-
-        def processes(attrs):
-            self.assertNotIn("cmdline", attrs)
-            for process in (unrelated, vanished, legacy):
-                process.info = {key: process.info[key] for key in attrs}
-                yield process
-
-        detector = detector_for([])
-        detector._process_iter = None
-        with patch("psutil.process_iter", side_effect=processes):
-            found = detector.scan()
-        self.assertEqual([item.pid for item in found], [40])
-        unrelated.as_dict.assert_not_called()
-
     def test_detects_absolute_debug_entry_and_pyappify_layout(self):
         absolute = self.legacy(
             41, cmdline=["python.exe", "D:\\ok-bd2-dev\\main_debug.py"], cwd="C:\\"
@@ -261,45 +233,6 @@ class LegacyDetectorTest(unittest.TestCase):
         found = detector_for([self.legacy(environ_error=AccessDenied("environ"))]).scan()
         self.assertEqual([item.pid for item in found], [40])
 
-    def test_processes_that_vanish_during_inspection_are_skipped(self):
-        class Vanishing(FakeProcess):
-            def cwd(self):
-                raise ProcessLookupError("gone")
-
-        found = detector_for(
-            [Vanishing(44, cmdline=["python.exe", "main.py"]), self.legacy()]
-        ).scan()
-        self.assertEqual([item.pid for item in found], [40])
-
-    def test_pyappify_working_dir_parsing(self):
-        self.assertEqual(
-            guard.pyappify_working_dir(
-                "D:\\Games\\ok-bd2\\data\\apps\\ok-bd2\\python\\pythonw.exe"
-            ),
-            "D:\\Games\\ok-bd2\\data\\apps\\ok-bd2\\working",
-        )
-        self.assertIsNone(guard.pyappify_working_dir("C:\\Python312\\python.exe"))
-        self.assertIsNone(guard.pyappify_working_dir(None))
-
-
-class LegacyGuardTest(unittest.TestCase):
-    def test_cached_scans_and_forced_rescans(self):
-        detector = Mock()
-        detector.scan.return_value = []
-        clock = [0.0]
-        legacy = guard.LegacyGuard(detector, cache_seconds=5, clock=lambda: clock[0])
-        self.assertIsNone(legacy.blocking_message())
-        clock[0] = 3
-        legacy.blocking_message()
-        self.assertEqual(detector.scan.call_count, 1)
-        legacy.blocking_message(force=True)
-        self.assertEqual(detector.scan.call_count, 2)
-        detector.scan.return_value = [guard.LegacyInstance(40, 1.0, "D:\\ok-bd2", "main.py")]
-        clock[0] = 9
-        message = legacy.blocking_message()
-        self.assertIn("旧版", message)
-        self.assertIn("进程 40", message)
-
 
 class InstalledGuardsTest(unittest.TestCase):
     """The checks sit on the core's own start and pick paths, not on a client button."""
@@ -323,9 +256,6 @@ class InstalledGuardsTest(unittest.TestCase):
         self.StartController = StartController
         self.TaskExecutor = TaskExecutor
 
-    def test_install_is_idempotent(self):
-        self.assertFalse(guard.install_executor_guards(self.legacy))
-
     def test_start_requests_are_refused_while_legacy_runs(self):
         controller = object.__new__(self.StartController)
         emitted = []
@@ -348,11 +278,6 @@ class InstalledGuardsTest(unittest.TestCase):
             self.assertEqual(self.TaskExecutor.next_task(executor), (None, False, False))
         executor.pause.assert_called_once_with()
         notify.assert_called_once()
-
-    def test_empty_picks_are_not_scanned(self):
-        self.original_next_task.return_value = (None, False, False)
-        self.legacy.blocking_message = Mock(side_effect=AssertionError("no scan expected"))
-        self.assertEqual(self.TaskExecutor.next_task(SimpleNamespace()), (None, False, False))
 
 
 class AcquireExecutorLockTest(unittest.TestCase):

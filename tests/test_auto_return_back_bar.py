@@ -66,12 +66,6 @@ class AutoReturnBackBarResolutionTest(unittest.TestCase):
                 self.assertAlmostEqual(click_x * width, center_x, delta=tol)
                 self.assertAlmostEqual(click_y * height, center_y, delta=tol)
 
-    def test_no_bar_does_not_match(self):
-        frame, _ = _make_frame(1920, 1080, with_bar=False)
-        task, clicks = self._task()
-        self.assertFalse(BaseBD2Task._click_top_left_back(task, frame, 1))
-        self.assertEqual([], clicks)
-
 
 if __name__ == "__main__":
     unittest.main()

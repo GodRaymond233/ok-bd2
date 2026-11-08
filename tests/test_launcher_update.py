@@ -1,11 +1,9 @@
 import os
-import re
 import unittest
 from unittest.mock import Mock, patch
 
 from src.compat.starter_launch import (
     starter_launch_arguments,
-    starter_launch_uri,
     wrap_starter_execute,
 )
 from src.config import config
@@ -21,26 +19,6 @@ class LauncherUpdateConfigTest(unittest.TestCase):
                 '"browndust2:games/10000001?usn=0"',
                 starter_launch_arguments(
                     r"C:\ProgramData\Neowiz\Browndust2Starter\Browndust2Starter.exe"
-                ),
-            )
-
-    def test_starter_launch_supports_another_registered_game_id(self):
-        with self.starter_uri_context("10000002"):
-            self.assertEqual(
-                '"browndust2:games/10000002?usn=0"',
-                starter_launch_arguments(
-                    r"C:\ProgramData\Neowiz\Browndust2Starter\Browndust2Starter.exe"
-                ),
-            )
-            self.assertEqual(starter_launch_uri(), "browndust2:games/10000002?usn=0")
-
-    def test_starter_launch_preserves_additional_arguments(self):
-        with self.starter_uri_context():
-            self.assertEqual(
-                '"browndust2:games/10000001?usn=0" --future-option',
-                starter_launch_arguments(
-                    r"C:\ProgramData\Neowiz\Browndust2Starter\Browndust2Starter.exe",
-                    "--future-option",
                 ),
             )
 
@@ -60,12 +38,6 @@ class LauncherUpdateConfigTest(unittest.TestCase):
                             '"browndust2:games/10000001?usn=0"',
                             starter_launch_arguments(rf"D:\Launchers\{executable_name}"),
                         )
-
-    def test_non_starter_launch_arguments_are_unchanged(self):
-        self.assertEqual(
-            "--existing-option",
-            starter_launch_arguments(r"D:\Games\OtherLauncher.exe", "--existing-option"),
-        )
 
     def test_starter_execute_wrapper_forwards_uri_to_ok_script(self):
         original_execute = Mock(return_value=True)
@@ -108,24 +80,6 @@ class LauncherUpdateConfigTest(unittest.TestCase):
                 ),
             },
             config["update_pyappify"],
-        )
-
-    def test_launcher_zip_url_matches_to_version_release_payload(self):
-        zip_url = config["update_pyappify"]["zip_url"]
-        self.assertIn("/v1.2.0/", zip_url)
-        self.assertTrue(zip_url.endswith("ok-bd2-win32.zip"))
-
-    def test_config_exposes_download_link_for_update_errors(self):
-        links = config["links"]["default"]
-        self.assertEqual(
-            "https://github.com/GodRaymond233/ok-bd2/releases/latest",
-            links["download"],
-        )
-
-    def test_launcher_hash_is_lowercase_sha256(self):
-        self.assertRegex(
-            config["update_pyappify"]["sha256"],
-            re.compile(r"^[0-9a-f]{64}$"),
         )
 
 

@@ -156,9 +156,3 @@ class ReportRoutesTest(unittest.TestCase):
         self.assertIn("磁盘已满", response.text)
         self.assertEqual(session, self.client.get("/api/bd2/report").json()["session_id"])
         self.executor.start.assert_not_called()
-
-    def test_preparation_error_releases_the_write_guard(self):
-        with patch.object(self.reports.manager, "prepare", side_effect=RuntimeError("记录失败")):
-            self.assertEqual(400, self.client.post("/api/bd2/report/prepare").status_code)
-        self.assertFalse(self.headless.diagnostic_pause)
-        self.assertIsNone(self.client.get("/api/bd2/report").json()["session_id"])

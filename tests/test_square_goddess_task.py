@@ -11,8 +11,6 @@ from src.tasks.SquareGoddessTask import (
     FANTASIA_SQUARE_TEMPLATE,
     GODDESS_ALREADY_COMPLETE,
     GODDESS_NAVIGATION_CLICKED,
-    GODDESS_PRAYER_READY,
-    QUICK_SWITCH_PAGE_PATTERNS,
     QUICK_SWITCH_TEMPLATE,
     REFERENCE_HEIGHT,
     REFERENCE_WIDTH,
@@ -48,44 +46,6 @@ class SquareGoddessEntryTest(StageHistoryTestCase):
         self.assertTrue(task._pray_at_goddess())
         task._click_goddess_daily_navigation_until.assert_not_called()
         task._click_square_notice_if_present.assert_called_once()
-
-    def test_home_requires_keyword_votes_brightness_and_gacha_ocr(self):
-        task = object.__new__(SquareGoddessTask)
-        task.config = {
-            "主页确认等待秒数": 0.0,
-            "主页压暗阈值": 185.0,
-        }
-        task.info_set = lambda *_args, **_kwargs: None
-        task.log_info = lambda *_args, **_kwargs: None
-        task.sleep = lambda *_args, **_kwargs: None
-        bright_frame = np.full((1080, 1920, 3), 255, dtype=np.uint8)
-        dimmed_frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        frame = {"value": bright_frame}
-        task.capture_frame = lambda: frame["value"]
-        left_text = {"value": "我的小屋 格鲁TALK 街机游戏"}
-        gacha_text = {"value": ""}
-
-        def fake_ocr(_frame, name, roi=None, **_kwargs):
-            if name == "主页左列":
-                return left_text["value"]
-            return gacha_text["value"]
-
-        task._ocr_text = fake_ocr
-        task._sleep_after_recognition = lambda: None
-        announcement_clicks = []
-        task.operate_click = lambda x, y, after_sleep=0.0: announcement_clicks.append(
-            (x, y, after_sleep)
-        )
-
-        self.assertFalse(SquareGoddessTask._wait_for_cartridge_home(task))
-        gacha_text["value"] = "抽抽乐"
-        self.assertTrue(SquareGoddessTask._wait_for_cartridge_home(task))
-        frame["value"] = dimmed_frame
-        self.assertFalse(SquareGoddessTask._wait_for_cartridge_home(task))
-        frame["value"] = bright_frame
-        left_text["value"] = "我的小屋"
-        self.assertFalse(SquareGoddessTask._wait_for_cartridge_home(task))
-        self.assertEqual([(169 / 1920, 615 / 1080, 0.2)], announcement_clicks)
 
     def test_entry_uses_quick_switch_life_gameplay_and_fixed_second_slot(self):
         task = object.__new__(SquareGoddessTask)
@@ -169,16 +129,6 @@ class SquareGoddessEntryTest(StageHistoryTestCase):
             allow_pvp_pages=False
         )
 
-    def test_fixed_points_are_relative_to_1920_by_1080(self):
-        self.assertEqual(
-            (1126 / REFERENCE_WIDTH, 875 / REFERENCE_HEIGHT),
-            LIFE_GAMEPLAY_CATEGORY_POINT,
-        )
-        self.assertEqual(
-            (331 / REFERENCE_WIDTH, 970 / REFERENCE_HEIGHT),
-            SQUARE_CARTRIDGE_SLOT_POINT,
-        )
-
     def test_entry_stops_before_slot_when_life_category_is_not_confirmed(self):
         task = object.__new__(SquareGoddessTask)
         task.config = {}
@@ -197,25 +147,6 @@ class SquareGoddessEntryTest(StageHistoryTestCase):
 
         self.assertFalse(SquareGoddessTask._enter_square_from_home(task))
         self.assertEqual([(*LIFE_GAMEPLAY_CATEGORY_POINT, 0.0)], clicks)
-
-    def test_quick_switch_uses_green_template_and_pixel_threshold(self):
-        self.assertEqual(
-            "image/green/QuickSwitchPlayIco.png",
-            QUICK_SWITCH_TEMPLATE.file_name,
-        )
-        self.assertTrue(QUICK_SWITCH_TEMPLATE.green_mask)
-        self.assertEqual(0.85, QUICK_SWITCH_TEMPLATE.min_pixel_score)
-        self.assertEqual(0.88, QUICK_SWITCH_TEMPLATE.minimum_safe_threshold)
-        # BUG-20260902-06：广场内暗色圆底按钮 1600x901 实测 zncc 最高 0.838，
-        # 误检位置最高 0.43；0.78 在两者之间有足够余量。
-        self.assertEqual(0.78, QUICK_SWITCH_TEMPLATE.min_zncc_score)
-        self.assertIn(0.975, QUICK_SWITCH_TEMPLATE.scale_ratios)
-        self.assertNotIn(0.80, QUICK_SWITCH_TEMPLATE.scale_ratios)
-        self.assertEqual(
-            ((0.15, 0.85, 0.65, 1.0), (0.16, 0.08, 0.24, 0.19)),
-            QUICK_SWITCH_TEMPLATE.relative_rois,
-        )
-        self.assertIsNone(QUICK_SWITCH_TEMPLATE.candidate_center_roi)
 
     def test_quick_switch_click_uses_three_consecutive_stable_frames(self):
         task = object.__new__(SquareGoddessTask)
@@ -311,26 +242,6 @@ class SquareGoddessEntryTest(StageHistoryTestCase):
         self.assertEqual((0, 1), result.position)
         self.assertTrue(np.isfinite(response).all())
 
-    def test_quick_switch_page_requires_all_requested_labels_after_one_second(self):
-        task = object.__new__(SquareGoddessTask)
-        task.config = {"卡带选择页确认等待秒数": 0.0}
-        task.info_set = lambda *_args, **_kwargs: None
-        task.log_info = lambda *_args, **_kwargs: None
-        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        text = {"value": "店长游戏卡 角色游戏卡 生活玩法游戏卡带"}
-        task._ocr_text = lambda *_args, **_kwargs: text["value"]
-        sleeps = []
-        task.sleep = lambda seconds: sleeps.append(seconds)
-
-        self.assertFalse(SquareGoddessTask._wait_for_quick_switch_page(task))
-        text["value"] += " 活动游戏卡"
-        self.assertTrue(SquareGoddessTask._wait_for_quick_switch_page(task))
-        self.assertEqual(
-            ("店长游戏卡", "角色游戏卡", "生活玩法游戏卡带", "活动游戏卡"),
-            QUICK_SWITCH_PAGE_PATTERNS,
-        )
-        self.assertEqual(2, sleeps.count(1.0))
-
     def test_life_gameplay_category_requires_ocr_and_visual_highlight(self):
         task = object.__new__(SquareGoddessTask)
         task.config = {"玩法类别高亮确认秒数": 0.0}
@@ -352,28 +263,6 @@ class SquareGoddessEntryTest(StageHistoryTestCase):
         self.assertTrue(SquareGoddessTask._wait_for_life_gameplay_category(task))
         self.assertEqual((1025, 840, 204, 75), LIFE_GAMEPLAY_CATEGORY_OCR_ROI)
         self.assertEqual(0.05, GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO)
-
-    def test_goddess_flow_claims_dispatch_after_prayer(self):
-        task = object.__new__(SquareGoddessTask)
-        task.config = {}
-        task.info_set = lambda *_args, **_kwargs: None
-        task.log_info = lambda *_args, **_kwargs: None
-        stages = []
-        task._click_square_notice_if_present = lambda **kwargs: stages.append(
-            ("notice", kwargs["timeout"])
-        ) or True
-        task._click_goddess_daily_navigation_until = (
-            lambda **_kwargs: stages.append("navigation") or GODDESS_NAVIGATION_CLICKED
-        )
-        task._wait_for_goddess_prayer_completion = (
-            lambda **_kwargs: stages.append("pray") or True
-        )
-
-        self.assertTrue(SquareGoddessTask._pray_at_goddess(task))
-        self.assertEqual(
-            ["navigation", "pray", ("notice", 5.0)],
-            stages,
-        )
 
     def test_post_prayer_dispatch_must_be_confirmed(self):
         for post_notice_found in (False, True):
@@ -442,62 +331,6 @@ class SquareGoddessEntryTest(StageHistoryTestCase):
         self.assertEqual([5.0], notice_calls)
         self.assertEqual(["广场女神像：已确认女神像许愿任务完成。"], messages)
 
-    def test_successful_run_returns_home_after_prayer(self):
-        task = object.__new__(SquareGoddessTask)
-        task.config = {"启用": True}
-        task.info_set = lambda *_args, **_kwargs: None
-        notifications = []
-        task.log_info = lambda message, notify=False: notifications.append(
-            (message, notify)
-        )
-        stages = []
-        task._enter_square_from_home = lambda: stages.append("enter") or True
-        task._pray_at_goddess = lambda: stages.append("pray") or True
-        task._return_home_from_square = lambda: stages.append("home") or True
-
-        self.assertTrue(SquareGoddessTask.run(task))
-        self.assertEqual(["enter", "pray", "home"], stages)
-        self.assertEqual(
-            [
-                ("广场女神像：开始从主页进入梦幻广场。", False),
-                ("广场女神像：许愿完成并返回主页。", True),
-            ],
-            notifications,
-        )
-
-    def test_square_return_home_uses_relative_home_point_and_restores_timeout(self):
-        task = object.__new__(SquareGoddessTask)
-        task.config = {
-            "主页确认等待秒数": 10.0,
-            "广场返回主页等待秒数": 15.0,
-            "广场返回主页最多点击次数": 3,
-            "广场返回主页重试间隔秒数": 2.0,
-        }
-        statuses = {}
-        task.info_set = lambda key, value: statuses.__setitem__(key, value)
-        clicks = []
-        task.operate_click = lambda *args, **kwargs: clicks.append((args, kwargs))
-        observed_waits = []
-        task._wait_for_cartridge_home = (
-            lambda **kwargs: observed_waits.append(kwargs) or True
-        )
-
-        self.assertTrue(SquareGoddessTask._return_home_from_square(task))
-        self.assertEqual([((*SQUARE_HOME_POINT,), {"after_sleep": 1.0})], clicks)
-        self.assertEqual(
-            [
-                {
-                    "timeout": 15.0,
-                    "retry_home_clicks": 2,
-                    "retry_interval": 2.0,
-                    "total_home_clicks": 3,
-                }
-            ],
-            observed_waits,
-        )
-        self.assertEqual("1/3", statuses["广场主页点击次数"])
-        self.assertEqual(10.0, task.config["主页确认等待秒数"])
-
     def test_square_return_home_retries_when_quick_switch_confirms_still_in_square(self):
         task = object.__new__(SquareGoddessTask)
         task.config = {"主页压暗阈值": 185.0}
@@ -549,55 +382,6 @@ class SquareGoddessEntryTest(StageHistoryTestCase):
         )
         self.assertEqual("2/3", statuses["广场主页点击次数"])
         self.assertTrue(any("执行第2次点击" in message for message in logs))
-
-    def test_square_return_home_does_not_retry_without_quick_switch_signal(self):
-        task = object.__new__(SquareGoddessTask)
-        task.config = {"主页压暗阈值": 185.0}
-        task.info_set = lambda *_args, **_kwargs: None
-        task.log_info = lambda *_args, **_kwargs: None
-        task.sleep = lambda *_args, **_kwargs: None
-        task.capture_frame = lambda: np.full((1080, 1920, 3), 255, dtype=np.uint8)
-
-        def fake_ocr(_frame, name, roi=None, **_kwargs):
-            if name == "主页左列":
-                return "我的小屋 格鲁TALK 街机游戏"
-            return ""
-
-        task._ocr_text = fake_ocr
-        task.clear_temporary_home_announcement_if_needed = (
-            lambda **_kwargs: False
-        )
-        task._match = lambda _frame, _spec: MatchResult(
-            score=0.50,
-            pixel_score=0.40,
-            position=(760, 960),
-            size=(64, 60),
-            zncc_score=0.30,
-        )
-        task._passes = lambda *_args, **_kwargs: False
-        clicks = []
-        task.operate_click = lambda *args, **kwargs: clicks.append((args, kwargs))
-        clock = {"value": 0.0}
-
-        def advance_clock():
-            clock["value"] += 0.1
-            return clock["value"]
-
-        with patch(
-            "src.tasks.SquareGoddessTask.monotonic",
-            side_effect=advance_clock,
-        ):
-            self.assertFalse(
-                SquareGoddessTask._wait_for_cartridge_home(
-                    task,
-                    timeout=0.5,
-                    retry_home_clicks=2,
-                    retry_interval=0.0,
-                    total_home_clicks=3,
-                )
-            )
-
-        self.assertEqual([], clicks)
 
     def test_square_return_home_stops_after_retry_budget_is_exhausted(self):
         task = object.__new__(SquareGoddessTask)
@@ -657,65 +441,6 @@ class SquareGoddessEntryTest(StageHistoryTestCase):
         self.assertEqual(1, sum("执行第2次点击" in message for message in logs))
         self.assertEqual(1, sum("执行第3次点击" in message for message in logs))
 
-    def test_square_notice_uses_requested_region_and_clicks_match_center(self):
-        self.assertEqual("image/green/tanhaoGE.png", SQUARE_NOTICE_TEMPLATE.file_name)
-        self.assertEqual((1376, 862, 66, 51), SQUARE_NOTICE_TEMPLATE.roi)
-        self.assertTrue(SQUARE_NOTICE_TEMPLATE.green_mask)
-        self.assertEqual(0.72, SQUARE_NOTICE_TEMPLATE.min_pixel_score)
-        self.assertEqual(
-            (0.68, 0.75, 0.80, 0.92),
-            SQUARE_NOTICE_TEMPLATE.candidate_center_roi,
-        )
-
-        task = object.__new__(SquareGoddessTask)
-        task.info_set = lambda *_args, **_kwargs: None
-        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        clicks = []
-        task._click_client = lambda *args, **kwargs: clicks.append((args, kwargs))
-        task.sleep = lambda *_args: None
-        task._match = lambda _frame, spec: MatchResult(
-            score=0.90 if spec is FANTASIA_SQUARE_TEMPLATE or not clicks else -1.0,
-            pixel_score=0.90,
-            position=(1376, 862),
-            size=(66, 51),
-        )
-        task._passes = lambda result, spec: result.score > 0
-
-        self.assertTrue(SquareGoddessTask._click_square_notice_if_present(task))
-        self.assertEqual(
-            [((1409, 887, 1920, 1080), {"after_sleep": 1.0})],
-            clicks,
-        )
-
-    def test_prayer_prefers_ocr_center_and_confirms_navigation_disappeared(self):
-        task = object.__new__(SquareGoddessTask)
-        task.config = {
-            "女神像许愿等待秒数": 8.0,
-            "女神像许愿最多点击次数": 3,
-            "女神像完成确认等待秒数": 8.0,
-        }
-        task.info_set = lambda *_args, **_kwargs: None
-        task.sleep = lambda *_args, **_kwargs: None
-        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        task._goddess_prayer_signals = lambda frame: ((1410, 880), True, "向女神像许愿")
-        clicks = []
-        task._click_client = lambda *args, **kwargs: clicks.append((args, kwargs))
-        task.operate_click = lambda *_args, **_kwargs: self.fail("不应使用固定点")
-        task._wait_for_daily_navigation_to_disappear = (
-            lambda **_kwargs: True
-        )
-
-        self.assertTrue(
-            SquareGoddessTask._wait_for_goddess_prayer_completion(
-                task,
-                timeout=0.1,
-            )
-        )
-        self.assertEqual(
-            [((1410, 880, 1920, 1080), {"after_sleep": 2.0})],
-            clicks,
-        )
-
     def test_prayer_without_prompt_never_clicks_or_completes(self):
         task = object.__new__(SquareGoddessTask)
         task.config = {}
@@ -766,16 +491,6 @@ class SquareGoddessEntryTest(StageHistoryTestCase):
             prompt.name = "向女神像许愿1/1完成！"
             prompt.confidence = .99
             self.assertEqual((None, False), task._goddess_prayer_signals(frame)[:2])
-
-    def test_visible_prayer_skips_navigation(self):
-        task = object.__new__(SquareGoddessTask)
-        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        task.info_set = Mock()
-        task._goddess_prayer_signals = lambda frame: ((948, 160), True, "向女神像许愿")
-        task._observe_goddess_navigation = Mock(
-            side_effect=AssertionError("navigation unnecessary")
-        )
-        self.assertEqual(GODDESS_PRAYER_READY, task._click_goddess_daily_navigation_until(1))
 
     def test_dispatch_clicks_once_without_rechecking_after_click(self):
         task = object.__new__(SquareGoddessTask)

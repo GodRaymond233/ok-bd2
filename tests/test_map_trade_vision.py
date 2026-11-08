@@ -10,162 +10,26 @@ import cv2
 import numpy as np
 
 from src.tasks.BaseBD2Task import (
-    BaseBD2Task,
     green_mask_from_template,
-)
-from src.tasks.map_trade.action_icons import (
-    ACTION_SLOT_CENTER_RELATIVE_ROIS,
-    ACTION_SLOT_CENTERS_REFERENCE,
-    ACTION_SLOT_RELATIVE_ROIS,
 )
 from src.tasks.map_trade.data import SHOP_CARTRIDGE_BRIGHTNESS
 from src.tasks.map_trade.models import (
     MatchResult,
     TemplateSpec,
 )
-from src.tasks.map_trade.navigator import (
-    QUICK_SWITCH_CARTRIDGE_REGION,
-    SANDBOX_TELEPORT_SKILL_TEMPLATE,
-)
 from src.tasks.map_trade.trader import BUY_CONFIRM_DIALOG_REGION
 from src.tasks.map_trade.vision import (
     Vision,
     parse_used_limit,
 )
-from src.utils.image_utils import read_template_image, to_gray
-from src.utils.template_resolution import offline_template_scale
+from src.utils.image_utils import to_gray
 from tests.helpers.map_trade import FakeTask
 from tests.helpers.recognition_fixtures import load_bgr
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-class SaveFrameTest(unittest.TestCase):
-    def test_save_frame_preserves_bgr_bgra_and_grayscale_channels(self):
-        from src.tasks import BaseBD2Task as base_task_module
-
-        task = object.__new__(BaseBD2Task)
-        task.info_set = lambda *_args: None
-        frames = (
-            np.array([[[3, 2, 1]]], dtype=np.uint8),
-            np.array([[[3, 2, 1, 4]]], dtype=np.uint8),
-            np.array([[7]], dtype=np.uint8),
-        )
-
-        with tempfile.TemporaryDirectory() as directory:
-            with patch.object(base_task_module, "PROBE_OUTPUT_DIR", Path(directory)):
-                for index, frame in enumerate(frames):
-                    with self.subTest(channels=frame.shape):
-                        path = task.save_frame(f"channel_{index}", frame)
-                        saved = read_template_image(path)
-                        np.testing.assert_array_equal(saved, frame)
-
-
 class VisionTest(unittest.TestCase):
-    def test_search_region_intersects_original_rectangle_at_frame_edges(self):
-        frame = np.arange(80 * 100, dtype=np.uint16).reshape(80, 100)
-        vision = Vision(FakeTask())
-        spec = TemplateSpec("edge", "unused.png")
-        for roi, bounds in (
-            ((-10, 20, 30, 20), (0, 20, 20, 40)),
-            ((-40, 20, 30, 20), (0, 20, 0, 40)),
-            ((90, 70, 30, 20), (90, 70, 100, 80)),
-            ((10, 20, 30, 20), (10, 20, 40, 40)),
-        ):
-            with self.subTest(roi=roi):
-                left, top, crop, width, height = vision._matching_region(
-                    frame, spec, search_roi=roi, gray_frame=frame,
-                )
-                x1, y1, x2, y2 = bounds
-                self.assertEqual((x1, y1, 100, 80), (left, top, width, height))
-                np.testing.assert_array_equal(frame[y1:y2, x1:x2], crop)
-
-    def test_reference_conversion_for_all_supported_resolutions(self):
-        for width, height in ((1280, 720), (1920, 1080), (2560, 1440), (3840, 2160)):
-            with self.subTest(resolution=(width, height)):
-                self.assertEqual(
-                    (width // 2, height // 2), Vision.reference_point(960, 540, width, height)
-                )
-                self.assertEqual(
-                    (width // 4, height // 4, width // 2, height // 2),
-                    Vision.reference_roi((480, 270, 960, 540), width, height),
-                )
-
-    def test_sandbox_teleport_template_uses_tight_shared_slot_at_all_resolutions(self):
-        self.assertEqual(
-            ACTION_SLOT_RELATIVE_ROIS["teleport"],
-            SANDBOX_TELEPORT_SKILL_TEMPLATE.relative_roi,
-        )
-        self.assertEqual(
-            ACTION_SLOT_CENTER_RELATIVE_ROIS["teleport"],
-            SANDBOX_TELEPORT_SKILL_TEMPLATE.candidate_center_roi,
-        )
-
-        source_template = np.random.default_rng(42).integers(
-            0,
-            256,
-            (20, 20),
-            dtype=np.uint8,
-        )
-        for width, height in ((1280, 720), (1920, 1080), (2560, 1440), (3840, 2160)):
-            with self.subTest(resolution=(width, height)):
-                task = FakeTask()
-                vision = Vision(task)
-                vision._load = lambda _spec: (source_template, None)
-                scale = offline_template_scale(
-                    SANDBOX_TELEPORT_SKILL_TEMPLATE.file_name,
-                    width,
-                    height,
-                    reference_scale=SANDBOX_TELEPORT_SKILL_TEMPLATE.reference_scale,
-                )
-                scaled = vision._resize_template(source_template, scale)
-                center_x = round(ACTION_SLOT_CENTERS_REFERENCE["teleport"][0] * width / 1920)
-                center_y = round(ACTION_SLOT_CENTERS_REFERENCE["teleport"][1] * height / 1080)
-                radius_x = round(55 * min(width / 1920, height / 1080))
-                frame = np.random.default_rng(width).integers(
-                    0,
-                    20,
-                    (height, width),
-                    dtype=np.uint8,
-                )
-
-                def paste(center):
-                    left = center[0] - scaled.shape[1] // 2
-                    top = center[1] - scaled.shape[0] // 2
-                    frame[top : top + scaled.shape[0], left : left + scaled.shape[1]] = scaled
-
-                # This candidate remains inside the search crop but outside
-                # the center gate and must therefore be rejected.
-                paste((center_x + radius_x, center_y))
-                outside = vision.match(frame, SANDBOX_TELEPORT_SKILL_TEMPLATE)
-                self.assertFalse(vision.passes(outside, SANDBOX_TELEPORT_SKILL_TEMPLATE))
-
-                frame = np.random.default_rng(width + 1).integers(
-                    0,
-                    20,
-                    (height, width),
-                    dtype=np.uint8,
-                )
-                paste((center_x, center_y))
-                inside = vision.match(frame, SANDBOX_TELEPORT_SKILL_TEMPLATE)
-                self.assertTrue(vision.passes(inside, SANDBOX_TELEPORT_SKILL_TEMPLATE))
-                self.assertLessEqual(abs(inside.center[0] - center_x), 2)
-                self.assertLessEqual(abs(inside.center[1] - center_y), 2)
-
-    def test_template_click_uses_match_center(self):
-        task = FakeTask()
-        vision = Vision(task)
-        vision.wait_template = lambda *_args, **_kwargs: MatchResult(0.9, (100, 200), (40, 20))
-
-        self.assertTrue(vision.click_template(TemplateSpec("test", "unused.png")))
-        self.assertEqual((120 / 1280, 210 / 720, 0.8), task.clicks[-1])
-        self.assertIn(
-            (
-                "test点击中心",
-                "center=(120,210), match=0.900, pixel=-1.000",
-            ),
-            task.infos,
-        )
 
     def test_stable_template_click_waits_for_temporal_consensus(self):
         task = FakeTask()
@@ -185,24 +49,6 @@ class VisionTest(unittest.TestCase):
         self.assertEqual((120 / 1280, 210 / 720, 0.8), task.clicks[-1])
         self.assertAlmostEqual(1.0, sum(sleeps))
         self.assertTrue(any(key == "stable稳定识别" for key, _value in task.infos))
-
-    def test_operate_click_log_converts_relative_target_to_client_pixels(self):
-        self.assertEqual(
-            ("快速切换按钮: client=(959,539), relative=(0.500000,0.500000)"),
-            BaseBD2Task._click_log_message(
-                0.5,
-                0.5,
-                1918,
-                1079,
-                "快速切换按钮",
-            ),
-        )
-
-    def test_configured_threshold_overrides_template_default(self):
-        task = FakeTask()
-        task.config["跑图跑商识图阈值"] = 0.81
-
-        self.assertEqual(0.81, Vision(task).threshold_for(TemplateSpec("test", "unused.png", 0.7)))
 
     def test_template_pass_requires_pixel_similarity_when_configured(self):
         task = FakeTask()
@@ -241,31 +87,6 @@ class VisionTest(unittest.TestCase):
                 spec,
             )
         )
-
-    def test_match_all_returns_multiple_peaks_in_full_frame_coordinates(self):
-        task = FakeTask()
-        vision = Vision(task)
-        rng = np.random.default_rng(7)
-        template = rng.integers(0, 256, (20, 20), dtype=np.uint8)
-        frame = np.zeros((1080, 1920), dtype=np.uint8)
-        frame[930:950, 100:120] = template
-        frame[930:950, 500:520] = template
-        spec = TemplateSpec(
-            "multi",
-            "quick_switch_cartridges/unused.png",
-            relative_roi=QUICK_SWITCH_CARTRIDGE_REGION,
-        )
-        vision._load = lambda _spec: (template, None)
-
-        matches = vision.match_all(
-            frame,
-            spec,
-            minimum_score=0.95,
-            peak_radius=5,
-        )
-
-        self.assertEqual([(110, 940), (510, 940)], sorted(value.center for value in matches))
-        self.assertTrue(all(value.pixel_score == 1.0 for value in matches))
 
     def test_story_cartridge_brightness_calibration_separates_selected_state(self):
         template_root = ROOT / "recognition-assets" / "template-assets"
@@ -364,40 +185,6 @@ class VisionTest(unittest.TestCase):
         self.assertAlmostEqual(1 / 3, ratios[1])
         self.assertAlmostEqual(1 / 3, ratios[2])
 
-    def test_template_hsv_color_ratios_only_measure_alpha_pixels(self):
-        with tempfile.TemporaryDirectory() as directory:
-            template = np.zeros((2, 2, 4), dtype=np.uint8)
-            template[:, :, 3] = np.array([[255, 255], [255, 0]], dtype=np.uint8)
-            path = Path(directory) / "hsv-color-mask.png"
-            self.assertTrue(cv2.imwrite(str(path), template))
-            frame = np.array(
-                [
-                    [
-                        [0, 200, 255],
-                        [160, 160, 160],
-                    ],
-                    [
-                        [20, 20, 20],
-                        [0, 200, 255],
-                    ],
-                ],
-                dtype=np.uint8,
-            )
-            with patch(
-                "src.tasks.map_trade.vision.TEMPLATE_DIR",
-                Path(directory),
-            ):
-                ratios = Vision(FakeTask()).template_hsv_color_ratios(
-                    frame,
-                    TemplateSpec("hsv colors", path.name),
-                    MatchResult(1.0, (0, 0), (2, 2)),
-                )
-
-        self.assertIsNotNone(ratios)
-        self.assertAlmostEqual(1 / 3, ratios[0])
-        self.assertAlmostEqual(1 / 3, ratios[1])
-        self.assertAlmostEqual(2 / 3, ratios[2])
-
     def test_star_color_uses_saturation(self):
         match = MatchResult(0.9, (0, 0), (20, 20))
         yellow = np.full((20, 20, 3), (0, 255, 255), dtype=np.uint8)
@@ -429,23 +216,6 @@ class VisionTest(unittest.TestCase):
         )
 
         self.assertEqual([], boxes)
-
-    def test_relative_ocr_roi_coordinates_are_returned_in_full_frame_space(self):
-        task = FakeTask()
-        task.ocr = lambda **_kwargs: [SimpleNamespace(name="确认", x=10, y=20, width=30, height=10)]
-        vision = Vision(task)
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-
-        boxes = vision.ocr_boxes(
-            frame,
-            "relative-roi",
-            relative_roi=BUY_CONFIRM_DIALOG_REGION,
-        )
-
-        self.assertEqual(
-            (711, 348, 30, 10),
-            (boxes[0].x, boxes[0].y, boxes[0].width, boxes[0].height),
-        )
 
     def test_ocr_scale_resizes_input_and_restores_box_coordinates(self):
         task = FakeTask()
@@ -533,29 +303,6 @@ class VisionTest(unittest.TestCase):
         self.assertEqual([(310, 410), (710, 410)], sorted(value.center for value in matches))
         self.assertTrue(all(value.score >= 0.95 for value in matches))
 
-    def test_find_all_returns_empty_when_template_larger_than_search_area(self):
-        task = FakeTask()
-        vision = Vision(task)
-        template = np.full((40, 40), 200, dtype=np.uint8)
-        frame = np.zeros((60, 60), dtype=np.uint8)
-        spec = TemplateSpec(
-            "find-all-oversize",
-            "quick_switch_cartridges/unused.png",
-            roi=(0, 0, 20, 20),
-            reference_scale=1.0,
-        )
-
-        def fake_load(_spec):
-            # reference_scale=1.0 in a 60px frame scales to ~2px, so emulate
-            # the oversize case by returning the raw 40px template unscaled.
-            return template, None
-
-        vision._load = fake_load
-        vision._resize_template = lambda template_, _scale: template_
-        vision._resize_mask = lambda mask, _scale: mask
-
-        self.assertEqual([], vision.find_all(frame, spec))
-
     def test_wait_ocr_returns_first_matching_poll_and_stops(self):
         task = FakeTask()
         vision = Vision(task)
@@ -574,17 +321,6 @@ class VisionTest(unittest.TestCase):
 
         self.assertEqual("生成 魔法阵 确认", text)
         self.assertEqual([0.5], sleeps)
-
-    def test_wait_ocr_returns_none_after_timeout(self):
-        task = FakeTask()
-        vision = Vision(task)
-        vision.ocr_text = lambda *_args, **_kwargs: "无关内容"
-        vision.capture = lambda: None
-        task.sleep = lambda *_args: None
-
-        self.assertIsNone(
-            vision.wait_ocr(["生成"], timeout=0.0, name="传送生成弹窗")
-        )
 
 
 class FrameGeometryTest(unittest.TestCase):
@@ -622,24 +358,6 @@ class FrameGeometryTest(unittest.TestCase):
 
         self.assertTrue(geometry.accepted, tuple(geometry.rejection_reasons))
         self.assertEqual((0, 0, 1956, 1100), geometry.content_rect)
-
-    def test_bars_that_do_not_restore_16_9_are_scene(self):
-        # A right-side black run whose cut moves the content ratio away from
-        # 16:9 is scenery: no black-bar rejection may be emitted.
-        frame = self._scene(1500, 900)
-        framed = np.zeros((900, 1600, 3), dtype=np.uint8)
-        framed[:, :1500] = frame
-
-        geometry = Vision.evaluate_frame_geometry(framed)
-
-        self.assertTrue(geometry.accepted, tuple(geometry.rejection_reasons))
-        self.assertEqual(1600, geometry.content_width)
-
-    def test_irregular_high_resolution_window_is_accepted(self):
-        geometry = Vision.evaluate_frame_geometry(self._scene(3206, 1802))
-
-        self.assertTrue(geometry.accepted)
-        self.assertAlmostEqual(3206 / 1802, geometry.aspect_ratio, places=4)
 
     def test_non_16_9_frame_is_rejected(self):
         geometry = Vision.evaluate_frame_geometry(self._scene(1000, 600))

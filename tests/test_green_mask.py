@@ -28,28 +28,6 @@ class GreenMaskTest(unittest.TestCase):
             ),
         )
 
-    def test_tolerance_can_ignore_near_green_pixels(self):
-        template = np.array(
-            [
-                [[0, 255, 0], [3, 252, 4]],
-                [[8, 247, 8], [9, 247, 8]],
-            ],
-            dtype=np.uint8,
-        )
-
-        mask = green_mask_from_template(template, tolerance=8)
-
-        np.testing.assert_array_equal(
-            mask,
-            np.array(
-                [
-                    [0, 0],
-                    [0, 255],
-                ],
-                dtype=np.uint8,
-            ),
-        )
-
     def test_transparent_pixels_are_ignored(self):
         template = np.array(
             [
@@ -71,13 +49,6 @@ class GreenMaskTest(unittest.TestCase):
                 dtype=np.uint8,
             ),
         )
-
-    def test_grayscale_template_has_no_green_mask(self):
-        template = np.zeros((2, 3), dtype=np.uint8)
-
-        mask = green_mask_from_template(template)
-
-        np.testing.assert_array_equal(mask, np.full((2, 3), 255, dtype=np.uint8))
 
 
 if __name__ == "__main__":

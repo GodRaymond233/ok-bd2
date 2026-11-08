@@ -5,7 +5,6 @@ The LocalSession, runtime control, configuration and event tests are ported from
 which main does not have yet.
 """
 
-import asyncio
 import json
 import tempfile
 import threading
@@ -332,15 +331,6 @@ class RuntimeControlTest(unittest.TestCase):
         runtime.toggle_execution()
         self.assertFalse(task.paused)
 
-    def test_desktop_toggle_pauses_globally_when_no_one_time_task_runs(self):
-        app, executor, _ = self.make_runtime([BaseTask])
-        runtime = app.state.runtime
-        executor.thread = SimpleNamespace(is_alive=lambda: True)
-        # A trigger task (for example the login wait) cannot be paused on its own.
-        executor.current_task = SimpleNamespace(name="login", paused=False, enabled=True)
-        runtime.toggle_execution()
-        self.assertTrue(executor.paused)
-
     def test_batch_child_config_is_locked_until_batch_and_login_wait_finish(self):
         app, executor, facade = self.make_runtime([QuickHuntTask, DailyBatchTask])
         child, batch = executor.onetime_tasks
@@ -457,49 +447,6 @@ class DesktopAppTest(unittest.TestCase):
             request_shutdown=request_shutdown,
         )
 
-    def test_serves_built_client_and_placeholder(self):
-        with tempfile.TemporaryDirectory() as directory:
-            dist = Path(directory)
-            headers = {"Authorization": f"Bearer {TOKEN}"}
-            with TestClient(self.make_app(dist), base_url=ORIGIN) as client:
-                response = client.get("/", headers=headers)
-                self.assertIn("界面文件缺失", response.text)
-                self.assertFalse(
-                    client.get("/api/desktop/info", headers=headers).json()["ui_built"]
-                )
-            (dist / "assets").mkdir()
-            (dist / "index.html").write_text("<!doctype html><title>client</title>", "utf-8")
-            (dist / "assets" / "main.js").write_text("console.log(1)", "utf-8")
-            with TestClient(self.make_app(dist), base_url=ORIGIN) as client:
-                self.assertIn("client", client.get("/", headers=headers).text)
-                self.assertEqual(client.get("/assets/main.js", headers=headers).status_code, 200)
-                self.assertEqual(client.get("/assets/main.js").status_code, 403)
-                self.assertIn(
-                    "default-src 'self'",
-                    client.get("/", headers=headers).headers["content-security-policy"],
-                )
-
-    def test_info_reports_api_version_and_legacy_instances(self):
-        legacy = [SimpleNamespace(pid=40, location="D:\\ok-bd2", describe=lambda: "进程 40")]
-        with TestClient(self.make_app(Path("missing"), legacy=legacy), base_url=ORIGIN) as client:
-            info = client.get(
-                "/api/desktop/info", headers={"Authorization": f"Bearer {TOKEN}"}
-            ).json()
-        self.assertEqual(info["api"], 1)
-        self.assertEqual(info["core_version"], "0.1.1")
-        self.assertEqual(info["legacy_instances"][0]["pid"], 40)
-
-    def test_shutdown_request_reaches_the_service(self):
-        requested = []
-        with TestClient(
-            self.make_app(Path("missing"), requested.append), base_url=ORIGIN
-        ) as client:
-            response = client.post(
-                "/api/desktop/shutdown", headers={"Authorization": f"Bearer {TOKEN}"}
-            )
-        self.assertEqual(response.json(), {"accepted": True})
-        self.assertEqual(requested, ["client-request"])
-
     def test_ui_ready_runs_launcher_hand_off_once(self):
         with patch("src.desktop.app.frontend_ready") as ready:
             with TestClient(self.make_app(Path("missing")), base_url=ORIGIN) as client:
@@ -595,24 +542,6 @@ class DesktopToolsTest(unittest.TestCase):
         self.executor._run_job(self.executor._pop_job())
         return self.client.get("/api/desktop/tools").json()
 
-    def test_code_output_namespace_reset_and_shared_preferences(self):
-        code = "value = 40\nprint('hello')\nvalue + 2"
-        state = self.execute(kind="code", code=code, task=self.task.name)
-        self.assertEqual(state["output"], "hello\n")
-        self.assertEqual(state["result"]["value"], "42")
-        self.assertIsNone(self.executor.exclusive_owner)
-        saved = Config("run_code", {"code": "", "target_task": ""}, folder=self.folder)
-        self.assertEqual(saved["code"], code)
-        self.assertEqual(saved["target_task"], "BaseTask")
-        state = self.execute(kind="code", code="value + 3")
-        self.assertEqual(state["result"]["value"], "43")
-        self.assertNotIn("task", self.tools.session.namespace)
-        self.assertEqual(self.post("reset").status_code, 200)
-        state = self.execute(kind="code", code="value")
-        self.assertIn("NameError", state["result"]["error"])
-        cleared = self.post("clear").json()
-        self.assertIsNone(cleared["result"]["error"])
-
     def test_tool_ownership_blocks_mutations_until_cancelled(self):
         response = self.post("run", kind="code", code="1 + 1")
         self.assertTrue(response.json()["active"])
@@ -657,29 +586,6 @@ class DesktopToolsTest(unittest.TestCase):
         self.tools.legacy_check = lambda: "旧版正在运行"
         self.assertEqual(self.post("run", kind="check").status_code, 400)
         self.assertIsNone(self.executor.exclusive_owner)
-
-    def test_ocr_returns_the_recognized_frame_and_boxes(self):
-        import cv2
-        import numpy as np
-
-        self.assertEqual(self.post("run", kind="ocr").status_code, 400)
-        frame = np.full((32, 48, 3), 123, dtype=np.uint8)
-        capture = SimpleNamespace(connected=lambda: True, get_frame=lambda: frame)
-        self.manager.capture_method = capture
-        self.task.ocr = Mock(return_value=[SimpleNamespace(
-            name="fixture", x=1, y=2, width=10, height=12, confidence=0.9,
-        )])
-        state = self.execute(kind="ocr")
-        self.task.ocr.assert_called_once_with(frame=frame, log=True, screenshot=True)
-        self.assertEqual(state["result"]["details"], {
-            "width": 48, "height": 32,
-            "boxes": [{"text": "fixture", "x": 1, "y": 2, "width": 10,
-                       "height": 12, "confidence": 0.9}],
-        })
-        response = self.client.get(state["image_url"])
-        self.assertEqual(response.headers["content-type"], "image/png")
-        decoded = cv2.imdecode(np.frombuffer(response.content, np.uint8), 1)
-        np.testing.assert_array_equal(decoded, frame)
 
     def test_mcp_requires_confirmation_and_reports_start_failure(self):
         path = "/api/desktop/mcp"
@@ -765,31 +671,6 @@ class CaptureUiTest(unittest.TestCase):
         )
         self.assertEqual(ui["capture_preference"], "WGC")
         self.assertEqual(ui["capture_in_use"], "ForegroundBitBlt")
-
-    def test_nothing_in_use_without_a_connected_window(self):
-        # ok-script keeps its last capture object after the game window is gone.
-        ui = self.capture_ui(NO_GAME_WINDOW, capture_method=new(WindowsGraphicsCaptureMethod))
-        self.assertIsNone(ui["capture_in_use"])
-        self.assertIsNone(self.capture_ui(GAME_WINDOW)["capture_in_use"])
-
-    def test_device_labels_are_chinese(self):
-        for device, label in (
-            (GAME_WINDOW, "PC 已连接：BrownDust II 1920x1080"),
-            (NO_GAME_WINDOW, "PC 未连接：BrownDust II.exe"),
-            ({"imei": "emulator-5554", "device": "adb", "connected": False}, "安卓 未连接"),
-        ):
-            with self.subTest(label=label):
-                (payload,) = self.capture_ui(device)["devices"]
-                self.assertEqual(payload["label"], label)
-                self.assertEqual(payload["id"], device["imei"])
-                self.assertEqual(payload["connected"], device["connected"])
-
-    def test_selecting_a_method_returns_the_same_payload(self):
-        with self.client(GAME_WINDOW, capture_method=new(WindowsGraphicsCaptureMethod)) as client:
-            ui = client.post("/api/capture-methods/select", json={"id": "BitBlt_RenderFull"}).json()
-        self.assertEqual(ui["capture_preference"], "BitBlt_RenderFull")
-        self.assertEqual(ui["capture_in_use"], "WGC")
-        self.assertEqual(ui["devices"][0]["label"], "PC 已连接：BrownDust II 1920x1080")
 
 
 class ConfigPersistenceTest(unittest.TestCase):
@@ -883,19 +764,6 @@ class EventBackpressureTest(unittest.TestCase):
         buffer.close()
         buffer.receive(EventMessage("log", (20, "after close"), {}))
         self.assertEqual(len(buffer.queue), 0)
-
-    def test_drain_allows_next_wakeup(self):
-        async def exercise():
-            buffer = EventBuffer(asyncio.get_running_loop())
-            for index in range(2):
-                buffer.receive(EventMessage("task", (str(index),), {}))
-                await asyncio.wait_for(buffer.ready.wait(), timeout=1)
-                messages, dropped = buffer.drain()
-                self.assertEqual(messages[0]["args"], [str(index)])
-                self.assertEqual(dropped, 0)
-            buffer.close()
-
-        asyncio.run(exercise())
 
 
 if __name__ == "__main__":

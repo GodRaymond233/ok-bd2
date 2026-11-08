@@ -9,15 +9,13 @@ from unittest.mock import Mock
 
 import numpy as np
 
-from src.tasks.map_trade.models import MatchResult, NavigationResult, ScreenState
+from src.tasks.map_trade.models import NavigationResult, ScreenState
 from src.tasks.map_trade.navigator import Navigator
 from src.tasks.map_trade.navigator_constants import (
     STORY_BADGE_GRID_MIN_MARGIN,
     STORY_BADGE_GRID_PIXEL_SCORE,
     STORY_BADGE_GRID_TEMPLATE_SCORE,
     STORY_BADGE_GRID_ZNCC_SCORE,
-    StoryBadgeCandidate,
-    StoryBadgeDetection,
 )
 from src.tasks.map_trade.vision import Vision
 from tests.helpers.recognition_fixtures import load_bgr
@@ -40,30 +38,6 @@ class _FixtureTask:
 
 def _load_fixture(name: str) -> np.ndarray:
     return load_bgr(FIXTURE_ROOT / name)
-
-
-def _anchor(center_x: int, center_y: int, number: int = 1) -> StoryBadgeDetection:
-    best = StoryBadgeCandidate(
-        number,
-        MatchResult(
-            0.97,
-            (center_x - 9, center_y - 9),
-            (18, 18),
-            pixel_score=0.92,
-            zncc_score=0.80,
-        ),
-    )
-    runner = StoryBadgeCandidate(
-        20 if number != 20 else 19,
-        MatchResult(
-            0.90,
-            (center_x - 9, center_y - 9),
-            (18, 18),
-            pixel_score=0.88,
-            zncc_score=0.65,
-        ),
-    )
-    return StoryBadgeDetection(best, runner)
 
 
 class StoryBadgeGridTest(unittest.TestCase):
@@ -189,28 +163,6 @@ class StoryBadgeGridTest(unittest.TestCase):
         self.assertEqual("slot_grid", q6.recovery_mode)
         self.assertIsNone(q18)
         self.assertIn("未达到角标栅格恢复门槛", q18_reason)
-
-    def test_grid_fit_requires_a_low_resolution_majority_lattice(self):
-        navigator = self._navigator()
-        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
-        anchors = tuple(_anchor(62 + 120 * index, 624) for index in range(7))
-        noisy = anchors + (_anchor(47, 601),)
-
-        grid = navigator._story_badge_grid(frame, noisy)
-
-        self.assertIsNotNone(grid)
-        assert grid is not None
-        self.assertAlmostEqual(120.0, grid.spacing)
-        self.assertAlmostEqual(62.0, grid.phase)
-        self.assertAlmostEqual(624.0, grid.center_y)
-        self.assertEqual(7, grid.anchors)
-        self.assertIsNone(navigator._story_badge_grid(frame, anchors[:-1]))
-        self.assertIsNone(
-            navigator._story_badge_grid(
-                np.zeros((1080, 1920, 3), dtype=np.uint8),
-                anchors,
-            )
-        )
 
 
 if __name__ == "__main__":

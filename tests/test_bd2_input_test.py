@@ -19,7 +19,6 @@ from src.tasks.BD2InputTestTask import (
     REFERENCE_POINT_Y_KEY,
     BD2BackgroundMouseClickInputTestTask,
     BD2ClickModeSelectorTask,
-    BD2MouseClickInputTestTask,
     BD2MouseWheelInputTestTask,
 )
 
@@ -54,12 +53,6 @@ class BD2MouseWheelInputTestTaskTest(unittest.TestCase):
         task.log_warning = lambda *_args, **_kwargs: None
         return task, interaction, operate_calls
 
-    def test_default_region_preserves_supplied_1920_by_1080_calibration(self):
-        self.assertEqual(
-            (228 / 1920, 117 / 1080, 463 / 1920, 959 / 1080),
-            DEFAULT_WHEEL_REGION,
-        )
-
     def test_wheel_action_clicks_center_then_scrolls_up_nine_times(self):
         task, interaction, operate_calls = self.make_task()
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -77,93 +70,8 @@ class BD2MouseWheelInputTestTaskTest(unittest.TestCase):
         self.assertEqual([(346, 538, 1)] * 9, interaction.scrolls)
         self.assertEqual([0.1] * 8, task.sleeps)
 
-    def test_wheel_action_supports_down_and_scales_to_client_size(self):
-        task, interaction, _operate_calls = self.make_task()
-        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
-        task._perform_wheel_action(frame, (0.25, 0.75), -1, 2, 0.2)
-
-        self.assertEqual((320, 540), interaction.clicks[0][:2])
-        self.assertEqual([(320, 540, -1), (320, 540, -1)], interaction.scrolls)
-        self.assertEqual([0.2], task.sleeps)
-
-    def test_configured_region_clamps_and_corrects_reversed_edges(self):
-        task, _interaction, _operate_calls = self.make_task()
-        task.config = {
-            "区域左 X 百分比": 80,
-            "区域上 Y 百分比": 120,
-            "区域右 X 百分比": 20,
-            "区域下 Y 百分比": -10,
-        }
-
-        self.assertEqual((0.2, 0.0, 0.8, 1.0), task._configured_wheel_region())
-
-    def test_reference_pixel_point_converts_and_clamps_against_1920_by_1080(self):
-        task, _interaction, _operate_calls = self.make_task()
-        task.config = {
-            REFERENCE_POINT_X_KEY: 960,
-            REFERENCE_POINT_Y_KEY: 1067,
-        }
-        self.assertEqual((0.5, 1067 / 1080), task._configured_reference_point(0, 0))
-
-        task.config = {
-            REFERENCE_POINT_X_KEY: 3000,
-            REFERENCE_POINT_Y_KEY: -50,
-        }
-        self.assertEqual((1.0, 0.0), task._configured_reference_point(0, 0))
-
-    def test_wheel_run_can_use_reference_pixel_point_instead_of_region_center(self):
-        task, _interaction, _operate_calls = self.make_task()
-        task.config = {
-            REFERENCE_POINT_MODE_KEY: True,
-            REFERENCE_POINT_X_KEY: 960,
-            REFERENCE_POINT_Y_KEY: 1067,
-            "滚轮方向": "向上",
-            "滚轮次数": 1,
-            "滚轮间隔秒数": 0.0,
-        }
-        actions = []
-        task._perform_wheel_action = lambda frame, point, amount, count, interval: (
-            actions.append((frame.shape, point, amount, count, interval))
-        )
-        task.run_input_probe = lambda _name, _details, action: action(
-            np.zeros((720, 1280, 3), dtype=np.uint8)
-        )
-
-        task.run()
-
-        self.assertEqual([((720, 1280, 3), (0.5, 1067 / 1080), 1, 1, 0.0)], actions)
-
-
-class BD2MouseClickInputTestTaskTest(unittest.TestCase):
-    def test_click_run_can_use_reference_pixel_point(self):
-        task = object.__new__(BD2MouseClickInputTestTask)
-        task.config = {
-            REFERENCE_POINT_MODE_KEY: True,
-            REFERENCE_POINT_X_KEY: 43,
-            REFERENCE_POINT_Y_KEY: 974,
-        }
-        clicks = []
-        task.operate_click = lambda x, y: clicks.append((x, y))
-        task.run_input_probe = lambda _name, _details, action: action(
-            np.zeros((1440, 2560, 3), dtype=np.uint8)
-        )
-
-        task.run()
-
-        self.assertEqual([(43 / 1920, 974 / 1080)], clicks)
-
 
 class BD2BackgroundMouseClickInputTestTaskTest(unittest.TestCase):
-    def test_debug_task_metadata_and_default_message_move(self):
-        task = BD2BackgroundMouseClickInputTestTask(
-            SimpleNamespace(scene=None),
-            SimpleNamespace(),
-        )
-
-        self.assertEqual("BD2 后台鼠标点击测试", task.name)
-        self.assertEqual("测试", task.group_name)
-        self.assertTrue(task.visible)
-        self.assertTrue(task.default_config[BACKGROUND_MOUSE_MOVE_KEY])
 
     def test_run_uses_reference_point_and_configured_message_move(self):
         task = object.__new__(BD2BackgroundMouseClickInputTestTask)

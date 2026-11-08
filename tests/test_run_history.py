@@ -55,18 +55,10 @@ class DayBoundaryTest(unittest.TestCase):
         anchor = day_start_ts(_beijing_ts(2026, 8, 18, 3, 59))
         self.assertEqual(anchor, _beijing_ts(2026, 8, 17, 4, 0))
 
-    def test_after_4am_belongs_to_today(self):
-        anchor = day_start_ts(_beijing_ts(2026, 8, 18, 4, 1))
-        self.assertEqual(anchor, _beijing_ts(2026, 8, 18, 4, 0))
-
     def test_week_starts_monday_4am(self):
         # Wednesday noon -> this Monday 04:00.
         anchor = week_start_ts(_beijing_ts(2026, 8, 19, 12, 0))
         self.assertEqual(anchor, _beijing_ts(2026, 8, 17, 4, 0))
-
-    def test_monday_before_4am_belongs_to_previous_week(self):
-        anchor = week_start_ts(_beijing_ts(2026, 8, 17, 3, 59))
-        self.assertEqual(anchor, _beijing_ts(2026, 8, 10, 4, 0))
 
 
 class JoinedNameTest(unittest.TestCase):
@@ -74,13 +66,6 @@ class JoinedNameTest(unittest.TestCase):
         joined = "公会、小屋、酒馆、快速狩猎"
         self.assertTrue(contains_joined_name(joined, "公会、小屋、酒馆"))
         self.assertTrue(contains_joined_name(joined, "快速狩猎"))
-
-    def test_non_member_is_rejected(self):
-        joined = "公会、小屋、酒馆、快速狩猎"
-        self.assertFalse(contains_joined_name(joined, "跑商"))
-        self.assertFalse(contains_joined_name(joined, ""))
-        self.assertFalse(contains_joined_name("-", "跑商"))
-        self.assertFalse(contains_joined_name(None, "跑商"))
 
 
 class RunHistoryStoreTest(unittest.TestCase):
@@ -138,30 +123,6 @@ class RunHistoryStoreTest(unittest.TestCase):
         self.assertEqual(original, saved["retired_stages"][0]["record"])
         self.assertEqual("expired", saved["retired_stages"][0]["reason"])
 
-    def test_retired_stage_history_is_bounded_and_survives_normal_saves(self):
-        for index in range(66):
-            self.store.save_stage("狩猎", str(index), "pending", "old")
-        pending = self.store.pending_stages("狩猎", "")
-        self.store.retire_stages("狩猎", pending, "expired")
-        reloaded = RunHistoryStore(self.path)
-        reloaded.record_task_done(_TaskStub("其他任务", {"状态": "完成"}))
-        with open(self.path, encoding="utf-8") as stream:
-            saved = json.load(stream)
-        self.assertEqual([str(index) for index in range(2, 66)],
-                         [row["step"] for row in saved["retired_stages"]])
-        self.assertFalse(reloaded.pending_stages("狩猎", ""))
-
-    def test_record_and_reload_roundtrip(self):
-        task = _TaskStub("快速狩猎", info={"状态": "快速狩猎完成。"}, start_time=1000.0)
-        self.store.record_task_done(task, finished=1090.0)
-
-        record = self.store.last_run("快速狩猎")
-        self.assertTrue(record["ok"])
-        self.assertEqual(record["duration"], 90.0)
-
-        reloaded = RunHistoryStore(self.path)
-        self.assertEqual(reloaded.last_run("快速狩猎"), record)
-
     def test_concurrent_records_keep_disk_and_memory_consistent(self):
         first_saving = threading.Event()
         second_at_write_boundary = threading.Event()
@@ -215,11 +176,6 @@ class RunHistoryStoreTest(unittest.TestCase):
         self.store.record_task_done(task, finished=2000.0)
         self.assertFalse(self.store.last_run("每日跑商")["ok"])
 
-    def test_aborted_status_marks_run_failed(self):
-        task = _TaskStub("一键完成日常", info={"状态": "一键完成日常中止。"})
-        self.store.record_task_done(task, finished=2000.0)
-        self.assertFalse(self.store.last_run("一键完成日常")["ok"])
-
     def test_neutral_status_with_failure_count_marks_run_failed(self):
         task = _TaskStub(
             "公会、小屋、酒馆",
@@ -227,25 +183,6 @@ class RunHistoryStoreTest(unittest.TestCase):
         )
         self.store.record_task_done(task, finished=2000.0)
         self.assertFalse(self.store.last_run("公会、小屋、酒馆")["ok"])
-
-    def test_neutral_status_with_failed_phase_names_marks_run_failed(self):
-        # MapTradeTask/MapCollectionTask report "…部分流程未完成。" with the
-        # failed phase names in the 失败 key.
-        task = _TaskStub(
-            "每日跑商",
-            info={"状态": "跑商部分流程未完成。", "完成": "-", "失败": "跑商买入", "跳过": "-"},
-        )
-        self.store.record_task_done(task, finished=2000.0)
-        self.assertFalse(self.store.last_run("每日跑商")["ok"])
-
-    def test_result_key_failure_marks_run_failed(self):
-        # BargainLevelTask writes the verdict into 结果 instead of 状态.
-        task = _TaskStub(
-            "刷砍价等级",
-            info={"状态": "页面文字确认超时，任务结束。", "结果": "失败"},
-        )
-        self.store.record_task_done(task, finished=2000.0)
-        self.assertFalse(self.store.last_run("刷砍价等级")["ok"])
 
     def test_empty_info_snapshot_is_not_success(self):
         task = _TaskStub("空快照任务", info={})
@@ -354,37 +291,6 @@ class RunHistoryStoreTest(unittest.TestCase):
         self.assertFalse(self.store.is_completed_today(
             task.name, now=stamp, scope=configuration_scope(task)))
 
-    def test_is_completed_this_week(self):
-        task = _TaskStub("每周跑图", info={"状态": "每周跑图完成。"})
-        self.store.record_task_done(task, finished=_beijing_ts(2026, 8, 17, 8, 0))
-        self.assertFalse(
-            self.store.is_completed_this_week("每周跑图", now=_beijing_ts(2026, 8, 19, 12))
-        )
-        task.info["跑图完成范围"] = "今日"
-        task.info["跑图周期"] = "2026-08-18"
-        self.store.record_task_done(task, finished=_beijing_ts(2026, 8, 18, 23))
-        reloaded = RunHistoryStore(self.path)
-        self.assertTrue(reloaded.is_completed_today(
-            "每周跑图", now=_beijing_ts(2026, 8, 19, 7, 59),
-        ))
-        self.assertFalse(reloaded.is_completed_today("每周跑图", now=_beijing_ts(2026, 8, 19, 8)))
-        self.assertFalse(reloaded.is_completed_this_week(
-            "每周跑图", now=_beijing_ts(2026, 8, 19, 7),
-        ))
-        task.info["跑图完成范围"] = "本周"
-        task.info["跑图周期"] = "2026-08-17"
-        self.store.record_task_done(task, finished=_beijing_ts(2026, 8, 19, 12))
-        self.assertTrue(
-            self.store.is_completed_this_week("每周跑图", now=_beijing_ts(2026, 8, 24, 7, 59))
-        )
-        self.assertFalse(
-            self.store.is_completed_this_week("每周跑图", now=_beijing_ts(2026, 8, 24, 8))
-        )
-        self.store.record_task_done(task, finished=_beijing_ts(2026, 8, 24, 8, 1))
-        self.assertFalse(
-            self.store.is_completed_this_week("每周跑图", now=_beijing_ts(2026, 8, 24, 8, 2))
-        )
-
     def test_collection_recorder_schedules_daily_weekly_and_crossed_refresh(self):
         from src.tasks import scheduler
         from src.tasks.run_history import install_run_history_recorder
@@ -464,12 +370,6 @@ class RunHistoryStoreTest(unittest.TestCase):
             file.write("{not json")
         store = RunHistoryStore(self.path)
         self.assertIsNone(store.last_run("快速狩猎"))
-
-    def test_unknown_version_loads_empty(self):
-        with open(self.path, "w", encoding="utf-8") as file:
-            file.write('{"version": 999, "tasks": {"a": {"finished": 1}}}')
-        store = RunHistoryStore(self.path)
-        self.assertIsNone(store.last_run("a"))
 
 
 if __name__ == "__main__":

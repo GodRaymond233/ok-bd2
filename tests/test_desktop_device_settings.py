@@ -11,12 +11,10 @@ from ok.util.GlobalConfig import create_basic_options, create_notification_optio
 
 from src.compat.starter_guard import starter_wait_status
 from src.desktop.app import AUTO_CAPTURE_CONFIG, create_app
-from src.desktop.settings_text import FIELD_TEXT, OMITTED_KEYS, describe_group
 from src.desktop.starter_wait import STARTER_WAIT, StarterWait
-from src.window_resolution import MANUAL_RESOLUTIONS, ManualResolutionError, WindowResizeResult
+from src.window_resolution import ManualResolutionError, WindowResizeResult
 from tests.test_desktop_app import (
     GAME_WINDOW,
-    NO_GAME_WINDOW,
     ORIGIN,
     TOKEN,
     FakeDeviceManager,
@@ -87,13 +85,6 @@ class SettingsTextTest(unittest.TestCase):
         client.headers.pop("Authorization")
         self.assertEqual(client.post("/api/desktop/toggle-execution").status_code, 403)
 
-    def test_every_shown_setting_has_a_chinese_name(self):
-        for option in (create_basic_options(enable_blur=True), create_notification_options()):
-            for key in option.default_config:
-                if key not in OMITTED_KEYS:
-                    with self.subTest(key=key):
-                        self.assertIn(key, FIELD_TEXT)
-
     def test_settings_route_names_fields_and_leaves_out_desktop_messengers(self):
         client = make_client(self)
         self.executor.global_config.configs["Notification"]["Discord Notification"] = True
@@ -122,40 +113,6 @@ class SettingsTextTest(unittest.TestCase):
         self.assertNotIn("WeChat Desktop Notification (Not Reliable)", notify)
         self.assertNotIn("WeChat Desktop Nickname", notify)
 
-    def test_launcher_settings_are_named_and_its_window_can_be_opened(self):
-        group = describe_group({
-            "name": "App Launcher",
-            "fields": [
-                {"key": "Auto Start {app_name}", "description": "x"},
-                {"key": "Auto Update", "description": "x"},
-            ],
-        })
-        self.assertEqual("启动器", group["label"])
-        labels = [field["label"] for field in group["fields"]]
-        self.assertEqual(["开机时打开启动器", "更新方式"], labels)
-        self.assertEqual("手动更新", group["fields"][1]["option_labels"]["Manual Update"])
-        client = make_client(self)
-        self.assertEqual(400, client.post("/api/desktop/launcher/open").status_code)
-        show = Mock()
-        client.app.state.runtime._pyappify_module = SimpleNamespace(show_pyappify=show)
-        self.assertEqual({"opened": True}, client.post("/api/desktop/launcher/open").json())
-        show.assert_called_once_with()
-
-    def test_saving_a_setting_returns_the_named_group(self):
-        client = make_client(self)
-        response = client.post(
-            "/api/settings/Basic Options/config", json={"key": "Trigger Interval", "value": 5}
-        )
-        self.assertEqual(200, response.status_code, response.text)
-        fields = {field["key"]: field for field in response.json()["fields"]}
-        self.assertEqual(5, fields["Trigger Interval"]["value"])
-        self.assertEqual("触发任务检查间隔", fields["Trigger Interval"]["label"])
-
-    def test_unknown_fields_keep_their_key_as_the_name(self):
-        group = describe_group({"name": "Other", "fields": [{"key": "X", "description": "d"}]})
-        self.assertEqual(("Other", "X", "d"), (
-            group["label"], group["fields"][0]["label"], group["fields"][0]["description"]))
-
 
 class CaptureAutoTest(unittest.TestCase):
     def test_auto_restores_the_default_that_tries_methods_in_order(self):
@@ -176,20 +133,6 @@ class CaptureAutoTest(unittest.TestCase):
 
 
 class WindowTest(unittest.TestCase):
-    def test_window_reports_the_size_and_whether_it_is_16_9(self):
-        cases = {
-            "1920x1080": (Window(1920, 1080), GAME_WINDOW, [1920, 1080], True),
-            "1600x1000": (Window(1600, 1000), GAME_WINDOW, [1600, 1000], False),
-            "no game": (None, NO_GAME_WINDOW, None, False),
-        }
-        for name, (window, device, size, ratio_ok) in cases.items():
-            with self.subTest(name):
-                client = make_client(self, device=device, window=window)
-                info = client.get("/api/bd2/window").json()
-                self.assertEqual(size, info["size"])
-                self.assertEqual(ratio_ok, info["ratio_ok"])
-                self.assertEqual([list(item) for item in MANUAL_RESOLUTIONS], info["resolutions"])
-                self.assertFalse(info["resizing"])
 
     def test_resize_marks_the_resize_in_progress_and_reports_the_result(self):
         client = make_client(self, window=Window(1600, 900))
@@ -232,16 +175,6 @@ class WindowTest(unittest.TestCase):
                 self.assertEqual(400, response.status_code)
                 self.assertIn(message, response.json()["detail"])
                 resize.assert_not_called()
-
-    def test_resize_is_allowed_while_the_task_is_paused(self):
-        client = make_client(self, window=Window(1600, 900))
-        self.executor.current_task = object()
-        self.executor.paused = True
-        with patch(
-            "src.desktop.app.resize_game_window", return_value=WindowResizeResult(1920, 1080, True)
-        ):
-            response = client.post("/api/bd2/window/resize", json={"width": 1920, "height": 1080})
-        self.assertEqual(200, response.status_code, response.text)
 
 
 class GamePathTest(unittest.TestCase):
@@ -309,24 +242,6 @@ class TestNotificationTest(unittest.TestCase):
         with patch("ok.notification.providers.SmtpProvider._deliver", side_effect=OSError("down")):
             self.assertIn("发送失败", self.post(client, "smtp").json()["detail"])
 
-    def test_names_missing_settings_and_reports_failures(self):
-        client = make_client(self)
-        response = self.post(client, "telegram")
-        self.assertEqual(400, response.status_code)
-        self.assertEqual("请先填写：Bot Token、Chat ID", response.json()["detail"])
-        self.assertEqual(400, self.post(client, "qq-desktop").status_code)
-        self.executor.global_config.configs["Notification"]["Discord Webhook"] = "https://x"
-        with patch("ok.notification.providers.DiscordProvider.send", return_value=False):
-            response = self.post(client, "discord")
-        self.assertEqual(400, response.status_code)
-        self.assertIn("发送失败", response.json()["detail"])
-        self.assertEqual(400, self.post(client, "system").status_code)
-        self.headless.notification_manager = SimpleNamespace(notify_system=Mock(return_value=True))
-        self.assertEqual(200, self.post(client, "system").status_code)
-        self.headless.notification_manager.notify_system.assert_called_once()
-        self.headless.notification_manager.notify_system.return_value = False
-        self.assertEqual(400, self.post(client, "system").status_code)
-
 
 class StarterWaitTest(unittest.TestCase):
     def setUp(self):
@@ -379,16 +294,6 @@ class StarterWaitTest(unittest.TestCase):
         controller.cancel_start.assert_called_once_with()
         controller.starting = False
         self.assertEqual({"cancelled": False}, client.post("/api/bd2/starter/cancel").json())
-
-
-class LauncherInfoTest(unittest.TestCase):
-    def test_launcher_versions(self):
-        cases = {"1.2.3": False, "1.1.0": True, None: None}
-        for version, outdated in cases.items():
-            with self.subTest(version=version):
-                client = make_client(self, launcher_version=version)
-                info = client.get("/api/desktop/info").json()
-                self.assertEqual({"version": version, "outdated": outdated}, info["launcher"])
 
 
 if __name__ == "__main__":

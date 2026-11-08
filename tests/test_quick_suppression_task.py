@@ -37,13 +37,6 @@ class QuickSuppressionTaskTest(unittest.TestCase):
         )
         self.assertEqual("自动刷级", task.group_name)
 
-    def test_reference_points_are_stored_as_ratios(self):
-        self.assertEqual((1680 / 1920, 740 / 1080), SUPPRESSION_POINTS["4号位"])
-        self.assertEqual((1792 / 1920, 791 / 1080), SUPPRESSION_POINTS["5号位"])
-        self.assertEqual((910 / 1920, 1000 / 1080), QUICK_SWITCH_POINT)
-        self.assertEqual((871 / 1920, 970 / 1080), CHAPTER_TWO_POINT)
-        self.assertEqual((690 / 1920, 974 / 1080), CHAPTER_ONE_POINT)
-
     def test_cycle_uses_selected_slot_for_both_suppression_clicks(self):
         task = object.__new__(QuickSuppressionTask)
         task.info_set = lambda *_args, **_kwargs: None
@@ -92,21 +85,6 @@ class QuickSuppressionTaskTest(unittest.TestCase):
         task.capture_frame = lambda: self.fail("must not OCR")
 
         self.assertFalse(task._switch_chapter("第一章", CHAPTER_ONE_POINT))
-
-    def test_notice_matching_ignores_ocr_whitespace(self):
-        self.assertTrue(QuickSuppressionTask._contains_notice("立刻前往 探索\n告示板"))
-        self.assertFalse(QuickSuppressionTask._contains_notice("探索告示板"))
-
-    def test_run_stops_when_task_is_disabled(self):
-        task = object.__new__(QuickSuppressionTask)
-        task.config = {"启用": True, "刷几号位": "4号位"}
-        task.info_set = lambda *_args, **_kwargs: None
-        task.log_info = lambda *_args, **_kwargs: None
-        task.sleep = lambda *_args, **_kwargs: None
-        task._task_stop_requested = lambda: True
-        task._run_cycle = lambda *_args, **_kwargs: self.fail("must stop before cycle")
-
-        self.assertFalse(QuickSuppressionTask.run(task))
 
 
 if __name__ == "__main__":

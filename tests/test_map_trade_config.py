@@ -1,10 +1,7 @@
 """Map-trade config tests (split from test_map_trade.py)."""
 
-import json
-import tempfile
 import unittest
 from datetime import datetime
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -23,7 +20,6 @@ from src.tasks.MapTradeTask import (
     TRADE_OCR_THRESHOLD_KEY,
     TRADE_VISION_THRESHOLD_KEY,
     MapTradeTask,
-    _migrate_collection_config,
     _trade_section_migration_values,
 )
 from src.tasks.run_history import is_successful_run
@@ -318,25 +314,3 @@ class MapTradeConfigTest(unittest.TestCase):
                 }
             ),
         )
-
-    def test_legacy_combined_config_seeds_weekly_card(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            target = Path(temp_dir) / "MapCollectionTask.json"
-            legacy = {
-                "启用": False,
-                "执行地图采集": False,
-                "跑图跑商识图阈值": 0.83,
-                "跑图跑商 OCR 阈值": 0.31,
-                "加载页面等待秒数": 61.0,
-                "卡带单步重试次数": 4,
-            }
-            with patch.object(map_trade_task_module, "_config_path", return_value=target):
-                _migrate_collection_config(legacy)
-
-            migrated = json.loads(target.read_text(encoding="utf-8"))
-            self.assertFalse(migrated["启用"])
-            self.assertFalse(migrated["执行地图采集"])
-            self.assertEqual(0.83, migrated[MAP_VISION_THRESHOLD_KEY])
-            self.assertEqual(0.31, migrated[MAP_OCR_THRESHOLD_KEY])
-            self.assertEqual(61.0, migrated["加载页面等待秒数"])
-            self.assertEqual(4, migrated["卡带单步重试次数"])

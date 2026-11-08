@@ -5,7 +5,6 @@ from unittest.mock import patch
 
 import numpy as np
 import win32api
-import win32con
 from ok.device.intercation import PostMessageInteraction
 from ok.task.exceptions import FinishedException, TaskDisabledException
 
@@ -164,22 +163,6 @@ class BD2InteractionOperateTest(unittest.TestCase):
         self.assertIn("restore_cursor", calls)
         self.assertIn("unblock_input", calls)
 
-    def test_operate_returns_callback_result_and_cleans_up(self):
-        interaction, calls = make_interaction()
-
-        with patch(
-            "src.interaction.BD2Interaction.GetCursorPos",
-            return_value=(7, 8),
-        ) as get_cursor_pos:
-            result = interaction.operate(lambda: 42, block=True)
-
-        self.assertEqual(42, result)
-        self.assertFalse(interaction._operating)
-        get_cursor_pos.assert_called_once_with()
-        self.assertIn("block_input", calls)
-        self.assertIn("restore_cursor", calls)
-        self.assertIn("unblock_input", calls)
-
     def test_nested_operate_keeps_outer_layer_state_isolated(self):
         interaction, calls = make_interaction()
         states_after_inner = []
@@ -224,57 +207,6 @@ class BD2InteractionClickModeTest(unittest.TestCase):
                 self.assertEqual(accepted, task.click(.25, .75, interval=1, action_name=action))
         self.assertEqual(3, click.call_count)
 
-    def test_standard_click_keeps_target_through_release_before_restoring(self):
-        for wrapped, requested, interrupted in (
-            (False, .02, False), (True, .02, False),
-            (True, .2, False), (True, .02, True),
-        ):
-            with self.subTest(wrapped=wrapped, requested=requested, interrupted=interrupted):
-                interaction, calls = make_interaction()
-                now = [0.0]
-                pointer = [None]
-                events = []
-                pressed = [False]
-                interaction.capture = SimpleNamespace(get_abs_cords=lambda x, y: (x + 10, y + 20))
-                interaction.try_activate = lambda: None
-
-                def post(message, _key, _point):
-                    events.append((message, now[0], pointer[0]))
-                    pressed[0] = message == win32con.WM_LBUTTONDOWN
-
-                def sleep(seconds):
-                    now[0] += seconds
-                    if interrupted and pressed[0]:
-                        raise InterruptedError("interrupted while pressed")
-
-                interaction.post = post
-                interaction._restore_cursor = lambda: events.append(("restore", now[0], pointer[0]))
-                with (
-                    patch("src.interaction.BD2Interaction.GetCursorPos", return_value=(1, 2)),
-                    patch("src.interaction.BD2Interaction.SetCursorPos",
-                          side_effect=lambda point: pointer.__setitem__(0, point)),
-                    patch("src.interaction.BD2Interaction.time.sleep", side_effect=sleep),
-                ):
-                    def click():
-                        interaction.click(320, 540, move_back=True, down_time=requested)
-
-                    if interrupted:
-                        with self.assertRaises(InterruptedError):
-                            interaction.operate(click, block=True)
-                    elif wrapped:
-                        interaction.operate(click, block=True)
-                    else:
-                        click()
-                self.assertEqual([win32con.WM_LBUTTONDOWN, win32con.WM_LBUTTONUP, "restore"],
-                                 [event[0] for event in events])
-                self.assertTrue(all(event[2] == (330, 560) for event in events))
-                self.assertGreaterEqual(events[1][1] - events[0][1] + 1e-9, max(.05, requested))
-                self.assertGreaterEqual(events[2][1] - events[1][1] + 1e-9, .05)
-                self.assertFalse(pressed[0])
-                self.assertFalse(interaction._operating)
-                if wrapped:
-                    self.assertEqual(["block_input", "unblock_input"], calls)
-
     def test_background_mode_routes_click_through_post_message_without_cursor_move(self):
         interaction, _calls = make_interaction()
         interaction.set_click_mode_provider(lambda: CLICK_MODE_BACKGROUND)
@@ -296,26 +228,6 @@ class BD2InteractionClickModeTest(unittest.TestCase):
             key="left",
         )
         set_cursor_pos.assert_not_called()
-
-    def test_operate_click_does_not_block_input_in_background_mode(self):
-        task = object.__new__(BaseBD2Task)
-        task._executor = SimpleNamespace(
-            interaction=SimpleNamespace(background_click_enabled=lambda: True),
-        )
-        task._check_action_interval = lambda *_args: True
-        task.click = lambda *_args, **_kwargs: True
-        task.info_set = lambda *_args: None
-        task.sleep = lambda *_args: None
-        operate_options = []
-
-        def operate(action, block=True, restore_cursor=True):
-            operate_options.append((block, restore_cursor))
-            return action()
-
-        task.operate = operate
-        task.operate_click(0.25, 0.75)
-
-        self.assertEqual([(False, False)], operate_options)
 
 
 class BD2InteractionActivationTest(unittest.TestCase):

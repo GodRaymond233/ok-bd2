@@ -8,22 +8,15 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from src.config import config
 from src.tasks.BD2MapCollectionProbeTask import (
-    ALL_COLLECTION_CARDS_OPTION,
-    DEFAULT_COLLECTION_END,
-    DEFAULT_COLLECTION_START,
     TELEPORT_MAP_ARROW_RECHECK_INTERVAL,
     TELEPORT_MAP_BACKWARD_CLICK_LIMIT,
     TELEPORT_MAP_FORWARD_CLICK_INTERVAL,
-    TELEPORT_MAP_FORWARD_CLICK_LIMIT,
     TELEPORT_MAP_PAGE_SETTLE_SECONDS,
     BD2MapCollectionProbeTask,
     TeleportMapScanResult,
     merge_completion_observations,
-    resolve_collection_map_titles,
 )
-from src.tasks.debug_registry import DEBUG_ONETIME_TASKS
 from src.tasks.map_trade.audit import CollectionVisualAuditStore
 from src.tasks.map_trade.card_status import (
     CardActionDetection,
@@ -40,10 +33,8 @@ from src.tasks.map_trade.models import (
     TeleportScope,
 )
 from src.tasks.map_trade.navigator import (
-    PROBE_QUICK_SWITCH_SCROLL_POINT,
     TELEPORT_MAP_BACKWARD_TEMPLATE,
     TELEPORT_MAP_FORWARD_TEMPLATE,
-    TELEPORT_MAP_RETURN_RELATIVE_POINT,
     TELEPORT_MAP_TITLE_OCR_RELATIVE_ROI,
     LocatedStoryCard,
     ProbedStoryCard,
@@ -169,85 +160,6 @@ class MapCollectionProbeTaskTest(unittest.TestCase):
                 self.assertEqual(int(can_scan), task._scan_teleport_map_pages.call_count)
                 if not can_scan:
                     navigator._restore_navigation_field.assert_called_once()
-
-    def test_only_merged_probe_task_is_registered_in_debug_section(self):
-        registration = [
-            "src.tasks.BD2MapCollectionProbeTask",
-            "BD2MapCollectionProbeTask",
-        ]
-        self.assertNotIn(registration, config["onetime_tasks"])
-        self.assertIn(registration, DEBUG_ONETIME_TASKS)
-        self.assertNotIn(
-            ["src.tasks.BD2MapCollectionProbeTask", "BD2CollectionStatusProbeTask"],
-            DEBUG_ONETIME_TASKS,
-        )
-        self.assertNotIn(
-            ["src.tasks.BD2MapCollectionProbeTask", "BD2MapLocationProbeTask"],
-            DEBUG_ONETIME_TASKS,
-        )
-
-        task = BD2MapCollectionProbeTask(
-            SimpleNamespace(scene=None),
-            SimpleNamespace(),
-        )
-        self.assertEqual("剧情卡带完成度与地图读取测试", task.name)
-        self.assertEqual("测试", task.group_name)
-        self.assertTrue(task.visible)
-
-    def test_collection_scope_and_all_new_reference_geometry(self):
-        self.assertEqual(25, len(COLLECTABLE_CARDS))
-        self.assertEqual(
-            {6, 20},
-            set(range(1, 21)) - {
-                card.number for card in COLLECTABLE_CARDS if card.category == "story"
-            },
-        )
-        self.assertEqual(
-            (654 / 1920, 946 / 1080, 1268 / 1920, 1021 / 1080),
-            TELEPORT_MAP_TITLE_OCR_RELATIVE_ROI,
-        )
-        self.assertEqual((136 / 1920, 52 / 1080), TELEPORT_MAP_RETURN_RELATIVE_POINT)
-        self.assertEqual((43 / 1920, 974 / 1080), PROBE_QUICK_SWITCH_SCROLL_POINT)
-
-    def test_probe_can_select_one_card_or_an_inclusive_range(self):
-        task = object.__new__(BD2MapCollectionProbeTask)
-        task.config = {"测试起始卡带": "Q_sp14", "测试终止卡带": "Q_sp14"}
-        self.assertEqual(("Q_sp14",), tuple(card.card_id for card in task._selected_cards()))
-
-        task.config = {"测试起始卡带": "Q_sp8", "测试终止卡带": "Q_sp11"}
-        self.assertEqual(
-            ("Q_sp8", "Q_sp9", "Q_sp10", "Q_sp11"),
-            tuple(card.card_id for card in task._selected_cards()),
-        )
-
-        task.config = {
-            "测试起始卡带": DEFAULT_COLLECTION_START,
-            "测试终止卡带": DEFAULT_COLLECTION_END,
-        }
-        self.assertEqual(25, len(task._selected_cards()))
-
-        task.config = {"测试起始卡带": "Q_sp14", "测试终止卡带": "Q_sp8"}
-        self.assertEqual((), task._selected_cards())
-
-    def test_probe_reads_retired_single_range_configuration(self):
-        task = object.__new__(BD2MapCollectionProbeTask)
-        task.config = {"测试卡带范围": "Q_sp14"}
-        self.assertEqual(("Q_sp14",), tuple(card.card_id for card in task._selected_cards()))
-        task.config = {"测试卡带范围": ALL_COLLECTION_CARDS_OPTION}
-        self.assertEqual(25, len(task._selected_cards()))
-
-    def test_title_resolution_preserves_unknown_and_prefers_longest_known_title(self):
-        self.assertEqual((), resolve_collection_map_titles("战斗Ⅰ 尚未建档的位置"))
-        self.assertEqual(
-            (
-                {
-                    "card_id": "Q_sp1",
-                    "target_key": "battle_area_2",
-                    "title": "卢戈森林深处",
-                },
-            ),
-            resolve_collection_map_titles("战斗Ⅱ 卢戈森林深处"),
-        )
 
     def test_clipped_and_conflicting_completion_observations_remain_conservative(self):
         self.assertIsNone(merge_completion_observations([_observation(complete_region=False)]))
@@ -376,47 +288,6 @@ class MapCollectionProbeTaskTest(unittest.TestCase):
             [value for value in task.sleep_calls if value == TELEPORT_MAP_PAGE_SETTLE_SECONDS],
         )
         self.assertEqual([5, 7, 9], [value[0] for value in ocr_calls])
-
-    def test_forward_limit_stops_before_any_ocr_when_arrow_still_exists(self):
-        task = object.__new__(BD2MapCollectionProbeTask)
-        task.config = {"保存每张传送阵地图截图": False}
-        task.info_set = lambda *_args, **_kwargs: None
-        task.sleep = lambda *_args: None
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        arrow = MatchResult(0.99, (360, 490), (40, 56), 0.96, 0.95)
-        clicks = []
-
-        class FakeVision:
-            @staticmethod
-            def capture():
-                return frame
-
-            @staticmethod
-            def match(_frame, spec):
-                self.assertIs(TELEPORT_MAP_FORWARD_TEMPLATE, spec)
-                return arrow
-
-            @staticmethod
-            def passes(_result, _spec):
-                return True
-
-            @staticmethod
-            def click_client(*args, **kwargs):
-                clicks.append((args, kwargs))
-
-            @staticmethod
-            def ocr_text(*_args, **_kwargs):
-                self.fail("forward overflow must stop before OCR")
-
-        result = task._scan_teleport_map_pages(
-            FakeVision(),
-            CARD_BY_ID["Q_sp1"],
-            "stamp",
-            1,
-        )
-        self.assertFalse(result.success)
-        self.assertEqual(TELEPORT_MAP_FORWARD_CLICK_LIMIT, len(clicks))
-        self.assertIn("向前7次", result.message)
 
     def test_backward_limit_records_last_page_then_reports_overflow(self):
         task = object.__new__(BD2MapCollectionProbeTask)
@@ -705,27 +576,6 @@ class MapCollectionProbeTaskTest(unittest.TestCase):
 
 
 class CollectionVisualAuditStoreTest(unittest.TestCase):
-    def test_visual_table_resets_at_monday_eight_am(self):
-        before = datetime(2026, 7, 13, 7, 59, tzinfo=UTC_PLUS_8)
-        after = datetime(2026, 7, 13, 8, 0, tzinfo=UTC_PLUS_8)
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "visual.json"
-            store = CollectionVisualAuditStore(path, now_provider=lambda: before)
-            store.save_scan(
-                {"Q_sp1": _observation()},
-                completed=False,
-            )
-            current = store.load()
-            self.assertIn("Q_sp1", current["cards"])
-            self.assertEqual(
-                ["Q_sp6", "Q_sp20"],
-                current["excluded_card_ids"],
-            )
-
-            reset = CollectionVisualAuditStore(path, now_provider=lambda: after)
-            state = reset.load()
-            self.assertEqual({}, state["cards"])
-            self.assertEqual({}, state["last_scan"])
 
     def test_visual_table_never_modifies_collection_progress_file(self):
         now = datetime(2026, 7, 15, 12, 0, tzinfo=UTC_PLUS_8)

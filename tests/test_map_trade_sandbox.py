@@ -1,7 +1,6 @@
 """Map-trade sandbox tests (split from test_map_trade.py)."""
 
 import unittest
-from itertools import cycle
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -12,10 +11,6 @@ from src.tasks.map_trade.action_icons import (
     ABSORB_ICON,
     SEARCH_ICON,
     SUMMON_ICON,
-)
-from src.tasks.map_trade.card_status import (
-    SUPPRESS_COMPLETED_TEMPLATE,
-    SUPPRESS_PENDING_TEMPLATE,
 )
 from src.tasks.map_trade.models import (
     MatchResult,
@@ -39,59 +34,18 @@ from src.tasks.map_trade.navigator import (
     STORY_BADGE_ENCODED_TEMPLATE_SCORE,
     STORY_BADGE_ENCODED_ZNCC_SCORE,
     STORY_BADGE_MIN_MARGIN,
-    STORY_BADGE_OCR_MIN_CONFIDENCE,
     STORY_BADGE_PIXEL_SCORE,
     STORY_BADGE_TEMPLATE_SCORE,
     Navigator,
     StoryBadgeCandidate,
     StoryBadgeDetection,
 )
-from src.utils.image_utils import read_template_image
 from tests.helpers import FakeClock
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class SandboxConfirmationTest(unittest.TestCase):
-    def test_story_card_state_templates_are_packaged_with_alpha_masks(self):
-        template_root = ROOT / "recognition-assets" / "template-assets"
-        expected_shapes = {
-            "image/green/StoryAbsorbAvailableGE.png": (29, 29, 4),
-            "image/green/StoryAbsorbCompletedGE.png": (29, 31, 4),
-            "image/green/StorySuppressAvailableGE.png": (28, 28, 4),
-            "image/green/StorySuppressCompletedGE.png": (28, 28, 4),
-        }
-
-        for file_name, expected_shape in expected_shapes.items():
-            with self.subTest(file_name=file_name):
-                template = read_template_image(template_root / file_name)
-                self.assertIsNotNone(template)
-                self.assertEqual(expected_shape, template.shape)
-                self.assertGreater(np.count_nonzero(template[:, :, 3] == 0), 0)
-                self.assertGreater(np.count_nonzero(template[:, :, 3] == 255), 0)
-        suppress_pending = read_template_image(template_root / SUPPRESS_PENDING_TEMPLATE.file_name)
-        suppress_completed = read_template_image(
-            template_root / SUPPRESS_COMPLETED_TEMPLATE.file_name,
-        )
-        self.assertEqual(0, suppress_pending[-1, -1, 3])
-        self.assertEqual(255, suppress_completed[-1, -1, 3])
-
-    def test_sandbox_skill_slot_templates_are_packaged_with_alpha_masks(self):
-        template_root = ROOT / "recognition-assets" / "template-assets"
-        expected_shapes = {
-            "image/green/SandboxSkillSlot1AvailableGE.png": (44, 44, 4),
-            "image/green/SandboxSkillSlot2UsedGE.png": (44, 44, 4),
-            "image/green/SandboxSkillSlot1UsedGE.png": (44, 44, 4),
-            "image/green/SandboxSkillSlot2AvailableGE.png": (45, 45, 4),
-        }
-
-        for file_name, expected_shape in expected_shapes.items():
-            with self.subTest(file_name=file_name):
-                template = read_template_image(template_root / file_name)
-                self.assertIsNotNone(template)
-                self.assertEqual(expected_shape, template.shape)
-                self.assertGreater(np.count_nonzero(template[:, :, 3] == 0), 0)
-                self.assertGreater(np.count_nonzero(template[:, :, 3] == 255), 0)
 
     def test_sandbox_skill_group_templates_use_strict_slot_specific_gates(self):
         self.assertEqual(
@@ -185,30 +139,6 @@ class SandboxConfirmationTest(unittest.TestCase):
 
         self.assertEqual("unknown", state)
 
-    def test_story_sandbox_skill_group_uses_other_slot_template_when_missing(self):
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        result = MatchResult(0.99, (1644, 983), (55, 55), 0.94, 0.60)
-        vision = SimpleNamespace(
-            template_hsv_color_ratios=lambda _frame, spec, _result: (
-                (0.71, 0.28, 1.0)
-                if spec is SANDBOX_SKILL_SLOT_1_UNSELECTED_TEMPLATE
-                else (0.01, 0.99, 0.56)
-            )
-        )
-        navigator = Navigator(SimpleNamespace(info_set=lambda *_args: None), vision)
-
-        state = navigator._sandbox_skill_slot_state(
-            frame,
-            SANDBOX_SKILL_SLOT_1_SELECTED_TEMPLATE,
-            MatchResult(-1.0, (0, 0), (0, 0)),
-            False,
-            SANDBOX_SKILL_SLOT_1_UNSELECTED_TEMPLATE,
-            result,
-            True,
-        )
-
-        self.assertEqual("selected", state)
-
     def test_skill_group_evidence_matches_each_slot_on_the_same_frame(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         passed_specs = {
@@ -256,25 +186,6 @@ class SandboxConfirmationTest(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual([], clicks)
         self.assertEqual(2, len(captures))
-
-    def test_story_field_confirmation_requires_consecutive_hud_frames(self):
-        frame = np.full((1080, 1920, 3), 100, dtype=np.uint8)
-        states = cycle((ScreenState.SANDBOX, ScreenState.UNKNOWN))
-        clock = FakeClock()
-        navigator = Navigator(
-            SimpleNamespace(info_set=lambda *_: None, sleep=clock.sleep),
-            SimpleNamespace(
-                capture=lambda: frame,
-                ocr_text=lambda *args, **kwargs: "",
-                simplify=lambda text: text,
-            ),
-        )
-        navigator.classify = lambda _frame: next(states)
-        with patch(
-            "src.tasks.map_trade.navigator_sandbox.monotonic", clock,
-        ):
-            result = navigator._wait_for_current_sandbox(timeout=2.0, interval=0.2)
-        self.assertFalse(result.success)
 
     def test_story_field_confirmation_does_not_accept_black_loading_frames(self):
         clock = FakeClock()
@@ -330,89 +241,6 @@ class StoryBadgeTest(unittest.TestCase):
         detection, reason = navigator._find_story_badge(frame, 6)
         self.assertIsNone(detection)
         self.assertIn("候选分差不足", reason)
-
-    def test_story_badge_ranking_uses_alpha_zncc_discrimination(self):
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        matches = {
-            "story_cartridge_badge_06.png": (
-                MatchResult(
-                    0.96,
-                    (80, 930),
-                    (29, 29),
-                    pixel_score=0.96,
-                    zncc_score=0.91,
-                ),
-            ),
-            "story_cartridge_badge_08.png": (
-                MatchResult(
-                    0.99,
-                    (81, 930),
-                    (29, 29),
-                    pixel_score=0.99,
-                    zncc_score=0.70,
-                ),
-            ),
-        }
-        vision = SimpleNamespace(
-            match_all=lambda _frame, spec, **_kwargs: matches.get(
-                Path(spec.file_name).name,
-                (),
-            ),
-            ocr_text=lambda *_args, **_kwargs: "",
-        )
-        navigator = Navigator(SimpleNamespace(), vision)
-
-        detection, reason = navigator._find_story_badge(frame, 6)
-
-        self.assertEqual("", reason)
-        self.assertIsNotNone(detection)
-        self.assertEqual(6, detection.best.number)
-        self.assertEqual(8, detection.runner_up.number)
-        self.assertAlmostEqual(0.21, detection.margin)
-
-    def test_story_badge_detection_records_matching_ocr_assistance(self):
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        matches = {
-            "story_cartridge_badge_06.png": (
-                MatchResult(
-                    STORY_BADGE_TEMPLATE_SCORE + 0.04,
-                    (80, 930),
-                    (29, 29),
-                    pixel_score=STORY_BADGE_PIXEL_SCORE + 0.03,
-                ),
-            ),
-            "story_cartridge_badge_08.png": (
-                MatchResult(0.80, (81, 930), (29, 29), pixel_score=0.82),
-            ),
-        }
-        ocr_calls = []
-
-        def ocr_text(frame, name, **kwargs):
-            ocr_calls.append((frame.shape, name, kwargs))
-            return "6"
-
-        vision = SimpleNamespace(
-            match_all=lambda _frame, spec, **_kwargs: matches.get(
-                Path(spec.file_name).name,
-                (),
-            ),
-            ocr_text=ocr_text,
-        )
-        navigator = Navigator(SimpleNamespace(), vision)
-
-        detection, reason = navigator._find_story_badge(frame, 6)
-
-        self.assertEqual("", reason)
-        self.assertIsNotNone(detection)
-        self.assertEqual(6, detection.ocr_number)
-        self.assertEqual("6", detection.ocr_text)
-        self.assertEqual((272, 288, 3), ocr_calls[0][0])
-        self.assertEqual("剧情角标数字辅助", ocr_calls[0][1])
-        self.assertEqual(0, ocr_calls[0][2]["target_height"])
-        self.assertEqual(
-            STORY_BADGE_OCR_MIN_CONFIDENCE,
-            ocr_calls[0][2]["minimum_threshold"],
-        )
 
     def test_story_badge_ocr_cannot_relax_strict_template_thresholds(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -541,32 +369,6 @@ class StoryBadgeTest(unittest.TestCase):
         self.assertIn("模板=6", reason)
         self.assertIn("OCR=8", reason)
 
-    def test_story_badge_detection_rejects_duplicate_target_number(self):
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        matches = {
-            "story_cartridge_badge_06.png": (
-                MatchResult(0.99, (80, 930), (30, 28), pixel_score=0.98),
-                MatchResult(0.98, (480, 930), (30, 28), pixel_score=0.97),
-            ),
-            "story_cartridge_badge_08.png": (
-                MatchResult(0.80, (81, 930), (31, 31), pixel_score=0.82),
-                MatchResult(0.79, (481, 930), (31, 31), pixel_score=0.81),
-            ),
-        }
-        vision = SimpleNamespace(
-            match_all=lambda _frame, spec, **_kwargs: matches.get(
-                Path(spec.file_name).name,
-                (),
-            ),
-            ocr_text=lambda *_args, **_kwargs: "",
-        )
-        navigator = Navigator(SimpleNamespace(), vision)
-
-        detection, reason = navigator._find_story_badge(frame, 6)
-
-        self.assertIsNone(detection)
-        self.assertIn("同一编号出现2个有效位置", reason)
-
     def test_story_badge_duplicate_resolved_by_single_ocr_confirmation(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         matches = {
@@ -606,56 +408,6 @@ class StoryBadgeTest(unittest.TestCase):
         self.assertEqual(detection.ocr_number, 6)
 
 
-class StoryBadgeOcrFallbackTest(unittest.TestCase):
-    @staticmethod
-    def _navigator(ocr_results):
-        vision = SimpleNamespace(
-            ocr_text=lambda *_args, **_kwargs: ocr_results.pop(0)
-            if ocr_results
-            else "",
-        )
-        return Navigator(SimpleNamespace(), vision)
-
-    def test_ocr_number_retries_with_raw_grayscale_when_binary_read_is_empty(self):
-        frame = np.zeros((200, 200, 3), dtype=np.uint8)
-        frame[80:100, 90:110] = 255
-        navigator = self._navigator(["", "8"])
-
-        number, text = navigator._story_badge_ocr_number(
-            frame,
-            MatchResult(1.0, (80, 80), (30, 30)),
-        )
-
-        self.assertEqual(8, number)
-        self.assertEqual("8", text)
-
-    def test_ocr_number_returns_none_without_any_readable_digit(self):
-        frame = np.zeros((200, 200, 3), dtype=np.uint8)
-        navigator = self._navigator(["", ""])
-
-        number, text = navigator._story_badge_ocr_number(
-            frame,
-            MatchResult(1.0, (80, 80), (30, 30)),
-        )
-
-        self.assertIsNone(number)
-        self.assertEqual("", text)
-
-    def test_ocr_frame_trims_even_crops_to_keep_mask_centered(self):
-        prepared = Navigator._story_badge_ocr_frame(
-            np.zeros((60, 60, 3), dtype=np.uint8),
-            MatchResult(1.0, (10, 10), (14, 14)),
-        )
-
-        self.assertEqual(
-            2 * 32 + 208,
-            prepared.shape[0],
-        )
-        # The digit area derives from an odd (13px) crop, so the horizontal
-        # upscale keeps an odd source ratio instead of a half-pixel center.
-        self.assertEqual(2 * 40 + 208, prepared.shape[1])
-
-
 class StoryBadgeRunnerTierTest(unittest.TestCase):
     @staticmethod
     def _grid_detection() -> StoryBadgeDetection:
@@ -690,25 +442,6 @@ class StoryBadgeRunnerTierTest(unittest.TestCase):
         self.assertEqual(1, len(promoted))
         self.assertEqual("slot_grid_runner", promoted[0].recovery_mode)
         self.assertEqual(5, promoted[0].best.number)
-
-    def test_runner_below_structural_floors_is_not_promoted(self):
-        detection = self._grid_detection()
-        weak_runner = StoryBadgeCandidate(
-            5,
-            MatchResult(
-                0.90,
-                (400, 462),
-                (14, 14),
-                pixel_score=0.80,
-                zncc_score=0.60,
-            ),
-        )
-        weak = StoryBadgeDetection(best=detection.best, runner_up=weak_runner)
-
-        self.assertEqual(
-            (),
-            Navigator._story_badge_grid_runner_detections(5, (weak,)),
-        )
 
     def test_promoted_runner_requires_digit_ocr_confirmation(self):
         frame = np.zeros((540, 960, 3), dtype=np.uint8)

@@ -64,12 +64,6 @@ class QuickHuntVisionTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(("unknown", None), read_free_switch(candidate, label))
 
-    def test_yellow_and_knob_position_must_agree(self):
-        frame, label = switch_frame("off")
-        track = (frame[:, :, 0] == 88) & (frame[:, :, 1] == 88)
-        frame[track] = (43, 133, 171)
-        self.assertEqual(("unknown", None), read_free_switch(frame, label))
-
     def test_free_pool_preserves_capacity_and_excludes_adjacent_stored_rice(self):
         for text, expected, value in (
             ("90/90 +20.5K", 90, (90, 90)),

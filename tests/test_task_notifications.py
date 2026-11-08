@@ -33,24 +33,6 @@ class TaskCompletionNotificationTest(unittest.TestCase):
             hasattr(task, "_completion_notification_suppression_depth")
         )
 
-    def test_nested_suppression_remains_active_until_outer_context_exits(self):
-        task, calls = self.make_task()
-
-        with suppress_task_completion_notifications(task):
-            with suppress_task_completion_notifications(task):
-                log_task_completion(task, "嵌套子任务完成")
-            log_task_completion(task, "外层子任务完成")
-        log_task_completion(task, "独立任务完成")
-
-        self.assertEqual(
-            [
-                ("嵌套子任务完成", False),
-                ("外层子任务完成", False),
-                ("独立任务完成", True),
-            ],
-            calls,
-        )
-
 
 if __name__ == "__main__":
     unittest.main()

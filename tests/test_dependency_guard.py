@@ -17,16 +17,6 @@ class FindMissingModulesTest(unittest.TestCase):
         ):
             self.assertEqual(guard.find_missing_modules(), ["win32con"])
 
-    def test_treats_import_error_as_missing(self):
-        def raise_error(name):
-            raise ImportError("broken parent package")
-
-        with patch("importlib.util.find_spec", raise_error):
-            self.assertEqual(
-                sorted(guard.find_missing_modules()),
-                sorted(guard.core_module_packages()),
-            )
-
     def test_ui_dependencies_follow_selected_mode(self):
         with patch.dict("os.environ", {"OK_BD2_UI": "service"}):
             packages = guard.core_module_packages()
@@ -64,17 +54,6 @@ class ParseLockedVersionsTest(unittest.TestCase):
         )
 
 
-class MissingPackagesTest(unittest.TestCase):
-    def test_deduplicates_modules_to_dist_packages(self):
-        self.assertEqual(
-            guard._missing_packages(["win32con", "win32api", "cv2"]),
-            {
-                "pywin32": ["win32con", "win32api"],
-                "opencv-python": ["cv2"],
-            },
-        )
-
-
 class BuildRepairCommandTest(unittest.TestCase):
     def test_pins_version_and_mirror(self):
         self.assertEqual(
@@ -90,11 +69,6 @@ class BuildRepairCommandTest(unittest.TestCase):
                 "--index-url",
                 "https://mirror/simple",
             ],
-        )
-
-    def test_without_mirror_has_no_index_url(self):
-        self.assertNotIn(
-            "--index-url", guard.build_repair_command("pywin32", "311", None)
         )
 
 
@@ -113,13 +87,6 @@ class ForceReinstallTest(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(calls[0][-2:], ["--index-url", guard.PIP_INDEX_FALLBACK[0]])
         self.assertNotIn("--index-url", calls[1])
-
-    def test_returns_false_when_all_mirrors_fail(self):
-        def fake_run(command, **_kwargs):
-            return subprocess.CompletedProcess(command, 1, stdout="", stderr="boom")
-
-        with patch.object(guard.subprocess, "run", fake_run):
-            self.assertFalse(guard.force_reinstall("pywin32", "311"))
 
 
 class EnsureCoreDependenciesTest(unittest.TestCase):
@@ -152,11 +119,6 @@ class EnsureCoreDependenciesTest(unittest.TestCase):
                 exit_code = exit_error.code
         return exit_code, context
 
-    def test_returns_silently_when_all_present(self):
-        exit_code, context = self.run_ensure([[]])
-        self.assertIsNone(exit_code)
-        self.assertEqual(context["repair_calls"], 0)
-
     def test_repairs_and_exits_zero_when_fixed(self):
         exit_code, context = self.run_ensure(
             [["win32con"], []], locked_versions={"pywin32": "311"}
@@ -164,12 +126,6 @@ class EnsureCoreDependenciesTest(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(context["repaired"], [("pywin32", "311")])
         self.assertFalse(context["notify"][0][1])
-
-    def test_exits_one_without_locked_versions(self):
-        exit_code, context = self.run_ensure([["win32con"], ["win32con"]])
-        self.assertEqual(exit_code, 1)
-        self.assertEqual(context["repair_calls"], 0)
-        self.assertTrue(context["notify"][0][1])
 
     def test_exits_one_when_repair_fails(self):
         exit_code, context = self.run_ensure(

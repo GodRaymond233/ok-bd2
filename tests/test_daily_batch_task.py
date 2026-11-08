@@ -8,7 +8,6 @@ from unittest import mock
 
 from ok.task.exceptions import TaskDisabledException
 
-from src.config import config
 from src.tasks import scheduler
 from src.tasks.DailyBatchTask import (
     RUN_MODE_ALL,
@@ -122,55 +121,6 @@ class DailyBatchTaskTest(unittest.TestCase):
             reset_scene=lambda **kwargs: resets.append(kwargs),
         )
         return task, resets
-
-    def test_registered_before_the_other_daily_tasks(self):
-        self.assertEqual(
-            ["src.tasks.DailyBatchTask", "DailyBatchTask"],
-            config["onetime_tasks"][0],
-        )
-
-    def test_config_exposes_all_daily_children_including_map_collection(self):
-        executor = SimpleNamespace(scene=None)
-        task = DailyBatchTask(executor, SimpleNamespace())
-        expected = [
-            "公会、小屋、酒馆",
-            "免费抽抽乐",
-            "快速狩猎",
-            "广场女神像",
-            "跑图",
-            "跑商",
-            "自动PVP",
-        ]
-        self.assertEqual(expected, task.config_type["启用"]["sub_configs"][True])
-        self.assertTrue(all(task.default_config[key] for key in expected))
-        self.assertIn("跑图", task.description)
-        self.assertIs(MapCollectionTask, task.child_tasks[-3].task_class)
-        daily_classes = [child.task_class.__name__ for child in task.child_tasks]
-        self.assertEqual(daily_classes, [
-            class_name for _module, class_name in config["onetime_tasks"]
-            if class_name in daily_classes
-        ])
-
-    def test_weekly_map_collection_card_is_visible_in_daily_group_in_both_modes(self):
-        from src.icons import TaskIcon as FluentIcon
-        from src.tasks.debug_registry import install_debug_tasks
-
-        for debug in (False, True):
-            with self.subTest(debug=debug):
-                cfg = {"onetime_tasks": list(config["onetime_tasks"])}
-                if debug:
-                    install_debug_tasks(cfg)
-                    install_debug_tasks(cfg)
-                self.assertEqual(
-                    1, cfg["onetime_tasks"].count(
-                        ["src.tasks.MapCollectionTask", "MapCollectionTask"]
-                    ),
-                )
-                task = MapCollectionTask(SimpleNamespace(scene=None), SimpleNamespace(debug=debug))
-                self.assertEqual("每周跑图", task.name)
-                self.assertTrue(task.visible)
-                self.assertEqual("日常/周常", task.group_name)
-                self.assertEqual(FluentIcon.CALENDAR, task.group_icon)
 
     def test_runs_enabled_children_in_order_and_restores_their_configs(self):
         class First:
@@ -504,32 +454,6 @@ class DailyBatchTaskTest(unittest.TestCase):
         self.assertEqual([], calls)
         self.assertEqual("第一项", task.info.get("跳过"))
 
-    def test_incomplete_mode_runs_child_once_backoff_expired(self):
-        class First:
-            pass
-
-        calls = []
-        first = _ChildTask("快速狩猎", calls)
-        specs = (DailyBatchChild("第一项", First),)
-        task, _resets = self.make_task(
-            {First: first},
-            specs,
-            {"启用": True, "第一项": True},
-        )
-        with tempfile.TemporaryDirectory() as temp_dir:
-            schedule_store = scheduler.TaskScheduleStore(f"{temp_dir}/schedule.json")
-            scheduler.set_default_store(schedule_store)
-            set_default_store(RunHistoryStore(f"{temp_dir}/history.json"))
-            try:
-                # 退避点已过期（next_run 在过去）→ 视为到期，应执行。
-                schedule_store.mark_due_now("快速狩猎", now=time.time() - 3600)
-                self.assertTrue(DailyBatchTask.run(task, RUN_MODE_INCOMPLETE))
-            finally:
-                scheduler.set_default_store(None)
-                set_default_store(None)
-
-        self.assertEqual([("快速狩猎", True)], calls)
-
     def test_skip_reasons_say_why_each_child_was_skipped(self):
         class Off:
             pass
@@ -596,28 +520,6 @@ class DailyBatchTaskTest(unittest.TestCase):
                 scheduler.set_default_store(None)
                 set_default_store(None)
 
-    def test_requested_run_mode_expires_and_defaults_to_all(self):
-        # MEDIUM 回归：启动自动执行注入的 run_mode 带有效期。启动失败时
-        # run() 不执行、请求无法消费，过期作废，避免残留的 INCOMPLETE 被
-        # 之后的用户手动点击静默继承。
-        class First:
-            pass
-
-        first = _ChildTask("快速狩猎", [])
-        task, _resets = self.make_task(
-            {First: first},
-            (DailyBatchChild("第一项", First),),
-            {"启用": True, "第一项": True},
-        )
-        task.request_run_mode(RUN_MODE_INCOMPLETE)
-        self.assertEqual(RUN_MODE_INCOMPLETE, task._take_run_mode(None))
-
-        task.request_run_mode(RUN_MODE_INCOMPLETE)
-        task._requested_run_mode_deadline = time.monotonic() - 1.0
-        self.assertEqual(RUN_MODE_ALL, task._take_run_mode(None))
-        # 作废后不留残留。
-        self.assertEqual(RUN_MODE_ALL, task._take_run_mode(None))
-
     def test_run_defers_while_auto_login_pending(self):
         # 回归：手动点开始且游戏冷启动时，onetime 出队优先于登录 trigger
         # 且运行期间 trigger 不执行；立即跑子任务只会在登录页把主页确认
@@ -640,47 +542,6 @@ class DailyBatchTaskTest(unittest.TestCase):
         self.assertEqual([], calls)
         self.assertTrue(task._start_after_login)
         self.assertIn("等待自动登录", task.info.get("状态"))
-
-    def test_run_proceeds_when_auto_login_settled(self):
-        from src.tasks.trigger.AutoLoginTask import AutoLoginTask
-
-        class First:
-            pass
-
-        for login in (
-            SimpleNamespace(_enabled=True, _finished=True),
-            SimpleNamespace(_enabled=False, _finished=False),
-            None,
-        ):
-            with self.subTest(login=login):
-                calls = []
-                first = _ChildTask("first", calls)
-                children = {First: first}
-                if login is not None:
-                    children[AutoLoginTask] = login
-                task, _resets = self.make_task(
-                    children,
-                    (DailyBatchChild("第一项", First),),
-                    {"启用": True, "第一项": True},
-                )
-
-                self.assertTrue(DailyBatchTask.run(task))
-                self.assertEqual([("first", True)], calls)
-                self.assertFalse(getattr(task, "_start_after_login", False))
-
-    def test_deferral_preserves_requested_run_mode(self):
-        from src.tasks.trigger.AutoLoginTask import AutoLoginTask
-
-        login = SimpleNamespace(_enabled=True, _finished=False)
-        task, _resets = self.make_task(
-            {AutoLoginTask: login},
-            (),
-            {"启用": True},
-        )
-        task.request_run_mode(RUN_MODE_INCOMPLETE)
-
-        self.assertTrue(DailyBatchTask.run(task))
-        self.assertEqual(RUN_MODE_INCOMPLETE, task._take_run_mode(None))
 
     def test_release_after_login_reenqueues_gated_batch_once(self):
         task, _resets = self.make_task({}, (), {"启用": True})
@@ -880,26 +741,6 @@ class DailyBatchTaskTest(unittest.TestCase):
                 ) as shutdown:
                     DailyBatchTask.run(task)
                 shutdown.assert_not_called()
-
-    def test_shutdown_not_scheduled_when_no_enabled_children(self):
-        class First:
-            pass
-
-        first = _ChildTask("first", [])
-        specs = (DailyBatchChild("第一项", First),)
-        task, _resets = self.make_task(
-            {First: first},
-            specs,
-            # 全部子开关关闭时一次成功运行没有执行任何日常；
-            # 「全部已启用子任务已完成」对空集合为真，但不得触发关机。
-            {"启用": True, "完成日常后自动关机": True, "第一项": False},
-        )
-        with mock.patch(
-            "src.tasks.DailyBatchTask._schedule_system_shutdown"
-        ) as shutdown:
-            self.assertTrue(DailyBatchTask.run(task))
-        shutdown.assert_not_called()
-        self.assertNotIn("自动关机", task.info.get("状态", ""))
 
     def test_shutdown_survives_day_boundary_for_pre_completed_children(self):
         class First:

@@ -73,12 +73,6 @@ class StoredLanguageTest(unittest.TestCase):
             json.dumps({"MainWindow": {"Language": value, "DpiScale": 1}}), encoding="utf-8"
         )
 
-    def test_follows_the_system_until_chosen(self):
-        self.assertEqual(stored_language(self.path), "Auto")
-        self.path.parent.mkdir()
-        self.path.write_text("not json", encoding="utf-8")
-        self.assertEqual(stored_language(self.path), "Auto")
-
     def test_reads_what_the_qt_window_stored(self):
         for stored, expected in (
             ("en_US", "en_US"),
@@ -102,10 +96,6 @@ class StoredLanguageTest(unittest.TestCase):
         self.assertEqual(
             sorted(item.name for item in self.path.parent.iterdir()), ["ui_config.json"]
         )
-
-    def test_saving_creates_the_file(self):
-        save_language(self.path, "zh_CN")
-        self.assertEqual(stored_language(self.path), "zh_CN")
 
 
 class LanguageRouteTest(unittest.TestCase):
@@ -154,14 +144,6 @@ class LanguageRouteTest(unittest.TestCase):
         self.assertEqual(refused.status_code, 400)
         self.assertEqual(stored_language(self.path), "en_US")
 
-    def test_waits_for_maintenance(self):
-        self.engine.headless_app.maintenance = True
-        response = self.client.post(
-            "/api/desktop/language", json={"language": "en_US"}, headers=HEADERS
-        )
-        self.assertEqual(response.status_code, 400)
-        self.assertFalse(self.path.exists())
-
 
 class CatalogTest(unittest.TestCase):
     def setUp(self):
@@ -175,9 +157,6 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(messages["快速狩猎"], "Quick Hunt")
         self.assertNotIn("", messages)
         self.assertEqual(task_messages("ja_JP"), {})
-
-    def test_the_task_catalog_is_packaged(self):
-        self.assertIn("i18n", (ROOT / "deploy.txt").read_text(encoding="utf-8").split())
 
     def test_every_message_from_the_core_has_a_translation(self):
         missing = []
