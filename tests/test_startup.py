@@ -92,7 +92,8 @@ class StartApplicationTest(unittest.TestCase):
 
     def test_start_application_takes_lock_then_checks_dependencies_before_config(self):
         events = []
-        self.guarded_startup(events)
+        argv = ("main.py", "-t", "1", "-e")
+        self.guarded_startup(events, argv=argv)
 
         def load_config():
             events.append("load_config")
@@ -103,6 +104,7 @@ class StartApplicationTest(unittest.TestCase):
 
         with patch.dict(sys.modules, {"ok": self.fake_ok(events)}):
             startup.start_application(load_config, configure)
+        self.assertEqual(list(argv), sys.argv)
 
         self.assertEqual(
             [
@@ -187,6 +189,10 @@ class StartApplicationTest(unittest.TestCase):
         self.assertEqual(startup.entry_mode(parsed, None), "service")
         parsed = startup.parse_entry_arguments(["-h", "-t", "1", "-e"])
         self.assertEqual(startup.entry_mode(parsed, None), "headless")
+        for task in ("0", "1", "src.tasks.DailyBatchTask.DailyBatchTask"):
+            parsed = startup.parse_entry_arguments(["-t", task, "-e"])
+            self.assertEqual(startup.entry_mode(parsed, None), "headless")
+            self.assertEqual(parsed.task, task)
         parsed = startup.parse_entry_arguments([])
         self.assertEqual(startup.entry_mode(parsed, None), "desktop")
         self.assertEqual(startup.entry_mode(parsed, lambda config: None), "desktop")

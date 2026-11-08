@@ -51,7 +51,7 @@ def make_client(test, device=GAME_WINDOW, window=None, launcher_version=None):
     executor = make_executor()
     executor.global_config = FakeGlobalConfig()
     headless = SimpleNamespace(
-        start_controller=SimpleNamespace(start=Mock(), starting=False),
+        start_controller=SimpleNamespace(start=Mock(), cancel_start=Mock(), starting=False),
         overlay_state=lambda: {},
         tr=lambda text: text,
     )
@@ -365,12 +365,19 @@ class StarterWaitTest(unittest.TestCase):
         client = make_client(self)
         self.addCleanup(communicate.starting_emulator.emit, True, None, 0)
         self.assertIsNone(client.get("/api/ui/capture").json()["starter_wait"])
+        controller = self.headless.start_controller
+        controller.starting = True
+        self.assertEqual({"cancelled": True}, client.post("/api/bd2/starter/cancel").json())
+        controller.cancel_start.assert_called_once_with()
+        controller.cancel_start.reset_mock()
         cancel = threading.Event()
         starter_wait_status.emit("", cancel)
         self.assertIsNotNone(STARTER_WAIT.snapshot())
         self.assertIsNotNone(client.get("/api/ui/capture").json()["starter_wait"])
         self.assertEqual({"cancelled": True}, client.post("/api/bd2/starter/cancel").json())
         self.assertTrue(cancel.is_set())
+        controller.cancel_start.assert_called_once_with()
+        controller.starting = False
         self.assertEqual({"cancelled": False}, client.post("/api/bd2/starter/cancel").json())
 
 

@@ -70,6 +70,7 @@ def parse_entry_arguments(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--service", action="store_true")
     parser.add_argument("-h", "--headless", action="store_true")
+    parser.add_argument("-t", dest="task")
     arguments, _ = parser.parse_known_args(sys.argv[1:] if argv is None else argv)
     return arguments
 
@@ -77,7 +78,7 @@ def parse_entry_arguments(argv: list[str] | None = None) -> argparse.Namespace:
 def entry_mode(arguments: argparse.Namespace, configure) -> str:
     if arguments.service:
         return "service"
-    if arguments.headless:
+    if arguments.headless or arguments.task is not None:
         return "headless"
     return "desktop"
 

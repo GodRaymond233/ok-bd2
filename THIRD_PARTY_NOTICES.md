@@ -1,16 +1,13 @@
 # Third-Party Notices
 
-This project uses and references third-party open source projects. This file is
-informational and does not replace the upstream license texts. If package
-metadata and the upstream repository license disagree, treat the upstream
-repository license as authoritative unless the upstream author clarifies
-otherwise.
+This project uses and references third-party projects. This file is informational
+and does not replace the license texts supplied with the specific versions used.
 
 ## Direct Runtime Dependencies
 
 | Project | Use in this project | License / notice | Source |
 |---|---|---|---|
-| ok-script | Core GUI, task framework, capture, input, OCR integration, update helpers | Upstream GitHub repository contains AGPL-3.0 `LICENSE.txt`; PyPI metadata has also advertised an MIT classifier. This project treats redistributed ok-script code as AGPL-3.0 unless upstream clarifies otherwise. | https://github.com/ok-oldking/ok-script |
+| ok-script 3.0.4 | Task framework, capture, input, OCR integration, update helpers | ok-script License: Apache License 2.0 as modified by Commons Clause and additional terms. The package's complete notice is preserved in `LICENSES/ok-script-3.0.4.txt`. | https://github.com/ok-oldking/ok-script |
 | ok-script Web runtime (copy) | `src/desktop/okweb` is a copy of the Web runtime of ok-script 2.0.6, which later versions removed; it serves the desktop client | `LICENSES/ok-script-2.0.6.txt` | https://github.com/ok-oldking/ok-script |
 | adbutils | ADB support through ok-script/device workflows | MIT | https://github.com/openatx/adbutils |
 | comtypes | Windows COM support | MIT | https://github.com/enthought/comtypes |
@@ -24,8 +21,6 @@ otherwise.
 | psutil | Process inspection | BSD-3-Clause | https://github.com/giampaolo/psutil |
 | PyDirectInput | Windows input simulation | MIT | https://github.com/learncodebygaming/pydirectinput |
 | pynput | Input monitoring/control support | LGPL-3.0 | https://github.com/moses-palmer/pynput |
-| PySide6 | Qt UI binding | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only, with commercial licensing available from Qt | https://code.qt.io/cgit/pyside/pyside-setup.git |
-| PySide6-Fluent-Widgets | Fluent UI widgets | GPL-3.0 | https://github.com/zhiyiYo/PyQt-Fluent-Widgets/tree/PySide6 |
 | pywin32 | Windows API bindings | PSF License | https://github.com/mhammond/pywin32 |
 
 ## Packaging And Update Components

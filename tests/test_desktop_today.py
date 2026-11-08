@@ -5,6 +5,7 @@ import re
 import tempfile
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +16,7 @@ from fastapi.testclient import TestClient
 from ok import BaseTask, Config
 
 from src.desktop.app import adapt_runtime, create_app
+from src.desktop.config_store import config_lock
 from src.desktop.okweb import app as framework
 from src.task_guides import GUIDES
 from src.tasks.DailyBatchTask import (
@@ -272,6 +274,34 @@ class Bd2RoutesTest(unittest.TestCase):
 
     def post_start(self, mode):
         return self.client.post("/api/bd2/daily/start", json={"mode": mode}, headers=self.headers)
+
+    def test_config_lock_wait_does_not_block_other_requests(self):
+        runtime = self.app.state.runtime
+        for method, path, operation in (
+            ("GET", "/api/tasks", "tasks"),
+            ("POST", "/api/executor/pause", "pause"),
+            ("POST", "/api/executor/stop-task", "stop_task"),
+        ):
+            with self.subTest(path=path), ThreadPoolExecutor(max_workers=2) as pool:
+                entered = threading.Event()
+                original = getattr(runtime, operation)
+
+                def run():
+                    entered.set()
+                    return original()
+
+                with patch.object(runtime, operation, run):
+                    with config_lock:
+                        waiting = pool.submit(
+                            self.client.request, method, path, headers=self.headers,
+                        )
+                        self.assertTrue(entered.wait(2))
+                        ready = pool.submit(
+                            self.client.post, "/api/ui/ready", headers=self.headers,
+                        )
+                        self.assertEqual(200, ready.result(timeout=2).status_code)
+                        self.assertFalse(waiting.done())
+                    self.assertEqual(200, waiting.result(timeout=2).status_code)
 
     def test_daily_start_requests_the_mode_then_starts_the_batch(self):
         for mode in (RUN_MODE_INCOMPLETE, RUN_MODE_ALL):

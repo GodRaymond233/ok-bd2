@@ -93,7 +93,7 @@ export function RunDock({
           <button type="button" className="btn sm" onClick={() => core.navigate("device")}>
             {t("详情")}
           </button>
-          <button type="button" className="btn sm" disabled={!wait} onClick={() => void core.act(core.cancelStarter)}>
+          <button type="button" className="btn sm" onClick={() => void core.act(core.cancelStarter)}>
             {t("取消等待")}
           </button>
         </div>

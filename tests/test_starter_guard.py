@@ -413,7 +413,8 @@ class FindStarterWindowsTest(unittest.TestCase):
 
 
 class GameWindowWaitTest(unittest.TestCase):
-    def run_wait(self, game_at=None, cancel_at=None, observation=None, exit_at=None):
+    def run_wait(self, game_at=None, cancel_at=None, observation=None, exit_at=None,
+                 controller_cancel_at=None):
         now = [0.0]
         cancel_events = []
         window = types.SimpleNamespace(hwnd=0, width=0, height=0, do_update_window_size=Mock())
@@ -434,6 +435,9 @@ class GameWindowWaitTest(unittest.TestCase):
         controller = types.SimpleNamespace(
             start_timeout=120,
             exit_event=exit_event,
+            _cancel_requested=types.SimpleNamespace(is_set=lambda: (
+                controller_cancel_at is not None and now[0] >= controller_cancel_at
+            )),
             tr=lambda text: text,
             STARTED_WINDOW_MIN_SIZE=(100, 100),
             STARTED_WINDOW_STABLE_SECONDS=2,
@@ -474,7 +478,8 @@ class GameWindowWaitTest(unittest.TestCase):
         self.assertIn("超时", events.emit.call_args.args[1])
 
     def test_cancel_and_application_exit_release_wait(self):
-        for kwargs in ({"cancel_at": 10}, {"exit_at": 10}):
+        for kwargs in ({"cancel_at": 10}, {"exit_at": 10}, {"controller_cancel_at": 0},
+                       {"controller_cancel_at": 10}):
             with self.subTest(kwargs=kwargs):
                 result, elapsed, events = self.run_wait(
                     observation=StarterObservation("updating", "下载"),

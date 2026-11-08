@@ -312,6 +312,8 @@ def _wait_for_game_window(controller, start_controller) -> bool:
     try:
         with StarterWizardWatcher() as watcher:
             while not controller.exit_event.is_set() and not cancel.is_set():
+                if controller._cancel_requested.is_set():
+                    break
                 now = monotonic()
                 window = getattr(start_controller.og.device_manager, "hwnd_window", None)
                 if window is not None:

@@ -29,7 +29,7 @@ function Connection({ core }: { core: Core }) {
         <div className="row">
           <b>{wait ? starterText(wait) : t("正在启动 Starter…")}</b>
           <span className="grow" />
-          <button type="button" className="btn sm" disabled={!wait} onClick={() => void core.act(core.cancelStarter)}>
+          <button type="button" className="btn sm" onClick={() => void core.act(core.cancelStarter)}>
             {t("取消等待")}
           </button>
         </div>

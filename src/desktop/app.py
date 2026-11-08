@@ -798,7 +798,12 @@ def create_app(
 
     @app.post("/api/bd2/starter/cancel")
     def cancel_starter():
-        return {"cancelled": STARTER_WAIT.cancel()}
+        controller = runtime.ok.headless_app.start_controller
+        cancelled = STARTER_WAIT.cancel()
+        if controller.starting:
+            controller.cancel_start()
+            cancelled = True
+        return {"cancelled": cancelled}
 
     @app.post("/api/bd2/notify/test")
     def notify_test(body: dict):

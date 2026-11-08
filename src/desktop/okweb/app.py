@@ -1139,11 +1139,11 @@ def create_web_app(config, ok_instance=None):
 
     @app.get("/api/status")
     async def status():
-        return runtime.status()
+        return await asyncio.to_thread(runtime.status)
 
     @app.get("/api/ui/capture")
     async def capture_ui():
-        return runtime.capture_ui()
+        return await asyncio.to_thread(runtime.capture_ui)
 
     @app.get("/api/ui/theme")
     async def theme_ui():
@@ -1213,11 +1213,11 @@ def create_web_app(config, ok_instance=None):
 
     @app.get("/api/tasks")
     async def tasks():
-        return runtime.tasks()
+        return await asyncio.to_thread(runtime.tasks)
 
     @app.get("/api/settings")
     async def settings():
-        return runtime.settings()
+        return await asyncio.to_thread(runtime.settings)
 
     @app.get("/api/navigation")
     async def navigation():
@@ -1247,7 +1247,7 @@ def create_web_app(config, ok_instance=None):
 
     @app.get("/api/about")
     async def about():
-        return runtime.about()
+        return await asyncio.to_thread(runtime.about)
 
     @app.get("/api/updates")
     async def updates(release_only: bool = True):
@@ -1485,7 +1485,7 @@ def create_web_app(config, ok_instance=None):
 
     @app.post("/api/executor/pause")
     async def pause():
-        return runtime.pause()
+        return await asyncio.to_thread(runtime.pause)
 
     @app.post("/api/executor/resume")
     async def resume():
@@ -1496,7 +1496,7 @@ def create_web_app(config, ok_instance=None):
 
     @app.post("/api/executor/stop-task")
     async def stop_task():
-        return runtime.stop_task()
+        return await asyncio.to_thread(runtime.stop_task)
 
     @app.websocket("/api/events")
     async def events(websocket: WebSocket, session_key: str = ""):

@@ -191,7 +191,7 @@ export function DailyPage({
               title={startReason ?? undefined} onClick={() => void connect()}>
               {starting || connecting ? t("正在连接…") : t("启动／连接游戏")}
             </button>
-            {starting && <button type="button" className="btn subtle sm" disabled={!core.ui?.starter_wait}
+            {starting && <button type="button" className="btn subtle sm"
               onClick={() => void core.act(core.cancelStarter)}>{t("取消等待")}</button>}
           </div>
         )}
