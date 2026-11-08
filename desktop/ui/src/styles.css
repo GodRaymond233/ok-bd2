@@ -2658,11 +2658,11 @@ mark {
     --lib-col-w: 280px;
   }
 
-  
 
-  
 
-  
+
+
+
 
   .dock .exp {
     grid-template-columns: minmax(0, 1fr);
@@ -2722,17 +2722,17 @@ mark {
     padding: 16px 14px 20px;
   }
 
-  
 
-  
 
-  
 
-  
 
-  
 
-  
+
+
+
+
+
+
 
   .lib {
     grid-template-columns: minmax(0, 1fr);
@@ -4351,7 +4351,7 @@ mark {
     padding-inline: 16px;
   }
 
-  
+
 }
 
 /* One-time tasks take the free height and scroll inside; a short trigger list stays in view. */
