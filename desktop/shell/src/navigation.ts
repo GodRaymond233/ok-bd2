@@ -17,6 +17,14 @@ export function sameOrigin(url: string, origin: string | null): boolean {
   }
 }
 
+// Web permissions the core's own pages get; everything else stays denied. Copy buttons need
+// clipboard writes (navigator.clipboard.writeText). Reading the clipboard is not allowed.
+export const PAGE_PERMISSIONS: readonly string[] = ["clipboard-sanitized-write"];
+
+export function pagePermissionAllowed(permission: string, url: string, origin: string | null): boolean {
+  return PAGE_PERMISSIONS.includes(permission) && sameOrigin(url, origin);
+}
+
 export function isStatusPage(url: string, statusFile: string): boolean {
   try {
     const target = new URL(url);

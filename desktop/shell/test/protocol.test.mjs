@@ -157,6 +157,14 @@ test("navigation rules", () => {
   assert.equal(navigation.sameOrigin("http://127.0.0.1:5124/", origin), false);
   assert.equal(navigation.sameOrigin("http://localhost:5123/", origin), false);
   assert.equal(navigation.sameOrigin("http://127.0.0.1:5123/", null), false);
+  // Copy buttons may write the clipboard; nothing else, and only from the core's pages.
+  assert.equal(navigation.pagePermissionAllowed("clipboard-sanitized-write", "http://127.0.0.1:5123/report", origin), true);
+  assert.equal(navigation.pagePermissionAllowed("clipboard-sanitized-write", "http://127.0.0.1:5123", origin), true);
+  assert.equal(navigation.pagePermissionAllowed("clipboard-sanitized-write", "https://example.com/", origin), false);
+  assert.equal(navigation.pagePermissionAllowed("clipboard-sanitized-write", "http://127.0.0.1:5123/", null), false);
+  for (const permission of ["clipboard-read", "notifications", "media", "openExternal"]) {
+    assert.equal(navigation.pagePermissionAllowed(permission, "http://127.0.0.1:5123/", origin), false);
+  }
   assert.equal(navigation.isAllowedExternal("https://github.com/GodRaymond233/ok-bd2"), true);
   assert.equal(navigation.isAllowedExternal("http://github.com/GodRaymond233/ok-bd2"), false);
   assert.equal(navigation.isAllowedExternal("https://github.com/GodRaymond233.evil/x"), false);

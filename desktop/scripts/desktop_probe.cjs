@@ -57,7 +57,7 @@ function runner() {
 
 function probe() {
   const electron = require("electron");
-  const { app, globalShortcut, Notification, Tray, dialog } = electron;
+  const { app, clipboard, globalShortcut, Notification, Tray, dialog } = electron;
   const mode = process.env.PROBE_MODE;
   const out = process.env.PROBE_OUT;
   const fixture = path.join(out, "fixture");
@@ -381,6 +381,16 @@ function probe() {
     await js("window.okbd2Shell.setZoom(125)");
     win.setBounds({ x: 80, y: 80, width: 980, height: 720 });
     await delay(400);
+
+    // Copy buttons (report, logs, OCR text): the page may write the clipboard, never read it.
+    const savedClipboard = await clipboard.readText();
+    win.webContents.focus();
+    // As a button click: with a user gesture, which is what makes Electron ask the shell.
+    const written = await win.webContents.executeJavaScript("navigator.clipboard.writeText('okbd2-probe').then(() => 'ok', (error) => String(error))", true);
+    const copied = await clipboard.readText();
+    check(`core pages can write the clipboard (${written}, read back "${copied}")`, written === "ok" && copied === "okbd2-probe");
+    check("core pages cannot read the clipboard", await js("navigator.clipboard.readText().then(() => false, () => true)"));
+    await clipboard.writeText(savedClipboard);
 
     await api(`/api/settings/${encodeURIComponent("Notification")}/config`, { key: "System Notification", value: true });
     check("local notification accepted", (await api("/api/bd2/notify/test", { channel: "system" })).status === 200);

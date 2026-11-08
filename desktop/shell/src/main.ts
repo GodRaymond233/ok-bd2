@@ -20,7 +20,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { CoreError, CoreProcess, type CoreExit } from "./core-process";
 import { ExecutionToggle, HotkeyBinding, QuitGate, type ToggleFailure } from "./desktop-control";
-import { isAllowedExternal, isStatusPage, navigationAllowed, sameOrigin } from "./navigation";
+import { isAllowedExternal, isStatusPage, navigationAllowed, pagePermissionAllowed, sameOrigin } from "./navigation";
 import { SUPPORTED_API, type CoreMessage } from "./protocol";
 import {
   fitBounds,
@@ -841,8 +841,11 @@ if (!app.requestSingleInstanceLock()) {
   });
   void app.whenReady().then(() => {
     const partition = session.fromPartition(PARTITION);
-    partition.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-    partition.setPermissionCheckHandler(() => false);
+    // Only the main window's core pages, and only what the copy buttons need.
+    partition.setPermissionRequestHandler((contents, permission, callback, details) => callback(
+      contents === mainWindow?.webContents && pagePermissionAllowed(permission, details.requestingUrl, coreOrigin())));
+    partition.setPermissionCheckHandler((contents, permission, requestingOrigin) =>
+      contents === mainWindow?.webContents && pagePermissionAllowed(permission, requestingOrigin, coreOrigin()));
     registerIpc();
     mainWindow = createWindow();
     createTray();
