@@ -22,6 +22,7 @@ from src.tasks.map_trade.navigator_constants import CHAPTER_HOME_POINT
 from src.tasks.MapCollectionTask import MapCollectionTask
 from src.tasks.MapTradeTask import MapTradeTask
 from src.tasks.PVPTask import (
+    HOME_GACHA_OCR_ROI,
     PVP_AUTO_BATTLE_CLICK_REFERENCE,
     PVP_AUTO_BATTLE_MENU_VERIFY_SECONDS,
     PVP_AUTO_BATTLE_SCREEN_ROI,
@@ -29,6 +30,7 @@ from src.tasks.PVPTask import (
     PVP_BATTLE_START_SCREEN_POINT,
     PVP_CARTRIDGE_SLOT_POINT,
     PVP_CLICK_VERIFY_ATTEMPTS,
+    PVP_FAILURE_LEAVE_REFERENCE_ROI,
     PVP_FREE_AP_SWITCH_SCREEN_POINT,
     PVP_HUB_NOTICE_SCREEN_ROI,
     PVP_HUB_NOTICE_TEMPLATE,
@@ -46,6 +48,8 @@ from src.tasks.PVPTask import (
     PVP_RESULT_SCREEN_ROI,
     PVP_SEASON_REWARD_AFTER_CLICK_SECONDS,
     PVP_STAGE_CLICK_REFERENCE_OFFSET,
+    PVP_SUCCESS_LEAVE_REFERENCE_ROI,
+    QUICK_PACK_TEMPLATE,
     QUICK_SWITCH_PAGE_PATTERNS,
     REFERENCE_HEIGHT,
     REFERENCE_WIDTH,
@@ -372,6 +376,38 @@ class PVPTaskHelperTest(unittest.TestCase):
                     self.assertFalse(is_successful_run(task.info))
                 task._wait_result_and_leave.assert_not_called()
                 task.auto_return_main_home.assert_called_once_with(notify_failure=False)
+
+    def test_quick_pack_clicks_recognized_center(self):
+        task = object.__new__(PVPTask)
+        task.config = {"快速切换按钮阈值": 0.78}
+        task.info_set = lambda *_args, **_kwargs: None
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task._match = lambda _frame, _spec: SimpleNamespace(
+            score=0.90,
+            pixel_score=0.90,
+            zncc_score=0.90,
+            position=(815, 962),
+            size=(74, 59),
+        )
+        clicks = []
+        task._click_client = lambda x, y, width, height, after_sleep=0.0: clicks.append(
+            (x, y, width, height, after_sleep)
+        )
+        sleeps = []
+        task.sleep = sleeps.append
+
+        self.assertTrue(
+            PVPTask._click_template_until(
+                task,
+                QUICK_PACK_TEMPLATE,
+                timeout=0.0,
+                name="快速切换按钮",
+                stabilize=True,
+            )
+        )
+        self.assertEqual([(852, 991, 1920, 1080, 0.0)], clicks)
+        self.assertEqual(2, len(sleeps))
+        self.assertTrue(all(seconds == 0.1 for seconds in sleeps))
 
     def test_all_recent_cartridge_tasks_run_shared_pvp_guard(self):
         for task_class in (
@@ -873,6 +909,46 @@ class PVPTaskHelperTest(unittest.TestCase):
             QUICK_SWITCH_PAGE_PATTERNS,
         )
 
+    def test_cartridge_home_requires_keyword_votes_brightness_and_gacha_ocr(self):
+        task = object.__new__(PVPTask)
+        task.config = {
+            "主页确认等待秒数": 0.0,
+            "主页压暗阈值": 185.0,
+        }
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        bright_frame = np.full((1080, 1920, 3), 255, dtype=np.uint8)
+        dimmed_frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        frame = {"value": dimmed_frame}
+        task.capture_frame = lambda: frame["value"]
+        ocr_calls = []
+
+        def fake_ocr(_frame, name, roi=None, **_kwargs):
+            ocr_calls.append((name, roi))
+            if name == "主页左列":
+                return "我的小屋 经营管理格鲁TALK 街机游戏"
+            return gacha_text["value"]
+
+        gacha_text = {"value": "抽抽乐"}
+        task._ocr_text = fake_ocr
+        task.sleep = lambda *_args, **_kwargs: None
+        task._sleep_after_recognition = lambda: None
+        announcement_clicks = []
+        task.operate_click = lambda x, y, after_sleep=0.0: announcement_clicks.append(
+            (x, y, after_sleep)
+        )
+
+        self.assertFalse(PVPTask._wait_for_cartridge_home(task))
+        self.assertEqual([(169 / 1920, 615 / 1080, 0.2)], announcement_clicks)
+
+        frame["value"] = bright_frame
+        gacha_text["value"] = ""
+        self.assertFalse(PVPTask._wait_for_cartridge_home(task))
+
+        gacha_text["value"] = "抽抽乐"
+        self.assertTrue(PVPTask._wait_for_cartridge_home(task))
+        self.assertIn(("主页抽抽乐 x1", HOME_GACHA_OCR_ROI), ocr_calls)
+
     def test_battle_gameplay_category_requires_ocr_and_visual_highlight(self):
         task = object.__new__(PVPTask)
         task.config = {"玩法类别高亮确认秒数": 0.0}
@@ -1371,6 +1447,39 @@ class PVPTaskHelperTest(unittest.TestCase):
         self.assertEqual([(*PVP_BACK_HOME_REFERENCE_POINT, 2.0)], clicks)
         self.assertEqual(10.0, home_calls[0])
         self.assertAlmostEqual(10.0, home_calls[1], places=5)
+
+    def test_click_leave_button_checks_both_regions_and_clicks_failure_target(self):
+        task = object.__new__(PVPTask)
+        task.config = {}
+        task.info_set = lambda *_args, **_kwargs: None
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        ocr_calls = []
+        clicks = []
+
+        def fake_ocr(_frame, name, roi=None, **_kwargs):
+            ocr_calls.append((name, roi))
+            if name == "pvp_leave_failure":
+                return [SimpleNamespace(name="离开", x=300, y=20, width=80, height=40)]
+            return []
+
+        task._bd2_ocr_boxes = fake_ocr
+        task.operate_click = lambda x, y, after_sleep=0.0: clicks.append(
+            (x, y, after_sleep)
+        )
+        task.sleep = lambda *_args, **_kwargs: None
+
+        self.assertTrue(PVPTask._click_leave_button(task))
+        self.assertEqual(
+            [
+                ("pvp_leave_failure", PVP_FAILURE_LEAVE_REFERENCE_ROI),
+                ("pvp_leave_success", PVP_SUCCESS_LEAVE_REFERENCE_ROI),
+            ],
+            ocr_calls,
+        )
+        self.assertEqual(
+            [(1036 / 1920, 992 / 1080, 2.0)],
+            clicks,
+        )
 
     def test_ensure_pvp_hub_after_leave_clicks_confirm_then_waits_hub(self):
         task = object.__new__(PVPTask)
@@ -1989,6 +2098,31 @@ class PVPTaskHelperTest(unittest.TestCase):
 
         self.assertTrue(PVPTask._free_ap_switch_on(task))
         self.assertEqual("开关黄色占比 1.000", harness.infos["PVP 免费AP"])
+
+    def test_click_ocr_pattern_center_uses_reference_roi_and_box_center(self):
+        task = object.__new__(PVPTask)
+        task.config = {}
+        task.info_set = lambda *_args, **_kwargs: None
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task._bd2_ocr_boxes = lambda *_args, **_kwargs: [
+            SimpleNamespace(name="自动战斗", x=10, y=20, width=30, height=40)
+        ]
+        clicks = []
+        task._click_client = lambda *args, **kwargs: clicks.append((args, kwargs))
+
+        self.assertTrue(
+            PVPTask._click_ocr_pattern_center(
+                task,
+                [r"自动战斗"],
+                name="PVP 自动战斗",
+                roi=PVP_AUTO_BATTLE_SCREEN_ROI,
+                after_sleep=1.0,
+            )
+        )
+        self.assertEqual(
+            [((1495, 950, 1920, 1080), {"after_sleep": 1.0})],
+            clicks,
+        )
 
 
 class PVPHubMedalsFixtureTest(unittest.TestCase):

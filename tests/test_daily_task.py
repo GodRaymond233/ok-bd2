@@ -28,6 +28,7 @@ from src.tasks.quick_hunt import (
     QUICK_HUNT_MENU_FOREGROUND_ROI,
     QUICK_HUNT_REWARD_ROI,
     QUICK_HUNT_REWARD_TITLE_ROI,
+    QUICK_HUNT_STONE_COUNT_ROI,
     HuntDialog,
 )
 from src.tasks.quick_hunt_plan import PLAN_KEY
@@ -777,6 +778,35 @@ class DailyTaskHelperTest(StageHistoryTestCase):
             calls,
         )
 
+    def test_quick_hunt_stone_counts_follow_top_to_bottom_element_order(self):
+        task = object.__new__(QuickHuntTask)
+        task.config = {"快速狩猎界面等待秒数": 1.0}
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task.sleep = Mock()
+        task.info_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        boxes = [
+            SimpleNamespace(name="90", x=1700, y=240, width=40, height=20),
+            SimpleNamespace(name="300", x=1700, y=90, width=40, height=20),
+            SimpleNamespace(name="180", x=1700, y=200, width=40, height=20),
+            SimpleNamespace(name="250", x=1700, y=130, width=40, height=20),
+            SimpleNamespace(name="200", x=1700, y=165, width=40, height=20),
+        ]
+
+        class FakeVision:
+            def ocr_boxes(self, _frame, _name, relative_roi=None, ocr_scale=1.0):
+                self.relative_roi = relative_roi
+                return boxes
+
+        vision = FakeVision()
+        task._quick_vision = lambda: vision
+
+        self.assertEqual(
+            {"火": 300, "水": 250, "风": 200, "光": 180, "暗": 90},
+            task._quick_hunt_stone_counts(),
+        )
+        self.assertEqual(QUICK_HUNT_STONE_COUNT_ROI, vision.relative_roi)
+
     def test_quick_hunt_crystal_selects_lowest_stone_and_runs_max(self):
         task = object.__new__(QuickHuntTask)
         task.config = {"快速狩猎界面等待秒数": 8.0}
@@ -1498,6 +1528,15 @@ class DailyTaskHelperTest(StageHistoryTestCase):
                 if "shortage" in states:
                     self.assertEqual(5, task._quick_hunt_dismiss_shortage.call_count)
                     task._quick_hunt_cancel_dialog.assert_not_called()
+
+    def test_quick_hunt_box_enabled_rejects_dark_text(self):
+        box = SimpleNamespace(x=2, y=2, width=6, height=6)
+        dark = np.zeros((10, 10, 3), dtype=np.uint8)
+        light = dark.copy()
+        light[2:8, 2:8] = 255
+
+        self.assertFalse(QuickHuntTask._quick_hunt_box_enabled(dark, box))
+        self.assertTrue(QuickHuntTask._quick_hunt_box_enabled(light, box))
 
     def test_daily_run_stops_when_failed_step_cannot_recover_home(self):
         task = object.__new__(DailyTask)

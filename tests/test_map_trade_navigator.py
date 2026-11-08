@@ -333,6 +333,36 @@ class NavigatorTest(unittest.TestCase):
             navigator._confirm_portal_interaction("交互")
         navigator._restore_navigation_field.assert_not_called()
 
+    def test_navigation_menu_upscale_requires_unique_stable_destination(self):
+        frame = np.full((720, 1280, 3), 120, dtype=np.uint8)
+        for labels, expected in (
+            (["狩猎扬", "快速狩猎", "艾琳"], "狩猎场"),
+            (["快速狩猎"], None),
+            (["狩猎场", "狩猎场"], None),
+            (["艾琳"], "艾琳"),
+        ):
+            with self.subTest(labels=labels):
+                clock = [0.0]
+                scales = []
+                def boxes(_frame, _label, _roi, *, ocr_scale=1.0):
+                    scales.append(ocr_scale)
+                    return [] if ocr_scale == 1.0 else [
+                        SimpleNamespace(name=text, x=300, y=100 + row * 40, width=80, height=20)
+                        for row, text in enumerate(labels)
+                    ]
+                navigator = Navigator(SimpleNamespace(
+                    info_set=Mock(),
+                    sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+                ), SimpleNamespace(capture=lambda: frame, ocr_boxes=boxes, simplify=str))
+                with patch("src.tasks.map_trade.navigator_sandbox.monotonic",
+                           side_effect=lambda: clock[0]):
+                    result = navigator._nav_menu_choice(("狩猎场", "艾琳"))
+                self.assertEqual(expected, None if result is None else result[0])
+                self.assertIn(2.0, scales)
+                if result is not None:
+                    self.assertEqual((720, 1280, 3), result[2])
+                    self.assertGreaterEqual(scales.count(2.0), 2)
+
     def test_navigation_destination_reclicks_fresh_menu_and_stops_on_unconfirmed_trip(self):
         for outcomes, success, click_count in (
             (["menu", "moving"], True, 2),
@@ -758,6 +788,19 @@ class NavigatorTest(unittest.TestCase):
         navigator._wait_for_field_hud = Mock()
         self.assertIsNone(navigator._travel_via_nav_menu("艾琳"))
         navigator._wait_for_field_hud.assert_not_called()
+
+    def test_small_chapter_eighteen_exit_uses_upscaled_ocr_centers(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        label = SimpleNamespace(name="科库托斯圣城", x=483, y=270, width=82, height=16)
+        vision = SimpleNamespace(
+            ocr_boxes=Mock(side_effect=[[], [label]]), simplify=lambda text: text,
+        )
+        navigator = Navigator(SimpleNamespace(info_set=Mock()), vision)
+        points = navigator._exit_label_points(frame, CARD_BY_ID["Q_sp18"].targets[1])
+        self.assertEqual([(524, 296), (524, 278), (524, 308)], points)
+        self.assertEqual(
+            [1.0, 2.0], [c.kwargs["ocr_scale"] for c in vision.ocr_boxes.call_args_list],
+        )
 
     def test_event_cover_replay_handles_playing_card_scaling_and_absence(self):
         band = load_bgr(ROOT / "tests/fixtures/quick_switch/event_bar_video_1080.png")
