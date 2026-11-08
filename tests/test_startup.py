@@ -43,7 +43,9 @@ class StartApplicationTest(unittest.TestCase):
         """Patch the executor guard so tests never take a real session lock."""
         legacy_guard = SimpleNamespace(blocking_message=lambda force=False: legacy)
         holder = None if acquired else SimpleNamespace(describe=lambda: "进程 7（qt）")
+        directory = self.enterContext(tempfile.TemporaryDirectory())
         patches = [
+            patch.object(startup, "SCHEDULED_FAILURE_DIR", Path(directory) / "failures"),
             patch.object(sys, "argv", list(argv)),
             patch.object(startup, "open_crash_log"),
             patch.object(startup.faulthandler, "enable"),
@@ -74,9 +76,21 @@ class StartApplicationTest(unittest.TestCase):
         class FakeOk:
             def __init__(self, config):
                 events.append(("ok_init", dict(config)))
+                task = startup.parse_entry_arguments().task
+                self.args = {"task": int(task) if task and task.isdigit() else task,
+                             "exit": "-e" in sys.argv}
 
             def start(self):
                 events.append("start")
+
+            def start_mcp_server(self):
+                events.append("mcp")
+
+            def run_task(self, task, exit_after=False):
+                events.append(("run_task", task, exit_after))
+
+            def quit(self):
+                events.append("quit")
 
         return SimpleNamespace(OK=FakeOk)
 
@@ -104,7 +118,9 @@ class StartApplicationTest(unittest.TestCase):
                 ("configure", {"debug": False}),
                 "guards",
                 ("ok_init", {"debug": False, "use_gui": False, "check_mutex": False}),
-                "start",
+                "mcp",
+                ("run_task", 1, True),
+                "quit",
             ],
             events,
         )
@@ -114,6 +130,7 @@ class StartApplicationTest(unittest.TestCase):
     def test_refused_lock_stops_before_dependencies_and_runtime(self):
         for argv, mode, dialog in (
             (("main.py", "--headless", "-t", "1"), "headless", False),
+            (("main.py", "-t", "1", "-e"), "headless", True),
         ):
             with self.subTest(mode=mode):
                 events = []
@@ -129,6 +146,38 @@ class StartApplicationTest(unittest.TestCase):
                 kinds = [event[0] for event in events if isinstance(event, tuple)]
                 self.assertNotIn("ok_init", kinds)
                 self.assertEqual("dialog" in kinds, dialog)
+                records = startup.scheduled_start_failures()
+                self.assertEqual(len(records), 1)
+                self.assertFalse(records[0]["ok"])
+                self.assertEqual(records[0]["details"]["退出码"], "11")
+
+    def test_scheduled_start_failures_are_recorded_and_runtime_is_closed(self):
+        for failure in ("legacy", "config", "run"):
+            with self.subTest(failure=failure):
+                events = []
+                self.guarded_startup(
+                    events, legacy="旧版客户端仍在运行" if failure == "legacy" else None,
+                    argv=("main.py", "-t", "1", "-e"),
+                )
+                fake = self.fake_ok(events)
+                prepare = Mock(
+                    side_effect=ValueError("配置恢复失败") if failure == "config" else None)
+                if failure == "run":
+                    fake.OK.run_task = Mock(side_effect=RuntimeError("Start task failed"))
+                with (
+                    patch.dict(sys.modules, {"ok": fake}),
+                    patch("src.desktop.backups.prepare_installed_configs", prepare),
+                    self.assertRaises(SystemExit) as raised,
+                ):
+                    startup.start_application(lambda: {})
+                self.assertEqual(raised.exception.code, 12)
+                self.assertEqual("quit" in events, failure == "run")
+                records = startup.scheduled_start_failures()
+                self.assertEqual(len(records), 1)
+                self.assertFalse(records[0]["ok"])
+                self.assertIn("失败", records[0]["status"])
+                self.assertTrue(any(
+                    isinstance(event, tuple) and event[0] == "dialog" for event in events))
 
     def test_graphical_entrypoints_launch_electron_without_loading_the_core(self):
         for script, configure, expected in (

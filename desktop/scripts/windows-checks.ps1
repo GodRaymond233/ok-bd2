@@ -21,6 +21,7 @@ if (-not $OutDir) {
     $OutDir = Join-Path $root ".local-dev\outputs\electron-p1-windows-checks\$stamp"
 }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+$OutDir = (Resolve-Path -LiteralPath $OutDir).Path
 $python = Join-Path $root '.venv\Scripts\python.exe'
 $shellDir = Join-Path $root 'desktop\shell'
 $uiDir = Join-Path $root 'desktop\ui'

@@ -73,6 +73,7 @@
   "游戏没有运行，已通过 Starter 启动。": "The game wasn't running, so it was started through the Starter.",
   "正在启动 Starter…": "Starting the Starter…",
   "取消等待": "Stop waiting",
+  "当前没有可取消的启动等待，请稍后重试或停止任务": "There is no startup wait to cancel right now. Try again shortly or stop the task.",
   "请在 Starter 里完成操作，等待会自动继续。": "Finish what the Starter asks for. The wait continues by itself.",
   "启动游戏失败": "Couldn't start the game",
   "常见原因：Starter 需要登录或更新、游戏被安全软件拦截。手动打开游戏后再开始，或检查下方的游戏位置。": "Common causes: the Starter needs a login or an update, or security software blocked the game. Open the game yourself and start again, or check the game location below.",

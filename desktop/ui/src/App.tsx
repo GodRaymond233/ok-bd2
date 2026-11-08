@@ -482,7 +482,11 @@ export function App() {
     refreshDevices: api.refreshDevices,
     selectDevice: async (id) => setUi(await api.selectDevice(id)),
     selectCapture: async (id) => setUi(await api.selectCapture(id)),
-    cancelStarter: api.cancelStarter,
+    cancelStarter: async () => {
+      const result = await api.cancelStarter();
+      if (!result.cancelled) throw new Error(t("当前没有可取消的启动等待，请稍后重试或停止任务"));
+      return result;
+    },
     dismissStartError: () => setStartError(null),
     setSetting: async (group, key, value) => replaceGroup(await api.setSetting(group, key, value)),
     resetSettings: async (group) => replaceGroup(await api.resetSettings(group)),

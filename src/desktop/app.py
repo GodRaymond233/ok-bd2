@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from ok.core.config_schema import build_config_fields
 from ok.core.events import communicate
 
+from src.compat.startup import scheduled_start_failures
 from src.compat.update_card_ui import launcher_supports_update_check
 from src.desktop.config_store import config_lock, save_config, task_config_busy
 from src.desktop.events import install_events
@@ -749,7 +750,10 @@ def create_app(
 
     @app.get("/api/bd2/history")
     def history(task: str | None = None, limit: int = 20):
-        return default_store().recent_runs(task or None, min(max(limit, 1), HISTORY_LIMIT))
+        limit = min(max(limit, 1), HISTORY_LIMIT)
+        runs = default_store().recent_runs(task or None, limit)
+        runs.extend(run for run in scheduled_start_failures() if not task or run["task"] == task)
+        return sorted(runs, key=lambda run: run["finished"], reverse=True)[:limit]
 
     def report_call(action, *args):
         try:
@@ -799,10 +803,9 @@ def create_app(
     @app.post("/api/bd2/starter/cancel")
     def cancel_starter():
         controller = runtime.ok.headless_app.start_controller
-        cancelled = STARTER_WAIT.cancel()
-        if controller.starting:
-            controller.cancel_start()
-            cancelled = True
+        cancelled = bool(controller.starting and controller.cancel_start())
+        if cancelled:
+            STARTER_WAIT.cancel()
         return {"cancelled": cancelled}
 
     @app.post("/api/bd2/notify/test")

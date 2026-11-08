@@ -202,6 +202,8 @@ class Bd2RoutesTest(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.folder = directory.name
+        self.enterContext(patch(
+            "src.compat.startup.SCHEDULED_FAILURE_DIR", Path(directory.name) / "starts"))
         self.store = RunHistoryStore(f"{directory.name}/history.json")
         set_default_store(self.store)
         self.addCleanup(set_default_store, None)
@@ -366,6 +368,18 @@ class Bd2RoutesTest(unittest.TestCase):
         self.assertEqual(1, len(get(limit=0)))
         self.assertEqual(4, len(get(limit=1000)))
         self.assertEqual("白嫖抽抽乐", get()[0]["task"])
+        from src.compat.startup import _report_headless_failure
+
+        with patch("src.compat.startup.time.time", return_value=NOW + 20):
+            _report_headless_failure(
+                SimpleNamespace(task="1", headless=True), "执行器被占用，未执行", 11)
+        records = get()
+        self.assertEqual("计划任务（1）", records[0]["task"])
+        self.assertFalse(records[0]["ok"])
+        self.assertEqual(5, len(records))
+        self.assertEqual(3, len(get(task="快速狩猎")))
+        self.assertEqual(1, len(get(task="计划任务（1）")))
+        self.assertEqual(4, len(self.store.recent_runs()))
 
     def tasks(self):
         response = self.client.get("/api/tasks", headers=self.headers)

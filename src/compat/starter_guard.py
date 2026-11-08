@@ -106,6 +106,82 @@ def enable_starter_launch_guard() -> None:
             logger.warning(f"starter WinRT unavailable, will try PrintWindow: {exc}")
     _patch_stable_wait(start_controller)
     _patch_execute_preflight(start_controller)
+    _patch_start_cancellation(start_controller)
+
+
+def _patch_start_cancellation(module) -> None:
+    """Accept cancellation only while queued or waiting for the device.
+
+    The upstream do_start clears its event on entry, so queued cancellation needs
+    a separate latch. The phase lock also closes cancellation before task activation.
+    """
+    controller_class = module.StartController
+    if getattr(controller_class.start, "_bd2_cancel_guard", False):
+        return
+    original_start = controller_class.start
+    original_do_start = controller_class.do_start
+    original_start_device = controller_class.start_device
+    original_cancel = controller_class.cancel_start
+
+    def lock(controller):
+        return controller.__dict__.setdefault("_bd2_cancel_lock", threading.RLock())
+
+    @wraps(original_start)
+    def start(controller, task=None, exit_after=False):
+        with lock(controller):
+            if controller.starting:
+                return False
+            controller._bd2_cancel_phase = "queued"
+            controller._bd2_cancelled = False
+            try:
+                return original_start(controller, task, exit_after)
+            except BaseException:
+                controller._bd2_cancel_phase = None
+                raise
+
+    @wraps(original_do_start)
+    def do_start(controller, task=None, exit_after=False):
+        with lock(controller):
+            cancelled = (getattr(controller, "_bd2_cancel_phase", None) == "queued"
+                         and controller._bd2_cancelled)
+            controller._bd2_cancel_phase = None
+            controller._bd2_cancelled = False
+            if cancelled:
+                controller.starting = False
+                module.communicate.starting_emulator.emit(True, None, 0)
+                return False
+        return original_do_start(controller, task, exit_after)
+
+    @wraps(original_start_device)
+    def start_device(controller, *args, **kwargs):
+        with lock(controller):
+            controller._bd2_cancel_phase = "waiting"
+        try:
+            result = original_start_device(controller, *args, **kwargs)
+        finally:
+            with lock(controller):
+                controller._bd2_cancel_phase = None
+                cancelled = controller._bd2_cancelled
+        if cancelled:
+            module.communicate.starting_emulator.emit(True, None, 0)
+            return False
+        return result
+
+    @wraps(original_cancel)
+    def cancel_start(controller):
+        with lock(controller):
+            if (getattr(controller, "_bd2_cancel_phase", None) not in {"queued", "waiting"}
+                    or controller._bd2_cancelled):
+                return False
+            controller._bd2_cancelled = True
+            original_cancel(controller)
+            return True
+
+    start._bd2_cancel_guard = True
+    controller_class.start = start
+    controller_class.do_start = do_start
+    controller_class.start_device = start_device
+    controller_class.cancel_start = cancel_start
 
 
 def notify_starter_wizard(windows: Iterable[StarterWindow], elapsed_seconds: float) -> None:

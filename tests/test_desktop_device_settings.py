@@ -282,8 +282,12 @@ class StarterWaitTest(unittest.TestCase):
         self.assertIsNone(client.get("/api/ui/capture").json()["starter_wait"])
         controller = self.headless.start_controller
         controller.starting = True
+        controller.cancel_start.return_value = True
         self.assertEqual({"cancelled": True}, client.post("/api/bd2/starter/cancel").json())
         controller.cancel_start.assert_called_once_with()
+        controller.cancel_start.return_value = False
+        self.assertEqual({"cancelled": False}, client.post("/api/bd2/starter/cancel").json())
+        controller.cancel_start.return_value = True
         controller.cancel_start.reset_mock()
         cancel = threading.Event()
         starter_wait_status.emit("", cancel)

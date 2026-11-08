@@ -1,3 +1,5 @@
+import inspect
+import threading
 import types
 import unittest
 from dataclasses import replace
@@ -319,6 +321,48 @@ class NotifyStarterWizardTest(unittest.TestCase):
 
 
 class GameWindowWaitTest(unittest.TestCase):
+    def test_cancellation_stops_queued_and_waiting_starts_and_rejects_activation(self):
+        from ok.core.start_controller import StartController
+
+        for phase in ("queued", "waiting", "activation"):
+            with self.subTest(phase=phase):
+                controller_class = type("Controller", (), {
+                    name: inspect.unwrap(getattr(StartController, name))
+                    for name in ("start", "do_start", "cancel_start")
+                })
+                controller_class.start_device = lambda self: (
+                    self.cancel_start() if phase == "waiting" else None) or True
+                events = Mock()
+                starter_guard._patch_start_cancellation(types.SimpleNamespace(
+                    StartController=controller_class, communicate=events,
+                ))
+                controller = controller_class()
+                controller.starting = False
+                controller._cancel_requested = threading.Event()
+                queue = []
+                controller.handler = types.SimpleNamespace(post=queue.append)
+                activations = []
+
+                def activate(*_args):
+                    if not controller.start_device():
+                        return False
+                    self.assertFalse(controller.cancel_start())
+                    activations.append(True)
+                    return True
+
+                controller._do_start = activate
+                controller.start()
+                if phase == "queued":
+                    self.assertTrue(controller.cancel_start())
+                result = queue.pop()()
+                self.assertEqual(result, phase == "activation")
+                self.assertEqual(activations, [True] if phase == "activation" else [])
+                self.assertFalse(controller.starting)
+                self.assertFalse(controller.cancel_start())
+                controller.start_device = lambda: True
+                controller.start()
+                self.assertTrue(queue.pop()())
+
     def run_wait(self, game_at=None, cancel_at=None, observation=None, exit_at=None,
                  controller_cancel_at=None):
         now = [0.0]
