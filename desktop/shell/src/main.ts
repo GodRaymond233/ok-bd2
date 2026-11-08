@@ -15,6 +15,7 @@ import {
   type IpcMainEvent,
   type IpcMainInvokeEvent,
 } from "electron";
+import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { CoreError, CoreProcess, type CoreExit } from "./core-process";
@@ -33,6 +34,7 @@ import {
 } from "./shell-config";
 import { ShellLog } from "./shell-log";
 import { launchUpdate, maintainData } from "./maintenance";
+import { APP_NAME, appIdentityCommands, notificationText } from "./notification";
 import type { MaintenanceMessage } from "./protocol";
 
 type StatusKind = "starting" | "error" | "crashed" | "exiting" | "restored";
@@ -200,15 +202,20 @@ function desktopInfo() {
 }
 
 /** False when the system could not be asked to show it. */
-function deliverNotification(title: string, body: string, error: boolean): boolean {
+function deliverNotification(title: string, message: string, error: boolean): boolean {
   if (quit.started) return false;
+  const text = notificationText(title, message);
+  const icon = iconImage();
   try {
     if (process.platform === "win32" && tray) {
-      tray.displayBalloon({ title, content: body, iconType: error ? "error" : "info" });
+      // The app's own icon in place of the stock info/error symbol; without one, keep the symbol.
+      tray.displayBalloon(icon.isEmpty()
+        ? { title: text.title, content: text.body, iconType: error ? "error" : "info" }
+        : { title: text.title, content: text.body, icon });
       return true;
     }
     if (Notification.isSupported()) {
-      const notification = new Notification({ title, body });
+      const notification = new Notification({ title: text.title, body: text.body, ...(icon.isEmpty() ? {} : { icon }) });
       notification.on("click", showWindow);
       notification.show();
       return true;
@@ -285,7 +292,7 @@ async function startCore(): Promise<void> {
   core = process_;
   process_.on("message", (message: CoreMessage) => {
     if (core === process_ && message.type === "notification") {
-      deliverNotification(message.title || "ok-bd2", message.message, message.error);
+      deliverNotification(message.title, message.message, message.error);
     }
     if (core === process_ && message.type === "maintenance-ready") cleanMaintenance.add(process_);
     if (core === process_ && message.type === "maintenance") void performMaintenance(process_, message);
@@ -678,9 +685,25 @@ function registerIpc(): void {
   });
 }
 
-function iconImage(): Electron.NativeImage {
+function iconFile(): string | null {
   const file = options ? path.join(options.core.cwd, "icons", "icon.png") : "";
-  return file && fs.existsSync(file) ? nativeImage.createFromPath(file) : nativeImage.createEmpty();
+  return file && fs.existsSync(file) ? file : null;
+}
+
+function iconImage(): Electron.NativeImage {
+  const file = iconFile();
+  return file ? nativeImage.createFromPath(file) : nativeImage.createEmpty();
+}
+
+/** Name and icon for the notification header; see appIdentityCommands. */
+function registerAppIdentity(): void {
+  if (process.platform !== "win32") return;
+  const reg = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "reg.exe");
+  for (const args of appIdentityCommands(APP_ID, APP_NAME, iconFile())) {
+    execFile(reg, args, { windowsHide: true, timeout: 10000 }, (error) => {
+      if (error) log.warn(`app identity (${args[3]}): ${String(error)}`);
+    });
+  }
 }
 
 function workAreas(): Bounds[] {
@@ -803,6 +826,7 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.setAppUserModelId(APP_ID);
+  registerAppIdentity();
   Menu.setApplicationMenu(null);
   app.on("second-instance", showWindow);
   app.on("will-quit", () => hotkey.release());
