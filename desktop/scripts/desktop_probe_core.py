@@ -45,6 +45,9 @@ def load_config():
             )
         state = {"starts": 0, "running": False, "current_task": None}
         original_status = runtime.status
+        original_capture_ui = runtime.capture_ui
+        # Keep the connection controls testable even when a real game is already open.
+        runtime.capture_ui = lambda: dict(original_capture_ui(), devices=[])
 
         def status():
             return dict(original_status(), running=state["running"],

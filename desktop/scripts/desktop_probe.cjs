@@ -384,13 +384,21 @@ function probe() {
 
     // Copy buttons (report, logs, OCR text): the page may write the clipboard, never read it.
     const savedClipboard = await clipboard.readText();
-    win.webContents.focus();
-    // As a button click: with a user gesture, which is what makes Electron ask the shell.
-    const written = await win.webContents.executeJavaScript("navigator.clipboard.writeText('okbd2-probe').then(() => 'ok', (error) => String(error))", true);
-    const copied = await clipboard.readText();
-    check(`core pages can write the clipboard (${written}, read back "${copied}")`, written === "ok" && copied === "okbd2-probe");
-    check("core pages cannot read the clipboard", await js("navigator.clipboard.readText().then(() => false, () => true)"));
-    await clipboard.writeText(savedClipboard);
+    try {
+      clipboard.writeText("okbd2-native-probe");
+      result.nativeClipboardAvailable = clipboard.readText() === "okbd2-native-probe";
+      win.webContents.focus();
+      // As a button click: with a user gesture, which is what makes Electron ask the shell.
+      const written = await win.webContents.executeJavaScript("navigator.clipboard.writeText('okbd2-probe').then(() => 'ok', (error) => String(error))", true);
+      check("core pages receive clipboard-write permission", written === "ok");
+      if (result.nativeClipboardAvailable) {
+        await until(() => clipboard.readText() === "okbd2-probe", "clipboard write visible", 30);
+        check("clipboard contents match the page write", true);
+      }
+      check("core pages cannot read the clipboard", await js("navigator.clipboard.readText().then(() => false, () => true)"));
+    } finally {
+      clipboard.writeText(savedClipboard);
+    }
 
     await api(`/api/settings/${encodeURIComponent("Notification")}/config`, { key: "System Notification", value: true });
     check("local notification accepted", (await api("/api/bd2/notify/test", { channel: "system" })).status === 200);
