@@ -475,6 +475,7 @@ def install_executor_guards(guard: LegacyGuard | None = None) -> bool:
     def guarded_do_start(controller, task=None, exit_after=False):
         message = legacy_guard().blocking_message(force=True)
         if message is not None:
+            controller.starting = False
             logger.warning(message)
             communicate.starting_emulator.emit(True, message, 0)
             return False

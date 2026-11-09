@@ -409,7 +409,9 @@ class RuntimeControlTest(unittest.TestCase):
     def test_frontend_ready_preserves_launcher_upgrade_and_exit_cancellation(self):
         launcher = Mock()
         stopped = threading.Event()
-        runtime = SimpleNamespace(pyappify_module=launcher, ok=SimpleNamespace(exit_event=stopped))
+        runtime = SimpleNamespace(pyappify_module=launcher, ok=SimpleNamespace(exit_event=stopped),
+                                  executor=SimpleNamespace(global_config=SimpleNamespace(
+                                      get_config=lambda name: {"Kill Launcher After Start": True})))
         update = {
             "to_version": "1.2.3",
             "sha256": "hash",
@@ -423,10 +425,11 @@ class RuntimeControlTest(unittest.TestCase):
             ["https://example.test/app.zip"],
             exit_event=stopped,
         )
+        self.assertEqual(launcher.method_calls[-1][0], "kill_pyappify")
 
 
 class DesktopAppTest(unittest.TestCase):
-    def make_app(self, ui_dist, request_shutdown=None, legacy=()):
+    def make_app(self, ui_dist, request_shutdown=None, legacy=(), config_folder="configs"):
         engine = SimpleNamespace(
             config={"version": "0.1.1"},
             task_executor=make_executor(),
@@ -438,7 +441,7 @@ class DesktopAppTest(unittest.TestCase):
             exit_event=threading.Event(),
         )
         return create_app(
-            {"version": "0.1.1"},
+            {"version": "0.1.1", "config_folder": config_folder},
             token=TOKEN,
             origin=ORIGIN,
             ok_instance=engine,
@@ -458,6 +461,24 @@ class DesktopAppTest(unittest.TestCase):
                 break
             threading.Event().wait(0.02)
         ready.assert_called_once()
+
+    def test_version_change_is_shown_until_acknowledged_then_persists_across_restarts(self):
+        with tempfile.TemporaryDirectory() as folder, patch.dict(
+                "os.environ", {"PYAPPIFY_APP_STARTING_VERSION": "v0.1.0",
+                               "PYAPPIFY_UPDATE_NOTE": "Updated components"}):
+            headers = {"Authorization": f"Bearer {TOKEN}"}
+            for acknowledged in (False, True):
+                with TestClient(self.make_app(Path("missing"), config_folder=folder),
+                                base_url=ORIGIN) as client:
+                    change = client.get(
+                        "/api/desktop/info", headers=headers).json()["version_change"]
+                    if acknowledged:
+                        self.assertIsNone(change)
+                    else:
+                        self.assertEqual(change, {"previous": "v0.1.0", "current": "0.1.1",
+                                                  "notes": "Updated components"})
+                        self.assertEqual(client.post("/api/desktop/version-shown",
+                                                     headers=headers).status_code, 200)
 
 
 class FakeDeviceManager:

@@ -21,7 +21,7 @@ import * as path from "node:path";
 import { CoreError, CoreProcess, type CoreExit } from "./core-process";
 import { ExecutionToggle, HotkeyBinding, QuitGate, type ToggleFailure } from "./desktop-control";
 import { isAllowedExternal, isStatusPage, navigationAllowed, pagePermissionAllowed, sameOrigin } from "./navigation";
-import { SUPPORTED_API, type CoreMessage } from "./protocol";
+import { EXIT, SUPPORTED_API, type CoreMessage } from "./protocol";
 import {
   fitBounds,
   minimumSize,
@@ -33,7 +33,7 @@ import {
   type ShellOptions,
 } from "./shell-config";
 import { ShellLog } from "./shell-log";
-import { launchUpdate, maintainData } from "./maintenance";
+import { launchUpdate, maintainData, updateCommand } from "./maintenance";
 import { APP_NAME, appIdentityCommands, notificationText } from "./notification";
 import type { MaintenanceMessage } from "./protocol";
 
@@ -87,7 +87,6 @@ let desktopRetry: ReturnType<typeof setTimeout> | null = null;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let controlDialogOpen = false;
 let maintenanceRunning = false;
-const cleanMaintenance = new WeakSet<CoreProcess>();
 const startedAt = Date.now();
 const smoke: Record<string, unknown> = { shellPid: process.pid };
 let status: ShellStatus = {
@@ -294,7 +293,9 @@ async function startCore(): Promise<void> {
     if (core === process_ && message.type === "notification") {
       deliverNotification(message.title, message.message, message.error);
     }
-    if (core === process_ && message.type === "maintenance-ready") cleanMaintenance.add(process_);
+    if (core === process_ && message.type === "fatal" && message.code === "config-newer") {
+      void restoreCompatibleConfig(process_, message);
+    }
     if (core === process_ && message.type === "maintenance") void performMaintenance(process_, message);
   });
   process_.on("exit", (exit: CoreExit) => onCoreExit(process_, exit));
@@ -320,6 +321,7 @@ async function startCore(): Promise<void> {
     }
   } catch (error) {
     log.error(`core start failed: ${error instanceof Error ? error.message : String(error)}`);
+    if (error instanceof CoreError && error.details.code === "config-newer") return;
     // A core that dies during the page load has its crash page already; it says more than this.
     if (core === process_ && !quit.started && status.kind !== "crashed") {
       showStatus(describeFailure(error));
@@ -333,6 +335,35 @@ async function startCore(): Promise<void> {
       app.exit(1);
     }
   }
+}
+
+async function restoreCompatibleConfig(process_: CoreProcess, message: Extract<CoreMessage, { type: "fatal" }>): Promise<void> {
+  if (!options || maintenanceRunning) return;
+  maintenanceRunning = true;
+  try {
+    const backup = message.backups?.[0];
+    showStatus({ kind: "error", title: "配置版本不匹配", message: message.message,
+      details: backup ? ["恢复对应版本的备份后可以启动；取消后可退出并在启动器中切回新版。"] :
+        ["没有找到匹配的备份。请在启动器中切回配置所属版本，或联系维护者恢复数据。"],
+      canRestart: false });
+    showWindow();
+    if (!backup) {
+      return;
+    }
+    const choice = await dialog.showMessageBox(mainWindow!, { type: "warning", title: "恢复版本备份",
+      message: message.message, detail: `可恢复 ${backup.created_at} 的备份。当前配置会先保留为安全备份。`,
+      buttons: ["取消", "恢复备份并启动"], defaultId: 0, cancelId: 0 });
+    if (choice.response !== 1 || core !== process_ || quit.started) return;
+    const stopped = await process_.stop("config-restore");
+    if (stopped.forced) throw new Error("核心未能退出，已取消恢复");
+    await maintainData(options.core.python, options.core.cwd, { type: "maintenance", operation: "restore",
+      version: message.core_version!, backup_id: backup.id, target: "", launcher: "" });
+    maintenanceRunning = false;
+    await startCore();
+  } catch (error) {
+    showStatus({ kind: "error", title: "备份恢复失败", message: String(error), details: [], canRestart: false });
+    showWindow();
+  } finally { maintenanceRunning = false; }
 }
 
 function writeSmoke(file: string): void {
@@ -533,13 +564,15 @@ async function performMaintenance(process_: CoreProcess, message: MaintenanceMes
   showStatus({ kind: "exiting", title: message.operation === "update" ? "正在准备更新" : "正在恢复备份",
     message: "正在停止核心并保存数据，请稍候。", details: [], canRestart: false });
   try {
+    if (message.operation === "update") updateCommand(options.core.cwd, message);
     const stopped = await process_.stop("maintenance");
-    if (stopped.forced || stopped.exitCode !== 0 || !cleanMaintenance.has(process_))
+    if (stopped.forced || stopped.exitCode !== EXIT.MAINTENANCE_READY)
       throw new Error("核心未完成安全退出，维护操作已取消，配置保持原样。");
     await maintainData(options.core.python, options.core.cwd, message);
     if (quit.started || quitting) return;
     if (message.operation === "update") {
       await launchUpdate(options.core.cwd, message);
+      deliverNotification("正在更新 ok-bd2", "启动器安装完成后会重新打开客户端。", false);
       quitting = true;
       app.exit(0);
     } else {

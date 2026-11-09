@@ -1,12 +1,14 @@
+import io
 import json
 import os
+import runpy
 import shutil
 import subprocess
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from scripts.install_dependencies import install_requirements
 
@@ -153,6 +155,43 @@ class DependencyInstallTest(unittest.TestCase):
                 self.assertEqual(7, install_requirements("requirements.txt"))
                 run.assert_called_once()
                 sleep.assert_not_called()
+
+
+class DesktopReleaseTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.release = runpy.run_path(str(ROOT / "desktop/scripts/build-shell-release.py"))
+
+    def test_shell_source_changes_require_a_new_release_version(self):
+        publish = self.release["publish"]
+        api = Mock(return_value={"assets": [{"name": "shell-release.json",
+                                           "browser_download_url": "https://example.test/meta"}]})
+        with (patch.dict(os.environ, GH_TOKEN="fixture", CNB_GH="fixture"),
+              patch.dict(publish.__globals__, {"api": api}),
+              patch("urllib.request.urlopen", return_value=io.BytesIO(
+                  b'{"source_sha256":"previous"}')),
+              self.assertRaisesRegex(ValueError, "bump")):
+            publish(Path("shell.zip"), {"version": "0.3.6", "source_sha256": "changed"},
+                    "owner/repository")
+        api.assert_called_once()
+
+    def test_electron_payload_prunes_framework_qt_and_refuses_qt_dependencies(self):
+        prepare = self.release["prepare_core_payload"]
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for name in ("ok/gui", "ok/ui/qt", "ok/core"):
+                path = root / name
+                path.mkdir(parents=True)
+                (path / "module.py").write_text("", "utf-8")
+            requirements = root / "requirements.txt"
+            requirements.write_text("fastapi==0.143.0", "utf-8")
+            prepare(root)
+            self.assertFalse((root / "ok/ui/qt").exists())
+            self.assertFalse((root / "ok/gui").exists())
+            self.assertTrue((root / "ok/core/module.py").exists())
+            requirements.write_text("PySide6==6.10.0", "utf-8")
+            with self.assertRaisesRegex(ValueError, "Qt dependencies"):
+                prepare(root)
 
 
 if __name__ == "__main__":

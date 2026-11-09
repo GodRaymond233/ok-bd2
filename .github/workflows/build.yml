@@ -135,6 +135,9 @@ jobs:
 
       - name: Build Electron interface and shell
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CNB_GH: ${{ secrets.CNB_GH }}
         run: |
           npm --prefix desktop/ui ci --no-audit --no-fund
           if ($LASTEXITCODE -ne 0) { throw "UI dependency installation failed." }
@@ -151,7 +154,7 @@ jobs:
           $shellVersion = (Get-Content desktop/shell/package.json -Raw | ConvertFrom-Json).version
           python desktop/scripts/build-shell-release.py --output desktop-release `
             --manifest src/desktop/shell-release.json `
-            --url "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:GITHUB_REF_NAME/ok-bd2-shell-$shellVersion-win-x64.zip"
+            --publish --repository $env:GITHUB_REPOSITORY
           if ($LASTEXITCODE -ne 0) { throw "Shell release assembly failed." }
           Copy-Item src/desktop/shell-release.json desktop-release/shell-release.json
           if (-not (Test-Path src/desktop/ui_dist/index.html)) { throw "The UI bundle is missing." }
@@ -172,6 +175,8 @@ jobs:
       - name: Validate inlined update repository
         shell: pwsh
         run: |
+          python desktop/scripts/build-shell-release.py --prepare-core-payload
+          if ($LASTEXITCODE -ne 0) { throw "Electron core payload validation failed." }
           if (-not (Test-Path -LiteralPath "ok" -PathType Container)) {
             throw "Inlined ok-script package folder is missing."
           }

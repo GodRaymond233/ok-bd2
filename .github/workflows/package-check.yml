@@ -48,6 +48,8 @@ jobs:
         run: |
           python -m ok.update.inline_ok_requirements --tag $env:APPLICATION_TAG
           if ($LASTEXITCODE -ne 0) { throw "Could not inline the current checkout." }
+          python desktop/scripts/build-shell-release.py --prepare-core-payload
+          if ($LASTEXITCODE -ne 0) { throw "Electron core payload validation failed." }
           if (-not (Test-Path -LiteralPath ok -PathType Container)) {
             throw "The inlined framework is missing."
           }

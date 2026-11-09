@@ -6,9 +6,11 @@ import re
 import shutil
 import stat
 import tempfile
+import time
 import urllib.parse
 import urllib.request
 import zipfile
+from contextlib import nullcontext
 from pathlib import Path, PurePosixPath
 
 MAX_DOWNLOAD = 512 * 1024 * 1024
@@ -17,12 +19,17 @@ MAX_FILES = 5000
 RELEASE_FILE = Path(__file__).with_name("shell-release.json")
 
 
-def install_shell(destination, version, check_shell, *, release_file=RELEASE_FILE):
+def install_shell(destination, version, check_shell, *,
+                  release_file=RELEASE_FILE, notice=nullcontext):
     destination = Path(destination)
     if destination.is_symlink() or destination.is_junction():
         raise ValueError("桌面程序安装目录不能是链接")
     if destination.exists():
-        return check_shell(destination)
+        try:
+            return check_shell(destination)
+        except (OSError, ValueError):
+            if not Path(release_file).is_file():
+                raise
     try:
         release = json.loads(Path(release_file).read_text("utf-8"))
     except (OSError, ValueError) as error:
@@ -39,7 +46,13 @@ def install_shell(destination, version, check_shell, *, release_file=RELEASE_FIL
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.parent.is_symlink() or destination.parent.is_junction():
         raise ValueError("桌面程序安装目录不能是链接")
-    with tempfile.TemporaryDirectory(prefix=".download-", dir=destination.parent) as temporary:
+    if destination.exists():
+        try:
+            destination.rename(destination.with_name(f"{version}.broken-{time.time_ns()}"))
+        except OSError as error:
+            raise ValueError("桌面程序正在运行或文件被占用，请关闭后重试") from error
+    with (notice(),
+          tempfile.TemporaryDirectory(prefix=".download-", dir=destination.parent) as temporary):
         staging = Path(temporary)
         archive = staging / "shell.zip"
         errors = []
@@ -51,16 +64,23 @@ def install_shell(destination, version, check_shell, *, release_file=RELEASE_FIL
                 ):
                     raise ValueError("下载地址必须使用 HTTPS")
                 digest, size = hashlib.sha256(), 0
+                checked_at, checked_size = time.monotonic(), 0
                 with (
                     urllib.request.urlopen(url, timeout=30) as source,
                     archive.open("wb") as target,
                 ):
-                    while chunk := source.read(1024 * 1024):
+                    read = getattr(source, "read1", source.read)
+                    while chunk := read(64 * 1024):
                         size += len(chunk)
                         if size > MAX_DOWNLOAD:
                             raise ValueError("桌面程序下载超过大小限制")
                         digest.update(chunk)
                         target.write(chunk)
+                        elapsed = time.monotonic() - checked_at
+                        if elapsed >= 60:
+                            if (size - checked_size) / elapsed < 20 * 1024:
+                                raise ValueError("下载持续过慢，切换备用地址")
+                            checked_at, checked_size = time.monotonic(), size
                 if digest.hexdigest() != release["sha256"]:
                     raise ValueError("桌面程序 SHA256 校验失败")
                 break
@@ -80,6 +100,11 @@ def install_shell(destination, version, check_shell, *, release_file=RELEASE_FIL
         except FileExistsError:
             # Another bootstrap may have finished the same immutable version first.
             return check_shell(destination)
+    from src.desktop.backups import regular_tree
+
+    for broken in sorted(destination.parent.glob(f"{version}.broken-*"), reverse=True)[1:]:
+        regular_tree(broken)
+        shutil.rmtree(broken)
     return check_shell(destination)
 
 

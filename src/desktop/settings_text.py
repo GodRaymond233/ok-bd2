@@ -37,8 +37,8 @@ FIELD_TEXT = {
     ),
     "Start/Stop": ("开始 / 停止快捷键", "全局快捷键。"),
     "Kill Launcher After Start": (
-        "游戏启动后关闭 Starter",
-        "游戏窗口出现后结束 Starter 进程。",
+        "客户端打开后关闭启动器",
+        "客户端窗口出现后结束启动器进程；更新时会重新打开启动器。",
     ),
     "Launch with DX11": ("用 DX11 启动", ""),
     "Enable Blur": (
@@ -72,7 +72,7 @@ FIELD_TEXT = {
         "会操作电脑上的微信窗口，可能打断你正在做的事，也可能发送失败。关闭后这一项不再显示。",
     ),
     "WeChat Desktop Nickname": ("微信昵称", "接收通知的联系人。"),
-    "Auto Start {app_name}": ("开机时打开启动器", "登录 Windows 后自动打开启动器。"),
+    "Auto Start {app_name}": ("打开启动器时自动启动 ok-bd2", "启动器打开后直接启动客户端。"),
     "Auto Update": ("更新方式", "启动器如何安装新版本。"),
     "SMTP Notification": ("邮件（SMTP）", "通过你的邮箱服务器发送通知邮件。"),
     "SMTP Host": ("服务器地址", "例如 smtp.qq.com。"),

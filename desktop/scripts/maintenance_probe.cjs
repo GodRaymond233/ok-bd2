@@ -7,7 +7,7 @@ const cp = require("node:child_process");
 const { createRequire } = require("node:module");
 const ROOT = path.resolve(__dirname, "../..");
 const SHELL = path.join(ROOT, "desktop/shell");
-const MODES = ["update", "restore", "unclean-exit", "backup-failure"];
+const MODES = ["update", "restore", "rollback", "unclean-exit", "backup-failure"];
 
 if (!process.versions.electron) {
   const arg = (key) => path.resolve(process.argv[process.argv.indexOf(key) + 1]);
@@ -27,6 +27,15 @@ if (!process.versions.electron) {
     fs.closeSync(log);
     const file = path.join(fixture, "result.json");
     const report = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file)) : { error: "no report" };
+    if (mode === "update" && process.platform === "win32" && report.passed) {
+      const reopened = path.join(fixture, "client-reopened.txt");
+      const deadline = Date.now() + 10_000;
+      while (!fs.existsSync(reopened) && Date.now() < deadline)
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+      const passed = fs.existsSync(reopened) && fs.readFileSync(reopened, "utf8") === "v0.9.8|v0.9.7";
+      report.checks.push({ name: "client reopens after Electron exits with the confirmed version", passed });
+      if (!passed) { report.passed = false; report.error = "native update handoff did not reopen client"; }
+    }
     results.push({ mode, ...report, exitCode: run.status, fixture });
     console.log(`${mode}: ${report.passed && run.status === 0 ? "PASS" : "FAIL"} ${report.error || ""}`);
   }
@@ -34,7 +43,7 @@ if (!process.versions.electron) {
   fs.writeFileSync(path.join(out, "maintenance-probe.json"), JSON.stringify({ passed, results }, null, 2));
   process.exit(passed ? 0 : 1);
 } else {
-  const { app, BrowserWindow, globalShortcut } = require("electron");
+  const { app, BrowserWindow, globalShortcut, dialog } = require("electron");
   const mode = process.env.PROBE_MODE;
   const fixture = process.env.PROBE_FIXTURE;
   const working = path.join(fixture, "data/apps/ok-bd2/working");
@@ -46,8 +55,41 @@ if (!process.versions.electron) {
   fs.writeFileSync(path.join(configs, "ui_config.json"), JSON.stringify({ MainWindow: { Language: "zh_CN" } }));
   fs.writeFileSync(path.join(configs, "probe-ledger.json"), '{"progress":"before"}');
   fs.writeFileSync(path.join(fixture, "ok-bd2.exe"), "launcher stand-in: never executed");
+  if (mode === "update" && process.platform === "win32") {
+    const compiler = path.join(process.env.SystemRoot, "Microsoft.NET/Framework64/v4.0.30319/csc.exe");
+    const python = "data/apps/ok-bd2/python";
+    fs.mkdirSync(path.join(fixture, python), { recursive: true });
+    fs.writeFileSync(path.join(fixture, "Launcher.cs"), `using System; using System.IO; class Launcher {
+      static void Main(string[] args) { System.Threading.Thread.Sleep(500);
+        string target=args[Array.IndexOf(args,"--update-to-version")+1];
+        string output=args[Array.IndexOf(args,"--response-file")+1];
+        File.WriteAllText(output,"{\\"updated\\":true,\\"version\\":\\""+target+"\\"}"); }}
+      `);
+    fs.writeFileSync(path.join(fixture, "Client.cs"), `using System; using System.IO; class Client {
+      static void Main() { File.WriteAllText(@"${path.join(fixture, "client-reopened.txt")}",
+        Environment.GetEnvironmentVariable("PYAPPIFY_APP_VERSION")+"|"+
+        Environment.GetEnvironmentVariable("PYAPPIFY_APP_STARTING_VERSION")); }}
+    `);
+    for (const [source, target] of [["Launcher.cs", "ok-bd2.exe"], ["Client.cs", `${python}/pythonw.exe`]]) {
+      const build = cp.spawnSync(compiler, ["/nologo", "/target:winexe", `/out:${target}`, source],
+        { cwd: fixture, encoding: "utf8", windowsHide: true });
+      if (build.status !== 0) throw new Error(`native handoff fixture failed: ${build.stdout} ${build.stderr}`);
+    }
+  }
   const result = { mode, checks: [] };
   const check = (name, value) => { result.checks.push({ name, passed: Boolean(value) }); assert(value, name); };
+  if (mode === "rollback") {
+    const setup = cp.spawnSync(process.env.PROBE_PYTHON, ["-c",
+      "from pathlib import Path; from src.desktop.backups import BackupStore; " +
+      "s=BackupStore(Path.cwd()); s.create('0.9.7','manual'); s.prepare_startup('0.9.8'); " +
+      "(s.configs/'probe-ledger.json').write_text('newer data','utf-8')"],
+      { cwd: working, env: { ...process.env, PYTHONPATH: ROOT }, encoding: "utf8" });
+    check("rollback fixture built from verified snapshots", setup.status === 0);
+    dialog.showMessageBox = async (_window, options) => {
+      check("rollback requires explicit matching-backup confirmation", options.buttons.includes("恢复备份并启动"));
+      return { response: 1 };
+    };
+  }
   let win, core, command, backupId;
   let failBackup = false;
   let leftRestoredPage = false;
@@ -67,16 +109,21 @@ if (!process.versions.electron) {
   const originalStart = CoreProcess.prototype.start;
   CoreProcess.prototype.start = function () {
     core = this;
-    if (mode === "unclean-exit") {
-      const emit = this.emit;
-      this.emit = function (event, value, ...rest) {
-        if (event === "message" && value?.type === "maintenance-ready") return true;
-        return emit.call(this, event, value, ...rest);
-      };
-    }
     return originalStart.call(this);
   };
+  const originalStop = CoreProcess.prototype.stop;
+  CoreProcess.prototype.stop = async function (...args) {
+    const result = await originalStop.apply(this, args);
+    return mode === "unclean-exit" ? { ...result, exitCode: 0 } : result;
+  };
   const maintenance = require(path.join(SHELL, "dist/maintenance.js"));
+  const originalSpawn = cp.spawn;
+  cp.spawn = (executable, args, ...rest) => {
+    if (args[0] === "-m" && args[1] === "src.desktop.maintenance") {
+      args = ["-c", "import src.desktop.maintenance as m; m.active_launcher=lambda:None; m.main()", ...args.slice(2)];
+    }
+    return originalSpawn(executable, args, ...rest);
+  };
   const originalMaintain = maintenance.maintainData;
   maintenance.maintainData = async (...args) => {
     check("data maintenance begins only after the core exits", core.state === "exited");
@@ -91,6 +138,7 @@ if (!process.versions.electron) {
     }
     return originalMaintain(...args);
   };
+  const originalLaunch = maintenance.launchUpdate;
   maintenance.launchUpdate = async (cwd, message) => {
     command = maintenance.updateCommand(cwd, message);
     check("launcher receives the checked version", command.args[1] === "v0.9.8");
@@ -101,6 +149,7 @@ if (!process.versions.electron) {
       return metadata.reason === "before-update" &&
         fs.readFileSync(path.join(backups, name, "configs/probe-ledger.json"), "utf8").includes("before");
     }));
+    if (mode === "update" && process.platform === "win32") await originalLaunch(cwd, message);
   };
   process.argv.push("--core-python", process.env.PROBE_PYTHON, "--core-script",
     path.join(__dirname, "desktop_probe_core.py"), "--core-cwd", working,
@@ -135,6 +184,15 @@ if (!process.versions.electron) {
     await until(async () => win && core?.state === "ready" &&
       await js("document.querySelector('[data-core]')?.dataset.core==='ok'").catch(() => false));
     check("game starter not called", (await api("/api/probe/state")).body.starts === 0);
+    if (mode === "rollback") {
+      check("matching configuration restored before starting core", fs.readFileSync(path.join(configs, ".core_version"), "utf8") === "0.9.7");
+      check("restored ledger matches the old version", fs.readFileSync(path.join(configs, "probe-ledger.json"), "utf8").includes("before"));
+      const items = (await api("/api/desktop/backups")).body.items;
+      check("newer configuration retained as safety backup", items.some(item => item.reason === "before-restore" && item.version === "0.9.8"));
+      await core.stop("probe-complete");
+      finish();
+      return;
+    }
     await until(() => click("设置"));
     await until(() => click("关于与更新"));
     // The core reports its installed tag here, which already starts with v.

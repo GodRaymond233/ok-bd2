@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, linkSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 
@@ -49,19 +49,24 @@ test("clipboard probe preserves non-text data and restores plain text or an empt
   }
 });
 
-test("maintenance validates the version and binds the launcher to its installation", () => {
-  const root = join(tmpdir(), "okbd2-install");
+test("maintenance validates the version and binds the launcher to its installation", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "okbd2-install-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
   const cwd = join(root, "data/apps/ok-bd2/working");
   const message = { type: "maintenance", operation: "update", version: "v0.9.7",
     target: "v0.9.8", backup_id: "", launcher: join(root, "ok-bd2.exe") };
+  writeFileSync(message.launcher, "launcher");
+  const alias = join(root, "alias.exe");
+  linkSync(message.launcher, alias);
   assert.deepEqual(updateCommand(cwd, message), { executable: message.launcher, cwd: root,
     args: ["--update-to-version", "v0.9.8"] });
+  assert.equal(updateCommand(cwd, { ...message, launcher: alias }).executable, message.launcher);
   assert.throws(() => updateCommand(cwd, { ...message, launcher: join(tmpdir(), "other.exe") }));
   assert.throws(() => maintenanceArguments({ ...message, target: "--other-command" }));
   assert.throws(() => maintenanceArguments({ ...message, operation: "restore", backup_id: "../configs" }));
   const line = "@@okbd2 " + JSON.stringify(message);
   assert.deepEqual(protocol.parseCoreLine(line), message);
-  assert.deepEqual(protocol.parseCoreLine('@@okbd2 {"type":"maintenance-ready"}'), { type: "maintenance-ready" });
+  assert.equal(protocol.parseCoreLine('@@okbd2 {"type":"maintenance-ready"}'), null);
 });
 
 test("protocol lines", () => {

@@ -353,6 +353,7 @@ export interface BackupEntry {
 export interface BackupList { items: BackupEntry[]; version: string; busy: boolean; supported: boolean }
 
 export interface DesktopInfo {
+  version_change?: { previous: string; current: string; notes: string } | null;
   api: number;
   core_version: string;
   pid: number;

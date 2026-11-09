@@ -1,4 +1,5 @@
 import hashlib
+import io
 import json
 import os
 import tempfile
@@ -114,6 +115,29 @@ class MainTest(unittest.TestCase):
 
 
 class ShellDownloadTest(unittest.TestCase):
+    def test_stalled_download_moves_to_the_next_source(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            archive = root / "shell.zip"
+            with zipfile.ZipFile(archive, "w") as output:
+                output.writestr(bootstrap.SHELL_EXECUTABLE, b"verified")
+                output.writestr(bootstrap.MANIFEST_NAME, json.dumps({
+                    "version": bootstrap.REQUIRED_SHELL_VERSION, "api": {"min": 1, "max": 1}}))
+            release = root / "release.json"
+            release.write_text(json.dumps({"version": bootstrap.REQUIRED_SHELL_VERSION,
+                "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+                "urls": ["https://slow.example/shell.zip", "https://fast.example/shell.zip"]}),
+                "utf-8")
+            with (patch("src.desktop.shell_install.urllib.request.urlopen",
+                        side_effect=[io.BytesIO(b"x"),
+                                     io.BytesIO(archive.read_bytes())]) as request,
+                  patch("src.desktop.shell_install.time.monotonic",
+                        side_effect=[0, 61, 62, 63])):
+                executable = install_shell(root / "installed", bootstrap.REQUIRED_SHELL_VERSION,
+                                           bootstrap.check_shell, release_file=release)
+            self.assertEqual(request.call_count, 2)
+            self.assertEqual(executable.read_bytes(), b"verified")
+
     def test_pinned_download_uses_next_source_and_keeps_old_shell(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -145,6 +169,11 @@ class ShellDownloadTest(unittest.TestCase):
             )
             self.assertEqual(executable.read_bytes(), b"verified shell")
             self.assertEqual(old.read_text("utf-8"), "old")
+            executable.unlink()
+            self.assertEqual(install_shell(destination, bootstrap.REQUIRED_SHELL_VERSION,
+                             bootstrap.check_shell, release_file=release).read_bytes(),
+                             b"verified shell")
+            self.assertEqual(len(list(destination.parent.glob("*.broken-*"))), 1)
             archive.unlink()
             self.assertEqual(
                 install_shell(

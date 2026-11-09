@@ -103,7 +103,8 @@ test("basic settings split between the device page, the shell and 设置", () =>
     DEVICE_KEYS,
   );
   assert.deepEqual(
-    otherFields(basic, [...DEVICE_KEYS, "Auto Resize Game Window", ...SHELL_KEYS]).map((item) => item.key),
+    otherFields(basic, [...DEVICE_KEYS, "Auto Resize Game Window", ...SHELL_KEYS,
+      "Kill Launcher After Start"]).map((item) => item.key),
     ["Use DirectML", "Trigger Interval", "Enable Blur"],
   );
   assert.deepEqual(pickFields(undefined, DEVICE_KEYS), []);

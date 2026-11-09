@@ -10,6 +10,7 @@ export const EXIT = {
   HANDSHAKE_FAILED: 10,
   EXECUTOR_LOCKED: 11,
   STARTUP_FAILED: 12,
+  MAINTENANCE_READY: 20,
 } as const;
 
 // R3 timing contract: the core starts its safe exit at once and its own watchdog
@@ -32,13 +33,16 @@ export type FatalMessage = {
   code: string;
   message: string;
   holder_pid?: number | null;
+  config_version?: string;
+  core_version?: string;
+  backups?: { id: string; created_at: string; version: string }[];
 };
 export type ExitingMessage = { type: "exiting"; reason: string };
 export type NotificationMessage = { type: "notification"; title: string; message: string; error: boolean };
 export type MaintenanceMessage = { type: "maintenance"; operation: "update" | "restore";
   version: string; target: string; backup_id: string; launcher: string };
 export type CoreMessage = ReadyMessage | FatalMessage | ExitingMessage | NotificationMessage |
-  MaintenanceMessage | { type: "maintenance-ready" };
+  MaintenanceMessage;
 
 export function parseCoreLine(line: string): CoreMessage | null {
   if (!line.startsWith(LINE_PREFIX)) {
@@ -78,6 +82,13 @@ export function parseCoreLine(line: string): CoreMessage | null {
         code: String(message.code ?? "unknown"),
         message: String(message.message ?? ""),
         holder_pid: typeof message.holder_pid === "number" ? message.holder_pid : null,
+        ...(message.code === "config-newer" ? {
+          config_version: String(message.config_version ?? ""),
+          core_version: String(message.core_version ?? ""),
+          backups: Array.isArray(message.backups) ? message.backups.filter((item): item is { id: string; created_at: string; version: string } =>
+            item !== null && typeof item === "object" &&
+            typeof item.id === "string" && typeof item.created_at === "string" && typeof item.version === "string") : [],
+        } : {}),
       };
     case "exiting":
       return { type: "exiting", reason: String(message.reason ?? "") };
@@ -91,8 +102,6 @@ export function parseCoreLine(line: string): CoreMessage | null {
           !["version", "target", "backup_id", "launcher"].every((key) => typeof message[key] === "string")) return null;
       return { type: "maintenance", operation: message.operation, version: String(message.version),
         target: String(message.target), backup_id: String(message.backup_id), launcher: String(message.launcher) };
-    case "maintenance-ready":
-      return { type: "maintenance-ready" };
     default:
       return null;
   }

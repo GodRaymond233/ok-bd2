@@ -31,6 +31,15 @@ def normalized_version(value: str) -> str:
     return str(value).strip().removeprefix("v")
 
 
+class ConfigVersionError(ValueError):
+    def __init__(self, previous, version, backups):
+        super().__init__(f"配置来自较新版本 {previous}，当前为 {version}。"
+                         "请打开客户端恢复与当前版本匹配的备份；原配置尚未改写。")
+        self.previous = previous
+        self.version = version
+        self.backups = backups
+
+
 def regular_tree(root: Path) -> list[Path]:
     """Never follow links out of the owned data directory, including Windows junctions."""
     if root.is_symlink() or root.is_junction():
@@ -212,8 +221,10 @@ class BackupStore:
 
     def prune(self):
         valid = [item for item in self.list() if not item.get("invalid")]
-        for item in valid[MAX_BACKUPS:]:
-            shutil.rmtree(self.root / item["id"])
+        for manual in (False, True):
+            items = [item for item in valid if (item["reason"] == "manual") == manual]
+            for item in items[MAX_BACKUPS:]:
+                shutil.rmtree(self.root / item["id"])
 
     def prepare_startup(self, version: str):
         self.recover_restore()
@@ -225,10 +236,8 @@ class BackupStore:
             return None
         if re.fullmatch(r"\d+\.\d+\.\d+", previous) and re.fullmatch(r"\d+\.\d+\.\d+", version):
             if tuple(map(int, previous.split("."))) > tuple(map(int, version.split("."))):
-                raise ValueError(
-                    f"配置来自较新版本 {previous}，当前为 {version}。"
-                    "请先退出并恢复与当前版本匹配的备份，再启动；原配置尚未改写。"
-                )
+                raise ConfigVersionError(previous, version, [item for item in self.list()
+                                         if not item.get("invalid") and item["version"] == version])
         result = self.create(previous, "version-change") if self.configs.exists() else None
         self.configs.mkdir(parents=True, exist_ok=True)
         temporary = marker.with_name(MARKER + ".tmp")
@@ -274,7 +283,7 @@ class BackupStore:
 
 
 def prepare_installed_configs(config):
-    """Both Qt and service entries call this under the executor lock, before ok.OK."""
+    """Automation entries call this under the executor lock, before ok.OK."""
     working = Path.cwd()
     if installed_base(working) is not None:
         BackupStore(working, config.get("config_folder", "configs")).prepare_startup(

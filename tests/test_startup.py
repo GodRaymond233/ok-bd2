@@ -51,6 +51,10 @@ class StartApplicationTest(unittest.TestCase):
             patch.object(startup.faulthandler, "enable"),
             patch.object(startup.faulthandler, "disable"),
             patch("src.executor_guard.mark_current_process"),
+            patch("src.executor_guard.release_executor_lock",
+                  side_effect=lambda: events.append("released")),
+            patch.object(startup, "_notify_headless_failure",
+                         side_effect=lambda arguments, message: events.append(("notice", message))),
             patch(
                 "src.executor_guard.acquire_executor_lock",
                 side_effect=lambda mode: events.append(("lock", mode)) or (acquired, holder),
@@ -121,6 +125,7 @@ class StartApplicationTest(unittest.TestCase):
                 "mcp",
                 ("run_task", 1, True),
                 "quit",
+                "released",
             ],
             events,
         )
@@ -128,9 +133,9 @@ class StartApplicationTest(unittest.TestCase):
         startup.open_crash_log.return_value.close.assert_called_once_with()
 
     def test_refused_lock_stops_before_dependencies_and_runtime(self):
-        for argv, mode, dialog in (
-            (("main.py", "--headless", "-t", "1"), "headless", False),
-            (("main.py", "-t", "1", "-e"), "headless", True),
+        for argv, mode in (
+            (("main.py", "--headless", "-t", "1"), "headless"),
+            (("main.py", "-t", "1", "-e"), "headless"),
         ):
             with self.subTest(mode=mode):
                 events = []
@@ -145,7 +150,8 @@ class StartApplicationTest(unittest.TestCase):
                 self.assertNotIn("dependencies", events)
                 kinds = [event[0] for event in events if isinstance(event, tuple)]
                 self.assertNotIn("ok_init", kinds)
-                self.assertEqual("dialog" in kinds, dialog)
+                self.assertIn("notice", kinds)
+                self.assertNotIn("dialog", kinds)
                 records = startup.scheduled_start_failures()
                 self.assertEqual(len(records), 1)
                 self.assertFalse(records[0]["ok"])
@@ -177,7 +183,11 @@ class StartApplicationTest(unittest.TestCase):
                 self.assertFalse(records[0]["ok"])
                 self.assertIn("失败", records[0]["status"])
                 self.assertTrue(any(
-                    isinstance(event, tuple) and event[0] == "dialog" for event in events))
+                    isinstance(event, tuple) and event[0] == "notice" for event in events))
+                self.assertEqual(events[-2], "released")
+                self.assertEqual(events[-1][0], "notice")
+                if failure == "run":
+                    self.assertLess(events.index("quit"), events.index("released"))
 
     def test_graphical_entrypoints_launch_electron_without_loading_the_core(self):
         for script, configure, expected in (

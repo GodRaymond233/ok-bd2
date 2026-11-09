@@ -12,7 +12,6 @@ stdout (core -> shell), one line per message, prefixed with ``LINE_PREFIX``:
     {"type": "notification", "title": str, "message": str, "error": bool}
     {"type": "maintenance", "operation": "update"|"restore", "version": str,
      "target": str, "backup_id": str, "launcher": str}
-    {"type": "maintenance-ready"}  # only after the writers stopped cleanly
 Anything else on stdout or stderr is log output.
 """
 
@@ -24,6 +23,7 @@ EXIT_OK = 0
 EXIT_HANDSHAKE_FAILED = 10
 EXIT_EXECUTOR_LOCKED = 11
 EXIT_STARTUP_FAILED = 12
+EXIT_MAINTENANCE_READY = 20
 # Bootstrap (main_desktop.py) only.
 EXIT_SHELL_MISSING = 13
 EXIT_SHELL_INCOMPATIBLE = 14

@@ -533,14 +533,18 @@ def _start_and_serve(
     try:
         controller.checkpoint()
         if dependency_check is None:
-            from src.compat.dependency_guard import ensure_core_dependencies
+            from src.compat.dependency_guard import find_missing_modules
 
-            dependency_check = ensure_core_dependencies
-        try:
-            dependency_check()
-        except SystemExit as exit_request:
-            channel.fatal("dependencies", "运行所需的组件缺失或已修复，需要重新启动 ok-bd2")
-            return int(exit_request.code or protocol.EXIT_STARTUP_FAILED)
+            if missing := find_missing_modules():
+                channel.fatal("dependencies", "运行组件缺失，请关闭客户端后从启动器重新打开以修复："
+                              + ", ".join(missing))
+                return protocol.EXIT_STARTUP_FAILED
+        else:
+            try:
+                dependency_check()
+            except SystemExit as exit_request:
+                channel.fatal("dependencies", "运行所需的组件缺失或已修复，需要重新启动 ok-bd2")
+                return int(exit_request.code or protocol.EXIT_STARTUP_FAILED)
 
         controller.checkpoint()
         config = config_loader()
@@ -624,7 +628,13 @@ def _start_and_serve(
         return protocol.EXIT_OK
     except Exception as error:
         logger.error(f"核心服务启动失败：{error}")
-        channel.fatal("startup", f"启动失败：{error}")
+        from src.desktop.backups import ConfigVersionError
+
+        if isinstance(error, ConfigVersionError):
+            channel.fatal("config-newer", str(error), config_version=error.previous,
+                          core_version=error.version, backups=error.backups)
+        else:
+            channel.fatal("startup", f"启动失败：{error}")
         if server is not None:
             server.stop()
         return protocol.EXIT_STARTUP_FAILED
@@ -635,19 +645,23 @@ def _start_and_serve(
     if maintenance_requested:
         from ok import og
 
-        if not controller.runtime_stopped.wait(8) or controller.quit_failed:
+        deadline = controller.started_at + protocol.EXIT_WATCHDOG_SECONDS - 2
+        if (not controller.runtime_stopped.wait(max(0, deadline - time.monotonic()))
+                or controller.quit_failed):
             logger.error("维护已取消：核心退出回调未完成")
             return protocol.EXIT_STARTUP_FAILED
         evidence = getattr(getattr(og, "my_app", None), "diagnostic_evidence", None)
         threads = [getattr(runtime.executor, "thread", None),
                    getattr(getattr(og, "handler", None), "thread", None),
                    getattr(evidence, "worker", None)]
-        deadline = time.monotonic() + 8
         for thread in threads:
             if thread is not None and thread is not threading.current_thread():
                 thread.join(max(0, deadline - time.monotonic()))
                 if thread.is_alive():
                     logger.error("维护已取消：后台写入尚未结束")
                     return protocol.EXIT_STARTUP_FAILED
-        channel.send("maintenance-ready")
+        if time.monotonic() >= deadline:
+            logger.error("维护已取消：安全退出超出总时限")
+            return protocol.EXIT_STARTUP_FAILED
+        return protocol.EXIT_MAINTENANCE_READY
     return protocol.EXIT_OK

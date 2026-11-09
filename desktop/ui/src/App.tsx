@@ -140,6 +140,8 @@ export function App() {
   const [todaySnapshot, setToday] = useState<TodaySummary | null>(null);
   const today = useMemo(() => withBatchConfig(todaySnapshot, tasks), [todaySnapshot, tasks]);
   const [info, setInfo] = useState<DesktopInfo | null>(null);
+  const [updateAvailable, setUpdateAvailable] = useState(false);
+  const nextUpdateCheck = useRef(Date.now() + 30_000);
   const [logs, setLogs] = useState<LogRecord[]>([]);
   const [settings, setSettings] = useState<SettingsGroup[] | null>(null);
   const [reportState, setReportState] = useState<ReportState | null>(null);
@@ -404,6 +406,15 @@ export function App() {
 
   const queued = tasks.find((task) => !task.trigger && task.enabled && task.name !== current);
   const busy = Boolean(current) || Boolean(queued) || starting || Boolean(ui?.diagnostic_pause) || Boolean(ui?.maintenance) || Boolean(ui?.tools_busy);
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (!info || busy || Date.now() < nextUpdateCheck.current) return;
+      nextUpdateCheck.current = Date.now() + 24 * 60 * 60 * 1000;
+      void api.updates().then((result) => setUpdateAvailable(result.update_available),
+        (error) => console.info("检查更新失败", errorText(error)));
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [info, busy]);
   const legacy = info && info.legacy_instances.length > 0 ? info.legacy_instances : null;
   const startBlocked = ui?.maintenance ? t("正在准备更新或恢复备份") : ui?.tools_busy
     ? t("调试操作正在进行，请等待或停止后再试") : ui?.diagnostic_pause
@@ -572,6 +583,7 @@ export function App() {
     >
       <Icon name={item.icon} />
       <span className="tx">{t(item.label)}</span>
+      {item.page === "settings" && updateAvailable && <span aria-label={t("有新版本")}>●</span>}
     </button>
   );
 
@@ -651,6 +663,18 @@ export function App() {
           </button>
         </div>
       )}
+      {info?.version_change && <div className="banner info" role="status">
+        <span className="t">{t("版本已切换")} {info.version_change.previous} → {info.version_change.current}
+          {info.version_change.notes && <span>{info.version_change.notes}</span>}</span>
+        <button className="btn sm" onClick={() => void act(async () => {
+          await api.versionShown();
+          setInfo((value) => value ? { ...value, version_change: null } : value);
+        })}>{t("知道了")}</button>
+      </div>}
+      {updateAvailable && page !== "settings" && <div className="banner info" role="status">
+        <span className="t">{t("有新版本可用")}</span>
+        <button className="btn sm" onClick={() => core.navigate("settings")}>{t("查看更新")}</button>
+      </div>}
       {legacy && (
         <div className="banner warning" role="alert">
           <Icon name="alert" />

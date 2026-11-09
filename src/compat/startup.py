@@ -35,7 +35,7 @@ def scheduled_start_failures() -> list[dict]:
     return records
 
 
-def _report_headless_failure(arguments, message: str, code: int) -> None:
+def _report_headless_failure(arguments, message: str, code: int, *, notify=True) -> None:
     print(message, file=sys.stderr)
     if arguments.task is not None:
         # A refused process must not overwrite the active executor's task/stage ledger.
@@ -64,10 +64,50 @@ def _report_headless_failure(arguments, message: str, code: int) -> None:
                     temporary.unlink(missing_ok=True)
                 except OSError:
                     pass
-        if not arguments.headless:
-            from src.executor_guard import show_refusal_dialog
+    if notify:
+        _notify_headless_failure(arguments, message)
 
-            show_refusal_dialog(message)
+
+def _notify_headless_failure(arguments, message):
+    if arguments.task is not None:
+        if os.name == "nt":
+            try:
+                import base64
+                import subprocess
+
+                script = """
+[Windows.UI.Notifications.ToastNotificationManager,
+ Windows.UI.Notifications, ContentType=WindowsRuntime] > $null
+[Windows.Data.Xml.Dom.XmlDocument,
+ Windows.Data.Xml.Dom.XmlDocument, ContentType=WindowsRuntime] > $null
+$xml = New-Object Windows.Data.Xml.Dom.XmlDocument
+$binding = '<binding template="ToastGeneric"><text/><text/></binding>'
+$xml.LoadXml('<toast><visual>' + $binding + '</visual></toast>')
+$texts = $xml.GetElementsByTagName('text')
+$texts.Item(0).AppendChild($xml.CreateTextNode('ok-bd2 计划任务启动失败')) > $null
+$texts.Item(1).AppendChild($xml.CreateTextNode($env:OKBD2_START_FAILURE)) > $null
+$toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
+$manager = [Windows.UI.Notifications.ToastNotificationManager]
+$manager::CreateToastNotifier('io.github.godraymond233.okbd2.desktop').Show($toast)
+"""
+                notice = subprocess.Popen(
+                    [str(Path(os.environ["SystemRoot"]) /
+                         "System32/WindowsPowerShell/v1.0/powershell.exe"),
+                     "-NoProfile", "-EncodedCommand",
+                     base64.b64encode(script.encode("utf-16le")).decode()],
+                    env=dict(os.environ, OKBD2_START_FAILURE=message),
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                import threading
+
+                threading.Thread(target=notice.wait, daemon=True).start()
+            except Exception as error:
+                print(f"计划任务通知失败：{error}", file=sys.stderr)
+    else:
+        from src.executor_guard import show_refusal_dialog
+
+        show_refusal_dialog(message)
 
 
 def _prune_crash_logs(
@@ -141,6 +181,9 @@ def start_application(
     configure: Callable[[dict], object] | None = None,
 ) -> None:
     """Route graphical launches through Electron before loading the core."""
+    from src.executor_guard import mark_current_process
+
+    mark_current_process()
     arguments = parse_entry_arguments()
     if entry_mode(arguments, configure) == "desktop":
         from src.desktop.bootstrap import main
@@ -152,10 +195,6 @@ def start_application(
     from src.ui_mode import UI_MODE_ENV
 
     os.environ[UI_MODE_ENV] = "service"
-    from src.executor_guard import mark_current_process
-
-    mark_current_process()
-
     crash_log = open_crash_log()
     fault_handler_enabled = False
     try:
@@ -183,6 +222,7 @@ def _run_headless(config_loader, configure) -> None:
         install_executor_guards,
         legacy_guard,
         refusal_message,
+        release_executor_lock,
     )
 
     arguments = parse_entry_arguments()
@@ -191,6 +231,7 @@ def _run_headless(config_loader, configure) -> None:
         _report_headless_failure(arguments, refusal_message(holder), EXIT_EXECUTOR_LOCKED)
         raise SystemExit(EXIT_EXECUTOR_LOCKED)
     engine = None
+    failure = None
     try:
         ensure_core_dependencies()
         import ok
@@ -215,8 +256,14 @@ def _run_headless(config_loader, configure) -> None:
             engine.start_mcp_server()
             engine.run_task(engine.args["task"], exit_after=engine.args.get("exit", False))
     except Exception as error:
-        _report_headless_failure(arguments, f"计划任务启动失败：{error}", EXIT_STARTUP_FAILED)
-        raise SystemExit(EXIT_STARTUP_FAILED) from error
+        failure = f"任务启动失败：{error}"
+        _report_headless_failure(arguments, failure, EXIT_STARTUP_FAILED, notify=False)
     finally:
-        if engine is not None:
-            engine.quit()
+        try:
+            if engine is not None:
+                engine.quit()
+        finally:
+            release_executor_lock()
+    if failure is not None:
+        _notify_headless_failure(arguments, failure)
+        raise SystemExit(EXIT_STARTUP_FAILED)

@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from src.desktop.backups import BackupStore, normalized_version
 
 VERSION = re.compile(r"v?\d+\.\d+\.\d+")
+LAUNCHER_IDENTIFIERS = ("ok-bd2", "pyappify")
 
 
 def active_launcher():
@@ -28,7 +29,8 @@ def active_launcher():
     user32.FindWindowW.restype = wintypes.HWND
     user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
     user32.GetWindowThreadProcessId.restype = wintypes.DWORD
-    window = user32.FindWindowW("pyappify-sic", "pyappify-siw")
+    window = next((window for name in LAUNCHER_IDENTIFIERS
+                   if (window := user32.FindWindowW(f"{name}-sic", f"{name}-siw"))), None)
     if not window:
         return None
     pid = wintypes.DWORD()
@@ -41,8 +43,13 @@ def active_launcher():
 
 def ensure_launcher_matches(executable):
     active = active_launcher()
-    if active is not None and active != Path(executable).resolve():
-        raise ValueError("另一安装目录的启动器正在运行，请先退出它，避免更新到其他安装")
+    if active is not None:
+        try:
+            matches = active.samefile(executable)
+        except OSError:
+            matches = False
+        if not matches:
+            raise ValueError("另一安装目录的启动器正在运行，请先退出它，避免更新到其他安装")
 
 
 def install_maintenance(app, runtime, version, request):

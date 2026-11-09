@@ -4,7 +4,7 @@ annotated-doc==0.0.5 ; sys_platform == 'win32'
     # via fastapi
 annotated-types==0.8.0 ; sys_platform == 'win32'
     # via pydantic
-anyio==4.15.1 ; sys_platform == 'win32'
+anyio==4.16.0 ; sys_platform == 'win32'
     # via
     #   httpx2
     #   mcp
@@ -41,9 +41,9 @@ h11==0.16.0 ; sys_platform == 'win32'
     #   httpcore2
     #   uvicorn
     #   wsproto
-httpcore2==2.13.1 ; sys_platform == 'win32'
+httpcore2==2.16.0 ; sys_platform == 'win32'
     # via httpx2
-httpx2==2.13.1 ; sys_platform == 'win32'
+httpx2==2.16.0 ; sys_platform == 'win32'
     # via mcp
 idna==3.18 ; sys_platform == 'win32'
     # via
@@ -108,12 +108,12 @@ pyclipper==1.4.0 ; sys_platform == 'win32'
     # via onnxocr-ppocrv5
 pycparser==3.12 ; implementation_name != 'PyPy' and platform_python_implementation != 'PyPy' and sys_platform == 'win32'
     # via cffi
-pydantic==2.14.1 ; sys_platform == 'win32'
+pydantic==2.14.3 ; sys_platform == 'win32'
     # via
     #   fastapi
     #   mcp
     #   mcp-types
-pydantic-core==2.50.1 ; sys_platform == 'win32'
+pydantic-core==2.50.4 ; sys_platform == 'win32'
     # via pydantic
 pydirectinput==1.0.4 ; sys_platform == 'win32'
     # via
@@ -157,7 +157,7 @@ six==1.17.0 ; sys_platform == 'win32'
     #   python-xlib
 sse-starlette==3.6.0 ; sys_platform == 'win32'
     # via mcp
-starlette==1.9.0 ; sys_platform == 'win32'
+starlette==1.10.0 ; sys_platform == 'win32'
     # via
     #   fastapi
     #   mcp

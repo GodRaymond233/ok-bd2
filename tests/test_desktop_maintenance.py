@@ -37,13 +37,24 @@ class ConfigurationBackupTest(unittest.TestCase):
         self.assertEqual(self.store.list(), [])
         self.assertIn("before", self.data.read_text("utf-8"))
 
+    def test_automatic_retention_preserves_manual_snapshots(self):
+        manual = self.store.create("1.4.12", "manual")
+        for _ in range(7):
+            self.store.create("1.4.12", "before-update")
+        items = self.store.list()
+        self.assertEqual(len(items), 6)
+        self.assertIn(manual["id"], [item["id"] for item in items])
+
     def test_downgrade_refuses_to_load_newer_configs_until_a_matching_restore(self):
         self.store.prepare_startup("1.4.12")
         snapshot = self.store.create("1.4.12", "manual")
         self.store.prepare_startup("1.4.13")
         self.data.write_text("newer data", "utf-8")
-        with self.assertRaisesRegex(ValueError, "较新版本"):
+        from src.desktop.backups import ConfigVersionError
+
+        with self.assertRaisesRegex(ConfigVersionError, "较新版本") as raised:
             self.store.prepare_startup("1.4.12")
+        self.assertIn(snapshot["id"], [item["id"] for item in raised.exception.backups])
         self.assertEqual(self.data.read_text("utf-8"), "newer data")
         safety = self.store.restore(snapshot["id"], "1.4.12")
         self.assertEqual(safety["version"], "1.4.13")

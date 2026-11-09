@@ -222,8 +222,11 @@ function General({ core }: { core: Core }) {
           {desktop && !desktop.trayAvailable && <div className="ferr">{t("系统托盘不可用，关闭窗口将退出客户端。")}</div>}
         </ConfigForm>
       </Section>
+      <Section title={t("启动器")}>
+        <ConfigForm fields={pickFields(basic, ["Kill Launcher After Start"])} disabled={core.busy} saveField={save} />
+      </Section>
       <Section title={t("识别与性能")}>
-        <ConfigForm fields={otherFields(basic, [...DEVICE_KEYS, AUTO_RESIZE_KEY, ...SHELL_KEYS])} disabled={false} saveField={save} />
+        <ConfigForm fields={otherFields(basic, [...DEVICE_KEYS, AUTO_RESIZE_KEY, ...SHELL_KEYS, "Kill Launcher After Start"])} disabled={false} saveField={save} />
       </Section>
       <McpSettings core={core} />
       <p className="why">{t("改完即保存。游戏启动、退出和窗口相关的选项在「设备」页。")}</p>
@@ -465,7 +468,7 @@ function Backups({ core }: { core: Core }) {
   useEffect(() => { void refresh(); }, []);
   return <Section title={t("配置备份与恢复")}>
     <div className="card pad">
-      <p className="dsc">{t("包含任务设置、方案、任务进度和运行记录；保留最近 5 份。更新后第一次打开时会自动备份。")}</p>
+      <p className="dsc">{t("包含任务设置、方案、任务进度和运行记录；手动与自动备份各保留最近 5 份。更新后第一次打开时会自动备份。")}</p>
       <div className="row wrap">
         <button className="btn sm" disabled={busy || core.busy || !data?.supported} onClick={() => {
           setBusy(true);

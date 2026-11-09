@@ -36,6 +36,10 @@ def load_config():
 
             from pyappify import is_greater_version
 
+            import src.desktop.maintenance as maintenance
+
+            maintenance.active_launcher = lambda: None
+
             runtime._pyappify_module = SimpleNamespace(
                 pyappify_executable=str(Path.cwd().parents[3] / "ok-bd2.exe"),
                 pyappify_version="1.2.3", app_version="v0.9.7",

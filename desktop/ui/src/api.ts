@@ -93,6 +93,7 @@ async function request<T>(path: string, method: "GET" | "POST" = "GET", body?: u
 }
 
 export const api = {
+  versionShown: () => request("/api/desktop/version-shown", "POST"),
   language: () => request<LanguageState>("/api/desktop/language"),
   setLanguage: (language: LanguagePreference) => request<LanguageState>("/api/desktop/language", "POST", { language }),
   tools: () => request<ToolState>("/api/desktop/tools"),

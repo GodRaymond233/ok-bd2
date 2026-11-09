@@ -30,7 +30,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "httpx2==2.13.1",
+    "httpx2==2.16.0",
     "ruff>=0.13.0",
 ]
 

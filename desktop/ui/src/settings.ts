@@ -17,7 +17,6 @@ export const LAUNCHER = "App Launcher";
 /** Game start and exit options shown on the device page (user decision 2026-10-23). */
 export const DEVICE_KEYS = [
   "Auto Start Game When App Starts",
-  "Kill Launcher After Start",
   "Exit App when Game Exits",
   "Mute Game while in Background",
 ];

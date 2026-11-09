@@ -622,6 +622,9 @@ def frontend_ready(config, runtime):
             [update.get("zip_url")],
             exit_event=runtime.ok.exit_event,
         )
+    basic = runtime.executor.global_config.get_config("Basic Options")
+    if basic.get("Kill Launcher After Start", False) and not runtime.ok.exit_event.is_set():
+        launcher.kill_pyappify()
 
 
 def create_app(
@@ -662,6 +665,30 @@ def create_app(
     install_events(app, runtime)
     app.add_middleware(LocalSession, token=token, origin=origin)
     frontend_once = threading.Event()
+    shown_version = Path(config.get("config_folder", "configs")) / ".desktop-version-shown"
+    current_version = core_version or str(config.get("version") or "")
+    previous_version = os.environ.get("PYAPPIFY_APP_STARTING_VERSION", "")
+
+    def version_change():
+        if (not previous_version or
+                previous_version.removeprefix("v") == current_version.removeprefix("v")):
+            return None
+        if shown_version.is_file() and shown_version.read_text("utf-8") == current_version:
+            return None
+        return {"previous": previous_version, "current": current_version,
+                "notes": os.environ.get("PYAPPIFY_UPDATE_NOTE", "")}
+
+    @app.post("/api/desktop/version-shown")
+    def version_shown():
+        from src.desktop.config_store import config_lock
+
+        with config_lock:
+            runtime.ensure_config_write()
+            shown_version.parent.mkdir(parents=True, exist_ok=True)
+            temporary = shown_version.with_suffix(".tmp")
+            temporary.write_text(current_version, "utf-8")
+            temporary.replace(shown_version)
+        return {"accepted": True}
 
     @app.get("/api/desktop/preferences")
     def desktop_preferences():
@@ -731,6 +758,7 @@ def create_app(
             },
             "api": API_VERSION,
             "core_version": core_version or str(config.get("version") or ""),
+            "version_change": version_change(),
             "pid": os.getpid(),
             "mode": "service",
             "ui_built": (ui_dist / "index.html").is_file(),

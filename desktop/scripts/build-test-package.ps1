@@ -93,6 +93,8 @@ function Write-UpdateTree {
         Where-Object { $_.FullName -notlike '*\.git\*' } | Remove-Item -Recurse -Force
     Copy-Item (Join-Path $root 'deploy.txt') (Join-Path $Destination 'deploy.txt')
     Invoke-Native $python @('-m', 'ok.update.inline_ok_requirements', '--tag', $Version) $Destination
+    Invoke-Native $python @((Join-Path $PSScriptRoot 'build-shell-release.py'),
+        '--prepare-core-payload', '--core-root', $Destination)
     Remove-Item -Force (Join-Path $Destination 'deploy.txt')
     foreach ($inlined in @('ok', 'pyappify')) {
         if (-not (Test-Path (Join-Path $Destination $inlined))) {
