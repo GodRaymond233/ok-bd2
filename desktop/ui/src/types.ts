@@ -252,6 +252,7 @@ export interface HistoryRun {
 }
 
 export interface ReportState {
+  failure_prompt: { run: string; task_name: string; failed: string } | null;
   session_id: string | null;
   snapshot: {
     captured_at: string;

@@ -45,9 +45,6 @@ def load_config():
             )
         state = {"starts": 0, "running": False, "current_task": None}
         original_status = runtime.status
-        original_capture_ui = runtime.capture_ui
-        # Keep the connection controls testable even when a real game is already open.
-        runtime.capture_ui = lambda: dict(original_capture_ui(), devices=[])
 
         def status():
             return dict(original_status(), running=state["running"],
@@ -118,9 +115,24 @@ def load_config():
         def crash():
             os._exit(77)
 
+        @app.post("/api/probe/failure")
+        def failure(body: dict):
+            evidence = app.state.reports.evidence
+            assert evidence.failure_notifier is not None
+            evidence._notify_failure({
+                "event": "failed", "parent": body.get("parent"), "run": body["run"],
+                "task_name": "探针日常", "info": {"失败": "探针子任务"},
+            })
+            return {"ok": True}
+
         return app
 
     desktop.create_app = create
+    config = dict(config, windows=dict(
+        config["windows"], exe=f"okbd2-probe-{os.getpid()}-absent.exe",
+        hwnd_class=f"okbd2-probe-{os.getpid()}-absent", start_exe=False,
+        calculate_pc_exe_path=lambda: "",
+    ))
     if os.environ.get("OKBD2_MAINTENANCE_PROBE"):
         return dict(config, config_folder="configs", version="v0.9.7", update_pyappify=None)
     return dict(config, config_folder=os.environ["OKBD2_DESKTOP_FIXTURE"], update_pyappify=None)

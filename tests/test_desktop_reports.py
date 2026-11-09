@@ -13,6 +13,7 @@ import cv2
 import numpy as np
 
 from src.desktop.preview import LivePreview
+from src.diagnostics.runtime import RuntimeEvidence
 from src.diagnostics.service import DiagnosticsManager
 from tests.test_desktop_device_settings import make_client
 
@@ -156,3 +157,59 @@ class ReportRoutesTest(unittest.TestCase):
         self.assertIn("磁盘已满", response.text)
         self.assertEqual(session, self.client.get("/api/bd2/report").json()["session_id"])
         self.executor.start.assert_not_called()
+
+    def test_failure_prompt_defers_deduplicates_and_accepts_or_declines_without_auto_export(self):
+        evidence = RuntimeEvidence(self.root)
+        self.addCleanup(evidence.stop)
+        self.reports.evidence = evidence
+        evidence.failure_notifier = self.reports._failure_notifier
+        self.addCleanup(self.reports.stop)
+        failure = {"event": "failed", "parent": None, "run": "failed-run",
+                   "task_name": "一键完成日常", "info": {"失败": "快速狩猎"}}
+        evidence._notify_failure(dict(failure, parent="batch", run="child"))
+        self.assertIsNone(self.client.get("/api/bd2/report").json()["failure_prompt"])
+        self.executor.current_task = object()
+        evidence._notify_failure(failure)
+        self.assertIsNone(self.client.get("/api/bd2/report").json()["failure_prompt"])
+        self.executor.current_task = None
+        prompt = self.client.get("/api/bd2/report").json()["failure_prompt"]
+        self.assertEqual("failed-run", prompt["run"])
+        self.assertEqual("快速狩猎", prompt["failed"])
+        self.assertEqual(400, self.client.post("/api/bd2/report/failure", json={
+            "run": "stale", "generate": True}).status_code)
+        declined = self.client.post("/api/bd2/report/failure", json={
+            "run": prompt["run"], "generate": False}).json()
+        self.assertIsNone(declined["session_id"])
+        self.assertIsNone(declined["result"])
+        evidence._notify_failure(failure)
+        self.assertIsNone(self.client.get("/api/bd2/report").json()["failure_prompt"])
+        evidence._notify_failure(dict(failure, run="next-run"))
+        accepted = self.client.post("/api/bd2/report/failure", json={
+            "run": "next-run", "generate": True})
+        self.assertEqual(200, accepted.status_code, accepted.text)
+        self.assertIsNone(accepted.json()["result"])
+        self.assertEqual({"source": "failure_prompt", "failure_run": "next-run"},
+                         self.reports.snapshot.report_context)
+        evidence._notify_failure(dict(failure, run="while-form-open"))
+        self.assertIsNone(self.client.get("/api/bd2/report").json()["failure_prompt"])
+        self.client.post("/api/bd2/report/finish",
+                         json={"session_id": accepted.json()["session_id"]})
+        self.assertEqual("while-form-open",
+                         self.client.get("/api/bd2/report").json()["failure_prompt"]["run"])
+        self.assertEqual([], list(self.root.glob("reports/*.zip")))
+        self.executor.start.assert_not_called()
+
+    def test_failure_notification_never_waits_for_report_compression(self):
+        import threading
+
+        self.reports._lock.acquire()
+        worker = threading.Thread(target=self.reports.on_failure,
+            args=({"run": "worker-failure", "task_name": "task", "info": {}},))
+        try:
+            worker.start()
+            worker.join(1)
+            self.assertFalse(worker.is_alive())
+        finally:
+            self.reports._lock.release()
+            worker.join(2)
+        self.assertEqual("worker-failure", self.reports.state()["failure_prompt"]["run"])

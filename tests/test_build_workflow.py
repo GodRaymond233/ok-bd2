@@ -1,5 +1,10 @@
+import json
+import os
+import shutil
 import subprocess
+import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -58,6 +63,67 @@ class BuildWorkflowTest(unittest.TestCase):
             with self.subTest(pattern=pattern):
                 self.assertIn(pattern, self.run_checks_script)
         self.assertNotIn('"SendInput"', self.run_checks_script)
+
+    def test_desktop_payload_is_built_before_sync_and_reaches_both_release_modes(self):
+        prepare = self.workflow.split("  prepare:", 1)[1].split("  package-fast:", 1)[0]
+        for required in ("npm --prefix desktop/ui run build",
+                         "npm --prefix desktop/shell run pack:win",
+                         "desktop/scripts/build-shell-release.py", "src/desktop/shell-release.json",
+                         "name: desktop-release"):
+            self.assertIn(required, prepare)
+        self.assertLess(prepare.index("Build Electron interface and shell"),
+                        prepare.index("Sync update repositories"))
+        for job, following in (("package-fast", "package-compact"),
+                               ("release-compact", None)):
+            section = self.workflow.split(f"  {job}:", 1)[1]
+            if following:
+                section = section.split(f"  {following}:", 1)[0]
+            self.assertIn("name: desktop-release", section)
+            self.assertIn("Copy-Item desktop-release/*.zip pyappify_dist/", section)
+
+    @unittest.skipUnless(shutil.which("powershell.exe"), "Windows launcher resource assembly")
+    def test_installer_shell_resource_keeps_its_versioned_layout_and_checks_hash(self):
+        import hashlib
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "ok-bd2-shell-0.3.5-win-x64.zip"
+            with zipfile.ZipFile(archive, "w") as output:
+                output.writestr("ok-bd2-desktop.exe", b"synthetic shell")
+                output.writestr("shell-manifest.json", json.dumps({"version": "0.3.5"}))
+                output.writestr("resources/app.asar", b"synthetic app")
+            manifest = root / "shell-release.json"
+            manifest.write_text(json.dumps({"version": "0.3.5", "sha256":
+                hashlib.sha256(archive.read_bytes()).hexdigest()}), "utf-8")
+            script = root / "check.ps1"
+            script.write_text('''param($Source, $Release, $Target)
+$ErrorActionPreference = 'Stop'
+$tokens = $null; $errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile($Source, [ref]$tokens, [ref]$errors)
+$function = $ast.Find({param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+    $node.Name -eq 'Add-DesktopShellResource'
+}, $true)
+Invoke-Expression $function.Extent.Text
+$config = [pscustomobject]@{bundle=[pscustomobject]@{resources=@('data')}}
+Add-DesktopShellResource $Release $Target 'ok-bd2' $config
+$config | ConvertTo-Json -Depth 10
+''', "utf-8")
+            command = ["powershell.exe", "-NoProfile", "-File", str(script),
+                       str(ROOT / "scripts/prepare_pyappify_launcher.ps1"), str(root),
+                       str(root / "tauri")]
+            env = {key: value for key, value in os.environ.items() if key.lower() != "psmodulepath"}
+            run = subprocess.run(command, capture_output=True, text=True, env=env,
+                                 encoding="utf-8", errors="replace")
+            self.assertEqual(0, run.returncode, run.stdout + run.stderr)
+            resources = json.loads(run.stdout)["bundle"]["resources"]
+            self.assertEqual("data/apps/ok-bd2/shell/0.3.5/", resources["desktop-shell/"])
+            self.assertTrue((root / "tauri/desktop-shell/resources/app.asar").is_file())
+            manifest.write_text(json.dumps({"version": "0.3.5", "sha256": "0" * 64}), "utf-8")
+            run = subprocess.run(command, capture_output=True, text=True, env=env,
+                                 encoding="utf-8", errors="replace")
+            self.assertNotEqual(0, run.returncode)
+            self.assertIn("SHA256 mismatch", run.stderr)
 
 
 class DependencyInstallTest(unittest.TestCase):

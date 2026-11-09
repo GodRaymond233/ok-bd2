@@ -204,6 +204,8 @@ export const api = {
   },
   reportState: () => request<ReportState>("/api/bd2/report"),
   prepareReport: () => request<ReportState>("/api/bd2/report/prepare", "POST", {}),
+  respondFailure: (run: string, generate: boolean) =>
+    request<ReportState>("/api/bd2/report/failure", "POST", { run, generate }),
   buildReport: (session_id: string, description: string) =>
     request<ReportState>("/api/bd2/report/build", "POST", { session_id, description }),
   finishReport: (session_id: string, resume: boolean) =>

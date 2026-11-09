@@ -129,6 +129,42 @@ jobs:
       - name: Install dependencies
         run: python scripts/install_dependencies.py requirements.txt
 
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Build Electron interface and shell
+        shell: pwsh
+        run: |
+          npm --prefix desktop/ui ci --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw "UI dependency installation failed." }
+          npm --prefix desktop/ui test
+          if ($LASTEXITCODE -ne 0) { throw "UI tests failed." }
+          npm --prefix desktop/ui run build
+          if ($LASTEXITCODE -ne 0) { throw "UI build failed." }
+          npm --prefix desktop/shell ci --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw "Shell dependency installation failed." }
+          npm --prefix desktop/shell test
+          if ($LASTEXITCODE -ne 0) { throw "Shell tests failed." }
+          npm --prefix desktop/shell run pack:win
+          if ($LASTEXITCODE -ne 0) { throw "Shell packaging failed." }
+          $shellVersion = (Get-Content desktop/shell/package.json -Raw | ConvertFrom-Json).version
+          python desktop/scripts/build-shell-release.py --output desktop-release `
+            --manifest src/desktop/shell-release.json `
+            --url "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:GITHUB_REF_NAME/ok-bd2-shell-$shellVersion-win-x64.zip"
+          if ($LASTEXITCODE -ne 0) { throw "Shell release assembly failed." }
+          Copy-Item src/desktop/shell-release.json desktop-release/shell-release.json
+          if (-not (Test-Path src/desktop/ui_dist/index.html)) { throw "The UI bundle is missing." }
+
+      - name: Retain desktop release payload
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-release
+          path: desktop-release/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
       - name: Inline ok-script for update repository
         run: |
           python -m ok.update.inline_ok_requirements --tag ${{ github.ref_name }}
@@ -227,6 +263,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - uses: actions/download-artifact@v8
+        with:
+          name: desktop-release
+          path: desktop-release
+
       - name: Prepare or restore launcher
         shell: pwsh
         run: |
@@ -279,6 +320,10 @@ jobs:
             -Changelog $env:CHANGELOG `
             -ReleaseTag $env:RELEASE_TAG
 
+      - name: Include shell download in release
+        shell: pwsh
+        run: Copy-Item desktop-release/*.zip pyappify_dist/
+
       - name: Release fast assets
         uses: softprops/action-gh-release@v3
         env:
@@ -317,6 +362,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: desktop-release
+          path: desktop-release
 
       - name: Select ${{ matrix.profile }} profile
         shell: pwsh
@@ -370,6 +420,15 @@ jobs:
           pattern: release-assets-*
           path: pyappify_dist
           merge-multiple: true
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: desktop-release
+          path: desktop-release
+
+      - name: Include shell download in release
+        shell: pwsh
+        run: Copy-Item desktop-release/*.zip pyappify_dist/
 
       - name: Validate compact release assets
         shell: pwsh

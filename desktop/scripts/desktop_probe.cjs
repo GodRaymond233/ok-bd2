@@ -19,6 +19,62 @@ const SHELL = path.join(ROOT, "desktop", "shell");
 const MODES = ["first", "restart", "close", "session", "early-crash"];
 const MODE_TIMEOUT_MS = 120_000;
 
+async function probeClipboard({ clipboard, webContents, python, result, check, skip, until,
+  platform = process.platform, spawnSync = childProcess.spawnSync }) {
+  let reason = null;
+  let empty = false;
+  try {
+    if (platform === "win32") {
+      // Electron can omit native-only formats such as file lists or metafiles.
+      const inspected = spawnSync(python, ["-c", [
+        "import json, win32clipboard as c", "c.OpenClipboard()", "formats = []", "try:",
+        "    value = c.EnumClipboardFormats(0)", "    while value:",
+        "        formats.append(value)", "        value = c.EnumClipboardFormats(value)",
+        "finally:", "    c.CloseClipboard()", "print(json.dumps(formats))",
+      ].join("\n")], { encoding: "utf8", timeout: 5000, windowsHide: true });
+      if (inspected.status !== 0) throw new Error("native format inspection failed");
+      const formats = JSON.parse(inspected.stdout);
+      if (!Array.isArray(formats) || formats.some((value) => !Number.isInteger(value)))
+        throw new Error("invalid native formats");
+      empty = formats.length === 0;
+      if (formats.some((value) => ![1, 7, 13, 16].includes(value)))
+        reason = "the clipboard contains non-text native formats; preserving it unchanged";
+    } else {
+      const items = await clipboard.read();
+      empty = items.length === 0;
+      if (items.some((item) => item.types.some((type) => type !== "text/plain")))
+        reason = "the clipboard contains non-text formats; preserving it unchanged";
+    }
+  } catch {
+    reason = "clipboard formats could not be inspected; preserving it unchanged";
+  }
+  if (reason) {
+    skip("core pages receive clipboard-write permission", reason);
+    skip("clipboard contents match the page write", reason);
+  } else {
+    const saved = await clipboard.readText();
+    try {
+      await clipboard.writeText("okbd2-native-probe");
+      result.nativeClipboardAvailable = (await clipboard.readText()) === "okbd2-native-probe";
+      webContents.focus();
+      result.clipboardWrite = await webContents.executeJavaScript(
+        "navigator.clipboard.writeText('okbd2-probe').then(() => 'ok', (error) => String(error))", true);
+      check("core pages receive clipboard-write permission", result.clipboardWrite === "ok");
+      if (result.nativeClipboardAvailable) {
+        await until(async () => (await clipboard.readText()) === "okbd2-probe", "clipboard write visible", 30);
+        check("clipboard contents match the page write", true);
+      } else {
+        skip("clipboard contents match the page write", "the shell cannot read back its own clipboard write");
+      }
+    } finally {
+      if (empty) clipboard.clear();
+      else await clipboard.writeText(saved);
+    }
+  }
+  check("core pages cannot read the clipboard", await webContents.executeJavaScript(
+    "navigator.clipboard.readText().then(() => false, () => true)"));
+}
+
 function runner() {
   const value = (flag) => {
     const index = process.argv.indexOf(flag);
@@ -335,7 +391,7 @@ function probe() {
     failToggle = false;
     delivered.length = shown;
 
-    // The probe core reports no game window even when one is open (desktop_probe_core.py);
+    // The probe core discovers only its nonexistent fixture window (desktop_probe_core.py);
     // the connection test starts with an idle runner.
     await api("/api/probe/current-task", { name: null, running: false });
     await until(() => js("document.querySelector('[data-action=connect-game]')?.disabled===false"), "home connection button");
@@ -387,28 +443,8 @@ function probe() {
     win.setBounds({ x: 80, y: 80, width: 980, height: 720 });
     await delay(400);
 
-    // Copy buttons (report, logs, OCR text): the page may write the clipboard, never read it.
-    // Electron's clipboard methods return Promises. Only text is saved and put back.
-    const savedClipboard = await clipboard.readText();
-    try {
-      await clipboard.writeText("okbd2-native-probe");
-      // Where even the shell cannot read back its own write, only the permission is checked.
-      result.nativeClipboardAvailable = (await clipboard.readText()) === "okbd2-native-probe";
-      win.webContents.focus();
-      // As a button click: with a user gesture, which is what makes Electron ask the shell.
-      const written = await win.webContents.executeJavaScript("navigator.clipboard.writeText('okbd2-probe').then(() => 'ok', (error) => String(error))", true);
-      result.clipboardWrite = written;
-      check("core pages receive clipboard-write permission", written === "ok");
-      if (result.nativeClipboardAvailable) {
-        await until(async () => (await clipboard.readText()) === "okbd2-probe", "clipboard write visible", 30);
-        check("clipboard contents match the page write", true);
-      } else {
-        skip("clipboard contents match the page write", "the shell cannot read back its own clipboard write");
-      }
-      check("core pages cannot read the clipboard", await js("navigator.clipboard.readText().then(() => false, () => true)"));
-    } finally {
-      await clipboard.writeText(savedClipboard).catch((error) => console.error("probe: clipboard not restored", error));
-    }
+    await probeClipboard({ clipboard, webContents: win.webContents, python: process.env.PROBE_PYTHON,
+      result, check, skip, until });
 
     await api(`/api/settings/${encodeURIComponent("Notification")}/config`, { key: "System Notification", value: true });
     check("local notification accepted", (await api("/api/bd2/notify/test", { channel: "system" })).status === 200);
@@ -473,6 +509,24 @@ function probe() {
     await js(`${reportButton}.click()`);
     await until(() => js("document.querySelector('h1.title')?.textContent==='问题报告'"), "report page");
     check("the finished run's button leads to the report page", true);
+
+    await api("/api/probe/failure", { run: "probe-child-failed", parent: "probe-batch" });
+    check("child failures wait for their batch", (await api("/api/bd2/report")).body.failure_prompt === null);
+    await api("/api/probe/failure", { run: "probe-batch-failed" });
+    await until(() => js("document.querySelector('[role=dialog]')?.textContent.includes('探针日常')"), "failure report prompt");
+    check("failure prompt defaults to declining", await js("document.activeElement?.textContent==='暂不生成'"));
+    fs.writeFileSync(path.join(out, "failure-report-prompt.png"), (await win.webContents.capturePage()).toPNG());
+    await js("[...document.querySelectorAll('[role=dialog] button')].find(b=>b.textContent==='暂不生成').click()");
+    await until(() => js("!document.querySelector('[role=dialog]')"), "failure prompt declined");
+    check("declining does not prepare or export a report", !(await api("/api/bd2/report")).body.session_id);
+    await api("/api/probe/failure", { run: "probe-batch-accepted" });
+    await until(() => js("Boolean(document.querySelector('[role=dialog]'))"), "next failure prompt");
+    await js("[...document.querySelectorAll('[role=dialog] button')].find(b=>b.textContent==='生成问题报告').click()");
+    await until(() => js("Boolean(document.querySelector('#report-description'))"), "failure report form");
+    const acceptedReport = (await api("/api/bd2/report")).body;
+    check("accepting opens the Electron report form without exporting", Boolean(acceptedReport.session_id) && acceptedReport.result === null);
+    await js("[...document.querySelectorAll('.report-actions button')].find(b=>b.textContent.includes('关闭报告')).click()");
+    await until(async () => !(await api("/api/bd2/report")).body.session_id, "failure report closed");
 
     const dockToggle = "document.querySelector('.dock button[aria-expanded]')";
     const dockExpanded = !(await js(`${dockToggle}.getAttribute('aria-expanded')==='true'`));
@@ -605,8 +659,6 @@ function probe() {
   }, MODE_TIMEOUT_MS);
 }
 
-if (process.versions.electron) {
-  probe();
-} else {
-  runner();
-}
+module.exports = { probeClipboard };
+if (process.versions.electron) probe();
+else if (require.main === module) runner();

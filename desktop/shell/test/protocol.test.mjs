@@ -10,6 +10,44 @@ const protocol = require("../dist/protocol.js");
 const { parseShellArgs, readDesktopState, fitBounds, minimumSize } = require("../dist/shell-config.js");
 const navigation = require("../dist/navigation.js");
 const { maintenanceArguments, updateCommand } = require("../dist/maintenance.js");
+const { probeClipboard } = require("../../scripts/desktop_probe.cjs");
+
+test("clipboard probe preserves non-text data and restores plain text or an empty clipboard", async () => {
+  for (const formats of [[], [13], [8], [15], [13, 49161], null]) {
+    let content = formats?.length ? "original" : "";
+    let writes = 0;
+    let cleared = false;
+    const checks = [];
+    const skips = [];
+    const clipboard = {
+      readText: async () => content,
+      writeText: async value => { content = value; writes++; },
+      clear: () => { content = ""; cleared = true; },
+    };
+    const result = {};
+    await probeClipboard({ clipboard, result, python: "unused", platform: "win32",
+      spawnSync: () => ({ status: formats === null ? 1 : 0, stdout: JSON.stringify(formats) }),
+      webContents: { focus() {}, async executeJavaScript(code) {
+        if (code.includes("writeText")) { await clipboard.writeText("okbd2-probe"); return "ok"; }
+        return true;
+      } },
+      check: (name, passed) => { assert.equal(passed, true, name); checks.push(name); },
+      skip: (name, reason) => skips.push({ name, reason }),
+      until: async fn => assert.equal(await fn(), true),
+    });
+    assert.equal(content, formats?.length ? "original" : "");
+    if (formats && formats.every(value => [1, 7, 13, 16].includes(value))) {
+      assert.equal(skips.length, 0);
+      assert.equal(result.clipboardWrite, "ok");
+      assert.equal(checks.length, 3);
+      assert.equal(cleared, formats.length === 0);
+    } else {
+      assert.equal(writes, 0);
+      assert.equal(skips.length, 2);
+      assert.equal(checks.length, 1);
+    }
+  }
+});
 
 test("maintenance validates the version and binds the launcher to its installation", () => {
   const root = join(tmpdir(), "okbd2-install");

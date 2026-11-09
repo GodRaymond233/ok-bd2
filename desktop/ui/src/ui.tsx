@@ -394,6 +394,7 @@ export function ConfirmDialog({
   confirm,
   cancel,
   disabled,
+  defaultCancel,
   onConfirm,
   onCancel,
 }: {
@@ -402,26 +403,28 @@ export function ConfirmDialog({
   confirm: string;
   cancel?: string;
   disabled?: boolean;
+  defaultCancel?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
   const confirmButton = useRef<HTMLButtonElement>(null);
+  const cancelButton = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     // A dialog with fields starts in its first field instead.
     if (!confirmButton.current?.closest(".dialog")?.querySelector("input, select")) {
-      confirmButton.current?.focus();
+      (defaultCancel ? cancelButton : confirmButton).current?.focus();
     }
     const escape = (event: KeyboardEvent) => event.key === "Escape" && onCancel();
     document.addEventListener("keydown", escape);
     return () => document.removeEventListener("keydown", escape);
-  }, [onCancel]);
+  }, [onCancel, defaultCancel]);
   return (
     <div className="scrim" onMouseDown={onCancel}>
       <div className="dialog" role="dialog" aria-modal="true" aria-label={title} onMouseDown={(event) => event.stopPropagation()}>
         <h2>{title}</h2>
         {children}
         <div className="acts">
-          <button type="button" className="btn" onClick={onCancel}>
+          <button type="button" className="btn" ref={cancelButton} onClick={onCancel}>
             {cancel ?? t("取消")}
           </button>
           <button type="button" className="btn primary" ref={confirmButton} disabled={disabled} onClick={onConfirm}>

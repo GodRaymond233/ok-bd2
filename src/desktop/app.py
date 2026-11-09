@@ -12,6 +12,7 @@ from pathlib import Path
 from fastapi import HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
+from ok import og
 from ok.core.config_schema import build_config_fields
 from ok.core.events import communicate
 
@@ -648,8 +649,11 @@ def create_app(
     install_language(app, runtime)
     install_tools(app, runtime, legacy_check)
     preview = LivePreview(runtime)
+    evidence = getattr(getattr(og, "my_app", None), "diagnostic_evidence", None)
     reports = ReportSession(runtime, preview, core_version or str(config.get("version") or ""),
-                            legacy_check=legacy_check)
+                            legacy_check=legacy_check, evidence=evidence)
+    if evidence is not None:
+        runtime.ok.exit_event.bind_stop(reports)
     app.state.reports = reports
     runtime.prevent_report_resume = reports.prevent_resume
     install_maintenance(
@@ -772,6 +776,10 @@ def create_app(
     @app.post("/api/bd2/report/prepare")
     def prepare_report():
         return report_call(reports.prepare)
+
+    @app.post("/api/bd2/report/failure")
+    def respond_failure(body: dict):
+        return report_call(reports.respond_failure, body.get("run"), body.get("generate"))
 
     @app.post("/api/bd2/report/build")
     def build_report(body: dict):

@@ -54,6 +54,18 @@ jobs:
           if ((Get-Content -LiteralPath requirements.txt -Raw) -match '(?im)^\s*ok-script\b') {
             throw "The update payload still depends on ok-script."
           }
+      - name: Fetch the released Electron shell
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (Get-Content desktop/shell/package.json -Raw | ConvertFrom-Json).version
+          $archive = "ok-bd2-shell-$version-win-x64.zip"
+          gh release download $env:APPLICATION_TAG --repo $env:GITHUB_REPOSITORY `
+            --pattern $archive --dir desktop-release
+          if ($LASTEXITCODE -ne 0) { throw "The requested tag has no matching Electron shell." }
+          $manifest = @{ version = $version; sha256 = (Get-FileHash "desktop-release/$archive" -Algorithm SHA256).Hash.ToLowerInvariant() }
+          $manifest | ConvertTo-Json | Set-Content desktop-release/shell-release.json -Encoding utf8
       - name: Prepare launcher
         shell: pwsh
         run: .\scripts\prepare_pyappify_launcher.ps1 -Version v1.2.4 -NsisCompression zlib

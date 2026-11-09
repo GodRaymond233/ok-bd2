@@ -2,8 +2,11 @@
 
 import threading
 import uuid
+from collections import deque
 from dataclasses import replace
 from pathlib import Path
+
+from ok.core.events import EventMessage, communicate
 
 from src.desktop.config_store import config_lock
 from src.desktop.tools import executor_busy
@@ -12,7 +15,7 @@ from src.diagnostics.service import DiagnosticsManager
 
 
 class ReportSession:
-    def __init__(self, runtime, preview, version, legacy_check=None):
+    def __init__(self, runtime, preview, version, legacy_check=None, evidence=None):
         self.runtime = runtime
         self.preview = preview
         self.legacy_check = legacy_check
@@ -28,6 +31,70 @@ class ReportSession:
         self._task = None
         self._resume_allowed = False
         self._archives = {}
+        self.evidence = evidence
+        # The evidence worker must never wait for report compression or its own snapshot barrier.
+        self._failure_lock = threading.Lock()
+        self._pending_failure = None
+        self._seen_failures = deque(maxlen=32)
+        self._offered_run = None
+        self._failure_notifier = self.on_failure
+        if evidence is not None:
+            evidence.failure_notifier = self._failure_notifier
+
+    def stop(self):
+        if self.evidence is not None and self.evidence.failure_notifier is self._failure_notifier:
+            self.evidence.failure_notifier = None
+
+    def _record(self, action, run=None):
+        if self.evidence is not None:
+            try:
+                self.evidence.report_action(action, run)
+            except Exception:
+                pass
+
+    def on_failure(self, failure):
+        with self._failure_lock:
+            if failure["run"] in self._seen_failures:
+                return
+            self._seen_failures.append(failure["run"])
+            self._pending_failure = {
+                "run": failure["run"], "task_name": failure["task_name"],
+                "failed": str(failure.get("info", {}).get("失败") or ""),
+            }
+        communicate.any.emit(EventMessage("bd2_failure_report", (), {}))
+
+    def _prompt_ready(self):
+        app = self.runtime.ok.headless_app
+        return not (
+            self.snapshot is not None or self.runtime.executor.current_task is not None
+            or app.start_controller.starting or executor_busy(self.runtime.executor)
+            or getattr(app, "maintenance", False) or getattr(app, "diagnostic_pause", False)
+            or getattr(app, "window_resize_in_progress", False)
+        )
+
+    def respond_failure(self, run, generate):
+        if type(generate) is not bool:
+            raise ValueError("报告选项应为布尔值")
+        with config_lock, self._lock:
+            if not self._prompt_ready():
+                raise ValueError("请先结束当前任务或报告，再处理失败提醒")
+            with self._failure_lock:
+                failure = self._pending_failure
+                if failure is None or failure["run"] != run:
+                    raise ValueError("失败提醒已改变，请重新读取")
+                self._pending_failure = None
+            if generate:
+                self._record("prompt_accepted", run)
+                try:
+                    self.prepare({"source": "failure_prompt", "failure_run": run})
+                except Exception:
+                    with self._failure_lock:
+                        if self._pending_failure is None:
+                            self._pending_failure = failure
+                    raise
+            else:
+                self._record("prompt_declined", run)
+            return self.state()
 
     def _task_identity(self):
         task = self.runtime.executor.current_task
@@ -40,7 +107,13 @@ class ReportSession:
     def state(self):
         with self._lock:
             snapshot = self.snapshot
+            with self._failure_lock:
+                failure = self._pending_failure if self._prompt_ready() else None
+            if failure and failure["run"] != self._offered_run:
+                self._offered_run = failure["run"]
+                self._record("prompt_offered", failure["run"])
             return {
+                "failure_prompt": failure,
                 "session_id": self.session_id,
                 "snapshot": None
                 if snapshot is None
@@ -59,7 +132,7 @@ class ReportSession:
                 "result": self.result,
             }
 
-    def prepare(self):
+    def prepare(self, report_context=None):
         with config_lock, self._lock:
             if self.snapshot is not None:
                 return self.state()
@@ -72,6 +145,8 @@ class ReportSession:
                 raise ValueError("请先等待游戏启动或窗口调整完成，再记录问题现场")
             app.diagnostic_pause = True
             try:
+                if report_context is None:
+                    self._record("manual_opened")
                 frame, age = self.preview.latest_frame()
                 snapshot = self.manager.prepare(
                     executor=self.runtime.executor,
@@ -82,7 +157,7 @@ class ReportSession:
             except Exception:
                 app.diagnostic_pause = False
                 raise
-            self.snapshot = replace(snapshot, report_context={"source": "manual"})
+            self.snapshot = replace(snapshot, report_context=report_context or {"source": "manual"})
             self._task = self._task_identity()
             self._resume_allowed = snapshot.executor_was_running
             self.session_id = uuid.uuid4().hex
@@ -102,12 +177,16 @@ class ReportSession:
         with self._lock:
             self._require(session_id)
             if self.result is None:
-                # As in the Qt dialog: only failure screenshots saved automatically go out.
-                report = self.manager.build_report(
-                    self.snapshot,
-                    description.strip(),
-                    include_screenshot=False,
-                )
+                run = self.snapshot.report_context.get("failure_run")
+                self._record("build_started", run)
+                try:
+                    report = self.manager.build_report(
+                        self.snapshot, description.strip(), include_screenshot=False,
+                    )
+                except Exception:
+                    self._record("build_failed", run)
+                    raise
+                self._record("build_succeeded", run)
                 self._archives[report.report_id] = report.archive_path.resolve()
                 self._archives = dict(list(self._archives.items())[-10:])
                 self.result = {
@@ -128,6 +207,8 @@ class ReportSession:
                 if self.legacy_check and (message := self.legacy_check()):
                     raise ValueError(message)
                 self.manager.resume(self.snapshot, self.runtime.executor)
+            if self.result is None:
+                self._record("form_cancelled", self.snapshot.report_context.get("failure_run"))
             self.snapshot = self.session_id = self.result = None
             self._resume_allowed = False
             self.runtime.ok.headless_app.diagnostic_pause = False

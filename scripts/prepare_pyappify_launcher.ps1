@@ -1,6 +1,7 @@
 ﻿param(
     [string]$Version = "v1.2.4",
     [string]$BuildDir = "",
+    [string]$DesktopRelease = "desktop-release",
     [ValidateSet("zlib", "lzma")]
     [string]$NsisCompression = "lzma",
     [switch]$SkipBuild
@@ -22,6 +23,28 @@ function Ensure-Command {
     if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
         throw "$Name is required but was not found. $InstallDescription"
     }
+}
+
+function Add-DesktopShellResource {
+    param([string]$ReleaseDirectory, [string]$TauriDirectory, [string]$AppName, [object]$Config)
+
+    $release = Get-Content -LiteralPath (Join-Path $ReleaseDirectory 'shell-release.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($release.version -notmatch '^\d+\.\d+\.\d+$' -or $release.sha256 -notmatch '^[0-9a-f]{64}$') {
+        throw 'Invalid desktop shell release manifest.'
+    }
+    $archive = Join-Path $ReleaseDirectory "ok-bd2-shell-$($release.version)-win-x64.zip"
+    if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $release.sha256) {
+        throw 'Desktop shell archive SHA256 mismatch.'
+    }
+    $payload = Join-Path $TauriDirectory 'desktop-shell'
+    Expand-Archive -LiteralPath $archive -DestinationPath $payload
+    $shell = Get-Content -LiteralPath (Join-Path $payload 'shell-manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($shell.version -ne $release.version -or -not (Test-Path -LiteralPath (Join-Path $payload 'ok-bd2-desktop.exe'))) {
+        throw 'Desktop shell payload does not match its release manifest.'
+    }
+    # Kept outside the profile's data directory, which the packaging action replaces.
+    $resources = [ordered]@{ 'data/' = 'data/'; 'desktop-shell/' = "data/apps/$AppName/shell/$($release.version)/" }
+    $Config.bundle | Add-Member -MemberType NoteProperty -Name resources -Value $resources -Force
 }
 
 function Ensure-Pnpm {
@@ -266,6 +289,8 @@ $tauriConf = Get-Content -LiteralPath $tauriConfPath -Raw
 $tauriConf = $tauriConf.Replace('"pyappify"', '"' + $appName + '"')
 $tauriConf = $tauriConf.Replace('"0.0.1"', '"' + $Version.TrimStart("v") + '"')
 $tauriConfObject = $tauriConf | ConvertFrom-Json
+Add-DesktopShellResource -ReleaseDirectory (Join-Path $workspace $DesktopRelease) `
+    -TauriDirectory (Join-Path $buildPath 'src-tauri') -AppName $appName -Config $tauriConfObject
 $tauriConfObject.bundle.windows.nsis | Add-Member `
     -MemberType NoteProperty `
     -Name compression `

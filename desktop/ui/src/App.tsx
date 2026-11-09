@@ -28,13 +28,14 @@ import type {
   Device,
   HistoryRun,
   HuntBook,
+  ReportState,
   SettingsGroup,
   ShellBridge,
   TaskPayload,
   TodayItem,
   TodaySummary,
 } from "./types.ts";
-import { Icon, RailDivider, useSlider } from "./ui.tsx";
+import { ConfirmDialog, Icon, RailDivider, useSlider } from "./ui.tsx";
 
 declare global {
   interface Window {
@@ -103,7 +104,7 @@ export interface Core {
   openLogs: (run: HistoryRun | null) => void;
 }
 
-const REFRESH_EVENTS = new Set(["task", "task_done", "task_list_updated", "executor_paused", "executor_exclusive"]);
+const REFRESH_EVENTS = new Set(["task", "task_done", "task_list_updated", "executor_paused", "executor_exclusive", "bd2_failure_report"]);
 // Game start progress only changes the capture state (status.starting, starter_wait).
 const CAPTURE_EVENTS = new Set(["starting_emulator", "starter_wait", "adb_devices"]);
 
@@ -141,6 +142,8 @@ export function App() {
   const [info, setInfo] = useState<DesktopInfo | null>(null);
   const [logs, setLogs] = useState<LogRecord[]>([]);
   const [settings, setSettings] = useState<SettingsGroup[] | null>(null);
+  const [reportState, setReportState] = useState<ReportState | null>(null);
+  const [failureWorking, setFailureWorking] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const [logFocus, setLogFocus] = useState<HistoryRun | null>(null);
   const [coreError, setCoreError] = useState<string | null>(null);
@@ -192,18 +195,20 @@ export function App() {
     const tasksRead = ++taskSequence.current;
     const revision = taskRevision.current;
     try {
-      const [capture, taskList, summary, desktop, groups] = await Promise.all([
+      const [capture, taskList, summary, desktop, groups, report] = await Promise.all([
         api.capture(),
         api.tasks(),
         api.today(),
         api.info(),
         api.settings(),
+        api.reportState(),
       ]);
       applyTasks(tasksRead, revision, taskList, summary);
       if (sequence !== fullSequence.current) return;
       setUi(capture);
       setInfo(desktop);
       setSettings(groups);
+      setReportState(report);
       setCoreError(null);
     } catch (reason) {
       if (sequence === fullSequence.current) setCoreError(errorText(reason));
@@ -538,6 +543,19 @@ export function App() {
     },
   };
 
+  const failure = reportState?.failure_prompt;
+  const respondFailure = async (generate: boolean) => {
+    if (!failure || failureWorking) return;
+    setFailureWorking(true);
+    await act(async () => {
+      const report = await api.respondFailure(failure.run, generate);
+      fullSequence.current += 1;
+      setReportState(report);
+      if (generate) setPage("report");
+    });
+    setFailureWorking(false);
+  };
+
   const setExpanded = (expanded: boolean) => {
     setDockExpanded(expanded);
     rememberDockExpanded(expanded);
@@ -577,7 +595,7 @@ export function App() {
       content = <RecordsPage core={core} />;
       break;
     case "report":
-      content = <ReportPage core={core} />;
+      content = <ReportPage key={reportState?.session_id ?? "manual"} core={core} />;
       break;
     case "logs":
       content = <LogsPage core={core} focus={logFocus} onFocus={setLogFocus} />;
@@ -709,6 +727,19 @@ export function App() {
           </button>
         </div>
       )}
+      {failure && !busy && <ConfirmDialog
+        title={t("任务执行失败")}
+        confirm={t("生成问题报告")}
+        cancel={t("暂不生成")}
+        defaultCancel
+        disabled={failureWorking}
+        onConfirm={() => void respondFailure(true)}
+        onCancel={() => void respondFailure(false)}
+      >
+        <p>{t("{task}执行结束，存在失败。是否生成问题报告？", { task: coreText(failure.task_name) })}</p>
+        {failure.failed && failure.failed !== "-" && <p>{t("失败项目：{tasks}", { tasks: coreText(failure.failed) })}</p>}
+        <p>{t("报告会自动附带已保存的故障截图。")}</p>
+      </ConfirmDialog>}
     </div>
   );
 }
