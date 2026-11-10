@@ -121,7 +121,7 @@ def publish(archive, manifest, repository):
     if domestic is None:
         domestic = api(cnb_api, cnb_token, {"tag_name": cnb_tag, "target_commitish": cnb_tag,
             "name": cnb_tag, "prerelease": True, "make_latest": "false"})
-    assets = {asset["name"]: asset for asset in domestic.get("assets", [])}
+    assets = {asset["name"]: asset for asset in (domestic.get("assets") or [])}
     if archive.name not in assets:
         upload = api(f"{cnb_api}/{domestic['id']}/asset-upload-url", cnb_token,
                      {"asset_name": archive.name, "size": archive.stat().st_size,

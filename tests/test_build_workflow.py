@@ -175,6 +175,50 @@ class DesktopReleaseTest(unittest.TestCase):
                     "owner/repository")
         api.assert_called_once()
 
+    def test_shell_publish_uploads_when_cnb_release_has_no_assets(self):
+        publish = self.release["publish"]
+        cnb_api = "https://api.cnb.cool/GodRaymond233/ok-bd2-update/-/releases"
+        for domestic in (None, {"id": 11, "assets": None}, {"id": 11, "assets": []}):
+            with self.subTest(domestic=domestic), tempfile.TemporaryDirectory() as folder:
+                archive = Path(folder) / "shell.zip"
+                archive.write_bytes(b"shell fixture")
+                manifest = {"version": "0.3.6", "source_sha256": "source",
+                            "sha256": self.release["file_hash"](archive)}
+                release = {"assets": [
+                    {"name": "shell-build.json", "browser_download_url": "https://example.test/meta"},
+                    {"name": archive.name, "browser_download_url": "https://example.test/shell"},
+                ]}
+                responses = [release, domestic]
+                if domestic is None:
+                    responses.append({"id": 11, "assets": None})
+                confirmation = f"{cnb_api}/11/asset-upload-confirmation/upload"
+                responses.extend([
+                    {"upload_url": "https://storage.example.test/upload",
+                     "verify_url": confirmation},
+                    {},
+                    {"id": 11, "assets": [{"name": archive.name,
+                        "browser_download_url": "https://example.test/domestic"}]},
+                ])
+                api = Mock(side_effect=responses)
+                verify = Mock()
+                with (patch.dict(os.environ, GH_TOKEN="fixture", CNB_GH="fixture",
+                                 GITHUB_REF_NAME="v2.0.0"),
+                      patch.dict(publish.__globals__, {"api": api, "download": Mock(),
+                                                       "verify_urls": verify}),
+                      patch("subprocess.check_output", return_value="v2.0.0\nv1.4.13\n"),
+                      patch("urllib.request.urlopen", side_effect=[
+                          io.BytesIO(json.dumps(manifest).encode()), io.BytesIO(b"")]) as open_url):
+                    self.assertIs(publish(archive, manifest, "owner/repository"), manifest)
+                request = open_url.call_args_list[1].args[0]
+                self.assertEqual(request.get_method(), "PUT")
+                self.assertEqual(request.data, archive.read_bytes())
+                self.assertIsNone(request.get_header("Authorization"))
+                api.assert_any_call(confirmation, "fixture", {})
+                self.assertEqual(manifest["urls"], ["https://example.test/domestic",
+                    "https://github.com/owner/repository/releases/download/"
+                    "desktop-shell-0.3.6/shell.zip"])
+                verify.assert_called_once_with(manifest)
+
     def test_electron_payload_prunes_framework_qt_and_refuses_qt_dependencies(self):
         prepare = self.release["prepare_core_payload"]
         with tempfile.TemporaryDirectory() as folder:
