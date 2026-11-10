@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { mkdtempSync, writeFileSync, rmSync, linkSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
+import { pathToFileURL } from "node:url";
 
 const require = createRequire(import.meta.url);
 const protocol = require("../dist/protocol.js");
@@ -212,8 +213,8 @@ test("navigation rules", () => {
   assert.equal(navigation.isAllowedExternal("http://github.com/GodRaymond233/ok-bd2"), false);
   assert.equal(navigation.isAllowedExternal("https://github.com/GodRaymond233.evil/x"), false);
   assert.equal(navigation.isAllowedExternal("https://example.com/"), false);
-  const page = join(tmpdir(), "static", "status.html");
-  const pageUrl = new URL(`file://${page}`).href;
+  const page = join(tmpdir(), "static ~#%", "status.html");
+  const pageUrl = pathToFileURL(page).href;
   assert.equal(navigation.navigationAllowed(pageUrl, null, page), true);
   assert.equal(navigation.navigationAllowed("file:///etc/passwd", origin, page), false);
   assert.equal(navigation.navigationAllowed("https://example.com/", origin, page), false);
