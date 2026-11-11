@@ -76,7 +76,6 @@ class NavigatorTest(unittest.TestCase):
             True, ScreenState.SANDBOX,
         ))
         navigator.current_collection_target = Mock(return_value=current)
-        navigator._wait_for_loading_screen = Mock(return_value=True)
         navigator._capture_area_map_context = Mock(return_value=self._area_context(
             "", None, page_mode=MapPageMode.UNKNOWN,
         ))
@@ -437,7 +436,7 @@ class NavigatorTest(unittest.TestCase):
                 self.assertEqual(expected_clicks, len(clicks))
 
     def test_walk_question_is_confirmed_and_remaining_map_is_closed_before_waiting(self):
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        frame = np.full((1080, 1920, 3), 120, dtype=np.uint8)
         clock = [0.0]
         task = SimpleNamespace(
             info_set=Mock(), config={},
@@ -451,6 +450,7 @@ class NavigatorTest(unittest.TestCase):
             0.99, (400, 400), (40, 40), 0.99,
         ))
         navigator._walk_text = Mock(return_value="是否自动移动前往所选目的地？")
+        navigator._field_battle_visible = Mock(return_value=False)
         navigator._click_sandbox_navigation_destination_confirmation = Mock(return_value=True)
         events = []
         navigator._close_confirmed_map_page = Mock(side_effect=lambda *a, **k: (
@@ -694,6 +694,87 @@ class NavigatorTest(unittest.TestCase):
                     int(expected), navigator._click_sandbox_teleport_interaction.call_count,
                 )
                 self.assertLessEqual(clock[0], 4.5)
+
+    def test_portal_selection_retreats_before_replanning_with_one_budget(self):
+        for scenario in ("auto", "manual", "repeated", "deadline", "unknown", "black",
+                         "disabled", "finished"):
+            with self.subTest(scenario=scenario):
+                clock = FakeClock()
+                frame = np.full((90, 160, 3), 0 if scenario == "black" else 120, dtype=np.uint8)
+                phase, clicks, deadlines = ["field"], [], []
+                task = SimpleNamespace(config={}, info_set=Mock(), sleep=clock.sleep)
+                vision = SimpleNamespace(
+                    capture=lambda: frame, simplify=lambda text: text,
+                    ocr_text=Mock(side_effect=lambda *a, **k: (
+                        "TURN.1 自动战斗中 结束自动战斗"
+                        if phase[0] == "battle" and scenario != "manual" else
+                        "TURN.1" if phase[0] == "battle" else ""
+                    )),
+                )
+                navigator = Navigator(task, vision)
+                navigator.wait_state = Mock(return_value=ScreenState.SANDBOX)
+                def open_map():
+                    self.assertEqual("field", phase[0])
+                    phase[0] = "map"
+                    return "科库托斯圣域"
+                navigator._open_field_map = open_map
+                navigator._sandbox_navigation_page_has_keyword = lambda _frame: phase[0] == "map"
+                navigator._sandbox_navigation_teleport = Mock(return_value=MatchResult(
+                    .99, (40, 40), (4, 4), .99,
+                ))
+                def click(*args, after_sleep=0):
+                    self.assertEqual("map", phase[0])
+                    clicks.append(args)
+                    phase[0] = (
+                        "unknown" if scenario in {"unknown", "black"} else
+                        "battle" if len(clicks) == 1 or scenario in {"repeated", "deadline"}
+                        else "moving"
+                    )
+                    clock.sleep(after_sleep)
+                vision.click_client = click
+                def retreat(_frame, *, end_at, stop_walk):
+                    self.assertTrue(stop_walk)
+                    deadlines.append(end_at)
+                    if scenario in {"disabled", "finished"}:
+                        signal = (
+                            TaskDisabledException if scenario == "disabled" else FinishedException
+                        )
+                        raise signal()
+                    clock.sleep(45 if scenario == "deadline" else 1)
+                    phase[0] = "field"
+                    return frame
+                navigator._retreat_from_field_battle = Mock(side_effect=retreat)
+                navigator._walk_text = lambda _frame: "自动移动中" if phase[0] == "moving" else ""
+                navigator._click_sandbox_navigation_menu_teleport = Mock(return_value=False)
+                navigator._click_sandbox_navigation_destination_confirmation = Mock(
+                    return_value=False,
+                )
+                navigator._wait_auto_move_finished = Mock(return_value="done")
+                navigator._click_sandbox_teleport_interaction = Mock(return_value=True)
+                navigator._confirm_portal_interaction = Mock(return_value=NavigationResult(
+                    True, ScreenState.AREA_MAP, map_page_mode=MapPageMode.DIRECT_TELEPORT,
+                ))
+                with patch("src.tasks.map_trade.navigator_sandbox.monotonic", clock):
+                    if scenario in {"disabled", "finished"}:
+                        with self.assertRaises(
+                            TaskDisabledException if scenario == "disabled" else FinishedException,
+                        ):
+                            navigator._walk_to_sandbox_teleport_interaction()
+                        continue
+                    result = navigator._walk_to_sandbox_teleport_interaction()
+                success = scenario in {"auto", "manual"}
+                self.assertEqual(success, result.success)
+                self.assertEqual(2 if success else 3 if scenario == "repeated" else 1, len(clicks))
+                self.assertEqual(int(success), navigator._confirm_portal_interaction.call_count)
+                self.assertEqual([45.0] * len(deadlines), deadlines)
+                if success:
+                    self.assertEqual(2, navigator.wait_state.call_count)
+                    self.assertLess(navigator._wait_auto_move_finished.call_args.args[0], 45)
+                if scenario in {"black", "unknown"}:
+                    navigator._retreat_from_field_battle.assert_not_called()
+                if scenario == "black":
+                    vision.ocr_text.assert_not_called()
+                    navigator._click_sandbox_navigation_destination_confirmation.assert_not_called()
 
     def test_chapter_eighteen_recovers_the_circle_before_changing_maps(self):
         card = CARD_BY_ID["Q_sp18"]
@@ -1038,6 +1119,7 @@ class NavigatorTest(unittest.TestCase):
             (1920, 1080, False), (1280, 720, False),
             (1920, 1080, True), (1280, 720, True),
             (1920, 1080, "recent"), (1280, 720, "recent"),
+            (1920, 1080, "auto"), (1280, 720, "auto"),
         ):
             for blocked in (
                 None, "pause", "escape", "confirm", "ambiguous", "loading", "stop",
@@ -1082,7 +1164,9 @@ class NavigatorTest(unittest.TestCase):
                                 + ([] if blocked == "title_only" else [dialog])
                                 + ([dialog] if blocked == "dialog_ambiguous" else [])
                             )
-                        return []
+                        return [box("自动战斗中", .05, .86), box("结束自动战斗", .86, .9)] if (
+                            entry == "auto" and state[0] == "battle"
+                        ) else []
 
                     def click(point, _shape, *, after_sleep=0):
                         stage = {"battle": "pause", "menu": "escape", "dialog": "confirm"}[state[0]]
@@ -1145,14 +1229,14 @@ class NavigatorTest(unittest.TestCase):
                                 return navigator._recent_field_ready()
                             return (
                                 navigator._wait_for_story_sandbox(14)
-                                if entry else navigator.wait_for_collection_field(frame)
+                                if entry is True else navigator.wait_for_collection_field(frame)
                             )
 
                         if blocked in (None, "field_moving"):
                             result = recover()
                             if entry == "recent":
                                 self.assertTrue(result)
-                            elif entry:
+                            elif entry is True:
                                 self.assertTrue(result.success)
                                 self.assertEqual(ScreenState.SANDBOX, result.state)
                             else:
@@ -1916,7 +2000,6 @@ class NavigatorTest(unittest.TestCase):
                         self._area_context("", None, page_mode=MapPageMode.UNKNOWN)
                         if destination_clicks else pages[position[0]]
                     )
-                    navigator._wait_for_loading_screen = Mock(return_value=True)
                     navigator._wait_for_story_sandbox = Mock(return_value=sandbox)
                     navigator._confirm_collection_arrival = Mock(return_value=sandbox)
                     with patch("src.tasks.map_trade.navigator_sandbox.monotonic", lambda: clock[0]):
@@ -2331,7 +2414,8 @@ class NavigatorTest(unittest.TestCase):
         ):
             with self.subTest(outcome=outcome):
                 navigator = self._routing_navigator()
-                navigator.task.sleep = Mock()
+                clock = FakeClock()
+                navigator.task.sleep = clock.sleep
                 clicked = []
                 navigator._click_teleport_map_destination = Mock(side_effect=lambda p, *a, **k: (
                     clicked.append(p) or True
@@ -2363,12 +2447,71 @@ class NavigatorTest(unittest.TestCase):
                     replace(page, teleports=(), skill_teleports=())
                     if outcome == "before_first" else page
                 )
-                result = navigator._click_collection_destination(card, target, initial)
+                with patch("src.tasks.map_trade.navigator_sandbox.monotonic", clock):
+                    result = navigator._click_collection_destination(card, target, initial)
                 self.assertEqual(expected, result.success)
                 self.assertEqual(clicks_expected, len(clicked))
                 self.assertTrue(all(item.center[0] < 900 for item in clicked[:4]))
                 self.assertTrue(all(item == purple for item in clicked[4:]))
                 self.assertEqual(expected, navigator._confirm_collection_arrival.called)
+
+    def test_destination_observes_disappearing_circle_before_retry_or_arrival(self):
+        card = CARD_BY_ID["Q_cp2"]
+        target = card.targets[1]
+        teleport = MatchResult(.983, (912, 531), (60, 60), .916, .918)
+        page = self._area_context(target.title, target.key, teleports=(teleport,))
+        missing = replace(page, teleports=(), skill_teleports=())
+        exited = replace(missing, map_page_mode=MapPageMode.UNKNOWN)
+        for scenario in ("transition", "reappears", "missing", "wrong_arrival",
+                         "no_arrival", "disabled", "finished", "unconfirmed"):
+            with self.subTest(scenario=scenario):
+                clock = FakeClock()
+                navigator = self._routing_navigator()
+                navigator.task.sleep = clock.sleep
+                click_times, read_times = [], []
+                navigator._click_teleport_map_destination = Mock(side_effect=lambda *a, **k: (
+                    click_times.append(clock()) or scenario != "unconfirmed"
+                ))
+                def capture(_card):
+                    read_times.append(clock())
+                    if scenario in {"disabled", "finished"} and clock() >= 1:
+                        signal = (
+                            TaskDisabledException if scenario == "disabled" else FinishedException
+                        )
+                        raise signal()
+                    if scenario == "missing":
+                        return missing
+                    if scenario == "reappears":
+                        return exited if len(click_times) > 1 else missing if clock() < 1 else page
+                    return page if len(read_times) == 1 else missing if clock() < 1 else exited
+                navigator._capture_area_map_context = capture
+                navigator._wait_for_story_sandbox = Mock(return_value=NavigationResult(
+                    scenario != "no_arrival", ScreenState.UNKNOWN, "仍在加载",
+                ))
+                navigator._collection_field_title = Mock(return_value=(
+                    card.targets[2].title if scenario == "wrong_arrival" else target.title
+                ))
+                with patch("src.tasks.map_trade.navigator_sandbox.monotonic", clock):
+                    if scenario in {"disabled", "finished"}:
+                        with self.assertRaises(
+                            TaskDisabledException if scenario == "disabled" else FinishedException,
+                        ):
+                            navigator._click_collection_destination(card, target, page)
+                        continue
+                    result = navigator._click_collection_destination(card, target, page)
+                self.assertEqual(scenario in {"transition", "reappears"}, result.success)
+                self.assertEqual(2 if scenario == "reappears" else 1, len(click_times))
+                if scenario == "reappears":
+                    self.assertGreaterEqual(click_times[1], TELEPORT_MAP_TRAVEL_SETTLE_SECONDS)
+                if scenario in {"missing", "unconfirmed"}:
+                    navigator._wait_for_story_sandbox.assert_not_called()
+                    navigator._collection_field_title.assert_not_called()
+                if scenario == "missing":
+                    self.assertIn("未确认切页或稳定可重试", result.message)
+                    self.assertGreaterEqual(clock(), TELEPORT_MAP_TRAVEL_SETTLE_SECONDS)
+                    self.assertLessEqual(clock(), TELEPORT_MAP_TRAVEL_SETTLE_SECONDS + .01)
+                if scenario in {"wrong_arrival", "no_arrival"}:
+                    self.assertIn("未确认", result.message)
 
     def test_collection_destination_requires_matching_arrival_map(self):
         card = CARD_BY_ID["Q_sp1"]

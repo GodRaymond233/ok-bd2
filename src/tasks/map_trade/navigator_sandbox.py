@@ -698,10 +698,55 @@ class SandboxNavigationMixin:
     def _walk_to_sandbox_teleport_interaction(self) -> NavigationResult:
         """Use the sandbox navigation map to walk back to a portal interaction prompt."""
 
+        walk_end_at = monotonic() + SANDBOX_NAVIGATION_WALK_TIMEOUT
+        for _recovery in range(FIELD_RETREAT_ATTEMPTS):
+            selected = self._select_sandbox_teleport_walk(walk_end_at)
+            if isinstance(selected, NavigationResult):
+                return selected
+            if selected:
+                break
+        else:
+            return NavigationResult(False, ScreenState.SANDBOX, "回阵连续遇敌，已达恢复次数上限")
+
+        self._status(
+            "导航状态",
+            "已选择导航地图传送阵，等待自动移动后重新识别交互按钮",
+        )
+        for look in range(3):
+            if not self._sandbox_navigation_page_has_keyword(self.vision.capture()):
+                break
+            if look < 2:
+                self.task.sleep(SANDBOX_NAVIGATION_OCR_INTERVAL * 2)
+        else:
+            closed = self._close_confirmed_map_page(
+                {MapPageMode.SANDBOX_LARGE_MAP}, timeout=SANDBOX_NAVIGATION_CONFIRM_TIMEOUT,
+            )
+            if not closed.success:
+                return closed
+        # 交互按钮可能在行走结束前出现；先等移动停止，避免传送后仍沿旧路线行走。
+        walk_state = self._wait_auto_move_finished(max(0.0, walk_end_at - monotonic()))
+        if walk_state != "done":
+            self._cancel_walk()
+            return NavigationResult(False, ScreenState.UNKNOWN, "走向传送阵的自动移动超时")
+        if not self._click_sandbox_teleport_interaction(timeout=self._loading_timeout()):
+            # A walk still going (resumed after an unseen catch) would fight
+            # the caller's next step (the ≡ menu).
+            self._cancel_walk()
+            return NavigationResult(
+                False,
+                ScreenState.SANDBOX,
+                "徒步回退后仍未识别到传送阵交互按钮",
+            )
+        return self._confirm_portal_interaction("徒步回退交互")
+
+    def _select_sandbox_teleport_walk(self, walk_end_at: float) -> bool | NavigationResult:
+        """Select a fresh route; False requests replanning after a confirmed retreat."""
+        if monotonic() >= walk_end_at:
+            return NavigationResult(False, ScreenState.UNKNOWN, "走向传送阵的自动移动超时")
         self._status("导航状态", "确认当前位置，徒步前往传送阵")
         state = self.wait_state(
             {ScreenState.SANDBOX, ScreenState.SANDBOX_MAP},
-            SANDBOX_NAVIGATION_CONFIRM_TIMEOUT,
+            min(SANDBOX_NAVIGATION_CONFIRM_TIMEOUT, max(0.0, walk_end_at - monotonic())),
         )
         if state not in {ScreenState.SANDBOX, ScreenState.SANDBOX_MAP}:
             return NavigationResult(
@@ -720,7 +765,7 @@ class SandboxNavigationMixin:
                 "未识别到左上导航地图入口，无法转入徒步回退",
             )
 
-        end_at = monotonic() + SANDBOX_NAVIGATION_MAP_TIMEOUT
+        end_at = min(walk_end_at, monotonic() + SANDBOX_NAVIGATION_MAP_TIMEOUT)
         teleport = None
         teleport_frame = None
         while monotonic() <= end_at:
@@ -748,11 +793,16 @@ class SandboxNavigationMixin:
             teleport_frame.shape,
             after_sleep=SANDBOX_NAVIGATION_TELEPORT_SETTLE_SECONDS,
         )
-        menu_end_at = monotonic() + SANDBOX_NAVIGATION_CONFIRM_TIMEOUT
-        walk_end_at = monotonic() + SANDBOX_NAVIGATION_WALK_TIMEOUT
+        menu_end_at = min(walk_end_at, monotonic() + SANDBOX_NAVIGATION_CONFIRM_TIMEOUT)
         destination_confirmed = False
         while monotonic() <= menu_end_at:
             menu_frame = self.vision.capture()
+            if self._black_frame(menu_frame):
+                self.task.sleep(SANDBOX_NAVIGATION_OCR_INTERVAL)
+                continue
+            if self._field_battle_visible(menu_frame):
+                self._retreat_from_field_battle(menu_frame, end_at=walk_end_at, stop_walk=True)
+                return False
             walk_text = self._walk_text(menu_frame)
             if walk_text is None:
                 self.task.sleep(SANDBOX_NAVIGATION_OCR_INTERVAL)
@@ -792,36 +842,7 @@ class SandboxNavigationMixin:
                 "箱庭大地图选择传送阵后未确认目的地按钮，已停止等待交互",
             )
 
-        self._status(
-            "导航状态",
-            "已选择导航地图传送阵，等待自动移动后重新识别交互按钮",
-        )
-        for look in range(3):
-            if not self._sandbox_navigation_page_has_keyword(self.vision.capture()):
-                break
-            if look < 2:
-                self.task.sleep(SANDBOX_NAVIGATION_OCR_INTERVAL * 2)
-        else:
-            closed = self._close_confirmed_map_page(
-                {MapPageMode.SANDBOX_LARGE_MAP}, timeout=SANDBOX_NAVIGATION_CONFIRM_TIMEOUT,
-            )
-            if not closed.success:
-                return closed
-        # 交互按钮可能在行走结束前出现；先等移动停止，避免传送后仍沿旧路线行走。
-        walk_state = self._wait_auto_move_finished(max(0.0, walk_end_at - monotonic()))
-        if walk_state != "done":
-            self._cancel_walk()
-            return NavigationResult(False, ScreenState.UNKNOWN, "走向传送阵的自动移动超时")
-        if not self._click_sandbox_teleport_interaction(timeout=self._loading_timeout()):
-            # A walk still going (resumed after an unseen catch) would fight
-            # the caller's next step (the ≡ menu).
-            self._cancel_walk()
-            return NavigationResult(
-                False,
-                ScreenState.SANDBOX,
-                "徒步回退后仍未识别到传送阵交互按钮",
-            )
-        return self._confirm_portal_interaction("徒步回退交互")
+        return True
 
     @staticmethod
     def _sandbox_same_action_identity(
@@ -1341,9 +1362,6 @@ class SandboxNavigationMixin:
             self._status("传送阵地图传送阵", f"拒绝未知页面模式={page_mode.value}")
             return False
         self.vision.click_client(teleport.center, frame_shape, after_sleep=0.0)
-        self._wait_for_loading_screen(
-            TELEPORT_MAP_TRAVEL_SETTLE_SECONDS
-        )
         self._status(
             "传送阵地图传送阵",
             f"交互入口直接点击中心={teleport.center}，等待传送完成",
@@ -1850,26 +1868,42 @@ class SandboxNavigationMixin:
             sent = self._click_teleport_map_destination(
                 teleport, context.frame_shape, page_mode=context.map_page_mode,
             )
-            latest = self._capture_area_map_context(card)
-            if not latest.is_area_map:
-                if not sent:
+            observe_end_at = monotonic() + TELEPORT_MAP_TRAVEL_SETTLE_SECONDS
+            retry_hits = 0
+            while True:
+                latest = self._capture_area_map_context(card)
+                if not latest.is_area_map:
+                    if not sent:
+                        return NavigationResult(
+                            False, ScreenState.UNKNOWN, "传送确认未完成，页面已变化",
+                        )
+                    arrived = self._wait_for_story_sandbox(card.number)
+                    if not arrived.success:
+                        return NavigationResult(
+                            False, arrived.state,
+                            f"传送到{target.title}后未确认剧情箱庭：{arrived.message}",
+                        )
+                    return self._confirm_collection_arrival(card, target)
+                if (
+                    latest.map_page_mode != context.map_page_mode
+                    or latest.resolved_target_key != target.key
+                    or latest.teleport_scope != context.teleport_scope
+                ):
                     return NavigationResult(
-                        False, ScreenState.UNKNOWN, "传送确认未完成，页面已变化",
+                        False, ScreenState.AREA_MAP, "传送重试前地图身份或技能范围变化",
                     )
-                arrived = self._wait_for_story_sandbox(card.number)
-                if not arrived.success:
-                    return NavigationResult(
-                        False, arrived.state,
-                        f"传送到{target.title}后未确认剧情箱庭：{arrived.message}",
-                    )
-                return self._confirm_collection_arrival(card, target)
-            if (
-                latest.map_page_mode != context.map_page_mode
-                or latest.resolved_target_key != target.key
-                or latest.teleport_scope != context.teleport_scope
-            ):
+                # A disappearing circle can precede the page transition. Only
+                # retry a click after observing the target page remain usable.
+                retry_hits = retry_hits + 1 if latest.teleports or latest.skill_teleports else 0
+                if monotonic() >= observe_end_at:
+                    break
+                self.task.sleep(max(
+                    0.0, min(AREA_MAP_CHANGE_INTERVAL, observe_end_at - monotonic()),
+                ))
+            if retry_hits < MAP_PAGE_MODE_STABLE_HITS:
                 return NavigationResult(
-                    False, ScreenState.AREA_MAP, "传送重试前地图身份或技能范围变化",
+                    False, ScreenState.UNKNOWN,
+                    f"传送到{target.title}后未确认切页或稳定可重试的传送阵",
                 )
             context = latest
         return NavigationResult(
@@ -2372,21 +2406,6 @@ class SandboxNavigationMixin:
             return float(np.percentile(frame[..., :3], 95)) < TELEPORT_LOADING_DARK_P95
         except (AttributeError, TypeError, IndexError, ValueError):
             return False
-
-    def _wait_for_loading_screen(self, timeout: float) -> bool:
-        """限时等待传送黑屏，避免把传送开始前的原地图当成到达画面。"""
-        end_at = monotonic() + max(0.0, timeout)
-        while monotonic() < end_at:
-            try:
-                frame = self.vision.capture()
-            except (TaskDisabledException, FinishedException):
-                raise
-            except Exception:
-                return False
-            if self._black_frame(frame):
-                return True
-            self.task.sleep(0.1)
-        return False
 
     def _seek_collection_page(
         self,
