@@ -7,6 +7,9 @@ from difflib import SequenceMatcher
 from functools import partial
 from time import monotonic
 
+import cv2
+import numpy as np
+
 from src.tasks.map_trade.action_icons import (
     ABSORB_ICON,
     SEARCH_ICON,
@@ -57,6 +60,7 @@ from src.tasks.map_trade.models import (
     MatchResult,
 )
 from src.tasks.map_trade.vision import parse_used_limit
+from src.utils.image_utils import relative_roi_frame
 
 
 class SkillExecutionMixin:
@@ -119,10 +123,11 @@ class SkillExecutionMixin:
                     action, detection, frame=frame, ocr_scale=SKILL_OCR_UPSCALE,
                     known_limit=baseline[1] if baseline else None,
                 )
-                # 新容量必须同时通过两个倍率；已确认容量保留快速双帧路径。
+                # 新容量交叉核对普通与留白读数；已确认容量保留快速双帧路径。
                 if baseline is None or (count is not None and count[1] != baseline[1]):
                     confirmed = self._read_count(
                         action, detection, frame=frame, ocr_scale=SKILL_OCR_FALLBACK_UPSCALE,
+                        bordered=True,
                     )
                     if confirmed != count:
                         count = None
@@ -150,7 +155,10 @@ class SkillExecutionMixin:
         count = counts[0] if len(counts) == 2 and counts[0] == counts[1] else None
         before, failure = self._prepare_before_click(
             action, detection, card_id=card_id, map_role=map_role,
-            observation=CountWindowObservation(count, count is not None),
+            observation=CountWindowObservation(
+                count, count is not None,
+                count is not None and (baseline is None or count[1] != baseline[1]),
+            ),
         )
         if failure is not None:
             raise RuntimeError(failure.message)
@@ -624,7 +632,7 @@ class SkillExecutionMixin:
         if known_limit is None:
             baseline = self.progress.trusted_action_baseline(action.name)
             known_limit = baseline[1] if baseline is not None else None
-        initial_count = None
+        all_samples: list[tuple[int, int]] = []
         for ocr_scale in (SKILL_OCR_UPSCALE, SKILL_OCR_FALLBACK_UPSCALE):
             samples: list[tuple[int, int]] = []
             for attempt in range(ACTION_OCR_WINDOW_SAMPLES):
@@ -635,6 +643,7 @@ class SkillExecutionMixin:
                 )
                 if count is not None:
                     samples.append(count)
+                    all_samples.append(count)
                 if attempt + 1 < ACTION_OCR_WINDOW_SAMPLES:
                     self.task.sleep(ACTION_OCR_WINDOW_INTERVAL)
             count, occurrences = Counter(samples).most_common(1)[0] if samples else (None, 0)
@@ -647,21 +656,14 @@ class SkillExecutionMixin:
                 f"scale={ocr_scale}；samples={samples}；"
                 f"expected={expected_used}/{expected_limit}；上次容量={known_limit}",
             )
-            if compatible and (
-                occurrences >= 2 or (ocr_scale == SKILL_OCR_FALLBACK_UPSCALE and allow_single)
+            if (
+                compatible and count[1] == known_limit
+                and all(value[1] == known_limit for value in all_samples)
+                and (
+                    occurrences >= 2
+                    or (ocr_scale == SKILL_OCR_FALLBACK_UPSCALE and allow_single)
+                )
             ):
-                if ocr_scale == SKILL_OCR_UPSCALE and (
-                    known_limit is None or count[1] != known_limit
-                ):
-                    initial_count = count
-                    continue
-                if initial_count is not None and count != initial_count and (
-                    known_limit is None or count[1] != known_limit
-                ):
-                    self._status(f"{action.name}次数校验", "容量确认跨倍率读数冲突，暂不记账")
-                    return CountWindowObservation(None, False)
-                if count[1] != known_limit and occurrences < 2:
-                    return CountWindowObservation(None, False)
                 return CountWindowObservation(count, occurrences >= 2)
             self._status(
                 f"{action.name}次数校验",
@@ -669,6 +671,29 @@ class SkillExecutionMixin:
                 f"预期={expected_used}/{expected_limit}；"
                 + ("以3x新帧复读" if ocr_scale == SKILL_OCR_UPSCALE else "未取得可信读数"),
             )
+        # A repeated wrong denominator survives resizing. Keep the calibrated
+        # crop but change its surrounding background for an independent read.
+        samples = []
+        for _attempt in range(ACTION_OCR_WINDOW_SAMPLES):
+            count = self._read_count(
+                action, detection, ocr_scale=SKILL_OCR_FALLBACK_UPSCALE,
+                known_limit=known_limit, expected_used=expected_used,
+                require_fraction=require_fraction, bordered=True,
+            )
+            if count is not None:
+                samples.append(count)
+        count, occurrences = Counter(samples).most_common(1)[0] if samples else (None, 0)
+        compatible = count is not None and (
+            expected_used is None or count[0] == expected_used
+        ) and (expected_limit is None or count[1] == expected_limit)
+        consistent = occurrences >= 2 and len(set(samples)) == 1
+        confirmed = consistent and all_samples.count(count) >= 2 and set(all_samples) == {count}
+        self._status(
+            f"{action.name}次数校验",
+            f"背景留白复读={count}；samples={samples}；容量确认={confirmed}",
+        )
+        if compatible and consistent and (count[1] == known_limit or confirmed):
+            return CountWindowObservation(count, True, confirmed)
         return CountWindowObservation(None, False)
 
     def _refresh_collection_quota(self, actions: tuple[SkillAction, ...]) -> None:
@@ -681,7 +706,9 @@ class SkillExecutionMixin:
         for action in actions:
             observation = self._read_count_window(action)
             if observation.count is not None and observation.is_stable:
-                self.progress.reconcile_pending(action.name, observation.count)
+                self.progress.reconcile_pending(
+                    action.name, observation.count, confirmed_limit=observation.limit_confirmed,
+                )
 
     def _reuse_recent_search(
         self,
@@ -1157,7 +1184,9 @@ class SkillExecutionMixin:
                 message=f"{action.name}未取得可信次数，未执行新点击",
             )
         self._status(f"{action.name}次数", f"{before[0]}/{before[1]}")
-        settled = self.progress.reconcile_pending(action.name, before)
+        settled = self.progress.reconcile_pending(
+            action.name, before, confirmed_limit=observation.limit_confirmed,
+        )
         if settled:
             self._status(
                 f"{action.name}次数对账",
@@ -1444,6 +1473,7 @@ class SkillExecutionMixin:
         expected_used: int | None = None,
         frame=None,
         require_fraction: bool = False,
+        bordered: bool = False,
     ) -> tuple[int, int] | None:
         # The calibrated fixed ROI is intentionally reused at 3x after a 2x
         # miss.  This catches the reproduced dark ``2`` without widening the
@@ -1456,26 +1486,28 @@ class SkillExecutionMixin:
         for index, scale in enumerate(scales):
             count_frame = self.vision.capture() if frame is None else frame
             if action.fixed_count_relative_roi is not None:
-                text = self.vision.ocr_text(
-                    count_frame,
-                    f"{action.name}次数",
-                    relative_roi=action.fixed_count_relative_roi,
-                    target_height=1080,
-                    ocr_scale=scale,
-                )
+                relative_roi = action.fixed_count_relative_roi
             elif detection is not None:
-                text = self.vision.ocr_text(
-                    count_frame,
-                    f"{action.name}次数",
-                    relative_roi=self._action_text_relative_roi(
-                        detection,
-                        count_frame.shape,
-                    ),
-                    target_height=1080,
-                    ocr_scale=scale,
+                relative_roi = self._action_text_relative_roi(
+                    detection, count_frame.shape,
                 )
             else:
                 return None
+            if bordered:
+                _left, _top, crop = relative_roi_frame(count_frame, relative_roi)
+                if not crop.size:
+                    return None
+                color = np.median(crop, axis=(0, 1)).tolist()
+                margin = max(1, crop.shape[0] // 2)
+                count_frame = cv2.copyMakeBorder(
+                    crop, margin, margin, margin, margin,
+                    cv2.BORDER_CONSTANT, value=color,
+                )
+                relative_roi = None
+            text = self.vision.ocr_text(
+                count_frame, f"{action.name}次数", relative_roi=relative_roi,
+                target_height=1080, ocr_scale=scale,
+            )
             if require_fraction and not re.fullmatch(r"\s*\d+\s*[/YyVv]\s*\d+\s*", text):
                 continue
             # 完整分数携带当前技能容量；旧容量只帮助恢复丢失的分隔符。

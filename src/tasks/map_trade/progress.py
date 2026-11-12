@@ -1244,11 +1244,15 @@ class ProgressStore:
         self.save()
         return True
 
-    def reconcile_pending(self, action: str, observed: tuple[int, int] | None) -> int:
+    def reconcile_pending(
+        self, action: str, observed: tuple[int, int] | None, *, confirmed_limit: bool = False,
+    ) -> int:
         """Settle pending records from a trusted later absolute snapshot.
 
         Invalid, bare and stale/lower snapshots are ignored. A changed HUD
         limit is accepted only when no unresolved cast depends on the old one.
+        Independently confirmed capacity can also settle completed reservations
+        when its exact positive delta accounts for every outstanding unit.
         Equal snapshots are accepted only when they are at least the local
         lower bound, making repeated reconciliation idempotent.
 
@@ -1264,6 +1268,7 @@ class ProgressStore:
         Args:
             action: The collection action whose pending records are reconciled.
             observed: A trusted absolute (used, limit) count, or None if unknown.
+            confirmed_limit: Stable ordinary and bordered OCR agree on capacity.
 
         Returns:
             The number of records settled. Zero also covers rejected evidence.
@@ -1276,7 +1281,9 @@ class ProgressStore:
         state = self._require_state()
         action_name = self._action_name(action)
         lower_bound = max(0, self._daily_lower_bound(action_name) - self.pending_count(action_name))
-        accepted = self._admit_count_snapshot(action_name, observed, lower_bound)
+        accepted = self._admit_count_snapshot(
+            action_name, observed, lower_bound, confirmed_limit=confirmed_limit,
+        )
         if accepted is None:
             return 0
         used, observed_limit = accepted
@@ -1347,7 +1354,9 @@ class ProgressStore:
         self.save()
         return settled
 
-    def _admit_count_snapshot(self, action_name, observed, lower_bound) -> tuple[int, int] | None:
+    def _admit_count_snapshot(
+        self, action_name, observed, lower_bound, *, confirmed_limit=False,
+    ) -> tuple[int, int] | None:
         """Validate external count evidence against outstanding reservations and trusted history."""
         if observed is None or action_name not in VALID_ACTION_NAMES or len(observed) != 2:
             return None
@@ -1361,14 +1370,35 @@ class ProgressStore:
         previous = state.observed_counts.get(action_name)
         if previous is not None and used < previous[0]:
             return None
-        for record in state.action_records.values():
-            if record.get("action") != action_name or not record.get("reservation"):
-                continue
+        reservations = [
+            record for record in state.action_records.values()
+            if record.get("action") == action_name and record.get("reservation")
+        ]
+        conflicting = False
+        for record in reservations:
             baseline = record.get("baseline")
             if baseline is not None and baseline[1] != observed_limit:
-                return None
+                conflicting = True
             if baseline is None and previous is not None and previous[1] != observed_limit:
+                conflicting = True
+        if conflicting:
+            # Independent capacity evidence may settle completed casts only
+            # when every reserved unit is accounted for by the exact delta.
+            if (
+                not confirmed_limit or previous is None
+                or used != previous[0] + len(reservations)
+                or len(reservations) != self.pending_count(action_name)
+            ):
                 return None
+            for record in reservations:
+                baseline = record.get("baseline")
+                if (
+                    not record.get("local_done") or not record.get("pending")
+                    or record.get("source") != "click" or baseline is None
+                    or baseline[1] != previous[1]
+                    or not previous[0] <= baseline[0] < used
+                ):
+                    return None
         return used, observed_limit
 
     @staticmethod

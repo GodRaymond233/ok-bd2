@@ -77,7 +77,7 @@ class CollectionRunTest(unittest.TestCase):
                 )
                 collector = Collector(
                     SimpleNamespace(config={}, sleep=Mock(), info_set=Mock()),
-                    SimpleNamespace(capture=lambda: None,
+                    SimpleNamespace(capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
                                     ocr_text=lambda *a, **k: f"40/{limit}"),
                     SimpleNamespace(select_collection_card=Mock(return_value=entered)), progress,
                 )
@@ -826,7 +826,10 @@ class CollectorSkillTest(unittest.TestCase):
                 ))
                 collector = Collector(
                     SimpleNamespace(config={}, sleep=Mock(), info_set=Mock()),
-                    SimpleNamespace(capture=lambda: None, ocr_text=lambda *a, **k: next(texts)),
+                    SimpleNamespace(
+                        capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
+                        ocr_text=lambda *a, **k: next(texts),
+                    ),
                     SimpleNamespace(), progress,
                 )
                 if scenario == "continuous":
@@ -915,6 +918,61 @@ class CollectorSkillTest(unittest.TestCase):
                 self.assertEqual((5, 40), progress.trusted_action_baseline("压制"))
                 self.assertEqual([], clicks)
                 self.assertIsNone(progress.get_action_record("Q_sp1", "battle_area_1", "压制"))
+
+    def test_repeated_capacity_misread_is_checked_against_bordered_count(self):
+        for bordered_text in ("7/21", "7/121", ""):
+            with self.subTest(bordered_text=bordered_text):
+                collector, clicks, _, progress = self._skill_collector(
+                    {ABSORB_ICON.name: ActionIconState.AVAILABLE}, {},
+                )
+                progress.reconcile_pending("吸收", (7, 21))
+                collector._count_actions_seen.add("吸收")
+                raw = iter(("7/121",) * 3 + ("7/121", "7/21", "7/121"))
+                def ocr(_frame, _name, **kwargs):
+                    return bordered_text if kwargs.get("relative_roi") is None else next(raw)
+
+                collector.vision.ocr_text = ocr
+                collector._read_count_window = Collector._read_count_window.__get__(collector)
+                detection = collector.action_icons.detect(None, ABSORB_ICON)
+                before, failure = collector._prepare_before_click(
+                    ABSORB_ACTION, detection,
+                    card_id="Q_cp5", map_role=CollectionMapRole.MAIN_AREA,
+                )
+                if bordered_text == "7/21":
+                    self.assertEqual((7, 21), before)
+                    self.assertIsNone(failure)
+                else:
+                    self.assertIsNone(before)
+                    self.assertIsNotNone(failure)
+                self.assertEqual((7, 21), progress.trusted_action_baseline("吸收"))
+                self.assertEqual([], clicks)
+                self.assertIsNone(progress.get_action_record("Q_cp5", "main_area", "吸收"))
+
+    def test_confirmed_capacity_recovers_completed_absorb_before_next_map(self):
+        collector, clicks, _, progress = self._skill_collector(
+            {ABSORB_ICON.name: ActionIconState.AVAILABLE}, {},
+        )
+        progress.reconcile_pending("吸收", (7, 121))
+        progress.arm_action("Q_cp5", "main_area", "吸收", baseline=(7, 121))
+        progress.mark_action_clicked("Q_cp5", "main_area", "吸收")
+        progress.mark_action_local_done("Q_cp5", "main_area", "吸收", pending=True)
+        collector.vision.ocr_text = lambda *a, **k: "8/21"
+        collector._read_count_window = Collector._read_count_window.__get__(collector)
+        before, failure = collector._prepare_before_click(
+            ABSORB_ACTION, collector.action_icons.detect(None, ABSORB_ICON),
+            card_id="Q_cp5", map_role=CollectionMapRole.BATTLE_AREA_1,
+        )
+        self.assertEqual((8, 21), before)
+        self.assertIsNone(failure)
+        progress.load()
+        self.assertEqual((8, 21), progress.trusted_action_baseline("吸收"))
+        self.assertEqual(0, progress.pending_count("吸收"))
+        record = progress.get_action_record("Q_cp5", "main_area", "吸收")
+        self.assertEqual([7, 121], record["baseline"])
+        self.assertEqual([8, 21], record["observed"])
+        self.assertEqual("settled", record["state"])
+        self.assertIsNone(progress.get_action_record("Q_cp5", "battle_area_1", "吸收"))
+        self.assertEqual([], clicks)
 
     def test_summon_suppression_prepares_quotas_then_clicks_before_settlement(self):
         for scenario in ("normal", "encounter", "quota", "unresolved", "failed_feedback"):
@@ -2098,7 +2156,7 @@ class CollectorSkillTest(unittest.TestCase):
                     collector = Collector(
                         SimpleNamespace(config={}, sleep=lambda *_: None, info_set=lambda *_: None),
                         SimpleNamespace(
-                            capture=lambda: None,
+                            capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
                             ocr_text=lambda *_, **kwargs: (
                                 f"0/{limit + 100}"
                                 if scenario == "cross_scale_conflict"
@@ -2150,7 +2208,10 @@ class CollectorSkillTest(unittest.TestCase):
 
             collector = Collector(
                 SimpleNamespace(config={}, sleep=Mock(), info_set=Mock()),
-                SimpleNamespace(capture=lambda: None, ocr_text=ocr_text),
+                SimpleNamespace(
+                    capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8),
+                    ocr_text=ocr_text,
+                ),
                 SimpleNamespace(), progress,
             )
             before, failure = collector._prepare_before_click(
@@ -2669,7 +2730,7 @@ class CollectorSkillTest(unittest.TestCase):
             )
             collector.action_icons = SimpleNamespace(detect=lambda *_args: available)
 
-            collector._read_count = Mock(side_effect=[(17, 21), None, None] * 2)
+            collector._read_count = Mock(side_effect=cycle(((17, 21), None, None)))
 
             result = collector._use_action(
                 ABSORB_ACTION,

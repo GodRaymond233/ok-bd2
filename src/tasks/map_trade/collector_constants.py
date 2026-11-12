@@ -46,6 +46,7 @@ class CountWindowObservation:
 
     count: tuple[int, int] | None
     is_stable: bool
+    limit_confirmed: bool = False
 
 
 def _relative_reference_point(point: tuple[int, int]) -> tuple[float, float]:

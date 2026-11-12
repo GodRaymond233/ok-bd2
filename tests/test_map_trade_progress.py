@@ -709,6 +709,34 @@ class ProgressTest(unittest.TestCase):
             self.assertEqual(0, store.reconcile_pending("吸收", (1, 21)))
             self.assertEqual(0, store.pending_count())
 
+    def test_confirmed_limit_change_requires_exact_completed_reservations(self):
+        for mode in ("completed", "ordinary_read", "armed", "clicked", "no_delta", "extra_delta"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                store = ProgressStore(Path(directory) / "progress.json")
+                store.load()
+                store.reconcile_pending("吸收", (7, 121))
+                store.arm_action("Q_cp5", "main_area", "吸收", baseline=(7, 121))
+                if mode != "armed":
+                    store.mark_action_clicked("Q_cp5", "main_area", "吸收")
+                if mode not in {"armed", "clicked"}:
+                    store.mark_action_local_done("Q_cp5", "main_area", "吸收", pending=True)
+                used = 7 if mode == "no_delta" else 9 if mode == "extra_delta" else 8
+                settled = store.reconcile_pending(
+                    "吸收", (used, 21), confirmed_limit=mode != "ordinary_read",
+                )
+                self.assertEqual(int(mode == "completed"), settled)
+                store.load()
+                self.assertEqual(
+                    (8, 21) if mode == "completed" else (7, 121),
+                    store.trusted_action_baseline("吸收"),
+                )
+                record = store.get_action_record("Q_cp5", "main_area", "吸收")
+                self.assertEqual(mode == "completed", record["state"] == "settled")
+                if mode == "completed":
+                    self.assertEqual(
+                        0, store.reconcile_pending("吸收", (used, 21), confirmed_limit=True),
+                    )
+
     def test_preexisting_map_state_does_not_claim_daily_consumption(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             store = ProgressStore(
