@@ -424,13 +424,23 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
         # OCR may combine the adjacent pool title and record label into one header box.
         header = section_name + "抽抽乐记录"
         controls = [[box for box, label in zip(boxes, labels) if label in accepted]
-                    for accepted in ((section_name, header), ("抽抽乐记录", header), ("抽1次",))]
+                    for accepted in ((section_name, header), ("抽抽乐记录", header),
+                                     ("抽1次", "拍1次"))]
         if any(len(group) != 1 for group in controls):
             reason = "、".join(f"{name}数量={len(group)}" for name, group
                               in zip(("池标题", "记录标签", "单抽按钮"), controls)
                               if len(group) != 1)
             return FreePoolObservation(FREE_ENTRY_RETRY_UNKNOWN, reason, text, free_hint=free_hint)
         title, record, single = (group[0] for group in controls)
+        # Observed OCR confusion: 抽1次 -> 拍1次. Require its neighboring ten-draw
+        # button before accepting this alias; neither button is a click target.
+        if normalize_ocr_text(single.name, alnum_only=True) == "拍1次":
+            tens = [box for box, label in zip(boxes, labels) if label == "抽10次"]
+            if (len(tens) != 1 or tens[0].width <= 0 or tens[0].height <= 0
+                    or single.x + single.width > tens[0].x
+                    or abs(single.y - tens[0].y) > max(single.height, tens[0].height)):
+                return FreePoolObservation(FREE_ENTRY_RETRY_UNKNOWN, "单抽误识别布局未通过",
+                                           text, free_hint=free_hint)
         if not (all(box.width > 0 and box.height > 0 for box in (title, record, single))
                 and (title is record or title.x + title.width <= record.x)
                 and abs(title.y - record.y) <= max(title.height, record.height)
@@ -473,7 +483,8 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
             labels = [normalize_ocr_text(box.name, alnum_only=True) for box in boxes]
             anchors = (any(label in (section_name, "抽抽乐记录", section_name + "抽抽乐记录")
                            for label in labels)
-                       and any(label in ("抽1次", FREE_GACHA_KEYWORDS[0]) for label in labels))
+                       and any(label in ("抽1次", "拍1次", FREE_GACHA_KEYWORDS[0])
+                               for label in labels))
             if anchors and observation.state in (
                     FREE_ENTRY_RETRY_UNKNOWN, FREE_ENTRY_RETRY_NO_FREE):
                 # Re-read this same frame at a second scale; replace the entire view.
@@ -497,7 +508,7 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
         return "; ".join(
             f"{box.name}@({box.x},{box.y},{box.width},{box.height})" for box in boxes
             if any(word in normalize_ocr_text(box.name)
-                   for word in ("抽抽乐", "抽1次", "免费", "确认", "取消")))[:1000]
+                   for word in ("抽抽乐", "抽1次", "拍1次", "免费", "确认", "取消")))[:1000]
 
     def _free_confirmation_in_frame(self, frame, section_name: str):
         if self._passes(self._match(frame, LOADING_TEMPLATE), LOADING_TEMPLATE):

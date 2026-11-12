@@ -54,6 +54,46 @@ def confirmation_boxes(pool="装备", count=3, cost=None, scale=1):
 
 
 class FreeGachaTaskHelperTest(StageHistoryTestCase):
+    def test_single_draw_ocr_typo_preserves_free_state(self):
+        for pool in ("服装", "装备"):
+            for scale in (.72, 1, 2):
+                for free in (False, True):
+                    for merged in (False, True):
+                        with self.subTest(pool=pool, scale=scale, free=free, merged=merged):
+                            boxes = pool_boxes(pool, free, scale, merged)
+                            single = next(box for box in boxes if box.name == "抽1次")
+                            single.name = "。拍1次"
+                            frame = np.zeros((round(800 * scale), round(1000 * scale), 3),
+                                             dtype=np.uint8)
+                            observed = FreeGachaTask._pool_observation(
+                                frame, boxes, pool + "抽抽乐")
+                            self.assertEqual(FREE_ENTRY_RETRY_READY if free else
+                                             free_gacha_module.FREE_ENTRY_RETRY_NO_FREE,
+                                             observed.state)
+                            if free:
+                                self.assertAlmostEqual(.2, observed.point[0])
+                                self.assertAlmostEqual(.91875, observed.point[1])
+
+    def test_single_draw_ocr_typo_requires_same_pool_and_neighbor_layout(self):
+        frame = np.zeros((800, 1000, 3), dtype=np.uint8)
+        for scenario in ("missing_ten", "misplaced_ten", "wrong_pool", "dialog", "duplicate"):
+            with self.subTest(scenario=scenario):
+                boxes = pool_boxes("服装", free=True)
+                single = next(box for box in boxes if box.name == "抽1次")
+                single.name = "拍1次"
+                if scenario == "missing_ten":
+                    boxes = [box for box in boxes if box.name != "抽10次."]
+                elif scenario == "misplaced_ten":
+                    next(box for box in boxes if box.name == "抽10次.").y = 100
+                elif scenario == "dialog":
+                    boxes += confirmation_boxes("服装", cost="消耗钻石90")
+                elif scenario == "duplicate":
+                    boxes.append(SimpleNamespace(name="抽1次", x=760, y=700, width=60, height=20))
+                observed = FreeGachaTask._pool_observation(
+                    frame, boxes, "装备抽抽乐" if scenario == "wrong_pool" else "服装抽抽乐")
+                self.assertNotIn(observed.state, (FREE_ENTRY_RETRY_READY,
+                                                 free_gacha_module.FREE_ENTRY_RETRY_NO_FREE))
+
     def test_current_free_batch_can_be_claimed_on_repeat_runs(self):
         from src.tasks import run_history
 
