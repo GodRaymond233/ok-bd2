@@ -66,6 +66,7 @@ class MapCollectionTask(MapAutomationTaskBase):
         "召集状态",
         "压制状态",
         "每日技能进度",
+        "次数周期核验",
         "跑图完成范围",
         "跑图周期",
         "完成",
@@ -103,6 +104,7 @@ class MapCollectionTask(MapAutomationTaskBase):
                 "单章模式": False,
                 "采集卡带屏蔽": "",
                 "启用压制技能": True,
+                "次数重置确认码": "",
             }
         )
         self.config_description.update(
@@ -122,6 +124,10 @@ class MapCollectionTask(MapAutomationTaskBase):
                     "如“Story_01_血骑士, Story_3, Character_2, Event_4”；被屏蔽的卡带不采集。"
                 ),
                 "启用压制技能": "关闭后只执行吸收与召集；已完成的部分动作可在后续运行继续核验。",
+                "次数重置确认码": (
+                    "仅当你确认游戏中技能升级或重置次数时，填写失败提示里的确认码并重跑。"
+                    "程序会重新读取相同旧/新次数后切换该技能周期，保留历史施放与周进度；确认码只用一次。"
+                ),
                 MAP_VISION_THRESHOLD_KEY: "卡带、导航与采集技能模板的最低匹配可信度。",
                 MAP_OCR_THRESHOLD_KEY: "技能次数和按钮识别的最低可信度。",
                 "加载页面等待秒数": "进入卡带或传送后等待加载完成的最长秒数。",
@@ -137,6 +143,7 @@ class MapCollectionTask(MapAutomationTaskBase):
                             "单章模式",
                             "采集卡带屏蔽",
                             "启用压制技能",
+                            "次数重置确认码",
                             MAP_VISION_THRESHOLD_KEY,
                             MAP_OCR_THRESHOLD_KEY,
                             "加载页面等待秒数",

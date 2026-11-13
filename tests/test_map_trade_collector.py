@@ -98,7 +98,7 @@ class CollectionRunTest(unittest.TestCase):
                     self.assertFalse(collector._collect_card_targets.call_args.kwargs["recovery_only"])
                 self.assertEqual({}, progress.state.action_records)
 
-    def test_card_recheck_recovers_observed_town_without_recasting_battles(self):
+    def test_pending_card_rechecks_supported_maps_and_unknown_does_not_reopen(self):
         for visual_state in (CardActionState.PENDING, CardActionState.UNKNOWN):
             with self.subTest(state=visual_state), tempfile.TemporaryDirectory() as directory:
                 progress = ProgressStore(
@@ -147,7 +147,10 @@ class CollectionRunTest(unittest.TestCase):
                 result = collector.collect_card(card)
                 if visual_state is CardActionState.PENDING:
                     self.assertIsNone(result)
-                    self.assertEqual([("main_area", ("吸收",))], performed)
+                    self.assertEqual(
+                        ["battle_area_2", "battle_area_1", "main_area"],
+                        [role for role, _actions in performed],
+                    )
                     self.assertTrue(progress.state.card_verified(card.card_id))
                 else:
                     self.assertFalse(result.success)
@@ -839,7 +842,7 @@ class CollectorSkillTest(unittest.TestCase):
                     card_id="Q_sp4", map_role=CollectionMapRole.MAIN_AREA,
                 )
                 progress.load()
-                if scenario.startswith("fresh"):
+                if scenario.startswith("fresh") or scenario == "continuous":
                     self.assertIsNone(failure)
                     self.assertEqual((10, 21), before)
                     self.assertEqual((10, 21), progress.trusted_action_baseline("吸收"))
@@ -974,8 +977,51 @@ class CollectorSkillTest(unittest.TestCase):
         self.assertIsNone(progress.get_action_record("Q_cp5", "battle_area_1", "吸收"))
         self.assertEqual([], clicks)
 
+    def test_count_reset_requires_confirmation_and_a_matching_fresh_read(self):
+        collector, clicks, _statuses, progress = self._skill_collector(
+            {SUPPRESS_ACTION.icon.name: ActionIconState.AVAILABLE},
+            {"压制": ((0, 55), (0, 55), (1, 55))},
+        )
+        progress.reconcile_pending("压制", (7, 50))
+        first = collector._use_action(
+            SUPPRESS_ACTION, card_id="Q_sp7", map_role=CollectionMapRole.BATTLE_AREA_2,
+        )
+        self.assertFalse(first.completed)
+        self.assertIn("7/50变为0/55", first.message)
+        self.assertEqual([], clicks)
+        collector.task.config["次数重置确认码"] = (
+            progress.state.count_reset_requests["压制"]["token"]
+        )
+        second = collector._use_action(
+            SUPPRESS_ACTION, card_id="Q_sp7", map_role=CollectionMapRole.BATTLE_AREA_2,
+        )
+        self.assertTrue(second.completed)
+        self.assertEqual(1, len(clicks))
+        self.assertEqual((1, 55), progress.trusted_action_baseline("压制"))
+        self.assertEqual([7, 50], progress.state.count_epochs["压制"]["before"])
+
+    def test_input_admission_failure_releases_only_definitely_unsent_cast(self):
+        for unsent in (True, False):
+            with self.subTest(unsent=unsent):
+                collector, _clicks, _statuses, progress = self._skill_collector(
+                    {SUPPRESS_ACTION.icon.name: ActionIconState.AVAILABLE},
+                    {"压制": ((0, 55),)},
+                )
+                error = RuntimeError("input failed")
+                error.input_not_dispatched = unsent
+                collector.vision.click_client = Mock(side_effect=error)
+                with self.assertRaises(RuntimeError):
+                    collector._use_action(
+                        SUPPRESS_ACTION, card_id="Q_sp7", map_role=CollectionMapRole.BATTLE_AREA_2,
+                    )
+                record = progress.get_action_record("Q_sp7", "battle_area_2", "压制")
+                self.assertEqual("void" if unsent else "armed", record["state"])
+                self.assertEqual(not unsent, record["reservation"])
+
     def test_summon_suppression_prepares_quotas_then_clicks_before_settlement(self):
-        for scenario in ("normal", "encounter", "quota", "unresolved", "failed_feedback"):
+        for scenario in (
+            "normal", "encounter", "quota", "unresolved", "failed_feedback", "used_before",
+        ):
             with self.subTest(scenario=scenario):
                 collector, clicks, _statuses, progress = self._skill_collector(
                     {action.icon.name: ActionIconState.AVAILABLE for action in BATTLE_ACTIONS},
@@ -985,6 +1031,18 @@ class CollectorSkillTest(unittest.TestCase):
                     },
                 )
                 role = CollectionMapRole.BATTLE_AREA_1
+                if scenario == "used_before":
+                    detect = collector.action_icons.detect
+
+                    def detect_before_summon(frame, icon):
+                        result = detect(frame, icon)
+                        if icon is SUPPRESS_ACTION.icon and not clicks:
+                            return ActionIconDetection(
+                                ActionIconState.USED, result.match, stable=True, sample_count=2,
+                            )
+                        return result
+
+                    collector.action_icons.detect = detect_before_summon
                 if scenario == "unresolved":
                     progress.reconcile_pending("压制", (0, 21))
                     progress.arm_action("Q_sp1", role, "压制", baseline=(0, 21))
@@ -1008,7 +1066,8 @@ class CollectorSkillTest(unittest.TestCase):
 
                 def click_client(*args, **kwargs):
                     self.assertIn(("prepare", "召集"), events)
-                    self.assertIn(("prepare", "压制"), events)
+                    if scenario != "used_before" or clicks:
+                        self.assertIn(("prepare", "压制"), events)
                     if len(clicks) == 1:
                         self.assertNotIn(("post", "召集"), events)
                         record = progress.get_action_record("Q_sp1", role, "召集")
@@ -1045,7 +1104,9 @@ class CollectorSkillTest(unittest.TestCase):
                 result = collector._use_actions(
                     (SUMMON_ACTION, SUPPRESS_ACTION), card_id="Q_sp1", map_role=role,
                 )
-                self.assertEqual(scenario in {"normal", "encounter"}, result.completed)
+                self.assertEqual(
+                    scenario in {"normal", "encounter", "used_before"}, result.completed,
+                )
                 self.assertEqual(
                     2 if result.completed else int(scenario == "failed_feedback"), len(clicks),
                 )
@@ -1063,9 +1124,9 @@ class CollectorSkillTest(unittest.TestCase):
                 if scenario == "encounter":
                     self.assertEqual(2, count_calls[0])
 
-    def test_missed_press_retries_only_with_a_stable_available_icon_and_unchanged_count(self):
+    def test_unknown_click_keeps_intent_even_with_stable_unchanged_count(self):
         cases = (
-            (None, True, True, True),
+            (None, True, True, False),
             (None, False, True, False),
             (None, True, False, False),
             ("failure", True, True, False),
@@ -1129,12 +1190,13 @@ class CollectorSkillTest(unittest.TestCase):
                 )
                 self.assertEqual(retry, result.completed)
                 self.assertEqual(2 if retry else 1, vision.click_client.call_count)
-                if retry:
-                    record = progress.get_action_record(
-                        "Q_sp1", CollectionMapRole.MAIN_AREA, "吸收"
-                    )
-                    self.assertEqual(2, record["attempts"])
-                    self.assertEqual("settled", record["state"])
+                record = progress.get_action_record(
+                    "Q_sp1", CollectionMapRole.MAIN_AREA, "吸收"
+                )
+                self.assertEqual(1, record["attempts"])
+                if feedback is None:
+                    self.assertTrue(record["reservation"])
+                    self.assertNotEqual("void", record["state"])
 
     def test_late_search_countdown_prevents_a_second_press(self):
         collector = Collector(SimpleNamespace(sleep=Mock()), object(), object(), object())
@@ -1450,6 +1512,8 @@ class CollectorSkillTest(unittest.TestCase):
 
     def test_skill_failure_evidence_is_bounded_and_replayable(self):
         warnings = []
+        from src.tasks.map_trade.progress import ProgressState
+
         collector = Collector(
             SimpleNamespace(
                 config={},
@@ -1458,7 +1522,9 @@ class CollectorSkillTest(unittest.TestCase):
             ),
             SimpleNamespace(),
             SimpleNamespace(),
-            SimpleNamespace(),
+            SimpleNamespace(
+                path=Path("progress.json"), state=ProgressState("2026-11-09", "2026-11-13"),
+            ),
         )
         collector._last_skill_observations["召集"] = {
             "state": "unknown",
@@ -2489,12 +2555,12 @@ class CollectorSkillTest(unittest.TestCase):
                     self.assertEqual(0, resumed.pending_count(action.name))
                     self.assertEqual((7, limit), resumed.trusted_action_baseline(action.name))
                     self.assertEqual(0, resumed.reconcile_pending(action.name, (7, limit)))
-                    hud.update(used=False, before=10)
-                    self.assertFalse(second._use_action(
+                    hud.update(used=False, before=10, after=11)
+                    self.assertTrue(second._use_action(
                         action, card_id="Q_sp5", map_role=CollectionMapRole.BATTLE_AREA_1,
                     ).completed)
-                    self.assertEqual(2, len(clicks))
-                    self.assertEqual((7, limit), resumed.trusted_action_baseline(action.name))
+                    self.assertEqual(3, len(clicks))
+                    self.assertEqual((11, limit), resumed.trusted_action_baseline(action.name))
 
     def test_restart_armed_intent_blocks_repeat_click(self):
         with tempfile.TemporaryDirectory() as temp_dir:

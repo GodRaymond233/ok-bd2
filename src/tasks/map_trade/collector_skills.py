@@ -696,7 +696,7 @@ class SkillExecutionMixin:
             return CountWindowObservation(count, True, confirmed)
         return CountWindowObservation(None, False)
 
-    def _refresh_collection_quota(self, actions: tuple[SkillAction, ...]) -> None:
+    def _refresh_collection_quota(self, actions: tuple[SkillAction, ...]):
         """旧额度不足时，入场复读HUD，避免技能升级后仍按旧容量跳过。"""
         self._quota_checks.update(action.name for action in actions)
         if not self._open_skill_menu(
@@ -706,6 +706,9 @@ class SkillExecutionMixin:
         for action in actions:
             observation = self._read_count_window(action)
             if observation.count is not None and observation.is_stable:
+                failure = self._check_count_epoch(action, observation)
+                if failure is not None:
+                    return failure
                 self.progress.reconcile_pending(
                     action.name, observation.count, confirmed_limit=observation.limit_confirmed,
                 )
@@ -916,7 +919,10 @@ class SkillExecutionMixin:
                 if not summon_result.completed:
                     return summon_result
             if isinstance(suppress, SkillExecutionResult):
-                suppress_result = suppress
+                self.progress.review_card_actions(
+                    card_id, (SUPPRESS_ACTION.name,), roles={map_role.value},
+                )
+                suppress_result = self._use_action(SUPPRESS_ACTION, **kwargs)
             else:
                 failure = self._click_prepared_action(SUPPRESS_ACTION, suppress, **kwargs)
                 if failure is not None:
@@ -1010,6 +1016,11 @@ class SkillExecutionMixin:
                 )
             return failure
         assert before is not None
+        if self.progress.action_needs_review(card_id, map_role, action.name):
+            if not self.progress.prepare_supplement(card_id, map_role, action.name):
+                return SkillExecutionResult(
+                    False, message=f"{action.name}原施放仍待对账，未执行补采",
+                )
         return detection, before, self._skill_field_generation
 
     def _click_prepared_action(self, action, prepared, *, card_id, map_role):
@@ -1041,11 +1052,18 @@ class SkillExecutionMixin:
             return SkillExecutionResult(
                 False, True, f"{action.name}每日额度或未决动作已阻止新点击",
             )
-        self.vision.click_client(
-            fresh.match.center,
-            frame.shape,
-            after_sleep=ACTION_AFTER_CLICK_SECONDS,
-        )
+        try:
+            self.vision.click_client(
+                fresh.match.center,
+                frame.shape,
+                after_sleep=ACTION_AFTER_CLICK_SECONDS,
+            )
+        except Exception as error:
+            if getattr(error, "input_not_dispatched", False):
+                self.progress.mark_action_void(
+                    card_id, map_role, action.name, "输入准入失败，消费回调未执行",
+                )
+            raise
         # CLICKED is durable only after the recognized-center click
         # returns successfully.  A crash/exception during the click
         # therefore leaves the pre-click ARMED intent for safe recovery.
@@ -1079,6 +1097,8 @@ class SkillExecutionMixin:
         existing_state = str(existing.get("state", existing.get("status", "")))
         if existing_state == "blocked" and "invalid_baseline" in existing:
             return SkillExecutionResult(False, message="动作基线损坏，需核对账本后恢复")
+        if existing.get("needs_review"):
+            return None
         if existing_state in {
             "local_done",
             "pending",
@@ -1111,6 +1131,14 @@ class SkillExecutionMixin:
         existing_state = str(existing.get("state", existing.get("status", "")))
         if existing_state not in {"armed", "clicked", "blocked"}:
             return None
+        if str(self.task.config.get("次数重置确认码", "")).strip():
+            observation = self._read_count_window(action, detection, require_fraction=True)
+            if observation.count is not None and observation.is_stable:
+                failure = self._check_count_epoch(action, observation)
+                if failure is not None:
+                    return failure
+                if self.progress.get_action_record(card_id, map_role, action.name) is None:
+                    return None
         if detection.state is ActionIconState.USED:
             self.progress.mark_action_local_done(
                 card_id,
@@ -1157,24 +1185,16 @@ class SkillExecutionMixin:
         map_role: CollectionMapRole,
         observation: CountWindowObservation | None = None,
     ) -> tuple[tuple[int, int] | None, SkillExecutionResult | None]:
-        # A fresh run may observe casts performed outside this task. During a
-        # continuous run, changes must be covered by our recorded consumption.
-        expected_used = (
-            self.progress.effective_used(action.name)
-            if action.name in self._count_actions_seen else None
-        )
         fresh_pending = (
             action.name not in self._count_actions_seen
             and self.progress.pending_count(action.name) > 0
         )
         if observation is None or fresh_pending:
             observation = self._read_count_window(
-                action, detection, expected_used=expected_used,
-                require_fraction=fresh_pending,
+                action, detection, require_fraction=True,
             )
         elif (
             observation.count is None or not observation.is_stable
-            or (expected_used is not None and observation.count[0] != expected_used)
         ):
             observation = CountWindowObservation(None, False)
         before = observation.count
@@ -1184,6 +1204,9 @@ class SkillExecutionMixin:
                 message=f"{action.name}未取得可信次数，未执行新点击",
             )
         self._status(f"{action.name}次数", f"{before[0]}/{before[1]}")
+        failure = self._check_count_epoch(action, observation)
+        if failure is not None:
+            return None, failure
         settled = self.progress.reconcile_pending(
             action.name, before, confirmed_limit=observation.limit_confirmed,
         )
@@ -1193,7 +1216,10 @@ class SkillExecutionMixin:
                 f"明亮帧结算 {settled} 条待对账动作",
             )
         remaining_pending = self.progress.pending_count(action.name)
-        if remaining_pending:
+        if remaining_pending and (
+            before[0] < self.progress.effective_used(action.name)
+            or not self.progress.can_reserve_action(action.name)
+        ):
             return None, SkillExecutionResult(
                 False,
                 message=(
@@ -1214,6 +1240,29 @@ class SkillExecutionMixin:
             )
         self._count_actions_seen.add(action.name)
         return before, None
+
+    def _check_count_epoch(self, action, observation):
+        before = observation.count
+        previous = self.progress.trusted_action_baseline(action.name)
+        if previous is not None and before[0] < previous[0]:
+            token = (
+                self.progress.request_count_reset(action.name, before)
+                if observation.limit_confirmed else ""
+            )
+            confirmation = str(self.task.config.get("次数重置确认码", "")).strip()
+            if not token or not self.progress.confirm_count_reset(
+                action.name, before, confirmation,
+            ):
+                message = (
+                    f"{action.name}次数由{previous[0]}/{previous[1]}变为{before[0]}/{before[1]}，"
+                    "需确认技能升级或重置"
+                    + (f"；确认后在跑图设置填写次数重置确认码：{token}"
+                       if token else "；请复核技能与账号")
+                )
+                self._status("次数周期核验", message)
+                return SkillExecutionResult(False, message=message)
+            self._status("次数周期核验", f"{action.name}已按确认建立新周期，历史施放保留")
+        return None
 
     def _finish_after_click(
         self,
@@ -1320,11 +1369,12 @@ class SkillExecutionMixin:
                 expected_limit=before[1],
             )
             if unchanged.count is not None:
-                self.progress.mark_action_void(
-                    card_id, map_role, action.name, "图标仍亮且次数稳定未变"
+                self.progress.mark_action_blocked(
+                    card_id, map_role, action.name,
+                    "点击已发送，图标仍亮且暂未见次数变化；保留未知结果",
                 )
                 return SkillExecutionResult(
-                    False, message=f"{action.name}点击未生效", press_again=True
+                    False, message=f"{action.name}点击结果待核验，未再次发送"
                 )
 
         return SkillExecutionResult(

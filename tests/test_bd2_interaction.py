@@ -24,12 +24,52 @@ def make_interaction():
     interaction.cursor_position = (1, 2)
     calls = []
     interaction._restore_cursor = lambda: calls.append("restore_cursor")
-    interaction.block_input = lambda: calls.append("block_input")
-    interaction.unblock_input = lambda: calls.append("unblock_input")
+    interaction.block_input = lambda: calls.append("block_input") or True
+    interaction.unblock_input = lambda: calls.append("unblock_input") or True
+    interaction._mouse_buttons_down = lambda: False
     return interaction, calls
 
 
 class BD2InteractionOperateTest(unittest.TestCase):
+    def test_mouse_admission_race_block_failure_and_nested_ownership(self):
+        for scenario in ("held", "race", "denied", "cancel", "nested", "release_failed"):
+            with self.subTest(scenario=scenario):
+                interaction, calls = make_interaction()
+                samples = iter([True, False, False] if scenario == "held" else
+                               [False, True, False, False] if scenario == "race" else
+                               [True] if scenario == "cancel" else [False, False])
+                interaction._mouse_buttons_down = lambda: next(samples)
+                if scenario == "denied":
+                    interaction.block_input = lambda: False
+                if scenario == "release_failed":
+                    interaction.unblock_input = lambda: False
+
+                def wait(_seconds):
+                    calls.append("wait")
+                    if scenario == "cancel":
+                        raise TaskDisabledException()
+
+                def callback():
+                    calls.append("click")
+                    if scenario == "nested":
+                        interaction.operate(lambda: calls.append("inner"), block=True)
+
+                with patch("src.interaction.BD2Interaction.GetCursorPos", return_value=(1, 2)):
+                    if scenario in {"denied", "cancel", "release_failed"}:
+                        exception = TaskDisabledException if scenario == "cancel" else RuntimeError
+                        with self.assertRaises(exception):
+                            interaction.operate(callback, block=True, input_wait=wait)
+                    else:
+                        interaction.operate(callback, block=True, input_wait=wait)
+                self.assertEqual(int(scenario not in {"denied", "cancel"}), calls.count("click"))
+                self.assertEqual(2 if scenario == "race" else
+                                 0 if scenario in {"denied", "cancel"} else 1,
+                                 calls.count("block_input"))
+                if scenario == "release_failed":
+                    with self.assertRaises(RuntimeError):
+                        interaction.operate(callback)
+                    self.assertEqual(1, calls.count("click"))
+
     def test_capture_discards_frame_interrupted_by_input_desktop_switch(self):
         for during_capture in (False, True):
             with self.subTest(during_capture=during_capture):

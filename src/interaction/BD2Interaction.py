@@ -27,6 +27,8 @@ class BD2Interaction(PostMessageInteraction):
         super().__init__(*args, **kwargs)
         self.cursor_position = None
         self._operating = False
+        self._input_blocked = False
+        self._input_unhealthy = False
         self._input_lock = threading.RLock()
         self._click_mode_provider: Callable[[], str] | None = None
         self.user32 = ctypes.windll.user32
@@ -180,25 +182,54 @@ class BD2Interaction(PostMessageInteraction):
         with self._input_lock:
             result = None
             is_outer_operate = False
-            if not self._operating:
-                self.cursor_position = self.wait_for_input(input_wait, input_status)
-                self._operating = True
-                is_outer_operate = True
-
+            owns_block = False
+            dispatched = False
             try:
-                if block:
-                    self.block_input()
+                if getattr(self, "_input_unhealthy", False):
+                    raise RuntimeError("鼠标输入状态异常，请恢复输入并重启任务程序")
+                if not self._operating:
+                    self.cursor_position = self.wait_for_input(input_wait, input_status)
+                    self._operating = True
+                    is_outer_operate = True
+                if block and not getattr(self, "_input_blocked", False):
+                    deadline = time.monotonic() + INPUT_WAIT_TIMEOUT
+                    while True:
+                        if not self._mouse_buttons_down():
+                            if not self.block_input():
+                                raise RuntimeError("无法取得鼠标输入屏蔽，本次操作尚未执行")
+                            owns_block = True
+                            self._input_blocked = True
+                            if not self._mouse_buttons_down():
+                                break
+                            if not self.unblock_input():
+                                self._input_unhealthy = True
+                                raise RuntimeError("鼠标输入屏蔽释放失败，停止操作")
+                            owns_block = False
+                            self._input_blocked = False
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise TimeoutError("等待鼠标五键松开超时，本次操作尚未执行")
+                        if input_status is not None:
+                            input_status("请松开鼠标左、右、中键及两侧键，等待恢复")
+                        input_wait(min(INPUT_WAIT_INTERVAL, remaining))
+                dispatched = True
                 result = fun()
             except Exception as e:
+                e.input_not_dispatched = not dispatched
                 logger.error("operate exception", e)
                 raise
             finally:
-                if is_outer_operate:
-                    self._operating = False
-                    if restore_cursor:
-                        self._restore_cursor()
-                if block:
-                    self.unblock_input()
+                try:
+                    if is_outer_operate:
+                        self._operating = False
+                        if restore_cursor:
+                            self._restore_cursor()
+                finally:
+                    if owns_block:
+                        if not self.unblock_input():
+                            self._input_unhealthy = True
+                            raise RuntimeError("鼠标输入屏蔽释放失败，停止操作")
+                        self._input_blocked = False
             return result
 
     def wait_until_idle(self, timeout: float = 2.0) -> bool:
@@ -247,10 +278,19 @@ class BD2Interaction(PostMessageInteraction):
             logger.error("restore cursor exception", e)
 
     def block_input(self):
-        self.user32.BlockInput(True)
+        return bool(self.user32.BlockInput(True))
 
     def unblock_input(self):
-        self.user32.BlockInput(False)
+        return bool(self.user32.BlockInput(False))
+
+    def _mouse_buttons_down(self):
+        return any(
+            win32api.GetAsyncKeyState(button) & 0x8000
+            for button in (
+                win32con.VK_LBUTTON, win32con.VK_RBUTTON, win32con.VK_MBUTTON,
+                win32con.VK_XBUTTON1, win32con.VK_XBUTTON2,
+            )
+        )
 
     def move_mouse_relative(self, dx, dy):
         with self._input_lock:

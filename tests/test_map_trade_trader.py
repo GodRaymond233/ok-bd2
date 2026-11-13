@@ -1893,6 +1893,79 @@ class BuyEntryTest(unittest.TestCase):
 
 
 class PurchaseEvidenceTest(StageHistoryTestCase):
+    def test_purchase_input_failure_preserves_only_possible_submission(self):
+        from src.tasks import run_history
+
+        for unsent in (True, False):
+            with self.subTest(unsent=unsent):
+                trader = create_trader()
+                trader.task.log_info = trader.task.log_warning = Mock()
+                trader._wait_for_buy_all_favorites_state = Mock(return_value=(
+                    (10, 10), np.zeros((720, 1280, 3), dtype=np.uint8),
+                ))
+                trader._wait_for_purchase_confirmation = Mock(return_value=True)
+                trader.vision.click_client = Mock()
+                error = RuntimeError("input failed")
+                error.input_not_dispatched = unsent
+                trader.task.operate_click = Mock(side_effect=error)
+                with self.assertRaises(RuntimeError):
+                    trader.buy_all_favorites()
+                record = run_history.read_stage(trader.task, "购买全部收藏")
+                if unsent:
+                    self.assertEqual({}, record)
+                else:
+                    self.assertEqual("pending", record["state"])
+                    self.assertEqual("armed", record["evidence"]["submission"])
+
+    def test_purchase_stock_rollover_archives_unknown_and_confirmation_boundary_stops(self):
+        from src.tasks import run_history
+
+        for evidence in ({"stock_date": "2026-11-12"}, {}):
+            with self.subTest(evidence=evidence):
+                trader = create_trader()
+                trader.task.log_info = trader.task.log_warning = Mock()
+                now = datetime(2026, 11, 13, 7, 59, tzinfo=UTC_PLUS_8)
+                trader.now_provider = lambda: now
+                with patch("src.tasks.run_history.time.time", return_value=
+                           datetime(2026, 11, 12, 20, tzinfo=UTC_PLUS_8).timestamp()):
+                    run_history.save_stage(
+                        trader.task, "购买全部收藏", "pending", evidence=evidence,
+                    )
+                record = run_history.read_stage(trader.task, "购买全部收藏")
+                self.assertEqual(
+                    record, trader._purchase_record_for_stock(now.date().replace(day=12)),
+                )
+                now = now.replace(hour=8, minute=0)
+                self.assertEqual({}, trader._purchase_record_for_stock(now.date()))
+                retired = run_history.default_store()._retired_stages[-1]
+                self.assertEqual(record, retired["record"])
+                self.assertIn("未知", retired["reason"])
+                self.assertEqual({}, run_history.read_stage(trader.task, "购买全部收藏"))
+
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        trader._wait_for_buy_all_favorites_state = Mock(return_value=((10, 10), frame))
+        trader._wait_for_purchase_confirmation = Mock(return_value=True)
+        trader.vision.click_client = Mock()
+        trader.task.operate_click = Mock()
+
+        def refresh(_seconds):
+            nonlocal now
+            now = now.replace(hour=8, minute=0)
+
+        for during_input in (False, True):
+            now = datetime(2026, 11, 14, 7, 59, tzinfo=UTC_PLUS_8)
+
+            def operate(callback):
+                if during_input:
+                    refresh(0)
+                return callback()
+
+            trader.task.operate = operate
+            trader.task.sleep = (lambda _seconds: None) if during_input else refresh
+            self.assertFalse(trader.buy_all_favorites())
+            trader.task.operate_click.assert_not_called()
+            self.assertEqual({}, run_history.read_stage(trader.task, "购买全部收藏"))
+
     def test_pending_purchase_only_rechecks_result_and_never_confirms_again(self):
         from unittest.mock import Mock
 
@@ -1900,6 +1973,7 @@ class PurchaseEvidenceTest(StageHistoryTestCase):
 
         trader = create_trader()
         trader.task = SimpleNamespace(config={}, log_warning=Mock())
+        trader.now_provider = lambda: datetime.now(UTC_PLUS_8)
         trader._wait_for_buy_all_favorites_state = Mock(return_value=((10, 10), None))
         trader._wait_for_purchase_completion = Mock(return_value=False)
         trader.vision = SimpleNamespace(click_client=Mock())
@@ -2398,6 +2472,7 @@ class PurchaseFlowTest(StageHistoryTestCase):
                 trader = create_trader()
                 trader.task = SimpleNamespace(
                     sleep=lambda *_args: None,
+                    operate=lambda callback: callback(),
                     operate_click=lambda *_args, **_kwargs: clicks.append("confirm"),
                     log_info=lambda *_args: None,
                     log_warning=lambda message: self.fail(message),
@@ -2460,6 +2535,7 @@ class PurchaseFlowTest(StageHistoryTestCase):
         warnings = []
         trader = create_trader()
         trader.task = SimpleNamespace(
+            operate=lambda callback: callback(),
             operate_click=lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep)),
             sleep=lambda *_args: None,
             log_info=lambda *_args: None,

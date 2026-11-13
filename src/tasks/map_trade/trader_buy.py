@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from datetime import date, datetime
 from time import monotonic
 
 import numpy as np
 
 from src.tasks.map_trade.calendar import (
     PURCHASE_STOCK_REFRESH_HOUR,
+    UTC_PLUS_8,
     purchase_stock_date,
 )
 from src.tasks.map_trade.models import (
@@ -39,9 +41,58 @@ BUY_ALL_FAVORITES_CLICK_AFTER_SLEEP = 0.3
 
 
 class BuyFlowMixin:
-    def run_buy(self) -> bool:
+    def _purchase_record_for_stock(self, stock_date):
         from src.tasks import run_history
 
+        record = run_history.read_stage(self.task, "购买全部收藏")
+        if record.get("state") != "pending":
+            return record
+        evidence = record.get("evidence", {})
+        try:
+            recorded = evidence.get("stock_date")
+            if recorded is not None:
+                previous_stock = date.fromisoformat(recorded)
+            else:
+                submitted = float(record["time"])
+                if submitted <= 0 or submitted > self._current_market_time().timestamp():
+                    raise ValueError("invalid purchase time")
+                previous_stock = purchase_stock_date(datetime.fromtimestamp(submitted, UTC_PLUS_8))
+        except (ValueError, TypeError, KeyError, OverflowError, OSError) as error:
+            raise RuntimeError("前次购买库存批次无法核验，请保留记录并核对该笔购买") from error
+        if previous_stock > stock_date:
+            raise RuntimeError("前次购买库存日期晚于当前日期，请核对系统时间与记录")
+        if previous_stock < stock_date:
+            run_history.default_store().retire_stages(
+                run_history.stage_owner(self.task), {"购买全部收藏": record},
+                f"旧库存批次{previous_stock.isoformat()}结果未知；当前批次{stock_date.isoformat()}",
+            )
+            self.task.log_info("买：旧库存批次的未决记录已保留归档，重新核验当前库存。")
+            return {}
+        return record
+
+    def _save_purchase_stage(self, state, stock_date, **evidence):
+        from src.tasks import run_history
+
+        run_history.save_stage(
+            self.task, "购买全部收藏", state,
+            scope=f"purchase:{stock_date.isoformat()}",
+            evidence={"stock_date": stock_date.isoformat(), **evidence},
+        )
+
+    def _record_purchase_failure(self):
+        from src.diagnostics.runtime import capture_failure_frame
+        from src.tasks import run_history
+
+        record = run_history.read_stage(self.task, "购买全部收藏")
+        evidence = record.get("evidence", {})
+        capture_failure_frame(self.task, "purchase_unconfirmed", recognition={
+            "file": str(run_history.default_store().path),
+            "state": record.get("state"), "scope": record.get("scope"),
+            "time": record.get("time"), "stock_date": evidence.get("stock_date"),
+            "submission": evidence.get("submission", "unknown"),
+        })
+
+    def run_buy(self) -> bool:
         stock_date = purchase_stock_date(self._current_market_time())
         self._status("购买库存日期", stock_date.isoformat())
         self.task.log_info(
@@ -60,12 +111,15 @@ class BuyFlowMixin:
         purchase_state = self._wait_for_buy_all_favorites_state()
         if purchase_state is None:
             return False
+        if stock_date != purchase_stock_date(self._current_market_time()):
+            self.task.log_warning("买：入场期间库存批次已刷新，请返回后重新核验。")
+            return False
+        record = self._purchase_record_for_stock(stock_date)
         if purchase_state[0] is None:
-            run_history.save_stage(self.task, "购买全部收藏", "done",
-                                   evidence={"stock_date": stock_date.isoformat()})
+            self._save_purchase_stage("done", stock_date, result="已售罄")
             self._buy_completed_in_current_shop = True
             return True
-        if run_history.read_stage(self.task, "购买全部收藏").get("state") == "pending":
+        if record.get("state") == "pending":
             completed = self.buy_all_favorites()
             self._buy_completed_in_current_shop = completed
             return completed
@@ -141,26 +195,27 @@ class BuyFlowMixin:
         return False
 
     def buy_all_favorites(self) -> bool:
-        from src.tasks import run_history
-
-        record = run_history.read_stage(self.task, "购买全部收藏")
+        stock_date = purchase_stock_date(self._current_market_time())
+        record = self._purchase_record_for_stock(stock_date)
         located = self._wait_for_buy_all_favorites_state()
         if located is None:
             self.task.log_warning("买：商店页面未稳定显示可购买按钮或售罄状态。")
             return False
+        if stock_date != purchase_stock_date(self._current_market_time()):
+            return False
         button_center, frame = located
         if button_center is None:
-            run_history.save_stage(self.task, "购买全部收藏", "done",
-                                   evidence={"result": "已售罄"})
+            self._save_purchase_stage("done", stock_date, result="已售罄")
             return True
         if record.get("state") == "pending":
             if self._wait_for_purchase_completion():
                 current = self._wait_for_buy_all_favorites_state()
-                if current is not None and current[0] is None:
-                    run_history.save_stage(self.task, "购买全部收藏", "done",
-                                           evidence={"result": "前次购买已核验售罄"})
+                if (current is not None and current[0] is None
+                        and purchase_stock_date(self._current_market_time()) == stock_date):
+                    self._save_purchase_stage("done", stock_date, result="前次购买已核验售罄")
                     return True
             self.task.log_warning("买：前次购买提交结果未知，售罄/完成未确认，禁止重复购买。")
+            self._record_purchase_failure()
             return False
         self._status(
             "一键购买全部收藏按钮点击中心",
@@ -178,20 +233,55 @@ class BuyFlowMixin:
             f"买：购买确认弹窗OCR完成，等待{BUY_CONFIRM_PRE_CLICK_DELAY:.1f}秒后点击确认。"
         )
         self.task.sleep(BUY_CONFIRM_PRE_CLICK_DELAY)
-        run_history.save_stage(self.task, "购买全部收藏", "pending",
-                               evidence={"target": "全部收藏"})
-        self.task.operate_click(
-            *BUY_CONFIRM_POINT,
-            after_sleep=BUY_CONFIRM_POST_CLICK_DELAY,
+        if purchase_stock_date(self._current_market_time()) != stock_date:
+            self.task.log_warning("买：确认期间库存批次已刷新，本次未提交，请返回后重新核验库存。")
+            return False
+        self._save_purchase_stage(
+            "pending", stock_date, target="全部收藏", submission="armed",
         )
+        from src.tasks import run_history
+
+        armed = run_history.read_stage(self.task, "购买全部收藏")
+
+        def submit_current_stock():
+            if purchase_stock_date(self._current_market_time()) != stock_date:
+                return False
+            self.task.operate_click(*BUY_CONFIRM_POINT, after_sleep=0)
+            return True
+
+        try:
+            submitted = self.task.operate(submit_current_stock)
+        except Exception as error:
+            if getattr(error, "input_not_dispatched", False):
+                run_history.default_store().retire_stages(
+                    run_history.stage_owner(self.task), {"购买全部收藏": armed},
+                    "输入准入失败，购买确认回调未执行",
+                )
+            self._record_purchase_failure()
+            raise
+        if not submitted:
+            run_history.default_store().retire_stages(
+                run_history.stage_owner(self.task), {"购买全部收藏": armed},
+                "等待输入期间库存刷新，购买确认未发送",
+            )
+            self.task.log_warning("买：输入恢复时库存批次已刷新，未提交购买。")
+            return False
+        self._save_purchase_stage(
+            "pending", stock_date, target="全部收藏", submission="sent",
+        )
+        self.task.sleep(BUY_CONFIRM_POST_CLICK_DELAY)
         if not self._wait_for_purchase_completion():
             self.task.log_warning(
                 "买：确认点击后未观察到售罄模板或购买完成页面，未记为购买成功。"
             )
+            self._record_purchase_failure()
+            return False
+        if stock_date != purchase_stock_date(self._current_market_time()):
+            self.task.log_warning("买：结果核验跨越库存刷新，保留原批次未决记录。")
+            self._record_purchase_failure()
             return False
         self.task.log_info("买：已确认购买全部收藏商品。")
-        run_history.save_stage(self.task, "购买全部收藏", "done",
-                               evidence={"result": "购买完成已确认"})
+        self._save_purchase_stage("done", stock_date, result="购买完成已确认")
         return True
 
     def _wait_for_purchase_completion(

@@ -309,7 +309,9 @@ class Collector(SkillExecutionMixin):
             return self._record_visual_completion(card, required_actions)
 
         if refresh_quota:
-            self._refresh_collection_quota(refresh_quota)
+            failure = self._refresh_collection_quota(refresh_quota)
+            if failure is not None:
+                return self._skill_failure(card.card_id, "次数周期核验", failure)
             remaining, recovery_only = self._plan_collection_work(card, completed, required_actions)
             if recovery_only and not remaining:
                 return CollectionResult(
@@ -516,17 +518,17 @@ class Collector(SkillExecutionMixin):
                     ) if detection.state is CardActionState.PENDING
                 } if completion is not None and completion.complete_region else set()
                 if pending:
-                    reopened = self.progress.invalidate_observed_completion(card.card_id, pending)
+                    reopened = self.progress.review_card_actions(card.card_id, pending)
                     if reopened:
                         self._status(
-                            "采集进度", f"{card.card_id}未完成，重新核验未点击的观察记录："
+                            "采集进度", f"{card.card_id}未完成，保留施放历史并复核地图："
                             + "、".join(sorted(reopened)),
                         )
                 return CollectionResult(
                     False,
                     completed_submaps=self._completed_this_run,
                     message=(f"{card.card_id}吸取/压制完成度复核失败：{verified.message or '-'}"),
-                    retryable=False,
+                    retryable=bool(pending),
                 )
             self.progress.mark_card_verified(card.card_id)
         else:
@@ -622,8 +624,30 @@ class Collector(SkillExecutionMixin):
             "message": message,
             "geometry": deepcopy(self._last_skill_geometry),
             "observations": deepcopy(self._last_skill_observations),
+            "ledger": {
+                "file": str(self.progress.path.resolve()),
+                "daily_key": self.progress.state.daily_key,
+                "counts": deepcopy(self.progress.state.observed_counts),
+                "epochs": deepcopy(self.progress.state.count_epochs),
+                "records": [
+                    {key: deepcopy(record[key]) for key in (
+                        "card_id", "map_role", "action", "state", "baseline", "observed",
+                        "pending", "reservation", "attempts", "armed_at", "clicked_at",
+                        "needs_review",
+                    ) if key in record}
+                    for record in self.progress.state.action_records.values()
+                    if record.get("card_id") == card_id
+                ][:12],
+            },
         }
         self._skill_failure_evidence.append(evidence)
+        from src.diagnostics.runtime import capture_failure_frame
+
+        ledger = evidence["ledger"]
+        capture_failure_frame(self.task, "collection_ledger_unconfirmed", recognition={
+            **{key: value for key, value in ledger.items() if key != "records"},
+            **{f"action_{index}": record for index, record in enumerate(ledger["records"])},
+        })
         try:
             self.task.log_warning(
                 f"地图采集：技能识别失败证据（最近{len(self._skill_failure_evidence)}条）"

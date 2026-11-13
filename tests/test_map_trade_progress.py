@@ -28,7 +28,75 @@ from tests.helpers.map_trade import _seed_action_records
 
 
 class ProgressTest(unittest.TestCase):
-    def test_pending_badges_reopen_only_unclicked_observations(self):
+    def test_confirmed_count_epoch_preserves_history_and_rejects_stale_confirmation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            now = datetime(2026, 11, 13, 20, tzinfo=UTC_PLUS_8)
+            store = ProgressStore(Path(directory) / "progress.json", lambda: now)
+            store.load()
+            store.reconcile_pending("压制", (6, 50))
+            store.arm_action("Q_sp7", "battle_area_1", "压制", baseline=(6, 50))
+            store.mark_action_clicked("Q_sp7", "battle_area_1", "压制")
+            store.mark_action_local_done("Q_sp7", "battle_area_1", "压制", pending=False,
+                                         observed=(7, 50))
+            store.reconcile_pending("压制", (7, 50))
+            self.assertEqual(0, store.reconcile_pending("压制", (0, 55), confirmed_limit=True))
+            token = store.request_count_reset("压制", (0, 55))
+            store.load()
+            self.assertFalse(store.confirm_count_reset("压制", (1, 55), token))
+            self.assertFalse(store.confirm_count_reset("压制", (0, 55), "wrong"))
+            with patch.object(store, "save", side_effect=OSError("disk full")):
+                with self.assertRaises(OSError):
+                    store.confirm_count_reset("压制", (0, 55), token)
+            self.assertEqual((7, 50), store.trusted_action_baseline("压制"))
+            self.assertTrue(store.confirm_count_reset("压制", (0, 55), token))
+            store.load()
+            self.assertEqual(0, store.effective_used("压制"))
+            self.assertEqual(1, store.state.daily_suppressions)
+            self.assertTrue(store.weekly_action_complete("Q_sp7", "battle_area_1", "压制"))
+            self.assertEqual(1, len(store.state.archived_action_records))
+            self.assertFalse(store.confirm_count_reset("压制", (0, 55), token))
+            store.arm_action("Q_sp7", "battle_area_2", "压制", baseline=(0, 55))
+            store.mark_action_local_done("Q_sp7", "battle_area_2", "压制", pending=False,
+                                         observed=(1, 55))
+            store.reconcile_pending("压制", (1, 55))
+            self.assertEqual(1, store.effective_used("压制"))
+            self.assertEqual(2, store.state.daily_suppressions)
+
+    def test_supplement_retains_settled_attempt_and_never_releases_unknown_spending(self):
+        for pending in (False, True):
+            with self.subTest(pending=pending), tempfile.TemporaryDirectory() as directory:
+                store = ProgressStore(Path(directory) / "progress.json")
+                store.load()
+                store.reconcile_pending("吸收", (0, 21))
+                store.arm_action("Q_sp1", "main_area", "吸收", baseline=(0, 21))
+                store.mark_action_local_done("Q_sp1", "main_area", "吸收", pending=pending,
+                                             observed=None if pending else (1, 21))
+                if not pending:
+                    store.reconcile_pending("吸收", (1, 21))
+                store.mark_target("Q_sp1", "main_area")
+                store.review_card_actions("Q_sp1", {"吸收"})
+                self.assertFalse(store.weekly_action_complete("Q_sp1", "main_area", "吸收"))
+                self.assertEqual(
+                    not pending, store.prepare_supplement("Q_sp1", "main_area", "吸收"),
+                )
+                if not pending:
+                    self.assertTrue(
+                        store.arm_action("Q_sp1", "main_area", "吸收", baseline=(1, 21)),
+                    )
+                    store.mark_action_local_done("Q_sp1", "main_area", "吸收", pending=False,
+                                                 observed=(2, 21))
+                    store.reconcile_pending("吸收", (2, 21))
+                    store.load()
+                    self.assertEqual(2, store.state.daily_absorbs)
+                    archived = next(iter(store.state.archived_action_records.values()))
+                    self.assertEqual("settled", archived["previous_state"])
+                    self.assertEqual([1, 21], archived["observed"])
+                else:
+                    self.assertTrue(
+                        store.get_action_record("Q_sp1", "main_area", "吸收")["reservation"],
+                    )
+
+    def test_pending_badges_reopen_targets_while_preserving_consumption_records(self):
         for phase in ("observed", "next_day", "armed", "clicked", "settled", "history"):
             with self.subTest(phase=phase), tempfile.TemporaryDirectory() as directory:
                 now = datetime(2026, 10, 21, 12, tzinfo=UTC_PLUS_8)
@@ -53,24 +121,22 @@ class ProgressTest(unittest.TestCase):
                     now += timedelta(days=1)
                     store.load()
                 before = store.effective_daily_counts()
-                reopened = store.invalidate_observed_completion(card.card_id, {"吸收"})
-                expected = phase in {"observed", "next_day"}
-                self.assertEqual({"main_area"} if expected else set(), reopened)
+                original = store.get_action_record(card.card_id, "main_area", "吸收")
+                original_state = original["state"] if original else None
+                reopened = store.review_card_actions(card.card_id, {"吸收"})
+                self.assertEqual({target.key for target in card.targets}, reopened)
                 self.assertEqual(before, store.effective_daily_counts())
-                self.assertTrue(store.weekly_action_complete(card.card_id, "battle_area_1", "吸收"))
-                self.assertTrue(store.weekly_action_complete(card.card_id, "battle_area_2", "压制"))
-                self.assertEqual(
-                    not expected, store.weekly_action_complete(card.card_id, "main_area", "吸收"),
+                self.assertFalse(
+                    store.weekly_action_complete(card.card_id, "battle_area_1", "吸收"),
                 )
-                if expected:
-                    store.load()
-                    self.assertEqual(
-                        {"battle_area_1", "battle_area_2"},
-                        store.state.completed_targets(card.card_id),
-                    )
-                    self.assertEqual(
-                        set(), store.invalidate_observed_completion(card.card_id, {"吸收"}),
-                    )
+                self.assertTrue(store.weekly_action_complete(card.card_id, "battle_area_2", "压制"))
+                self.assertFalse(store.weekly_action_complete(card.card_id, "main_area", "吸收"))
+                if original is not None:
+                    self.assertEqual(original_state, original["state"])
+                if phase in {"armed", "clicked"}:
+                    self.assertFalse(store.prepare_supplement(card.card_id, "main_area", "吸收"))
+                store.load()
+                self.assertEqual(set(), store.state.completed_targets(card.card_id))
 
     def test_chapter_eighteen_schema_nine_progress_keeps_battles_and_requires_town(self):
         with tempfile.TemporaryDirectory() as directory:
