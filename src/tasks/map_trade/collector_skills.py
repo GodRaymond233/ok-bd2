@@ -1693,6 +1693,29 @@ class SkillExecutionMixin:
                 return None
             if attempt + 1 < ACTION_OCR_WINDOW_SAMPLES:
                 self.task.sleep(SEARCH_COUNTDOWN_INTERVAL)
+        now = monotonic()
+        if any(
+            cached_card == card_id and expires_at > now
+            for (cached_card, _role), expires_at in self._search_expires_at.items()
+        ):
+            self._status("探查倒计时", "近期探查倒计时漏读，等待新帧确认或图标恢复")
+            end_at = now + SEARCH_RENEW_TIMEOUT
+            while monotonic() < end_at:
+                observed_at = monotonic()
+                frame, _recovered = self._capture_skill_field()
+                seconds = self._read_search_countdown(frame)
+                search = self.action_icons.detect(frame, SEARCH_ICON)
+                remaining = (seconds or 0) - (monotonic() - observed_at)
+                if monotonic() >= end_at:
+                    break
+                if search.state is ActionIconState.AVAILABLE:
+                    return self._start_search(card_id=card_id, map_role=map_role)
+                if remaining >= ABSORB_SEARCH_MARGIN_SECONDS:
+                    return SearchCountdownSession(SEARCH_COUNTDOWN_RELATIVE_ROI, int(remaining))
+                self.task.sleep(SEARCH_COUNTDOWN_INTERVAL)
+            return SkillExecutionResult(
+                False, message="近期探查倒计时持续漏读且图标未恢复，未执行吸收",
+            )
         started = self._start_search(card_id=card_id, map_role=map_role)
         if not isinstance(started, SkillExecutionResult):
             return started

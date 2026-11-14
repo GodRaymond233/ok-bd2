@@ -1234,6 +1234,67 @@ class CollectorSkillTest(unittest.TestCase):
         )
         collector._start_search.assert_called_once()
 
+    def test_cross_map_search_countdown_loss_recovers_only_with_recent_same_card_evidence(self):
+        for scenario in ("readable", "expired", "timeout", "other_card", "stale"):
+            with self.subTest(scenario=scenario):
+                clock = [1000.0]
+                frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+
+                def sleep(seconds):
+                    clock[0] += seconds
+
+                def countdown(*_args, **_kwargs):
+                    if scenario == "readable" and clock[0] >= 1003.0:
+                        return "8"
+                    return "1Q"
+
+                def detect(_frame, _icon):
+                    available = scenario == "expired" and clock[0] >= 1006.0
+                    return ActionIconDetection(
+                        ActionIconState.AVAILABLE if available else ActionIconState.ABSENT,
+                        MatchResult(0.99, (100, 100), (40, 40)),
+                    )
+
+                collector = Collector(
+                    SimpleNamespace(config={}, sleep=sleep, info_set=Mock()),
+                    SimpleNamespace(capture=lambda: frame, ocr_text=countdown, click_client=Mock()),
+                    SimpleNamespace(), SimpleNamespace(),
+                )
+                collector._open_skill_menu = Mock(return_value=True)
+                collector._capture_skill_field = Mock(return_value=(frame, False))
+                collector.action_icons = SimpleNamespace(detect=detect)
+                collector._search_expires_at[
+                    ("Q_sp1" if scenario == "other_card" else "Q_sp2",
+                     CollectionMapRole.MAIN_AREA.value)
+                ] = 999.0 if scenario == "stale" else 1006.0
+                collector._start_search = Mock(return_value=(
+                    SearchCountdownSession(SEARCH_COUNTDOWN_RELATIVE_ROI, 89)
+                    if scenario == "expired" else SkillExecutionResult(False)
+                ))
+                with patch(
+                    "src.tasks.map_trade.collector_skills.monotonic", side_effect=lambda: clock[0],
+                ):
+                    result = collector._ensure_search(
+                        card_id="Q_sp2", map_role=CollectionMapRole.BATTLE_AREA_2,
+                    )
+                if scenario in ("readable", "expired"):
+                    self.assertIsInstance(result, SearchCountdownSession)
+                    self.assertEqual(8 if scenario == "readable" else 89, result.value)
+                    if scenario == "readable":
+                        collector._start_search.assert_not_called()
+                    else:
+                        collector._start_search.assert_called_once()
+                        self.assertGreaterEqual(clock[0], 1006.0)
+                else:
+                    self.assertFalse(result.completed)
+                    if scenario == "timeout":
+                        self.assertIn("倒计时", result.message)
+                        collector._start_search.assert_not_called()
+                        self.assertLessEqual(clock[0], 1015.5)
+                    else:
+                        collector._capture_skill_field.assert_not_called()
+                collector.vision.click_client.assert_not_called()
+
     def _skill_collector(self, states, counts):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
         clicks = []
