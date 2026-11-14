@@ -8,6 +8,7 @@ import numpy as np
 from ok.task.exceptions import FinishedException, TaskDisabledException
 
 from src.icons import TaskIcon as FluentIcon
+from src.interaction.BD2Interaction import InputTargetChanged
 from src.tasks.BaseBD2Task import (
     FIEND_HUNT_REWARD_TITLE,
     RANK_OVERLAY_TITLES,
@@ -449,7 +450,9 @@ class PVPTask(BaseBD2Task):
     ) -> bool:
         """Handle every PVP entry special page before accepting the PVP hub."""
         end_at = monotonic() + max(0.0, timeout)
-        handled: set[str] = set()
+        presses: dict[str, int] = {}
+        pressed_at: dict[str, float] = {}
+        candidate = None
         action_count = 0
         last_text = ""
         last_hub_score = -1.0
@@ -484,10 +487,15 @@ class PVPTask(BaseBD2Task):
             )
             if action_name or has_rank_overlay:
                 hub_candidate_at = None
+                stable_page = candidate == action_name and action_name is not None
+                candidate = action_name
                 if (
-                    action_name not in handled
+                    stable_page
+                    and presses.get(action_name, 0) < 2
+                    and now - pressed_at.get(action_name, float("-inf"))
+                    >= PVP_RANK_PAGE_AFTER_CLICK_SECONDS
                     and target_box is not None
-                    and action_count < RECENT_CARTRIDGE_SPECIAL_PAGE_MAX_ACTIONS
+                    and action_count < RECENT_CARTRIDGE_SPECIAL_PAGE_MAX_ACTIONS * 2
                 ):
                     point = self._ocr_box_center(target_box)
                     if point is not None:
@@ -498,12 +506,19 @@ class PVPTask(BaseBD2Task):
                             if action_name in ("赛季奖励", FIEND_HUNT_REWARD_TITLE)
                             else PVP_RANK_PAGE_AFTER_CLICK_SECONDS
                         )
-                        self.operate_click(
-                            max(0.0, min(1.0, point[0] / max(1, frame_width))),
-                            max(0.0, min(1.0, point[1] / max(1, frame_height))),
-                            after_sleep=after_sleep,
-                        )
-                        handled.add(action_name)
+                        try:
+                            self.operate_click(
+                                max(0.0, min(1.0, point[0] / max(1, frame_width))),
+                                max(0.0, min(1.0, point[1] / max(1, frame_height))),
+                                after_sleep=after_sleep,
+                                require_fresh_target=True,
+                            )
+                        except InputTargetChanged:
+                            candidate = None
+                            self.sleep(interval)
+                            continue
+                        presses[action_name] = presses.get(action_name, 0) + 1
+                        pressed_at[action_name] = now
                         action_count += 1
                         continue
                 # The hub artwork can remain visible behind these overlays. Never
@@ -511,6 +526,7 @@ class PVPTask(BaseBD2Task):
                 self.sleep(interval)
                 continue
 
+            candidate = None
             self.info_set("当前阶段", "确认 PVP 箱庭")
             hub = self._match(frame, PVP_MEDALS_TEMPLATE)
             last_hub_score = hub.score
@@ -538,7 +554,7 @@ class PVPTask(BaseBD2Task):
         self.log_info(
             "镜中之战：点击 PVP 卡带后未确认进入 PVP 箱庭，"
             f"hub={last_hub_score:.3f}, special_page_ocr={last_text or '-'}, "
-            f"handled={','.join(sorted(handled)) or '-'}。"
+            f"presses={presses}。"
         )
         self._save_flow_diagnostic("pvp_hub_entry_failed")
         return False

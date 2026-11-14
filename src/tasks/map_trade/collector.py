@@ -604,7 +604,7 @@ class Collector(SkillExecutionMixin):
             message=(
                 f"{card_id}{stage}技能操作失败" + (f"：{result.message}" if result.message else "")
             ),
-            retryable=False,
+            retryable=result.review_required,
         )
 
     def _record_skill_failure(
@@ -633,7 +633,7 @@ class Collector(SkillExecutionMixin):
                     {key: deepcopy(record[key]) for key in (
                         "card_id", "map_role", "action", "state", "baseline", "observed",
                         "pending", "reservation", "attempts", "armed_at", "clicked_at",
-                        "needs_review",
+                        "needs_review", "retry_reserve", "retry_used", "count_epoch",
                     ) if key in record}
                     for record in self.progress.state.action_records.values()
                     if record.get("card_id") == card_id

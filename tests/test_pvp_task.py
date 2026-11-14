@@ -1230,9 +1230,11 @@ class PVPTaskHelperTest(unittest.TestCase):
                 [],
             )
         )
+        pages = [page for page in screens for _ in range(2 if page else 1)]
+        screens = iter(pages)
         task._pvp_special_page_ocr_boxes = lambda *_args, **_kwargs: next(screens)
         clicks = []
-        task.operate_click = lambda x, y, after_sleep=0.0: clicks.append(
+        task.operate_click = lambda x, y, after_sleep=0.0, **_: clicks.append(
             (x, y, after_sleep)
         )
         matched = []
@@ -1243,7 +1245,7 @@ class PVPTaskHelperTest(unittest.TestCase):
 
         with patch(
             "src.tasks.PVPTask.monotonic",
-            side_effect=(0.0, 0.1, 0.6, 4.0, 6.5, 7.0, 8.6),
+            side_effect=(0.0, 0.1, 0.6, 1.1, 4.0, 4.5, 6.5, 7.0, 8.6),
         ):
             self.assertTrue(PVPTask._wait_for_pvp_hub_after_cart(task, timeout=10.0))
 
@@ -1263,7 +1265,7 @@ class PVPTaskHelperTest(unittest.TestCase):
             clicks,
         )
         self.assertEqual([PVP_MEDALS_TEMPLATE] * 4, matched)
-        self.assertEqual([0.5, 0.5, 0.5], sleeps)
+        self.assertEqual([0.5] * 5, sleeps)
         self.assertEqual(2.0, PVP_HUB_SPECIAL_PAGE_GRACE_SECONDS)
 
     def test_pvp_entry_wait_closes_fiend_reward_on_non_monday(self):
@@ -1277,7 +1279,7 @@ class PVPTaskHelperTest(unittest.TestCase):
             SimpleNamespace(name=FIEND_HUNT_REWARD_DISMISS_TEXT, x=1180, y=820,
                             width=180, height=30),
         ]
-        screens = iter((reward, [], [], []))
+        screens = iter((reward, reward, [], [], []))
         task._pvp_special_page_ocr_boxes = lambda *_args, **_kwargs: next(screens)
         task.operate_click = Mock()
         task._match = lambda *_args, **_kwargs: SimpleNamespace(score=0.9)
@@ -1286,7 +1288,7 @@ class PVPTaskHelperTest(unittest.TestCase):
 
         with patch(
             "src.tasks.PVPTask.monotonic",
-            side_effect=(0.0, 0.1, 0.5, 1.0, 3.1),
+            side_effect=(0.0, 0.1, 0.5, 1.0, 1.5, 3.1),
         ):
             self.assertTrue(PVPTask._wait_for_pvp_hub_after_cart(task, timeout=5.0))
 
@@ -1294,44 +1296,52 @@ class PVPTaskHelperTest(unittest.TestCase):
             (1180 + 180 / 2) / 1920,
             (820 + 30 / 2) / 1080,
             after_sleep=PVP_SEASON_REWARD_AFTER_CLICK_SECONDS,
+            require_fresh_target=True,
         )
         task.info_set.assert_any_call("PVP 入场特殊页面模式", "非周一：魔兽奖励及升降级")
 
-    def test_pvp_entry_wait_does_not_repeat_rank_page_click_while_visible(self):
-        task = object.__new__(PVPTask)
-        task.info_set = lambda *_args, **_kwargs: None
-        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        task._is_beijing_monday = lambda: False
-        rank_page = [
-            SimpleNamespace(name="段位下滑", x=820, y=700, width=180, height=50),
-            SimpleNamespace(name="确认", x=930, y=990, width=60, height=30),
-        ]
-        screens = iter((rank_page, rank_page, [], []))
-        task._pvp_special_page_ocr_boxes = lambda *_args, **_kwargs: next(screens)
-        clicks = []
-        task.operate_click = lambda x, y, after_sleep=0.0: clicks.append(
-            (x, y, after_sleep)
-        )
-        task._match = lambda *_args, **_kwargs: SimpleNamespace(score=0.9)
-        task._passes = lambda *_args, **_kwargs: True
-        task.sleep = lambda *_args, **_kwargs: None
+    def test_pvp_entry_retries_same_page_once_and_observes_late_close(self):
+        from src.interaction.BD2Interaction import InputTargetChanged
 
-        with patch(
-            "src.tasks.PVPTask.monotonic",
-            side_effect=(0.0, 0.1, 0.5, 1.0, 3.1),
-        ):
-            self.assertTrue(PVPTask._wait_for_pvp_hub_after_cart(task, timeout=5.0))
+        for scenario in ("second", "late", "stuck", "changed", "unknown"):
+            with self.subTest(scenario=scenario):
+                task = object.__new__(PVPTask)
+                task.info_set = Mock()
+                task.log_info = Mock()
+                task._save_flow_diagnostic = Mock()
+                task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+                task._is_beijing_monday = lambda: False
+                rank_page = [
+                    SimpleNamespace(name="段位下滑", x=820, y=700, width=180, height=50),
+                    SimpleNamespace(name="确认", x=930, y=990, width=60, height=30),
+                ]
+                now = [0.0]
+                clicks = []
+                invalidated = []
 
-        self.assertEqual(
-            [
-                (
-                    (930 + 60 / 2) / 1920,
-                    (990 + 30 / 2) / 1080,
-                    PVP_RANK_PAGE_AFTER_CLICK_SECONDS,
-                )
-            ],
-            clicks,
-        )
+                def page(*_args, **_kwargs):
+                    closed = len(clicks) >= (2 if scenario == "second" else 1)
+                    if scenario == "stuck":
+                        return rank_page
+                    return [] if closed else rank_page
+
+                def click(*_args, after_sleep=0, **_kwargs):
+                    if scenario == "changed" and not invalidated:
+                        invalidated.append(True)
+                        raise InputTargetChanged("input changed")
+                    clicks.append(now[0])
+                    now[0] += after_sleep
+
+                task._pvp_special_page_ocr_boxes = page
+                task.operate_click = click
+                task._match = lambda *_args: SimpleNamespace(score=.99)
+                task._passes = lambda *_args: scenario != "unknown"
+                task.sleep = lambda seconds: now.__setitem__(0, now[0] + seconds)
+                with patch("src.tasks.PVPTask.monotonic", side_effect=lambda: now[0]):
+                    result = task._wait_for_pvp_hub_after_cart(timeout=10)
+                self.assertEqual(scenario not in {"stuck", "unknown"}, result)
+                self.assertEqual(2 if scenario in {"stuck", "second"} else 1, len(clicks))
+                self.assertLessEqual(now[0], 10.5)
 
     def test_clear_pvp_hub_notice_clicks_notice_center_and_waits(self):
         task = object.__new__(PVPTask)

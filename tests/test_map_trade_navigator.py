@@ -621,7 +621,7 @@ class NavigatorTest(unittest.TestCase):
                         capture_frame=lambda: frame,
                         sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
                     )
-                    task.operate_click = lambda x, y, after_sleep: (
+                    task.operate_click = lambda x, y, after_sleep, **_kwargs: (
                         clicks.append((x, y)), task.sleep(after_sleep),
                     )
                     navigator = Navigator(task, Vision(task))

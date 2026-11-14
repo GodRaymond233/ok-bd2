@@ -125,6 +125,7 @@ class SkillExecutionResult:
     # final-map warnings without changing the existing positional interface.
     pending_actions: tuple[str, ...] = ()
     press_again: bool = False
+    review_required: bool = False
 
 
 @dataclass(frozen=True)

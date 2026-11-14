@@ -237,10 +237,11 @@ class BaseBD2Task(BaseTask):
     def capture_frame(self, screenshot_name: str | None = None):
         for _attempt in range(3):
             self._ensure_input_desktop()
-            paused = getattr(self, "_input_wait_seconds", 0.0)
+            context = self._input_target_context()
             frame = self.next_frame()
             self._ensure_input_desktop()
-            if paused == getattr(self, "_input_wait_seconds", 0.0):
+            if context == self._input_target_context():
+                self._frame_input_context = context
                 break
         else:
             raise TimeoutError("输入桌面反复中断，未取得可用游戏画面。")
@@ -254,6 +255,11 @@ class BaseBD2Task(BaseTask):
         if screenshot_name:
             self.save_frame(screenshot_name, frame)
         return frame
+
+    def _input_target_context(self):
+        interaction = getattr(self.executor, "interaction", None)
+        context = getattr(interaction, "target_context", None)
+        return getattr(self, "_input_wait_seconds", 0.0), context() if context else None
 
     def save_frame(self, name: str, frame) -> Path:
         if name.endswith(FAILURE_FRAME_SUFFIXES):
@@ -821,6 +827,7 @@ class BaseBD2Task(BaseTask):
         hcenter=False,
         vcenter=False,
         action_name=None,
+        require_fresh_target=False,
     ) -> Any:
         action_name = action_name or "operate_click"
         if not self._check_action_interval(action_name, interval):
@@ -841,8 +848,18 @@ class BaseBD2Task(BaseTask):
             and hasattr(interaction, "background_click_enabled")
             and interaction.background_click_enabled()
         )
-        result = self.operate(
-            lambda: self.click(
+        expected_context = getattr(self, "_frame_input_context", self._input_target_context())
+
+        def send():
+            if require_fresh_target:
+                current_context = self._input_target_context()
+                self.info_set("输入投递", f"准备={expected_context}；当前={current_context}")
+                if expected_context != current_context:
+                    from src.interaction.BD2Interaction import InputTargetChanged
+
+                    self.info_set("输入状态", "输入等待或窗口变化，取消旧目标并重新识别")
+                    raise InputTargetChanged("目标准备后输入环境变化，本次点击尚未发送")
+            return self.click(
                 x,
                 y,
                 name=name,
@@ -853,11 +870,16 @@ class BaseBD2Task(BaseTask):
                 key=key,
                 hcenter=hcenter,
                 vcenter=vcenter,
-            ),
+            )
+
+        result = self.operate(
+            send,
             block=not background_click,
             restore_cursor=restore_cursor and not background_click,
         )
         self.info_set("鼠标点击", click_log)
+        if require_fresh_target:
+            self.info_set("输入投递", f"{click_log}；调用已返回，等待游戏结果确认")
         self.sleep(after_sleep)
         return result
 

@@ -3,7 +3,7 @@
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import cv2
 import numpy as np
@@ -43,7 +43,7 @@ class CookingTask:
         self.infos = []
         self.saved_frames = []
 
-    def operate_click(self, x, y, after_sleep=0.0):
+    def operate_click(self, x, y, after_sleep=0.0, **_kwargs):
         self.clicks.append((x, y, after_sleep))
 
     def sleep(self, _seconds):
@@ -83,6 +83,63 @@ class CookingProgress:
 
 
 class CookingFlowTest(StageHistoryTestCase):
+    def test_recipe_selection_recovers_once_and_never_submits_wrong_detail(self):
+        from src.interaction.BD2Interaction import InputTargetChanged
+
+        for scenario in ("list", "wrong", "stuck", "late", "input"):
+            with self.subTest(scenario=scenario):
+                recipe = DEFAULT_COOKING_RECIPES[0]
+                frame = np.full((1080, 1920, 3), 145, dtype=np.uint8)
+                card = MatchResult(.99, (1000, 600), (100, 100), pixel_score=.99)
+                start = MatchResult(.99, (1100, 970), (400, 60), pixel_score=.99)
+                detail = CookingDetailSnapshot(frame, start, True, .7)
+                trader = create_trader()
+                trader.task = CookingTask()
+                clicks = []
+                interrupted = []
+                page = {"kind": "list"}
+
+                def click(point, *_args, **_kwargs):
+                    if scenario == "input" and not interrupted:
+                        interrupted.append(True)
+                        raise InputTargetChanged("mouse wait")
+                    clicks.append(point)
+                    if point == card.center:
+                        page["kind"] = "wrong" if scenario in {"wrong", "stuck"} else "list"
+
+                trader.vision = SimpleNamespace(
+                    capture=lambda: frame, match=lambda *_: card, passes=lambda *_: True,
+                    click_client=click,
+                )
+                trader._wait_for_cooking_list = lambda _: (
+                    CookingListSnapshot(frame, card) if page["kind"] == "list" else None
+                )
+                trader._wait_for_cooking_detail = lambda *_: (
+                    detail if len(clicks) >= 2 and scenario != "stuck" else None
+                )
+                trader._cooking_detail_snapshot = lambda *_: detail if scenario == "late" else None
+                trader._cooking_controls_snapshot = lambda: (
+                    detail if page["kind"] == "wrong" else None
+                )
+                trader._click_cooking_back = Mock(
+                    side_effect=lambda *_args, **_kwargs: page.update(kind="list"),
+                )
+                trader._select_max_cooking_quantity = Mock(return_value=detail)
+                trader._wait_for_cooking_started = lambda *_: True
+                trader._wait_for_cooking_result = lambda *_: frame
+                trader._return_from_detail_to_list = lambda *_: True
+                trader._recover_cooking_list = Mock(wraps=trader._recover_cooking_list)
+                result = trader._cook_one_recipe(recipe)
+                self.assertEqual(scenario != "stuck", result is CookingRecipeOutcome.COOKED)
+                self.assertEqual(int(scenario != "stuck"), clicks.count(start.center))
+                self.assertEqual(1 if scenario == "late" else 2, clicks.count(card.center))
+                self.assertEqual(0 if scenario == "late" else 1,
+                                 trader._recover_cooking_list.call_count)
+                self.assertEqual(int(scenario in {"wrong", "stuck"}),
+                                 trader._click_cooking_back.call_count)
+                if scenario != "late":
+                    self.assertTrue(trader.task.saved_frames)
+
     def _orchestrated_trader(self, *, selected, completed=(), outcomes=(), exit_ok=True):
         task = CookingTask(**{"5星料理": list(selected)})
         progress = CookingProgress(completed)

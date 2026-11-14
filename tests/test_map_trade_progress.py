@@ -28,6 +28,73 @@ from tests.helpers.map_trade import _seed_action_records
 
 
 class ProgressTest(unittest.TestCase):
+    def test_absorb_retry_reserves_two_attempts_and_persists_budget(self):
+        for baseline, allowed in (((4, 21), True), ((20, 21), False)):
+            with self.subTest(baseline=baseline), tempfile.TemporaryDirectory() as directory:
+                store = ProgressStore(Path(directory) / "progress.json")
+                store.load()
+                store.reconcile_pending("吸收", baseline)
+                store.arm_action("Q_sp1", "main_area", "吸收", baseline=baseline)
+                store.mark_action_blocked("Q_sp1", "main_area", "吸收")
+                self.assertEqual(allowed, store.arm_action_retry(
+                    "Q_sp1", "main_area", "吸收", baseline,
+                ))
+                store.load()
+                self.assertEqual(baseline[0] + (2 if allowed else 1), store.effective_used("吸收"))
+                self.assertFalse(store.arm_action_retry("Q_sp1", "main_area", "吸收", baseline))
+                if allowed:
+                    store.mark_action_local_done("Q_sp1", "main_area", "吸收", pending=False,
+                                                 observed=(5, 21))
+                    store.reconcile_pending("吸收", (5, 21))
+                    store.load()
+                    self.assertEqual(6, store.effective_used("吸收"))
+                    self.assertEqual(1, store.pending_count("吸收"))
+                    self.assertTrue(store.can_reserve_action("吸收"))
+                    self.assertTrue(store.weekly_action_complete("Q_sp1", "main_area", "吸收"))
+
+    def test_absorb_retry_write_failure_and_unsent_retry_keep_original_intent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = ProgressStore(Path(directory) / "progress.json")
+            store.load()
+            store.reconcile_pending("吸收", (4, 21))
+            store.arm_action("Q_sp1", "main_area", "吸收", baseline=(4, 21))
+            store.mark_action_blocked("Q_sp1", "main_area", "吸收")
+            with patch.object(store, "save", side_effect=OSError("full")):
+                with self.assertRaises(OSError):
+                    store.arm_action_retry("Q_sp1", "main_area", "吸收", (4, 21))
+            self.assertEqual(5, store.effective_used("吸收"))
+            self.assertEqual({}, store.state.archived_action_records)
+            self.assertTrue(store.arm_action_retry("Q_sp1", "main_area", "吸收", (4, 21)))
+            store.mark_action_unsent("Q_sp1", "main_area", "吸收")
+            store.load()
+            self.assertEqual(5, store.effective_used("吸收"))
+            self.assertTrue(store.has_unresolved_action("Q_sp1", "main_area", "吸收"))
+            self.assertTrue(store.arm_action_retry("Q_sp1", "main_area", "吸收", (4, 21)))
+            store.mark_action_void("Q_sp1", "main_area", "吸收", "本次明确失败")
+            store.load()
+            self.assertEqual(5, store.effective_used("吸收"))
+            self.assertFalse(store.arm_action_retry("Q_sp1", "main_area", "吸收", (4, 21)))
+
+    def test_unresolved_increment_recovers_only_unique_matching_attempt(self):
+        for scenario in ("unique", "unchanged", "multiple", "external"):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as directory:
+                store = ProgressStore(Path(directory) / "progress.json")
+                store.load()
+                store.reconcile_pending("吸收", (4, 21))
+                store.arm_action("Q_sp1", "main_area", "吸收", baseline=(4, 21))
+                store.mark_action_blocked("Q_sp1", "main_area", "吸收")
+                if scenario == "multiple":
+                    store.arm_action("Q_sp2", "main_area", "吸收", baseline=(4, 21))
+                if scenario == "external":
+                    store.reconcile_pending("吸收", (5, 21))
+                self.assertEqual(scenario == "unique", store.recover_action_increment(
+                    "Q_sp1", "main_area", "吸收", (4 if scenario == "unchanged" else 5, 21),
+                ))
+                store.load()
+                self.assertEqual(scenario == "unique", store.weekly_action_complete(
+                    "Q_sp1", "main_area", "吸收",
+                ))
+
     def test_confirmed_count_epoch_preserves_history_and_rejects_stale_confirmation(self):
         with tempfile.TemporaryDirectory() as directory:
             now = datetime(2026, 11, 13, 20, tzinfo=UTC_PLUS_8)

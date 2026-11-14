@@ -410,6 +410,7 @@ class Vision:
             max(0.0, min(1.0, point[0] / max(1, width))),
             max(0.0, min(1.0, point[1] / max(1, height))),
             after_sleep=after_sleep,
+            require_fresh_target=True,
             **options,
         )
 

@@ -22,6 +22,10 @@ MOUSE_PRESS_MIN_SECONDS = 0.05
 MOUSE_RELEASE_SETTLE_SECONDS = 0.05
 
 
+class InputTargetChanged(RuntimeError):
+    input_not_dispatched = True
+
+
 class BD2Interaction(PostMessageInteraction):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -37,6 +41,24 @@ class BD2Interaction(PostMessageInteraction):
 
     def on_visible(self, visible):
         self._activate_required = not visible
+
+    def target_context(self):
+        window = getattr(self, "hwnd_window", None)
+        if window is None:
+            return None
+        target = window.top_hwnd or window.hwnd
+        return (
+            target, win32gui.GetForegroundWindow(),
+            win32gui.GetWindowRect(target), win32gui.GetClientRect(target),
+        )
+
+    def post(self, message, wParam=0, lParam=0, hwnd=None):
+        target = self.hwnd if hwnd is None else hwnd
+        try:
+            win32gui.PostMessage(target, message, wParam, lParam)
+        except Exception as error:
+            logger.error(f"PostMessage failed: target={target}, message={message}", error)
+            raise
 
     def scroll(self, x, y, scroll_amount):
         with self._input_lock:
@@ -123,8 +145,8 @@ class BD2Interaction(PostMessageInteraction):
                 btn_down = win32con.WM_RBUTTONDOWN
                 btn_mk = win32con.MK_RBUTTON
                 btn_up = win32con.WM_RBUTTONUP
-            self.post(btn_down, btn_mk, click_pos)
             try:
+                self.post(btn_down, btn_mk, click_pos)
                 time.sleep(max(down_time, MOUSE_PRESS_MIN_SECONDS))
             finally:
                 self.post(btn_up, 0, click_pos)
@@ -215,7 +237,7 @@ class BD2Interaction(PostMessageInteraction):
                 dispatched = True
                 result = fun()
             except Exception as e:
-                e.input_not_dispatched = not dispatched
+                e.input_not_dispatched = not dispatched or getattr(e, "input_not_dispatched", False)
                 logger.error("operate exception", e)
                 raise
             finally:

@@ -1,7 +1,7 @@
 import threading
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 import win32api
@@ -11,6 +11,7 @@ from ok.task.exceptions import FinishedException, TaskDisabledException
 from src.interaction.BD2Interaction import (
     CLICK_MODE_BACKGROUND,
     BD2Interaction,
+    InputTargetChanged,
 )
 from src.tasks.BaseBD2Task import BaseBD2Task
 
@@ -31,6 +32,53 @@ def make_interaction():
 
 
 class BD2InteractionOperateTest(unittest.TestCase):
+    def test_prepared_click_is_discarded_after_input_wait_or_window_change(self):
+        for changed in ("held", "window", "none"):
+            with self.subTest(changed=changed):
+                interaction, calls = make_interaction()
+                context = [1]
+                interaction.target_context = lambda: context[0]
+                buttons = iter([True, False, False] if changed == "held" else [False, False])
+                interaction._mouse_buttons_down = lambda: next(buttons)
+                task = object.__new__(BaseBD2Task)
+                task.info_set = Mock()
+                task.sleep = Mock()
+                task.click = Mock()
+                task._check_action_interval = lambda *_: True
+                task._executor = SimpleNamespace(interaction=interaction)
+                task._frame_input_context = task._input_target_context()
+                task._wait_for_input = lambda _: setattr(task, "_input_wait_seconds", 1.0)
+                if changed == "window":
+                    context[0] = 2
+                with patch("src.interaction.BD2Interaction.GetCursorPos", return_value=(1, 2)):
+                    if changed == "none":
+                        task.operate_click(.5, .5, require_fresh_target=True)
+                    else:
+                        with self.assertRaises(InputTargetChanged) as caught:
+                            task.operate_click(.5, .5, require_fresh_target=True)
+                        self.assertTrue(caught.exception.input_not_dispatched)
+                self.assertEqual(int(changed == "none"), task.click.call_count)
+                self.assertIn("unblock_input", calls)
+                self.assertFalse(interaction._operating)
+
+    def test_post_failure_propagates_and_button_release_is_attempted(self):
+        interaction, calls = make_interaction()
+        interaction.try_activate = lambda: None
+        interaction._dynamic_target_hwnd = 0
+        interaction.hwnd_window = SimpleNamespace(top_hwnd=123, hwnd=123)
+        error = RuntimeError("post failed")
+        with (
+            patch("src.interaction.BD2Interaction.win32gui.PostMessage",
+                  side_effect=[error, None]) as post,
+            patch("src.interaction.BD2Interaction.time.sleep"),
+            patch("src.interaction.BD2Interaction.GetCursorPos", return_value=(1, 2)),
+        ):
+            with self.assertRaises(RuntimeError) as caught:
+                interaction.operate(lambda: interaction.click(10, 10, move=False), block=True)
+        self.assertFalse(caught.exception.input_not_dispatched)
+        self.assertEqual(2, post.call_count)
+        self.assertIn("unblock_input", calls)
+
     def test_mouse_admission_race_block_failure_and_nested_ownership(self):
         for scenario in ("held", "race", "denied", "cancel", "nested", "release_failed"):
             with self.subTest(scenario=scenario):

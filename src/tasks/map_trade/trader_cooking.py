@@ -9,6 +9,7 @@ from time import monotonic
 
 from ok.task.exceptions import FinishedException, TaskDisabledException
 
+from src.interaction.BD2Interaction import InputTargetChanged
 from src.tasks.map_trade.action_icons import COOKING_ICON, SKILL_GROUP_CENTERS_REFERENCE
 from src.tasks.map_trade.models import (
     COOKING_RECIPE_TEMPLATES,
@@ -317,6 +318,85 @@ class CookingFlowMixin:
         self,
         recipe: str,
     ) -> CookingRecipeOutcome:
+        detail = self._open_recipe_detail(recipe)
+        if isinstance(detail, CookingRecipeOutcome):
+            return detail
+        if not detail.enabled:
+            self.task.log_info(f"料理：{recipe} 当前材料不足或制作按钮不可用。")
+            if not self._return_from_detail_to_list(recipe):
+                return CookingRecipeOutcome.FAILED
+            return CookingRecipeOutcome.UNAVAILABLE
+        for _preparation in range(3):
+            try:
+                ready = self._select_max_cooking_quantity(recipe)
+                if ready is None:
+                    self.task.log_warning(f"料理：{recipe} 未确认 MAX 数量，停止制作。")
+                    self._recover_cooking_list()
+                    return CookingRecipeOutcome.FAILED
+                self._status(
+                    f"料理-{recipe}开始点击中心",
+                    (
+                        f"center={ready.start_match.center}, "
+                        f"match={ready.start_match.score:.3f}, "
+                        f"pixel={ready.start_match.pixel_score:.3f}"
+                    ),
+                )
+                self.vision.click_client(
+                    ready.start_match.center, ready.frame.shape, after_sleep=0.0,
+                )
+                break
+            except InputTargetChanged:
+                self.task.log_info(f"料理：{recipe} 输入等待后重新核验详情和数量，尚未制作。")
+        else:
+            return CookingRecipeOutcome.FAILED
+        if not self._wait_for_cooking_started(recipe, COOKING_START_TIMEOUT):
+            self.task.log_warning(f"料理：{recipe} 点击后未确认制作按钮变灰。")
+            self._recover_cooking_list()
+            return CookingRecipeOutcome.FAILED
+        if self._wait_for_cooking_result(recipe, COOKING_COMPLETION_TIMEOUT) is None:
+            self.task.log_warning(f"料理：{recipe} 制作超时，未确认结果条。")
+            self._recover_cooking_list()
+            return CookingRecipeOutcome.FAILED
+        if not self._return_from_detail_to_list(recipe):
+            self.task.log_warning(f"料理：{recipe} 结果已确认，但未恢复料理列表。")
+            return CookingRecipeOutcome.FAILED
+        return CookingRecipeOutcome.COOKED
+
+    def _open_recipe_detail(self, recipe: str):
+        end_at = monotonic() + COOKING_PAGE_TIMEOUT * 3
+        for attempt in range(2):
+            for _preparation in range(3):
+                if monotonic() >= end_at:
+                    return CookingRecipeOutcome.FAILED
+                try:
+                    selected = self._select_recipe_card(recipe)
+                    break
+                except InputTargetChanged:
+                    self.task.log_info(f"料理：{recipe} 输入环境变化，重新识别列表。")
+            else:
+                return CookingRecipeOutcome.FAILED
+            if isinstance(selected, CookingRecipeOutcome):
+                return selected
+            detail = self._wait_for_cooking_detail(
+                recipe, min(COOKING_PAGE_TIMEOUT, max(0.0, end_at - monotonic())),
+            )
+            if detail is not None:
+                return detail
+            list_snapshot, recipe_match = selected
+            self._record_recipe_list_evidence(
+                list_snapshot.frame, recipe, COOKING_IDENTITY_SPECS[recipe], recipe_match,
+            )
+            frame = self.vision.capture()
+            detail = self._cooking_detail_snapshot(recipe, frame)
+            if detail is not None:
+                return detail
+            self.task.save_frame(f"cooking_{recipe}_detail_failed", frame)
+            self.task.log_warning(f"料理：点击 {recipe} 后未确认对应详情页，重选={attempt}/1。")
+            if attempt or not self._recover_cooking_list(timeout=max(0.0, end_at - monotonic())):
+                return CookingRecipeOutcome.FAILED
+        return CookingRecipeOutcome.FAILED
+
+    def _select_recipe_card(self, recipe: str):
         list_snapshot = self._wait_for_cooking_list(2.0)
         if list_snapshot is None:
             self.task.log_warning(f"料理：选择 {recipe} 前料理列表未确认。")
@@ -353,47 +433,7 @@ class CookingFlowMixin:
             ),
         )
         self.vision.click_client(recipe_match.center, list_snapshot.frame.shape, after_sleep=0.0)
-
-        detail = self._wait_for_cooking_detail(recipe, COOKING_PAGE_TIMEOUT)
-        if detail is None:
-            self.task.log_warning(f"料理：点击 {recipe} 后未确认对应详情页。")
-            self._recover_cooking_list()
-            return CookingRecipeOutcome.FAILED
-        if not detail.enabled:
-            self.task.log_info(f"料理：{recipe} 当前材料不足或制作按钮不可用。")
-            if not self._return_from_detail_to_list(recipe):
-                return CookingRecipeOutcome.FAILED
-            return CookingRecipeOutcome.UNAVAILABLE
-        ready = self._select_max_cooking_quantity(recipe)
-        if ready is None:
-            self.task.log_warning(f"料理：{recipe} 未确认 MAX 数量，停止制作。")
-            self._recover_cooking_list()
-            return CookingRecipeOutcome.FAILED
-        self._status(
-            f"料理-{recipe}开始点击中心",
-            (
-                f"center={ready.start_match.center}, "
-                f"match={ready.start_match.score:.3f}, "
-                f"pixel={ready.start_match.pixel_score:.3f}"
-            ),
-        )
-        self.vision.click_client(
-            ready.start_match.center,
-            ready.frame.shape,
-            after_sleep=0.0,
-        )
-        if not self._wait_for_cooking_started(recipe, COOKING_START_TIMEOUT):
-            self.task.log_warning(f"料理：{recipe} 点击后未确认制作按钮变灰。")
-            self._recover_cooking_list()
-            return CookingRecipeOutcome.FAILED
-        if self._wait_for_cooking_result(recipe, COOKING_COMPLETION_TIMEOUT) is None:
-            self.task.log_warning(f"料理：{recipe} 制作超时，未确认结果条。")
-            self._recover_cooking_list()
-            return CookingRecipeOutcome.FAILED
-        if not self._return_from_detail_to_list(recipe):
-            self.task.log_warning(f"料理：{recipe} 结果已确认，但未恢复料理列表。")
-            return CookingRecipeOutcome.FAILED
-        return CookingRecipeOutcome.COOKED
+        return list_snapshot, recipe_match
 
     def _wait_for_cooking_list(self, timeout: float) -> CookingListSnapshot | None:
         end_at = monotonic() + max(0.0, timeout)
@@ -636,14 +676,22 @@ class CookingFlowMixin:
         self._click_cooking_back(detail.frame, context=f"{recipe}详情")
         return self._wait_for_cooking_list(COOKING_PAGE_TIMEOUT) is not None
 
-    def _recover_cooking_list(self) -> bool:
-        if self._wait_for_cooking_list(1.0) is not None:
-            return True
-        detail = self._cooking_controls_snapshot()
-        if detail is None:
-            return False
-        self._click_cooking_back(detail.frame, context="料理详情恢复")
-        return self._wait_for_cooking_list(COOKING_PAGE_TIMEOUT) is not None
+    def _recover_cooking_list(self, timeout: float = COOKING_PAGE_TIMEOUT) -> bool:
+        end_at = monotonic() + max(0.0, timeout)
+        for _preparation in range(3):
+            if self._wait_for_cooking_list(min(1.0, max(0.0, end_at - monotonic()))) is not None:
+                return True
+            if monotonic() >= end_at:
+                return False
+            detail = self._cooking_controls_snapshot()
+            if detail is None:
+                return False
+            try:
+                self._click_cooking_back(detail.frame, context="料理详情恢复")
+            except InputTargetChanged:
+                continue
+            return self._wait_for_cooking_list(max(0.0, end_at - monotonic())) is not None
+        return False
 
     def _click_cooking_back(self, frame, *, context: str) -> None:
         back = self.vision.match(frame, COOKING_BACK_TEMPLATE)

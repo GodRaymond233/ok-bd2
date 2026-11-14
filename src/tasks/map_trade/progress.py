@@ -32,8 +32,8 @@ UTC_PLUS_8 = timezone(timedelta(hours=8), name="UTC+8")
 # Version 7 scopes card verification to the action policy that produced it.
 # Version 8 derives skill budgets from trusted HUD counts.
 # Version 11 adds the chapter-18 safe area; older readers would discard that role.
-STATE_SCHEMA_VERSION = 12
-SUPPORTED_STATE_SCHEMA_VERSIONS = frozenset({3, 4, 5, 6, 7, 8, 9, 11, STATE_SCHEMA_VERSION})
+STATE_SCHEMA_VERSION = 13
+SUPPORTED_STATE_SCHEMA_VERSIONS = frozenset({3, 4, 5, 6, 7, 8, 9, 11, 12, STATE_SCHEMA_VERSION})
 _development_directory: Path | None = None
 
 
@@ -567,6 +567,7 @@ class ProgressStore:
             record["daily_key"] = record_daily
             record["covered"] = bool(record.get("covered", False))
             record["local_done"] = bool(record.get("local_done", False))
+            record["retry_reserve"] = cls._safe_nonnegative_int(record.get("retry_reserve", 0))
             record["reservation"] = bool(
                 record.get("reservation", state in {
                     CollectionActionState.ARMED.value,
@@ -981,8 +982,9 @@ class ProgressStore:
                     baseline_used = int(baseline[0])
                 except (TypeError, ValueError, IndexError):
                     continue
-            if baseline_used >= observed:
+            if baseline_used >= observed or record.get("state") in {"armed", "clicked", "blocked"}:
                 reservations += 1
+            reservations += self._safe_nonnegative_int(record.get("retry_reserve", 0))
         return max(lower_bound, observed + reservations)
 
     def effective_daily_counts(self) -> dict[str, int]:
@@ -1217,6 +1219,62 @@ class ProgressStore:
             return True
         return False
 
+    def arm_action_retry(self, card_id, map_role, action, baseline) -> bool:
+        record = self.get_action_record(card_id, map_role, action)
+        if (
+            action != "吸收" or record is None
+            or record.get("state") not in {"armed", "clicked", "blocked"}
+            or record.get("retry_used") or record.get("attempts") != 1
+            or record.get("baseline") != list(baseline)
+            or record.get("count_epoch", "")
+            != self.state.count_epochs.get(action, {}).get("token", "")
+            or self.trusted_action_baseline(action) != baseline
+            or not self.can_reserve_action(action)
+        ):
+            return False
+        previous = deepcopy(self.state)
+        try:
+            self._archive_attempt(self.action_key(card_id, map_role, action), record,
+                                  "同图稳定复核后补点，原投递仍保留一次消耗预留")
+            record.update(state="armed", status="armed", reservation=True,
+                          retry_reserve=1, retry_used=True, attempts=2,
+                          armed_at=self.now_provider().isoformat())
+            self.save()
+        except Exception:
+            self.state = previous
+            raise
+        return True
+
+    def recover_action_increment(self, card_id, map_role, action, observed) -> bool:
+        record = self.get_action_record(card_id, map_role, action)
+        if record is None or observed is None:
+            return False
+        baseline = record.get("baseline")
+        if (
+            record.get("state") not in {"armed", "clicked", "blocked"}
+            or record.get("retry_used") or baseline is None
+            or tuple(baseline) != self.trusted_action_baseline(action)
+            or observed != (baseline[0] + 1, baseline[1])
+            or sum(bool(other.get("reservation")) for other in self.state.action_records.values()
+                   if other.get("action") == action) != 1
+        ):
+            return False
+        self.mark_action_local_done(card_id, map_role, action, pending=False, observed=observed)
+        self.reconcile_pending(action, observed)
+        return True
+
+    def mark_action_unsent(self, card_id, map_role, action) -> None:
+        record = self.get_action_record(card_id, map_role, action)
+        if record is not None and record.get("retry_reserve"):
+            record.update(state="blocked", status="blocked", retry_reserve=0,
+                          retry_used=False, attempts=1, reservation=True,
+                          message="补点准入取消；仅原投递结果待核验")
+            self.save()
+        else:
+            if record is not None:
+                record["attempts"] = max(0, self._safe_nonnegative_int(record.get("attempts")) - 1)
+            self.mark_action_void(card_id, map_role, action, "消费回调未执行")
+
     def mark_action_preexisting_used(
         self,
         card_id: str,
@@ -1265,6 +1323,7 @@ class ProgressStore:
             CollectionActionState.ARCHIVED.value,
         }:
             return False
+        pending = pending or bool(record.get("retry_reserve"))
         next_state = (
             CollectionActionState.PENDING.value
             if pending
@@ -1322,6 +1381,11 @@ class ProgressStore:
         record = self.get_action_record(card_id, map_role, action)
         if record is None:
             return False
+        if record.get("retry_reserve"):
+            record["retry_reserve"] = 0
+            return self.mark_action_blocked(
+                card_id, map_role, action, f"本次失败，原投递仍待核验：{message}",
+            )
         record["state"] = CollectionActionState.VOID.value
         record["status"] = CollectionActionState.VOID.value
         record["local_done"] = False
@@ -1381,6 +1445,7 @@ class ProgressStore:
                 (key, record)
                 for key, record in state.action_records.items()
                 if str(record.get("action", "")) == action_name
+                and not record.get("retry_reserve")
                 and str(record.get("state", ""))
                 in {
                     CollectionActionState.PENDING.value,
@@ -1474,6 +1539,7 @@ class ProgressStore:
             # when every reserved unit is accounted for by the exact delta.
             if (
                 not confirmed_limit or previous is None
+                or any(record.get("retry_reserve") for record in reservations)
                 or used != previous[0] + len(reservations)
                 or len(reservations) != self.pending_count(action_name)
             ):

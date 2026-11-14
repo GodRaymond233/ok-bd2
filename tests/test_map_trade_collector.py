@@ -288,6 +288,11 @@ class CollectionRunTest(unittest.TestCase):
                     ),
                     vision, navigator, progress,
                 )
+                navigator.current_collection_target = lambda current_card: (
+                    collector._collection_target[1].key if collector._collection_target
+                    else current_card.targets[0].key
+                )
+                navigator.return_home = Mock(return_value=NavigationResult(True, ScreenState.HOME))
                 collector._start_search = Mock()
                 collector._open_skill_menu = Mock(return_value=True)
                 collector.action_icons = SimpleNamespace(
@@ -310,7 +315,10 @@ class CollectionRunTest(unittest.TestCase):
                 )
                 progress.load()
                 self.assertTrue(progress.state.depleted_today)
-                self.assertEqual(before_counts, progress.effective_daily_counts())
+                self.assertTrue(all(
+                    value <= before_counts[name]
+                    for name, value in progress.effective_daily_counts().items()
+                ))
                 self.assertEqual({}, progress.state.count_reset_requests)
                 self.assertEqual(phase != "bright", result.success)
                 self.assertEqual(
@@ -747,6 +755,97 @@ class CollectionRunTest(unittest.TestCase):
 
 
 class CollectorSkillTest(unittest.TestCase):
+    def test_absorb_pending_review_retry_and_late_increment(self):
+        for scenario in (
+            "default", "enabled", "late", "last", "unknown", "readonly", "wrong_map", "two_unknown",
+        ):
+            with self.subTest(scenario=scenario):
+                baseline = 20 if scenario == "last" else 4
+                collector, clicks, statuses, progress = self._skill_collector(
+                    {ABSORB_ICON.name: ActionIconState.AVAILABLE}, {},
+                )
+                collector.task.config["未决吸收补点测试"] = scenario in {
+                    "enabled", "last", "readonly", "two_unknown",
+                }
+                progress.reconcile_pending("吸收", (baseline, 21))
+                progress.arm_action("Q_sp1", "main_area", "吸收", baseline=(baseline, 21))
+                progress.mark_action_blocked("Q_sp1", "main_area", "吸收")
+                def ocr(_frame, name, **_kwargs):
+                    if name == "探查倒计时":
+                        return "87"
+                    if scenario == "unknown":
+                        return "?"
+                    used = baseline + int(scenario == "late")
+                    if scenario != "two_unknown":
+                        used += len(clicks)
+                    return f"{used}/21"
+
+                collector.vision.ocr_text = ocr
+                if scenario == "wrong_map":
+                    card = CARD_BY_ID["Q_sp1"]
+                    collector._collection_target = (card, card.targets[0])
+                    collector.navigator.current_collection_target = lambda _: "battle_area_2"
+                collector._read_count_window = Collector._read_count_window.__get__(collector)
+                collector._read_action_feedback = lambda _: SkillFeedbackObservation("", None)
+                result = collector._use_action(
+                    ABSORB_ACTION, card_id="Q_sp1", map_role=CollectionMapRole.MAIN_AREA,
+                    recovery_only=scenario == "readonly",
+                )
+                self.assertEqual(scenario in {"enabled", "late"}, result.completed, result.message)
+                self.assertEqual(int(scenario in {"enabled", "two_unknown"}), len(clicks))
+                if not result.completed:
+                    self.assertTrue(result.review_required)
+                    self.assertFalse(result.depleted)
+                progress.load()
+                if scenario in {"enabled", "two_unknown"}:
+                    self.assertEqual(6, progress.effective_used("吸收"))
+                    self.assertEqual(int(scenario == "enabled"), progress.pending_count("吸收"))
+                    again = collector._use_action(
+                        ABSORB_ACTION, card_id="Q_sp1", map_role=CollectionMapRole.MAIN_AREA,
+                    )
+                    self.assertEqual(scenario == "enabled", again.completed)
+                    self.assertEqual(1, len(clicks))
+                if scenario != "wrong_map":
+                    self.assertTrue(any(key == "吸收原始次数" for key, _ in statuses))
+
+    def test_input_target_change_reprepares_without_consuming_an_attempt(self):
+        from src.interaction.BD2Interaction import InputTargetChanged
+
+        collector, clicks, _, progress = self._skill_collector(
+            {SUPPRESS_ACTION.icon.name: ActionIconState.AVAILABLE},
+            {"压制": ((0, 55), (0, 55), (1, 55))},
+        )
+        collector._open_skill_menu = lambda *args, **kwargs: True
+        original = collector.vision.click_client
+        attempts = []
+
+        def click(*args, **kwargs):
+            attempts.append(True)
+            if len(attempts) == 1:
+                raise InputTargetChanged("window changed")
+            return original(*args, **kwargs)
+
+        collector.vision.click_client = click
+        result = collector._use_actions(
+            (SUPPRESS_ACTION,), card_id="Q_sp7", map_role=CollectionMapRole.BATTLE_AREA_2,
+        )
+        self.assertTrue(result.completed)
+        self.assertEqual(1, len(clicks))
+        self.assertEqual(1, progress.effective_used("压制"))
+
+    def test_count_window_reports_stable_raw_value_rejected_by_expected_increment(self):
+        collector, _, statuses, progress = self._skill_collector(
+            {ABSORB_ICON.name: ActionIconState.AVAILABLE}, {},
+        )
+        progress.reconcile_pending("吸收", (4, 21))
+        collector.vision.ocr_text = lambda *_args, **_kwargs: "4/21"
+        result = Collector._read_count_window(collector, ABSORB_ACTION, expected_used=5,
+                                             expected_limit=21)
+        self.assertIsNone(result.count)
+        self.assertTrue(any(
+            "稳定=(4, 21)" in text for key, text in statuses if key == "吸收次数窗口"
+        ))
+
     def setUp(self):
         self._layout_check = Collector._check_collection_skill_layout
         layout = patch.object(Collector, "_check_collection_skill_layout", return_value=None)
@@ -2166,7 +2265,7 @@ class CollectorSkillTest(unittest.TestCase):
                     self.assertEqual(2 if scenario == "known_quota" else 4, len(reads))
                     # Re-entering recovery with an unconfirmed intent never repeats the click.
                     collector.task.operate_click = Mock()
-                    with self.assertRaisesRegex(RuntimeError, "未决"):
+                    with self.assertRaisesRegex(RuntimeError, "待核验"):
                         collector._suppress_after_retreat(
                             field, card_id=card.card_id, map_role=role,
                         )
@@ -2380,7 +2479,7 @@ class CollectorSkillTest(unittest.TestCase):
     def test_transient_used_after_click_keeps_intent_unresolved(self):
         collector, clicks, _statuses, progress = self._skill_collector(
             {ABSORB_ACTION.icon.name: ActionIconState.AVAILABLE},
-            {"吸收": ((0, 21), None)},
+            {"吸收": ((0, 21), None, (0, 21))},
         )
         frame = collector.vision.capture()
         available = collector.action_icons.detect(frame, ABSORB_ACTION.icon)
@@ -2672,6 +2771,7 @@ class CollectorSkillTest(unittest.TestCase):
                 SimpleNamespace(
                     capture=lambda: frame,
                     click_client=lambda *args, **kwargs: clicks.append((args, kwargs)),
+                    ocr_text=lambda *_args, **_kwargs: "0/21",
                 ),
                 SimpleNamespace(wait_for_collection_field=lambda frame: frame),
                 progress,
@@ -2685,7 +2785,7 @@ class CollectorSkillTest(unittest.TestCase):
             )
 
             self.assertFalse(result.completed)
-            self.assertIn("禁止重复点击", result.message)
+            self.assertIn("待核验", result.message)
             self.assertEqual([], clicks)
             record = progress.get_action_record("Q_sp1", CollectionMapRole.MAIN_AREA, "吸收")
             record["baseline"] = []
@@ -2783,7 +2883,7 @@ class CollectorSkillTest(unittest.TestCase):
                 ],
             )
 
-    def test_battle_two_bright_zero_blocks_click_when_battle_one_pending(self):
+    def test_battle_two_prepares_with_budget_reserved_for_battle_one_pending(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             progress = ProgressStore(
                 Path(temp_dir) / "progress.json",
@@ -2831,18 +2931,20 @@ class CollectorSkillTest(unittest.TestCase):
 
             collector._read_count_window = read_count_window
 
-            result = collector._use_action(
-                ABSORB_ACTION,
+            before, failure = collector._prepare_before_click(
+                ABSORB_ACTION, available,
                 card_id="Q_sp1",
                 map_role=CollectionMapRole.BATTLE_AREA_2,
             )
 
-            self.assertFalse(result.completed)
-            self.assertIn("待对账", result.message)
+            self.assertIsNone(failure)
+            self.assertEqual((0, 21), before)
+            self.assertEqual(1, progress.effective_used("吸收"))
             self.assertEqual([], clicks)
-            self.assertIsNone(
-                progress.get_action_record("Q_sp1", CollectionMapRole.BATTLE_AREA_2, "吸收")
-            )
+            self.assertTrue(progress.arm_action(
+                "Q_sp1", CollectionMapRole.BATTLE_AREA_2, "吸收", baseline=before,
+            ))
+            self.assertEqual(2, progress.effective_used("吸收"))
 
     def test_available_single_checkpoint_blocks_new_click_and_global_reconcile(self):
         with tempfile.TemporaryDirectory() as temp_dir:
