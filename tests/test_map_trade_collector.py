@@ -264,7 +264,10 @@ class CollectionRunTest(unittest.TestCase):
                 progress.load()
                 before_counts = progress.effective_daily_counts()
                 frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-                vision = SimpleNamespace(capture=lambda: frame, click_client=Mock())
+                vision = SimpleNamespace(
+                    capture=lambda: frame, click_client=Mock(),
+                    ocr_text=Mock(return_value="20/21"),
+                )
                 sandbox = NavigationResult(True, ScreenState.SANDBOX)
                 card_menu = NavigationResult(True, ScreenState.CARD_MENU)
                 navigator = SimpleNamespace(
@@ -308,6 +311,7 @@ class CollectionRunTest(unittest.TestCase):
                 progress.load()
                 self.assertTrue(progress.state.depleted_today)
                 self.assertEqual(before_counts, progress.effective_daily_counts())
+                self.assertEqual({}, progress.state.count_reset_requests)
                 self.assertEqual(phase != "bright", result.success)
                 self.assertEqual(
                     phase not in {"bright", "later_summon"},
@@ -978,27 +982,42 @@ class CollectorSkillTest(unittest.TestCase):
         self.assertEqual([], clicks)
 
     def test_count_reset_requires_confirmation_and_a_matching_fresh_read(self):
-        collector, clicks, _statuses, progress = self._skill_collector(
-            {SUPPRESS_ACTION.icon.name: ActionIconState.AVAILABLE},
-            {"压制": ((0, 55), (0, 55), (1, 55))},
-        )
-        progress.reconcile_pending("压制", (7, 50))
-        first = collector._use_action(
-            SUPPRESS_ACTION, card_id="Q_sp7", map_role=CollectionMapRole.BATTLE_AREA_2,
-        )
-        self.assertFalse(first.completed)
-        self.assertIn("7/50变为0/55", first.message)
-        self.assertEqual([], clicks)
-        collector.task.config["次数重置确认码"] = (
-            progress.state.count_reset_requests["压制"]["token"]
-        )
-        second = collector._use_action(
-            SUPPRESS_ACTION, card_id="Q_sp7", map_role=CollectionMapRole.BATTLE_AREA_2,
-        )
-        self.assertTrue(second.completed)
-        self.assertEqual(1, len(clicks))
-        self.assertEqual((1, 55), progress.trusted_action_baseline("压制"))
-        self.assertEqual([7, 50], progress.state.count_epochs["压制"]["before"])
+        for state in (None, "armed", "clicked", "blocked"):
+            with self.subTest(state=state):
+                collector, clicks, _statuses, progress = self._skill_collector(
+                    {SUPPRESS_ACTION.icon.name: ActionIconState.AVAILABLE},
+                    {"压制": ((0, 55), (0, 55), (0, 55), (1, 55))
+                     if state else ((0, 55), (0, 55), (1, 55))},
+                )
+                progress.reconcile_pending("压制", (7, 50))
+                role = CollectionMapRole.BATTLE_AREA_2
+                if state:
+                    progress.arm_action("Q_sp7", role, "压制", baseline=(7, 50))
+                    if state == "clicked":
+                        progress.mark_action_clicked("Q_sp7", role, "压制")
+                    elif state == "blocked":
+                        progress.mark_action_blocked("Q_sp7", role, "压制")
+                first = collector._use_action(SUPPRESS_ACTION, card_id="Q_sp7", map_role=role)
+                self.assertFalse(first.completed)
+                self.assertIn("7/50变为0/55", first.message)
+                self.assertEqual([], clicks)
+                self.assertEqual((7, 50), progress.trusted_action_baseline("压制"))
+                if state:
+                    self.assertEqual(
+                        state, progress.get_action_record("Q_sp7", role, "压制")["state"],
+                    )
+                collector.task.config["次数重置确认码"] = (
+                    progress.state.count_reset_requests["压制"]["token"]
+                )
+                progress.load()
+                second = collector._use_action(SUPPRESS_ACTION, card_id="Q_sp7", map_role=role)
+                self.assertTrue(second.completed)
+                self.assertEqual(1, len(clicks))
+                self.assertEqual((1, 55), progress.trusted_action_baseline("压制"))
+                self.assertEqual([7, 50], progress.state.count_epochs["压制"]["before"])
+                self.assertEqual(
+                    int(state is not None), len(progress.state.archived_action_records),
+                )
 
     def test_input_admission_failure_releases_only_definitely_unsent_cast(self):
         for unsent in (True, False):
@@ -1021,17 +1040,21 @@ class CollectorSkillTest(unittest.TestCase):
     def test_summon_suppression_prepares_quotas_then_clicks_before_settlement(self):
         for scenario in (
             "normal", "encounter", "quota", "unresolved", "failed_feedback", "used_before",
+            "used_before_quota", "recorded_quota",
         ):
             with self.subTest(scenario=scenario):
                 collector, clicks, _statuses, progress = self._skill_collector(
                     {action.icon.name: ActionIconState.AVAILABLE for action in BATTLE_ACTIONS},
                     {
                         "召集": ((0, 21), (1, 21)),
-                        "压制": ((21, 21),) if scenario == "quota" else ((0, 21), (1, 21)),
+                        "压制": ((21, 21),) if scenario in {
+                            "quota", "used_before_quota", "recorded_quota",
+                        } else ((0, 21), (0, 21), (1, 21)) if scenario == "used_before"
+                        else ((0, 21), (1, 21)),
                     },
                 )
                 role = CollectionMapRole.BATTLE_AREA_1
-                if scenario == "used_before":
+                if scenario in {"used_before", "used_before_quota"}:
                     detect = collector.action_icons.detect
 
                     def detect_before_summon(frame, icon):
@@ -1043,6 +1066,9 @@ class CollectorSkillTest(unittest.TestCase):
                         return result
 
                     collector.action_icons.detect = detect_before_summon
+                if scenario == "recorded_quota":
+                    progress.reconcile_pending("压制", (21, 21))
+                    progress.mark_action_preexisting_used("Q_sp1", role, "压制")
                 if scenario == "unresolved":
                     progress.reconcile_pending("压制", (0, 21))
                     progress.arm_action("Q_sp1", role, "压制", baseline=(0, 21))
@@ -1066,8 +1092,7 @@ class CollectorSkillTest(unittest.TestCase):
 
                 def click_client(*args, **kwargs):
                     self.assertIn(("prepare", "召集"), events)
-                    if scenario != "used_before" or clicks:
-                        self.assertIn(("prepare", "压制"), events)
+                    self.assertIn(("prepare", "压制"), events)
                     if len(clicks) == 1:
                         self.assertNotIn(("post", "召集"), events)
                         record = progress.get_action_record("Q_sp1", role, "召集")

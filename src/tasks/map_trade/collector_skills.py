@@ -906,8 +906,12 @@ class SkillExecutionMixin:
             summon_result = summon
         else:
             suppress = self._prepare_action(SUPPRESS_ACTION, **kwargs)
-            if isinstance(suppress, SkillExecutionResult) and not suppress.completed:
-                return suppress
+            if isinstance(suppress, SkillExecutionResult):
+                if not suppress.completed:
+                    return suppress
+                _before, failure = self._prepare_before_click(SUPPRESS_ACTION, None, **kwargs)
+                if failure is not None:
+                    return failure
             failure = self._click_prepared_action(SUMMON_ACTION, summon, **kwargs)
             if failure is not None:
                 return failure
@@ -1131,7 +1135,11 @@ class SkillExecutionMixin:
         existing_state = str(existing.get("state", existing.get("status", "")))
         if existing_state not in {"armed", "clicked", "blocked"}:
             return None
-        if str(self.task.config.get("次数重置确认码", "")).strip():
+        previous = self.progress.trusted_action_baseline(action.name)
+        if (
+            detection.state is ActionIconState.AVAILABLE
+            and previous is not None and previous[0] > 0
+        ) or str(self.task.config.get("次数重置确认码", "")).strip():
             observation = self._read_count_window(action, detection, require_fraction=True)
             if observation.count is not None and observation.is_stable:
                 failure = self._check_count_epoch(action, observation)
@@ -1179,7 +1187,7 @@ class SkillExecutionMixin:
     def _prepare_before_click(
         self,
         action: SkillAction,
-        detection: ActionIconDetection,
+        detection: ActionIconDetection | None,
         *,
         card_id: str,
         map_role: CollectionMapRole,
@@ -1232,7 +1240,7 @@ class SkillExecutionMixin:
                 False,
                 message=f"{action.name}次数与账本记录冲突，未执行新点击",
             )
-        if detection.state is ActionIconState.AVAILABLE and before[0] >= before[1]:
+        if before[0] >= before[1]:
             return None, SkillExecutionResult(
                 False,
                 True,
