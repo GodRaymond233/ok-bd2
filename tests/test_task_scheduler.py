@@ -273,6 +273,28 @@ class RunDueTasksOnceTest(unittest.TestCase):
         self.assertEqual(og.app.start_controller.started, [batch])
         self.assertEqual(batch.requested_modes, ["incomplete"])
 
+    def test_refused_start_retries_and_clears_unconsumed_mode(self):
+        from unittest.mock import Mock, patch
+
+        batch, executor = self._build({})
+        og = _FakeOg(executor)
+        og.app.start_controller.start = Mock(side_effect=[False, True])
+        handler = Mock()
+        auto_scheduler.install_auto_scheduler(handler=handler)
+        runner = auto_scheduler.install_auto_scheduler._runner
+        self.addCleanup(runner.stop)
+        runner._startup_deadline = float("inf")
+        with patch.object(auto_scheduler, "_resolve_og", return_value=og):
+            runner._startup_check()
+            self.assertEqual(["incomplete", "all"], batch.requested_modes)
+            handler.post.assert_called_once_with(
+                runner._startup_check, delay=auto_scheduler.STARTUP_RETRY_INTERVAL_SECONDS,
+            )
+            handler.post.reset_mock()
+            runner._startup_check()
+            self.assertEqual("incomplete", batch.requested_modes[-1])
+            handler.post.assert_not_called()
+
     def _build_with_login(self, login_enabled, login_finished):
         from src.tasks.trigger.AutoLoginTask import AutoLoginTask
 

@@ -331,17 +331,23 @@ class ScriptRoutesTest(ScriptCase):
     def test_recording_listens_to_the_mouse_only(self):
         listener = Mock()
         mouse = SimpleNamespace(
-            Listener=Mock(return_value=listener), Button=SimpleNamespace(right="r", middle="m")
+            Listener=Mock(return_value=listener),
+            Button=SimpleNamespace(left="l", right="r", middle="m"),
         )
         keyboard = SimpleNamespace(Listener=Mock())
         pynput = ModuleType("pynput")
         pynput.mouse = mouse
         pynput.keyboard = keyboard
         modules = {"pynput": pynput, "pynput.mouse": mouse, "pynput.keyboard": keyboard}
-        sys.modules.pop("ok.ui.qt.tasks.RecordScript", None)
+        modules["ok.ui.qt"] = None
+        window = SimpleNamespace(hwnd=123, x=100, y=200, real_x_offset=10, real_y_offset=20,
+                                 real_width=1280, real_height=720)
+        now = [0.0]
         with (
             patch.dict(sys.modules, modules),
-            patch("ok.og.device_manager", SimpleNamespace(hwnd_window=None), create=True),
+            patch("ok.og.device_manager", SimpleNamespace(hwnd_window=window), create=True),
+            patch("win32gui.GetForegroundWindow", return_value=456) as foreground,
+            patch("src.desktop.scripts.time.monotonic", side_effect=lambda: now[0]),
         ):
             state = self.post("/api/scripts-record/start").json()
             self.assertTrue(state["recording"])
@@ -349,34 +355,33 @@ class ScriptRoutesTest(ScriptCase):
             self.assertEqual(state["target"], "BrownDust II")
             keyboard.Listener.assert_not_called()
             listener.start.assert_called_once()
-            self.assertNotIn(
-                "PySide6.QtWidgets.QMessageBox",
-                sys.modules.get("ok.ui.qt.tasks.RecordScript").__dict__,
-            )
             recorder = mouse.Listener.call_args.kwargs["on_click"].__self__
+            foreground.return_value = 123
             recorder.on_window(True)
             self.assertTrue(self.get("/api/bd2/scripts/recording").json()["active"])
-            recorder.events.append(
-                {
-                    "type": "click",
-                    "x": 0.5,
-                    "y": 0.25,
-                    "button": "left",
-                    "time": 1,
-                    "latency": 0,
-                    "down_time": 0.1,
-                }
-            )
+            recorder.on_click(750, 400, "l", True)
+            now[0] = 0.1
+            recorder.on_click(750, 400, "l", False)
+            recorder.on_click(50, 50, "l", True)
+            recorder.on_click(50, 50, "l", False)
             self.assertEqual(self.get("/api/bd2/scripts/recording").json()["clicks"], 1)
-            recorder.generate_code = lambda: ("", "self.click_relative(0.5, 0.25)")
+            recorder.on_click(750, 400, "l", True)
+            recorder.on_window(False)
+            now[0] = 10.1
+            recorder.on_window(True)
+            recorder.on_click(750, 400, "l", False)
             source = "class A:\n    def run(self):\n        pass\n"
             stopped = self.post(
                 "/api/scripts-record/stop", {"code": source, "loop": "count", "count": 2}
             ).json()
         self.assertFalse(stopped["recording"])
         self.assertIn(
-            "for _ in range(2):\n            self.click_relative(0.5, 0.25)", stopped["code"]
+            "for _ in range(2):\n            self.click_relative(0.500000, 0.250000,",
+            stopped["code"],
         )
+        self.assertIn("down_time=0.100", stopped["code"])
+        self.assertEqual(1, stopped["code"].count("self.click_relative"))
+        listener.stop.assert_called_once()
         self.assertEqual(self.post("/api/scripts-record/stop", {}).status_code, 400)
 
 

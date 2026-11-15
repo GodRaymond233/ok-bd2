@@ -755,6 +755,23 @@ class CollectionRunTest(unittest.TestCase):
 
 
 class CollectorSkillTest(unittest.TestCase):
+    def test_combined_summon_suppress_preserves_pending_review(self):
+        collector, clicks, _statuses, progress = self._skill_collector(
+            {action.icon.name: ActionIconState.AVAILABLE for action in BATTLE_ACTIONS},
+            {"召集": ((1, 21),), "压制": ((0, 21),)},
+        )
+        role = CollectionMapRole.BATTLE_AREA_1
+        progress.mark_action_preexisting_used("Q_sp1", role, "召集")
+        progress.reconcile_pending("压制", (0, 21))
+        progress.arm_action("Q_sp1", role, "压制", baseline=(0, 21))
+        result = collector._use_actions(
+            (SUMMON_ACTION, SUPPRESS_ACTION), card_id="Q_sp1", map_role=role,
+        )
+        self.assertTrue(result.review_required)
+        self.assertTrue(collector._skill_failure("Q_sp1", "战斗区域1", result).retryable)
+        self.assertFalse(result.completed)
+        self.assertEqual([], clicks)
+
     def test_absorb_pending_review_retry_and_late_increment(self):
         for scenario in (
             "default", "enabled", "late", "last", "unknown", "readonly", "wrong_map", "two_unknown",

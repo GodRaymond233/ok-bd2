@@ -1,7 +1,6 @@
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from time import monotonic
@@ -61,7 +60,6 @@ FIEND_HUNT_REWARD_TITLE = "魔兽追踪者赛季奖励"
 FIEND_HUNT_REWARD_DISMISS_TEXT = "奖励已发放至背包"
 GOLDEN_ARENA_REWARD_TITLE = "黄金竞技场体验赛季"
 GOLDEN_ARENA_REWARD_DISMISS_TEXT = "奖励已通过邮件发放"
-BEIJING_TIMEZONE = timezone(timedelta(hours=8))
 RECENT_PVP_CARTRIDGE_TEMPLATE_FILE = "cartridge-image2-left-lower-cutout.png"
 RECENT_PVP_CARTRIDGE_TEMPLATE_THRESHOLD = 0.95
 RECENT_PVP_CARTRIDGE_PIXEL_THRESHOLD = 0.95
@@ -1235,14 +1233,12 @@ class BaseBD2Task(BaseTask):
         self,
         timeout: float = RECENT_CARTRIDGE_SPECIAL_PAGE_SECONDS,
         interval: float = 0.25,
-        allow_season_reward: bool | None = None,
+        allow_season_reward: bool = True,
         *,
         allow_pvp_pages: bool = True,
         entry_ready: Callable[[], bool] | None = None,
     ) -> CartridgeSpecialPageResult:
         """Dismiss overlays and accept a caller-confirmed field when requested."""
-        if allow_season_reward is None:
-            allow_season_reward = self._is_beijing_monday()
         end_at = monotonic() + max(0.0, float(timeout))
         handled: set[str] = set()
         action_count = 0
@@ -1339,12 +1335,6 @@ class BaseBD2Task(BaseTask):
         if "段位下滑" in normalized and "确认" in normalized:
             return text, "段位下滑", cls._find_ocr_box(boxes, "确认")
         return text, "", None
-
-    @staticmethod
-    def _is_beijing_monday(now: datetime | None = None) -> bool:
-        if now is None:
-            now = datetime.now(timezone.utc)
-        return now.astimezone(BEIJING_TIMEZONE).weekday() == 0
 
     def _pvp_special_page_ocr_boxes(
         self,

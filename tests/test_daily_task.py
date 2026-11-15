@@ -2034,6 +2034,33 @@ class QuickHuntRecoveryTest(StageHistoryTestCase):
                     self.assertEqual(expected_clicks,
                                      self.task._quick_vision().click_client.call_count)
 
+    def test_unsent_first_click_can_recover_but_previous_dispatch_remains_pending(self):
+        from src.tasks.run_history import RunHistoryStore
+
+        for failure_at, unsent in ((1, True), (1, False), (2, True)):
+            with self.subTest(failure_at=failure_at, unsent=unsent):
+                self._reset_hunt()
+                self.task.config["快速狩猎结算等待秒数"] = 5.0
+                self.task._quick_hunt_dialog_snapshot.return_value = hunt_dialog()
+                error = RuntimeError("input failed")
+                error.input_not_dispatched = unsent
+                click = self.task._quick_vision().click_client
+                click.side_effect = [None] * (failure_at - 1) + [error]
+                with self.assertRaises(RuntimeError):
+                    self.task._quick_hunt_execute_current_map("MIN", "金币 MIN")
+                store = RunHistoryStore(self.history.path)
+                self.history_mock.return_value = store
+                self.task._hunt_checkpoint = None
+                evidence = store.stage("QuickHuntTask", "狩猎提交:米饭:金币 MIN")["evidence"]
+                recoverable = failure_at == 1 and unsent
+                self.assertEqual("prepared" if recoverable else "attempted", evidence["phase"])
+                self.assertEqual(0 if recoverable else failure_at, evidence["start_clicks"])
+                click.reset_mock(side_effect=True)
+                self.task._quick_hunt_open_confirmation.reset_mock()
+                self.task._quick_hunt_execute_current_map("MIN", "金币 MIN")
+                self.assertEqual(recoverable, self.task._quick_hunt_open_confirmation.called)
+                self.assertEqual(recoverable, click.called)
+
     def test_late_cleanup_settles_before_close_but_cancellation_does_not_invent_completion(self):
         for case in ("reward", "cross_cycle", "cancel", "unbound", "write_failure"):
             with self.subTest(case=case):

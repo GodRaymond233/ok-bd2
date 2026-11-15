@@ -75,7 +75,6 @@ class FiendRewardEntryTest(unittest.TestCase):
         task.info_set = Mock()
         task._sleep_after_recognition = lambda: None
         task._recent_cartridge_is_pvp = lambda: recent_pvp
-        task._is_beijing_monday = lambda: False
         task._save_flow_diagnostic = Mock()
         self.now = 0.0
         self.clicks = []
@@ -755,7 +754,6 @@ class PVPTaskHelperTest(unittest.TestCase):
                 )
                 task.info_set = lambda *_args, **_kwargs: None
                 task.sleep = lambda *_args, **_kwargs: None
-                task._is_beijing_monday = lambda: True
                 task._recent_cartridge_ocr_boxes = lambda: [
                     SimpleNamespace(name=state_text, x=800, y=200, width=200, height=50),
                     SimpleNamespace(
@@ -801,7 +799,6 @@ class PVPTaskHelperTest(unittest.TestCase):
                 )
                 task.info_set = lambda *_args, **_kwargs: None
                 task.sleep = lambda *_args, **_kwargs: None
-                task._is_beijing_monday = lambda: True
                 screens = [
                     [
                         SimpleNamespace(name="赛季奖励", x=1150, y=220, width=200, height=60),
@@ -834,7 +831,7 @@ class PVPTaskHelperTest(unittest.TestCase):
                     )
                 self.assertEqual(2, len(clicks))
 
-    def test_non_monday_ignores_reward_but_still_handles_rank_pages(self):
+    def test_explicit_reward_disable_still_handles_rank_pages(self):
         reward_boxes = [
             SimpleNamespace(name="赛季奖励", x=900, y=200, width=180, height=50),
             SimpleNamespace(
@@ -1203,11 +1200,10 @@ class PVPTaskHelperTest(unittest.TestCase):
 
         self.assertFalse(PVPTask._wait_result_and_leave(task, 1))
 
-    def test_pvp_entry_wait_handles_weekly_reward_then_rank_drop_before_hub(self):
+    def test_pvp_entry_wait_handles_deferred_reward_then_rank_drop_before_hub(self):
         task = object.__new__(PVPTask)
         task.info_set = lambda *_args, **_kwargs: None
         task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        task._is_beijing_monday = lambda: True
         screens = iter(
             (
                 [],
@@ -1272,7 +1268,6 @@ class PVPTaskHelperTest(unittest.TestCase):
         task = object.__new__(PVPTask)
         task.info_set = Mock()
         task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        task._is_beijing_monday = lambda: False
         reward = [
             SimpleNamespace(name=FIEND_HUNT_REWARD_TITLE, x=1100, y=280,
                             width=340, height=50),
@@ -1298,7 +1293,7 @@ class PVPTaskHelperTest(unittest.TestCase):
             after_sleep=PVP_SEASON_REWARD_AFTER_CLICK_SECONDS,
             require_fresh_target=True,
         )
-        task.info_set.assert_any_call("PVP 入场特殊页面模式", "非周一：魔兽奖励及升降级")
+        task.info_set.assert_any_call("PVP 入场特殊页面模式", "赛季奖励、魔兽奖励及升降级")
 
     def test_pvp_entry_retries_same_page_once_and_observes_late_close(self):
         from src.interaction.BD2Interaction import InputTargetChanged
@@ -1310,7 +1305,6 @@ class PVPTaskHelperTest(unittest.TestCase):
                 task.log_info = Mock()
                 task._save_flow_diagnostic = Mock()
                 task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-                task._is_beijing_monday = lambda: False
                 rank_page = [
                     SimpleNamespace(name="段位下滑", x=820, y=700, width=180, height=50),
                     SimpleNamespace(name="确认", x=930, y=990, width=60, height=30),

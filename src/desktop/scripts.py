@@ -50,22 +50,37 @@ def error_line(error):
 
 def mouse_recorder():
     """Record mouse clicks and report status through the client."""
+    import win32gui
     from ok import og
-    from ok.ui.qt.tasks.RecordScript import Recorder
     from pynput import mouse
 
-    class MouseRecorder(Recorder):
+    class MouseRecorder:
+        def __init__(self):
+            self.is_recording = False
+            self.is_active = False
+            self.events = []
+            self.mouse_listener = None
+            self.target_title = None
+            self.target_hwnd = None
+
         def start(self, target_title):
             self.is_recording = True
             self.events = []
-            self.last_event_time = self.inactive_start_time = time.time()
+            self.last_event_time = self.inactive_start_time = time.monotonic()
             self.target_title = target_title
             window = getattr(og.device_manager, "hwnd_window", None)
             self.target_hwnd = window.hwnd if window else None
             self.is_active = False
             self.mouse_listener = mouse.Listener(on_click=self.on_click)
-            self.mouse_listener.start()
             communicate.window.connect(self.on_window)
+            try:
+                self.mouse_listener.start()
+                self.on_window(bool(
+                    self.target_hwnd and win32gui.GetForegroundWindow() == self.target_hwnd
+                ))
+            except Exception:
+                self.stop()
+                raise
 
         def on_window(self, visible, *args):
             if not self.is_recording or visible == self.is_active:
@@ -73,13 +88,79 @@ def mouse_recorder():
             self.is_active = visible
             if not visible:
                 self.drop_pending_inputs()
-                self.inactive_start_time = time.time()
+                self.inactive_start_time = time.monotonic()
                 return
             window = getattr(og.device_manager, "hwnd_window", None)
             if not self.target_hwnd and window:
                 self.target_hwnd = window.hwnd
             # The time away from the game is not a pause between two clicks.
-            self.last_event_time += time.time() - self.inactive_start_time
+            self.last_event_time += time.monotonic() - self.inactive_start_time
+
+        def drop_pending_inputs(self):
+            self.events = [event for event in self.events if event["type"] == "click"]
+
+        def on_click(self, x, y, button, pressed):
+            if not self.is_recording or not self.is_active or not self.target_hwnd:
+                return
+            buttons = {mouse.Button.left: "left", mouse.Button.right: "right",
+                       mouse.Button.middle: "middle"}
+            if button not in buttons:
+                return
+            try:
+                if win32gui.GetForegroundWindow() != self.target_hwnd:
+                    self.on_window(False)
+                    return
+                window = getattr(og.device_manager, "hwnd_window", None)
+                if window and window.hwnd == self.target_hwnd:
+                    left = window.x + window.real_x_offset
+                    top = window.y + window.real_y_offset
+                    width = window.real_width or window.width
+                    height = window.real_height or window.height
+                else:
+                    left, top = win32gui.ClientToScreen(self.target_hwnd, (0, 0))
+                    rect = win32gui.GetClientRect(self.target_hwnd)
+                    width, height = rect[2] - rect[0], rect[3] - rect[1]
+                if width <= 0 or height <= 0 or not (
+                    left <= x < left + width and top <= y < top + height
+                ):
+                    self.drop_pending_inputs()
+                    return
+            except Exception:
+                self.drop_pending_inputs()
+                return
+            now = time.monotonic()
+            name = buttons[button]
+            if pressed:
+                self.events.append({
+                    "type": "mouse_down", "x": (x - left) / width, "y": (y - top) / height,
+                    "button": name, "time": now, "latency": now - self.last_event_time,
+                })
+            else:
+                for event in reversed(self.events):
+                    if event["type"] == "mouse_down" and event["button"] == name:
+                        event.update(type="click", down_time=now - event["time"])
+                        break
+            self.last_event_time = now
+
+        def stop(self):
+            self.is_recording = self.is_active = False
+            if self.mouse_listener:
+                self.mouse_listener.stop()
+            communicate.window.disconnect(self.on_window)
+            self.drop_pending_inputs()
+            return self.generate_code()
+
+        def generate_code(self):
+            events = [event for event in self.events if event["type"] == "click"]
+            lines = []
+            for index, event in enumerate(events):
+                after_sleep = events[index + 1]["latency"] if index + 1 < len(events) else 0
+                lines.append(
+                    f"self.click_relative({event['x']:.6f}, {event['y']:.6f}, "
+                    f"key={event['button']!r}, down_time={event['down_time']:.3f}, "
+                    f"after_sleep={max(0, after_sleep):.3f})"
+                )
+            return "", "\n".join(lines) or "pass"
 
     return MouseRecorder()
 

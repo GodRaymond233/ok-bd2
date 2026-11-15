@@ -1470,9 +1470,20 @@ class QuickHuntFeatureMixin:
         self._hunt_checkpoint = (checkpoint, scope, evidence)
         if not self._quick_hunt_update_submission("attempted", start=True):
             return "failed"
-        self._quick_vision().click_client(
-            submission.start_point, submission.frame_shape, after_sleep=0.3,
-        )
+        try:
+            self._quick_vision().click_client(
+                submission.start_point, submission.frame_shape, after_sleep=0.3,
+            )
+        except Exception as error:
+            if getattr(error, "input_not_dispatched", False):
+                current = run_history.read_stage(self, checkpoint)
+                if (current.get("state") == "pending" and current.get("scope") == scope
+                        and current.get("evidence") == self._hunt_checkpoint[2]):
+                    run_history.save_stage(
+                        self, checkpoint, "pending", scope=scope, evidence=evidence,
+                    )
+                    self._hunt_checkpoint = None
+            raise
         return self._quick_hunt_wait_result(stage, submission=submission, resource=resource)
 
     def _quick_hunt_recover_submission(

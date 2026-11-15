@@ -1343,6 +1343,10 @@ class SellFlowMixin:
             )
             full_name = self._normal(" ".join(texts))
             full_ids = catalog.get(full_name, set())
+            if full_ids:
+                if full_ids != {expected}:
+                    self.task.log_warning(f"卖：弹窗完整标题与目标不符：{' '.join(texts)}。")
+                return full_ids == {expected}
             seen_ids = set(full_ids)
             for text in texts:
                 seen_ids.update(catalog.get(self._normal(text), set()))

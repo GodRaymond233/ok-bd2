@@ -1220,18 +1220,30 @@ class SellFlowTest(StageHistoryTestCase):
                 self.assertLessEqual(len(calls), 3)
 
     def test_sale_dialog_rejects_wrong_or_ambiguous_identity_before_fallback(self):
-        for texts, aliases in (
-            ("豆子", ()),
+        for texts, expected in (
+            ("豆子", "姜黄"),
+            (("巧克力", "鸡尾酒"), "巧克力"),
+            ("巧克力鸡尾酒", "巧克力"),
         ):
-            with self.subTest(texts=texts, aliases=aliases):
+            with self.subTest(texts=texts, expected=expected):
                 trader, calls, warnings, clock = self._title_trader([(texts, texts, texts)])
                 with patch("src.tasks.map_trade.trader_sell.monotonic", lambda: clock[0]):
                     self.assertFalse(trader._wait_sale_dialog_item(
-                        CalendarEntry("姜黄", "S12", aliases=aliases),
+                        CalendarEntry(expected, "S12"),
                     ))
                 self.assertEqual(2, len(calls))
                 self.assertTrue(trader._sale_dialog_rejected)
                 self.assertTrue(warnings)
+
+    def test_sale_dialog_accepts_complete_split_title_and_background_items(self):
+        for texts, expected in (
+            (("巧克力", "鸡尾酒"), "巧克力鸡尾酒"),
+            (("苹果", "豆子"), "苹果"),
+        ):
+            with self.subTest(texts=texts):
+                trader, _calls, _warnings, clock = self._title_trader([(texts, texts, texts)])
+                with patch("src.tasks.map_trade.trader_sell.monotonic", lambda: clock[0]):
+                    self.assertTrue(trader._wait_sale_dialog_item(CalendarEntry(expected, "S12")))
 
     def test_sale_completion_ignores_previous_transaction_toast(self):
         frames = [

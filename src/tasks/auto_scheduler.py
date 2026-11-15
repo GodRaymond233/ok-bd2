@@ -73,10 +73,12 @@ def run_due_tasks_once(og=None) -> str | None:
     if bool(config.get("启动自动执行日常", False)) and _any_batch_child_due(
         batch, executor, history, schedule_store
     ):
-        from src.tasks.DailyBatchTask import RUN_MODE_INCOMPLETE
+        from src.tasks.DailyBatchTask import RUN_MODE_ALL, RUN_MODE_INCOMPLETE
 
         batch.request_run_mode(RUN_MODE_INCOMPLETE)
-        app.start_controller.start(batch)
+        if app.start_controller.start(batch) is False:
+            batch.request_run_mode(RUN_MODE_ALL)
+            return None
         return "一键完成日常（仅执行今日未完成）"
 
     return None

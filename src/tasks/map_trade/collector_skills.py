@@ -970,6 +970,7 @@ class SkillExecutionMixin:
             "; ".join(r.message for r in (summon_result, suppress_result) if r.message),
             summon_result.pending_actions + suppress_result.pending_actions,
             press_again=summon_result.press_again or suppress_result.press_again,
+            review_required=summon_result.review_required or suppress_result.review_required,
         )
 
     def _prepare_action(self, action, *, card_id, map_role):
