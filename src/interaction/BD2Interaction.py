@@ -47,8 +47,9 @@ class BD2Interaction(PostMessageInteraction):
         if window is None:
             return None
         target = window.top_hwnd or window.hwnd
+        # Window messages stay directed at the game while other apps gain focus.
         return (
-            target, None if self.background_click_enabled() else win32gui.GetForegroundWindow(),
+            target,
             win32gui.GetWindowRect(target), win32gui.GetClientRect(target),
         )
 

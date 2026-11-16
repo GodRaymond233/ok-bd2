@@ -242,7 +242,7 @@ class BaseBD2Task(BaseTask):
                 self._frame_input_context = context
                 break
         else:
-            raise TimeoutError("输入桌面反复中断，未取得可用游戏画面。")
+            raise TimeoutError("截图期间游戏窗口或输入环境反复变化，未取得可用游戏画面。")
         if frame is None:
             raise RuntimeError("未能从 BD2 截取画面。")
 
