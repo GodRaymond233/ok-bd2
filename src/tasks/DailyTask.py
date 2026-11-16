@@ -325,6 +325,20 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
             name="guild_sign_in_early",
             reject_template_on_home=True,
         )
+        if loading_state == "none" and not success_found:
+            frame = self.capture_frame()
+            if self._frame_confirms_home(frame, "公会入口重试前"):
+                guild, guild_spec = self._match_best(frame, GUILD_ENTRY_TEMPLATES)
+                if self._passes(guild, guild_spec):
+                    self.log_info("公会入口点击后仍在主页，按新识别中心重试一次。")
+                    height, width = frame.shape[:2]
+                    self.operate_click(
+                        guild.center[0] / width, guild.center[1] / height, after_sleep=0.5,
+                    )
+                    loading_state, success_found, text = self._wait_loading_or_template_or_ocr(
+                        "公会签到", GUILD_SIGNUP_SUCCESS_TEMPLATE, GUILD_SUCCESS_KEYWORDS,
+                        name="guild_sign_in_retry", reject_template_on_home=True,
+                    )
         self._status_set("公会签到 loading 状态", loading_state)
         if loading_state == "stuck":
             self._status_set("公会签到成功", "否")
@@ -396,6 +410,14 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
         全帧 OCR 仍能读到公会页面关键字时才补点返回键，最多 3 次。
         """
         home_ok = False
+        frame = self.capture_frame()
+        if self._frame_confirms_home(frame, "公会退出前"):
+            self._status_set("公会签到返回主页结果", "通过")
+            return True
+        text = self._ocr_text(frame, name="公会退出前页面")
+        if self._keyword_match_count(text, GUILD_PAGE_KEYWORDS) < 1:
+            self.log_info("公会签到：未确认公会页面，不点击返回。")
+            return False
         for attempt in range(1, 4):
             self._click_reference(*BACK_BUTTON_REFERENCE_POINT, after_sleep=1.0)
             if self._wait_for_home_confirmation("公会签到返回主页", timeout=4.0):

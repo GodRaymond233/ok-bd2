@@ -274,6 +274,56 @@ class BD2InteractionOperateTest(unittest.TestCase):
 
 
 class BD2InteractionClickModeTest(unittest.TestCase):
+    def test_background_scroll_and_drag_leave_physical_cursor_and_buttons_alone(self):
+        interaction, calls = make_interaction()
+        interaction.set_click_mode_provider(lambda: CLICK_MODE_BACKGROUND)
+        interaction.scroll = Mock()
+        interaction.move = Mock()
+        interaction.mouse_down = Mock()
+        interaction.mouse_up = Mock()
+        interaction.try_activate = Mock()
+        interaction.capture = SimpleNamespace(get_abs_cords=lambda x, y: (x, y))
+        task = object.__new__(BaseBD2Task)
+        task._executor = SimpleNamespace(interaction=interaction)
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task._wait_for_input = Mock()
+        task.info_set = Mock()
+        task.sleep = Mock()
+        with (
+            patch("src.interaction.BD2Interaction.GetCursorPos", return_value=(10, 20)),
+            patch("win32api.SetCursorPos") as cursor,
+            patch("win32api.mouse_event") as mouse,
+            patch("time.sleep"),
+        ):
+            task.scroll_client((.25, .5), 1, count=2)
+            task.drag_client((100, 100), (200, 300), duration=.1)
+        cursor.assert_not_called()
+        mouse.assert_not_called()
+        self.assertEqual([], calls)
+        self.assertEqual(2, interaction.scroll.call_count)
+        interaction.scroll.assert_called_with(480, 540, 1)
+        interaction.mouse_down.assert_called_once_with(100, 100)
+        interaction.mouse_up.assert_called_once()
+        self.assertEqual((200, 300), interaction.move.call_args.args)
+
+    def test_background_context_ignores_other_foreground_windows_but_tracks_target_geometry(self):
+        interaction, _calls = make_interaction()
+        interaction.hwnd_window = SimpleNamespace(top_hwnd=123, hwnd=123)
+        interaction.set_click_mode_provider(lambda: CLICK_MODE_BACKGROUND)
+        with (
+            patch("src.interaction.BD2Interaction.win32gui.GetForegroundWindow") as foreground,
+            patch("src.interaction.BD2Interaction.win32gui.GetWindowRect",
+                  return_value=(0, 0, 1920, 1080)) as rect,
+            patch("src.interaction.BD2Interaction.win32gui.GetClientRect",
+                  return_value=(0, 0, 1920, 1080)),
+        ):
+            first = interaction.target_context()
+            foreground.return_value = 456
+            self.assertEqual(first, interaction.target_context())
+            rect.return_value = (10, 10, 1930, 1090)
+            self.assertNotEqual(first, interaction.target_context())
+        foreground.assert_not_called()
+
     def test_click_throttling_uses_elapsed_time_across_system_clock_changes(self):
         task = object.__new__(BaseBD2Task)
         task._action_interval_lock = threading.Lock()

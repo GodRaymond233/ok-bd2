@@ -804,7 +804,7 @@ class ProgressStore:
         if self._sanitize_observed_counts({action: observed}).get(action) != observed:
             return ""
         previous = self.trusted_action_baseline(action)
-        if previous is None or observed[0] >= previous[0] or observed[1] <= previous[1]:
+        if previous is None or observed[0] >= previous[0] or observed[1] < previous[1]:
             return ""
         request = state.count_reset_requests.get(action, {})
         if request.get("before") != list(previous) or request.get("after") != list(observed):

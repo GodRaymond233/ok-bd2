@@ -48,7 +48,7 @@ class BD2Interaction(PostMessageInteraction):
             return None
         target = window.top_hwnd or window.hwnd
         return (
-            target, win32gui.GetForegroundWindow(),
+            target, None if self.background_click_enabled() else win32gui.GetForegroundWindow(),
             win32gui.GetWindowRect(target), win32gui.GetClientRect(target),
         )
 
@@ -202,6 +202,9 @@ class BD2Interaction(PostMessageInteraction):
         input_wait=time.sleep, input_status=None,
     ):
         with self._input_lock:
+            if self.background_click_enabled():
+                block = False
+                restore_cursor = False
             result = None
             is_outer_operate = False
             owns_block = False
