@@ -7,7 +7,7 @@ from unittest.mock import Mock
 import numpy as np
 from ok.task.exceptions import FinishedException, TaskDisabledException
 
-from src.tasks.BaseBD2Task import BaseBD2Task
+from src.tasks.BaseBD2Task import SCENE_HOME_MAX_CLICKS, BaseBD2Task
 from src.utils.home_confirmation import (
     HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT,
     HOME_LEFT_COLUMN_OCR_RELATIVE_ROI,
@@ -31,7 +31,7 @@ class AutoReturnMainHomeTest(unittest.TestCase):
                     task.recover_daily_home()
                 self.assertEqual([], clicks)
 
-    def _task(self, home_results, *, house_match=None, task_type=BaseBD2Task):
+    def _task(self, home_results, *, house_match=None, scene_points=None, task_type=BaseBD2Task):
         task = object.__new__(task_type)
         task.config = {
             "自动返回主页最大步数": 1,
@@ -56,7 +56,14 @@ class AutoReturnMainHomeTest(unittest.TestCase):
 
         task.capture_frame = capture_frame
         results = iter(home_results)
-        task._home_scan = lambda _frame: next(results)
+        points = iter(scene_points) if scene_points is not None else None
+
+        def home_scan(_frame):
+            result = next(results)
+            task._scene_home_point = next(points) if points is not None else None
+            return result
+
+        task._home_scan = home_scan
         task._match_house_button = lambda _frame: house_match
         task._click_top_left_back = lambda *_args, **_kwargs: False
         task._clear_dimmed_home_announcement = lambda _frame: False
@@ -77,7 +84,10 @@ class AutoReturnMainHomeTest(unittest.TestCase):
     def test_cancellation_propagates_from_capture_and_return_click(self):
         for boundary in ("capture_frame", "operate_click"):
             with self.subTest(boundary=boundary):
-                task, clicks = self._task([(False, True)] * 3)
+                task, clicks = self._task(
+                    [(False, True)] * 3,
+                    scene_points=[(0.9363, 0.0535)] * 3,
+                )
                 setattr(task, boundary, Mock(side_effect=TaskDisabledException))
                 with self.assertRaises(TaskDisabledException):
                     task.auto_return_main_home()
@@ -115,6 +125,15 @@ class AutoReturnMainHomeTest(unittest.TestCase):
         self.assertEqual(1, len(task._test_captures))
         self.assertEqual(1, len(task._test_logs["warning"]))
 
+    def test_unrecognized_scene_stops_without_keyboard_input(self):
+        task, clicks = self._task([(False, False)])
+        task.config["自动返回主页最大步数"] = 4
+        task.send_key = Mock()
+        self.assertFalse(task.auto_return_main_home())
+        task.send_key.assert_not_called()
+        self.assertEqual([], clicks)
+        self.assertEqual(1, len(task._test_captures))
+
     def test_h_ocr_missing_but_house_image_match_is_positive_signal(self):
         task = object.__new__(BaseBD2Task)
         task.config = {}
@@ -126,6 +145,39 @@ class AutoReturnMainHomeTest(unittest.TestCase):
         self.assertEqual(
             (False, True),
             BaseBD2Task._home_scan(task, np.zeros((100, 100, 3), dtype=np.uint8)),
+        )
+
+    def test_scene_return_point_is_clicked_when_house_template_misses(self):
+        # 格鲁菲餐厅：房子模板 -1.000（字形是空心房子+H，不是主页的房子+齿轮），
+        # 只能靠几何判据给出的点退出；点完下一轮必须确认到主页。
+        point = (0.9363, 0.0535)
+        task, clicks = self._task(
+            [(False, True), (False, True), (False, True), (True, False)],
+            scene_points=[point] * 4,
+        )
+        self.assertTrue(BaseBD2Task.auto_return_main_home(task))
+        self.assertEqual([point], clicks)
+        self.assertGreaterEqual(len(task._test_logs["info"]), 1)
+        self.assertIn("场景返回控件", task._test_logs["info"][0][0])
+
+    def test_scene_point_instability_stops_without_click(self):
+        task, clicks = self._task(
+            [(False, True), (False, True), (False, True)],
+            scene_points=[(0.9363, 0.0535), (0.9000, 0.0535), (0.9000, 0.0535)],
+        )
+        self.assertFalse(BaseBD2Task.auto_return_main_home(task))
+        self.assertEqual([], clicks)
+
+    def test_scene_return_point_click_cap(self):
+        task, clicks = self._task(
+            [(False, True)] * 40,
+            scene_points=[(0.9363, 0.0535)] * 40,
+        )
+        task.config["自动返回主页最大步数"] = 12
+        self.assertFalse(BaseBD2Task.auto_return_main_home(task))
+        self.assertEqual(SCENE_HOME_MAX_CLICKS, len(clicks))
+        self.assertTrue(
+            any("场景返回控件已点击" in message for message, _ in task._test_logs["warning"])
         )
 
     def test_dimmed_home_cleanup_requires_fresh_bright_confirmation(self):

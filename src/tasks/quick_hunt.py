@@ -572,6 +572,7 @@ class QuickHuntFeatureMixin:
                 brightness_threshold=self._home_p95_threshold(),
                 gacha_ocr_text=last_gacha_text,
                 context="快速狩猎确认主页",
+                frame=frame,
             )
             self.sleep(interval)
 
@@ -1855,6 +1856,7 @@ class QuickHuntFeatureMixin:
                 brightness_threshold=self._home_p95_threshold(),
                 gacha_ocr_text=gacha_text,
                 context="快速狩猎返回主页",
+                frame=frame,
             ):
                 self.sleep(0.35)
                 continue

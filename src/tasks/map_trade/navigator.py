@@ -612,6 +612,7 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
                     brightness_threshold=HOME_DIMMED_P95_THRESHOLD,
                     gacha_ocr_text=last_gacha_text,
                     context="跑商/跑图确认主页",
+                    frame=frame,
                 ):
                     self.task.sleep(interval)
                     continue
@@ -717,6 +718,7 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
                 brightness_threshold=HOME_DIMMED_P95_THRESHOLD,
                 gacha_ocr_text=gacha_text,
                 context=clear_context,
+                frame=frame,
             )
         return (
             confirmed,

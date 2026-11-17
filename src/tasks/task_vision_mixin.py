@@ -324,6 +324,7 @@ class TaskVisionMixin:
                 brightness_threshold=self._home_p95_threshold(),
                 gacha_ocr_text=last_gacha_text,
                 context=name,
+                frame=frame,
             )
             self.sleep(interval)
 

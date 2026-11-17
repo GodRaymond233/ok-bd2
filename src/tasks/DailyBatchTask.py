@@ -116,6 +116,8 @@ class DailyBatchTask(BaseTask):
                 "启用": True,
                 "启动自动执行日常": False,
                 "完成日常后自动关机": False,
+                "回主页失败后按返回键": True,
+                "回主页返回键最多次数": 3,
                 **{key: True for key in child_keys},
             }
         )
@@ -139,6 +141,13 @@ class DailyBatchTask(BaseTask):
                 "跑图": (
                     "沿用每周跑图卡片的配置；执行剩余时，今日额度已用尽或本周已完成则跳过。"
                     "技能次数每日08:00、资源周一08:00刷新（北京时间）。"
+                ),
+                "回主页失败后按返回键": (
+                    "自动返回主页识别不到房子/返回按钮时，按返回键逐级退出弹窗或子页面再试，"
+                    "避免停在游戏内某个子界面导致后续任务卡住。关闭则保持原有的安全停止行为。"
+                ),
+                "回主页返回键最多次数": (
+                    "每次返回键兜底最多按几次；每次按键后都会重新确认是否已回到主页。"
                 ),
             }
         )
@@ -367,14 +376,16 @@ class DailyBatchTask(BaseTask):
                         if not ensure_home():
                             self.log_warning(
                                 f"一键完成日常：{child.config_key} 自动回主页未成功，"
-                                "继续执行该子任务（由子任务自身兜底）。"
+                                "先尝试按返回键退出当前页面。"
                             )
+                            self._try_home_back_fallback(task, child.config_key)
                     except (TaskDisabledException, FinishedException):
                         raise
                     except Exception as ensure_exc:
                         self.log_warning(
                             f"一键完成日常：{child.config_key} 自动回主页异常：{ensure_exc}"
                         )
+                        self._try_home_back_fallback(task, child.config_key)
                 with suppress_task_completion_notifications(task):
                     child_result = bool(task.run())
                     child_finished = time.time()
@@ -443,15 +454,40 @@ class DailyBatchTask(BaseTask):
         self._maybe_shutdown_after_daily(completed, pre_completed)
         return True
 
-    @staticmethod
-    def _recover_failed_child(task) -> bool:
+    def _try_home_back_fallback(self, task, label: str) -> bool:
+        """自动返回主页未成功时，用返回键逐级退出当前页面再试一次。"""
+        if not bool(self.config.get("回主页失败后按返回键", True)):
+            return False
+        fallback = getattr(task, "try_return_home_with_back", None)
+        if fallback is None:
+            return False
+        try:
+            ok = bool(
+                fallback(
+                    max_presses=int(self.config.get("回主页返回键最多次数", 3))
+                )
+            )
+        except (TaskDisabledException, FinishedException):
+            raise
+        except Exception as exc:
+            self.log_warning(f"一键完成日常：{label} 返回键兜底异常：{exc}")
+            return False
+        self.log_info(
+            f"一键完成日常：{label} 返回键兜底"
+            + ("已回到主页。" if ok else "仍未确认主页，继续执行后续流程。")
+        )
+        return ok
+
+    def _recover_failed_child(self, task) -> bool:
         recover = getattr(task, "recover_daily_home", None)
         try:
-            return bool(recover and recover())
+            if recover and recover():
+                return True
         except (TaskDisabledException, FinishedException):
             raise
         except Exception:
-            return False
+            pass
+        return self._try_home_back_fallback(task, str(getattr(task, "name", "")))
 
     def _maybe_shutdown_after_daily(
         self,

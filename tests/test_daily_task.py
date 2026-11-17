@@ -11,9 +11,11 @@ from ok.util.config import Config
 
 from src.tasks.DailyTask import (
     BUSINESS_GUEST_RELATIVE_ROI,
+    GUILD_SIGN_IN_ENTRY_REFERENCE_POINT,
     GUILD_SIGNUP_SUCCESS_TEMPLATE,
     GUILD_SUCCESS_KEYWORDS,
     GUILD_TEMPLATE,
+    MY_HOME_BACK_REFERENCE_POINT,
     MY_HOME_TEMPLATE,
     DailyTask,
 )
@@ -394,6 +396,8 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         task._wait_for_template_or_ocr = lambda *_args, **_kwargs: (False, "")
         task._ocr_text = lambda _frame, name: "公告事项 进入公会联合战 公会商店"
         task._keyword_match_count = lambda text, keywords: 3
+        # 本用例只验证返回主页流程，入口后已离开主页（不触发补点）。
+        task._frame_confirms_home = lambda *_args, **_kwargs: False
         # 依次为：入口前主页确认、返回主页第 1/2/3 次确认。
         wait_results = iter([True, False, False, True])
         waited_names = []
@@ -434,12 +438,56 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         task._wait_for_template_or_ocr = lambda *_args, **_kwargs: (False, "")
         task._ocr_text = lambda _frame, name: ""
         task._keyword_match_count = lambda text, keywords: 0
+        # 本用例只验证未知页面不盲点返回键，入口后已离开主页。
+        task._frame_confirms_home = lambda *_args, **_kwargs: False
         # 依次为：入口前主页确认（通过）、返回主页第 1 次确认（失败）。
         confirm_results = iter([True, False])
         task._wait_for_home_confirmation = lambda name, **_kwargs: next(confirm_results)
 
         self.assertFalse(DailyTask.run_guild_sign_in(task))
         self.assertEqual([(370, 155), (100, 50)], clicks)
+
+    def _guild_entry_task(self, still_home):
+        """公会入口重试用例的公共装配：模板命中、主页确认通过。"""
+        task = object.__new__(DailyTask)
+        task.config = {"公会入口阈值": 0.78, "公会进入最大点击次数": 3}
+        task.info_set = lambda *_args, **_kwargs: None
+        task._status_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task.sleep = lambda *_args, **_kwargs: None
+        task._sleep_after_recognition = lambda: None
+        task.capture_frame = lambda: np.zeros((10, 10, 3), dtype=np.uint8)
+        task._wait_for_home_confirmation = lambda *_args, **_kwargs: True
+        task._match_best = lambda *_args, **_kwargs: (
+            MatchResult(0.95, (0, 0), (1, 1)),
+            SimpleNamespace(file_name="image/green/MainBotmUnionGE.png"),
+        )
+        task._passes = lambda *_args, **_kwargs: True
+        clicks = []
+        task._click_reference = lambda x, y, **_kwargs: clicks.append((x, y))
+        task._wait_loading_or_template_or_ocr = lambda *_a, **_k: ("none", False, "")
+        task._guild_entry_still_on_home = lambda _attempt: still_home
+        task._wait_for_template_or_ocr = lambda *_a, **_k: (False, "")
+        task._wait_for_existing_guild_visit = lambda: False
+        task._return_home_from_guild = lambda: True
+        task._save_flow_diagnostic = Mock()
+        return task, clicks
+
+    def test_guild_entry_retries_while_still_on_home(self):
+        # 2026-11-17 实机：任务启动后第一次点公会入口被转场吞掉——18 秒后画面
+        # 仍是主页、公会入口模板原位命中（0.957），签到整条被判失败。旧实现只
+        # 点一次就转入签到检测，没有任何补点机会。
+        task, clicks = self._guild_entry_task(still_home=True)
+
+        self.assertFalse(DailyTask.run_guild_sign_in(task))
+        self.assertEqual([GUILD_SIGN_IN_ENTRY_REFERENCE_POINT] * 3, clicks)
+
+    def test_guild_entry_stops_retrying_once_home_is_left(self):
+        # 已确认离开主页说明点击生效，不得再补点，否则会在公会页面上乱点。
+        task, clicks = self._guild_entry_task(still_home=False)
+
+        self.assertFalse(DailyTask.run_guild_sign_in(task))
+        self.assertEqual([GUILD_SIGN_IN_ENTRY_REFERENCE_POINT], clicks)
 
     def test_my_home_retry_stops_when_no_longer_on_home(self):
         task = object.__new__(DailyTask)
@@ -483,8 +531,13 @@ class DailyTaskHelperTest(StageHistoryTestCase):
                 task._quick_vision = lambda: SimpleNamespace(ocr_text=ocr_text)
 
                 self.assertIs(expected, DailyTask.run_my_home_sign_in(task))
+                # 小屋的返回条比自己更宽，箭头在参考 (172,48)；
+                # 旧值 (100,50) 点在返回条左侧空白上，实机点不动。
                 self.assertEqual(
-                    [(166, 158), (100, 50)] if expected else [(166, 158)], clicks
+                    [(166, 158), MY_HOME_BACK_REFERENCE_POINT]
+                    if expected
+                    else [(166, 158)],
+                    clicks,
                 )
                 self.assertEqual(1 if expected else 3, len(ocr_calls))
                 self.assertEqual((0.11, 0.01, 0.25, 0.10), ocr_calls[0]["relative_roi"])

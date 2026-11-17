@@ -9,7 +9,11 @@ import unittest
 import cv2
 import numpy as np
 
-from src.tasks.BaseBD2Task import TEMPLATE_DIR, BaseBD2Task
+from src.tasks.BaseBD2Task import (
+    TEMPLATE_DIR,
+    TOP_LEFT_BACK_CHEVRON_RATIO,
+    BaseBD2Task,
+)
 
 RESOLUTIONS = ((2560, 1440), (1920, 1080), (1280, 720))
 
@@ -36,7 +40,12 @@ def _make_frame(width: int, height: int, with_bar: bool):
     display = cv2.resize(template, (t_width, t_height), interpolation=cv2.INTER_AREA)
     left, top = 20, 18
     frame[top : top + t_height, left : left + t_width] = display
-    return frame, (left + t_width // 2, top + t_height // 2)
+    # 可点的 ‹ 箭头在返回条右端，不是模板几何中心。
+    ratio_x, ratio_y = TOP_LEFT_BACK_CHEVRON_RATIO
+    return frame, (
+        left + round(t_width * ratio_x),
+        top + round(t_height * ratio_y),
+    )
 
 
 class AutoReturnBackBarResolutionTest(unittest.TestCase):

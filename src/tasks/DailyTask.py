@@ -86,6 +86,10 @@ BUSINESS_COLLECT_KEYWORDS = [
 GUILD_SIGN_IN_ENTRY_REFERENCE_POINT = (370, 155)
 GUILD_SIGN_IN_SUCCESS_ACKNOWLEDGE_REFERENCE_POINT = (450, 650)
 BACK_BUTTON_REFERENCE_POINT = (100, 50)
+# 「我的小屋」左上角那条返回条比公会页更宽，可点的 ‹ 箭头在参考 (172, 48)；
+# 共用 (100, 50) 会点进返回条左侧的空白，2026-11-16 实机表现为「点了没反应、
+# 一直停在小屋」，随后整批日常被判失败。实测 (344,97)@4K = (172,48.5)@1080p。
+MY_HOME_BACK_REFERENCE_POINT = (172, 48)
 MY_HOME_ENTRY_REFERENCE_POINT = (166, 158)
 MY_HOME_TITLE_RELATIVE_ROI = (0.11, 0.01, 0.25, 0.10)
 MY_HOME_TITLE_OCR_RETRIES = 3
@@ -115,6 +119,7 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
         "公会入口",
         "公会入口模板",
         "公会入口阈值",
+        "公会入口点击次数",
         "公会签到 loading 状态",
         "公会签到_loading_appear",
         "公会签到_loading_gone",
@@ -198,6 +203,7 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
                 '执行小屋签到': True,
                 '执行一键收菜': True,
                 '小屋进入最大点击次数': 3,
+                '公会进入最大点击次数': 3,
                 '公会入口阈值': 0.78,
                 '公会签到成功阈值': 0.76,
                 '小屋页面阈值': 0.76,
@@ -217,6 +223,7 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
                 '执行公会签到': "从主页进入公会，领取每日签到奖励。",
                 '执行小屋签到': "从主页进入小屋，确认到达后返回主页。",
                 '小屋进入最大点击次数': "小屋入口点击后未确认到达时的补点上限（转场可能吞点击）。",
+                '公会进入最大点击次数': "公会入口点击后仍停在主页时的补点上限（转场可能吞点击）。",
                 '执行一键收菜': "一键领取经营奖励，随后进入餐厅领取常客圣石。",
             }
         )
@@ -317,14 +324,32 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
 
         self._status_set("公会判断", "已识别入口，进入公会")
         self._sleep_after_recognition()
-        self._click_reference(*GUILD_SIGN_IN_ENTRY_REFERENCE_POINT, after_sleep=0.5)
-        loading_state, success_found, text = self._wait_loading_or_template_or_ocr(
-            "公会签到",
-            GUILD_SIGNUP_SUCCESS_TEMPLATE,
-            GUILD_SUCCESS_KEYWORDS,
-            name="guild_sign_in_early",
-            reject_template_on_home=True,
-        )
+
+        entry_clicks = int(self.config.get("公会进入最大点击次数", 3))
+        loading_state = "none"
+        success_found = False
+        text = ""
+        for attempt in range(1, entry_clicks + 1):
+            if attempt > 1:
+                self.log_info(
+                    f"公会签到：第 {attempt} 次点击公会入口（转场可能吞掉点击）。"
+                )
+            self._click_reference(*GUILD_SIGN_IN_ENTRY_REFERENCE_POINT, after_sleep=0.5)
+            self._status_set("公会入口点击次数", attempt)
+            loading_state, success_found, text = self._wait_loading_or_template_or_ocr(
+                "公会签到",
+                GUILD_SIGNUP_SUCCESS_TEMPLATE,
+                GUILD_SUCCESS_KEYWORDS,
+                name="guild_sign_in_early" if attempt == 1 else f"guild_sign_in_early{attempt}",
+                reject_template_on_home=True,
+            )
+            if success_found or loading_state == "stuck":
+                break
+            if attempt >= entry_clicks:
+                break
+            # 仍能确认主页 = 这次点击被转场吞掉；已离开主页则交给后续模板/OCR 等待。
+            if not self._guild_entry_still_on_home(attempt):
+                break
         self._status_set("公会签到 loading 状态", loading_state)
         if loading_state == "stuck":
             self._status_set("公会签到成功", "否")
@@ -362,6 +387,28 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
         # 与运行历史误记为成功，并在当日跳过补跑。
         home_ok = self._return_home_from_guild()
         return bool(success_found and home_ok)
+
+    def _guild_entry_still_on_home(self, attempt: int) -> bool:
+        """点击公会入口后仍停在主页时返回 True。
+
+        2026-11-17 实机：任务启动后第一次点击公会入口无效——18 秒后画面仍是主页，
+        公会入口模板原样命中在同一坐标，签到因此整条失败。旧实现只点一次就直接
+        进入签到检测，没有补点机会。返回键早就有同类补点（BUG-20260901-02），
+        小屋入口也有（小屋进入最大点击次数），公会入口这里补齐。
+        """
+
+        try:
+            frame = self.capture_frame()
+        except (TaskDisabledException, FinishedException):
+            raise
+        except Exception:
+            return False
+        still_home = self._frame_confirms_home(frame, f"公会签到重试前主页{attempt}")
+        if still_home:
+            self.log_info(
+                f"公会签到：第{attempt}次点击后仍确认主页，判定点击被吞，准备补点。"
+            )
+        return still_home
 
     def _wait_for_existing_guild_visit(self) -> bool:
         deadline = monotonic() + 3.0
@@ -468,7 +515,7 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
         if found:
             self.log_info("小屋签到：已进入小屋页面，返回主页。")
             self._sleep_after_recognition()
-            self._click_reference(*BACK_BUTTON_REFERENCE_POINT, after_sleep=1.0)
+            self._click_reference(*MY_HOME_BACK_REFERENCE_POINT, after_sleep=1.0)
         else:
             self.log_info("小屋签到：未确认小屋页面标题，不执行返回点击。")
             self._status_set("小屋签到返回主页结果", "未执行")
