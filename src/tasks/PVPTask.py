@@ -174,7 +174,8 @@ class PVPTask(BaseBD2Task):
         self.default_config.update(
             {
                 "启用": True,
-                "竞技场战斗倍数": 1,
+                # 默认直接拉满 40 倍；配置仍可覆盖（1～40）。
+                "竞技场战斗倍数": 40,
                 "加载页面阈值": 0.72,
                 "主页压暗阈值": HOME_DIMMED_P95_THRESHOLD_DEFAULT,
                 "PVP OCR 阈值": 0.2,
@@ -1794,12 +1795,13 @@ class PVPTask(BaseBD2Task):
         return normalized.replace("倍", "").replace("o", "0")
 
     def _target_multiplier(self) -> int:
-        raw = str(self.config.get("竞技场战斗倍数", 1)).replace("倍", "")
+        # 默认 40 倍；配置损坏或越界时也回到 40，避免悄悄打成 1 倍。
+        raw = str(self.config.get("竞技场战斗倍数", 40)).replace("倍", "")
         try:
             multiplier = int(raw)
         except ValueError:
-            multiplier = 1
-        return multiplier if 1 <= multiplier <= 40 else 1
+            multiplier = 40
+        return multiplier if 1 <= multiplier <= 40 else 40
 
     @staticmethod
     def _roi_frame(
