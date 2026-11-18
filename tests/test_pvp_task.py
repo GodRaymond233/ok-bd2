@@ -304,7 +304,8 @@ class PVPTaskHelperTest(unittest.TestCase):
 
     def test_weekly_settlement_skips_entry_and_opening_clears_skip_state(self):
         task = object.__new__(PVPTask)
-        task.config = {"启用": True}
+        # 倍率显式指定，避免本用例与默认倍率取值耦合。
+        task.config = {"启用": True, "竞技场战斗倍数": 1}
         task.info = {}
         task.info_set = lambda key, value: task.info.__setitem__(key, value)
         task.log_info = Mock()
@@ -323,6 +324,21 @@ class PVPTaskHelperTest(unittest.TestCase):
         self.assertFalse(task.info["PVP 结算休战"])
         task._start_auto_battle.assert_called_once_with(1)
         task._wait_result_and_leave.assert_called_once_with(1)
+
+    def test_target_multiplier_defaults_to_40_and_clamps_invalid_values(self):
+        task = object.__new__(PVPTask)
+        for config, expected in (
+            ({}, 40),
+            ({"竞技场战斗倍数": 40}, 40),
+            ({"竞技场战斗倍数": 20}, 20),
+            ({"竞技场战斗倍数": "10倍"}, 10),
+            ({"竞技场战斗倍数": "abc"}, 40),
+            ({"竞技场战斗倍数": 0}, 40),
+            ({"竞技场战斗倍数": 41}, 40),
+        ):
+            with self.subTest(config=config):
+                task.config = config
+                self.assertEqual(expected, task._target_multiplier())
 
     def test_settlement_during_preparation_blocks_battle_start(self):
         task = object.__new__(PVPTask)
