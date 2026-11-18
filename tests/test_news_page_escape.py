@@ -56,9 +56,10 @@ def _base_task():
     task.info = {}
     task.clicks = []
     task.back_calls = []
+    task.warnings = []
     task.info_set = lambda key, value=None: task.info.__setitem__(key, value)
     task.log_info = lambda message, **kwargs: None
-    task.log_warning = lambda message, **kwargs: None
+    task.log_warning = lambda message, **kwargs: task.warnings.append(message)
     task.operate_click = lambda x, y, **kwargs: task.clicks.append((x, y))
     task.back = lambda **kwargs: task.back_calls.append(kwargs)
     return task
@@ -185,18 +186,26 @@ class NewsPageClickTest(unittest.TestCase):
         self.assertEqual([True, True, True], results)
         self.assertEqual(3, len(task.clicks))
 
-    def test_switches_to_back_key_after_three_failed_clicks(self):
+    def test_reports_failure_after_three_failed_clicks_without_pressing_back(self):
         task = _base_task()
         ticks = iter(range(10, 200, 5))
         with patch(
             "src.tasks.BaseBD2Task.monotonic", side_effect=lambda: next(ticks),
         ):
-            for _ in range(4):
+            results = [
                 task.dismiss_fullscreen_news_page(
                     _blank_frame(), ocr_text=REAL_NEWS_TEXT,
                 )
+                for _ in range(5)
+            ]
+            self.assertEqual([True, True, True, False, False], results)
+            self.assertIn("仍未退出", task.info["整页退出"])
+            self.assertTrue(task._news_page_back_exhausted)
+            task.dismiss_fullscreen_news_page(_blank_frame(), ocr_text=HOME_TEXT)
+            self.assertFalse(task._news_page_back_exhausted)
         self.assertEqual(3, len(task.clicks))
-        self.assertEqual(1, len(task.back_calls))
+        self.assertEqual([], task.back_calls)
+        self.assertEqual(1, len(task.warnings))
 
     def test_stops_after_repeated_popup_news_cycles(self):
         """复现 14:00 的死循环：弹窗 → 点开公告 → 退出 → 又回到弹窗。"""
@@ -267,9 +276,21 @@ class AutoLoginNewsPageTest(unittest.TestCase):
     def test_escape_news_page_keeps_budget_when_repeated(self):
         task = _login_task([_title_box()])
         task._esc_home_attempts = 3
-        task._news_page_back_attempts = 3
+        task._news_page_back_attempts = 2
         self.assertTrue(task._escape_news_page(_blank_frame()))
         self.assertEqual(3, task._esc_home_attempts)
+
+    def test_exhausted_news_page_waits_for_manual_return(self):
+        task = _login_task([_title_box()])
+        task._news_page_back_attempts = 3
+        frame = _news_frame()
+
+        self.assertFalse(task._escape_news_page(frame))
+        self.assertIn("等待手动返回主页", task.stages)
+        task._clear_home_popup(0.51, frame)
+
+        self.assertEqual([], task.clicks)
+        self.assertIn("返回次数已用尽", task.actions[-1])
 
 
 if __name__ == "__main__":

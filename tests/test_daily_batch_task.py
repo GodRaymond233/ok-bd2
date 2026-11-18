@@ -238,6 +238,9 @@ class DailyBatchTaskTest(unittest.TestCase):
         calls = []
         skipped = _ChildTask("skipped", calls)
         failed = _ChildTask("failed", calls, result=False)
+        failed.auto_return_main_home = mock.Mock(return_value=False)
+        failed.recover_daily_home = mock.Mock(return_value=False)
+        failed.try_return_home_with_back = mock.Mock(return_value=True)
         later = _ChildTask("later", calls)
         specs = (
             DailyBatchChild("关闭项", Skipped),
@@ -252,6 +255,9 @@ class DailyBatchTaskTest(unittest.TestCase):
 
         self.assertFalse(DailyBatchTask.run(task))
         self.assertEqual([("failed", True)], calls)
+        failed.auto_return_main_home.assert_called_once_with()
+        failed.recover_daily_home.assert_called_once_with()
+        failed.try_return_home_with_back.assert_not_called()
 
     def test_child_completion_is_silent_and_batch_emits_one_overview(self):
         class NotifyingChild:

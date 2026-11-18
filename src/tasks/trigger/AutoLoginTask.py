@@ -147,6 +147,7 @@ class AutoLoginTask(BaseBD2Task):
         self._match_error_names: set[str] = set()
         self._match_pause_until = 0.0
         self._news_page_back_attempts = 0
+        self._news_page_back_exhausted = False
 
     def on_create(self):
         self._enabled = bool(self.config.get("_enabled", True))
@@ -290,6 +291,8 @@ class AutoLoginTask(BaseBD2Task):
             self._set_action("Confirm 已处理，等待更新下载提示或 TOUCH TO START。")
         else:
             if self._escape_news_page(frame, boxes=boxes, text=login_text):
+                return False
+            if getattr(self, "_news_page_back_exhausted", False):
                 return False
             if self._maybe_return_home(frame):
                 return False
@@ -724,6 +727,11 @@ class AutoLoginTask(BaseBD2Task):
             self._set_action("检测到新闻/公告整页，点击左上角返回。")
             return
 
+        if getattr(self, "_news_page_back_exhausted", False):
+            self._set_action("新闻/公告页返回次数已用尽，等待人工处理。")
+            self._last_clear_click_at = now
+            return
+
         if getattr(self, "_news_page_loop_detected", False):
             # 已经在「弹窗 -> 公告详情 -> 退出 -> 弹窗」之间循环过，停止一切点击，
             # 让状态机按超时结束，避免继续点开公告。
@@ -887,6 +895,9 @@ class AutoLoginTask(BaseBD2Task):
             ocr_text=text,
             context="自动登录",
         ):
+            if getattr(self, "_news_page_back_exhausted", False):
+                self._set_stage("等待手动返回主页")
+                self._set_action("新闻/公告页返回次数已用尽，请手动返回主页。")
             return False
         if int(getattr(self, "_news_page_back_attempts", 0)) <= 2:
             self._esc_home_attempts = 0
@@ -990,6 +1001,7 @@ class AutoLoginTask(BaseBD2Task):
         self._esc_hold_until = 0.0
         self._esc_home_user_notified_at = 0.0
         self._news_page_back_attempts = 0
+        self._news_page_back_exhausted = False
         self._finished = False
         self._set_stage("等待登录页")
         self._set_action(action)

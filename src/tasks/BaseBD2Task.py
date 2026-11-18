@@ -84,6 +84,7 @@ OVERLAY_CLEAR_FRAMES = 2
 
 # 场景界面「房子 + H」返回控件单次调用最多点几次（点完由下一轮 _home_scan 复核）。
 SCENE_HOME_MAX_CLICKS = 3
+NEWS_PAGE_BACK_MAX_CLICKS = 3
 
 # back_return_bar_arrow.png 是整条左上古返回条（218x76 @1080p），
 # 可点的 ‹ 箭头在模板内 (0.79, 0.49)，不是几何中心。
@@ -429,64 +430,6 @@ class BaseBD2Task(BaseTask):
             self.log_warning(f"日常恢复主页失败：{exc}")
             return False
 
-    def try_return_home_with_back(self, max_presses: int | None = None) -> bool:
-        """自动返回主页失败后的兜底：按返回键逐级退出弹窗/子页面，再复核主页。
-
-        仅在已确认不在主页时才按返回键；每次按键后重新确认，最多
-        ``max_presses`` 次，避免在主页误触发「是否退出游戏」之类的确认框。
-        本方法不改变 ``auto_return_main_home`` 「证据不足即安全停止、绝不盲点」
-        的语义，只在它已经失败后才介入。
-        """
-        presses = (
-            int(self.config.get("回主页返回键兜底次数", 3))
-            if max_presses is None
-            else int(max_presses)
-        )
-        if presses <= 0:
-            return False
-        for attempt in range(1, presses + 1):
-            try:
-                frame = self.capture_frame()
-            except (TaskDisabledException, FinishedException):
-                raise
-            except Exception as exc:
-                self.log_warning(f"尝试返回主页：截图失败：{exc}")
-                return False
-            try:
-                if self._home_scan(frame)[0]:
-                    self._auto_return_home_cooldown_until = 0.0
-                    self.log_info("尝试返回主页：已确认回到主页。")
-                    return True
-            except (TaskDisabledException, FinishedException):
-                raise
-            except Exception as exc:
-                self.log_warning(f"尝试返回主页：主页识别失败：{exc}")
-                return False
-
-            # auto_return_main_home 失败会进入失败冷却；兜底是新一轮主动尝试，
-            # 需要清掉冷却才能让它重新截图和识别。
-            self._auto_return_home_cooldown_until = 0.0
-            self.log_info(
-                f"尝试返回主页：第 {attempt}/{presses} 次按返回键退出当前页面。"
-            )
-            try:
-                self.back(after_sleep=1.0)
-            except (TaskDisabledException, FinishedException):
-                raise
-            except Exception as exc:
-                self.log_warning(f"尝试返回主页：返回键失败：{exc}")
-                return False
-            self._auto_return_home_cooldown_until = 0.0
-            try:
-                if self.auto_return_main_home(notify_failure=False):
-                    return True
-            except (TaskDisabledException, FinishedException):
-                raise
-            except Exception as exc:
-                self.log_warning(f"尝试返回主页：自动返回主页异常：{exc}")
-        self.log_info("尝试返回主页：按返回键兜底后仍未确认主页。")
-        return False
-
     def auto_return_main_home(
         self,
         max_steps: int | None = None,
@@ -636,6 +579,10 @@ class BaseBD2Task(BaseTask):
                 self.sleep(settle)
                 acted = True
                 continue
+            if getattr(self, "_news_page_back_exhausted", False):
+                return self._finish_auto_return_failure(
+                    "新闻/公告页返回次数已用尽。", notify=notify_failure,
+                )
 
             failure_reason = (
                 "未确认到主页，也未正面识别到房子按钮或左上角返回控件。"
@@ -1009,7 +956,7 @@ class BaseBD2Task(BaseTask):
         这类页面亮度均匀、几乎占满画面，``modal_panel_bbox`` 会按面积上限拒绝，
         固定清理点又落在左侧分类栏（只切换分类），所以旧逻辑会一直循环到超时。
         这里只在 OCR 明确读到 新闻／公告 标题或左侧分类时才点击，绝不盲点；
-        同一页面点 3 次仍未退出后改用返回键兜底。
+        返回点击达到重试上限后报告失败，由调用方处理。
         """
         width = height = 0
         if frame is not None:
@@ -1045,15 +992,23 @@ class BaseBD2Task(BaseTask):
 
         if not news_page_detected(text):
             self._news_page_back_attempts = 0
+            self._news_page_back_exhausted = False
             self.info_set("整页退出", f"{context}：未检测到新闻/公告页")
             return False
 
-        point = news_back_point(boxes, width, height)
         now = monotonic()
         if now - float(getattr(self, "_news_page_back_at", 0.0)) < 1.5:
             return True
 
         attempts = int(getattr(self, "_news_page_back_attempts", 0)) + 1
+        if attempts > NEWS_PAGE_BACK_MAX_CLICKS:
+            if not getattr(self, "_news_page_back_exhausted", False):
+                self._news_page_back_exhausted = True
+                message = f"{context}：新闻/公告页已点击返回 {attempts - 1} 次，仍未退出。"
+                self.info_set("整页退出", message)
+                self.log_warning(message)
+            return False
+
         # 防循环：attempts==1 表示这是「重新识别到新闻页」的新一轮。如果在 90 秒
         # 内反复出现这种新的一轮（每次退出后又回到同一个遮挡主页的弹窗），说明
         # 上层弹窗没关掉，继续点只会无限重复，于是停下交给调用方报失败。
@@ -1078,22 +1033,7 @@ class BaseBD2Task(BaseTask):
         self._news_page_back_at = now
         self._news_page_loop_detected = False
 
-        if attempts > 3:
-            self.info_set(
-                "整页退出",
-                f"{context}：新闻/公告页点返回 {attempts - 1} 次未退出，改用返回键。",
-            )
-            self.log_warning(
-                f"{context}：新闻/公告整页返回箭头无效，改用返回键退出。",
-            )
-            try:
-                self.back(after_sleep=1.0)
-            except (TaskDisabledException, FinishedException):
-                raise
-            except Exception as exc:
-                self.log_warning(f"{context}：返回键失败：{exc}")
-            return True
-
+        point = news_back_point(boxes, width, height)
         self.info_set(
             "整页退出",
             f"{context}：新闻/公告页，点击左上角返回 "
