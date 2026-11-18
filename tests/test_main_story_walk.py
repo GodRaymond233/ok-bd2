@@ -255,8 +255,8 @@ class InteractTemplateTest(unittest.TestCase):
             spec.file_name, 3840, 2160, reference_scale=spec.reference_scale,
         )
         width = round(template.shape[1] * scale)
-        self.assertGreaterEqual(width, 35, f"模板缩到 {width} 像素，比实机键帽小")
-        self.assertLessEqual(width, 50, f"模板缩到 {width} 像素，比实机键帽大")
+        self.assertGreaterEqual(width, 26, f"键帽内部字形缩到 {width} 像素")
+        self.assertLessEqual(width, 36, f"键帽内部字形放大到 {width} 像素")
 
     def test_prompt_roi_inside_frame(self):
         """搜索区要在画面内，且不覆盖顶部货币栏与底部技能区。"""
@@ -510,8 +510,8 @@ class WalkLoopTest(unittest.TestCase):
         self.assertEqual(task.alerts, [])
         self.assertEqual(task.keys, [], "这个客户端不吃注入按键，不该再按 F")
 
-    def test_moving_screen_does_not_interact(self):
-        """走过去路过的瞬间不停下来点提示，免得打断寻路。"""
+    def test_moving_prompt_does_not_interact(self):
+        """镜头移动时提示位置也在变，不打断寻路。"""
 
         task = _FakeWalkTask(
             [(MainStoryWalkState.FIELD, "前往丢弃铁假面的地方")],
@@ -521,6 +521,9 @@ class WalkLoopTest(unittest.TestCase):
         )
         task.interact_score = 0.95
         task.interact_works = True
+        task._walk_interact_target = lambda _frame: (
+            (task.capture_index * 10, 723), "F", .95,
+        )
         self.assertTrue(self._run(task))
         self.assertEqual(task.clicks, [])
 
@@ -549,19 +552,20 @@ class WalkLoopTest(unittest.TestCase):
             config={"推主线时间上限分钟": 0.2},
         )
         task.interact_score = 0.95
-        self.assertTrue(self._run(task))
+        self.assertFalse(self._run(task))
         self.assertNotIn(HUD_CLICK, task.clicks)
 
-    def test_interact_without_effect_falls_back_to_advance(self):
-        """点了提示条提示还在：不算交互成功，照旧点追踪条推进。"""
+    def test_interact_without_effect_does_not_restart_navigation(self):
+        """提示还在时保留交互优先级，不能又点追踪条打断。"""
 
         task = _FakeWalkTask(
             [(MainStoryWalkState.FIELD, "前往丢弃铁假面的地方")],
         )
         task.interact_score = 0.95
-        self.assertTrue(self._run(task))
+        self.assertFalse(self._run(task))
+        self.assertEqual(3, task.clicks.count(PROMPT_CLICK))
         self.assertIn(PROMPT_CLICK, task.clicks)
-        self.assertGreaterEqual(len(task.clicks), 2)
+        self.assertNotIn(TRACKER_OBJECTIVE_POINT, task.clicks)
         self.assertEqual(task.infos.get("推主线交互次数"), 0)
 
     def test_e_advance_mode_clicks_the_e_keycap(self):
@@ -597,7 +601,7 @@ class WalkLoopTest(unittest.TestCase):
             config={"推主线等待秒数": 5.0, "推主线时间上限分钟": 0.3},
         )
         task.interact_score = 0.95
-        self.assertTrue(self._run(task))
+        self.assertFalse(self._run(task))
         self.assertNotIn(TRACKER_OBJECTIVE_POINT, task.clicks)
         self.assertNotIn(TRACKER_E_POINT, task.clicks)
 

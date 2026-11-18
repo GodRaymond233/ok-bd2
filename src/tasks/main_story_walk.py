@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import re
 from difflib import SequenceMatcher
 from enum import Enum
 from time import monotonic
@@ -109,24 +110,27 @@ INTERACT_HUD_BUTTON_OFFSET = (0, -45)
 # 模板是 2026-11-18 实机 3840x2160 截图里「F」键帽的原尺寸裁切（键帽 35x39）。
 # 客户端实际是 4K 画面，所以它的宽在 1080p 参考尺寸下是 42 * 1920/3840 ≈ 21 像素，
 # 即 reference_scale=0.5；匹配器再按帧尺寸换算到客户端分辨率。
-# 阈值给到 0.93：真提示实测 1.00，追踪条那个「E」键帽只有 0.90，正好卡开。
+# 只匹配键帽内部，排除外围场景背景。两张不同背景的实机F字形匹配
+# 均超过0.97；E字形仅0.875，且追踪条不在场景搜索区内。
 INTERACT_WORLD_KEYCAP = TemplateSpec(
     "野外交互键F",
     "field/field_keycap_F.png",
-    0.93,
+    0.94,
     relative_roi=INTERACT_PROMPT_ROI,
     reference_scale=0.5,
     scale_ratios=(0.95, 1.0, 1.05),
-    min_pixel_score=0.85,
+    min_pixel_score=0.90,
+    crop=(.15, .15, .85, .85),
 )
 INTERACT_HUD_KEYCAP = TemplateSpec(
     "右下角交互键F",
     "field/field_keycap_F.png",
-    0.93,
+    0.94,
     relative_roi=INTERACT_HUD_ROI,
     reference_scale=0.5,
     scale_ratios=(0.95, 1.0, 1.05),
-    min_pixel_score=0.85,
+    min_pixel_score=0.90,
+    crop=(.15, .15, .85, .85),
 )
 INTERACT_KEYCAP_TEMPLATES = (INTERACT_WORLD_KEYCAP, INTERACT_HUD_KEYCAP)
 
@@ -141,8 +145,9 @@ INTERACT_COOLDOWN_SECONDS = 3.0
 INTERACT_CONFIRM_SECONDS = 3.0
 # 点完先停一下再取帧，否则截到的还是点之前那帧。
 INTERACT_CLICK_SETTLE_SECONDS = 0.8
-# 最后一场确认：提示条上的键帽在这个分数以下＝提示被吃掉了。
-INTERACT_GONE_SCORE = 0.9
+# 提示消失需连续两帧确认；失败重试受限，避免提示条与追踪条来回点。
+INTERACT_MAX_FAILURES = 3
+INTERACT_STABLE_DISTANCE = 5.0
 
 # 目标文字允许一字之差（OCR 形近误读），低于这个相似度才算「目标变了」。
 OBJECTIVE_MATCH_RATIO = 0.8
@@ -204,6 +209,10 @@ def objective_changed(
         return False
     if previous == current:
         return False
+    previous_counts = re.findall(r"\d+/\d+", previous)
+    current_counts = re.findall(r"\d+/\d+", current)
+    if previous_counts and current_counts and previous_counts != current_counts:
+        return True
     return SequenceMatcher(None, previous, current).ratio() < ratio
 
 
@@ -458,6 +467,9 @@ class MainStoryWalkFeatureMixin(MainStoryVisionMixin):
         failures = 0
         interactions = 0
         last_interact_at = 0.0
+        prompt_point = None
+        prompt_since = None
+        interact_failures = 0
         cycles = 0
         probe_lines: list[str] = []
 
@@ -510,7 +522,7 @@ class MainStoryWalkFeatureMixin(MainStoryVisionMixin):
                         last_progress_at = now
                         self._walk_set_stats(battles, advances, failures, interactions)
                         self.log_info(f"自动推主线：进入战斗（第 {battles} 场），让它自己打。")
-                elif state is not MainStoryWalkState.FIELD:
+                elif state not in (MainStoryWalkState.FIELD, MainStoryWalkState.UNKNOWN):
                     # 野外之外的任何界面切换都是一次推进（走进战斗、开始结算…）。
                     last_progress_at = now
                 if state is not MainStoryWalkState.CUTSCENE:
@@ -523,10 +535,14 @@ class MainStoryWalkFeatureMixin(MainStoryVisionMixin):
             signature = objective_signature(objective_text)
             if signature:
                 objective_readable = True
+                if not last_objective:
+                    last_objective = signature
+                    last_progress_at = now
             if objective_changed(last_objective, signature):
                 last_objective = signature
                 last_progress_at = now
                 still_since = None
+                interact_failures = 0
                 self.log_info(f"自动推主线：目标更新为「{objective_text}」。")
 
             # 画面在动只说明"游戏自己在走"，不算目标推进：否则一段循环动画
@@ -543,6 +559,18 @@ class MainStoryWalkFeatureMixin(MainStoryVisionMixin):
 
             if state is MainStoryWalkState.FIELD:
                 battle_since = None
+                target = self._walk_interact_target(frame) if interact else None
+                if target is not None:
+                    point = target[0]
+                    if prompt_point is None or max(
+                        abs(point[0] - prompt_point[0]), abs(point[1] - prompt_point[1]),
+                    ) > INTERACT_STABLE_DISTANCE:
+                        prompt_since = now
+                        interact_failures = 0
+                        prompt_point = point
+                else:
+                    prompt_point = None
+                    prompt_since = None
                 needed = advance_interval if advances else FIRST_ADVANCE_SECONDS
                 still_seconds = now - still_since if still_since is not None else 0.0
                 if int(still_seconds) != last_still_reported:
@@ -552,7 +580,9 @@ class MainStoryWalkFeatureMixin(MainStoryVisionMixin):
                 # 先看画面上有没有 F 键帽，有就点提示条并确认提示真的消失了。
                 if (
                     interact
-                    and still_seconds >= INTERACT_SETTLE_SECONDS
+                    and target is not None
+                    and prompt_since is not None
+                    and now - prompt_since >= INTERACT_SETTLE_SECONDS
                     and now - last_interact_at >= INTERACT_COOLDOWN_SECONDS
                 ):
                     last_interact_at = now
@@ -565,8 +595,19 @@ class MainStoryWalkFeatureMixin(MainStoryVisionMixin):
                         last_progress_at = now
                         still_since = now
                         last_still_reported = 0
+                        prompt_point = None
+                        prompt_since = None
+                        interact_failures = 0
+                    else:
+                        interact_failures += 1
+                        if interact_failures >= INTERACT_MAX_FAILURES:
+                            return self._main_story_walk_stuck(
+                                frame, "发现F交互提示，但连续3次点击后没有推进，请检查交互条件",
+                                evidence, objective_text,
+                            )
                 if (
                     tracker_seen
+                    and target is None
                     and still_since is not None
                     and now - still_since >= needed
                 ):
@@ -717,6 +758,11 @@ class MainStoryWalkFeatureMixin(MainStoryVisionMixin):
                     return self._main_story_walk_stuck(
                         frame, "界面持续无法识别", evidence, objective_text,
                     )
+
+            if state is not MainStoryWalkState.FIELD:
+                prompt_point = None
+                prompt_since = None
+                interact_failures = 0
 
             if state not in BATTLE_STATES and stuck_due(
                 last_progress_at, now, stuck_seconds,
@@ -869,13 +915,6 @@ class MainStoryWalkFeatureMixin(MainStoryVisionMixin):
             (y + box_height / 2) * REFERENCE_HEIGHT / max(1, height),
         )
 
-    def _walk_interact_score(self, frame) -> float:
-        """场景里「F」键帽最像的那一处得分；没有帧或不认识返回 -1。"""
-
-        if frame is None or getattr(frame, "size", 0) == 0:
-            return -1.0
-        return float(self._walk_match_spec(frame, INTERACT_WORLD_KEYCAP).score)
-
     def _walk_match_spec(self, frame, spec) -> MatchResult:
         """跑一次模板匹配；模板缺失/内存不足都只记一次，不打断主循环。"""
 
@@ -949,6 +988,7 @@ class MainStoryWalkFeatureMixin(MainStoryVisionMixin):
         """点完交互入口后的确认：提示条消失或者界面离开野外才算真的点到了。"""
 
         deadline = monotonic() + max(1.0, INTERACT_CONFIRM_SECONDS)
+        absent_frames = 0
         while monotonic() < deadline:
             self.sleep(0.5)
             try:
@@ -957,10 +997,14 @@ class MainStoryWalkFeatureMixin(MainStoryVisionMixin):
                 self.info_set("推主线截图错误", str(exc))
                 continue
             state, *_rest = self._walk_state(frame, threshold)
-            if state is not MainStoryWalkState.FIELD:
+            if state not in (MainStoryWalkState.FIELD, MainStoryWalkState.UNKNOWN):
                 return True
-            if self._walk_interact_score(frame) < INTERACT_GONE_SCORE:
-                return True
+            if state is MainStoryWalkState.FIELD and self._walk_interact_target(frame) is None:
+                absent_frames += 1
+                if absent_frames >= 2:
+                    return True
+            else:
+                absent_frames = 0
         return False
 
     def _walk_advance(self, mode: str) -> None:
