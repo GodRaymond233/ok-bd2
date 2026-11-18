@@ -2,6 +2,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import cv2
 import numpy as np
 
 from src.tasks import main_story_walk
@@ -18,6 +19,7 @@ from src.tasks.main_story_walk import (
     classify_main_story_walk_state,
     objective_changed,
     objective_signature,
+    scene_motion_delta,
     screen_delta,
     screen_signature,
     stuck_due,
@@ -35,6 +37,15 @@ from src.utils.vision_models import MatchResult
 PROMPT_CLICK = (1421 + INTERACT_PROMPT_OFFSET[0], 723)
 # 右下角那个键帽中心 (1421,923)，圆形按钮在它上面 45 像素。
 HUD_CLICK = (1421, 923 - 45)
+
+
+def castle_entrance_frames():
+    root = Path(__file__).parent / "fixtures" / "main_story_navigation"
+    for name in ("castle-1.png", "castle-2.png"):
+        crop = cv2.imdecode(np.frombuffer((root / name).read_bytes(), np.uint8), cv2.IMREAD_COLOR)
+        frame = np.zeros((540, 960, 3), np.uint8)
+        frame[150:430, 100:850] = crop
+        yield frame
 
 
 class ClassifyMainStoryWalkStateTest(unittest.TestCase):
@@ -200,6 +211,15 @@ class ScreenDeltaTest(unittest.TestCase):
             screen_delta(screen_signature(self._frame(0)), np.zeros((4, 4))), 0.0,
         )
         self.assertIsNone(screen_signature(None))
+
+    def test_stationary_castle_lighting_is_distinct_from_camera_pan(self):
+        first, second = castle_entrance_frames()
+        baseline = screen_signature(first)
+        stationary = screen_signature(second)
+        panned = screen_signature(np.roll(first, 4, axis=1))
+        self.assertGreater(screen_delta(baseline, stationary), 6.0)
+        self.assertLess(scene_motion_delta(baseline, stationary), 6.0)
+        self.assertGreaterEqual(scene_motion_delta(baseline, panned), 6.0)
 
 
 class RetryButtonTest(unittest.TestCase):
@@ -459,6 +479,16 @@ class WalkLoopTest(unittest.TestCase):
         )
         self.assertTrue(self._run(task))
         self.assertEqual(task.clicks, [])
+
+    def test_castle_navigation_retries_while_lighting_and_ocr_flicker(self):
+        frames = list(castle_entrance_frames())
+        task = _FakeWalkTask(
+            [(MainStoryWalkState.FIELD, "进入王城内部"),
+             (MainStoryWalkState.FIELD, "日进人主城内部")] * 40,
+            frames=lambda index: frames[index % len(frames)],
+        )
+        self.assertTrue(self._run(task))
+        self.assertEqual(task.clicks, [TRACKER_OBJECTIVE_POINT, TRACKER_OBJECTIVE_POINT])
 
     def test_stuck_alerts_and_stops(self):
         task = _FakeWalkTask(

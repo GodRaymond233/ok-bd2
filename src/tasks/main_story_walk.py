@@ -94,7 +94,7 @@ RETRY_KEYWORDS = ("重试", "重新挑战", "再次挑战", "retry")
 
 # 画面活动采样区：避开右上追踪条与右下技能轮盘，只留中间的游戏场景。
 ACTIVITY_ROI = _main_story_roi(200, 300, 1700, 860)
-ACTIVITY_STRIDE = 8
+ACTIVITY_SAMPLE_SIZE = (192, 72)
 
 # 野外交互提示的搜索区：走到 NPC/机关旁边时游戏会在物件旁画一个「F」键帽
 # （2026-11-18 实机「F 可疑物品」截图）。去掉顶部货币栏、左上小地图与队伍栏、
@@ -232,9 +232,12 @@ def screen_signature(frame) -> np.ndarray | None:
     crop = array[y1:y2, x1:x2]
     if crop.size == 0:
         return None
-    if crop.ndim == 3:
-        crop = crop[..., :3].mean(axis=2)
-    return crop[::ACTIVITY_STRIDE, ::ACTIVITY_STRIDE].astype("float32", copy=False)
+    # Downsample before converting to gray to keep the per-frame cost small and
+    # the motion threshold comparable across client resolutions.
+    sample = cv2.resize(crop, ACTIVITY_SAMPLE_SIZE, interpolation=cv2.INTER_AREA)
+    if sample.ndim == 3:
+        sample = cv2.cvtColor(sample, cv2.COLOR_BGR2GRAY)
+    return sample.astype(np.float32)
 
 
 def screen_delta(previous, current) -> float:
@@ -242,11 +245,29 @@ def screen_delta(previous, current) -> float:
 
     if previous is None or current is None:
         return 0.0
-    left = np.asarray(previous, dtype=float)
-    right = np.asarray(current, dtype=float)
+    left = np.asarray(previous, dtype=np.float32)
+    right = np.asarray(current, dtype=np.float32)
     if left.shape != right.shape or left.size == 0:
         return 0.0
     return float(np.abs(left - right).mean())
+
+
+def scene_motion_delta(previous, current) -> float:
+    """Measure changes spread across the scene after removing smooth lighting."""
+    shape = ACTIVITY_SAMPLE_SIZE[::-1]
+    if getattr(previous, "shape", None) != shape or getattr(current, "shape", None) != shape:
+        return 0.0
+    previous_edges = previous - cv2.GaussianBlur(previous, (5, 5), 0)
+    current_edges = current - cv2.GaussianBlur(current, (5, 5), 0)
+    if max(previous_edges.std(), current_edges.std()) < 2:
+        # A nearly flat frame has no reliable structure to compare. A large
+        # brightness change can still indicate a transition.
+        return screen_delta(previous, current)
+    diff = np.abs(previous_edges - current_edges)
+    # A moving camera shifts many tiles. A passing NPC or a particle usually
+    # changes only a few, which cannot dominate the median.
+    tiles = diff.reshape(4, 18, 6, 32).mean(axis=(1, 3))
+    return float(np.median(tiles))
 
 
 def _looks_like_retry_button(text: object) -> bool:
@@ -499,7 +520,7 @@ class MainStoryWalkFeatureMixin(MainStoryVisionMixin):
 
             now = monotonic()
             frame_signature = screen_signature(frame)
-            delta = screen_delta(last_frame_signature, frame_signature)
+            delta = scene_motion_delta(last_frame_signature, frame_signature)
             last_frame_signature = frame_signature
             # 画面差值每轮都变，写状态面板会刷屏；整数量级变化才写一次。
             if int(delta) != last_delta_reported:
@@ -541,7 +562,6 @@ class MainStoryWalkFeatureMixin(MainStoryVisionMixin):
             if objective_changed(last_objective, signature):
                 last_objective = signature
                 last_progress_at = now
-                still_since = None
                 interact_failures = 0
                 self.log_info(f"自动推主线：目标更新为「{objective_text}」。")
 
