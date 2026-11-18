@@ -158,6 +158,7 @@
   "添加预设…": "Add preset…",
   "方案名称": "Plan name",
   "保留免费米饭": "Keep free rice",
+  "保留数量只计算免费米饭；付费米饭无需填写，也不会消耗。": "The reserve applies to free rice only. Paid rice does not need to be entered and will not be spent.",
   "规则 {number} · 当": "Rule {number} · when",
   "规则 {number}": "Rule {number}",
   "条件": "condition",

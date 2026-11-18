@@ -14,6 +14,7 @@ import cv2
 import numpy as np
 from ok.task.exceptions import FinishedException, TaskDisabledException
 
+from src.interaction.BD2Interaction import InputTargetChanged
 from src.tasks.map_trade.action_icons import (
     ABSORB_ICON,
     ACTION_SLOT_CENTERS_REFERENCE,
@@ -65,6 +66,34 @@ from tests.helpers.map_trade import _seed_action_records, _seed_battle_supplemen
 
 
 class CollectionRunTest(unittest.TestCase):
+    def test_input_change_restarts_from_confirmed_home_once_and_keeps_ledger(self):
+        for scenario in ("recover", "repeat", "unsafe_home"):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as directory:
+                progress = ProgressStore(Path(directory) / "progress.json")
+                progress.load()
+                progress.mark_action_preexisting_used("Q_sp1", "main_area", "吸收")
+                collector = Collector(
+                    SimpleNamespace(config={}, info_set=Mock(), log_warning=Mock()),
+                    SimpleNamespace(), SimpleNamespace(return_home=Mock(return_value=
+                        NavigationResult(
+                            scenario != "unsafe_home",
+                            ScreenState.HOME if scenario != "unsafe_home" else ScreenState.UNKNOWN,
+                        ),
+                    )), progress,
+                )
+                collector._run_collection = Mock(side_effect=[
+                    InputTargetChanged("held mouse"),
+                    InputTargetChanged("held again") if scenario == "repeat"
+                    else CollectionResult(True),
+                ])
+                result = collector.run((CARD_BY_ID["Q_sp1"],))
+                self.assertEqual(scenario == "recover", result.success)
+                self.assertEqual(1 if scenario == "unsafe_home" else 2,
+                                 collector._run_collection.call_count)
+                collector.navigator.return_home.assert_called_once()
+                progress.load()
+                self.assertTrue(progress.weekly_action_complete("Q_sp1", "main_area", "吸收"))
+
     def test_insufficient_historical_quota_is_refreshed_after_entry_before_skipping(self):
         for limit in (40, 45, 75, 130):
             with self.subTest(limit=limit), tempfile.TemporaryDirectory() as directory:
@@ -863,6 +892,29 @@ class CollectorSkillTest(unittest.TestCase):
             "稳定=(4, 21)" in text for key, text in statuses if key == "吸收次数窗口"
         ))
 
+    def test_same_capacity_lower_count_requires_independent_reads_before_reset_code(self):
+        for sample in ("2/21", "3/21"):
+            with self.subTest(sample=sample):
+                collector, clicks, _statuses, progress = self._skill_collector(
+                    {ABSORB_ICON.name: ActionIconState.AVAILABLE}, {},
+                )
+                progress.reconcile_pending("吸收", (17, 21))
+                collector.vision.ocr_text = Mock(return_value=sample)
+                observation = Collector._read_count_window(collector, ABSORB_ACTION)
+                self.assertTrue(observation.limit_confirmed)
+                self.assertEqual(9, collector.vision.ocr_text.call_count)
+                result = collector._check_count_epoch(ABSORB_ACTION, observation)
+                self.assertIn("次数重置确认码", result.message)
+                self.assertEqual((17, 21), progress.trusted_action_baseline("吸收"))
+                self.assertEqual([], clicks)
+                token = progress.state.count_reset_requests["吸收"]["token"]
+                self.assertFalse(progress.confirm_count_reset("吸收", (4, 21), token))
+                collector.task.config["次数重置确认码"] = token
+                self.assertIsNone(collector._check_count_epoch(ABSORB_ACTION, observation))
+                progress.load()
+                self.assertEqual(observation.count, progress.trusted_action_baseline("吸收"))
+                self.assertFalse(progress.confirm_count_reset("吸收", observation.count, token))
+
     def setUp(self):
         self._layout_check = Collector._check_collection_skill_layout
         layout = patch.object(Collector, "_check_collection_skill_layout", return_value=None)
@@ -1210,6 +1262,7 @@ class CollectorSkillTest(unittest.TestCase):
                     self.assertIn(("prepare", "召集"), events)
                     self.assertIn(("prepare", "压制"), events)
                     if len(clicks) == 1:
+                        self.assertIn(("settle", "召集"), events)
                         self.assertNotIn(("post", "召集"), events)
                         record = progress.get_action_record("Q_sp1", role, "召集")
                         self.assertEqual("clicked", record["state"])
@@ -1228,6 +1281,14 @@ class CollectorSkillTest(unittest.TestCase):
                 collector._open_skill_menu = Mock(return_value=True)
                 collector._read_count_window = read_count
                 collector._read_action_feedback = read_feedback
+                wait_after_feedback = collector._wait_after_feedback_match
+
+                def settle(action, feedback):
+                    wait_after_feedback(action, feedback)
+                    if feedback.outcome == "success":
+                        events.append(("settle", action.name))
+
+                collector._wait_after_feedback_match = settle
                 collector._capture_skill_field = capture_field
                 collector.vision.click_client = click_client
                 if scenario == "encounter":

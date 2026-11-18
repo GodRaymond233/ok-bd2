@@ -16,6 +16,7 @@ from src.tasks.DailyTask import DailyTask
 from src.tasks.FreeGachaTask import FreeGachaTask
 from src.tasks.MapCollectionTask import MapCollectionTask
 from src.tasks.MapTradeTask import MapTradeTask
+from src.tasks.MissionRewardTask import MissionRewardTask
 from src.tasks.PVPTask import PVPTask
 from src.tasks.QuickHuntTask import QuickHuntTask
 from src.tasks.SquareGoddessTask import SquareGoddessTask
@@ -75,6 +76,7 @@ DAILY_BATCH_CHILDREN = (
     DailyBatchChild("跑图", MapCollectionTask),
     DailyBatchChild("跑商", MapTradeTask),
     DailyBatchChild("自动PVP", PVPTask),
+    DailyBatchChild("领取每日及每周奖励", MissionRewardTask),
 )
 
 
@@ -100,7 +102,7 @@ class DailyBatchTask(BaseTask):
         self.name = "一键完成日常"
         self.description = (
             "按顺序执行已开启的公会、小屋、酒馆、抽抽乐、快速狩猎、"
-            "广场、跑图、跑商和PVP。"
+            "广场、跑图、跑商和PVP，最后领取每日及每周奖励。"
         )
         self.icon = FluentIcon.COMPLETED
         self.group_name = "日常/周常"
@@ -140,6 +142,7 @@ class DailyBatchTask(BaseTask):
                     "沿用每周跑图卡片的配置；执行剩余时，今日额度已用尽或本周已完成则跳过。"
                     "技能次数每日08:00、资源周一08:00刷新（北京时间）。"
                 ),
+                "领取每日及每周奖励": "在日常流程最后领取奖励；同日再次执行也会复查新增奖励。",
             }
         )
         self.config_type.update(
@@ -321,7 +324,8 @@ class DailyBatchTask(BaseTask):
                 self.log_info(f"一键完成日常：{child.config_key} 赛季结算，本次跳过。")
                 continue
 
-            if only_incomplete and history.is_completed(
+            recheck = bool(getattr(task, "recheck_in_batch", False))
+            if only_incomplete and not recheck and history.is_completed(
                 str(task.name), scope=configuration_scope(task),
             ):
                 skipped.append(child.config_key)
@@ -331,7 +335,8 @@ class DailyBatchTask(BaseTask):
                 self.log_info(f"一键完成日常：{child.config_key} 今日已完成，跳过。")
                 continue
 
-            if only_incomplete and not schedule_store.is_due(
+            last_run_ok = bool((history.last_run(str(task.name)) or {}).get("ok"))
+            if only_incomplete and not (recheck and last_run_ok) and not schedule_store.is_due(
                 str(task.name), scope=configuration_scope(task),
             ):
                 remaining = schedule_store.backoff_remaining_minutes(str(task.name))

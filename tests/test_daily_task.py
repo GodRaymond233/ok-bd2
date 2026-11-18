@@ -382,6 +382,7 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         task.sleep = lambda *_args, **_kwargs: None
         # The repeat-visit probe polls on real time; these cases test leaving.
         task._wait_for_existing_guild_visit = lambda: False
+        task._frame_confirms_home = lambda *_: False
         clicks = []
         task._save_flow_diagnostic = lambda _name: self.assertEqual(1, len(clicks))
 
@@ -424,6 +425,7 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         task.sleep = lambda *_args, **_kwargs: None
         # The repeat-visit probe polls on real time; these cases test leaving.
         task._wait_for_existing_guild_visit = lambda: False
+        task._frame_confirms_home = lambda *_: False
         clicks = []
         task._save_flow_diagnostic = lambda _name: self.assertEqual(1, len(clicks))
 
@@ -445,7 +447,39 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         task._wait_for_home_confirmation = lambda name, **_kwargs: next(confirm_results)
 
         self.assertFalse(DailyTask.run_guild_sign_in(task))
-        self.assertEqual([(370, 155), (100, 50)], clicks)
+        self.assertEqual([(370, 155)], clicks)
+
+    def test_guild_entry_retries_once_on_home_and_never_clicks_back_from_home(self):
+        for width, height in ((1920, 1080), (3840, 2160)):
+            for found in (False, True):
+                with self.subTest(width=width, found=found):
+                    task = object.__new__(DailyTask)
+                    task.config = {"公会进入最大点击次数": 2}
+                    task.capture_frame = lambda: np.zeros((height, width, 3), dtype=np.uint8)
+                    task.info_set = Mock()
+                    task.log_info = Mock()
+                    task.sleep = Mock()
+                    task._wait_for_home_confirmation = Mock(return_value=True)
+                    task._frame_confirms_home = Mock(return_value=True)
+                    task._match_best = Mock(return_value=(MatchResult(
+                        .99, (width // 5, height // 5), (width // 20, height // 20),
+                        pixel_score=.99,
+                    ), GUILD_TEMPLATE))
+                    task._wait_loading_or_template_or_ocr = Mock(side_effect=[
+                        ("none", False, ""), ("target" if found else "none", found, "签到成功"),
+                    ])
+                    task._wait_for_template_or_ocr = Mock(return_value=(False, ""))
+                    task._wait_for_existing_guild_visit = Mock(return_value=False)
+                    task._save_flow_diagnostic = Mock()
+                    task._click_reference = Mock()
+                    task.operate_click = Mock()
+                    self.assertEqual(found, task.run_guild_sign_in())
+                    task.operate_click.assert_called_once_with(.225, .225, after_sleep=.5)
+                    self.assertEqual(2, task._wait_loading_or_template_or_ocr.call_count)
+                    self.assertEqual(2 if found else 1, task._click_reference.call_count)
+                    self.assertFalse(any(
+                        call.args == (100, 50) for call in task._click_reference.call_args_list
+                    ))
 
     def _guild_entry_task(self, still_home):
         """公会入口重试用例的公共装配：模板命中、主页确认通过。"""
@@ -458,15 +492,16 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         task._sleep_after_recognition = lambda: None
         task.capture_frame = lambda: np.zeros((10, 10, 3), dtype=np.uint8)
         task._wait_for_home_confirmation = lambda *_args, **_kwargs: True
+        task._frame_confirms_home = lambda *_args, **_kwargs: still_home
         task._match_best = lambda *_args, **_kwargs: (
-            MatchResult(0.95, (0, 0), (1, 1)),
+            MatchResult(0.95, (1, 1), (2, 2)),
             SimpleNamespace(file_name="image/green/MainBotmUnionGE.png"),
         )
         task._passes = lambda *_args, **_kwargs: True
         clicks = []
         task._click_reference = lambda x, y, **_kwargs: clicks.append((x, y))
+        task.operate_click = lambda x, y, **_kwargs: clicks.append((x, y))
         task._wait_loading_or_template_or_ocr = lambda *_a, **_k: ("none", False, "")
-        task._guild_entry_still_on_home = lambda _attempt: still_home
         task._wait_for_template_or_ocr = lambda *_a, **_k: (False, "")
         task._wait_for_existing_guild_visit = lambda: False
         task._return_home_from_guild = lambda: True
@@ -480,7 +515,7 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         task, clicks = self._guild_entry_task(still_home=True)
 
         self.assertFalse(DailyTask.run_guild_sign_in(task))
-        self.assertEqual([GUILD_SIGN_IN_ENTRY_REFERENCE_POINT] * 3, clicks)
+        self.assertEqual([GUILD_SIGN_IN_ENTRY_REFERENCE_POINT, (.2, .2), (.2, .2)], clicks)
 
     def test_guild_entry_stops_retrying_once_home_is_left(self):
         # 已确认离开主页说明点击生效，不得再补点，否则会在公会页面上乱点。

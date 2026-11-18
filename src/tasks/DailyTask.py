@@ -324,32 +324,33 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
 
         self._status_set("公会判断", "已识别入口，进入公会")
         self._sleep_after_recognition()
-
-        entry_clicks = int(self.config.get("公会进入最大点击次数", 3))
-        loading_state = "none"
-        success_found = False
-        text = ""
-        for attempt in range(1, entry_clicks + 1):
-            if attempt > 1:
-                self.log_info(
-                    f"公会签到：第 {attempt} 次点击公会入口（转场可能吞掉点击）。"
-                )
-            self._click_reference(*GUILD_SIGN_IN_ENTRY_REFERENCE_POINT, after_sleep=0.5)
+        self._click_reference(*GUILD_SIGN_IN_ENTRY_REFERENCE_POINT, after_sleep=0.5)
+        loading_state, success_found, text = self._wait_loading_or_template_or_ocr(
+            "公会签到",
+            GUILD_SIGNUP_SUCCESS_TEMPLATE,
+            GUILD_SUCCESS_KEYWORDS,
+            name="guild_sign_in_early",
+            reject_template_on_home=True,
+        )
+        self._status_set("公会入口点击次数", 1)
+        entry_clicks = max(1, int(self.config.get("公会进入最大点击次数", 3)))
+        for attempt in range(2, entry_clicks + 1):
+            if loading_state != "none" or success_found:
+                break
+            frame = self.capture_frame()
+            if not self._frame_confirms_home(frame, "公会入口重试前"):
+                break
+            guild, guild_spec = self._match_best(frame, GUILD_ENTRY_TEMPLATES)
+            if not self._passes(guild, guild_spec):
+                break
+            self.log_info(f"公会入口点击后仍在主页，按新识别中心第 {attempt} 次点击。")
+            height, width = frame.shape[:2]
+            self.operate_click(guild.center[0] / width, guild.center[1] / height, after_sleep=0.5)
             self._status_set("公会入口点击次数", attempt)
             loading_state, success_found, text = self._wait_loading_or_template_or_ocr(
-                "公会签到",
-                GUILD_SIGNUP_SUCCESS_TEMPLATE,
-                GUILD_SUCCESS_KEYWORDS,
-                name="guild_sign_in_early" if attempt == 1 else f"guild_sign_in_early{attempt}",
-                reject_template_on_home=True,
+                "公会签到", GUILD_SIGNUP_SUCCESS_TEMPLATE, GUILD_SUCCESS_KEYWORDS,
+                name="guild_sign_in_retry", reject_template_on_home=True,
             )
-            if success_found or loading_state == "stuck":
-                break
-            if attempt >= entry_clicks:
-                break
-            # 仍能确认主页 = 这次点击被转场吞掉；已离开主页则交给后续模板/OCR 等待。
-            if not self._guild_entry_still_on_home(attempt):
-                break
         self._status_set("公会签到 loading 状态", loading_state)
         if loading_state == "stuck":
             self._status_set("公会签到成功", "否")
@@ -388,28 +389,6 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
         home_ok = self._return_home_from_guild()
         return bool(success_found and home_ok)
 
-    def _guild_entry_still_on_home(self, attempt: int) -> bool:
-        """点击公会入口后仍停在主页时返回 True。
-
-        2026-11-17 实机：任务启动后第一次点击公会入口无效——18 秒后画面仍是主页，
-        公会入口模板原样命中在同一坐标，签到因此整条失败。旧实现只点一次就直接
-        进入签到检测，没有补点机会。返回键早就有同类补点（BUG-20260901-02），
-        小屋入口也有（小屋进入最大点击次数），公会入口这里补齐。
-        """
-
-        try:
-            frame = self.capture_frame()
-        except (TaskDisabledException, FinishedException):
-            raise
-        except Exception:
-            return False
-        still_home = self._frame_confirms_home(frame, f"公会签到重试前主页{attempt}")
-        if still_home:
-            self.log_info(
-                f"公会签到：第{attempt}次点击后仍确认主页，判定点击被吞，准备补点。"
-            )
-        return still_home
-
     def _wait_for_existing_guild_visit(self) -> bool:
         deadline = monotonic() + 3.0
         hits = 0
@@ -443,6 +422,14 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
         全帧 OCR 仍能读到公会页面关键字时才补点返回键，最多 3 次。
         """
         home_ok = False
+        frame = self.capture_frame()
+        if self._frame_confirms_home(frame, "公会退出前"):
+            self._status_set("公会签到返回主页结果", "通过")
+            return True
+        text = self._ocr_text(frame, name="公会退出前页面")
+        if self._keyword_match_count(text, GUILD_PAGE_KEYWORDS) < 1:
+            self.log_info("公会签到：未确认公会页面，不点击返回。")
+            return False
         for attempt in range(1, 4):
             self._click_reference(*BACK_BUTTON_REFERENCE_POINT, after_sleep=1.0)
             if self._wait_for_home_confirmation("公会签到返回主页", timeout=4.0):

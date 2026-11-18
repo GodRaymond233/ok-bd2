@@ -38,6 +38,43 @@ class _ChildTask:
 
 
 class DailyBatchTaskTest(unittest.TestCase):
+    def test_rewards_are_last_and_rechecked_after_a_successful_run_today(self):
+        from src.tasks.DailyBatchTask import DAILY_BATCH_CHILDREN
+        from src.tasks.MissionRewardTask import MissionRewardTask
+        from src.tasks.run_history import default_store
+
+        self.assertIs(DAILY_BATCH_CHILDREN[-1].task_class, MissionRewardTask)
+        calls = []
+        rewards = _ChildTask("每日及每周奖励", calls)
+        rewards.recheck_in_batch = True
+        store = default_store()
+        store.record_task_done(SimpleNamespace(name=rewards.name, config=rewards.config,
+                                                info={"状态": "领取完成。"}, start_time=0))
+        task, _ = self.make_task({MissionRewardTask: rewards}, (DAILY_BATCH_CHILDREN[-1],),
+                                 {"启用": True})
+        with mock.patch.object(scheduler, "default_store") as schedule:
+            schedule.return_value.is_due.return_value = False
+            self.assertTrue(task.run(RUN_MODE_INCOMPLETE))
+        self.assertEqual([(rewards.name, True)], calls)
+
+    def test_reward_rechecks_still_respect_failure_backoff(self):
+        from src.tasks.DailyBatchTask import DAILY_BATCH_CHILDREN
+        from src.tasks.MissionRewardTask import MissionRewardTask
+        from src.tasks.run_history import default_store
+
+        calls = []
+        rewards = _ChildTask("每日及每周奖励", calls)
+        rewards.recheck_in_batch = True
+        default_store().record_task_done(SimpleNamespace(
+            name=rewards.name, config=rewards.config, info={"状态": "领取失败。"}, start_time=0))
+        task, _ = self.make_task({MissionRewardTask: rewards}, (DAILY_BATCH_CHILDREN[-1],),
+                                 {"启用": True})
+        with mock.patch.object(scheduler, "default_store") as schedule:
+            schedule.return_value.is_due.return_value = False
+            schedule.return_value.backoff_remaining_minutes.return_value = 3
+            self.assertTrue(task.run(RUN_MODE_INCOMPLETE))
+        self.assertEqual([], calls)
+
     def test_pvp_settlement_skips_in_both_modes_without_home_or_completion(self):
         for mode in (RUN_MODE_ALL, RUN_MODE_INCOMPLETE):
             for crosses_during_run in (False, True):
