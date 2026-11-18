@@ -14,6 +14,8 @@ from src.tasks.mission_rewards import (
 from src.tasks.task_vision_mixin import TaskVisionMixin
 from src.utils.image_utils import read_template_image
 
+PASS_PAGE_STATES = ("list", "claim", "empty")
+
 
 class MissionRewardTask(TaskVisionMixin, BaseBD2Task):
     recheck_in_batch = True
@@ -113,14 +115,17 @@ class MissionRewardTask(TaskVisionMixin, BaseBD2Task):
             self.info_set(f"{section}领奖", "待检查")
         if self._disabled_button is None:
             return self._fail("缺少按钮状态识别素材")
-        view, _, _ = self._read_view()
+        view, boxes, frame = self._read_view()
         if view.state == "popup":
             self.operate_click(*view.point, after_sleep=.6)
             view = self._wait_page()
             if view is None:
                 return self._fail("奖励弹窗返回任务页")
         if view.section not in SECTIONS:
-            if not self._wait_for_home_confirmation("奖励领取入口前主页确认"):
+            if season_pass_view(frame, boxes).state in PASS_PAGE_STATES:
+                if not self._return_from_pass():
+                    return self._fail("从通行证返回主页")
+            elif not self._wait_for_home_confirmation("奖励领取入口前主页确认"):
                 return self._fail("未确认主页或任务页")
             _, boxes, frame = self._read_view()
             if not self._frame_confirms_home(frame, "奖励领取主页复核"):
@@ -154,6 +159,24 @@ class MissionRewardTask(TaskVisionMixin, BaseBD2Task):
         self.info_set("通行证页面判断", f"{view.section or '-'} / {view.state}")
         return view, boxes, frame
 
+    def _return_from_pass(self):
+        deadline = monotonic() + max(1.0, float(self.config.get("页面等待秒数", 12)))
+        attempts = 0
+        next_back = 0.0
+        while monotonic() < deadline:
+            view, _, frame = self._read_pass_view()
+            if view.state in PASS_PAGE_STATES:
+                # 主页底图仍可被 OCR 读到。先用通行证页自己的返回控件。
+                if attempts < 2 and monotonic() >= next_back:
+                    if self._click_top_left_back(frame, attempts + 1):
+                        attempts += 1
+                        next_back = monotonic() + 2.0
+            elif view.state != "popup" and self._frame_confirms_home(frame, "通行证返回主页确认"):
+                self.info_set("通行证返回主页", "已确认主页")
+                return True
+            self.sleep(.5)
+        return False
+
     def _wait_pass_page(self, section=None):
         deadline = monotonic() + max(1.0, float(self.config.get("页面等待秒数", 12)))
         previous_tabs = None
@@ -161,7 +184,7 @@ class MissionRewardTask(TaskVisionMixin, BaseBD2Task):
             view, _, _ = self._read_pass_view()
             if section is not None and view.section == section and view.state in ("claim", "empty"):
                 return view
-            if section is None and view.state in ("list", "claim", "empty"):
+            if section is None and view.state in PASS_PAGE_STATES:
                 tabs = frozenset(name for name, _ in view.tabs)
                 if tabs == previous_tabs:
                     return view
@@ -173,7 +196,7 @@ class MissionRewardTask(TaskVisionMixin, BaseBD2Task):
 
     def _claim_season_passes(self):
         view, boxes, frame = self._read_pass_view()
-        if view.state not in ("list", "claim", "empty"):
+        if view.state not in PASS_PAGE_STATES:
             if not self._frame_confirms_home(frame, "通行证入口前主页确认"):
                 if not self._wait_for_home_confirmation("通行证入口前主页确认"):
                     return self._fail("未确认主页或通行证页")
@@ -224,8 +247,8 @@ class MissionRewardTask(TaskVisionMixin, BaseBD2Task):
             return self._fail("返回主页")
         if season_pass and not self._claim_season_passes():
             return False
-        if season_pass and not self.auto_return_main_home(notify_failure=False):
-            return self._fail("返回主页")
+        if season_pass and not self._return_from_pass():
+            return self._fail("从通行证返回主页")
         self.info_set("状态", "每日及每周奖励完成：当前可领取奖励已领完。")
         self.log_completion("每日及每周奖励：领取检查完成。")
         return True

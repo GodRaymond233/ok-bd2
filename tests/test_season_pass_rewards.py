@@ -1,6 +1,6 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -81,12 +81,13 @@ class SeasonPassTaskTest(unittest.TestCase):
         task._claim_missions = lambda sections: events.append(tuple(sections)) or True
         task._claim_season_passes = lambda: events.append("season passes") or True
         task.auto_return_main_home = lambda **_kwargs: events.append("home") or True
+        task._return_from_pass = lambda: events.append("pass back") or True
         task.info_set = lambda *_args: None
         task.log_completion = lambda *_args: None
 
         self.assertTrue(task.run())
 
-        self.assertEqual([SECTIONS, "home", "season passes", "home"], events)
+        self.assertEqual([SECTIONS, "home", "season passes", "pass back"], events)
 
     def test_claims_each_identified_season_and_confirms_disabled_button(self):
         task = object.__new__(MissionRewardTask)
@@ -104,7 +105,7 @@ class SeasonPassTaskTest(unittest.TestCase):
         popup = RewardView("popup", point=dismiss)
         frames = iter([guide, guide, guide, available, available,
                        popup, popup, popup, cleared, cleared,
-                       cleared, cleared, other, other, other])
+                       cleared, cleared, other, other, other, other, RewardView()])
         events = []
         task._read_pass_view = lambda: (next(frames), [], None)
         task.sleep = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
@@ -116,7 +117,50 @@ class SeasonPassTaskTest(unittest.TestCase):
         task.operate_click = click
         task.info_set = lambda *_args: None
         task.log_completion = lambda *_args: None
-        task.auto_return_main_home = lambda **_kwargs: events.append("home") or True
+        task.auto_return_main_home = Mock()
+        task._click_top_left_back = lambda _frame, _attempt: events.append("pass back") or True
+        task._frame_confirms_home = Mock(return_value=True)
         with patch("src.tasks.MissionRewardTask.monotonic", side_effect=lambda: clock[0]):
             self.assertTrue(task.run())
-        self.assertEqual([card_one, button, dismiss, card_two, "home"], events)
+        self.assertEqual([card_one, button, dismiss, card_two, "pass back"], events)
+        task.auto_return_main_home.assert_not_called()
+        task._frame_confirms_home.assert_called_once()
+
+    def test_return_retries_at_most_twice_while_pass_stays_open(self):
+        task = object.__new__(MissionRewardTask)
+        task.config = {"页面等待秒数": 5}
+        clock = [0.0]
+        frame = object()
+        task._read_pass_view = Mock(return_value=(RewardView("empty", SPECIAL), [], frame))
+        task.sleep = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+        task._click_top_left_back = Mock(return_value=True)
+        task._frame_confirms_home = Mock(return_value=True)
+
+        with patch("src.tasks.MissionRewardTask.monotonic", side_effect=lambda: clock[0]):
+            self.assertFalse(task._return_from_pass())
+
+        self.assertEqual([(frame, 1), (frame, 2)],
+                         [call.args for call in task._click_top_left_back.call_args_list])
+        task._frame_confirms_home.assert_not_called()
+
+    def test_daily_rewards_can_start_with_pass_already_open(self):
+        task = object.__new__(MissionRewardTask)
+        task._disabled_button = object()
+        daily = RewardView("empty", SECTIONS[0])
+        task._read_view = Mock(side_effect=[
+            (RewardView(), boxes(PASS_LABELS), pass_frame(254)),
+            (RewardView(), boxes((("任务", .35, .94),)), pass_frame(254)),
+        ])
+        task._return_from_pass = Mock(return_value=True)
+        task._wait_for_home_confirmation = Mock()
+        task._frame_confirms_home = Mock(return_value=True)
+        task._wait_page = Mock(return_value=daily)
+        task._claim_section = Mock(return_value=True)
+        task.info_set = Mock()
+        task.operate_click = Mock()
+
+        self.assertTrue(task._claim_missions((SECTIONS[0],)))
+
+        task._return_from_pass.assert_called_once()
+        task._wait_for_home_confirmation.assert_not_called()
+        task._claim_section.assert_called_once_with(SECTIONS[0])
