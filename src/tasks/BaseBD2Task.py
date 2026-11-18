@@ -413,6 +413,64 @@ class BaseBD2Task(BaseTask):
             self.log_warning(f"日常恢复主页失败：{exc}")
             return False
 
+    def try_return_home_with_back(self, max_presses: int | None = None) -> bool:
+        """自动返回主页失败后的兜底：按返回键逐级退出弹窗/子页面，再复核主页。
+
+        仅在已确认不在主页时才按返回键；每次按键后重新确认，最多
+        ``max_presses`` 次，避免在主页误触发「是否退出游戏」之类的确认框。
+        本方法不改变 ``auto_return_main_home`` 「证据不足即安全停止、绝不盲点」
+        的语义，只在它已经失败后才介入。
+        """
+        presses = (
+            int(self.config.get("回主页返回键兜底次数", 3))
+            if max_presses is None
+            else int(max_presses)
+        )
+        if presses <= 0:
+            return False
+        for attempt in range(1, presses + 1):
+            try:
+                frame = self.capture_frame()
+            except (TaskDisabledException, FinishedException):
+                raise
+            except Exception as exc:
+                self.log_warning(f"尝试返回主页：截图失败：{exc}")
+                return False
+            try:
+                if self._home_scan(frame)[0]:
+                    self._auto_return_home_cooldown_until = 0.0
+                    self.log_info("尝试返回主页：已确认回到主页。")
+                    return True
+            except (TaskDisabledException, FinishedException):
+                raise
+            except Exception as exc:
+                self.log_warning(f"尝试返回主页：主页识别失败：{exc}")
+                return False
+
+            # auto_return_main_home 失败会进入失败冷却；兜底是新一轮主动尝试，
+            # 需要清掉冷却才能让它重新截图和识别。
+            self._auto_return_home_cooldown_until = 0.0
+            self.log_info(
+                f"尝试返回主页：第 {attempt}/{presses} 次按返回键退出当前页面。"
+            )
+            try:
+                self.back(after_sleep=1.0)
+            except (TaskDisabledException, FinishedException):
+                raise
+            except Exception as exc:
+                self.log_warning(f"尝试返回主页：返回键失败：{exc}")
+                return False
+            self._auto_return_home_cooldown_until = 0.0
+            try:
+                if self.auto_return_main_home(notify_failure=False):
+                    return True
+            except (TaskDisabledException, FinishedException):
+                raise
+            except Exception as exc:
+                self.log_warning(f"尝试返回主页：自动返回主页异常：{exc}")
+        self.log_info("尝试返回主页：按返回键兜底后仍未确认主页。")
+        return False
+
     def auto_return_main_home(
         self,
         max_steps: int | None = None,
