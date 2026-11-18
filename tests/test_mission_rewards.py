@@ -160,7 +160,8 @@ class MissionRewardVisionTest(unittest.TestCase):
 class MissionRewardFlowTest(unittest.TestCase):
     def make_task(self, views, **config):
         task = object.__new__(MissionRewardTask)
-        task.config = {"领奖等待秒数": 4, "最多领取次数": 2, **config}
+        task.config = {"领奖等待秒数": 4, "最多领取次数": 2,
+                       "领取赛季通行证奖励": False, **config}
         task.info = {}
         task.info_set = task.info.__setitem__
         task.operate_click = Mock()

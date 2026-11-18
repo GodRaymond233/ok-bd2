@@ -59,14 +59,7 @@ def home_mission_entry(boxes, width, height):
     return _point(entries[0], width, height) if len(entries) == 1 else None
 
 
-def mission_reward_view(frame, boxes, disabled_template):
-    """Require the foreground title, sidebar, interval header and bulk button."""
-    height, width = frame.shape[:2]
-    labels = [(box, normalize_ocr_text(box.name, alnum_only=True)) for box in boxes]
-
-    def unknown(reason):
-        return RewardView(diagnostics=reason)
-
+def _reward_popup(labels, width, height):
     reward_titles = [box for box, text in labels if text == "reward"
                      and _in(box, width, height, (.4, .2, .6, .36))]
     reward_counts = [box for box, text in labels if re.fullmatch(r"获得[1-9]\d*种", text)
@@ -81,13 +74,27 @@ def mission_reward_view(frame, boxes, disabled_template):
     if len(popup) == 1:
         if any(any(word in text for word in ("选择", "购买", "消耗"))
                and _in(box, width, height, (.2, .15, .8, .9)) for box, text in labels):
-            return unknown("奖励弹窗含选择/购买/消耗字样")
+            return RewardView(diagnostics="奖励弹窗含选择/购买/消耗字样")
         confirms = [box for box, text in labels if text in ("确认", "确定")
                     and _in(box, width, height, (.3, .5, .7, .95))]
         point = _point(confirms[0], width, height) if len(confirms) == 1 else (.5, .9)
         return RewardView("popup", point=point)
     if any(text in ("确认", "取消", "确定") for _, text in labels):
-        return unknown("页面含确认/取消/确定字样")
+        return RewardView(diagnostics="页面含确认/取消/确定字样")
+    return None
+
+
+def mission_reward_view(frame, boxes, disabled_template):
+    """Require the foreground title, sidebar, interval header and bulk button."""
+    height, width = frame.shape[:2]
+    labels = [(box, normalize_ocr_text(box.name, alnum_only=True)) for box in boxes]
+
+    def unknown(reason):
+        return RewardView(diagnostics=reason)
+
+    popup = _reward_popup(labels, width, height)
+    if popup is not None:
+        return popup
     titles = [(box, _clean_section_text(text)) for box, text in labels
               if _clean_section_text(text) in SECTIONS
               and _in(box, width, height, (.12, .01, .26, .10))]
@@ -128,3 +135,82 @@ def mission_reward_view(frame, boxes, disabled_template):
                 and bool(text_mask.any()) and float(difference[text_mask].mean()) <= 8)
     return RewardView("empty" if disabled else "claim", section,
                       _point(buttons[0], width, height), tuple(tabs))
+
+
+def home_pass_entry(boxes, width, height):
+    """Find the pass shortcut on a confirmed home frame."""
+    entries = [box for box in boxes
+               if normalize_ocr_text(box.name, alnum_only=True) == "通行证"
+               and _in(box, width, height, (.78, .24, .91, .31))]
+    return _point(entries[0], width, height) if len(entries) == 1 else None
+
+
+def _pass_card_selected(frame, label_y):
+    """The selected card has a gold outline above and beside its label."""
+    height, width = frame.shape[:2]
+    top = round((label_y - .070) * height)
+    margin = max(1, round(.009 * height))
+    header = frame[max(0, top - margin):top + margin,
+                   round(.174 * width):round(.266 * width)]
+    edge = frame[top + margin:round((label_y - .010) * height),
+                 round(.164 * width):round(.172 * width)]
+
+    def gold(pixels):
+        blue, green, red = cv2.split(pixels.astype(np.int16))
+        return (red - blue > 30) & (green - blue > 15) & (green > 125)
+
+    return (header.size > 0 and edge.size > 0
+            and gold(header).mean(axis=1).max() > .75
+            and gold(edge).mean(axis=0).max() > .75)
+
+
+def season_pass_view(frame, boxes):
+    """Read season cards and the selected season's level reward control."""
+    height, width = frame.shape[:2]
+    labels = [(box, normalize_ocr_text(box.name, alnum_only=True)) for box in boxes]
+    popup = _reward_popup(labels, width, height)
+    if popup is not None:
+        return popup
+
+    titles = [box for box, text in labels if text.endswith("通行证")
+              and _in(box, width, height, (.13, .015, .205, .08))]
+    if len(titles) != 1:
+        return RewardView()
+    cards = [(box, text) for box, text in labels if text.endswith("赛季通行证")
+             and "指南" not in text and _in(box, width, height, (.165, .30, .276, .73))]
+    if len({text for _, text in cards}) != len(cards):
+        return RewardView()
+    tabs = []
+    for box, text in cards:
+        x, y = _point(box, width, height)
+        tabs.append((text, (x, y - .03)))
+    tabs = tuple(tabs)
+    selected = [text for box, text in cards
+                if _pass_card_selected(frame, _point(box, width, height)[1])]
+    if len(selected) != 1:
+        guides = [box for box, text in labels if text.startswith("指南通行证")
+                  and _in(box, width, height, (.165, .30, .276, .38))]
+        if len(guides) == 1 and _pass_card_selected(frame, _point(guides[0], width, height)[1]):
+            return RewardView("list", tabs=tabs)
+        return RewardView()
+
+    section = selected[0]
+    level_labels = {text for box, text in labels
+                    if _in(box, width, height, (.48, .26, .78, .33))}
+    buttons = [box for box, text in labels if text == "全部获得"
+               and _in(box, width, height, (.71, .675, .79, .74))]
+    if not {"level", "基础"}.issubset(level_labels) or len(buttons) != 1:
+        return RewardView("list", section=section, tabs=tabs)
+
+    point = _point(buttons[0], width, height)
+    x, y = point
+    fill = frame[round((y - .018) * height):round((y - .013) * height),
+                 round((x - .016) * width):round((x + .016) * width)]
+    if fill.size == 0:
+        return RewardView("list", section=section, tabs=tabs)
+    brightness = float(np.median(cv2.cvtColor(fill, cv2.COLOR_BGR2GRAY)))
+    if brightness >= 225:
+        return RewardView("claim", section, point, tabs)
+    if 105 <= brightness <= 160:
+        return RewardView("empty", section, point, tabs)
+    return RewardView("list", section=section, tabs=tabs)
