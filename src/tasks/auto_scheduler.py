@@ -108,7 +108,7 @@ def _any_batch_child_due(batch, executor, history, schedule_store, now=None) -> 
     from src.tasks.run_history import configuration_scope
 
     for child in getattr(batch, "child_tasks", ()) or ():
-        if not bool(batch.config.get(child.config_key, True)):
+        if not bool(batch.config.get(child.config_key, getattr(child, "default_enabled", True))):
             continue
         task = executor.get_task_by_class(child.task_class)
         if task is None:

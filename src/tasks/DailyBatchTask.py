@@ -13,6 +13,8 @@ from src.diagnostics.runtime import observe_run, task_error
 from src.icons import TaskIcon as FluentIcon
 from src.tasks.BaseBD2Task import task_info_snapshot
 from src.tasks.DailyTask import DailyTask
+from src.tasks.equipment_daily import EQUIPMENT_DAILY_NAME
+from src.tasks.EquipmentDailyTask import EquipmentDailyTask
 from src.tasks.FreeGachaTask import FreeGachaTask
 from src.tasks.MapCollectionTask import MapCollectionTask
 from src.tasks.MapTradeTask import MapTradeTask
@@ -66,6 +68,7 @@ def _schedule_system_shutdown(seconds: int) -> bool:
 class DailyBatchChild:
     config_key: str
     task_class: type[BaseTask]
+    default_enabled: bool = True
 
 
 DAILY_BATCH_CHILDREN = (
@@ -76,6 +79,7 @@ DAILY_BATCH_CHILDREN = (
     DailyBatchChild("跑图", MapCollectionTask),
     DailyBatchChild("跑商", MapTradeTask),
     DailyBatchChild("自动PVP", PVPTask),
+    DailyBatchChild(EQUIPMENT_DAILY_NAME, EquipmentDailyTask, default_enabled=False),
     DailyBatchChild("领取每日及每周奖励", MissionRewardTask),
 )
 
@@ -118,7 +122,7 @@ class DailyBatchTask(BaseTask):
                 "启用": True,
                 "启动自动执行日常": False,
                 "完成日常后自动关机": False,
-                **{key: True for key in child_keys},
+                **{child.config_key: child.default_enabled for child in self.child_tasks},
             }
         )
         self.config_description.update(
@@ -300,7 +304,7 @@ class DailyBatchTask(BaseTask):
         )
 
         for child in self.child_tasks:
-            taking_part = bool(self.config.get(child.config_key, True))
+            taking_part = bool(self.config.get(child.config_key, child.default_enabled))
             if not taking_part or stop_remaining:
                 skipped.append(child.config_key)
                 self._skip_reasons[child.config_key] = {
@@ -477,7 +481,7 @@ class DailyBatchTask(BaseTask):
         enabled_children = [
             child
             for child in self.child_tasks
-            if bool(self.config.get(child.config_key, True))
+            if bool(self.config.get(child.config_key, child.default_enabled))
         ]
         if not enabled_children:
             self.log_info("一键完成日常：没有已启用子任务，不执行自动关机。")
