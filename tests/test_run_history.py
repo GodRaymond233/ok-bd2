@@ -245,7 +245,8 @@ class RunHistoryStoreTest(unittest.TestCase):
                     for method in methods:
                         value = False if method == failed_method else True
                         if method == "_start_auto_battle":
-                            value = "failed" if method == failed_method else "started"
+                            state = "failed" if method == failed_method else "started"
+                            value = (state, 4)
                         setattr(task, method, lambda *args, value=value: value)
                     self.assertFalse(task_class.run(task))
                     self.store.record_task_done(task, finished=finished)
