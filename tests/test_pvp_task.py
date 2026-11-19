@@ -311,7 +311,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         task.log_info = Mock()
         task.log_completion = Mock()
         task._ensure_pvp_hub = Mock(return_value=True)
-        task._start_auto_battle = Mock(return_value="started")
+        task._start_auto_battle = Mock(return_value=("started", 1))
         task._wait_result_and_leave = Mock(return_value=True)
         opens = datetime(2026, 11, 2, 0, tzinfo=timezone.utc).timestamp()
         with patch("src.tasks.PVPTask.pvp_settlement_end_ts", return_value=opens):
@@ -348,6 +348,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         task.log_info = Mock()
         task._click_pvp_stage_once = Mock(return_value=True)
         task._wait_for_ocr_patterns = Mock(return_value=(True, "鲜血鸡尾酒 自动战斗"))
+        task._confirm_free_ap_balance = Mock(return_value=None)
         task._ensure_free_ap_enabled = Mock(return_value=True)
         task._ensure_multiplier = Mock(return_value=True)
         task._select_max_battle_count = Mock()
@@ -355,7 +356,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         task._wait_battle_start_or_ap_shortage = Mock()
         opens = datetime(2026, 11, 2, 0, tzinfo=timezone.utc).timestamp()
         with patch("src.tasks.PVPTask.pvp_settlement_end_ts", side_effect=[None, opens]):
-            self.assertEqual("settlement", task._start_auto_battle(40))
+            self.assertEqual(("settlement", 40), task._start_auto_battle(40))
         self.assertTrue(task.info["PVP 结算休战"])
         task._wait_battle_start_or_ap_shortage.assert_not_called()
         self.assertNotIn(call(*PVP_BATTLE_START_SCREEN_POINT, after_sleep=2.0),
@@ -381,7 +382,7 @@ class PVPTaskHelperTest(unittest.TestCase):
                 if ap_retry:
                     def start(multiplier):
                         if multiplier == 40:
-                            return "ap_shortage"
+                            return "ap_shortage", 40
                         return PVPTask._start_auto_battle(task, 1)
                     task._start_auto_battle = start
                 with patch("src.tasks.PVPTask.pvp_settlement_end_ts", side_effect=[None, opens]):
@@ -1082,6 +1083,7 @@ class PVPTaskHelperTest(unittest.TestCase):
 
         task._wait_for_ocr_patterns = fake_wait_for_ocr_patterns
         task._click_ocr_pattern_center = lambda *_args, **_kwargs: True
+        task._confirm_free_ap_balance = Mock(return_value=None)
         task._ensure_free_ap_enabled = lambda: True
         starts = []
         task._ensure_multiplier = lambda multiplier: starts.append(multiplier) or True
@@ -1101,13 +1103,11 @@ class PVPTaskHelperTest(unittest.TestCase):
             "battle should not start"
         )
 
+        task._skip_cocktail_battle = Mock(return_value="free_ap_unavailable")
         self.assertTrue(PVPTask.run(task))
         self.assertEqual([10, 1], starts)
         self.assertEqual("鲜血鸡尾酒不足", infos["PVP AP不足 OCR"])
-        self.assertEqual(
-            ("镜中之战：免费 AP 已耗尽，流程结束。", True),
-            notifications[-1],
-        )
+        task._skip_cocktail_battle.assert_called_once_with("1 倍战斗所需的鲜血鸡尾酒不足")
 
     def _make_battle_window_task(self):
         harness = SimpleNamespace(
@@ -1135,16 +1135,17 @@ class PVPTaskHelperTest(unittest.TestCase):
         )
         self.assertEqual("鲜血鸡尾酒不足", harness.infos["PVP AP不足 OCR"])
 
-    def test_battle_start_window_times_out_to_settlement_wait(self):
+    def test_battle_start_window_stops_when_start_and_result_are_unconfirmed(self):
         task, harness = self._make_battle_window_task()
         task.config = {"PVP 战斗开始等待秒数": 30.0}
+        task._save_flow_diagnostic = Mock()
 
         with patch(
             "src.tasks.PVPTask.monotonic",
             side_effect=(0.0, 0.0, 100.0),
         ):
             self.assertEqual(
-                "started",
+                "failed",
                 PVPTask._wait_battle_start_or_ap_shortage(task, 1),
             )
 
@@ -1719,6 +1720,7 @@ class PVPTaskHelperTest(unittest.TestCase):
             return True
 
         task._click_template_until = fake_click_template_until
+        task._confirm_free_ap_balance = Mock(return_value=None)
         task._ensure_free_ap_enabled = lambda: True
         task._ensure_multiplier = lambda _multiplier: True
         task._select_max_battle_count = lambda: None
@@ -1750,7 +1752,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         task._wait_for_ocr_patterns = fake_wait_for_ocr_patterns
         task._click_screen_reference = fake_click_screen_reference
 
-        self.assertEqual("started", PVPTask._start_auto_battle(task, 1))
+        self.assertEqual(("started", 1), PVPTask._start_auto_battle(task, 1))
         self.assertEqual(
             PVP_STAGE_CLICK_REFERENCE_OFFSET,
             template_clicks[0][1]["target_reference_offset"],
@@ -1770,6 +1772,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         task.log_info = lambda *_args, **_kwargs: None
         task.log_warning = lambda *_args, **_kwargs: None
         task._click_template_until = lambda *_args, **_kwargs: True
+        task._confirm_free_ap_balance = Mock(return_value=None)
         task._ensure_free_ap_enabled = lambda: True
         task._ensure_multiplier = lambda _multiplier: True
         task._select_max_battle_count = lambda: None
@@ -1802,7 +1805,7 @@ class PVPTaskHelperTest(unittest.TestCase):
 
         task._wait_for_ocr_patterns = fake_wait_for_ocr_patterns
 
-        self.assertEqual("started", PVPTask._start_auto_battle(task, 1))
+        self.assertEqual(("started", 1), PVPTask._start_auto_battle(task, 1))
         self.assertIn((*PVP_AUTO_BATTLE_CLICK_REFERENCE, 1.0), clicks)
         self.assertEqual(
             [
@@ -1834,7 +1837,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         diagnostics = []
         task._save_flow_diagnostic = diagnostics.append
 
-        self.assertEqual("failed", PVPTask._start_auto_battle(task, 1))
+        self.assertEqual(("failed", 1), PVPTask._start_auto_battle(task, 1))
         self.assertEqual(["pvp_auto_battle_failed"], diagnostics)
 
     def test_start_auto_battle_stage_reclick_budget_gives_up(self):
@@ -1855,7 +1858,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         diagnostics = []
         task._save_flow_diagnostic = diagnostics.append
 
-        self.assertEqual("failed", PVPTask._start_auto_battle(task, 1))
+        self.assertEqual(("failed", 1), PVPTask._start_auto_battle(task, 1))
         # BUG-20260908-04：重试预算用尽才判失败，保留 pvp_auto_battle_failed 落帧。
         self.assertEqual(PVP_CLICK_VERIFY_ATTEMPTS, len(menu_waits))
         self.assertEqual(["pvp_auto_battle_failed"], diagnostics)
@@ -1885,7 +1888,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         diagnostics = []
         task._save_flow_diagnostic = diagnostics.append
 
-        self.assertEqual("failed", PVPTask._start_auto_battle(task, 1))
+        self.assertEqual(("failed", 1), PVPTask._start_auto_battle(task, 1))
         self.assertEqual(PVP_CLICK_VERIFY_ATTEMPTS, len(menu_calls))
         self.assertEqual([PVP_AUTO_BATTLE_CLICK_REFERENCE] * 2, clicks)
         self.assertEqual(["pvp_auto_battle_failed"], diagnostics)
@@ -1907,6 +1910,7 @@ class PVPTaskHelperTest(unittest.TestCase):
 
         task._wait_for_ocr_patterns = fake_wait_for_ocr_patterns
         task._click_ocr_pattern_center = lambda *_args, **_kwargs: True
+        task._confirm_free_ap_balance = Mock(return_value=None)
         task._ensure_free_ap_enabled = lambda: True
         multiplier_calls = []
         task._ensure_multiplier = (
@@ -1921,7 +1925,7 @@ class PVPTaskHelperTest(unittest.TestCase):
             (x, y, after_sleep)
         )
 
-        self.assertEqual("failed", PVPTask._start_auto_battle(task, 10))
+        self.assertEqual(("failed", 10), PVPTask._start_auto_battle(task, 10))
         self.assertEqual([10], multiplier_calls)
         self.assertNotIn((1381, 1061, 2.0), clicks)
 
