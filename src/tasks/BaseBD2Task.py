@@ -1,5 +1,6 @@
 import threading
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -44,6 +45,7 @@ from src.utils.home_confirmation import (
     news_back_point,
     news_page_detected,
     scene_home_button_point,
+    wide_upper_right_button_at,
 )
 from src.utils.image_utils import (
     best_pixel_valid_match,
@@ -60,6 +62,7 @@ from src.utils.ocr_utils import normalize_ocr_text
 from src.utils.template_resolution import offline_template_scale
 
 logger = Logger.get_logger(__name__)
+_BACKGROUND_HOME_TASK = ContextVar("bd2_background_home_task", default=None)
 PROBE_OUTPUT_DIR = Path("probe_outputs")
 GREEN_MASK_TOLERANCE = 0
 CARTRIDGE_RECENT_ENTRY_POINT = (0.7875, 0.9111111111111111)
@@ -145,6 +148,7 @@ class RecentPvpCartridgeMatch:
 
 class BaseBD2Task(BaseTask):
     DEFAULT_MOVE = False
+    return_home_after_run = True
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -215,6 +219,8 @@ class BaseBD2Task(BaseTask):
             return super().info_add_to_list(key, item)
 
     def info_set(self, key, value):
+        if _BACKGROUND_HOME_TASK.get() is self:
+            return None
         with self._task_info_lock():
             changed = (
                 key in ("状态", "阶段", "当前阶段", "当前子任务")
@@ -419,6 +425,7 @@ class BaseBD2Task(BaseTask):
 
     def recover_daily_home(self) -> bool:
         """Confirm the safe boundary before continuing an independent daily task."""
+        token = _BACKGROUND_HOME_TASK.set(self)
         try:
             # Read-only confirmation is allowed even during the click-recovery cooldown.
             if self._home_scan(self.capture_frame())[0]:
@@ -429,6 +436,14 @@ class BaseBD2Task(BaseTask):
         except Exception as exc:
             self.log_warning(f"日常恢复主页失败：{exc}")
             return False
+        finally:
+            _BACKGROUND_HOME_TASK.reset(token)
+
+    def finish_gameplay_at_home(self) -> bool:
+        """Try to restore home without rewriting the completed task's result."""
+        if not self.return_home_after_run or not bool(self.config.get("启用", True)):
+            return True
+        return self.recover_daily_home()
 
     def auto_return_main_home(
         self,
@@ -686,6 +701,8 @@ class BaseBD2Task(BaseTask):
                 return None
             center_x = result.position[0] + result.size[0] // 2
             center_y = result.position[1] + result.size[1] // 2
+            if wide_upper_right_button_at(frame, (center_x, center_y)):
+                return None
             self.info_set(
                 "返回主页房子模板",
                 f"{result.score:.3f}/{threshold:.3f} @{center_x},{center_y}",
@@ -740,6 +757,11 @@ class BaseBD2Task(BaseTask):
         # 实机 4K 帧复现）。这里改用几何判据同时给出点击点，避免再有
         # 「有证据但没坐标」的分支去点固定百分比。
         point = scene_home_button_point(frame)
+        if point is not None:
+            height, width = frame.shape[:2]
+            pixel = (round(point[0] * width), round(point[1] * height))
+            if wide_upper_right_button_at(frame, pixel):
+                point = None
         self._scene_home_point = point
         if point is not None:
             self.info_set(

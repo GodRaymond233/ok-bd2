@@ -485,6 +485,27 @@ def _scene_glyph_candidates(crop, gray, frame_h: int) -> list[ScenePlateBox]:
     return found
 
 
+def wide_upper_right_button_at(frame, point: tuple[int, int]) -> bool:
+    """Reject a house match that lands on a wide, pale text button such as 比较."""
+    height, width = frame.shape[:2]
+    left = round(width * .80)
+    top = round(height * .005)
+    roi = frame[top:round(height * .10), left:width]
+    if roi.size == 0:
+        return False
+    lower = roi.min(axis=2)
+    pale = ((lower >= 115) & (roi.max(axis=2) - lower <= 36)).astype(np.uint8)
+    _, _, stats, _ = cv2.connectedComponentsWithStats(pale, connectivity=8)
+    x, y = point
+    for box_x, box_y, box_w, box_h, area in stats[1:]:
+        if (box_w >= width * .063 and height * .022 <= box_h <= height * .062
+                and area >= box_w * box_h * .65
+                and box_x <= x - left < box_x + box_w
+                and box_y <= y - top < box_y + box_h):
+            return True
+    return False
+
+
 def scene_home_button_point(frame) -> tuple[float, float] | None:
     """Locate the scene return-home button and return a click point.
 

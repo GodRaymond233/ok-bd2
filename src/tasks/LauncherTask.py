@@ -4,6 +4,7 @@ from src.tasks.BaseBD2Task import BaseBD2Task
 
 
 class LauncherTask(BaseBD2Task):
+    return_home_after_run = False
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.name = "连接游戏"

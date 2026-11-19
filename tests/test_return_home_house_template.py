@@ -19,6 +19,7 @@ import cv2
 import numpy as np
 
 from src.tasks.BaseBD2Task import TEMPLATE_DIR, BaseBD2Task
+from src.utils.vision_models import MatchResult
 
 WIDTH, HEIGHT = 3840, 2160
 TEMPLATE_NAME = "return_home_house_button_alpha.png"
@@ -114,6 +115,14 @@ class ReturnHomeHouseTemplateTest(unittest.TestCase):
     def test_does_not_match_the_share_settings_pill(self):
         task = _task()
         self.assertIsNone(task._match_house_button(_frame_with_share_pill()))
+
+    def test_rejects_false_positive_over_equipment_compare(self):
+        frame = _background()
+        frame[36:126, 3270:3610] = (202, 211, 219)
+        frame[58:96, 3405:3480] = 50
+        match = MatchResult(.96, (3542, 6), (84, 106))
+        with patch("src.utils.task_vision.match_template", return_value=match):
+            self.assertIsNone(_task()._match_house_button(frame))
 
     def test_does_not_match_an_empty_dark_frame(self):
         task = _task()

@@ -64,6 +64,14 @@ def _execute(self):
                     logger.debug(f"start running onetime_task {task.name}")
                     task.run()
                     returned = True
+                    finish_at_home = getattr(task, "finish_gameplay_at_home", None)
+                    if finish_at_home is not None:
+                        try:
+                            finish_at_home()
+                        except (TaskDisabledException, FinishedException):
+                            raise
+                        except Exception as error:
+                            logger.warning(f"{task.name}结束后回主页失败: {error}")
                     logger.debug(f"end running onetime_task {task.name}")
                 finally:
                     prevent_sleeping(False)

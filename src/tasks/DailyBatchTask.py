@@ -364,22 +364,6 @@ class DailyBatchTask(BaseTask):
                 task.config = ChainMap({"启用": True, "_仅执行未完成步骤": only_incomplete},
                                        original_config or {})
                 task.info_clear()
-                # 每个子任务开始前先尝试自动回主页（找不到入口也不硬失败，
-                # 子任务自身的入口主页确认/回主页逻辑仍会兜底）。
-                ensure_home = getattr(task, "auto_return_main_home", None)
-                if ensure_home is not None:
-                    try:
-                        if not ensure_home():
-                            self.log_warning(
-                                f"一键完成日常：{child.config_key} 自动回主页未成功，"
-                                "继续执行该子任务（由子任务自身兜底）。"
-                            )
-                    except (TaskDisabledException, FinishedException):
-                        raise
-                    except Exception as ensure_exc:
-                        self.log_warning(
-                            f"一键完成日常：{child.config_key} 自动回主页异常：{ensure_exc}"
-                        )
                 with suppress_task_completion_notifications(task):
                     child_result = bool(task.run())
                     child_finished = time.time()
@@ -398,12 +382,9 @@ class DailyBatchTask(BaseTask):
                     else:
                         failed.append(child.config_key)
                         publish_outcome()
-                        stop_remaining = not self._recover_failed_child(task)
-                        self.log_warning(
-                            f"一键完成日常：{child.config_key} 失败，"
-                            + ("停止后续子任务。" if stop_remaining
-                               else "已恢复主页，继续后续子任务。")
-                        )
+                        self.log_warning(f"一键完成日常：{child.config_key} 失败。")
+                at_home = self._finish_child_at_home(task)
+                stop_remaining = child_result is False and not at_home
             except (TaskDisabledException, FinishedException):
                 raise
             except Exception as exc:
@@ -411,7 +392,7 @@ class DailyBatchTask(BaseTask):
                 child_finished = time.time()
                 failed.append(child.config_key)
                 publish_outcome()
-                stop_remaining = not self._recover_failed_child(task)
+                stop_remaining = not self._finish_child_at_home(task)
                 self.log_error(
                     f"一键完成日常：{child.config_key} 异常。",
                     exc,
@@ -449,8 +430,10 @@ class DailyBatchTask(BaseTask):
         return True
 
     @staticmethod
-    def _recover_failed_child(task) -> bool:
-        recover = getattr(task, "recover_daily_home", None)
+    def _finish_child_at_home(task) -> bool:
+        recover = getattr(task, "finish_gameplay_at_home", None)
+        if recover is None:
+            recover = getattr(task, "recover_daily_home", None)
         try:
             return bool(recover and recover())
         except (TaskDisabledException, FinishedException):
