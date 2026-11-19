@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 
 from src.tasks.map_trade.data import (
     ITEM_ALIASES,
 )
 from src.tasks.map_trade.models import (
-    DEFAULT_RECIPES,
+    COOKING_GROUPS,
     DEFAULT_SALE_WHITELIST,
     CalendarEntry,
 )
@@ -15,13 +16,30 @@ from src.tasks.map_trade.trader_constants import split_items
 from src.tasks.map_trade.vision import normalize_text
 
 
+def parse_sale_reserves(text: str) -> dict[str, int]:
+    """Read item=quantity overrides; -1 excludes an item from sale."""
+    result = {}
+    for entry in re.split(r"[,，;；\n]", text):
+        if not entry.strip():
+            continue
+        name, separator, raw = entry.partition("=")
+        name, raw = name.strip(), raw.strip()
+        if not name or not separator or not re.fullmatch(r"-1|[0-9]+", raw):
+            raise ValueError("商品保留量请按「物品=非负整数」填写；-1表示不出售。")
+        if name in result:
+            raise ValueError(f"商品保留量重复：{name}")
+        result[name] = int(raw)
+    return result
+
+
 class PriceDiscoveryMixin:
     def _sale_whitelist(self) -> set[str]:
         raw = self.task.config.get("出售白名单", ",".join(DEFAULT_SALE_WHITELIST))
-        selected_recipes = self.task.config.get("5星料理", list(DEFAULT_RECIPES))
+        selected_recipes = self.task.config.get("黄框料理", COOKING_GROUPS["黄框料理"])
         configured = (
             set(DEFAULT_SALE_WHITELIST)
             | set(split_items(selected_recipes))
+            | set(split_items(self.task.config.get("蓝框料理", COOKING_GROUPS["蓝框料理"])))
             | set(split_items(raw))
         )
         expanded = set(configured)

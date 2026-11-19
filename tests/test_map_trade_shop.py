@@ -10,6 +10,7 @@ import numpy as np
 from src.tasks.map_trade.data import (
     SHOP_CARTRIDGE_PAGES,
     SHOP_FAVORITE_POINTS,
+    SHOP_PURCHASE_REFERENCES,
 )
 from src.tasks.map_trade.models import (
     MatchResult,
@@ -27,6 +28,27 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ShopAndCatalogTest(unittest.TestCase):
+
+    def test_story_shrimp_slots_are_excluded_from_purchase_favorites(self):
+        for shop_id, shrimp_slot in (("S3", 3), ("S13", 3), ("S16", 1)):
+            with self.subTest(shop_id=shop_id):
+                self.assertNotIn(shrimp_slot, SHOP_PURCHASE_REFERENCES[shop_id].favorite_slots)
+
+    def test_sale_selects_visible_target_without_inferring_page_boundaries(self):
+        for visible in ((True,), (False, True), (False, False)):
+            with self.subTest(visible=visible):
+                trader = create_trader()
+                trader.task = SimpleNamespace(log_warning=lambda *_args: None)
+                trader.vision = SimpleNamespace(capture=lambda: object())
+                views = iter(visible)
+                trader._cartridge_visible = lambda *_args: next(views)
+                trader._sell_cartridge_page = 1
+                trader._show_shop_page = lambda *_args, **_kwargs: False
+                selected = []
+                trader._select_purchase_cartridge = lambda shop: selected.append(shop) or True
+                self.assertEqual(visible[-1], trader._select_shop_cartridge_downward("S19"))
+                self.assertEqual(["S19"] if visible[-1] else [], selected)
+                self.assertIsNone(trader._sell_cartridge_page)
 
     def test_s1_normal_and_dimmed_templates_both_enter_competition(self):
         seen = []
@@ -72,7 +94,7 @@ class ShopAndCatalogTest(unittest.TestCase):
             scrolls.append((scroll_amount, count, interval, after_sleep))
         )
         trader._select_purchase_cartridge = lambda shop_id: selected.append(shop_id) or True
-        trader._align_unfavorited_points = lambda shop_id: aligned.append(shop_id) or True
+        trader._align_favorite_slots = lambda shop_id: aligned.append(shop_id) or True
 
         self.assertTrue(trader.rebuild_favorites())
 
@@ -117,7 +139,7 @@ class ShopAndCatalogTest(unittest.TestCase):
             scrolls.append((scroll_amount, count, interval, after_sleep))
         )
         trader._select_purchase_cartridge = lambda _shop_id: True
-        trader._align_unfavorited_points = lambda _shop_id: True
+        trader._align_favorite_slots = lambda _shop_id: True
 
         self.assertTrue(trader.rebuild_favorites())
         self.assertEqual(
@@ -157,7 +179,7 @@ class ShopAndCatalogTest(unittest.TestCase):
             scrolls.append((scroll_amount, count, interval, after_sleep))
         )
         trader._select_purchase_cartridge = lambda _shop_id: True
-        trader._align_unfavorited_points = lambda _shop_id: True
+        trader._align_favorite_slots = lambda _shop_id: True
 
         self.assertFalse(trader.rebuild_favorites())
         self.assertEqual(
@@ -195,15 +217,19 @@ class ShopAndCatalogTest(unittest.TestCase):
         trader = create_trader()
         trader.task = task
         trader.vision = SimpleNamespace(capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8))
-        states = {1: "gray", 2: "yellow", 6: "gray"}
-        trader._star_state = lambda _frame, slot, _point: states.get(slot)
+        states = dict.fromkeys((2, 3, 4, 5, 6, 7), "yellow")
+        states[1] = "gray"
+        trader._star_state = lambda _frame, slot, _point, **_kwargs: states.get(slot)
         trader._wait_for_star_state = lambda _slot, _point, _expected: True
 
-        self.assertTrue(trader._align_unfavorited_points("S1"))
+        self.assertTrue(trader._align_favorite_slots("S1"))
         self.assertEqual(
-            [(*SHOP_FAVORITE_POINTS[1], STAR_POST_CLICK_DELAY)],
+            [(*SHOP_FAVORITE_POINTS[slot], STAR_POST_CLICK_DELAY) for slot in (1, 6)],
             clicks,
         )
+
+        del states[7]
+        self.assertFalse(trader._align_favorite_slots("S1"))
 
     def test_gray_star_wait_accepts_removal_toast_confirmation(self):
         statuses = []
@@ -271,6 +297,13 @@ class ShopAndCatalogTest(unittest.TestCase):
         result["value"] = MatchResult(0.951, (1231, 238), (24, 24), 0.919)
         yellow["value"] = True
         self.assertEqual("yellow", trader._star_state(frame, 7, point))
+
+        result["value"] = MatchResult(0.831, (1554, 258), (25, 25), 0.895)
+        point = SHOP_FAVORITE_POINTS[8]
+        self.assertIsNone(trader._star_state(frame, 8, point))
+        self.assertEqual("yellow", trader._star_state(frame, 8, point, expected_yellow=True))
+        yellow["value"] = False
+        self.assertIsNone(trader._star_state(frame, 8, point, expected_yellow=True))
 
     def test_select_purchase_cartridge_reclicks_when_first_click_is_swallowed(self):
         from src.tasks.map_trade import trader_cartridge as cartridge_module

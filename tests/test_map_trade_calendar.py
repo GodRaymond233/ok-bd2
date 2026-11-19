@@ -23,7 +23,7 @@ from src.tasks.map_trade.calendar import (
     purchase_stock_date,
     sale_price_calendar_date,
 )
-from src.tasks.map_trade.models import DEFAULT_SALE_WHITELIST
+from src.tasks.map_trade.models import DEFAULT_SALE_WHITELIST, CalendarEntry
 from src.tasks.map_trade.progress import UTC_PLUS_8
 from tests.helpers.map_trade import create_trader
 
@@ -34,6 +34,30 @@ BUNDLED_CALENDAR = ROOT / "assets" / "map_trade" / "price_calendar.v1.json"
 
 
 class CalendarTest(unittest.TestCase):
+    def test_item_reserves_preserve_price_flags_and_blacklist(self):
+        trader = create_trader()
+        trader.task = SimpleNamespace(
+            config={"商品保留量": "杏仁=5000\n豆子=-1\n白糖=0",
+                    "使用出售白名单": False, "使用出售黑名单": True, "出售黑名单": "小麦"},
+            info_set=lambda *_args: None, log_info=lambda *_args: None,
+            log_warning=lambda *_args: None,
+        )
+        trader.vision = SimpleNamespace(simplify=lambda value: value)
+        trader.now_provider = lambda: datetime(2026, 11, 16, tzinfo=UTC_PLUS_8)
+        entries = (CalendarEntry("杏仁", "S1", reserve=2000), CalendarEntry("豆子", "S1"),
+                   CalendarEntry("小麦", "S1"), CalendarEntry("白糖", "S1", sell=False),
+                   CalendarEntry("蜂蜜", "S1", reserve=1000))
+        trader.calendar_client = SimpleNamespace(load=lambda **_kwargs: SimpleNamespace(
+            source="manual", entries_for=lambda _day: entries,
+        ))
+        self.assertEqual(
+            [("杏仁", 5000), ("蜂蜜", 1000)],
+            [(entry.item, entry.reserve) for entry in trader._resolve_sale_entries()],
+        )
+        self.assertEqual(3, len(trader._sale_not_sold))
+        trader.task.config["商品保留量"] = "杏仁=-2"
+        self.assertIsNone(trader._resolve_sale_entries())
+
     def test_market_refresh_boundaries_use_utc_plus_8_business_dates(self):
         self.assertEqual(23, SALE_PRICE_REFRESH_HOUR)
         self.assertEqual(8, PURCHASE_STOCK_REFRESH_HOUR)
@@ -87,7 +111,7 @@ class CalendarTest(unittest.TestCase):
                 "使用在线价表": True,
                 "自定义最高价表": "",
                 "出售白名单": "",
-                "5星料理": [],
+                "黄框料理": [],
             },
             info_set=lambda key, value: statuses.append((key, value)),
             log_info=logs.append,
@@ -253,6 +277,65 @@ class CalendarTest(unittest.TestCase):
 
             self.assertEqual("bundled", loaded.source)
             fetch.assert_not_called()
+
+    def test_dated_bundled_calendar_switches_at_market_refresh_and_preserves_manual(self):
+        revised = BUNDLED_CALENDAR.with_name("price_calendar.20261119.v1.json")
+        client = PriceCalendarClient(BUNDLED_CALENDAR, revised_bundled_path=revised)
+        for moment, expected in (
+            (datetime(2026, 11, 18, 22, 59, 59, tzinfo=UTC_PLUS_8), "土豆"),
+            (datetime(2026, 11, 18, 23, 0, 0, tzinfo=UTC_PLUS_8), "水果冰沙"),
+            (datetime(2027, 1, 1, tzinfo=UTC_PLUS_8), "水果冰沙"),
+        ):
+            with self.subTest(moment=moment):
+                client.now_provider = lambda: moment
+                loaded = client.load()
+                self.assertIn(expected, {entry.item for entry in loaded.entries_for(17)})
+                self.assertEqual(set(range(1, 32)), set(loaded.days))
+        self.assertIn("土豆", {entry.item for entry in client.load(
+            market_date=date(2026, 11, 18),
+        ).entries_for(17)})
+        manual = "\n".join(f"{day}=" for day in range(1, 32))
+        self.assertEqual("manual", client.load(
+            use_bundled=False, use_online=False, manual_text=manual,
+        ).source)
+        client.revised_bundled_path = revised.with_name("missing.json")
+        with self.assertRaises(FileNotFoundError):
+            client.load(market_date=date(2026, 11, 19))
+
+    def test_revised_calendar_routes_selected_dishes_and_retires_ingredient_sales(self):
+        revised = BUNDLED_CALENDAR.with_name("price_calendar.20261119.v1.json")
+        calendar = PriceCalendarClient(BUNDLED_CALENDAR, revised_bundled_path=revised).load(
+            market_date=date(2026, 11, 19),
+        )
+        trader = create_trader()
+        trader.task = SimpleNamespace(config={})
+        trader.vision = SimpleNamespace(simplify=lambda value: value)
+        whitelist = trader._sale_whitelist()
+        additions = (
+            ("水果冰沙", 17, "S5"), ("凯洛养生汤", 17, "E1"), ("土豆汤", 11, "S8"),
+            ("黑啤酒炖锅", 3, "R6"), ("藏红花甜茶", 2, "S19"),
+        )
+        new_entries = set()
+        for name, day, shop in additions:
+            with self.subTest(name=name):
+                matches = [
+                    (sale_day, entry) for sale_day, entries in calendar.days.items()
+                    for entry in entries
+                    if name in (entry.item, *entry.aliases)
+                ]
+                self.assertEqual([(day, shop)], [(d, e.shop.split(":")[0]) for d, e in matches])
+                entry = matches[0][1]
+                self.assertTrue(entry.sell and trader._entry_allowed(entry, whitelist))
+                new_entries.add((day, entry.item))
+        removed = {(22, "凯洛药材"), (18, "藏红花"), (24, "啤酒花"),
+                   (2, "水果罐头"), (24, "吐司"), (11, "牛奶")}
+        original = PriceCalendarClient(BUNDLED_CALENDAR).load()
+        for day, entries in original.days.items():
+            with self.subTest(day=day):
+                self.assertEqual(
+                    [e for e in entries if (day, e.item) not in removed],
+                    [e for e in calendar.entries_for(day) if (day, e.item) not in new_entries],
+                )
 
     def test_online_failure_uses_fresh_cache_without_reenabling_bundled(self):
         payload = json.loads(BUNDLED_CALENDAR.read_text(encoding="utf-8"))

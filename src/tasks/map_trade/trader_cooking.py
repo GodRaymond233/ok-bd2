@@ -12,11 +12,9 @@ from ok.task.exceptions import FinishedException, TaskDisabledException
 from src.interaction.BD2Interaction import InputTargetChanged
 from src.tasks.map_trade.action_icons import COOKING_ICON, SKILL_GROUP_CENTERS_REFERENCE
 from src.tasks.map_trade.models import (
+    COOKING_GROUPS,
     COOKING_RECIPE_TEMPLATES,
-    DEFAULT_COOKING_RECIPES,
-    FINAL_COOKING_RECIPE,
     MERCHANT_CARD_ID,
-    OPTIONAL_COOKING_RECIPES,
     MatchResult,
     TemplateSpec,
 )
@@ -203,6 +201,9 @@ class CookingFlowMixin:
 
     def run_cooking(self) -> bool:
         selected = self._selected_cooking_recipes()
+        if not selected:
+            self.task.log_info("料理：未选择食谱，本次跳过。")
+            return True
 
         unsupported = tuple(
             recipe for recipe in selected if recipe not in COOKING_RECIPE_SPECS
@@ -235,7 +236,7 @@ class CookingFlowMixin:
             if self._enter_cooking_list():
                 flow_success = True
                 for recipe in selected:
-                    outcome = self._cook_one_recipe(recipe)
+                    outcome = self._cook_recipe_batches(recipe)
                     if outcome is CookingRecipeOutcome.COOKED:
                         cooked.append(recipe)
                         self._status("料理进度", f"已完成：{'、'.join(cooked)}")
@@ -272,15 +273,38 @@ class CookingFlowMixin:
                 self._status("料理状态", "失败")
         return flow_success
 
-    def _selected_cooking_recipes(self) -> tuple[str, ...]:
-        raw = self.task.config.get("5星料理", [])
-        values = (
-            split_items(raw)
-            if isinstance(raw, str)
-            else split_items(tuple(raw or ()))
+    def _cook_recipe_batches(self, recipe: str) -> CookingRecipeOutcome:
+        limit = self.task.config.get("单道料理批次上限", 20)
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 100
+        ):
+            self.task.log_warning("料理：单道料理批次上限必须是1至100的整数，未开始制作。")
+            return CookingRecipeOutcome.FAILED
+        for batch in range(1, limit + 1):
+            outcome = self._cook_one_recipe(recipe)
+            if outcome is CookingRecipeOutcome.UNAVAILABLE and batch > 1:
+                return CookingRecipeOutcome.COOKED
+            if outcome is not CookingRecipeOutcome.COOKED:
+                # A missing recipe after a successful batch does not establish exhaustion.
+                if batch > 1 and outcome is CookingRecipeOutcome.ABSENT:
+                    return CookingRecipeOutcome.FAILED
+                return outcome
+            self._status("料理批次", f"{recipe}：{batch}/{limit}")
+        if self._select_recipe_card(recipe, inspect_only=True) is CookingRecipeOutcome.UNAVAILABLE:
+            return CookingRecipeOutcome.COOKED
+        self.task.log_warning(
+            f"料理：{recipe} 已完成{limit}批，达到本次上限，未确认材料耗尽。"
         )
-        optional = tuple(recipe for recipe in OPTIONAL_COOKING_RECIPES if recipe in values)
-        return (*DEFAULT_COOKING_RECIPES, *optional, FINAL_COOKING_RECIPE)
+        return CookingRecipeOutcome.FAILED
+
+    def _selected_cooking_recipes(self) -> tuple[str, ...]:
+        ordered = []
+        for group, recipes in COOKING_GROUPS.items():
+            selected = split_items(self.task.config.get(group, recipes))
+            ordered.extend(recipe for recipe in recipes if recipe in selected)
+        return tuple(ordered)
 
     def _enter_cooking_list(self) -> bool:
         bought_in_current_shop = self._buy_completed_in_current_shop
@@ -396,7 +420,7 @@ class CookingFlowMixin:
                 return CookingRecipeOutcome.FAILED
         return CookingRecipeOutcome.FAILED
 
-    def _select_recipe_card(self, recipe: str):
+    def _select_recipe_card(self, recipe: str, *, inspect_only: bool = False):
         list_snapshot = self._wait_for_cooking_list(2.0)
         if list_snapshot is None:
             self.task.log_warning(f"料理：选择 {recipe} 前料理列表未确认。")
@@ -425,6 +449,8 @@ class CookingFlowMixin:
         if not enabled:
             self.task.log_info(f"料理：{recipe} 列表图标变灰，跳过。")
             return CookingRecipeOutcome.UNAVAILABLE
+        if inspect_only:
+            return list_snapshot, recipe_match
         self._status(
             f"料理-{recipe}点击中心",
             (

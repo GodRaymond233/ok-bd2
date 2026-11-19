@@ -77,6 +77,7 @@ class Trader(
         self._sale_summary_reason = ""
         self.calendar_client = PriceCalendarClient(
             bundled_path=CALENDAR_DIR / "price_calendar.v1.json",
+            revised_bundled_path=CALENDAR_DIR / "price_calendar.20261119.v1.json",
             sources_path=CALENDAR_DIR / "calendar_sources.json",
         )
 

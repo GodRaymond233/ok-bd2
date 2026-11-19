@@ -63,9 +63,17 @@ reference to ALAS/NKAS scheduling semantics.
 | ok-oldking/ok-script-app | Reference starter template for ok-script applications, example tasks, custom tabs, i18n, tests, and packaging files | https://github.com/ok-oldking/ok-script-app |
 | ok-oldking/ok-wuthering-waves | Reference for mature ok-script game automation structure, trigger task registration, custom tabs, logging, and update packaging | https://github.com/ok-oldking/ok-wuthering-waves |
 | JZPPP/MaaBD2 | Reference for BrownDust II map-collection navigation ideas. | https://github.com/JZPPP/MaaBD2 |
-| sunyink/MFABD2 | Reference for field-encounter escape, navigation result branches, bounded retries and HUD-based skill exhaustion; implemented with this project's recognition, input and collection accounting. | https://github.com/sunyink/MFABD2 |
-| nobell001/YES-BD2 | Reference for consecutive collection skills, map identity evidence, transit-page navigation, portal recovery and observed skill capacity; implemented with this project's fresh-frame and consumption guards. | https://github.com/nobell001/YES-BD2 |
+| sunyink/MFABD2 | Reference for field-encounter escape, navigation result branches, bounded retries, HUD-based skill exhaustion and per-item sale retention; implemented with this project's recognition, input and collection accounting. | https://github.com/sunyink/MFABD2 |
+| nobell001/YES-BD2 | Reference for collection and portal recovery, observed skill capacity, selectable cooking batches and visible shop-cartridge selection; implemented with this project's recognition, input and consumption guards. | https://github.com/nobell001/YES-BD2 |
 | BD2DB | Public market data used once to seed the bundled 1-28 day price snapshot. The runtime does not query this site. | https://browndust2-db.souseha.com/en/market-data |
+
+The six cooking templates for Kello Wellness Soup, Saffron Sweet Tea, Fruit
+Smoothie, Chocolate Bread, Dark Beer Stew and Potato Soup under
+`recognition-assets/template-assets/image/Shop/` are unmodified assets from
+nobell001/YES-BD2 commit `0b58668ce715cd2f38233a9b4ab35563ea40937a`
+(GPL-3.0, see `LICENSE`). Its contributors captured the game UI; underlying
+game-art rights remain with the respective rights holders. They use ok-bd2's
+existing template scaling and recognition regions.
 
 ## Game And Platform Materials
 
