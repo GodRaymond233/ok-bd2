@@ -10,6 +10,7 @@ from src.tasks.FreeGachaTask import (
     FREE_ENTRY_RETRY_BLOCKED,
     FREE_ENTRY_RETRY_LOADING,
     FREE_ENTRY_RETRY_READY,
+    FREE_ENTRY_RETRY_STEP_UP,
     FREE_ENTRY_RETRY_UNKNOWN,
     RESULT_BACK_TEMPLATE,
     FreeDrawConfirmation,
@@ -53,6 +54,18 @@ def confirmation_boxes(pool="装备", count=3, cost=None, scale=1):
                             width=w * scale, height=h * scale) for name, x, y, w, h in rows]
 
 
+def step_up_boxes(scale=1, ownership=("未拥有",)):
+    rows = [
+        ("服装抽抽乐", 200, 20, 110, 30),
+        ("step1抽抽乐", 840, 680, 80, 30),
+        ("付费钻石90", 840, 710, 80, 20),
+    ]
+    rows.extend((label, 175 + index * 15, 305, 50, 30)
+                for index, label in enumerate(ownership))
+    return [SimpleNamespace(name=name, x=x * scale, y=y * scale,
+                            width=w * scale, height=h * scale) for name, x, y, w, h in rows]
+
+
 class FreeGachaTaskHelperTest(StageHistoryTestCase):
     def test_paid_event_pool_uses_only_the_free_batch_entry(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -92,6 +105,54 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
                             if free:
                                 self.assertAlmostEqual(.2, observed.point[0])
                                 self.assertAlmostEqual(.91875, observed.point[1])
+
+    def test_paid_step_up_banner_locates_the_free_clothing_banner(self):
+        frame = np.zeros((800, 1000, 3), dtype=np.uint8)
+        boxes = step_up_boxes()
+        observed = FreeGachaTask._step_up_observation(
+            frame, boxes, [box.name for box in boxes], "")
+        self.assertEqual(FREE_ENTRY_RETRY_STEP_UP, observed.state)
+        self.assertAlmostEqual(.165, observed.point[0])
+        self.assertAlmostEqual(.373, observed.point[1])
+        self.assertEqual(FREE_ENTRY_RETRY_STEP_UP,
+                         FreeGachaTask._pool_observation(frame, boxes, "服装抽抽乐").state)
+        self.assertNotEqual(FREE_ENTRY_RETRY_STEP_UP,
+                            FreeGachaTask._pool_observation(frame, boxes, "装备抽抽乐").state)
+
+    def test_paid_step_up_requires_title_draw_price_and_one_ownership_label(self):
+        frame = np.zeros((800, 1000, 3), dtype=np.uint8)
+        for dropped in ("服装抽抽乐", "step1抽抽乐", "付费钻石90"):
+            with self.subTest(dropped=dropped):
+                boxes = [box for box in step_up_boxes() if box.name != dropped]
+                self.assertIsNone(FreeGachaTask._step_up_observation(
+                    frame, boxes, [box.name for box in boxes], ""))
+        for ownership in ((), ("未拥有", "已拥有")):
+            with self.subTest(ownership=ownership):
+                boxes = step_up_boxes(ownership=ownership)
+                observed = FreeGachaTask._step_up_observation(
+                    frame, boxes, [box.name for box in boxes], "")
+                self.assertEqual(FREE_ENTRY_RETRY_STEP_UP, observed.state)
+                self.assertIsNone(observed.point)
+
+    def test_pool_waiter_switches_the_step_up_banner_once(self):
+        frame = np.zeros((800, 1000, 3), dtype=np.uint8)
+        boxes = step_up_boxes()
+        step_up = FreeGachaTask._step_up_observation(
+            frame, boxes, [box.name for box in boxes], "")
+        task = object.__new__(FreeGachaTask)
+        task.config = {}
+        task.info_set = Mock()
+        task.log_info = Mock()
+        task.sleep = Mock()
+        task.operate_click = Mock()
+        task._observe_free_pool = Mock(
+            side_effect=[step_up, step_up, SimpleNamespace(pool_confirmed=True, text="")])
+        self.assertTrue(task._wait_for_pool_page("服装抽抽乐", "确认服装池"))
+        args, kwargs = task.operate_click.call_args
+        self.assertAlmostEqual(.165, args[0])
+        self.assertAlmostEqual(.373, args[1])
+        self.assertEqual("切换普通服装横幅", kwargs.get("name"))
+        self.assertEqual(.8, kwargs.get("after_sleep"))
 
     def test_single_draw_ocr_typo_requires_same_pool_and_neighbor_layout(self):
         frame = np.zeros((800, 1000, 3), dtype=np.uint8)

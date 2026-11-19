@@ -25,6 +25,7 @@ FREE_ENTRY_RETRY_LOADING = "loading"
 FREE_ENTRY_RETRY_UNKNOWN = "unknown"
 FREE_ENTRY_RETRY_BLOCKED = "blocked"
 FREE_ENTRY_RETRY_NO_FREE = "no_free"
+FREE_ENTRY_RETRY_STEP_UP = "step_up"
 
 # 以下点击点均为 1920×1080 参考（_click_reference 按当前客户区归一）。
 GACHA_ENTRY_REFERENCE_POINT = (162, 986)
@@ -135,9 +136,7 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
         if not gacha_found and not self._wait_for_gacha_page("进入抽卡页"):
             return self._fail_run("进入抽卡页")
 
-        # 通用抽卡页关键词在装备页同样能命中，无法证明首段处于服装池；
-        # 没有服装页签参考点无法安全切换，校验失败时只能停止不点击
-        # （BUG-20260913-01 合并前 review）。
+        # 服装页可能默认打开付费 STEP UP。切换横幅后仍须重新确认普通服装池。
         if not self._wait_for_clothing_pool_page("确认服装池"):
             return self._fail_run("确认服装池", "服装抽抽乐")
 
@@ -419,6 +418,10 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
         if any(word in label for label in labels
                for word in ("确认", "取消", "抽抽乐券", "查看获取途径")):
             return FreePoolObservation(FREE_ENTRY_RETRY_BLOCKED, "存在覆盖弹窗", text)
+        if section_name == "服装抽抽乐":
+            step_up = FreeGachaTask._step_up_observation(frame, boxes, labels, text)
+            if step_up is not None:
+                return step_up
         free_hint = any(FREE_GACHA_KEYWORDS[0] in label or "免费1次" in label
                         for label in labels)
         # OCR may combine the adjacent pool title and record label into one header box.
@@ -490,6 +493,34 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
         return FreePoolObservation(FREE_ENTRY_RETRY_READY, "同池免费入口确认", text,
                                    point, pool_confirmed=True, free_hint=True)
 
+    @staticmethod
+    def _step_up_observation(frame, boxes, labels, text):
+        step_draw_pattern = r"step[1-9]\d*抽抽乐"
+        if not any(re.fullmatch(step_draw_pattern, label) for label in labels):
+            return None
+        height, width = frame.shape[:2]
+        points = [
+            (label, (box.x + box.width / 2) / width, (box.y + box.height / 2) / height)
+            for box, label in zip(boxes, labels)
+            if box.width > 0 and box.height > 0
+        ]
+        title = any(label in ("服装抽抽乐", "服装抽抽乐抽抽乐记录")
+                    and .12 < x < .35 and .01 < y < .10 for label, x, y in points)
+        step_draw = any(re.fullmatch(step_draw_pattern, label)
+                        and .80 < x < .96 and .84 < y < .91 for label, x, y in points)
+        price = any(label.startswith("付费") and .80 < x < .96 and .88 < y < .95
+                    for label, x, y in points)
+        if not (title and step_draw and price):
+            return None
+        # The ownership label in the next banner anchors a click inside its card.
+        # Draw buttons are on the other side of the screen.
+        targets = [(x - .035, y - .027) for label, x, y in points
+                   if label in ("未拥有", "已拥有", "未拥", "拥有")
+                   and .18 < x < .23 and .38 < y < .43]
+        point = targets[0] if len(targets) == 1 else None
+        reason = "付费 STEP UP，已定位下方服装横幅" if point else "付费 STEP UP，横幅未确认"
+        return FreePoolObservation(FREE_ENTRY_RETRY_STEP_UP, reason, text, point)
+
     def _observe_free_pool(self, section_name: str, name: str):
         frame = self.capture_frame()
         loading = self._match(frame, LOADING_TEMPLATE)
@@ -506,8 +537,13 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
                            for label in labels)
                        and any(label in ("抽1次", "拍1次", FREE_GACHA_KEYWORDS[0])
                                for label in labels))
-            if (observation.state == FREE_ENTRY_RETRY_NO_FREE
-                    or (anchors and observation.state == FREE_ENTRY_RETRY_UNKNOWN)):
+            reread = (
+                observation.state == FREE_ENTRY_RETRY_NO_FREE
+                or (anchors and observation.state == FREE_ENTRY_RETRY_UNKNOWN)
+                or (observation.state == FREE_ENTRY_RETRY_STEP_UP
+                    and not observation.point)
+            )
+            if reread:
                 # Re-read this same frame at a second scale; replace the entire view.
                 # A free hint in either view forbids declaring exhaustion.
                 boxes = self._gacha_ocr_boxes(frame, name + "_1080", target_height=1080)
@@ -682,12 +718,17 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
 
     def _wait_for_pool_page(self, section_name: str, name: str) -> bool:
         end_at = monotonic() + float(self.config.get("抽卡页面等待秒数", 12.0))
+        switched_banner = False
         while monotonic() <= end_at:
             observation = self._observe_free_pool(section_name, name)
             self.info_set(f"{name} OCR", observation.text or "-")
             if observation.pool_confirmed:
                 self.log_info(f"{name}：已确认{section_name}页面。")
                 return True
+            if (observation.state == FREE_ENTRY_RETRY_STEP_UP and observation.point
+                    and not switched_banner):
+                self.operate_click(*observation.point, name="切换普通服装横幅", after_sleep=.8)
+                switched_banner = True
             self.sleep(0.5)
         self.log_info(f"{name}：未确认可操作的{section_name}页面。")
         return False
