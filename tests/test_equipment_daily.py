@@ -27,6 +27,7 @@ from src.tasks.equipment_daily import (
 )
 from src.tasks.EquipmentDailyTask import EquipmentDailyTask
 from src.tasks.MissionRewardTask import MissionRewardTask
+from src.tasks.scheduler import policy_for
 from src.utils.image_utils import read_template_image
 
 REFINEMENT_RESULT_LABELS = (
@@ -190,6 +191,9 @@ class EquipmentFlowTest(unittest.TestCase):
         task._open_inventory = Mock(return_value=object())
         task._leave_equipment = Mock(return_value=True)
         return task
+
+    def test_task_is_scheduled_daily(self):
+        self.assertEqual("daily", policy_for("装备分解与精炼").anchor)
 
     def test_batch_lists_equipment_before_rewards_and_requires_opt_in(self):
         equipment, reward = DAILY_BATCH_CHILDREN[-2:]

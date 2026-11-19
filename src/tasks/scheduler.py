@@ -87,6 +87,7 @@ TASK_POLICIES: dict[str, SchedulePolicy] = {
     "广场女神像": SchedulePolicy("daily"),
     "镜中之战": SchedulePolicy("daily"),
     "每日跑商": SchedulePolicy("daily"),
+    "装备分解与精炼": SchedulePolicy("daily"),
     "每日及每周奖励": SchedulePolicy("daily"),
     "每周跑图": SchedulePolicy("weekly", refresh_hour=COLLECTION_REFRESH_HOUR),
 }
