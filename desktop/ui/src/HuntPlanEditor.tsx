@@ -183,6 +183,7 @@ export function HuntPlanEditor({ core, task, onClose }: { core: Core; task: Task
               aria-label={t("保留免费米饭")} value={Number.isNaN(plan.reserve) ? "" : plan.reserve ?? 0}
               onChange={(event) => editPlan((draft) => { draft.reserve = event.target.valueAsNumber; })} /></label>
           </div>
+          <p className="why">{t("保留数量只计算免费米饭；付费米饭无需填写，也不会消耗。")}</p>
           {plan.rules.map((rule, index) => <section className="hunt-rule" key={index}>
             <div className="hunt-toolbar">
               <b>{t("规则 {number} · 当", { number: index + 1 })}</b>

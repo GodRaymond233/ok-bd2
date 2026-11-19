@@ -4,6 +4,7 @@ from collections import deque
 from copy import deepcopy
 from dataclasses import replace
 
+from src.interaction.BD2Interaction import InputTargetChanged
 from src.tasks.map_trade.action_icons import ActionIconDetector
 from src.tasks.map_trade.card_status import CardActionState, CollectionCardSelectionOutcome
 from src.tasks.map_trade.collector_constants import (
@@ -81,14 +82,23 @@ class Collector(SkillExecutionMixin):
         self._scope_cards = tuple(COLLECTABLE_CARDS if cards is None else cards)
         self._scope_actions = collection_action_policy(battle_actions)
         self.missing_cards = []
-        try:
-            return self._run_collection(battle_actions, only_once=only_once)
-        except RuntimeError as exc:
-            self.task.log_error("地图采集流程异常", exc)
-            return CollectionResult(
-                False,
-                message=f"地图采集流程异常：{exc}",
-            )
+        for attempt in range(2):
+            try:
+                return self._run_collection(battle_actions, only_once=only_once)
+            except InputTargetChanged as exc:
+                self._forget_skill_evidence()
+                self.task.log_warning(f"地图采集：{exc}，重新确认页面。")
+                if attempt == 0:
+                    returned = self.navigator.return_home()
+                    if returned.success and returned.state == ScreenState.HOME:
+                        continue
+                return CollectionResult(False, message="输入环境变化，未能安全恢复采集，请重跑")
+            except RuntimeError as exc:
+                self.task.log_error("地图采集流程异常", exc)
+                return CollectionResult(
+                    False,
+                    message=f"地图采集流程异常：{exc}",
+                )
 
     def scope_complete(self) -> bool:
         """本次范围内的卡带（未找到的活动卡除外）是否都已按启用动作核验完成。"""

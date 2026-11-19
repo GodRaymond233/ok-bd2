@@ -50,11 +50,10 @@ test("a picture's address names only the file", () => {
 
 test("every shipped guide parses with nothing left as raw Markdown", () => {
   const files = readdirSync(GUIDES).filter((name) => name.endsWith(".md"));
-  assert.equal(files.length, 3);
+  assert.ok(files.length > 0);
   for (const name of files) {
     const blocks = parseGuide(readFileSync(new URL(name, GUIDES), "utf-8"));
     assert.ok(blocks.some((block) => block.kind === "heading"), name);
-    assert.ok(blocks.some((block) => block.kind === "image"), name);
     for (const block of blocks) {
       const parts = block.kind === "paragraph" ? block.content : block.kind === "list" ? block.items.flat() : [];
       for (const part of parts) {

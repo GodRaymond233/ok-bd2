@@ -242,7 +242,7 @@ class BaseBD2Task(BaseTask):
                 self._frame_input_context = context
                 break
         else:
-            raise TimeoutError("输入桌面反复中断，未取得可用游戏画面。")
+            raise TimeoutError("截图期间游戏窗口或输入环境反复变化，未取得可用游戏画面。")
         if frame is None:
             raise RuntimeError("未能从 BD2 截取画面。")
 
@@ -906,13 +906,34 @@ class BaseBD2Task(BaseTask):
         duration: float = 0.7,
         after_sleep: float = 0.0,
     ) -> None:
-        """Drag with foreground mouse input only; these tasks never send keys."""
+        """Drag in the selected mouse mode."""
+
+        interaction = getattr(self.executor, "interaction", None)
+        background = bool(
+            interaction and hasattr(interaction, "background_click_enabled")
+            and interaction.background_click_enabled()
+        )
 
         def action():
             import win32api
             import win32con
 
-            interaction = getattr(self.executor, "interaction", None)
+            steps = max(6, round(duration / 0.03))
+            if background:
+                interaction.move(*start)
+                interaction.mouse_down(*start)
+                try:
+                    for index in range(1, steps + 1):
+                        ratio = index / steps
+                        interaction.move(
+                            round(start[0] + (end[0] - start[0]) * ratio),
+                            round(start[1] + (end[1] - start[1]) * ratio),
+                            down_btn=win32con.MK_LBUTTON,
+                        )
+                        time.sleep(duration / steps)
+                finally:
+                    interaction.mouse_up()
+                return
             if interaction is not None and hasattr(interaction, "force_activate"):
                 interaction.force_activate()
             elif interaction is not None and hasattr(interaction, "try_activate"):
@@ -926,7 +947,6 @@ class BaseBD2Task(BaseTask):
 
             start_abs = to_screen(start)
             end_abs = to_screen(end)
-            steps = max(6, round(duration / 0.03))
             win32api.SetCursorPos(start_abs)
             time.sleep(0.03)
             win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
@@ -940,7 +960,7 @@ class BaseBD2Task(BaseTask):
             finally:
                 win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
 
-        self.operate(action, block=True, restore_cursor=True)
+        self.operate(action, block=not background, restore_cursor=not background)
         self.sleep(after_sleep)
 
     def scroll_client(
@@ -951,7 +971,7 @@ class BaseBD2Task(BaseTask):
         interval: float = 0.1,
         after_sleep: float = 0.0,
     ) -> None:
-        """Send foreground mouse-wheel events at a relative client point."""
+        """Send mouse-wheel events at a relative client point in the selected mode."""
 
         frame = self.capture_frame()
         height, width = frame.shape[:2]
@@ -962,6 +982,10 @@ class BaseBD2Task(BaseTask):
         interaction = getattr(self.executor, "interaction", None)
         if interaction is None or not hasattr(interaction, "scroll"):
             raise RuntimeError("当前交互对象不支持鼠标滚轮")
+        background = bool(
+            hasattr(interaction, "background_click_enabled")
+            and interaction.background_click_enabled()
+        )
 
         def action():
             import win32api
@@ -971,14 +995,14 @@ class BaseBD2Task(BaseTask):
             elif hasattr(interaction, "try_activate"):
                 interaction.try_activate()
             capture = getattr(interaction, "capture", None)
-            if capture is not None and hasattr(capture, "get_abs_cords"):
+            if not background and capture is not None and hasattr(capture, "get_abs_cords"):
                 win32api.SetCursorPos(capture.get_abs_cords(x, y))
             for index in range(wheel_count):
                 interaction.scroll(x, y, int(scroll_amount))
                 if index + 1 < wheel_count:
                     time.sleep(wheel_interval)
 
-        self.operate(action, block=True, restore_cursor=True)
+        self.operate(action, block=not background, restore_cursor=not background)
         self.sleep(after_sleep)
 
     def _sleep_after_recognition(self) -> None:

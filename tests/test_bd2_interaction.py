@@ -10,6 +10,7 @@ from ok.task.exceptions import FinishedException, TaskDisabledException
 
 from src.interaction.BD2Interaction import (
     CLICK_MODE_BACKGROUND,
+    CLICK_MODE_STANDARD,
     BD2Interaction,
     InputTargetChanged,
 )
@@ -33,33 +34,52 @@ def make_interaction():
 
 class BD2InteractionOperateTest(unittest.TestCase):
     def test_prepared_click_is_discarded_after_input_wait_or_window_change(self):
-        for changed in ("held", "window", "none"):
-            with self.subTest(changed=changed):
-                interaction, calls = make_interaction()
-                context = [1]
-                interaction.target_context = lambda: context[0]
-                buttons = iter([True, False, False] if changed == "held" else [False, False])
-                interaction._mouse_buttons_down = lambda: next(buttons)
-                task = object.__new__(BaseBD2Task)
-                task.info_set = Mock()
-                task.sleep = Mock()
-                task.click = Mock()
-                task._check_action_interval = lambda *_: True
-                task._executor = SimpleNamespace(interaction=interaction)
-                task._frame_input_context = task._input_target_context()
-                task._wait_for_input = lambda _: setattr(task, "_input_wait_seconds", 1.0)
-                if changed == "window":
-                    context[0] = 2
-                with patch("src.interaction.BD2Interaction.GetCursorPos", return_value=(1, 2)):
-                    if changed == "none":
+        for mode in (CLICK_MODE_STANDARD, CLICK_MODE_BACKGROUND):
+            changes = ("window", "client", "target", "foreground", "none")
+            if mode == CLICK_MODE_STANDARD:
+                changes += ("held",)
+            for changed in changes:
+                with (
+                    self.subTest(mode=mode, changed=changed),
+                    patch("src.interaction.BD2Interaction.GetCursorPos", return_value=(1, 2)),
+                    patch("src.interaction.BD2Interaction.win32gui.GetForegroundWindow",
+                          return_value=456) as foreground,
+                    patch("src.interaction.BD2Interaction.win32gui.GetWindowRect",
+                          return_value=(0, 0, 1920, 1080)) as rect,
+                    patch("src.interaction.BD2Interaction.win32gui.GetClientRect",
+                          return_value=(0, 0, 1920, 1080)) as client,
+                ):
+                    interaction, calls = make_interaction()
+                    interaction.set_click_mode_provider(lambda: mode)
+                    interaction.hwnd_window = SimpleNamespace(top_hwnd=123, hwnd=123)
+                    buttons = iter([True, False, False] if changed == "held" else [False, False])
+                    interaction._mouse_buttons_down = lambda: next(buttons)
+                    task = object.__new__(BaseBD2Task)
+                    task.info_set = Mock()
+                    task.sleep = Mock()
+                    task.click = Mock()
+                    task._check_action_interval = lambda *_: True
+                    task._executor = SimpleNamespace(interaction=interaction)
+                    task._frame_input_context = task._input_target_context()
+                    task._wait_for_input = lambda _: setattr(task, "_input_wait_seconds", 1.0)
+                    if changed == "window":
+                        rect.return_value = (10, 10, 1930, 1090)
+                    elif changed == "client":
+                        client.return_value = (0, 0, 1280, 720)
+                    elif changed == "target":
+                        interaction.hwnd_window.top_hwnd = 124
+                    elif changed == "foreground":
+                        foreground.return_value = 789
+                    accepted = changed in {"foreground", "none"}
+                    if accepted:
                         task.operate_click(.5, .5, require_fresh_target=True)
                     else:
                         with self.assertRaises(InputTargetChanged) as caught:
                             task.operate_click(.5, .5, require_fresh_target=True)
                         self.assertTrue(caught.exception.input_not_dispatched)
-                self.assertEqual(int(changed == "none"), task.click.call_count)
-                self.assertIn("unblock_input", calls)
-                self.assertFalse(interaction._operating)
+                    self.assertEqual(int(accepted), task.click.call_count)
+                    self.assertEqual(mode == CLICK_MODE_STANDARD, "unblock_input" in calls)
+                    self.assertFalse(interaction._operating)
 
     def test_post_failure_propagates_and_button_release_is_attempted(self):
         interaction, calls = make_interaction()
@@ -274,6 +294,71 @@ class BD2InteractionOperateTest(unittest.TestCase):
 
 
 class BD2InteractionClickModeTest(unittest.TestCase):
+    def test_background_scroll_and_drag_leave_physical_cursor_and_buttons_alone(self):
+        interaction, calls = make_interaction()
+        interaction.set_click_mode_provider(lambda: CLICK_MODE_BACKGROUND)
+        interaction.scroll = Mock()
+        interaction.move = Mock()
+        interaction.mouse_down = Mock()
+        interaction.mouse_up = Mock()
+        interaction.try_activate = Mock()
+        interaction.capture = SimpleNamespace(get_abs_cords=lambda x, y: (x, y))
+        task = object.__new__(BaseBD2Task)
+        task._executor = SimpleNamespace(interaction=interaction)
+        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task._wait_for_input = Mock()
+        task.info_set = Mock()
+        task.sleep = Mock()
+        with (
+            patch("src.interaction.BD2Interaction.GetCursorPos", return_value=(10, 20)),
+            patch("win32api.SetCursorPos") as cursor,
+            patch("win32api.mouse_event") as mouse,
+            patch("time.sleep"),
+        ):
+            task.scroll_client((.25, .5), 1, count=2)
+            task.drag_client((100, 100), (200, 300), duration=.1)
+        cursor.assert_not_called()
+        mouse.assert_not_called()
+        self.assertEqual([], calls)
+        self.assertEqual(2, interaction.scroll.call_count)
+        interaction.scroll.assert_called_with(480, 540, 1)
+        interaction.mouse_down.assert_called_once_with(100, 100)
+        interaction.mouse_up.assert_called_once()
+        self.assertEqual((200, 300), interaction.move.call_args.args)
+
+    def test_capture_keeps_game_frame_when_another_foreground_window_changes(self):
+        for mode in (CLICK_MODE_STANDARD, CLICK_MODE_BACKGROUND):
+            with (
+                self.subTest(mode=mode),
+                patch("src.interaction.BD2Interaction.GetCursorPos", return_value=(1, 2)),
+                patch("src.interaction.BD2Interaction.win32gui.GetForegroundWindow",
+                      return_value=456) as foreground,
+                patch("src.interaction.BD2Interaction.win32gui.GetWindowRect",
+                      return_value=(0, 0, 1920, 1080)),
+                patch("src.interaction.BD2Interaction.win32gui.GetClientRect",
+                      return_value=(0, 0, 1920, 1080)),
+                patch("src.tasks.BaseBD2Task.observe_frame") as observe,
+            ):
+                interaction, _calls = make_interaction()
+                interaction.hwnd_window = SimpleNamespace(top_hwnd=123, hwnd=123)
+                interaction.set_click_mode_provider(lambda: mode)
+                task = object.__new__(BaseBD2Task)
+                task.info_set = Mock()
+                task._executor = SimpleNamespace(
+                    interaction=interaction,
+                    device_manager=SimpleNamespace(capture_method="test"),
+                )
+                frame = np.zeros((2, 2, 3), dtype=np.uint8)
+
+                def capture():
+                    foreground.return_value = 789 if foreground.return_value == 456 else 456
+                    return frame
+
+                task.next_frame = Mock(side_effect=capture)
+                self.assertIs(frame, task.capture_frame())
+                task.next_frame.assert_called_once()
+                observe.assert_called_once_with(task, frame)
+
     def test_click_throttling_uses_elapsed_time_across_system_clock_changes(self):
         task = object.__new__(BaseBD2Task)
         task._action_interval_lock = threading.Lock()

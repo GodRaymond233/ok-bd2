@@ -12,4 +12,5 @@ GUIDES = {
     "MapCollectionTask": ("每周跑图", "collection", "选择卡带，按周进度完成采集。"),
     "MapTradeTask": ("每日跑商", "trade", "先确认买卖范围，再开始每日跑商。"),
     "QuickHuntTask": ("快速狩猎", "quick-hunt", "安排米饭用途，按需补充属性圣石。"),
+    "MissionRewardTask": ("每日及每周奖励", "mission-rewards", "在日常结束后领取任务奖励。"),
 }

@@ -635,9 +635,9 @@ class SkillExecutionMixin:
         require_fraction: bool = False,
     ) -> CountWindowObservation:
         """Return a compatible count; single-frame evidence requires allow_single explicitly."""
+        baseline = self.progress.trusted_action_baseline(action.name)
         known_limit = expected_limit
         if known_limit is None:
-            baseline = self.progress.trusted_action_baseline(action.name)
             known_limit = baseline[1] if baseline is not None else None
         all_samples: list[tuple[int, int]] = []
         for ocr_scale in (SKILL_OCR_UPSCALE, SKILL_OCR_FALLBACK_UPSCALE):
@@ -668,6 +668,7 @@ class SkillExecutionMixin:
             )
             if (
                 compatible and count[1] == known_limit
+                and (baseline is None or count[0] >= baseline[0])
                 and all(value[1] == known_limit for value in all_samples)
                 and (
                     occurrences >= 2
@@ -935,6 +936,7 @@ class SkillExecutionMixin:
             if failure is not None:
                 return failure
             feedback = self._read_action_feedback(SUMMON_ACTION)
+            self._wait_after_feedback_match(SUMMON_ACTION, feedback)
             if feedback.outcome != "success":
                 summon_result = self._verify_clicked_action(
                     SUMMON_ACTION, summon, feedback, **kwargs,

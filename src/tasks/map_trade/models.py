@@ -456,21 +456,17 @@ DEFAULT_RECIPES = (
     "地狱火紫菜包饭",
 )
 
-# Red, yellow, then blue priority; reference order breaks ties within each group.
-DEFAULT_COOKING_RECIPES = (
-    "巧克力鸡尾酒",
-    "冰镇甜点",
-    "香草牛排",
-    "蜂蜜黄油杏仁",
-    "鱼子酱蛋包饭",
-    "火烤鱼板棒",
-    "泰瑞丝派",
-    "橄榄油意面",
-    "三明治便当",
-)
-
-OPTIONAL_COOKING_RECIPES = DEFAULT_RECIPES
-FINAL_COOKING_RECIPE = "街头烤鸡肉串"
+# Within each priority tier the grid is read row by row.
+COOKING_GROUPS = {
+    "黄框料理": DEFAULT_RECIPES,
+    "红框料理": (
+        "巧克力鸡尾酒", "蜂蜜黄油杏仁", "火烤鱼板棒", "鱼子酱蛋包饭",
+        "泰瑞丝派", "三明治便当", "街头烤鸡肉串", "香草牛排", "冰镇甜点", "橄榄油意面",
+    ),
+    "蓝框料理": (
+        "巧克力面包", "土豆汤", "水果冰沙", "黑啤酒炖锅", "藏红花甜茶", "凯洛养身汤",
+    ),
+}
 
 COOKING_RECIPE_TEMPLATES = {
     "巧克力鸡尾酒": "image/Shop/cook_Chocolate Cocktail.png",
@@ -482,7 +478,7 @@ COOKING_RECIPE_TEMPLATES = {
     "橄榄油意面": "image/Shop/cook_Olive Oil Pasta.png",
     "三明治便当": "image/Shop/cook_Sandwich Lunch Box.png",
     "火烤鱼板棒": "image/Shop/cook_Grilled Fish Cake Skewer.png",
-    FINAL_COOKING_RECIPE: "image/Shop/cook_Street Grilled Chicken Skewer.png",
+    "街头烤鸡肉串": "image/Shop/cook_Street Grilled Chicken Skewer.png",
 }
 
 RECIPE_TEMPLATES = {
@@ -493,6 +489,14 @@ RECIPE_TEMPLATES = {
     "地狱火紫菜包饭": "image/Shop/cook_Hellfire Gimbap.png",
 }
 COOKING_RECIPE_TEMPLATES.update(RECIPE_TEMPLATES)
+COOKING_RECIPE_TEMPLATES.update({
+    "凯洛养身汤": "image/Shop/cook_Kello Wellness Soup.png",
+    "藏红花甜茶": "image/Shop/cook_Saffron Sweet Tea.png",
+    "水果冰沙": "image/Shop/cook_Fruit Smoothie.png",
+    "巧克力面包": "image/Shop/cook_Chocolate Bread.png",
+    "黑啤酒炖锅": "image/Shop/cook_Dark Beer Stew.png",
+    "土豆汤": "image/Shop/cook_Potato Soup.png",
+})
 
 DEFAULT_SALE_WHITELIST = (
     "蜂蜜黄油杏仁",

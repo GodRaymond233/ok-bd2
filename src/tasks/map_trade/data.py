@@ -26,43 +26,39 @@ SHOP_FAVORITE_POINTS: dict[int, tuple[float, float]] = {
     15: (1244 / FHD_1080.width, 471 / FHD_1080.height),
 }
 
-# Gray-star positions that must remain unfavorited for each cartridge. Keys use
-# the established S=story, R=character, and E=event numbering; an empty set means
-# every detected product star on that cartridge should be favorited. These values
-# follow the latest supplied position calibration. Event cartridges retain their
-# actual numbers (1, 2, 3, 5, 7).
-SHOP_UNFAVORITED_POINTS: dict[str, frozenset[int]] = {
-    "S1": frozenset({6}),
-    "S2": frozenset({1}),
-    "S3": frozenset({8, 9, 12, 13}),
-    "S4": frozenset({3, 4, 11, 12, 13}),
-    "S5": frozenset({2, 4, 8}),
-    "S6": frozenset({8, 9}),
-    "S7": frozenset({5, 9}),
-    "S8": frozenset({3, 4, 9, 10, 11, 12}),
-    "S9": frozenset({1, 2, 3, 4, 5, 6, 7, 8}),
-    "S10": frozenset({2, 3, 4, 5, 9, 12}),
-    "S11": frozenset({9}),
-    "S12": frozenset({3, 4, 6, 11, 12, 13}),
-    "S13": frozenset({7, 8, 9, 11, 12, 13}),
-    "S14": frozenset({2, 3, 4, 5, 9, 11, 12}),
-    "S15": frozenset({1, 8, 9}),
-    "S16": frozenset({7, 9, 10}),
-    "S17": frozenset({2, 8, 9, 10}),
-    "S18": frozenset({2, 9}),
-    "S19": frozenset({3, 8, 9}),
-    "R1": frozenset(),
-    "R2": frozenset({4}),
-    "R3": frozenset({3, 10}),
-    "R4": frozenset(),
-    "R5": frozenset({3, 7, 8, 9, 11}),
-    "R6": frozenset({3, 7, 8, 9, 11}),
-    "R7": frozenset({4}),
-    "E1": frozenset(),
-    "E2": frozenset({4}),
-    "E3": frozenset({3, 8, 10}),
-    "E5": frozenset({4}),
-    "E7": frozenset({5}),
+# Four-column shop grid, numbered left to right and top to bottom.
+SHOP_FAVORITE_SLOTS: dict[str, tuple[int, ...]] = {
+    "S1": (1, 2, 3, 4, 5, 7),
+    "S2": (2, 3, 4, 5, 6, 7, 8),
+    "S3": (1, 2, 4, 5, 6, 7, 10, 11),
+    "S4": (1, 2, 5, 6, 7, 8, 9, 10),
+    "S5": (1, 3, 5, 6, 7),
+    "S6": (1, 2, 3, 4, 5, 6, 7),
+    "S7": (1, 2, 3, 4, 6, 7, 8),
+    "S8": (1, 2, 5, 6, 7, 8, 13),
+    "S9": (),
+    "S10": (1, 6, 7, 8, 10, 11),
+    "S11": (1, 2, 3, 4, 5, 6, 7, 8, 10),
+    "S12": (1, 2, 5, 7, 8, 9, 10, 14, 15),
+    "S13": (1, 2, 4, 5, 6, 10),
+    "S14": (1, 6, 7, 10),
+    "S15": (2, 3, 4, 5, 6, 7),
+    "S16": (2, 3, 4, 5, 6, 8),
+    "S17": (1, 3, 4, 5, 6, 7),
+    "S18": (1, 3, 4, 5, 6, 7, 8),
+    "S19": (1, 2, 4, 5, 6, 7),
+    "R1": (1, 3, 5, 6, 7),
+    "R2": (1, 2, 3, 6, 7, 8),
+    "R3": (2, 4, 5, 6, 7, 8, 9),
+    "R4": (1, 2, 3, 4, 5, 6, 7, 8),
+    "R5": (1, 2, 4, 5, 6, 10),
+    "R6": (1, 2, 4, 5, 6, 10),
+    "R7": (1, 3, 5, 6, 7),
+    "E1": (1, 3, 5, 6, 7),
+    "E2": (1, 2, 3, 6, 7),
+    "E3": (2, 4, 5, 6, 7, 8, 9),
+    "E5": (1, 2, 3, 6, 7),
+    "E7": (2, 3, 4, 6, 8),
 }
 
 
@@ -73,11 +69,7 @@ class ShopPurchaseReference:
     shop_id: str
     label: str
     cartridge_templates: tuple[str, ...]
-    unfavorited_points: tuple[tuple[int, tuple[float, float]], ...]
-
-    @property
-    def unfavorited_slots(self) -> frozenset[int]:
-        return frozenset(slot for slot, _point in self.unfavorited_points)
+    favorite_slots: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -150,19 +142,12 @@ def _shop_cartridge_templates(shop_id: str) -> tuple[str, ...]:
     return (normal,)
 
 
-# This is the self-contained local purchase reference. Each cartridge points to
-# its local tab template and to the exact gray-star slots/relative coordinates that
-# must remain unfavorited. It deliberately does not depend on OCR product names or
-# the online highest-price calendar.
 SHOP_PURCHASE_REFERENCES: dict[str, ShopPurchaseReference] = {
     shop_id: ShopPurchaseReference(
         shop_id=shop_id,
         label=SHOP_CARTRIDGE_LABELS[shop_id],
         cartridge_templates=_shop_cartridge_templates(shop_id),
-        unfavorited_points=tuple(
-            (slot, SHOP_FAVORITE_POINTS[slot])
-            for slot in sorted(SHOP_UNFAVORITED_POINTS[shop_id])
-        ),
+        favorite_slots=SHOP_FAVORITE_SLOTS[shop_id],
     )
     for shop_id in SHOP_CARTRIDGE_LABELS
 }

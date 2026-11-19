@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from time import monotonic
 from types import SimpleNamespace
 
@@ -61,6 +61,7 @@ from src.tasks.map_trade.trader_constants import (
     SHOP_MODE_TITLE_REGION,
     SaleItemCandidate,
 )
+from src.tasks.map_trade.trader_pricing import parse_sale_reserves
 from src.tasks.map_trade.vision import normalize_text
 from src.utils.calibration import FHD_1080
 from src.utils.image_utils import relative_roi_frame, to_gray
@@ -233,6 +234,7 @@ class SellFlowMixin:
 
     def _resolve_sale_entries(self) -> list[CalendarEntry] | None:
         try:
+            reserves = parse_sale_reserves(str(self.task.config.get("商品保留量", "")))
             market_now = self._current_market_time()
             calendar_date = sale_price_calendar_date(market_now)
             calendar = self.calendar_client.load(
@@ -241,7 +243,9 @@ class SellFlowMixin:
                 ),
                 use_online=bool(self.task.config.get("使用在线价表", True)),
                 manual_text=str(self.task.config.get("自定义最高价表", "")),
+                market_date=calendar_date,
             )
+            self._sale_calendar_date = calendar_date
             self._status("价表来源", calendar.source)
             self._status("出售价表日期", calendar_date.isoformat())
             self.task.log_info(
@@ -263,7 +267,11 @@ class SellFlowMixin:
                 self._record_not_sold(entry, "未出售：价表标记为不出售")
                 self.task.log_info(f"卖：{entry.item}标记为不出售，跳过。")
                 continue
-            sellable.append(entry)
+            reserve = reserves.get(entry.item, entry.reserve)
+            if reserve == -1:
+                self._record_not_sold(entry, "未出售：商品保留量设置为全部保留")
+                continue
+            sellable.append(replace(entry, reserve=reserve))
 
         use_whitelist = bool(self.task.config.get("使用出售白名单", True))
         self._status("出售白名单", "开启" if use_whitelist else "关闭")
@@ -354,6 +362,12 @@ class SellFlowMixin:
             self._sale_not_sold[entry] = "未出售：尚未执行"
         self._sell_cartridge_page = None
         for index, entry in enumerate(entries):
+            if not self._sale_date_current():
+                failed.append(entry)
+                for remaining in entries[index:]:
+                    self._record_not_sold(remaining, "未出售：价表已刷新，请重新执行出售")
+                self.task.log_warning("卖：最高价日期已变化，停止使用本轮旧价表。")
+                break
             if entry.shop != selected_shop:
                 if not self.select_shop_tab(entry.shop):
                     failed.append(entry)
@@ -385,6 +399,13 @@ class SellFlowMixin:
         if failed:
             self.task.log_warning("最高价出售失败：" + "、".join(entry.item for entry in failed))
         return not failed
+
+    def _sale_date_current(self) -> bool:
+        active_date = getattr(self, "_sale_calendar_date", None)
+        return (
+            active_date is None
+            or sale_price_calendar_date(self._current_market_time()) == active_date
+        )
 
     def _sell_selected_entry(self, entry: CalendarEntry) -> bool:
         self._last_sale_unavailable = False
@@ -581,15 +602,20 @@ class SellFlowMixin:
                 if bool(self.task.config.get("出售保险", False))
                 else available
             )
-        selected = self._wait_selected_sale_quantity(
+        quote = self._wait_selected_sale_quantity(
             expected_selected, maximum=maximum_selected,
         )
-        if selected is None:
+        if quote is None:
             self._last_sale_reason = "未出售：安全出售数量未确认"
             self.task.log_warning(
                 f"卖：{entry.item}出售数量未确认（期望{expected_selected or '正数'}，"
                 f"安全出售上限{maximum_selected}，当前组上限{available}），停止确认。"
             )
+            return None
+        selected, payout = quote
+        if not self._sale_date_current():
+            self._last_sale_reason = "未出售：确认前价表已刷新，请重新执行出售"
+            self.task.log_warning(self._last_sale_reason)
             return None
         run_history.save_stage(self.task, checkpoint, "pending",
                                evidence={"owned": owned, "selected": selected})
@@ -604,6 +630,7 @@ class SellFlowMixin:
             before_toast_id=before_toast_id,
             owned=owned,
             selected=selected,
+            payout=payout,
         ):
             self._last_sale_reason = f"本组 {selected} 个出售结果未确认，未计入已出售数量"
             return None
@@ -1118,6 +1145,7 @@ class SellFlowMixin:
         before_toast_id: int | None = None,
         owned: int | None = None,
         selected: int | None = None,
+        payout: int | None = None,
     ) -> bool:
         """Wait until the sale dialog closes and the page advances.
 
@@ -1129,6 +1157,9 @@ class SellFlowMixin:
 
         if before_toast_id is None:
             before_toast_id = self._sale_toast_id(before_frame)
+        payout_visible_before = payout is not None and payout in self._sale_credit_amounts(
+            self.vision.ocr_text(before_frame, "出售前到账提示"),
+        )
         end_at = monotonic() + max(0.0, timeout)
         changed_signature: tuple[tuple[str, int, int, int, int], ...] | None = None
         stable_hits = 0
@@ -1170,6 +1201,11 @@ class SellFlowMixin:
                             f"{entry.item}:交易提示{toast_id or '-'}",
                         )
                         return True
+                if (payout is not None and not payout_visible_before
+                        and "出售" in normalized_full
+                        and payout in self._sale_credit_amounts(full_text)):
+                    self._status("出售完成确认", f"{entry.item}:金币到账+{payout:,}")
+                    return True
                 current_signature = self._sale_name_signature(entry, frame)
                 if (
                     current_signature is not None
@@ -1252,6 +1288,13 @@ class SellFlowMixin:
         if matched is None:
             return None
         return self._quantity_from_text(matched.group(1))
+
+    @staticmethod
+    def _sale_credit_amounts(text: str) -> set[int]:
+        return {
+            int(re.sub(r"[,，.]", "", amount))
+            for amount in re.findall(r"[+＋]\s*([0-9]+(?:[,，.][0-9]{3})*)(?![0-9,，.])", text)
+        }
 
     @staticmethod
     def _ocr_box_geometry(box) -> tuple[float, float, float, float] | None:
@@ -1438,8 +1481,8 @@ class SellFlowMixin:
         timeout: float = SALE_DIALOG_TIMEOUT,
         *,
         maximum: int,
-    ) -> int | None:
-        """Return the observed safe quantity, preserving evidence for pending recovery."""
+    ) -> tuple[int, int | None] | None:
+        """Read the safe quantity and the discounted payout from the same dialog."""
         end_at = monotonic() + max(0.0, timeout)
         while True:
             text = self.vision.ocr_text(
@@ -1455,7 +1498,11 @@ class SellFlowMixin:
             ):
                 if expected is None or selected == expected:
                     self._status("出售已选数量", str(selected))
-                    return selected
+                    price = re.search(
+                        r"[-－→]\s*([0-9]+(?:[,，.][0-9]{3})*)\s*▲\s*120[%％]", text,
+                    )
+                    payout = self._quantity_from_text(price.group(1)) if price else None
+                    return selected, payout
             if monotonic() >= end_at:
                 return None
             self.task.sleep(SALE_OCR_INTERVAL)

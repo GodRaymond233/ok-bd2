@@ -71,6 +71,14 @@ class HuntPlanTest(StageHistoryTestCase):
         for raw in ("{", '{"version": 2}', '{"version": 1, "active": 3, "plans": []}'):
             with self.subTest(raw=raw), self.assertRaises(ValueError):
                 load_book({PLAN_KEY: raw})
+        book = {"version": 1, "active": 0, "plans": preset_plans()[:2]}
+        book["plans"][1]["rules"].insert(0, {"condition": "always", "steps": []})
+        with self.assertRaisesRegex(ValueError, "方案 2.*规则 1.*最后"):
+            load_book({PLAN_KEY: json.dumps(book)})
+        book["plans"][1] = preset_plans()[1]
+        book["plans"][1]["reserve"] = 10000
+        with self.assertRaisesRegex(ValueError, "方案 2.*免费米饭.*付费米饭无需填写"):
+            load_book({PLAN_KEY: json.dumps(book)})
 
     def test_scheduler_honors_budget_reserve_and_execution_order(self):
         from src.tasks.QuickHuntTask import QuickHuntTask

@@ -65,6 +65,7 @@ VALID_TARGET_KEYS = {
     for card in REGISTERED_COLLECTION_CARDS
 }
 VALID_FAVORITE_SHOP_IDS = frozenset(SHOP_PURCHASE_REFERENCES)
+FAVORITE_PLAN_VERSION = 2
 VALID_ACTION_NAMES = COLLECTION_ACTION_NAMES
 VALID_MAP_ROLE_NAMES = frozenset(role.value for role in CollectionMapRole)
 
@@ -234,6 +235,9 @@ class ProgressStore:
             backup = self.path.with_suffix(f".schema-{schema_version}.backup.json")
             if not backup.exists():
                 shutil.copy2(self.path, backup)
+        if raw.get("favorite_plan_version") != FAVORITE_PLAN_VERSION:
+            raw.pop("favorite_week", None)
+            raw.pop("favorite_cards", None)
         cooldown_records = raw.get("cooldown_records", {})
         legacy_cooldown = self.path.parent / "collection_cooldown.json"
         cooldown_records = (
@@ -727,6 +731,7 @@ class ProgressStore:
                 and set(key.split("|")) < VALID_ACTION_NAMES
                 and "吸收" in set(key.split("|"))
             },
+            "favorite_plan_version": FAVORITE_PLAN_VERSION,
             "favorite_week": self.state.favorite_week,
             "favorite_cards": sorted(self.state.completed_favorite_cards),
             "cooking_week": self.state.cooking_week,
@@ -804,7 +809,7 @@ class ProgressStore:
         if self._sanitize_observed_counts({action: observed}).get(action) != observed:
             return ""
         previous = self.trusted_action_baseline(action)
-        if previous is None or observed[0] >= previous[0] or observed[1] <= previous[1]:
+        if previous is None or observed[0] >= previous[0] or observed[1] < previous[1]:
             return ""
         request = state.count_reset_requests.get(action, {})
         if request.get("before") != list(previous) or request.get("after") != list(observed):

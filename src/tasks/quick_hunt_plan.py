@@ -84,7 +84,7 @@ def validate_plan(plan):
     ):
         raise ValueError("请填写方案名称。")
     if type(plan.get("reserve", 0)) is not int or not 0 <= plan.get("reserve", 0) <= 9999:
-        raise ValueError("保留米饭应为 0 至 9999 的整数。")
+        raise ValueError("保留免费米饭应为 0 至 9999 的整数；付费米饭无需填写，不会消耗。")
     rules = plan.get("rules")
     if not isinstance(rules, list) or not isinstance(plan.get("fallback"), list):
         raise ValueError("方案缺少规则或其他情况的步骤。")
@@ -93,7 +93,9 @@ def validate_plan(plan):
         if not isinstance(rule, dict) or rule.get("condition") not in CONDITIONS:
             raise ValueError("不支持的规则条件。")
         if rule["condition"] == "always" and index != len(rules) - 1:
-            raise ValueError("始终执行规则必须放在最后，否则后续规则无法命中。")
+            raise ValueError(
+                f"规则 {index + 1} 的始终执行必须放在最后，否则后续规则无法命中。"
+            )
         groups.append(rule.get("steps"))
     for steps in groups:
         if not isinstance(steps, list):
@@ -126,8 +128,12 @@ def load_book(config):
             raise ValueError("至少保留一个刷取方案。")
         if type(book.get("active")) is not int or not 0 <= book["active"] < len(plans):
             raise ValueError("当前方案不存在。")
-        for plan in plans:
-            validate_plan(plan)
+        for index, plan in enumerate(plans):
+            try:
+                validate_plan(plan)
+            except ValueError as exc:
+                name = plan.get("name", "") if isinstance(plan, dict) else ""
+                raise ValueError(f"方案 {index + 1}「{name}」：{exc}") from exc
         return book
     except (TypeError, json.JSONDecodeError) as exc:
         raise ValueError("无法读取刷取方案，请在编辑器中重新设置。") from exc
