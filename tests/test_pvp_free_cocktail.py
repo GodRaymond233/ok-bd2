@@ -31,51 +31,37 @@ class PVPFreeCocktailTest(unittest.TestCase):
 
     # ---- 免费不可用 -> 跳过并回主页 ----
 
-    def test_skip_closes_popup_and_returns_home(self):
-        task = self._task()
-        task.back = Mock()
-        task.recover_daily_home = Mock(return_value=True)
-        self.assertEqual("free_ap_unavailable", task._skip_unavailable_free_cocktail())
-        task.back.assert_called_once_with(after_sleep=1.0)
-        task.recover_daily_home.assert_called_once_with()
-        self.assertEqual(0.0, task._auto_return_home_cooldown_until)
-        self.assertIn("已跳过", task.info["状态"])
-
-    def test_skip_fails_when_home_cannot_be_confirmed(self):
-        task = self._task()
-        task.back = Mock()
-        task.recover_daily_home = Mock(return_value=False)
-        self.assertEqual("home_recovery_failed", task._skip_unavailable_free_cocktail())
-        task.log_completion.assert_not_called()
+    def test_skip_records_success_only_after_home_recovery(self):
+        for recovered, state in ((True, "free_ap_unavailable"), (False, "home_recovery_failed")):
+            with self.subTest(recovered=recovered):
+                task = self._task()
+                task._leave_unstarted_battle = Mock(return_value=recovered)
+                task._save_flow_diagnostic = Mock()
+                self.assertEqual(state, task._skip_cocktail_battle("免费鸡尾酒不足"))
+                task._leave_unstarted_battle.assert_called_once_with()
+                self.assertEqual(0.0, task._auto_return_home_cooldown_until)
 
     def test_home_recovery_error_does_not_report_success(self):
         task = self._task()
-        task.back = Mock()
-        task.recover_daily_home = Mock(side_effect=RuntimeError("capture unavailable"))
-        self.assertEqual("home_recovery_failed", task._skip_unavailable_free_cocktail())
+        task._leave_unstarted_battle = Mock(side_effect=RuntimeError("capture unavailable"))
+        task._save_flow_diagnostic = Mock()
+        self.assertEqual("home_recovery_failed", task._skip_cocktail_battle("免费鸡尾酒不足"))
         task.log_completion.assert_not_called()
 
     def test_home_recovery_propagates_cancellation(self):
         for exception in (TaskDisabledException, FinishedException):
             with self.subTest(exception=exception):
                 task = self._task()
-                task.back = Mock()
-                task.recover_daily_home = Mock(side_effect=exception)
+                task._leave_unstarted_battle = Mock(side_effect=exception)
                 with self.assertRaises(exception):
-                    task._skip_unavailable_free_cocktail()
-
-    def test_skip_propagates_cancellation_from_back(self):
-        task = self._task()
-        task.back = Mock(side_effect=TaskDisabledException)
-        with self.assertRaises(TaskDisabledException):
-            task._skip_unavailable_free_cocktail()
+                    task._skip_cocktail_battle("免费鸡尾酒不足")
 
     def test_run_treats_free_ap_unavailable_as_skip(self):
         task = self._task()
         task._skip_weekly_settlement = Mock(return_value=False)
         task._target_multiplier = Mock(return_value=1)
         task._ensure_pvp_hub = Mock(return_value=True)
-        task._start_auto_battle = Mock(return_value="free_ap_unavailable")
+        task._start_auto_battle = Mock(return_value=("free_ap_unavailable", 1))
         task._wait_result_and_leave = Mock()
         self.assertTrue(task.run())
         task._wait_result_and_leave.assert_not_called()
@@ -85,7 +71,7 @@ class PVPFreeCocktailTest(unittest.TestCase):
         task._skip_weekly_settlement = Mock(return_value=False)
         task._target_multiplier = Mock(return_value=1)
         task._ensure_pvp_hub = Mock(return_value=True)
-        task._start_auto_battle = Mock(return_value="home_recovery_failed")
+        task._start_auto_battle = Mock(return_value=("home_recovery_failed", 1))
         task._wait_result_and_leave = Mock()
         self.assertFalse(task.run())
         task._wait_result_and_leave.assert_not_called()
@@ -126,11 +112,12 @@ class PVPFreeCocktailTest(unittest.TestCase):
         task._click_screen_reference = Mock()
         task._click_ocr_pattern_center = Mock(return_value=True)
         task._mf_roi = Mock(return_value=(0, 0, 1, 1))
+        task._confirm_free_ap_balance = Mock(return_value=None)
         task._ensure_free_ap_enabled = Mock(return_value=True)
         task._ensure_free_ap_disabled = Mock(return_value=True)
         task._ensure_multiplier = Mock(return_value=True)
         task._select_max_battle_count = Mock()
-        task._skip_unavailable_free_cocktail = Mock(
+        task._skip_cocktail_battle = Mock(
             return_value="free_ap_unavailable"
         )
         task._wait_battle_start_or_ap_shortage = Mock(return_value="started")
@@ -139,18 +126,18 @@ class PVPFreeCocktailTest(unittest.TestCase):
     def test_paid_mode_skips_free_switch_and_continues(self):
         task = self._start_task(**{"允许使用非免费鸡尾酒": True})
         with patch("src.tasks.PVPTask.pvp_settlement_end_ts", return_value=None):
-            self.assertEqual("started", task._start_auto_battle(1))
+            self.assertEqual(("started", 1), task._start_auto_battle(1))
         task._ensure_free_ap_disabled.assert_called_once_with()
         task._ensure_free_ap_enabled.assert_not_called()
-        task._skip_unavailable_free_cocktail.assert_not_called()
+        task._skip_cocktail_battle.assert_not_called()
         task._ensure_multiplier.assert_called_once_with(1)
 
     def test_free_mode_skips_when_switch_cannot_be_enabled(self):
         task = self._start_task()
         task._ensure_free_ap_enabled = Mock(return_value=False)
         with patch("src.tasks.PVPTask.pvp_settlement_end_ts", return_value=None):
-            self.assertEqual("free_ap_unavailable", task._start_auto_battle(1))
-        task._skip_unavailable_free_cocktail.assert_called_once_with()
+            self.assertEqual(("free_ap_unavailable", 1), task._start_auto_battle(1))
+        task._skip_cocktail_battle.assert_called_once_with("未能开启仅用免费鸡尾酒")
         task._ensure_free_ap_disabled.assert_not_called()
         task._ensure_multiplier.assert_not_called()
 
