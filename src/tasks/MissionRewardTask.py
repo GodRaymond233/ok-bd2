@@ -25,7 +25,7 @@ class MissionRewardTask(TaskVisionMixin, BaseBD2Task):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.name = "每日及每周奖励"
-        self.description = "领取每日、每周及赛季通行证当前可领取的奖励，并复核领取状态。"
+        self.description = "领取每日、每周任务及赛季和角色通行证的奖励，并复核领取状态。"
         self.icon = TaskIcon.CERTIFICATE
         self.group_name = "日常/周常"
         self.group_icon = TaskIcon.CALENDAR
@@ -41,7 +41,9 @@ class MissionRewardTask(TaskVisionMixin, BaseBD2Task):
             "启用": "领取已完成任务的奖励，不执行尚未完成的任务。",
             "领取每日奖励": "检查每日任务页的全部获得按钮。",
             "领取每周奖励": "每次均检查每周任务页，领取本周后来新增的奖励。",
-            "领取赛季通行证奖励": "用全部获得领取各赛季的等级奖励和任务经验，跳过指南通行证。",
+            "领取赛季通行证奖励": (
+                "用全部获得领取赛季与角色通行证的等级奖励和任务经验，跳过指南通行证。"
+            ),
             "最多领取次数": "每页最多点击全部获得的次数，防止卡住时无限点击。",
         })
         self._disabled_button = read_template_image(DISABLED_BUTTON_FILE)
@@ -213,7 +215,7 @@ class MissionRewardTask(TaskVisionMixin, BaseBD2Task):
             return self._fail("进入通行证页")
         sections = tuple(name for name, _ in view.tabs)
         if not sections:
-            self.info_set("赛季通行证领奖", "当前没有赛季通行证")
+            self.info_set("通行证领奖", "当前没有可检查的赛季或角色通行证")
         for index, section in enumerate(sections):
             if index:
                 view = self._wait_pass_page()

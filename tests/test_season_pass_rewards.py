@@ -11,11 +11,13 @@ WIDTH, HEIGHT = 1280, 720
 GUIDE = "指南通行证Ⅱ"
 SPECIAL = "孤注一掷特别赛季通行证"
 REGULAR = "Blood Royale赛季通行证"
+CHARACTER = "沙漠之花席比雅角色通行证"
 PASS_LABELS = (
     ("爱通行证", .16, .048),
     (GUIDE, .20, .324),
     (SPECIAL, .219, .422),
     (REGULAR, .219, .521),
+    (CHARACTER, .219, .620),
     ("LEVEL", .503, .294),
     ("基础", .593, .294),
     ("购买 ￥3,390", .728, .372),
@@ -48,18 +50,24 @@ class SeasonPassViewTest(unittest.TestCase):
         view = season_pass_view(pass_frame(183), boxes(PASS_LABELS))
         self.assertEqual("list", view.state)
         self.assertIsNone(view.section)
-        self.assertEqual([SPECIAL, "bloodroyale赛季通行证"], [name for name, _ in view.tabs])
+        self.assertEqual(
+            [SPECIAL, "bloodroyale赛季通行证", CHARACTER],
+            [name for name, _ in view.tabs],
+        )
 
     def test_each_card_requires_its_own_selected_border(self):
-        for selected_top, name in ((254, SPECIAL), (325, "bloodroyale赛季通行证")):
+        selections = ((254, SPECIAL), (325, "bloodroyale赛季通行证"), (396, CHARACTER))
+        for selected_top, name in selections:
             with self.subTest(name=name):
                 view = season_pass_view(pass_frame(selected_top), boxes(PASS_LABELS))
                 self.assertEqual(("claim", name), (view.state, view.section))
                 self.assertEqual((.749, .707), view.point)
 
     def test_grey_claim_button_proves_empty(self):
-        view = season_pass_view(pass_frame(254, 128), boxes(PASS_LABELS))
-        self.assertEqual("empty", view.state)
+        for selected_top, name in ((254, SPECIAL), (396, CHARACTER)):
+            with self.subTest(name=name):
+                view = season_pass_view(pass_frame(selected_top, 128), boxes(PASS_LABELS))
+                self.assertEqual(("empty", name), (view.state, view.section))
 
     def test_confirm_dialog_blocks_claim_click(self):
         labels = PASS_LABELS + (("购买等级", .50, .45), ("确认", .58, .72))
@@ -89,19 +97,19 @@ class SeasonPassTaskTest(unittest.TestCase):
 
         self.assertEqual([SECTIONS, "home", "season passes", "pass back"], events)
 
-    def test_claims_each_identified_season_and_confirms_disabled_button(self):
+    def test_visits_season_and_character_pass_and_confirms_disabled_button(self):
         task = object.__new__(MissionRewardTask)
         task.config = {"领取每日奖励": False, "领取每周奖励": False}
         clock = [0.0]
         section_one = SPECIAL
-        section_two = "bloodroyale赛季通行证"
-        card_one, card_two = (.219, .392), (.219, .491)
+        pass_boxes = boxes([label for label in PASS_LABELS if label[0] != REGULAR])
+        card_one, card_two = (.219, .392), (.219, .590)
         button, dismiss = (.749, .707), (.50, .91)
-        tabs = ((section_one, card_one), (section_two, card_two))
-        guide = RewardView("list", tabs=tabs)
+        guide = season_pass_view(pass_frame(183), pass_boxes)
+        tabs = guide.tabs
         available = RewardView("claim", section_one, button, tabs)
         cleared = RewardView("empty", section_one, button, tabs)
-        other = RewardView("empty", section_two, button, tabs)
+        other = season_pass_view(pass_frame(396, 128), pass_boxes)
         popup = RewardView("popup", point=dismiss)
         frames = iter([guide, guide, guide, available, available,
                        popup, popup, popup, cleared, cleared,

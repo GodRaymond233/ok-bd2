@@ -165,7 +165,7 @@ def _pass_card_selected(frame, label_y):
 
 
 def season_pass_view(frame, boxes):
-    """Read season cards and the selected season's level reward control."""
+    """Read season and character pass cards and the selected pass's reward control."""
     height, width = frame.shape[:2]
     labels = [(box, normalize_ocr_text(box.name, alnum_only=True)) for box in boxes]
     popup = _reward_popup(labels, width, height)
@@ -176,7 +176,7 @@ def season_pass_view(frame, boxes):
               and _in(box, width, height, (.13, .015, .205, .08))]
     if len(titles) != 1:
         return RewardView()
-    cards = [(box, text) for box, text in labels if text.endswith("赛季通行证")
+    cards = [(box, text) for box, text in labels if text.endswith(("赛季通行证", "角色通行证"))
              and "指南" not in text and _in(box, width, height, (.165, .30, .276, .73))]
     if len({text for _, text in cards}) != len(cards):
         return RewardView()
