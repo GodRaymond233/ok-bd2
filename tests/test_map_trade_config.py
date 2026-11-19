@@ -8,6 +8,7 @@ from unittest.mock import patch
 from src.tasks import MapCollectionTask as map_collection_task_module
 from src.tasks import MapTradeTask as map_trade_task_module
 from src.tasks.map_trade.models import (
+    COOKING_GROUPS,
     CollectionResult,
     NavigationResult,
     ScreenState,
@@ -20,6 +21,7 @@ from src.tasks.MapTradeTask import (
     TRADE_OCR_THRESHOLD_KEY,
     TRADE_VISION_THRESHOLD_KEY,
     MapTradeTask,
+    _cooking_migration_values,
     _trade_section_migration_values,
 )
 from src.tasks.run_history import is_successful_run
@@ -201,6 +203,17 @@ class MapTradeConfigTest(unittest.TestCase):
                     else:
                         self.assertNotIn("存在问题", task.info["状态"])
 
+    def test_cooking_selection_migrates_custom_lists_once(self):
+        self.assertEqual({}, _cooking_migration_values({"5星料理": [], "额外料理": []}))
+        self.assertEqual(
+            {"黄框料理": [], "红框料理": ["泰瑞丝派"], "蓝框料理": []},
+            _cooking_migration_values({"料理清单": ["泰瑞丝派"]}),
+        )
+        self.assertEqual(
+            {"黄框料理": [], "蓝框料理": ["土豆汤"]},
+            _cooking_migration_values({"料理清单": [], "红框料理": [], "额外料理": "土豆汤"}),
+        )
+
     def test_daily_and_weekly_cards_expose_separate_configurations(self):
         executor = SimpleNamespace(scene=None)
         app = SimpleNamespace()
@@ -217,11 +230,17 @@ class MapTradeConfigTest(unittest.TestCase):
                 self.assertIn("制作料理", getattr(trade, mapping_name))
                 self.assertNotIn("料理制作周期", getattr(trade, mapping_name))
                 self.assertNotIn("料理保险", getattr(trade, mapping_name))
-                self.assertIn("5星料理", getattr(trade, mapping_name))
+                for group in COOKING_GROUPS:
+                    self.assertIn(group, getattr(trade, mapping_name))
         self.assertTrue(trade.default_config["制作料理"])
-        self.assertEqual([], trade.default_config["5星料理"])
-        self.assertEqual(["5星料理"], trade.config_type["制作料理"]["sub_configs"][True])
-        self.assertEqual("multi_selection", trade.config_type["5星料理"]["type"])
+        self.assertEqual(
+            [*COOKING_GROUPS, "单道料理批次上限"],
+            trade.config_type["制作料理"]["sub_configs"][True],
+        )
+        for group, recipes in COOKING_GROUPS.items():
+            self.assertEqual(list(recipes), trade.default_config[group])
+            self.assertEqual(list(recipes), trade.config_type[group]["options"])
+        self.assertEqual(20, trade.default_config["单道料理批次上限"])
         keys = list(trade.default_config)
         self.assertLess(keys.index("买"), keys.index("制作料理"))
         self.assertLess(keys.index("制作料理"), keys.index("卖"))
@@ -250,6 +269,7 @@ class MapTradeConfigTest(unittest.TestCase):
                 "出售保险",
                 "使用出售白名单",
                 "使用出售黑名单",
+                "商品保留量",
             ],
             trade.config_type["卖"]["sub_configs"][True],
         )
@@ -290,6 +310,9 @@ class MapTradeConfigTest(unittest.TestCase):
             "缺少 '='",
             trade.validate_config("使用在线价表", False),
         )
+        self.assertIsNone(trade.validate_config("商品保留量", "杏仁=5000\n豆子=-1"))
+        for invalid in ("杏仁=-2", "杏仁=1.5", "杏仁", "杏仁=1\n杏仁=2"):
+            self.assertIsNotNone(trade.validate_config("商品保留量", invalid))
 
     def test_legacy_trade_switches_migrate_to_three_sections(self):
         self.assertEqual(

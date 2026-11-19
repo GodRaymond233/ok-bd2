@@ -12,7 +12,6 @@ from ok.task.TaskExecutor import TaskExecutor
 
 from src.tasks.map_trade.models import (
     COLLECTABLE_CARDS,
-    DEFAULT_COOKING_RECIPES,
     MatchResult,
     NavigationResult,
     ScreenState,
@@ -163,7 +162,7 @@ class MapTradeSafetyTest(unittest.TestCase):
                 task, executor, _frame, clicks, _cancel = self._cancellable_task()
                 trader = object.__new__(Trader)
                 trader.task = task
-                trader._selected_cooking_recipes = lambda: DEFAULT_COOKING_RECIPES[:1]
+                trader._selected_cooking_recipes = lambda: ("巧克力鸡尾酒",)
 
                 def fail():
                     if boundary == "ordinary_error":

@@ -10,9 +10,8 @@ import numpy as np
 
 from src.tasks import run_history
 from src.tasks.map_trade.models import (
-    DEFAULT_COOKING_RECIPES,
+    COOKING_GROUPS,
     DEFAULT_RECIPES,
-    FINAL_COOKING_RECIPE,
     MatchResult,
     ScreenState,
 )
@@ -35,7 +34,7 @@ class CookingTask:
         self.config = {
             "料理制作周期": "每周",
             "料理保险": True,
-            "5星料理": list(DEFAULT_RECIPES),
+            "黄框料理": list(DEFAULT_RECIPES),
             **config,
         }
         self.clicks = []
@@ -88,7 +87,7 @@ class CookingFlowTest(StageHistoryTestCase):
 
         for scenario in ("list", "wrong", "stuck", "late", "input"):
             with self.subTest(scenario=scenario):
-                recipe = DEFAULT_COOKING_RECIPES[0]
+                recipe = "巧克力鸡尾酒"
                 frame = np.full((1080, 1920, 3), 145, dtype=np.uint8)
                 card = MatchResult(.99, (1000, 600), (100, 100), pixel_score=.99)
                 start = MatchResult(.99, (1100, 970), (400, 60), pixel_score=.99)
@@ -141,7 +140,7 @@ class CookingFlowTest(StageHistoryTestCase):
                     self.assertTrue(trader.task.saved_frames)
 
     def _orchestrated_trader(self, *, selected, completed=(), outcomes=(), exit_ok=True):
-        task = CookingTask(**{"5星料理": list(selected)})
+        task = CookingTask(黄框料理=list(selected))
         progress = CookingProgress(completed)
         trader = create_trader()
         trader.task = task
@@ -167,7 +166,8 @@ class CookingFlowTest(StageHistoryTestCase):
         trader, progress, calls = self._orchestrated_trader(
             selected=(first, second, third),
             completed=(first,),
-            outcomes=(CookingRecipeOutcome.COOKED, CookingRecipeOutcome.COOKED,
+            outcomes=(CookingRecipeOutcome.COOKED, CookingRecipeOutcome.UNAVAILABLE,
+                      CookingRecipeOutcome.COOKED, CookingRecipeOutcome.UNAVAILABLE,
                       CookingRecipeOutcome.UNAVAILABLE),
         )
 
@@ -177,6 +177,8 @@ class CookingFlowTest(StageHistoryTestCase):
             [
                 "enter",
                 ("cook", first),
+                ("cook", first),
+                ("cook", second),
                 ("cook", second),
                 ("cook", third),
                 "exit",
@@ -189,7 +191,8 @@ class CookingFlowTest(StageHistoryTestCase):
         first, second, third = DEFAULT_RECIPES[:3]
         trader, progress, calls = self._orchestrated_trader(
             selected=(first, second, third),
-            outcomes=(CookingRecipeOutcome.COOKED, CookingRecipeOutcome.FAILED),
+            outcomes=(CookingRecipeOutcome.COOKED, CookingRecipeOutcome.UNAVAILABLE,
+                      CookingRecipeOutcome.FAILED),
         )
 
         self.assertFalse(trader.run_cooking())
@@ -197,6 +200,7 @@ class CookingFlowTest(StageHistoryTestCase):
         self.assertEqual(
             [
                 "enter",
+                ("cook", first),
                 ("cook", first),
                 ("cook", second),
                 "exit",
@@ -212,6 +216,7 @@ class CookingFlowTest(StageHistoryTestCase):
                 CookingRecipeOutcome.ABSENT,
                 CookingRecipeOutcome.COOKED,
                 CookingRecipeOutcome.UNAVAILABLE,
+                CookingRecipeOutcome.UNAVAILABLE,
             ),
         )
 
@@ -220,6 +225,7 @@ class CookingFlowTest(StageHistoryTestCase):
             [
                 "enter",
                 ("cook", first),
+                ("cook", second),
                 ("cook", second),
                 ("cook", third),
                 "exit",
@@ -238,7 +244,7 @@ class CookingFlowTest(StageHistoryTestCase):
     def test_exit_to_q_sp6_is_required_for_success(self):
         trader, progress, calls = self._orchestrated_trader(
             selected=(DEFAULT_RECIPES[0],),
-            outcomes=(CookingRecipeOutcome.COOKED,),
+            outcomes=(CookingRecipeOutcome.COOKED, CookingRecipeOutcome.UNAVAILABLE),
             exit_ok=False,
         )
 
@@ -246,14 +252,53 @@ class CookingFlowTest(StageHistoryTestCase):
         self.assertEqual([], progress.marked)
         self.assertEqual("exit", calls[-1])
 
-    def test_default_order_optional_selection_and_chicken_last(self):
+    def test_recipe_priority_and_empty_selection(self):
         trader = create_trader()
-        trader.task = CookingTask(**{"5星料理": []})
-        self.assertEqual((*DEFAULT_COOKING_RECIPES, FINAL_COOKING_RECIPE),
-                         trader._selected_cooking_recipes())
-        trader.task.config["5星料理"] = [DEFAULT_RECIPES[1], DEFAULT_RECIPES[0]]
-        self.assertEqual((*DEFAULT_COOKING_RECIPES, *DEFAULT_RECIPES[:2],
-                          FINAL_COOKING_RECIPE), trader._selected_cooking_recipes())
+        trader.task = CookingTask()
+        self.assertEqual(
+            (*DEFAULT_RECIPES, *COOKING_GROUPS["红框料理"], *COOKING_GROUPS["蓝框料理"]),
+            trader._selected_cooking_recipes(),
+        )
+        trader.task.config.update(
+            黄框料理="煤炭饼干，卢戈山参烤串",
+            红框料理=["橄榄油意面", "街头烤鸡肉串"],
+            蓝框料理=["凯洛养身汤", "巧克力面包"],
+        )
+        self.assertEqual(
+            ("卢戈山参烤串", "煤炭饼干", "街头烤鸡肉串", "橄榄油意面", "巧克力面包", "凯洛养身汤"),
+            trader._selected_cooking_recipes(),
+        )
+        trader.task.config.update(dict.fromkeys(COOKING_GROUPS, []))
+        trader._enter_cooking_list = Mock(side_effect=AssertionError("空清单不得导航"))
+        self.assertTrue(trader.run_cooking())
+
+    def test_repeated_batches_require_confirmation_and_stop_at_limit(self):
+        cooked = CookingRecipeOutcome.COOKED
+        unavailable = CookingRecipeOutcome.UNAVAILABLE
+        failed = CookingRecipeOutcome.FAILED
+        absent = CookingRecipeOutcome.ABSENT
+        for outcomes, final_card, expected in (
+            ((cooked, cooked, unavailable), None, True),
+            ((cooked, failed), None, False),
+            ((cooked, absent), None, False),
+            ((cooked, cooked, cooked), unavailable, True),
+            ((cooked, cooked, cooked), object(), False),
+        ):
+            with self.subTest(outcomes=outcomes):
+                recipe = "巧克力鸡尾酒"
+                trader, _progress, calls = self._orchestrated_trader(
+                    selected=(recipe,), outcomes=outcomes,
+                )
+                trader.task.config["单道料理批次上限"] = 3
+                trader._select_recipe_card = Mock(return_value=final_card)
+                self.assertEqual(expected, trader.run_cooking())
+                self.assertEqual(len(outcomes), calls.count(("cook", recipe)))
+                self.assertEqual("exit", calls[-1])
+                if outcomes == (cooked, cooked, cooked):
+                    trader._select_recipe_card.assert_called_once_with(recipe, inspect_only=True)
+                    self.assertEqual(not expected, any(
+                        "达到本次上限" in msg for _, msg in trader.task.logs
+                    ))
 
     def test_recipe_state_machine_requires_result_and_list_restoration(self):
         recipe = DEFAULT_RECIPES[0]
@@ -351,6 +396,7 @@ class CookingFlowTest(StageHistoryTestCase):
                 self.reset_stage_history()
                 recovered.clear()
                 clicks.clear()
+                trader._cooking_card_enabled = lambda *_args: len(clicks) < 4
                 trader._wait_for_cooking_started = lambda *_args: started
                 trader._wait_for_cooking_result = lambda *_args: None
                 self.assertFalse(trader.run_cooking())
@@ -363,7 +409,7 @@ class CookingFlowTest(StageHistoryTestCase):
                 self.assertEqual(4, len(clicks))
 
     def test_lost_max_click_retries_and_never_starts_without_confirmation(self):
-        recipe = DEFAULT_COOKING_RECIPES[0]
+        recipe = "巧克力鸡尾酒"
         frame = np.full((1080, 1920, 3), 145, dtype=np.uint8)
         card = MatchResult(0.99, (1000, 600), (100, 100), pixel_score=0.99)
         start = MatchResult(0.99, (1100, 970), (400, 60), pixel_score=0.99)

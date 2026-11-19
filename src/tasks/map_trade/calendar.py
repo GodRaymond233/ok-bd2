@@ -17,6 +17,7 @@ UTC_PLUS_8 = timezone(timedelta(hours=8), name="UTC+8")
 SALE_PRICE_REFRESH_HOUR = 23
 PURCHASE_STOCK_REFRESH_HOUR = 8
 MAX_CALENDAR_CACHE_AGE = timedelta(hours=24)
+REVISED_BUNDLED_CALENDAR_FROM = date(2026, 11, 19)
 
 
 def _china_time(now: datetime) -> datetime:
@@ -192,22 +193,32 @@ class PriceCalendarClient:
         sources_path: Path | None = None,
         timeout: float = 5.0,
         now_provider: Callable[[], datetime] | None = None,
+        revised_bundled_path: Path | None = None,
     ) -> None:
         self.bundled_path = bundled_path
         self.cache_path = Path(cache_path)
         self.sources_path = sources_path
         self.timeout = timeout
         self.now_provider = now_provider or (lambda: datetime.now(UTC_PLUS_8))
+        self.revised_bundled_path = revised_bundled_path
 
     def load(
         self,
         use_online: bool = True,
         manual_text: str = "",
         use_bundled: bool = True,
+        market_date: date | None = None,
     ) -> LoadedCalendar:
         if use_bundled:
+            active_date = market_date or sale_price_calendar_date(self._now())
+            path = self.bundled_path
+            if (
+                self.revised_bundled_path is not None
+                and active_date >= REVISED_BUNDLED_CALENDAR_FROM
+            ):
+                path = self.revised_bundled_path
             return parse_calendar_payload(
-                self.bundled_path.read_text(encoding="utf-8"), source="bundled"
+                path.read_text(encoding="utf-8"), source="bundled"
             )
         if not use_online:
             return parse_manual_calendar(manual_text)

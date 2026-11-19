@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from difflib import SequenceMatcher
 from time import monotonic
 
@@ -47,6 +48,7 @@ from src.tasks.map_trade.trader_constants import (
     STAR_TEMPLATE_THRESHOLD,
     STAR_VERIFY_ATTEMPTS,
     STAR_VERIFY_INTERVAL,
+    STAR_YELLOW_PIXEL_THRESHOLD,
     ShopCartridgeDetection,
     ShopCartridgeOcrRow,
     ShopCartridgeOcrText,
@@ -91,14 +93,14 @@ class ShopCartridgeNavigationMixin:
                 if not self._select_purchase_cartridge(shop_id):
                     self.task.log_warning(f"买：未能选择{reference.label}。")
                     return False
-                if not self._align_unfavorited_points(shop_id):
-                    self.task.log_warning(f"买：{reference.label}空收藏位置核对失败。")
+                if not self._align_favorite_slots(shop_id):
+                    self.task.log_warning(f"买：{reference.label}收藏位置核对失败。")
                     return False
                 self.progress.mark_favorite_card(shop_id)
                 self._status("收藏重建进度", f"{reference.label} 已完成")
 
         self.progress.mark_favorites_built()
-        self.task.log_info("买：31张商品卡带的空收藏位置已全部核对完成。")
+        self.task.log_info("买：31张商品卡带的收藏位置已全部核对完成。")
         return True
 
     def _show_shop_page(self, page: ShopCartridgePage, *, phase: str = "买") -> bool:
@@ -175,6 +177,10 @@ class ShopCartridgeNavigationMixin:
 
     def _select_shop_cartridge_downward(self, shop_id: str) -> bool:
         """出售会话内单调向下选卡带：按目标页与当前页的差值一口气下滚。"""
+        if self._cartridge_visible(shop_id, self.vision.capture()):
+            # Seeing the target does not establish the viewport's boundary rows.
+            self._sell_cartridge_page = None
+            return self._select_purchase_cartridge(shop_id)
         if self._sell_cartridge_page is None:
             if not self._ensure_sell_list_at_top():
                 return False
@@ -202,6 +208,8 @@ class ShopCartridgeNavigationMixin:
         if not self._show_shop_page(page, phase="卖"):
             # 页号已失真，强制下次重新定位，不能沿用本次滚动距离。
             self._sell_cartridge_page = None
+            if self._cartridge_visible(shop_id, self.vision.capture()):
+                return self._select_purchase_cartridge(shop_id)
             labels = "、".join(
                 SHOP_PURCHASE_REFERENCES[value].label
                 for value in page.confirmation_shop_ids
@@ -562,16 +570,20 @@ class ShopCartridgeNavigationMixin:
                 self.task.sleep(SHOP_CARTRIDGE_SELECT_POLL_INTERVAL)
         return False
 
-    def _align_unfavorited_points(self, shop_id: str) -> bool:
+    def _align_favorite_slots(self, shop_id: str) -> bool:
         reference = SHOP_PURCHASE_REFERENCES[shop_id]
-        desired_unfavorited = reference.unfavorited_slots
         for slot, point in SHOP_FAVORITE_POINTS.items():
             frame = self.vision.capture()
-            state = self._star_state(frame, slot, point)
+            state = self._star_state(
+                frame, slot, point, expected_yellow=slot in reference.favorite_slots,
+            )
             if state is None:
+                if slot in reference.favorite_slots:
+                    self.task.log_warning(f"买：{reference.label} #{slot} 未识别到目标商品星标。")
+                    return False
                 self._status(f"{shop_id} 收藏#{slot}", "无商品，跳过")
                 continue
-            if slot in desired_unfavorited:
+            if slot not in reference.favorite_slots:
                 if state == "gray":
                     self._status(f"{shop_id} 空收藏#{slot}", "已是灰星")
                     continue
@@ -619,6 +631,8 @@ class ShopCartridgeNavigationMixin:
         frame: np.ndarray,
         slot: int,
         point: tuple[float, float],
+        *,
+        expected_yellow: bool = False,
     ) -> str | None:
         spec = self._star_spec(slot, point)
         result = self.vision.match(frame, spec)
@@ -627,6 +641,16 @@ class ShopCartridgeNavigationMixin:
             f"match={result.score:.3f}, pixel={result.pixel_score:.3f}",
         )
         if not self.vision.passes(result, spec):
+            if expected_yellow:
+                fallback = replace(spec, min_pixel_score=STAR_YELLOW_PIXEL_THRESHOLD)
+                candidate = self.vision.match(frame, fallback)
+                if (self.vision.passes(candidate, fallback)
+                        and self.vision.star_is_yellow(frame, candidate)):
+                    self._status(
+                        f"星标#{slot}",
+                        f"黄星复核: match={candidate.score:.3f}, pixel={candidate.pixel_score:.3f}",
+                    )
+                    return "yellow"
             return None
         return "yellow" if self.vision.star_is_yellow(frame, result) else "gray"
 

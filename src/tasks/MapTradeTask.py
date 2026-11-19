@@ -11,10 +11,12 @@ from ok.util.file import get_relative_path
 from src.icons import TaskIcon as FluentIcon
 from src.tasks.BaseBD2Task import BaseBD2Task
 from src.tasks.map_trade.calendar import parse_manual_calendar
-from src.tasks.map_trade.models import DEFAULT_SALE_WHITELIST, OPTIONAL_COOKING_RECIPES
+from src.tasks.map_trade.models import COOKING_GROUPS, DEFAULT_SALE_WHITELIST
 from src.tasks.map_trade.navigator import Navigator
 from src.tasks.map_trade.progress import ProgressStore
 from src.tasks.map_trade.trader import Trader
+from src.tasks.map_trade.trader_constants import split_items
+from src.tasks.map_trade.trader_pricing import parse_sale_reserves
 from src.tasks.map_trade.vision import Vision
 
 LEGACY_VISION_THRESHOLD_KEY = "跑图跑商识图阈值"
@@ -50,6 +52,23 @@ def _trade_section_migration_values(legacy: dict) -> dict[str, bool]:
     if "卖" not in legacy and ({"执行跑商", "最高价出售"} & legacy.keys()):
         migrated["卖"] = trade_enabled and bool(legacy.get("最高价出售", True))
     return migrated
+
+
+def _cooking_migration_values(legacy: dict) -> dict[str, list[str]]:
+    old_keys = {"黄框料理": "5星料理", "红框料理": "料理清单", "蓝框料理": "额外料理"}
+    if not any(key in legacy for key in old_keys.values()):
+        return {}
+    old_defaults = {"红框料理": COOKING_GROUPS["红框料理"], "黄框料理": (), "蓝框料理": ()}
+    selected = {
+        group: set(split_items(legacy.get(key, old_defaults[group]) or ()))
+        for group, key in old_keys.items()
+    }
+    if all(selected[group] == set(default) for group, default in old_defaults.items()):
+        return {}
+    return {
+        group: [recipe for recipe in recipes if recipe in selected[group]]
+        for group, recipes in COOKING_GROUPS.items() if group not in legacy
+    }
 
 
 def _migrate_collection_config(legacy: dict) -> None:
@@ -238,7 +257,8 @@ class MapTradeTask(MapAutomationTaskBase):
                 "买": True,
                 "收藏重建周期": "每周",
                 "制作料理": True,
-                "5星料理": [],
+                **{group: list(recipes) for group, recipes in COOKING_GROUPS.items()},
+                "单道料理批次上限": 20,
                 "卖": True,
                 "使用程序默认价表": True,
                 "使用在线价表": True,
@@ -248,6 +268,7 @@ class MapTradeTask(MapAutomationTaskBase):
                 "出售白名单": "，".join(DEFAULT_SALE_WHITELIST),
                 "使用出售黑名单": False,
                 "出售黑名单": "",
+                "商品保留量": "",
                 TRADE_VISION_THRESHOLD_KEY: 0.72,
                 TRADE_OCR_THRESHOLD_KEY: 0.20,
                 "加载页面等待秒数": 45.0,
@@ -255,10 +276,12 @@ class MapTradeTask(MapAutomationTaskBase):
         )
         self.config_description.update(
             {
-                "制作料理": "购买阶段后按优先级制作料理，全部选择 MAX；灰色料理跳过，"
-                "当天同一配置已确认制作的料理不重复。",
-                "5星料理": "额外制作的白框五道料理，默认不选；街头烤鸡肉串始终最后制作。",
-                "买": "按每日08:00库存批次进入 Q_sp6 完成砍价，并按本地卡带与灰星坐标表重建收藏。",
+                "制作料理": "按黄框、红框、蓝框顺序制作所选食谱，每批选择 MAX，做到食谱变灰。",
+                "黄框料理": "优先制作，默认全选。",
+                "红框料理": "完成黄框料理后制作，默认全选。",
+                "蓝框料理": "完成红框料理后制作，默认全选。",
+                "单道料理批次上限": "单道料理本次最多制作的批数；达到上限后提示尚未确认材料耗尽。",
+                "买": "按每日08:00库存批次砍价购买，收藏表包含31张卡带的190个商品格。",
                 "收藏重建周期": (
                     "每周只重建一次收藏；每次会强制重新核对；永不则只购买当前收藏。"
                 ),
@@ -281,12 +304,16 @@ class MapTradeTask(MapAutomationTaskBase):
                     "开启时只出售最高价表和出售白名单的交集；关闭时出售价表中全部允许出售的商品。"
                 ),
                 "出售白名单": (
-                    "用逗号、分号或换行追加物品；五种已选利润料理始终纳入出售白名单。"
+                    "用逗号、分号或换行追加物品；已选蓝框料理也纳入出售白名单。"
                 ),
                 "使用出售黑名单": (
                     "开启后排除出售黑名单中的商品；黑名单优先于出售白名单。"
                 ),
                 "出售黑名单": "用逗号、分号或换行填写禁止出售的商品。",
+                "商品保留量": (
+                    "每行填写「物品=数量」，例如「杏仁=5000」；使用价表中的完整商品名。"
+                    "填写-1时该商品不出售，留空沿用价表保留量；仍受最高价和黑白名单限制。"
+                ),
                 TRADE_VISION_THRESHOLD_KEY: "商店、导航与料理模板的最低匹配可信度。",
                 TRADE_OCR_THRESHOLD_KEY: "商店文字和按钮识别的最低可信度。",
                 "加载页面等待秒数": "进入卡带或传送后等待加载完成的最长秒数。",
@@ -294,11 +321,14 @@ class MapTradeTask(MapAutomationTaskBase):
         )
         self.config_type.update(
             {
-                "制作料理": {"sub_configs": {True: ["5星料理"]}},
-                "5星料理": {
-                    "type": "multi_selection",
-                    "options": list(OPTIONAL_COOKING_RECIPES),
+                "制作料理": {
+                    "sub_configs": {True: [*COOKING_GROUPS, "单道料理批次上限"]},
                 },
+                **{
+                    group: {"type": "multi_selection", "options": list(recipes)}
+                    for group, recipes in COOKING_GROUPS.items()
+                },
+                "单道料理批次上限": {"min": 1, "max": 100, "step": 1},
                 "买": {"sub_configs": {True: ["收藏重建周期"]}},
                 "收藏重建周期": {
                     "type": "drop_down",
@@ -311,12 +341,14 @@ class MapTradeTask(MapAutomationTaskBase):
                             "出售保险",
                             "使用出售白名单",
                             "使用出售黑名单",
+                            "商品保留量",
                         ]
                     }
                 },
                 "使用出售白名单": {"sub_configs": {True: ["出售白名单"]}},
                 "使用出售黑名单": {"sub_configs": {True: ["出售黑名单"]}},
                 "出售黑名单": {"type": "text_edit"},
+                "商品保留量": {"type": "text_edit"},
                 "使用程序默认价表": {
                     "sub_configs": {False: ["使用在线价表"]}
                 },
@@ -329,7 +361,10 @@ class MapTradeTask(MapAutomationTaskBase):
         )
     def load_config(self):
         legacy = _read_config(_config_path(self.__class__.__name__))
-        section_values = _trade_section_migration_values(legacy)
+        section_values = {
+            **_trade_section_migration_values(legacy),
+            **_cooking_migration_values(legacy),
+        }
         _migrate_collection_config(legacy)
         super().load_config()
         for key, value in section_values.items():
@@ -342,6 +377,12 @@ class MapTradeTask(MapAutomationTaskBase):
             if new_key not in legacy and old_key in legacy:
                 self.config[new_key] = legacy[old_key]
     def validate_config(self, key, value):
+        if key == "商品保留量":
+            try:
+                parse_sale_reserves(str(value))
+            except ValueError as exc:
+                return str(exc)
+            return None
         current_config = self.config if self.config is not None else self.default_config
         manual_text = None
         if key == "自定义最高价表":

@@ -487,6 +487,14 @@ class ProgressTest(unittest.TestCase):
             resumed.mark_favorites_built()
             self.assertFalse(resumed.should_rebuild_favorites())
 
+            old_plan = json.loads(path.read_text(encoding="utf-8"))
+            old_plan["favorite_plan_version"] = 1
+            path.write_text(json.dumps(old_plan), encoding="utf-8")
+            migrated = ProgressStore(path, now)
+            migrated.load()
+            self.assertTrue(migrated.should_rebuild_favorites())
+            self.assertFalse(migrated.favorite_card_complete("S1"))
+
             resumed.clear_favorite_cards()
             self.assertTrue(resumed.should_rebuild_favorites())
             self.assertEqual(set(), resumed.state.completed_favorite_cards)
@@ -720,7 +728,7 @@ class ProgressTest(unittest.TestCase):
                 (0, 0, 0),
                 (state.daily_submaps, state.daily_summons, state.daily_suppressions),
             )
-            self.assertEqual({"S1"}, state.completed_favorite_cards)
+            self.assertEqual(set(), state.completed_favorite_cards)
             self.assertEqual(week, state.cooking_week)
             self.assertEqual(set(DEFAULT_RECIPES), state.completed_cooking_recipes)
 
@@ -1027,7 +1035,7 @@ class ProgressTest(unittest.TestCase):
             self.assertEqual(0, state.daily_submaps)
             self.assertEqual(0, state.daily_summons)
             self.assertEqual(0, state.daily_suppressions)
-            self.assertEqual({"S1"}, state.completed_favorite_cards)
+            self.assertEqual(set(), state.completed_favorite_cards)
             self.assertEqual(weekly_cycle_key(now), state.cooking_week)
             self.assertEqual(set(DEFAULT_RECIPES), state.completed_cooking_recipes)
             self.assertEqual(STATE_SCHEMA_VERSION, saved["schema_version"])
@@ -1064,7 +1072,7 @@ class ProgressTest(unittest.TestCase):
             self.assertEqual({}, state.cards)
             self.assertEqual(0, state.daily_absorbs)
             self.assertEqual([], state.verified_cards)
-            self.assertEqual({"S1"}, state.completed_favorite_cards)
+            self.assertEqual(set(), state.completed_favorite_cards)
 
     def test_schema_four_whole_week_cooking_marker_migrates_to_all_recipes(self):
         with tempfile.TemporaryDirectory() as temp_dir:

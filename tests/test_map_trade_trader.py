@@ -146,6 +146,37 @@ class TradeSellTestTaskTest(unittest.TestCase):
 
 
 class SellFlowTest(StageHistoryTestCase):
+    def test_market_refresh_blocks_new_entry_and_final_confirmation(self):
+        from src.tasks import run_history
+
+        trader = create_trader()
+        trader.task = SimpleNamespace(config={}, log_info=Mock(), log_warning=Mock(),
+                                      info_set=Mock(), operate_click=Mock())
+        trader._sale_calendar_date = datetime(2026, 11, 18).date()
+        trader.now_provider = lambda: datetime(2026, 11, 18, 23, tzinfo=UTC_PLUS_8)
+        trader.select_shop_tab = Mock()
+        entry = CalendarEntry("苹果", "S1")
+        self.assertFalse(trader._sell_resolved_entries([entry]))
+        trader.select_shop_tab.assert_not_called()
+
+        trader.vision = SimpleNamespace(click_client=Mock())
+        trader._sale_name_signature = Mock(return_value=())
+        trader._sale_toast_id = Mock(return_value=None)
+        trader._wait_sale_dialog_item = Mock(return_value=True)
+        trader._wait_owned_quantity = Mock(return_value=100)
+        trader._wait_available_quantity = Mock(return_value=50)
+        trader._choose_sale_quantity = Mock(return_value=True)
+        trader._wait_selected_sale_quantity = Mock(return_value=(50, None))
+        candidate = SimpleNamespace(center=(10, 10), percent_box=None)
+        self.assertIsNone(trader._sell_one_candidate(
+            entry, candidate, np.zeros((30, 30, 3), np.uint8), previous_owned=None,
+        ))
+        trader.task.operate_click.assert_not_called()
+        self.assertNotEqual("pending", run_history.read_stage(trader.task, "出售:S1:苹果").get(
+            "state",
+        ))
+        self.assertIn("价表已刷新", trader._last_sale_reason)
+
     def test_native_2k_sale_recovery_requires_exact_percent_and_unique_marker(self):
         from unittest.mock import Mock
 
@@ -440,6 +471,7 @@ class SellFlowTest(StageHistoryTestCase):
             capture=lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
         )
         trader._shop_list_top_row_index = lambda _frame: 5
+        trader._cartridge_visible = lambda *_args: False
 
         # 两次落点确认都失败：会话页号必须作废，否则后续条目从失真基准少滚。
         self.assertFalse(trader.select_shop_tab("E7:戏水女王"))
@@ -900,7 +932,7 @@ class SellFlowTest(StageHistoryTestCase):
                 trader._wait_owned_quantity = lambda: 400
                 trader._wait_available_quantity = lambda: 400
                 trader._wait_selected_sale_quantity = lambda expected, **_kwargs: (
-                    quantities.append(expected) or expected
+                    quantities.append(expected) or (expected, None)
                 )
                 trader._wait_sale_completion = lambda *_args, **_kwargs: True
 
@@ -1016,7 +1048,7 @@ class SellFlowTest(StageHistoryTestCase):
                 trader._wait_owned_quantity = stock
                 trader._wait_available_quantity = Mock(return_value=77850)
                 trader._choose_sale_quantity = Mock(return_value=True)
-                trader._wait_selected_sale_quantity = Mock(return_value=72350)
+                trader._wait_selected_sale_quantity = Mock(return_value=(72350, None))
                 trader._ensure_sell_page = Mock(return_value=True)
                 with patch("src.tasks.map_trade.trader_sell.monotonic", clock):
                     result = trader._sell_selected_entry(CalendarEntry("苹果", "S2", reserve=5500))
@@ -1055,7 +1087,7 @@ class SellFlowTest(StageHistoryTestCase):
                 trader._wait_owned_quantity = lambda: next(quantities)
                 trader._wait_available_quantity = lambda: next(available)
                 trader._wait_selected_sale_quantity = lambda expected, **_kwargs: (
-                    selected.append(expected) or expected
+                    selected.append(expected) or (expected, None)
                 )
                 trader._wait_sale_completion = lambda *_a, **_k: len(scans) == 1 or completed
                 self.assertEqual(
@@ -1275,6 +1307,40 @@ class SellFlowTest(StageHistoryTestCase):
                 before_toast_id=5,
             )
         )
+
+    def test_saffron_sale_requires_a_fresh_credit_matching_the_quote(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        signature = (("藏红花", 620, 560, 44, 23),)
+        quote = "藏红花 拥有4,265个 4265个 149275-179,130 ▲120% 可购买4265个 MIN -10 +10 MAX 出售"
+        for previous, current, dialog, completed in (
+            ("出售", "出售 +179,130 悠丝缇亚 食物", "", True),
+            ("出售", "出售 +179,131 悠丝缇亚 食物", "", False),
+            ("出售 +179,130", "出售 +179,130 悠丝缇亚 食物", "", False),
+            ("出售", "出售 +179,130 悠丝缇亚 食物", "拥有4265个", False),
+        ):
+            with self.subTest(previous=previous, current=current, dialog=dialog):
+                trader = create_trader()
+                trader.task = SimpleNamespace(
+                    info_set=lambda *_args: None, log_warning=lambda *_args: None,
+                )
+                trader.vision = SimpleNamespace(
+                    capture=lambda: frame,
+                    simplify=lambda value: value,
+                    ocr_text=lambda _frame, name, **_kwargs: {
+                        "出售弹窗已选数量": quote,
+                        "出售前到账提示": previous,
+                        "出售弹窗完成确认": dialog,
+                        "出售交易完成": current,
+                    }[name],
+                )
+                trader._sale_name_signature = lambda *_args: signature
+                self.assertEqual((4265, 179130), trader._wait_selected_sale_quantity(
+                    4265, timeout=0, maximum=4265,
+                ))
+                self.assertEqual(completed, trader._wait_sale_completion(
+                    CalendarEntry("藏红花", "S10"), frame, signature, timeout=0,
+                    before_toast_id=5, owned=4265, selected=4265, payout=179130,
+                ))
 
     def test_sale_completion_rejects_blank_page_ocr_as_name_disappearance(self):
         clock = FakeClock()
