@@ -426,40 +426,61 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
         controls = [[box for box, label in zip(boxes, labels) if label in accepted]
                     for accepted in ((section_name, header), ("抽抽乐记录", header),
                                      ("抽1次", "拍1次"))]
-        if any(len(group) != 1 for group in controls):
+        if any(len(group) != 1 for group in controls[:2]) or len(controls[2]) > 1:
             reason = "、".join(f"{name}数量={len(group)}" for name, group
                               in zip(("池标题", "记录标签", "单抽按钮"), controls)
                               if len(group) != 1)
             return FreePoolObservation(FREE_ENTRY_RETRY_UNKNOWN, reason, text, free_hint=free_hint)
-        title, record, single = (group[0] for group in controls)
+        title, record = (group[0] for group in controls[:2])
+        if not (title.width > 0 and title.height > 0 and record.width > 0 and record.height > 0
+                and (title is record or title.x + title.width <= record.x)
+                and abs(title.y - record.y) <= max(title.height, record.height)):
+            return FreePoolObservation(FREE_ENTRY_RETRY_UNKNOWN, "标题栏布局未通过",
+                                       text, free_hint=free_hint)
+        entries = [box for box, label in zip(boxes, labels) if label == FREE_GACHA_KEYWORDS[0]]
+        single = controls[2][0] if controls[2] else None
         # Observed OCR confusion: 抽1次 -> 拍1次. Require its neighboring ten-draw
         # button before accepting this alias; neither button is a click target.
-        if normalize_ocr_text(single.name, alnum_only=True) == "拍1次":
+        if single is not None and normalize_ocr_text(single.name, alnum_only=True) == "拍1次":
             tens = [box for box, label in zip(boxes, labels) if label == "抽10次"]
             if (len(tens) != 1 or tens[0].width <= 0 or tens[0].height <= 0
                     or single.x + single.width > tens[0].x
                     or abs(single.y - tens[0].y) > max(single.height, tens[0].height)):
                 return FreePoolObservation(FREE_ENTRY_RETRY_UNKNOWN, "单抽误识别布局未通过",
                                            text, free_hint=free_hint)
-        if not (all(box.width > 0 and box.height > 0 for box in (title, record, single))
-                and (title is record or title.x + title.width <= record.x)
-                and abs(title.y - record.y) <= max(title.height, record.height)
-                and max(title.y + title.height, record.y + record.height) < single.y):
-            return FreePoolObservation(FREE_ENTRY_RETRY_UNKNOWN, "标题栏/单抽布局未通过",
-                                       text, free_hint=free_hint)
+        if single is None:
+            height, width = frame.shape[:2]
+            footer_y = height * 0.8
+            # Event banners can show a paid step in place of the regular draw controls.
+            paid_action = any(
+                re.fullmatch(r"付费[1-9]\d*|step\d+抽抽乐", label, re.IGNORECASE)
+                and box.x >= width / 2 and box.y >= footer_y
+                for box, label in zip(boxes, labels))
+            if (max(title.y + title.height, record.y + record.height) >= height / 2
+                    or not (entries or paid_action)):
+                return FreePoolObservation(FREE_ENTRY_RETRY_UNKNOWN, "未确认抽卡页面布局",
+                                           text, free_hint=free_hint)
+        else:
+            if (single.width <= 0 or single.height <= 0
+                    or max(title.y + title.height, record.y + record.height) >= single.y):
+                return FreePoolObservation(FREE_ENTRY_RETRY_UNKNOWN, "标题栏/单抽布局未通过",
+                                           text, free_hint=free_hint)
+            footer_y = single.y - single.height * 2
         free_hint = free_hint or any(
-            "免费" in label and box.y + box.height / 2 >= single.y - single.height * 2
+            "免费" in label and box.y + box.height / 2 >= footer_y
             for box, label in zip(boxes, labels))
-        entries = [box for box in boxes
-                   if normalize_ocr_text(box.name, alnum_only=True) == FREE_GACHA_KEYWORDS[0]]
         if len(entries) != 1:
             state = FREE_ENTRY_RETRY_UNKNOWN if free_hint else FREE_ENTRY_RETRY_NO_FREE
             return FreePoolObservation(state, f"免费入口数量={len(entries)}，免费信号={free_hint}",
                                        text, pool_confirmed=True, free_hint=free_hint)
         entry = entries[0]
-        if not (entry.width > 0 and entry.height > 0 and entry.x + entry.width < single.x
-                and abs(entry.y - single.y) <= max(entry.height, single.height) * 3):
-            return FreePoolObservation(FREE_ENTRY_RETRY_UNKNOWN, "免费入口与单抽行布局未通过",
+        if single is None:
+            entry_in_row = entry.x + entry.width < width / 2 and entry.y >= footer_y
+        else:
+            entry_in_row = (entry.x + entry.width < single.x
+                            and abs(entry.y - single.y) <= max(entry.height, single.height) * 3)
+        if not (entry.width > 0 and entry.height > 0 and entry_in_row):
+            return FreePoolObservation(FREE_ENTRY_RETRY_UNKNOWN, "免费入口布局未通过",
                                        text, pool_confirmed=True, free_hint=True)
         point = ((entry.x + entry.width / 2) / frame.shape[1],
                  (entry.y + entry.height / 2) / frame.shape[0])
@@ -485,8 +506,8 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
                            for label in labels)
                        and any(label in ("抽1次", "拍1次", FREE_GACHA_KEYWORDS[0])
                                for label in labels))
-            if anchors and observation.state in (
-                    FREE_ENTRY_RETRY_UNKNOWN, FREE_ENTRY_RETRY_NO_FREE):
+            if (observation.state == FREE_ENTRY_RETRY_NO_FREE
+                    or (anchors and observation.state == FREE_ENTRY_RETRY_UNKNOWN)):
                 # Re-read this same frame at a second scale; replace the entire view.
                 # A free hint in either view forbids declaring exhaustion.
                 boxes = self._gacha_ocr_boxes(frame, name + "_1080", target_height=1080)

@@ -54,6 +54,25 @@ def confirmation_boxes(pool="装备", count=3, cost=None, scale=1):
 
 
 class FreeGachaTaskHelperTest(StageHistoryTestCase):
+    def test_paid_event_pool_uses_only_the_free_batch_entry(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        boxes = pool_boxes("服装")[:2]
+        entry = SimpleNamespace(name="所有免费抽抽乐", x=242, y=948, width=194, height=36)
+        for action in ("STEP1抽抽乐", "付费2,000"):
+            paid = SimpleNamespace(name=action, x=1620, y=938, width=146, height=33)
+            for footer, expected in [
+                ([entry], FREE_ENTRY_RETRY_READY),
+                ([entry, paid], FREE_ENTRY_RETRY_READY),
+                ([paid], free_gacha_module.FREE_ENTRY_RETRY_NO_FREE),
+                ([entry, paid] + confirmation_boxes("服装", cost="付费2,000"),
+                 free_gacha_module.FREE_ENTRY_RETRY_DIALOG),
+            ]:
+                with self.subTest(action=action, expected=expected):
+                    observed = FreeGachaTask._pool_observation(frame, boxes + footer, "服装抽抽乐")
+                    self.assertEqual(expected, observed.state)
+                    self.assertEqual((339 / 1920, 966 / 1080) if expected == FREE_ENTRY_RETRY_READY
+                                     else None, observed.point)
+
     def test_single_draw_ocr_typo_preserves_free_state(self):
         for pool in ("服装", "装备"):
             for scale in (.72, 1, 2):
