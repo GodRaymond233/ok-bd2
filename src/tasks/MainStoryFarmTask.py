@@ -214,7 +214,7 @@ class MainStoryFarmTask(
                 if not auto_start and farm_state in PREPARE_STATES:
                     # 关掉自动开始难度时，大厅那几步不再算「能刷快速探索」。
                     farm_state = MainStoryState.BUSY
-                walk_state, walk_evidence, _objective, _seen = self._walk_state(
+                walk_state, walk_evidence, *_rest = self._walk_state(
                     frame, walk_threshold,
                 )
                 interact_visible = (

@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 from enum import Enum
 from time import monotonic
@@ -35,7 +36,6 @@ from src.tasks.main_story import (
     BATTLE_TURN_INTERVAL,
     CLICK_CONFIRM_SECONDS,
     CLICK_RETRY_ATTEMPTS,
-    CUTSCENE_SKIP_ATTEMPTS,
     CUTSCENE_SKIP_HINT_ROI,
     CUTSCENE_SKIP_POINT,
     FAILED_KEYWORDS,
@@ -46,7 +46,6 @@ from src.tasks.main_story import (
     SKIP_CONFIRM_BODY_ROI,
     SKIP_CONFIRM_ROUNDS,
     SKIP_CONFIRM_TITLE_ROI,
-    STORY_ADVANCE_CLICKS,
     STORY_SUBTITLE_ROIS,
     VICTORY_KEYWORDS,
     VICTORY_LEAVE_POINT,
@@ -134,6 +133,25 @@ INTERACT_HUD_KEYCAP = TemplateSpec(
 )
 INTERACT_KEYCAP_TEMPLATES = (INTERACT_WORLD_KEYCAP, INTERACT_HUD_KEYCAP)
 
+# 两个独立的剧情控件来自实机，只有图标和其下方的 F2 键帽配对才触发跳过。
+STORY_SKIP_ICON = TemplateSpec(
+    "剧情跳过图标", "field/story_skip_icon.png", .73,
+    relative_roi=_main_story_roi(1596, 35, 1685, 85),
+    reference_scale=.5, scale_ratios=(.93, 1., 1.07), min_pixel_score=.79,
+)
+STORY_SKIP_KEYCAP = TemplateSpec(
+    "剧情跳过键帽", "field/story_keycap_f2.png", .82,
+    relative_roi=CUTSCENE_SKIP_HINT_ROI,
+    reference_scale=.5, scale_ratios=(.93, 1., 1.07), min_pixel_score=.83,
+)
+STORY_BUBBLE_ARROW = TemplateSpec(
+    "剧情对白继续箭头", "field/story_dialogue_arrow.png", .72,
+    reference_scale=.5, scale_ratios=(.93, 1., 1.07), min_pixel_score=.82,
+)
+STORY_CLICK_ATTEMPTS = 2
+STORY_CLICK_CONFIRM_SECONDS = 3.0
+STORY_POINT_TOLERANCE = 8.0
+
 # 点提示条时落在键帽右侧的标签按钮里（实测标签从键帽右边一直延伸出去）。
 INTERACT_PROMPT_OFFSET = (60, 0)
 
@@ -174,6 +192,53 @@ class MainStoryWalkState(str, Enum):
 
 
 BATTLE_STATES = (MainStoryWalkState.BATTLE, MainStoryWalkState.BATTLE_TURN)
+
+
+@dataclass(frozen=True)
+class StoryAction:
+    state: MainStoryWalkState
+    point: tuple[float, float] | None
+    line: str = ""
+
+    def same_step(self, other: StoryAction) -> bool:
+        return self.state is other.state and (
+            not self.line or not other.line or not objective_changed(self.line, other.line)
+        )
+
+    def confirms(self, previous: StoryAction | None) -> bool:
+        if previous is None or not self.same_step(previous):
+            return False
+        if self.point is None or previous.point is None:
+            return self.point is previous.point
+        return max(abs(a - b) for a, b in zip(self.point, previous.point)) <= STORY_POINT_TOLERANCE
+
+    @property
+    def label(self) -> str:
+        return "跳过剧情" if self.state is MainStoryWalkState.CUTSCENE else "推进对白"
+
+
+def _story_bubble_bounds(frame) -> tuple[float, float, float, float] | None:
+    """Locate a single broad, pale dialogue bubble centered above the characters."""
+
+    if not isinstance(frame, np.ndarray) or frame.ndim != 3 or frame.shape[2] < 3 or not frame.size:
+        return None
+    width, height = 960, 540
+    thumbnail = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
+    blue, green, red = np.moveaxis(thumbnail[:, :, :3].astype(np.int16), 2, 0)
+    mask = np.uint8(
+        (red >= 185) & (green >= 170)
+        & (red - green >= 1) & (red - green <= 27)
+        & (green - blue >= 5) & (green - blue <= 33)
+    )
+    _, _, stats, _ = cv2.connectedComponentsWithStats(mask)
+    candidates = [
+        (x / width, y / height, (x + w) / width, (y + h) / height)
+        for x, y, w, h, area in stats[1:]
+        if 135 <= x <= 400 and 78 <= y <= 255 and x + w <= 825 and y + h <= 405
+        and 205 <= w <= 470 and 50 <= h <= 170 and 2.0 <= w / h <= 5.5
+        and area >= .49 * w * h
+    ]
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def _looks_like_tracker_header(text: object) -> bool:
@@ -480,8 +545,10 @@ class MainStoryWalkFeatureMixin(MainStoryVisionMixin):
         battle_turn_clicks = 0
         last_delta_reported = -1
         last_still_reported = -1
-        cutscene_clicks = 0
-        story_clicks = 0
+        previous_story = None
+        submitted_story = None
+        story_attempts = 0
+        story_retry_at = 0.0
         skip_confirm_rounds = 0
         battles = 0
         advances = 0
@@ -502,7 +569,7 @@ class MainStoryWalkFeatureMixin(MainStoryVisionMixin):
                 return True
 
             frame = self.capture_frame()
-            state, evidence, objective_text, tracker_seen = self._walk_state(
+            state, evidence, objective_text, tracker_seen, story_action = self._walk_state(
                 frame, threshold,
             )
             if state is MainStoryWalkState.UNKNOWN and interact:
@@ -527,6 +594,14 @@ class MainStoryWalkFeatureMixin(MainStoryVisionMixin):
                 last_delta_reported = int(delta)
                 self.info_set("推主线画面差值", f"{delta:.1f}")
             moving = delta >= still_threshold
+            story_confirmed = story_action is not None and story_action.confirms(previous_story)
+            if (submitted_story is not None and submitted_story.state is MainStoryWalkState.CUTSCENE
+                    and state is MainStoryWalkState.STORY_DIALOG):
+                # 跳过控件短暂淡出时，下面露出的同一句对白不是跳过成功的证据。
+                story_confirmed = False
+            previous_story = story_action
+            if story_action is None and state is not MainStoryWalkState.UNKNOWN:
+                submitted_story = None
 
             previous_state = last_state
             if state is not last_state:
@@ -543,13 +618,10 @@ class MainStoryWalkFeatureMixin(MainStoryVisionMixin):
                         last_progress_at = now
                         self._walk_set_stats(battles, advances, failures, interactions)
                         self.log_info(f"自动推主线：进入战斗（第 {battles} 场），让它自己打。")
-                elif state not in (MainStoryWalkState.FIELD, MainStoryWalkState.UNKNOWN):
+                elif (state not in (MainStoryWalkState.FIELD, MainStoryWalkState.UNKNOWN)
+                      and story_action is None):
                     # 野外之外的任何界面切换都是一次推进（走进战斗、开始结算…）。
                     last_progress_at = now
-                if state is not MainStoryWalkState.CUTSCENE:
-                    cutscene_clicks = 0
-                if state is not MainStoryWalkState.STORY_DIALOG:
-                    story_clicks = 0
                 if state is not MainStoryWalkState.SKIP_CONFIRM:
                     skip_confirm_rounds = 0
 
@@ -726,16 +798,6 @@ class MainStoryWalkFeatureMixin(MainStoryVisionMixin):
                         frame, "点击「奖励弹窗」后界面无变化", evidence, objective_text,
                     )
 
-            elif state is MainStoryWalkState.CUTSCENE:
-                if cutscene_clicks < CUTSCENE_SKIP_ATTEMPTS:
-                    cutscene_clicks += 1
-                    last_progress_at = now
-                    self.log_info(
-                        f"自动推主线：剧情过场，点右上角跳过（第 {cutscene_clicks} 次）。",
-                    )
-                    self._click_reference(*CUTSCENE_SKIP_POINT)
-                    self.sleep(1.0)
-
             elif state is MainStoryWalkState.SKIP_CONFIRM:
                 if skip_confirm_rounds < SKIP_CONFIRM_ROUNDS:
                     skip_confirm_rounds += 1
@@ -745,11 +807,21 @@ class MainStoryWalkFeatureMixin(MainStoryVisionMixin):
                     self._click_reference(*point)
                     self.sleep(1.0)
 
-            elif state is MainStoryWalkState.STORY_DIALOG:
-                if story_clicks < STORY_ADVANCE_CLICKS:
-                    story_clicks += 1
-                    last_progress_at = now
-                    point = self._main_story_subtitle_point(frame, threshold)
+            elif story_confirmed:
+                if submitted_story is None or not story_action.same_step(submitted_story):
+                    if submitted_story is not None:
+                        last_progress_at = now
+                    story_attempts = 0
+                if story_attempts == 0 or now >= story_retry_at:
+                    if story_attempts >= STORY_CLICK_ATTEMPTS:
+                        return self._main_story_walk_stuck(
+                            frame, f"{story_action.label}后剧情未推进", evidence, objective_text,
+                        )
+                    point = story_action.point or self._main_story_subtitle_point(frame, threshold)
+                    story_attempts += 1
+                    submitted_story = story_action
+                    story_retry_at = now + STORY_CLICK_CONFIRM_SECONDS
+                    self.log_info(f"自动推主线：{story_action.label}（第 {story_attempts} 次）。")
                     self._click_reference(*point)
                     self.sleep(0.8)
 
@@ -775,9 +847,18 @@ class MainStoryWalkFeatureMixin(MainStoryVisionMixin):
                 if waiting_since is None:
                     waiting_since = now
                 if now - waiting_since >= confirm_seconds:
+                    reason = "界面持续无法识别"
+                    if submitted_story is not None:
+                        reason = f"{submitted_story.label}后无法确认剧情是否推进"
                     return self._main_story_walk_stuck(
-                        frame, "界面持续无法识别", evidence, objective_text,
+                        frame, reason, evidence, objective_text,
                     )
+
+            if submitted_story is not None and now >= story_retry_at + confirm_seconds:
+                reason = f"{submitted_story.label}后无法确认剧情是否推进"
+                return self._main_story_walk_stuck(
+                    frame, reason, evidence, objective_text,
+                )
 
             if state is not MainStoryWalkState.FIELD:
                 prompt_point = None
@@ -813,8 +894,8 @@ class MainStoryWalkFeatureMixin(MainStoryVisionMixin):
         self,
         frame,
         threshold: float,
-    ) -> tuple[MainStoryWalkState, str, str, bool]:
-        """识别当前界面，返回 (状态, 存证文本, 追踪条目标文字, 追踪条是否显示)。"""
+    ) -> tuple[MainStoryWalkState, str, str, bool, StoryAction | None]:
+        """识别当前界面及可见的剧情点击目标。"""
 
         header = self._main_story_ocr(
             frame, TRACKER_HEADER_ROI, "推主线追踪条标题", threshold,
@@ -843,6 +924,7 @@ class MainStoryWalkFeatureMixin(MainStoryVisionMixin):
 
         skip_confirm = cutscene = story = ""
         cutscene_bars = False
+        story_action = None
         state = classify_main_story_walk_state(
             reward_text=f"{reward_title} {reward_hint}",
             victory_text=victory,
@@ -867,7 +949,6 @@ class MainStoryWalkFeatureMixin(MainStoryVisionMixin):
                 self._main_story_ocr(frame, bounds, "推主线剧情字幕", threshold)
                 for bounds in STORY_SUBTITLE_ROIS
             )
-            cutscene_bars = self._main_story_cutscene_bars(frame)
             state = classify_main_story_walk_state(
                 skip_confirm_text=skip_confirm,
                 cutscene_text=cutscene,
@@ -880,8 +961,25 @@ class MainStoryWalkFeatureMixin(MainStoryVisionMixin):
                 objective_text=objective,
                 story_text=story,
             )
-            if state is MainStoryWalkState.UNKNOWN and cutscene_bars:
-                state = MainStoryWalkState.CUTSCENE
+            if state in (MainStoryWalkState.UNKNOWN, MainStoryWalkState.STORY_DIALOG,
+                         MainStoryWalkState.CUTSCENE):
+                story_choices = any(
+                    hint in skip_confirm + story for hint in ("请选择回答", "请选择对话")
+                )
+                if story_choices:
+                    state = MainStoryWalkState.UNKNOWN
+                else:
+                    story_action, visual_skip = self._walk_story_action(
+                        frame, state, story, threshold,
+                    )
+                    if visual_skip:
+                        cutscene = f"跳过图标+F2键帽（OCR={cutscene or '-'}）"
+                    elif story_action is None:
+                        cutscene_bars = self._main_story_cutscene_bars(frame)
+            if story_action is not None:
+                state = story_action.state
+                if state is MainStoryWalkState.STORY_DIALOG and story_action.point is not None:
+                    story = f"中央对白：{story_action.line}"
 
         evidence = (
             f"标题={header or '-'};目标={objective or '-'};离开={victory or '-'};"
@@ -892,7 +990,52 @@ class MainStoryWalkFeatureMixin(MainStoryVisionMixin):
         tracker_seen = bool(
             normalize_ocr_text(header) or normalize_ocr_text(objective),
         )
-        return state, evidence, objective, tracker_seen
+        return state, evidence, objective, tracker_seen, story_action
+
+    def _walk_story_action(self, frame, state, story, threshold) -> tuple[StoryAction | None, bool]:
+        skip_point = self._walk_story_skip_point(frame)
+        if skip_point is not None:
+            return StoryAction(MainStoryWalkState.CUTSCENE, skip_point), True
+        if state is MainStoryWalkState.CUTSCENE:
+            return StoryAction(state, CUTSCENE_SKIP_POINT), False
+        bubble_action = self._walk_story_bubble_action(frame, threshold)
+        if bubble_action is not None:
+            return bubble_action, False
+        if state is MainStoryWalkState.STORY_DIALOG:
+            return StoryAction(state, None, normalize_ocr_text(story, alnum_only=True)), False
+        return None, False
+
+    def _walk_story_skip_point(self, frame) -> tuple[float, float] | None:
+        icon = self._walk_match_spec(frame, STORY_SKIP_ICON)
+        if not task_vision.passes_match(icon, STORY_SKIP_ICON, self.config):
+            return None
+        keycap = self._walk_match_spec(frame, STORY_SKIP_KEYCAP)
+        if not task_vision.passes_match(keycap, STORY_SKIP_KEYCAP, self.config):
+            return None
+        x, y = self._walk_reference_point(frame, icon)
+        key_x, key_y = self._walk_reference_point(frame, keycap)
+        return (x, y) if abs(x - key_x) <= STORY_POINT_TOLERANCE and 34 <= key_y - y <= 57 else None
+
+    def _walk_story_bubble_action(self, frame, threshold: float) -> StoryAction | None:
+        bounds = _story_bubble_bounds(frame)
+        if bounds is None:
+            return None
+        x1, y1, x2, y2 = bounds
+        width, height = x2 - x1, y2 - y1
+        arrow_area = (x2 - .24 * width, y1 + .42 * height, x2 - .02 * width, y1 + .90 * height)
+        spec = replace(STORY_BUBBLE_ARROW, relative_roi=arrow_area)
+        arrow = self._walk_match_spec(frame, spec)
+        if not task_vision.passes_match(arrow, spec, self.config):
+            return None
+        text_area = (x1 + .18 * width, y1 + .16 * height, x2 - .05 * width, y1 + .62 * height)
+        line = self._main_story_ocr(frame, text_area, "推主线中央对白", threshold)
+        if not _looks_like_story_subtitle(line):
+            return None
+        return StoryAction(
+            MainStoryWalkState.STORY_DIALOG,
+            self._walk_reference_point(frame, arrow),
+            normalize_ocr_text(line, alnum_only=True),
+        )
 
     def _walk_interact_target(self, frame):
         """找画面里的「F」交互键帽：找到返回 (参考坐标, 模板名, 匹配分)。

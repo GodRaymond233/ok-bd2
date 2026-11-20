@@ -141,6 +141,67 @@ class ClassifyMainStoryWalkStateTest(unittest.TestCase):
         )
 
 
+class StoryControlVisionTest(unittest.TestCase):
+    def setUp(self):
+        self.task = main_story_walk.MainStoryWalkFeatureMixin()
+        self.task.config = {}
+        self.task._walk_templates = {}
+        self.text = {
+            "推主线跳过剧情": "f",
+            "推主线中央对白": "怎么劝都留不住最后还是走到了这一步",
+        }
+        self.task._main_story_ocr = lambda frame, bounds, name, threshold: self.text.get(name, "")
+
+    @staticmethod
+    def frame(name):
+        path = Path(__file__).parent / "fixtures" / "main_story_navigation" / f"{name}.webp"
+        return cv2.imdecode(np.frombuffer(path.read_bytes(), np.uint8), cv2.IMREAD_COLOR)
+
+    def test_icon_and_keycap_recover_truncated_ocr_on_two_real_scenes(self):
+        for name in ("secretary-dialogue", "hot-spring-dialogue"):
+            with self.subTest(scene=name):
+                state, evidence, _, _, action = self.task._walk_state(self.frame(name), .2)
+                self.assertIs(state, MainStoryWalkState.CUTSCENE)
+                self.assertIn("跳过图标+F2键帽", evidence)
+                self.assertAlmostEqual(1640, action.point[0], delta=3)
+                self.assertAlmostEqual(60, action.point[1], delta=3)
+
+    def test_bubble_fallback_requires_arrow_and_readable_text(self):
+        frame = self.frame("secretary-dialogue")
+        frame[43:65, 799:847] = 40  # F2 键帽缺失，图标依然可见。
+        state, _, _, _, action = self.task._walk_state(frame, .2)
+        self.assertIs(state, MainStoryWalkState.STORY_DIALOG)
+        self.assertAlmostEqual(1293, action.point[0], delta=3)
+        self.assertAlmostEqual(431, action.point[1], delta=3)
+
+        original = self.text.pop("推主线中央对白")
+        self.assertIsNone(self.task._walk_state(frame, .2)[-1])
+        self.text["推主线中央对白"] = original
+        frame[204:225, 635:666] = (214, 225, 234)
+        self.assertIsNone(self.task._walk_state(frame, .2)[-1])
+
+    def test_confirmation_and_choice_take_priority_over_visible_skip_control(self):
+        frame = self.frame("secretary-dialogue")
+        self.text["推主线跳过对话标题"] = "跳过对话"
+        state, _, _, _, action = self.task._walk_state(frame, .2)
+        self.assertIs(state, MainStoryWalkState.SKIP_CONFIRM)
+        self.assertIsNone(action)
+
+        self.text["推主线跳过对话标题"] = "请选择回答"
+        state, _, _, _, action = self.task._walk_state(frame, .2)
+        self.assertIs(state, MainStoryWalkState.UNKNOWN)
+        self.assertIsNone(action)
+
+    def test_real_field_cannot_match_either_story_control(self):
+        frame = self.frame("snowy-field")
+        self.assertIsNone(self.task._walk_story_skip_point(frame))
+        self.assertIsNone(self.task._walk_story_bubble_action(frame, .2))
+        self.text["推主线追踪条标题"] = "主线"
+        state, _, _, _, action = self.task._walk_state(frame, .2)
+        self.assertIs(state, MainStoryWalkState.FIELD)
+        self.assertIsNone(action)
+
+
 class ObjectiveSignatureTest(unittest.TestCase):
 
     def test_strips_e_key_hint(self):
@@ -392,7 +453,7 @@ class _FakeWalkTask(main_story_walk.MainStoryWalkFeatureMixin):
         state, objective = self.states[min(self.index, len(self.states) - 1)]
         self.index += 1
         # 目标文字就是「追踪条露出来了」的证据：空目标等于追踪条没显示。
-        return state, f"脚本:{state.value}", objective, bool(objective)
+        return state, f"脚本:{state.value}", objective, bool(objective), None
 
     def _main_story_ocr(self, frame, bounds, name, threshold):
         return self.title_text if name == "推主线结算标题" else ""
@@ -458,6 +519,40 @@ class WalkLoopTest(unittest.TestCase):
                     lambda message, *a, **kw: task.alerts.append(message),
                 ):
             return task.run_main_story_walk()
+
+    def test_same_story_requires_two_frames_and_allows_one_retry(self):
+        task = _FakeWalkTask([(MainStoryWalkState.UNKNOWN, "")])
+        action = main_story_walk.StoryAction(MainStoryWalkState.CUTSCENE, (1640, 60))
+        skip = (action.state, "跳过", "", False, action)
+        unknown = (MainStoryWalkState.UNKNOWN, "加载", "", False, None)
+        line = main_story_walk.StoryAction(
+            MainStoryWalkState.STORY_DIALOG, (1293, 431), "还是同一句对白",
+        )
+        bubble = (line.state, "对白", "", False, line)
+        frames = iter([skip, unknown, skip, skip, bubble, bubble, unknown] + [skip] * 30)
+
+        def read_story(*_args):
+            if task.capture_index <= 4:
+                self.assertEqual([], task.clicks)
+            return next(frames)
+
+        task._walk_state = read_story
+        self.assertFalse(self._run(task))
+        self.assertEqual([action.point, action.point], task.clicks)
+        self.assertIn("跳过剧情后剧情未推进", task.infos["推主线停止原因"])
+
+    def test_dialogue_change_is_verified_even_when_screen_state_is_unchanged(self):
+        task = _FakeWalkTask([(MainStoryWalkState.UNKNOWN, "")])
+        state = MainStoryWalkState.STORY_DIALOG
+        first = main_story_walk.StoryAction(state, (1290, 430), "最后还是走到了这一步")
+        second = main_story_walk.StoryAction(state, (1260, 395), "我会告诉你发生了什么")
+        frames = iter([(state, "对白", "", False, line)
+                       for line in (first, first, second, second)]
+                      + [(MainStoryWalkState.ALL_CLEAR, "完成", "", False, None)])
+        task._walk_state = lambda *_args: next(frames)
+
+        self.assertTrue(self._run(task))
+        self.assertEqual([first.point, second.point], task.clicks)
 
     def test_presses_tracker_when_screen_is_still(self):
         task = _FakeWalkTask(

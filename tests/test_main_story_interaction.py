@@ -71,6 +71,7 @@ class InteractionTest(unittest.TestCase):
             "目标",
             f"寻找魔法工具{int((task.clock.now - start) // 10)}/2",
             True,
+            None,
         )
         self.assertTrue(helpers.WalkLoopTest()._run(task))
         self.assertEqual([], task.alerts)
