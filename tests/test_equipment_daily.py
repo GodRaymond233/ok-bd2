@@ -38,6 +38,19 @@ REFINEMENT_RESULT_LABELS = (
     ("精炼痕迹", 0.127, 0.932),
 )
 
+DISMANTLE_RESULT_LABELS = (
+    ("RESULT", 0.50, 0.30),
+    ("获得1种", 0.50, 0.37),
+    ("点击画面即可返回。", 0.495, 0.915),
+)
+
+# OCR centers from PR #23 report RPT-20261121-000627-57FE8241.
+EXCLUSIVE_DETAIL_LABELS = (
+    ("设置自定义标记", 0.336, 0.449),
+    ("专用装备", 0.284, 0.540),
+    ("精炼", 0.708, 0.679),
+)
+
 
 def screen(labels, *, fill=220):
     frame = np.full((1080, 1920, 3), fill, dtype=np.uint8)
@@ -123,6 +136,20 @@ class EquipmentRecognitionTest(unittest.TestCase):
             with self.subTest(labels=labels):
                 self.assertIsNone(screen(labels).dismantle_dialog)
 
+    def test_dismantle_result_blocks_the_inventory_behind_it(self):
+        inventory = (("装备738/814", 0.20, 0.05), ("一键分解", 0.889, 0.928))
+        self.assertIsNotNone(screen(inventory).dismantle_entry)
+        result = screen(inventory + DISMANTLE_RESULT_LABELS)
+        self.assertIsNotNone(result.dismantle_result)
+        self.assertEqual((738, 814), result.inventory)
+        self.assertIsNone(result.dismantle_entry)
+        for label in DISMANTLE_RESULT_LABELS:
+            with self.subTest(label=label):
+                partial = screen((*inventory, label))
+                self.assertTrue(partial.dismantle_result_visible)
+                self.assertIsNone(partial.dismantle_result)
+                self.assertIsNone(partial.dismantle_entry)
+
     def test_grid_blank_rows_spot_empty_slots_but_not_equipment_cards(self):
         frame = np.full((1080, 1920, 3), 20, dtype=np.uint8)
         self.assertEqual([True] * 6, grid_blank_rows(frame))
@@ -135,6 +162,26 @@ class EquipmentRecognitionTest(unittest.TestCase):
         for prompt in ("请选择需要分解的装备。", "请选择需要强化的装备。"):
             self.assertIsNotNone(screen(((prompt, 0.372, 0.92),)).selection_page)
         self.assertIsNone(screen((("分享", 0.372, 0.92),)).selection_page)
+
+    def test_refine_entry_recognizes_standard_and_exclusive_details(self):
+        marker, _, button = EXCLUSIVE_DETAIL_LABELS
+        standard = (marker, ("基本能力+9", 0.284, 0.51), button)
+        for labels in (standard, EXCLUSIVE_DETAIL_LABELS):
+            with self.subTest(labels=labels):
+                x, y = screen(labels).detail_refine
+                self.assertAlmostEqual(button[1], x)
+                self.assertAlmostEqual(button[2], y)
+                self.assertIsNone(screen(labels, fill=70).detail_refine)
+
+    def test_refine_entry_requires_exclusive_label_in_detail_and_custom_marker(self):
+        marker, exclusive, button = EXCLUSIVE_DETAIL_LABELS
+        for labels in (
+            (exclusive, button),
+            (marker, ("专用装备", 0.61, 0.54), button),
+            (marker, ("基本能力+8", 0.284, 0.51), button),
+        ):
+            with self.subTest(labels=labels):
+                self.assertIsNone(screen(labels).detail_refine)
 
     def test_refine_uses_the_single_button_and_detects_its_cost(self):
         labels = (
@@ -319,10 +366,26 @@ class EquipmentFlowTest(unittest.TestCase):
             selection_count=1,
         )
         dialog = SimpleNamespace(dismantle_dialog=(1, (0.53, 0.64)))
-        result = SimpleNamespace(dismantle_result=(0.50, 0.92))
-        updated_inventory = SimpleNamespace(inventory=(99, 500), dismantle_entry=(0.89, 0.93))
+        inventory_labels = (("装备99/500", 0.20, 0.05), ("一键分解", 0.889, 0.928))
+        result = screen(inventory_labels + DISMANTLE_RESULT_LABELS)
+        updated_inventory = screen(inventory_labels)
+        observations = iter(
+            (
+                selecting,
+                selected,
+                dialog,
+                result,
+                result,
+                result,
+                result,
+                updated_inventory,
+                updated_inventory,
+            )
+        )
         task._wait_equipment = Mock(
-            side_effect=[selecting, selected, dialog, result, updated_inventory],
+            side_effect=lambda predicate, **_kwargs: next(
+                (view for view in observations if predicate(view)), None
+            )
         )
         task._read_equipment = Mock(return_value=selecting)
         # 选择页进来就是全量列表，点页签会被当成取消筛选，所以只扫一次当前列表。
@@ -339,6 +402,9 @@ class EquipmentFlowTest(unittest.TestCase):
 
         names = [call.kwargs.get("name") for call in task.operate_click.call_args_list]
         self.assertNotIn("切换分解分类", names)
+        self.assertEqual(1, names.count("分解一件装备"))
+        self.assertEqual(2, names.count("关闭分解结果"))
+        self.assertIsNone(next(observations, None))
         task._grade_points.assert_called_once()
         selection = next(
             call
@@ -362,7 +428,7 @@ class EquipmentFlowTest(unittest.TestCase):
             frame=object(),
             selection_count=0,
             selection_page=(0.372, 0.92),
-            dismantle_result=None,
+            dismantle_result_visible=False,
             active_category=None,
         )
         task._read_equipment = Mock(return_value=selecting)
@@ -389,9 +455,9 @@ class EquipmentFlowTest(unittest.TestCase):
         )
         selected = SimpleNamespace(inventory=(28, 500), frame=object(), selection_count=1)
         dialog = SimpleNamespace(dismantle_dialog=(1, (0.53, 0.64)))
-        result = SimpleNamespace(dismantle_result=(0.50, 0.92))
         updated = SimpleNamespace(inventory=(27, 500), dismantle_entry=(0.89, 0.93))
-        task._wait_equipment = Mock(side_effect=[dialog, result, updated])
+        task._wait_equipment = Mock(return_value=dialog)
+        task._close_dismantle_result = Mock(return_value=updated)
         task._read_equipment = Mock(return_value=selecting)
         task._scan_selection_tab = Mock(return_value=selected)
         task._record_step = Mock()
@@ -403,6 +469,62 @@ class EquipmentFlowTest(unittest.TestCase):
         names = [call.kwargs.get("name") for call in task.operate_click.call_args_list]
         self.assertNotIn("进入装备分解选择", names)
         self.assertIn("分解一件装备", names)
+        task._close_dismantle_result.assert_called_once_with(expected_inventory=(27, 500))
+
+    def test_dismantle_result_stops_clicking_when_the_page_never_closes(self):
+        task = self.task()
+        result = screen(DISMANTLE_RESULT_LABELS)
+        task._wait_equipment = Mock(
+            side_effect=lambda predicate, **_kwargs: next(
+                (view for view in (result, result) if predicate(view)), None
+            )
+        )
+        self.assertIsNone(task._close_dismantle_result(expected_inventory=(738, 814)))
+        self.assertEqual(3, task.operate_click.call_count)
+        self.assertEqual(4, task._wait_equipment.call_count)
+        self.assertTrue(
+            all(call.kwargs["name"] == "关闭分解结果" for call in task.operate_click.call_args_list)
+        )
+
+    def test_dismantle_result_requires_two_consecutive_frames_of_the_expected_count(self):
+        task = self.task()
+        entry = ("一键分解", 0.889, 0.928)
+        expected = screen((("装备738/814", 0.20, 0.05), entry))
+        unexpected = screen((("装备737/814", 0.20, 0.05), entry))
+        observations = iter((expected, unexpected, unexpected, expected))
+        task._wait_equipment = Mock(
+            side_effect=lambda predicate, **_kwargs: next(
+                (view for view in observations if predicate(view)), None
+            )
+        )
+        self.assertIsNone(task._close_dismantle_result(expected_inventory=(738, 814)))
+        task.operate_click.assert_not_called()
+
+    def test_pending_dismantle_recovers_a_leftover_result_before_refinement(self):
+        task = self.task()
+        cycle = "1.0"
+        task._open_inventory = EquipmentDailyTask._open_inventory.__get__(task)
+        task._record_step(DISMANTLE_STEP, cycle, "pending", {"inventory": [739, 814]})
+        task._dismantle_once = Mock()
+        task._refine_once = Mock(return_value=True)
+        inventory = screen((("装备738/814", 0.20, 0.05), ("一键分解", 0.889, 0.928)))
+        result = screen(DISMANTLE_RESULT_LABELS)
+        task._read_equipment = Mock(side_effect=[result, inventory])
+        observations = iter((result, result, inventory, inventory, inventory))
+        task._wait_equipment = Mock(
+            side_effect=lambda predicate, **_kwargs: next(
+                (view for view in observations if predicate(view)), None
+            )
+        )
+        with patch("src.tasks.EquipmentDailyTask.equipment_daily_cycle", return_value=cycle):
+            self.assertTrue(task.run())
+        task._dismantle_once.assert_not_called()
+        task._refine_once.assert_called_once_with(inventory, cycle, None)
+        self.assertEqual("关闭分解结果", task.operate_click.call_args.kwargs["name"])
+        self.assertEqual(1, task.operate_click.call_count)
+        stage = run_history.default_store().stage("EquipmentDailyTask", DISMANTLE_STEP)
+        self.assertEqual("done", stage["state"])
+        self.assertEqual({"inventory": [739, 814]}, stage["evidence"])
 
     def test_category_tabs_are_not_clicked_while_the_bag_shows_other_tabs(self):
         task = self.task()
@@ -584,11 +706,11 @@ class EquipmentFlowTest(unittest.TestCase):
         task._record_step.assert_not_called()
         self.assertEqual(3, task.operate_click.call_count)
 
-    def test_single_refine_records_expected_debit_before_clicking(self):
+    def test_exclusive_gear_refine_records_expected_debit_before_clicking(self):
         task = self.task()
         task._record_step = Mock()
-        inventory = SimpleNamespace(scored_gear=lambda: [(23, (0.6, 0.3))])
-        detail = SimpleNamespace(detail_refine=(0.71, 0.68), refine_once=None)
+        inventory = SimpleNamespace(scored_gear=lambda: [(19, (0.6, 0.3))])
+        detail = screen(EXCLUSIVE_DETAIL_LABELS)
         refine = SimpleNamespace(
             detail_refine=None,
             refine_once=((30, 80), (0.84, 0.93)),
@@ -600,7 +722,7 @@ class EquipmentFlowTest(unittest.TestCase):
                 None,
             )
         )
-        task._read_refinement_badges = Mock(return_value=(23, 23))
+        task._read_refinement_badges = Mock(return_value=(19, 19))
         task._confirm_refinement = Mock(return_value=True)
 
         def click(*_args, name, **_kwargs):
@@ -622,8 +744,8 @@ class EquipmentFlowTest(unittest.TestCase):
         )
         task._confirm_refinement.assert_called_once_with([70, 220])
 
-    def test_refinement_does_not_submit_a_24_point_or_unverified_candidate(self):
-        for badges in ((24, 24), (23, 24), (17, None), (None, None)):
+    def test_refinement_does_not_submit_an_out_of_range_or_unverified_candidate(self):
+        for badges in ((5, 5), (24, 24), (23, 24), (17, None), (None, None)):
             with self.subTest(badges=badges):
                 task = self.task()
                 task._record_step = Mock()

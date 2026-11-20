@@ -94,9 +94,8 @@ class EquipmentDailyTask(TaskVisionMixin, BaseBD2Task):
 
     def _open_inventory(self):
         screen = self._read_equipment()
-        if screen.dismantle_result:
-            self.operate_click(*screen.dismantle_result, after_sleep=0.6)
-            screen = self._wait_equipment(lambda view: view.dismantle_entry is not None)
+        if screen.dismantle_result_visible:
+            screen = self._close_dismantle_result()
             return self._open_all_equipment(screen) if screen is not None else None
         if screen.selection_page is not None and screen.selection_count is not None:
             if screen.active_category is not None:
@@ -264,10 +263,14 @@ class EquipmentDailyTask(TaskVisionMixin, BaseBD2Task):
             return False
         expected = (before[0] - 1, before[1])
         inventory = self._open_inventory()
+
+        def matches(view):
+            return view.dismantle_entry is not None and view.inventory == expected
+
         return (
             inventory is not None
-            and inventory.inventory == expected
-            and self._wait_equipment(lambda screen: screen.inventory == expected) is not None
+            and matches(inventory)
+            and self._wait_equipment(matches) is not None
         )
 
     def _leave_selection_page(self, screen, attempts=3):
@@ -324,19 +327,37 @@ class EquipmentDailyTask(TaskVisionMixin, BaseBD2Task):
             DISMANTLE_STEP, cycle, "pending", {"inventory": list(before)}, attempt=attempt
         )
         self.operate_click(*dialog.dismantle_dialog[1], name="分解一件装备", after_sleep=0.8)
-        result = self._wait_equipment(lambda screen: screen.dismantle_result is not None)
-        if result is None:
-            return False
-        self.operate_click(*result.dismantle_result, name="关闭分解结果", after_sleep=0.6)
-        return (
-            self._wait_equipment(
-                lambda screen: (
-                    screen.dismantle_entry is not None
-                    and screen.inventory == (before[0] - 1, before[1])
-                ),
+        expected = (before[0] - 1, before[1])
+        return self._close_dismantle_result(expected_inventory=expected) is not None
+
+    def _close_dismantle_result(self, *, expected_inventory=None):
+        max_clicks = 3
+        previous_inventory = None
+        result_frames = 0
+
+        def ready(view):
+            nonlocal previous_inventory, result_frames
+            inventory = view.inventory if view.dismantle_entry is not None else None
+            backpack_confirmed = (
+                inventory is not None
+                and inventory == previous_inventory
+                and (expected_inventory is None or inventory == expected_inventory)
             )
-            is not None
-        )
+            previous_inventory = inventory
+            result_frames = result_frames + 1 if view.dismantle_result is not None else 0
+            return backpack_confirmed or (attempt < max_clicks and result_frames >= 2)
+
+        for attempt in range(max_clicks + 1):
+            screen = self._wait_equipment(ready, timeout=8.0 if attempt == 0 else 5.0)
+            if screen is None:
+                break
+            if screen.dismantle_entry is not None:
+                return screen
+            self.info_set(DISMANTLE_STEP, f"关闭分解结果（{attempt + 1}/{max_clicks}）")
+            self.operate_click(*screen.dismantle_result, name="关闭分解结果", after_sleep=1.2)
+            result_frames = 0
+        self.info_set(DISMANTLE_STEP, "分解结果退出或背包数量仍待确认")
+        return None
 
     def _refine_once(self, inventory, cycle, attempt=None):
         if getattr(inventory, "selection_page", None) is not None:

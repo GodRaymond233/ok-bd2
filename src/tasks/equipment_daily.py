@@ -1,6 +1,7 @@
 """Recognition and daily completion evidence for the equipment tasks."""
 
 import re
+from functools import cached_property
 from pathlib import Path
 
 import cv2
@@ -165,7 +166,7 @@ class EquipmentScreen:
 
     @property
     def dismantle_entry(self):
-        if self.inventory is None:
+        if self.inventory is None or self.dismantle_result_visible:
             return None
         _, point = self.find(r"[一\-―]键分解", (0.83, 0.90, 0.95, 0.98))
         return point if point and self._light_button(point) else None
@@ -208,11 +209,20 @@ class EquipmentScreen:
         )
         return (int(count.group(1)), confirm) if count else None
 
+    @cached_property
+    def _dismantle_result_labels(self):
+        _, title = self.find(r"result", (0.41, 0.25, 0.59, 0.36))
+        _, count = self.find(r"获得[1-9]\d*种", (0.42, 0.32, 0.58, 0.42))
+        _, dismiss = self.find(r"点击画面即可返回[。.]?", (0.39, 0.88, 0.61, 0.97))
+        return title, count, dismiss
+
+    @property
+    def dismantle_result_visible(self):
+        return any(self._dismantle_result_labels)
+
     @property
     def dismantle_result(self):
-        title, _ = self.find(r"result", (0.41, 0.25, 0.59, 0.36))
-        count, _ = self.find(r"获得[1-9]\d*种", (0.42, 0.32, 0.58, 0.42))
-        _, dismiss = self.find(r"点击画面即可返回[。.]?", (0.39, 0.88, 0.61, 0.97))
+        title, count, dismiss = self._dismantle_result_labels
         return dismiss if title and count else None
 
     def scored_gear(self):
@@ -238,10 +248,13 @@ class EquipmentScreen:
 
     @property
     def detail_refine(self):
-        level, _ = self.find(r"基本能力\+9", (0.23, 0.45, 0.38, 0.56))
         marker, _ = self.find(r"设置自定义标记", (0.25, 0.40, 0.42, 0.49))
         _, button = self.find(r"精炼", (0.65, 0.63, 0.77, 0.73))
-        return button if level and marker and button and self._light_button(button) else None
+        if not marker or not button or not self._light_button(button):
+            return None
+        level, _ = self.find(r"基本能力\+9", (0.23, 0.45, 0.38, 0.56))
+        exclusive, _ = self.find(r"专用装备", (0.23, 0.50, 0.38, 0.58))
+        return button if level or exclusive else None
 
     @property
     def detail_close(self):
