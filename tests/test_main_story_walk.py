@@ -150,7 +150,12 @@ class StoryControlVisionTest(unittest.TestCase):
             "推主线跳过剧情": "f",
             "推主线中央对白": "怎么劝都留不住最后还是走到了这一步",
         }
-        self.task._main_story_ocr = lambda frame, bounds, name, threshold: self.text.get(name, "")
+        self.task._main_story_ocr = self.ocr
+
+    def ocr(self, frame, bounds, name, threshold):
+        if name == "推主线剧情字幕" and bounds != main_story_walk.STORY_SUBTITLE_ROIS[-1]:
+            return ""
+        return self.text.get(name, "")
 
     @staticmethod
     def frame(name):
@@ -196,10 +201,89 @@ class StoryControlVisionTest(unittest.TestCase):
         frame = self.frame("snowy-field")
         self.assertIsNone(self.task._walk_story_skip_point(frame))
         self.assertIsNone(self.task._walk_story_bubble_action(frame, .2))
+        self.assertIsNone(self.task._walk_state(frame, .2)[-1])
         self.text["推主线追踪条标题"] = "主线"
         state, _, _, _, action = self.task._walk_state(frame, .2)
         self.assertIs(state, MainStoryWalkState.FIELD)
         self.assertIsNone(action)
+
+    def test_full_screen_dialogue_finds_continue_arrow_below_subtitles(self):
+        frame = self.frame("bottom-dialogue")
+        self.text["推主线剧情字幕"] = "抱歉，但这千载难逢的机会，我绝对不能放过"
+        state, _, _, _, action = self.task._walk_state(frame, .2)
+        self.assertIs(state, MainStoryWalkState.STORY_DIALOG)
+        self.assertAlmostEqual(960, action.point[0], delta=4)
+        self.assertAlmostEqual(997, action.point[1], delta=4)
+
+        frame[489:508, 469:492] = 35
+        action = self.task._walk_state(frame, .2)[-1]
+        self.assertIsNone(action.point)
+        self.assertFalse(action.follows_skip(None))
+
+    def test_short_centered_line_with_continue_arrow_is_dialogue(self):
+        frame = self.frame("centered-black-dialogue")
+        self.text["推主线黑底旁白"] = "找到了。"
+        state, _, _, _, action = self.task._walk_state(frame, .2)
+        self.assertIs(state, MainStoryWalkState.STORY_DIALOG)
+        self.assertEqual("找到了", action.line)
+        self.assertAlmostEqual(960, action.point[0], delta=4)
+        self.assertAlmostEqual(998, action.point[1], delta=4)
+        self.assertTrue(action.follows_skip(None))
+        before_skip = self.task._walk_dialogue_before_skip(frame, .2)
+        self.assertTrue(action.same_step(before_skip))
+
+    def test_centered_text_tracking_uses_dark_backdrop_and_continue_arrow(self):
+        frame = self.frame("centered-black-dialogue")
+        self.text["推主线黑底旁白"] = "找到了。"
+        without_arrow = frame.copy()
+        without_arrow[489:508, 469:492] = 0
+        state, _, _, _, action = self.task._walk_state(without_arrow, .2)
+        self.assertIs(state, MainStoryWalkState.UNKNOWN)
+        self.assertIsNone(action)
+
+        bright = frame.copy()
+        bright[:200, :] = 80
+        action = self.task._walk_state(bright, .2)[-1]
+        self.assertTrue(action.subtitle_arrow)
+        self.assertEqual("", action.line)
+
+        self.text["推主线黑底旁白"] = "100%"
+        self.assertEqual("", self.task._walk_state(frame, .2)[-1].line)
+
+    def test_full_screen_arrow_advances_short_or_unreadable_dialogue(self):
+        frame = self.frame("dragon-heart-short-dialogue")
+        previous = None
+        for text, expected_line in (("呃呃…！l", "呃呃"), ("等等！", "等等"), ("", "")):
+            with self.subTest(text=text):
+                self.text["推主线剧情字幕"] = text
+                state, _, _, _, action = self.task._walk_state(frame, .2)
+                self.assertIs(state, MainStoryWalkState.STORY_DIALOG)
+                self.assertEqual(expected_line, action.line)
+                self.assertAlmostEqual(960, action.point[0], delta=4)
+                self.assertAlmostEqual(997, action.point[1], delta=4)
+                self.assertTrue(action.follows_skip(None))
+                if previous is not None:
+                    self.assertTrue(action.confirms(previous))
+                previous = action
+
+        self.text["推主线跳过对话标题"] = "请选择回答"
+        state, _, _, _, action = self.task._walk_state(frame, .2)
+        self.assertIs(state, MainStoryWalkState.UNKNOWN)
+        self.assertIsNone(action)
+
+    def test_unreadable_old_bubble_requires_layout_change(self):
+        self.text.pop("推主线中央对白")
+        old = self.task._walk_dialogue_before_skip(self.frame("secretary-dialogue"), .2)
+        self.assertEqual("", old.line)
+
+        same_layout = main_story_walk.StoryAction(
+            MainStoryWalkState.STORY_DIALOG, old.point, "旧对白",
+        )
+        self.assertFalse(same_layout.follows_skip(old))
+
+        self.text["推主线剧情字幕"] = "抱歉，但这千载难逢的机会，我绝对不能放过"
+        new = self.task._walk_state(self.frame("bottom-dialogue"), .2)[-1]
+        self.assertTrue(new.follows_skip(old))
 
 
 class ObjectiveSignatureTest(unittest.TestCase):
@@ -528,6 +612,7 @@ class WalkLoopTest(unittest.TestCase):
         line = main_story_walk.StoryAction(
             MainStoryWalkState.STORY_DIALOG, (1293, 431), "还是同一句对白",
         )
+        task._walk_dialogue_before_skip = mock.Mock(return_value=line)
         bubble = (line.state, "对白", "", False, line)
         frames = iter([skip, unknown, skip, skip, bubble, bubble, unknown] + [skip] * 30)
 
@@ -540,6 +625,44 @@ class WalkLoopTest(unittest.TestCase):
         self.assertFalse(self._run(task))
         self.assertEqual([action.point, action.point], task.clicks)
         self.assertIn("跳过剧情后剧情未推进", task.infos["推主线停止原因"])
+        task._walk_dialogue_before_skip.assert_called_once()
+
+    def test_skip_hands_off_to_confirmed_new_dialogue_with_continue_arrow(self):
+        task = _FakeWalkTask([(MainStoryWalkState.UNKNOWN, "")])
+        skip = main_story_walk.StoryAction(MainStoryWalkState.CUTSCENE, (1640, 60))
+        old = main_story_walk.StoryAction(
+            MainStoryWalkState.STORY_DIALOG, (1293, 431), "我们就到此为止了吧",
+        )
+        new = main_story_walk.StoryAction(
+            MainStoryWalkState.STORY_DIALOG, (960, 997), "抱歉但这个机会我绝对不能放过",
+        )
+        new_without_arrow = main_story_walk.StoryAction(new.state, None, new.line)
+        task._walk_dialogue_before_skip = mock.Mock(return_value=old)
+        actions = (skip, skip, old, old, new_without_arrow, new_without_arrow, new, new)
+        frames = iter([(action.state, "剧情", "", False, action) for action in actions]
+                      + [(MainStoryWalkState.ALL_CLEAR, "完成", "", False, None)])
+        task._walk_state = lambda *_args: next(frames)
+
+        self.assertTrue(self._run(task))
+        self.assertEqual([skip.point, new.point], task.clicks)
+
+    def test_skip_hands_off_to_an_arrow_without_ocr_and_retries_are_bounded(self):
+        task = _FakeWalkTask([(MainStoryWalkState.UNKNOWN, "")])
+        skip = main_story_walk.StoryAction(MainStoryWalkState.CUTSCENE, (1640, 60))
+        arrow = main_story_walk.StoryAction(
+            MainStoryWalkState.STORY_DIALOG, (960, 997), subtitle_arrow=True,
+        )
+        task._walk_dialogue_before_skip = mock.Mock(return_value=arrow)
+        actions = iter([skip, skip] + [arrow] * 30)
+
+        def read_story(*_args):
+            action = next(actions)
+            return action.state, "剧情", "", False, action
+
+        task._walk_state = read_story
+        self.assertFalse(self._run(task))
+        self.assertEqual([skip.point, arrow.point, arrow.point], task.clicks)
+        self.assertIn("推进对白后剧情未推进", task.infos["推主线停止原因"])
 
     def test_dialogue_change_is_verified_even_when_screen_state_is_unchanged(self):
         task = _FakeWalkTask([(MainStoryWalkState.UNKNOWN, "")])

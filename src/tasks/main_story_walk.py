@@ -148,6 +148,13 @@ STORY_BUBBLE_ARROW = TemplateSpec(
     "剧情对白继续箭头", "field/story_dialogue_arrow.png", .72,
     reference_scale=.5, scale_ratios=(.93, 1., 1.07), min_pixel_score=.82,
 )
+STORY_SUBTITLE_ARROW = TemplateSpec(
+    "剧情字幕继续箭头", "field/story_subtitle_continue.png", .82,
+    relative_roi=_main_story_roi(806, 950, 1114, 1042),
+    reference_scale=.5, scale_ratios=(.93, 1., 1.07), min_pixel_score=.84,
+)
+# Some interludes render just one short line in the middle of a black screen.
+STORY_CENTER_TEXT_ROI = _main_story_roi(660, 466, 1260, 614)
 STORY_CLICK_ATTEMPTS = 2
 STORY_CLICK_CONFIRM_SECONDS = 3.0
 STORY_POINT_TOLERANCE = 8.0
@@ -199,6 +206,7 @@ class StoryAction:
     state: MainStoryWalkState
     point: tuple[float, float] | None
     line: str = ""
+    subtitle_arrow: bool = False
 
     def same_step(self, other: StoryAction) -> bool:
         return self.state is other.state and (
@@ -206,11 +214,32 @@ class StoryAction:
         )
 
     def confirms(self, previous: StoryAction | None) -> bool:
-        if previous is None or not self.same_step(previous):
+        if previous is None or self.state is not previous.state:
+            return False
+        if self.subtitle_arrow != previous.subtitle_arrow:
+            return False
+        if not self.subtitle_arrow and not self.same_step(previous):
             return False
         if self.point is None or previous.point is None:
             return self.point is previous.point
         return max(abs(a - b) for a, b in zip(self.point, previous.point)) <= STORY_POINT_TOLERANCE
+
+    def follows_skip(self, prior_dialogue: StoryAction | None) -> bool:
+        """Allow a confirmed subtitle arrow to take over from the skip control."""
+
+        if self.point is None:
+            return False
+        if self.subtitle_arrow:
+            return True
+        if not self.line:
+            return False
+        if prior_dialogue is None:
+            return True  # 字幕和继续箭头此前均未识别到。
+        if prior_dialogue.line:
+            return objective_changed(prior_dialogue.line, self.line)
+        # 旧对白文字未读出时，只有明显换了布局才能确认已离开旧对白。
+        return (prior_dialogue.point is not None
+                and abs(prior_dialogue.point[1] - self.point[1]) >= REFERENCE_HEIGHT * .15)
 
     @property
     def label(self) -> str:
@@ -547,6 +576,7 @@ class MainStoryWalkFeatureMixin(MainStoryVisionMixin):
         last_still_reported = -1
         previous_story = None
         submitted_story = None
+        dialogue_before_skip = None
         story_attempts = 0
         story_retry_at = 0.0
         skip_confirm_rounds = 0
@@ -595,10 +625,10 @@ class MainStoryWalkFeatureMixin(MainStoryVisionMixin):
                 self.info_set("推主线画面差值", f"{delta:.1f}")
             moving = delta >= still_threshold
             story_confirmed = story_action is not None and story_action.confirms(previous_story)
-            if (submitted_story is not None and submitted_story.state is MainStoryWalkState.CUTSCENE
+            if (story_confirmed and submitted_story is not None
+                    and submitted_story.state is MainStoryWalkState.CUTSCENE
                     and state is MainStoryWalkState.STORY_DIALOG):
-                # 跳过控件短暂淡出时，下面露出的同一句对白不是跳过成功的证据。
-                story_confirmed = False
+                story_confirmed = story_action.follows_skip(dialogue_before_skip)
             previous_story = story_action
             if story_action is None and state is not MainStoryWalkState.UNKNOWN:
                 submitted_story = None
@@ -818,6 +848,8 @@ class MainStoryWalkFeatureMixin(MainStoryVisionMixin):
                             frame, f"{story_action.label}后剧情未推进", evidence, objective_text,
                         )
                     point = story_action.point or self._main_story_subtitle_point(frame, threshold)
+                    if state is MainStoryWalkState.CUTSCENE and story_attempts == 0:
+                        dialogue_before_skip = self._walk_dialogue_before_skip(frame, threshold)
                     story_attempts += 1
                     submitted_story = story_action
                     story_retry_at = now + STORY_CLICK_CONFIRM_SECONDS
@@ -979,7 +1011,7 @@ class MainStoryWalkFeatureMixin(MainStoryVisionMixin):
             if story_action is not None:
                 state = story_action.state
                 if state is MainStoryWalkState.STORY_DIALOG and story_action.point is not None:
-                    story = f"中央对白：{story_action.line}"
+                    story = f"对白继续：{story_action.line or '继续箭头'}"
 
         evidence = (
             f"标题={header or '-'};目标={objective or '-'};离开={victory or '-'};"
@@ -1001,9 +1033,47 @@ class MainStoryWalkFeatureMixin(MainStoryVisionMixin):
         bubble_action = self._walk_story_bubble_action(frame, threshold)
         if bubble_action is not None:
             return bubble_action, False
-        if state is MainStoryWalkState.STORY_DIALOG:
-            return StoryAction(state, None, normalize_ocr_text(story, alnum_only=True)), False
-        return None, False
+        subtitle = self._walk_subtitle_action(frame, story, threshold)
+        return (subtitle if subtitle.point is not None or subtitle.line else None), False
+
+    def _walk_subtitle_action(self, frame, story: str, threshold: float) -> StoryAction:
+        arrow = self._walk_match_spec(frame, STORY_SUBTITLE_ARROW)
+        if task_vision.passes_match(arrow, STORY_SUBTITLE_ARROW, self.config):
+            # 字幕只用于区分前后两句。短字幕或 OCR 漏读时仍可点已经定位的箭头。
+            line = self._walk_centered_story_text(frame, threshold)
+            if not line:
+                line = "".join(re.findall(r"[\u3400-\u9fff]", story))
+            return StoryAction(
+                MainStoryWalkState.STORY_DIALOG,
+                self._walk_reference_point(frame, arrow),
+                line,
+                subtitle_arrow=True,
+            )
+        line = (
+            normalize_ocr_text(story, alnum_only=True) if _looks_like_story_subtitle(story) else ""
+        )
+        return StoryAction(MainStoryWalkState.STORY_DIALOG, None, line)
+
+    def _walk_centered_story_text(self, frame, threshold: float) -> str:
+        # 黑底旁白用独立的中央 OCR 区域来跟踪当前句子。
+        if np.mean(np.max(frame[::16, ::16, :3], axis=2) <= 24) < .98:
+            return ""
+        text = self._main_story_ocr(frame, STORY_CENTER_TEXT_ROI, "推主线黑底旁白", threshold)
+        han = re.findall(r"[\u3400-\u9fff]", text)
+        if len(han) >= 2 or (han and text.endswith(("。", "！", "？", "…"))):
+            return normalize_ocr_text(text, alnum_only=True)
+        return ""
+
+    def _walk_dialogue_before_skip(self, frame, threshold: float) -> StoryAction | None:
+        bubble = self._walk_story_bubble_action(frame, threshold, allow_unreadable=True)
+        if bubble is not None:
+            return bubble
+        story = " ".join(
+            self._main_story_ocr(frame, bounds, "推主线剧情字幕", threshold)
+            for bounds in STORY_SUBTITLE_ROIS
+        )
+        subtitle = self._walk_subtitle_action(frame, story, threshold)
+        return subtitle if subtitle.line or subtitle.point is not None else None
 
     def _walk_story_skip_point(self, frame) -> tuple[float, float] | None:
         icon = self._walk_match_spec(frame, STORY_SKIP_ICON)
@@ -1016,7 +1086,9 @@ class MainStoryWalkFeatureMixin(MainStoryVisionMixin):
         key_x, key_y = self._walk_reference_point(frame, keycap)
         return (x, y) if abs(x - key_x) <= STORY_POINT_TOLERANCE and 34 <= key_y - y <= 57 else None
 
-    def _walk_story_bubble_action(self, frame, threshold: float) -> StoryAction | None:
+    def _walk_story_bubble_action(
+        self, frame, threshold: float, *, allow_unreadable: bool = False,
+    ) -> StoryAction | None:
         bounds = _story_bubble_bounds(frame)
         if bounds is None:
             return None
@@ -1029,12 +1101,13 @@ class MainStoryWalkFeatureMixin(MainStoryVisionMixin):
             return None
         text_area = (x1 + .18 * width, y1 + .16 * height, x2 - .05 * width, y1 + .62 * height)
         line = self._main_story_ocr(frame, text_area, "推主线中央对白", threshold)
-        if not _looks_like_story_subtitle(line):
+        line = normalize_ocr_text(line, alnum_only=True) if _looks_like_story_subtitle(line) else ""
+        if not line and not allow_unreadable:
             return None
         return StoryAction(
             MainStoryWalkState.STORY_DIALOG,
             self._walk_reference_point(frame, arrow),
-            normalize_ocr_text(line, alnum_only=True),
+            line,
         )
 
     def _walk_interact_target(self, frame):
