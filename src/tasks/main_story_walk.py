@@ -1,0 +1,1364 @@
+"""主线野外「自动推主线」流程。
+
+实机流程（1920x1080，坐标取自 2026-11-18 用户提供的野外截图 3837x2158）：
+
+    野外：右上角任务追踪条
+        「主线」标题
+        「E 前往丢弃铁假面的地方」 ← 目标行左侧的 E 就是游戏自己的推进热键
+        ↓ 点目标行（或点那个 E 键帽），角色自动寻路
+    途中：战斗 → 让它自己打（回合停住就点 BATTLE）；剧情 → F2 跳过并确认
+        ↓ 目标文字换成下一句
+    继续推进，直到整章完成
+        ↓ 很久都没有任何推进（多半是解谜/机关/对话选项）
+    存图 → 托盘通知 → 置顶弹框 → 停任务等玩家处理
+
+这是「主线快速探索」任务在找不到快速探索入口时走的备用模式（由
+``main_story_mode`` 决定）。这里没有固定按钮序列，每一步都以**当前帧的证据**为准。
+判定「有没有在推进」只认两个信号：目标文字变化、界面状态变化。画面活动只用来
+决定「现在能不能推」——自动寻路时镜头在走，这时候不去点，免得打断寻路。
+点击本身**不算**推进，否则卡在解谜上永远报不出来。
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, replace
+from difflib import SequenceMatcher
+from enum import Enum
+from time import monotonic
+
+import cv2
+import numpy as np
+
+from src.tasks.main_story import (
+    ALL_CLEAR_ROI,
+    BATTLE_TURN_CLICKS,
+    BATTLE_TURN_INTERVAL,
+    CLICK_CONFIRM_SECONDS,
+    CLICK_RETRY_ATTEMPTS,
+    CUTSCENE_SKIP_HINT_ROI,
+    CUTSCENE_SKIP_POINT,
+    FAILED_KEYWORDS,
+    LIST_BUTTON_ROI,
+    QUEST_START_ROI,
+    REWARD_POPUP_HINT_ROI,
+    REWARD_POPUP_TITLE_ROI,
+    SKIP_CONFIRM_BODY_ROI,
+    SKIP_CONFIRM_ROUNDS,
+    SKIP_CONFIRM_TITLE_ROI,
+    STORY_SUBTITLE_ROIS,
+    VICTORY_KEYWORDS,
+    VICTORY_LEAVE_POINT,
+    VICTORY_LEAVE_ROI,
+    VICTORY_TITLE_ROI,
+    MainStoryVisionMixin,
+    _looks_like_all_clear,
+    _looks_like_battle_hud,
+    _looks_like_battle_turn,
+    _looks_like_cutscene,
+    _looks_like_quest_start,
+    _looks_like_reward_popup,
+    _looks_like_skip_confirm,
+    _looks_like_story_subtitle,
+    _main_story_roi,
+)
+from src.tasks.task_vision_mixin import (
+    REFERENCE_HEIGHT,
+    REFERENCE_WIDTH,
+    TEMPLATE_DIR,
+)
+from src.utils import task_vision
+from src.utils.ocr_utils import keyword_match_count, normalize_ocr_text
+from src.utils.topmost_alert import show_topmost_alert
+from src.utils.vision_models import EMPTY_MATCH, MatchResult, TemplateSpec
+
+# 追踪条标题「主线」：实测在参考分辨率 y≈129–150、x≈1600 起。
+TRACKER_HEADER_ROI = _main_story_roi(1580, 120, 1720, 154)
+
+# 追踪条当前目标行：实测文字 (1580,153)-(1785,179)，左边 (1551,152)-(1577,179)
+# 是按键提示「E」，右边 x≥1809 是展开按钮「+」——ROI 两头都留了余量。
+TRACKER_OBJECTIVE_ROI = _main_story_roi(1550, 150, 1800, 188)
+
+# 点这一行＝让游戏重新寻路到当前目标；实测行中心，避开「+」。
+TRACKER_OBJECTIVE_POINT = (1682, 166)
+
+# 目标行左边那个「E」键帽的中心：手机版点它和按 E 是同一件事。
+TRACKER_E_POINT = (1564, 166)
+
+TRACKER_HEADER_KEYWORDS = ("主线",)
+
+# 战斗失败结算页的按钮条：实机未截到失败页，只按文字找「重试」，不设兜底点。
+RETRY_BUTTON_ROI = _main_story_roi(1150, 930, 1900, 1060)
+RETRY_KEYWORDS = ("重试", "重新挑战", "再次挑战", "retry")
+
+# 画面活动采样区：避开右上追踪条与右下技能轮盘，只留中间的游戏场景。
+ACTIVITY_ROI = _main_story_roi(200, 300, 1700, 860)
+ACTIVITY_SAMPLE_SIZE = (192, 72)
+
+# 野外交互提示的搜索区：走到 NPC/机关旁边时游戏会在物件旁画一个「F」键帽
+# （2026-11-18 实机「F 可疑物品」截图）。去掉顶部货币栏、左上小地图与队伍栏、
+# 底部技能区，也不搜右上角追踪条——追踪条目标行左边的「E」键帽和 F 是同一套
+# 皮肤，实测能到 0.90 分，混进来就会把「点追踪条」错当成「交互」。
+INTERACT_PROMPT_ROI = _main_story_roi(200, 150, 1500, 850)
+
+# 右下角那个圆形「!」按钮是手机版的同一个交互入口，键帽「F」画在它下方。
+INTERACT_HUD_ROI = _main_story_roi(1300, 780, 1520, 960)
+# 圆形按钮中心在键帽上方约 45 参考像素处。
+INTERACT_HUD_BUTTON_OFFSET = (0, -45)
+
+# 模板是 2026-11-18 实机 3840x2160 截图里「F」键帽的原尺寸裁切（键帽 35x39）。
+# 客户端实际是 4K 画面，所以它的宽在 1080p 参考尺寸下是 42 * 1920/3840 ≈ 21 像素，
+# 即 reference_scale=0.5；匹配器再按帧尺寸换算到客户端分辨率。
+# 只匹配键帽内部，排除外围场景背景。两张不同背景的实机F字形匹配
+# 均超过0.97；E字形仅0.875，且追踪条不在场景搜索区内。
+INTERACT_WORLD_KEYCAP = TemplateSpec(
+    "野外交互键F",
+    "field/field_keycap_F.png",
+    0.94,
+    relative_roi=INTERACT_PROMPT_ROI,
+    reference_scale=0.5,
+    scale_ratios=(0.95, 1.0, 1.05),
+    min_pixel_score=0.90,
+    crop=(.15, .15, .85, .85),
+)
+INTERACT_HUD_KEYCAP = TemplateSpec(
+    "右下角交互键F",
+    "field/field_keycap_F.png",
+    0.94,
+    relative_roi=INTERACT_HUD_ROI,
+    reference_scale=0.5,
+    scale_ratios=(0.95, 1.0, 1.05),
+    min_pixel_score=0.90,
+    crop=(.15, .15, .85, .85),
+)
+INTERACT_KEYCAP_TEMPLATES = (INTERACT_WORLD_KEYCAP, INTERACT_HUD_KEYCAP)
+
+# 两个独立的剧情控件来自实机，只有图标和其下方的 F2 键帽配对才触发跳过。
+STORY_SKIP_ICON = TemplateSpec(
+    "剧情跳过图标", "field/story_skip_icon.png", .73,
+    relative_roi=_main_story_roi(1596, 35, 1685, 85),
+    reference_scale=.5, scale_ratios=(.93, 1., 1.07), min_pixel_score=.79,
+)
+STORY_SKIP_KEYCAP = TemplateSpec(
+    "剧情跳过键帽", "field/story_keycap_f2.png", .82,
+    relative_roi=CUTSCENE_SKIP_HINT_ROI,
+    reference_scale=.5, scale_ratios=(.93, 1., 1.07), min_pixel_score=.83,
+)
+STORY_BUBBLE_ARROW = TemplateSpec(
+    "剧情对白继续箭头", "field/story_dialogue_arrow.png", .72,
+    reference_scale=.5, scale_ratios=(.93, 1., 1.07), min_pixel_score=.82,
+)
+STORY_SUBTITLE_ARROW = TemplateSpec(
+    "剧情字幕继续箭头", "field/story_subtitle_continue.png", .82,
+    relative_roi=_main_story_roi(806, 950, 1114, 1042),
+    reference_scale=.5, scale_ratios=(.93, 1., 1.07), min_pixel_score=.84,
+)
+# Some interludes render just one short line in the middle of a black screen.
+STORY_CENTER_TEXT_ROI = _main_story_roi(660, 466, 1260, 614)
+STORY_CLICK_ATTEMPTS = 2
+STORY_CLICK_CONFIRM_SECONDS = 3.0
+STORY_POINT_TOLERANCE = 8.0
+
+# 点提示条时落在键帽右侧的标签按钮里（实测标签从键帽右边一直延伸出去）。
+INTERACT_PROMPT_OFFSET = (60, 0)
+
+# 站定多久后才去点提示（太早会打扰还在走路的角色）。
+INTERACT_SETTLE_SECONDS = 1.0
+# 两次交互之间至少隔这么久，免得同一个提示被反复点。
+INTERACT_COOLDOWN_SECONDS = 3.0
+# 点完提示后等「提示消失/界面切换」的秒数；没消失说明这一下没被接受。
+INTERACT_CONFIRM_SECONDS = 3.0
+# 点完先停一下再取帧，否则截到的还是点之前那帧。
+INTERACT_CLICK_SETTLE_SECONDS = 0.8
+# 提示消失需连续两帧确认；失败重试受限，避免提示条与追踪条来回点。
+INTERACT_MAX_FAILURES = 3
+INTERACT_STABLE_DISTANCE = 5.0
+
+# 目标文字允许一字之差（OCR 形近误读），低于这个相似度才算「目标变了」。
+OBJECTIVE_MATCH_RATIO = 0.8
+
+WALK_POLL_SECONDS = 0.5
+FIRST_ADVANCE_SECONDS = 1.5
+PROBE_FLUSH_EVERY = 20
+WALK_ADVANCE_MODES = ("点击追踪条", "按 E 键", "两者都试")
+
+
+class MainStoryWalkState(str, Enum):
+    FIELD = "野外推进"
+    BATTLE = "战斗内"
+    BATTLE_TURN = "战斗-待开回合"
+    VICTORY = "战斗结算"
+    DEFEAT = "战斗失败"
+    REWARD = "奖励弹窗"
+    CUTSCENE = "剧情过场"
+    SKIP_CONFIRM = "跳过对话确认"
+    STORY_DIALOG = "剧情演出"
+    ALL_CLEAR = "主线已完成"
+    LOBBY = "不在野外场景"
+    UNKNOWN = "无法识别"
+
+
+BATTLE_STATES = (MainStoryWalkState.BATTLE, MainStoryWalkState.BATTLE_TURN)
+
+
+@dataclass(frozen=True)
+class StoryAction:
+    state: MainStoryWalkState
+    point: tuple[float, float] | None
+    line: str = ""
+    subtitle_arrow: bool = False
+
+    def same_step(self, other: StoryAction) -> bool:
+        return self.state is other.state and (
+            not self.line or not other.line or not objective_changed(self.line, other.line)
+        )
+
+    def confirms(self, previous: StoryAction | None) -> bool:
+        if previous is None or self.state is not previous.state:
+            return False
+        if self.subtitle_arrow != previous.subtitle_arrow:
+            return False
+        if not self.subtitle_arrow and not self.same_step(previous):
+            return False
+        if self.point is None or previous.point is None:
+            return self.point is previous.point
+        return max(abs(a - b) for a, b in zip(self.point, previous.point)) <= STORY_POINT_TOLERANCE
+
+    def follows_skip(self, prior_dialogue: StoryAction | None) -> bool:
+        """Allow a confirmed subtitle arrow to take over from the skip control."""
+
+        if self.point is None:
+            return False
+        if self.subtitle_arrow:
+            return True
+        if not self.line:
+            return False
+        if prior_dialogue is None:
+            return True  # 字幕和继续箭头此前均未识别到。
+        if prior_dialogue.line:
+            return objective_changed(prior_dialogue.line, self.line)
+        # 旧对白文字未读出时，只有明显换了布局才能确认已离开旧对白。
+        return (prior_dialogue.point is not None
+                and abs(prior_dialogue.point[1] - self.point[1]) >= REFERENCE_HEIGHT * .15)
+
+    @property
+    def label(self) -> str:
+        return "跳过剧情" if self.state is MainStoryWalkState.CUTSCENE else "推进对白"
+
+
+def _story_bubble_bounds(frame) -> tuple[float, float, float, float] | None:
+    """Locate a single broad, pale dialogue bubble centered above the characters."""
+
+    if not isinstance(frame, np.ndarray) or frame.ndim != 3 or frame.shape[2] < 3 or not frame.size:
+        return None
+    width, height = 960, 540
+    thumbnail = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
+    blue, green, red = np.moveaxis(thumbnail[:, :, :3].astype(np.int16), 2, 0)
+    mask = np.uint8(
+        (red >= 185) & (green >= 170)
+        & (red - green >= 1) & (red - green <= 27)
+        & (green - blue >= 5) & (green - blue <= 33)
+    )
+    _, _, stats, _ = cv2.connectedComponentsWithStats(mask)
+    candidates = [
+        (x / width, y / height, (x + w) / width, (y + h) / height)
+        for x, y, w, h, area in stats[1:]
+        if 135 <= x <= 400 and 78 <= y <= 255 and x + w <= 825 and y + h <= 405
+        and 205 <= w <= 470 and 50 <= h <= 170 and 2.0 <= w / h <= 5.5
+        and area >= .49 * w * h
+    ]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _looks_like_tracker_header(text: object) -> bool:
+    """右上角追踪条标题是不是「主线」。"""
+
+    return keyword_match_count(
+        text, TRACKER_HEADER_KEYWORDS, fuzzy_ratio=0.75,
+    ) >= 1
+
+
+def objective_signature(text: object) -> str:
+    """把目标行 OCR 文本归一成可比较的签名。
+
+    目标行最左边是按键提示「E」，OCR 常常和正文连成一个字符串（实机读作
+    「E 前往丢弃铁假面的地方」）。E 是游戏热键提示、不是目标内容，去掉它，
+    否则「E 出现/消失」会被误当成目标变化，把卡住计时一直刷掉。
+    """
+
+    merged = normalize_ocr_text(text)
+    if merged.startswith("e") and len(merged) > 1:
+        merged = merged[1:]
+    return merged
+
+
+def objective_changed(
+    previous: str,
+    current: str,
+    ratio: float = OBJECTIVE_MATCH_RATIO,
+) -> bool:
+    """目标是不是换了新的一句。OCR 漏读（空串）不参与判断。"""
+
+    if not previous or not current:
+        return False
+    if previous == current:
+        return False
+    previous_counts = re.findall(r"\d+/\d+", previous)
+    current_counts = re.findall(r"\d+/\d+", current)
+    if previous_counts and current_counts and previous_counts != current_counts:
+        return True
+    return SequenceMatcher(None, previous, current).ratio() < ratio
+
+
+def screen_signature(frame) -> np.ndarray | None:
+    """画面活动采样：中间场景区灰度缩略图。"""
+
+    if frame is None:
+        return None
+    array = np.asarray(frame)
+    if array.ndim < 2 or array.size == 0:
+        return None
+    height, width = array.shape[:2]
+    x1 = int(ACTIVITY_ROI[0] * width)
+    y1 = int(ACTIVITY_ROI[1] * height)
+    x2 = int(ACTIVITY_ROI[2] * width)
+    y2 = int(ACTIVITY_ROI[3] * height)
+    crop = array[y1:y2, x1:x2]
+    if crop.size == 0:
+        return None
+    # Downsample before converting to gray to keep the per-frame cost small and
+    # the motion threshold comparable across client resolutions.
+    sample = cv2.resize(crop, ACTIVITY_SAMPLE_SIZE, interpolation=cv2.INTER_AREA)
+    if sample.ndim == 3:
+        sample = cv2.cvtColor(sample, cv2.COLOR_BGR2GRAY)
+    return sample.astype(np.float32)
+
+
+def screen_delta(previous, current) -> float:
+    """两帧采样图的平均绝对差；拿不到可比数据时按「没动」处理。"""
+
+    if previous is None or current is None:
+        return 0.0
+    left = np.asarray(previous, dtype=np.float32)
+    right = np.asarray(current, dtype=np.float32)
+    if left.shape != right.shape or left.size == 0:
+        return 0.0
+    return float(np.abs(left - right).mean())
+
+
+def scene_motion_delta(previous, current) -> float:
+    """Measure changes spread across the scene after removing smooth lighting."""
+    shape = ACTIVITY_SAMPLE_SIZE[::-1]
+    if getattr(previous, "shape", None) != shape or getattr(current, "shape", None) != shape:
+        return 0.0
+    previous_edges = previous - cv2.GaussianBlur(previous, (5, 5), 0)
+    current_edges = current - cv2.GaussianBlur(current, (5, 5), 0)
+    if max(previous_edges.std(), current_edges.std()) < 2:
+        # A nearly flat frame has no reliable structure to compare. A large
+        # brightness change can still indicate a transition.
+        return screen_delta(previous, current)
+    diff = np.abs(previous_edges - current_edges)
+    # A moving camera shifts many tiles. A passing NPC or a particle usually
+    # changes only a few, which cannot dominate the median.
+    tiles = diff.reshape(4, 18, 6, 32).mean(axis=(1, 3))
+    return float(np.median(tiles))
+
+
+def _looks_like_retry_button(text: object) -> bool:
+    """失败结算页的「重试」按钮。"""
+
+    return keyword_match_count(text, RETRY_KEYWORDS, fuzzy_ratio=0.75) >= 1
+
+
+def stuck_due(last_progress_at: float, now: float, timeout: float) -> bool:
+    """从最后一次推进到现在是否已经超过卡住门槛。"""
+
+    if timeout <= 0:
+        return False
+    return now - last_progress_at >= timeout
+
+
+def classify_main_story_walk_state(
+    *,
+    skip_confirm_text: object = "",
+    cutscene_text: object = "",
+    reward_text: object = "",
+    victory_text: object = "",
+    battle_text: object = "",
+    tracker_start_text: object = "",
+    all_clear_text: object = "",
+    tracker_header_text: object = "",
+    objective_text: object = "",
+    story_text: object = "",
+) -> MainStoryWalkState:
+    """把各 ROI 的 OCR 文本归到一个界面状态。
+
+    判定顺序的每一条都有实机依据：
+
+    - 跳过确认排在过场之前：点 F2 后右上角「F2」提示还压在弹窗背后，
+      先认过场就会一直点跳过图标、永远点不到「确认」。
+    - 结算「离开」/战斗 HUD 排在追踪条之前：野外战斗时追踪条仍可能可见，
+      先认追踪条会把战斗当成野外、在战斗中乱点追踪条。
+    - 「开始XX难度」先于野外判定：大厅的追踪条也在右上角，文字是
+      「开始困难难度」——那是「起点不对」，不是野外目标。
+    - 野外判定在剧情字幕之前：野外 HUD 上的技能名/杂字（≥4 个汉字的可能）
+      不该把正常野外帧抢成剧情演出；万一是野外误判，点 (960,990) 也只落在
+      空地上，没有副作用。
+    """
+
+    if _looks_like_skip_confirm(skip_confirm_text):
+        return MainStoryWalkState.SKIP_CONFIRM
+
+    if _looks_like_cutscene(cutscene_text):
+        return MainStoryWalkState.CUTSCENE
+
+    if _looks_like_reward_popup(reward_text):
+        return MainStoryWalkState.REWARD
+
+    if keyword_match_count(victory_text, VICTORY_KEYWORDS):
+        return MainStoryWalkState.VICTORY
+
+    if _looks_like_battle_turn(battle_text, victory_text):
+        return MainStoryWalkState.BATTLE_TURN
+
+    if _looks_like_battle_hud(battle_text, victory_text):
+        return MainStoryWalkState.BATTLE
+
+    if _looks_like_quest_start(tracker_start_text):
+        return MainStoryWalkState.LOBBY
+
+    if _looks_like_all_clear(all_clear_text):
+        return MainStoryWalkState.ALL_CLEAR
+
+    if _looks_like_tracker_header(tracker_header_text):
+        return MainStoryWalkState.FIELD
+
+    if len(objective_signature(objective_text)) >= 2:
+        return MainStoryWalkState.FIELD
+
+    if _looks_like_story_subtitle(story_text):
+        return MainStoryWalkState.STORY_DIALOG
+
+    return MainStoryWalkState.UNKNOWN
+
+
+class MainStoryWalkConfigMixin:
+    """自动推主线的配置项，键名统一以「推主线」开头，避免与其它任务冲突。"""
+
+    MAIN_STORY_WALK_CONFIG_KEYS = (
+        "推主线推进方式",
+        "推主线自动交互",
+        "推主线停滞秒数",
+        "推主线推进间隔秒数",
+        "推主线静止阈值",
+        "推主线等待秒数",
+        "推主线战斗等待秒数",
+        "推主线战斗失败重试次数",
+        "推主线时间上限分钟",
+        "推主线 OCR 阈值",
+        "主线置顶弹框",
+        "推主线调试记录",
+    )
+
+    def _install_main_story_walk_config(self) -> None:
+        self.default_config.update(
+            {
+                "启用": True,
+                "推主线推进方式": "点击追踪条",
+                "推主线自动交互": True,
+                "推主线停滞秒数": 240.0,
+                "推主线推进间隔秒数": 10.0,
+                "推主线静止阈值": 6.0,
+                "推主线等待秒数": 20.0,
+                "推主线战斗等待秒数": 300.0,
+                "推主线战斗失败重试次数": 1,
+                "推主线时间上限分钟": 0.0,
+                "推主线 OCR 阈值": 0.2,
+                "主线置顶弹框": True,
+                "推主线调试记录": False,
+            }
+        )
+        self.config_description.update(
+            {
+                "启用": "是否执行主线野外自动推进。",
+                "推主线推进方式": (
+                    "怎么让游戏继续走：点右上角追踪条的目标行，或点目标行左边的 E "
+                    "键帽（这个客户端不响应脚本注入的按键，两种方式都是点击）。"
+                    "「两者都试」会先点目标行再点 E 键帽。"
+                ),
+                "推主线自动交互": (
+                    "野外画面出现「F」交互键帽（走到 NPC、可疑物品、机关旁边时游戏会"
+                    "显示）就自己点提示条，并确认提示真的消失才算成功；关掉后只会点"
+                    "追踪条。"
+                ),
+                "推主线停滞秒数": (
+                    "目标文字与界面状态都不变化超过这么久，就判定卡住：存图、托盘通知、"
+                    "弹置顶框并停止任务。自动寻路途中目标本来就不变，所以要给足走完一段"
+                    "路的时间（默认 240 秒）；解谜/机关/对话选项多半靠它兜底。"
+                ),
+                "推主线推进间隔秒数": (
+                    "画面静止多久后再「推」一次。正在寻路时（画面在动）不会去点，"
+                    "避免把自动寻路打断。"
+                ),
+                "推主线静止阈值": (
+                    "画面活动量（0–255 的平均像素差）低于它算静止、高于它算「还在动」。"
+                    "打开「推主线调试记录」可按实际分布校准。"
+                ),
+                "推主线等待秒数": (
+                    "认不出界面（加载中、过场切换）时连续等待的秒数，超过才报错。"
+                ),
+                "推主线战斗等待秒数": (
+                    "单场战斗从进战场到结算的兜底秒数；战斗停在「TURN. N / BATTLE」"
+                    "时任务会自己点 BATTLE，这里只是点满次数仍打不完时的上限。"
+                ),
+                "推主线战斗失败重试次数": (
+                    "战斗失败后在失败结算页找「重试」再打几次；用完后弹框停机。"
+                ),
+                "推主线时间上限分钟": "运行多久后停止，0 表示不限。",
+                "推主线 OCR 阈值": "追踪条与按钮文字识别的最低置信度。",
+                "主线置顶弹框": (
+                    "卡住时是否弹一个置顶消息框压在游戏之上（同时总会发系统通知）。"
+                ),
+                "推主线调试记录": (
+                    "把每轮的状态、目标文字、画面差值写进 "
+                    "probe_outputs/main_story_walk_probe.txt，用于校准静止阈值。"
+                ),
+            }
+        )
+        self.config_type.update(
+            {
+                "推主线推进方式": {
+                    "type": "drop_down",
+                    "options": list(WALK_ADVANCE_MODES),
+                },
+                "推主线停滞秒数": {"min": 60.0, "max": 1200.0, "step": 30.0},
+                "推主线推进间隔秒数": {"min": 3.0, "max": 60.0, "step": 1.0},
+                "推主线静止阈值": {"min": 0.0, "max": 30.0, "step": 0.5},
+                "推主线等待秒数": {"min": 5.0, "max": 120.0, "step": 1.0},
+                "推主线战斗等待秒数": {"min": 30.0, "max": 900.0, "step": 10.0},
+                "推主线战斗失败重试次数": {"min": 0, "max": 3, "step": 1},
+                "推主线时间上限分钟": {"min": 0.0, "max": 1440.0, "step": 5.0},
+                "推主线 OCR 阈值": {"min": 0.05, "max": 0.95, "step": 0.01},
+            }
+        )
+
+
+class MainStoryWalkFeatureMixin(MainStoryVisionMixin):
+    """自动推主线的状态机主体。"""
+
+    def run_main_story_walk(self) -> bool:
+        advance_mode = str(self.config.get("推主线推进方式", "点击追踪条") or "")
+        interact = bool(self.config.get("推主线自动交互", True))
+        stuck_seconds = float(self.config.get("推主线停滞秒数", 240.0))
+        advance_interval = float(self.config.get("推主线推进间隔秒数", 10.0))
+        still_threshold = float(self.config.get("推主线静止阈值", 6.0))
+        confirm_seconds = float(self.config.get("推主线等待秒数", 20.0))
+        battle_wait = float(self.config.get("推主线战斗等待秒数", 300.0))
+        max_retries = int(self.config.get("推主线战斗失败重试次数", 1) or 0)
+        minute_limit = float(self.config.get("推主线时间上限分钟", 0.0) or 0.0)
+        threshold = float(self.config.get("推主线 OCR 阈值", 0.2))
+        probe = bool(self.config.get("推主线调试记录", False))
+
+        deadline = monotonic() + minute_limit * 60 if minute_limit > 0 else None
+        started_at = monotonic()
+
+        last_progress_at = started_at
+        last_state: MainStoryWalkState | None = None
+        last_objective = ""
+        objective_readable = False
+        last_evidence = ""
+        last_frame_signature = None
+        still_since: float | None = None
+        battle_since: float | None = None
+        waiting_since: float | None = None
+        battle_turn_clicks = 0
+        last_delta_reported = -1
+        last_still_reported = -1
+        previous_story = None
+        submitted_story = None
+        dialogue_before_skip = None
+        story_attempts = 0
+        story_retry_at = 0.0
+        skip_confirm_rounds = 0
+        battles = 0
+        advances = 0
+        failures = 0
+        interactions = 0
+        last_interact_at = 0.0
+        prompt_point = None
+        prompt_since = None
+        interact_failures = 0
+        cycles = 0
+        probe_lines: list[str] = []
+
+        self._walk_set_stats(battles, advances, failures, interactions)
+
+        while True:
+            if deadline is not None and monotonic() >= deadline:
+                self.log_info("自动推主线：到达时间上限，结束。")
+                return True
+
+            frame = self.capture_frame()
+            state, evidence, objective_text, tracker_seen, story_action = self._walk_state(
+                frame, threshold,
+            )
+            if state is MainStoryWalkState.UNKNOWN and interact:
+                # 有些野外场景右上角根本不显示追踪条（只有小地图、队伍栏和货币栏），
+                # 这时画面上的「F」键帽就是最硬的「人站在野外」证据。
+                target = self._walk_interact_target(frame)
+                if target is not None:
+                    state = MainStoryWalkState.FIELD
+                    evidence = f"野外F键帽({target[1]})"
+            if evidence != last_evidence:
+                last_evidence = evidence
+                self.info_set("推主线当前界面", f"{state.value}｜{evidence}")
+            if normalize_ocr_text(objective_text):
+                self.info_set("推主线当前目标", objective_text)
+
+            now = monotonic()
+            frame_signature = screen_signature(frame)
+            delta = scene_motion_delta(last_frame_signature, frame_signature)
+            last_frame_signature = frame_signature
+            # 画面差值每轮都变，写状态面板会刷屏；整数量级变化才写一次。
+            if int(delta) != last_delta_reported:
+                last_delta_reported = int(delta)
+                self.info_set("推主线画面差值", f"{delta:.1f}")
+            moving = delta >= still_threshold
+            story_confirmed = story_action is not None and story_action.confirms(previous_story)
+            if (story_confirmed and submitted_story is not None
+                    and submitted_story.state is MainStoryWalkState.CUTSCENE
+                    and state is MainStoryWalkState.STORY_DIALOG):
+                story_confirmed = story_action.follows_skip(dialogue_before_skip)
+            previous_story = story_action
+            if story_action is None and state is not MainStoryWalkState.UNKNOWN:
+                submitted_story = None
+
+            previous_state = last_state
+            if state is not last_state:
+                last_state = state
+                waiting_since = None
+                still_since = None
+                if state in BATTLE_STATES:
+                    # 只有"从别的界面走进战斗"才算一场新战斗；BATTLE↔BATTLE_TURN
+                    # 之间来回切不重置计时与回合点击次数。
+                    if previous_state not in BATTLE_STATES:
+                        battle_since = now
+                        battle_turn_clicks = 0
+                        battles += 1
+                        last_progress_at = now
+                        self._walk_set_stats(battles, advances, failures, interactions)
+                        self.log_info(f"自动推主线：进入战斗（第 {battles} 场），让它自己打。")
+                elif (state not in (MainStoryWalkState.FIELD, MainStoryWalkState.UNKNOWN)
+                      and story_action is None):
+                    # 野外之外的任何界面切换都是一次推进（走进战斗、开始结算…）。
+                    last_progress_at = now
+                if state is not MainStoryWalkState.SKIP_CONFIRM:
+                    skip_confirm_rounds = 0
+
+            signature = objective_signature(objective_text)
+            if signature:
+                objective_readable = True
+                if not last_objective:
+                    last_objective = signature
+                    last_progress_at = now
+            if objective_changed(last_objective, signature):
+                last_objective = signature
+                last_progress_at = now
+                interact_failures = 0
+                self.log_info(f"自动推主线：目标更新为「{objective_text}」。")
+
+            # 画面在动只说明"游戏自己在走"，不算目标推进：否则一段循环动画
+            # （NPC 抖动、粒子特效）会把真正的卡死一直遮住。推进只认目标文字
+            # 和界面状态的改变，所以停滞秒数要给得足够走完一段寻路。
+            # 例外：目标行一次都没读出来时没有别的推进信号，只能退回画面活动，
+            # 否则正常的寻路也会被误判成卡住。
+            if moving:
+                still_since = None
+                if not objective_readable:
+                    last_progress_at = now
+            elif still_since is None:
+                still_since = now
+
+            if state is MainStoryWalkState.FIELD:
+                battle_since = None
+                target = self._walk_interact_target(frame) if interact else None
+                if target is not None:
+                    point = target[0]
+                    if prompt_point is None or max(
+                        abs(point[0] - prompt_point[0]), abs(point[1] - prompt_point[1]),
+                    ) > INTERACT_STABLE_DISTANCE:
+                        prompt_since = now
+                        interact_failures = 0
+                        prompt_point = point
+                else:
+                    prompt_point = None
+                    prompt_since = None
+                needed = advance_interval if advances else FIRST_ADVANCE_SECONDS
+                still_seconds = now - still_since if still_since is not None else 0.0
+                if int(still_seconds) != last_still_reported:
+                    last_still_reported = int(still_seconds)
+                    self.info_set("推主线静止秒数", f"{still_seconds:.0f}")
+                # 走到 NPC/机关旁边时游戏会停下来等一个「F」，这时点追踪条没用：
+                # 先看画面上有没有 F 键帽，有就点提示条并确认提示真的消失了。
+                if (
+                    interact
+                    and target is not None
+                    and prompt_since is not None
+                    and now - prompt_since >= INTERACT_SETTLE_SECONDS
+                    and now - last_interact_at >= INTERACT_COOLDOWN_SECONDS
+                ):
+                    last_interact_at = now
+                    if self._walk_try_interact(frame, threshold):
+                        interactions += 1
+                        self._walk_set_stats(
+                            battles, advances, failures, interactions,
+                        )
+                        now = monotonic()
+                        last_progress_at = now
+                        still_since = now
+                        last_still_reported = 0
+                        prompt_point = None
+                        prompt_since = None
+                        interact_failures = 0
+                    else:
+                        interact_failures += 1
+                        if interact_failures >= INTERACT_MAX_FAILURES:
+                            return self._main_story_walk_stuck(
+                                frame, "发现F交互提示，但连续3次点击后没有推进，请检查交互条件",
+                                evidence, objective_text,
+                            )
+                if (
+                    tracker_seen
+                    and target is None
+                    and still_since is not None
+                    and now - still_since >= needed
+                ):
+                    advances += 1
+                    self._walk_set_stats(battles, advances, failures, interactions)
+                    self.log_info(
+                        f"自动推主线：画面静止 {still_seconds:.0f} 秒，"
+                        f"推进一次（第 {advances} 次，方式={advance_mode}）。",
+                    )
+                    self._walk_advance(advance_mode)
+                    still_since = now
+                    last_still_reported = 0
+
+            elif state is MainStoryWalkState.BATTLE_TURN:
+                if battle_turn_clicks < BATTLE_TURN_CLICKS:
+                    battle_turn_clicks += 1
+                    last_progress_at = now
+                    self.log_info(
+                        f"自动推主线：战斗停在开回合前，点「BATTLE」"
+                        f"（本场第 {battle_turn_clicks}/{BATTLE_TURN_CLICKS} 次）。",
+                    )
+                    point = self._main_story_battle_turn_point(frame, threshold)
+                    self._click_reference(*point)
+                    self.sleep(BATTLE_TURN_INTERVAL)
+                if battle_since is not None and now - battle_since > battle_wait:
+                    return self._main_story_walk_stuck(
+                        frame,
+                        f"战斗超过 {battle_wait:.0f} 秒仍未结算",
+                        evidence,
+                        objective_text,
+                    )
+
+            elif state is MainStoryWalkState.BATTLE:
+                if battle_since is not None and now - battle_since > battle_wait:
+                    return self._main_story_walk_stuck(
+                        frame,
+                        f"战斗超过 {battle_wait:.0f} 秒仍未结算",
+                        evidence,
+                        objective_text,
+                    )
+
+            elif state is MainStoryWalkState.VICTORY:
+                battle_since = None
+                title = self._main_story_ocr(
+                    frame, VICTORY_TITLE_ROI, "推主线结算标题", threshold,
+                )
+                if keyword_match_count(title, FAILED_KEYWORDS):
+                    failures += 1
+                    self._walk_set_stats(battles, advances, failures, interactions)
+                    self.log_info(f"自动推主线：本场战斗失败（连续 {failures} 次）。")
+                    if failures <= max_retries:
+                        point = self._walk_retry_point(frame, threshold)
+                        if point is None:
+                            return self._main_story_walk_stuck(
+                                frame,
+                                "战斗失败，但失败结算页没读到「重试」按钮",
+                                evidence,
+                                objective_text,
+                            )
+                        self.log_info("自动推主线：点「重试」再打一次。")
+                        if not self._walk_click_and_confirm(
+                            state, point, threshold, "重试",
+                        ):
+                            return self._main_story_walk_stuck(
+                                frame,
+                                "点击「重试」后失败结算页没有变化",
+                                evidence,
+                                objective_text,
+                            )
+                        last_progress_at = now
+                    else:
+                        return self._main_story_walk_stuck(
+                            frame,
+                            f"连续 {failures} 场战斗失败，疑似打不过该节点",
+                            evidence,
+                            objective_text,
+                        )
+                else:
+                    failures = 0
+                    self._walk_set_stats(battles, advances, failures, interactions)
+                    self.log_info("自动推主线：结算完成，点「离开」。")
+                    if not self._walk_click_and_confirm(
+                        state, VICTORY_LEAVE_POINT, threshold, "离开",
+                    ):
+                        return self._main_story_walk_stuck(
+                            frame, "点击「离开」后界面无变化", evidence, objective_text,
+                        )
+
+            elif state is MainStoryWalkState.REWARD:
+                self.log_info("自动推主线：奖励弹窗，点击关闭。")
+                point = self._main_story_reward_click_point(frame, threshold)
+                if not self._walk_click_and_confirm(
+                    state, point, threshold, "奖励弹窗",
+                ):
+                    return self._main_story_walk_stuck(
+                        frame, "点击「奖励弹窗」后界面无变化", evidence, objective_text,
+                    )
+
+            elif state is MainStoryWalkState.SKIP_CONFIRM:
+                if skip_confirm_rounds < SKIP_CONFIRM_ROUNDS:
+                    skip_confirm_rounds += 1
+                    last_progress_at = now
+                    self.log_info("自动推主线：「跳过对话」确认框，点「确认」。")
+                    point = self._main_story_skip_confirm_point(frame, threshold)
+                    self._click_reference(*point)
+                    self.sleep(1.0)
+
+            elif story_confirmed:
+                if submitted_story is None or not story_action.same_step(submitted_story):
+                    if submitted_story is not None:
+                        last_progress_at = now
+                    story_attempts = 0
+                if story_attempts == 0 or now >= story_retry_at:
+                    if story_attempts >= STORY_CLICK_ATTEMPTS:
+                        return self._main_story_walk_stuck(
+                            frame, f"{story_action.label}后剧情未推进", evidence, objective_text,
+                        )
+                    point = story_action.point or self._main_story_subtitle_point(frame, threshold)
+                    if state is MainStoryWalkState.CUTSCENE and story_attempts == 0:
+                        dialogue_before_skip = self._walk_dialogue_before_skip(frame, threshold)
+                    story_attempts += 1
+                    submitted_story = story_action
+                    story_retry_at = now + STORY_CLICK_CONFIRM_SECONDS
+                    self.log_info(f"自动推主线：{story_action.label}（第 {story_attempts} 次）。")
+                    self._click_reference(*point)
+                    self.sleep(0.8)
+
+            elif state is MainStoryWalkState.ALL_CLEAR:
+                self.save_frame("main_story_walk_all_clear", frame)
+                self.info_set("推主线停止原因", "主线已完成")
+                self.log_info("自动推主线：主线已全部完成，任务正常结束。")
+                return True
+
+            elif state is MainStoryWalkState.LOBBY:
+                if waiting_since is None:
+                    waiting_since = now
+                if now - waiting_since >= confirm_seconds:
+                    return self._main_story_walk_stuck(
+                        frame,
+                        "未识别到主线野外场景（追踪条显示「开始难度」＝还站在大厅，"
+                        "请先进入主线野外场景再启动）",
+                        evidence,
+                        objective_text,
+                    )
+
+            elif state is MainStoryWalkState.UNKNOWN:
+                if waiting_since is None:
+                    waiting_since = now
+                if now - waiting_since >= confirm_seconds:
+                    reason = "界面持续无法识别"
+                    if submitted_story is not None:
+                        reason = f"{submitted_story.label}后无法确认剧情是否推进"
+                    return self._main_story_walk_stuck(
+                        frame, reason, evidence, objective_text,
+                    )
+
+            if submitted_story is not None and now >= story_retry_at + confirm_seconds:
+                reason = f"{submitted_story.label}后无法确认剧情是否推进"
+                return self._main_story_walk_stuck(
+                    frame, reason, evidence, objective_text,
+                )
+
+            if state is not MainStoryWalkState.FIELD:
+                prompt_point = None
+                prompt_since = None
+                interact_failures = 0
+
+            if state not in BATTLE_STATES and stuck_due(
+                last_progress_at, now, stuck_seconds,
+            ):
+                return self._main_story_walk_stuck(
+                    frame,
+                    f"主线目标 {stuck_seconds:.0f} 秒没有推进",
+                    evidence,
+                    objective_text,
+                )
+
+            cycles += 1
+            if probe:
+                probe_lines.append(
+                    f"{monotonic() - started_at:8.1f}s {state.value} "
+                    f"delta={delta:5.1f} 目标={signature or '-'}",
+                )
+                if cycles % PROBE_FLUSH_EVERY == 0:
+                    self.write_probe_text(
+                        "main_story_walk_probe.txt",
+                        probe_lines[-200:],
+                        info_label="推主线调试文件",
+                    )
+
+            self.sleep(WALK_POLL_SECONDS)
+
+    def _walk_state(
+        self,
+        frame,
+        threshold: float,
+    ) -> tuple[MainStoryWalkState, str, str, bool, StoryAction | None]:
+        """识别当前界面及可见的剧情点击目标。"""
+
+        header = self._main_story_ocr(
+            frame, TRACKER_HEADER_ROI, "推主线追踪条标题", threshold,
+        )
+        objective = self._main_story_ocr(
+            frame, TRACKER_OBJECTIVE_ROI, "推主线当前目标", threshold,
+        )
+        reward_hint = self._main_story_ocr(
+            frame, REWARD_POPUP_HINT_ROI, "推主线奖励提示", threshold,
+        )
+        reward_title = self._main_story_ocr(
+            frame, REWARD_POPUP_TITLE_ROI, "推主线奖励标题", threshold,
+        )
+        victory = self._main_story_ocr(
+            frame, VICTORY_LEAVE_ROI, "推主线结算离开", threshold,
+        )
+        battle = self._main_story_ocr(
+            frame, LIST_BUTTON_ROI, "推主线战斗按钮", threshold,
+        )
+        tracker_start = self._main_story_ocr(
+            frame, QUEST_START_ROI, "推主线追踪条开始难度", threshold,
+        )
+        all_clear = self._main_story_ocr(
+            frame, ALL_CLEAR_ROI, "推主线完成提示", threshold,
+        )
+
+        skip_confirm = cutscene = story = ""
+        cutscene_bars = False
+        story_action = None
+        state = classify_main_story_walk_state(
+            reward_text=f"{reward_title} {reward_hint}",
+            victory_text=victory,
+            battle_text=battle,
+            tracker_start_text=tracker_start,
+            all_clear_text=all_clear,
+            tracker_header_text=header,
+            objective_text=objective,
+        )
+        if state is MainStoryWalkState.UNKNOWN:
+            # 过场/跳过确认/剧情字幕只在认不出界面时才补测：野外每轮都测
+            # 等于十几次 OCR，而且字幕 ROI 在野外会读到 HUD 上的杂字。
+            skip_confirm = self._main_story_ocr(
+                frame, SKIP_CONFIRM_TITLE_ROI, "推主线跳过对话标题", threshold,
+            ) + self._main_story_ocr(
+                frame, SKIP_CONFIRM_BODY_ROI, "推主线跳过对话正文", threshold,
+            )
+            cutscene = self._main_story_ocr(
+                frame, CUTSCENE_SKIP_HINT_ROI, "推主线跳过剧情", threshold,
+            )
+            story = " ".join(
+                self._main_story_ocr(frame, bounds, "推主线剧情字幕", threshold)
+                for bounds in STORY_SUBTITLE_ROIS
+            )
+            state = classify_main_story_walk_state(
+                skip_confirm_text=skip_confirm,
+                cutscene_text=cutscene,
+                reward_text=f"{reward_title} {reward_hint}",
+                victory_text=victory,
+                battle_text=battle,
+                tracker_start_text=tracker_start,
+                all_clear_text=all_clear,
+                tracker_header_text=header,
+                objective_text=objective,
+                story_text=story,
+            )
+            if state in (MainStoryWalkState.UNKNOWN, MainStoryWalkState.STORY_DIALOG,
+                         MainStoryWalkState.CUTSCENE):
+                story_choices = any(
+                    hint in skip_confirm + story for hint in ("请选择回答", "请选择对话")
+                )
+                if story_choices:
+                    state = MainStoryWalkState.UNKNOWN
+                else:
+                    story_action, visual_skip = self._walk_story_action(
+                        frame, state, story, threshold,
+                    )
+                    if visual_skip:
+                        cutscene = f"跳过图标+F2键帽（OCR={cutscene or '-'}）"
+                    elif story_action is None:
+                        cutscene_bars = self._main_story_cutscene_bars(frame)
+            if story_action is not None:
+                state = story_action.state
+                if state is MainStoryWalkState.STORY_DIALOG and story_action.point is not None:
+                    story = f"对白继续：{story_action.line or '继续箭头'}"
+
+        evidence = (
+            f"标题={header or '-'};目标={objective or '-'};离开={victory or '-'};"
+            f"战斗={battle or '-'};奖励={reward_hint or '-'};开始={tracker_start or '-'};"
+            f"完成={all_clear or '-'};跳确认={skip_confirm or '-'};"
+            f"过场={cutscene or ('黑边' if cutscene_bars else '-')};字幕={story or '-'}"
+        )
+        tracker_seen = bool(
+            normalize_ocr_text(header) or normalize_ocr_text(objective),
+        )
+        return state, evidence, objective, tracker_seen, story_action
+
+    def _walk_story_action(self, frame, state, story, threshold) -> tuple[StoryAction | None, bool]:
+        skip_point = self._walk_story_skip_point(frame)
+        if skip_point is not None:
+            return StoryAction(MainStoryWalkState.CUTSCENE, skip_point), True
+        if state is MainStoryWalkState.CUTSCENE:
+            return StoryAction(state, CUTSCENE_SKIP_POINT), False
+        bubble_action = self._walk_story_bubble_action(frame, threshold)
+        if bubble_action is not None:
+            return bubble_action, False
+        subtitle = self._walk_subtitle_action(frame, story, threshold)
+        return (subtitle if subtitle.point is not None or subtitle.line else None), False
+
+    def _walk_subtitle_action(self, frame, story: str, threshold: float) -> StoryAction:
+        arrow = self._walk_match_spec(frame, STORY_SUBTITLE_ARROW)
+        if task_vision.passes_match(arrow, STORY_SUBTITLE_ARROW, self.config):
+            # 字幕只用于区分前后两句。短字幕或 OCR 漏读时仍可点已经定位的箭头。
+            line = self._walk_centered_story_text(frame, threshold)
+            if not line:
+                line = "".join(re.findall(r"[\u3400-\u9fff]", story))
+            return StoryAction(
+                MainStoryWalkState.STORY_DIALOG,
+                self._walk_reference_point(frame, arrow),
+                line,
+                subtitle_arrow=True,
+            )
+        line = (
+            normalize_ocr_text(story, alnum_only=True) if _looks_like_story_subtitle(story) else ""
+        )
+        return StoryAction(MainStoryWalkState.STORY_DIALOG, None, line)
+
+    def _walk_centered_story_text(self, frame, threshold: float) -> str:
+        # 黑底旁白用独立的中央 OCR 区域来跟踪当前句子。
+        if np.mean(np.max(frame[::16, ::16, :3], axis=2) <= 24) < .98:
+            return ""
+        text = self._main_story_ocr(frame, STORY_CENTER_TEXT_ROI, "推主线黑底旁白", threshold)
+        han = re.findall(r"[\u3400-\u9fff]", text)
+        if len(han) >= 2 or (han and text.endswith(("。", "！", "？", "…"))):
+            return normalize_ocr_text(text, alnum_only=True)
+        return ""
+
+    def _walk_dialogue_before_skip(self, frame, threshold: float) -> StoryAction | None:
+        bubble = self._walk_story_bubble_action(frame, threshold, allow_unreadable=True)
+        if bubble is not None:
+            return bubble
+        story = " ".join(
+            self._main_story_ocr(frame, bounds, "推主线剧情字幕", threshold)
+            for bounds in STORY_SUBTITLE_ROIS
+        )
+        subtitle = self._walk_subtitle_action(frame, story, threshold)
+        return subtitle if subtitle.line or subtitle.point is not None else None
+
+    def _walk_story_skip_point(self, frame) -> tuple[float, float] | None:
+        icon = self._walk_match_spec(frame, STORY_SKIP_ICON)
+        if not task_vision.passes_match(icon, STORY_SKIP_ICON, self.config):
+            return None
+        keycap = self._walk_match_spec(frame, STORY_SKIP_KEYCAP)
+        if not task_vision.passes_match(keycap, STORY_SKIP_KEYCAP, self.config):
+            return None
+        x, y = self._walk_reference_point(frame, icon)
+        key_x, key_y = self._walk_reference_point(frame, keycap)
+        return (x, y) if abs(x - key_x) <= STORY_POINT_TOLERANCE and 34 <= key_y - y <= 57 else None
+
+    def _walk_story_bubble_action(
+        self, frame, threshold: float, *, allow_unreadable: bool = False,
+    ) -> StoryAction | None:
+        bounds = _story_bubble_bounds(frame)
+        if bounds is None:
+            return None
+        x1, y1, x2, y2 = bounds
+        width, height = x2 - x1, y2 - y1
+        arrow_area = (x2 - .24 * width, y1 + .42 * height, x2 - .02 * width, y1 + .90 * height)
+        spec = replace(STORY_BUBBLE_ARROW, relative_roi=arrow_area)
+        arrow = self._walk_match_spec(frame, spec)
+        if not task_vision.passes_match(arrow, spec, self.config):
+            return None
+        text_area = (x1 + .18 * width, y1 + .16 * height, x2 - .05 * width, y1 + .62 * height)
+        line = self._main_story_ocr(frame, text_area, "推主线中央对白", threshold)
+        line = normalize_ocr_text(line, alnum_only=True) if _looks_like_story_subtitle(line) else ""
+        if not line and not allow_unreadable:
+            return None
+        return StoryAction(
+            MainStoryWalkState.STORY_DIALOG,
+            self._walk_reference_point(frame, arrow),
+            line,
+        )
+
+    def _walk_interact_target(self, frame):
+        """找画面里的「F」交互键帽：找到返回 (参考坐标, 模板名, 匹配分)。
+
+        键帽是游戏自己在物件旁画的，位置随物件走，所以只能整块场景搜；
+        分数不过阈值就当作没有提示，绝不点「大概位置」。
+        """
+
+        spec = INTERACT_WORLD_KEYCAP
+        return self._walk_keycap_target(frame, spec)
+
+    def _walk_hud_interact_target(self, frame):
+        """右下角圆形「!」按钮下面那个「F」：只在它真的画出来时才算数。"""
+
+        spec = INTERACT_HUD_KEYCAP
+        return self._walk_keycap_target(frame, spec)
+
+    def _walk_keycap_target(self, frame, spec):
+        """跑一次键帽模板，过阈值就换算成参考坐标返回 (点, 名字, 分数)。"""
+
+        if frame is None or getattr(frame, "size", 0) == 0:
+            return None
+        best = self._walk_match_spec(frame, spec)
+        if best is None or best.score <= 0:
+            return None
+        if not task_vision.passes_match(
+            best, spec, getattr(self, "config", {}),
+        ):
+            return None
+        return self._walk_reference_point(frame, best), spec.name, best.score
+
+    def _walk_reference_point(self, frame, match) -> tuple[float, float]:
+        """匹配结果的中心点换算成 1080p 参考坐标。"""
+
+        height, width = frame.shape[:2]
+        x, y = match.position
+        box_width, box_height = match.size
+        return (
+            (x + box_width / 2) * REFERENCE_WIDTH / max(1, width),
+            (y + box_height / 2) * REFERENCE_HEIGHT / max(1, height),
+        )
+
+    def _walk_match_spec(self, frame, spec) -> MatchResult:
+        """跑一次模板匹配；模板缺失/内存不足都只记一次，不打断主循环。"""
+
+        try:
+            return task_vision.match_template(
+                frame,
+                spec,
+                getattr(self, "config", {}),
+                TEMPLATE_DIR,
+                cache=getattr(self, "_walk_templates", None),
+                min_size=8,
+                skip_scale_errors=True,
+            )
+        except RuntimeError as exc:
+            if not getattr(self, "_walk_missing_template", False):
+                self._walk_missing_template = True
+                self.log_warning(str(exc), notify=True)
+            return EMPTY_MATCH
+        except (cv2.error, MemoryError, ValueError) as exc:
+            self.info_set("推主线交互匹配错误", str(exc))
+            return EMPTY_MATCH
+
+    def _walk_try_interact(self, frame, threshold: float) -> bool:
+        """画面上有「F」提示就用鼠标点它。
+
+        这个客户端不处理 PostMessage 注入的按键（实测 F/E/ESC 发了都不动），
+        鼠标消息却照收，所以交互一律走点击——手机版本来就是点这几个按钮。
+        点完必须看到「提示条消失」或「界面离开野外」才算成立，否则换下一个
+        入口再点一次；两个入口都没反应就交回主循环，不盲试。
+        """
+
+        target = self._walk_interact_target(frame)
+        if target is None:
+            return False
+        point, name, score = target
+        self.log_info(
+            f"自动推主线：检测到交互提示「{name}」（匹配 {score:.2f}，"
+            f"位于参考坐标 {point[0]:.0f},{point[1]:.0f}），点提示条交互。",
+        )
+        attempts = [
+            (
+                "提示条",
+                (
+                    point[0] + INTERACT_PROMPT_OFFSET[0],
+                    point[1] + INTERACT_PROMPT_OFFSET[1],
+                ),
+            ),
+        ]
+        hud = self._walk_hud_interact_target(frame)
+        if hud is not None:
+            hud_point = hud[0]
+            attempts.append(
+                (
+                    "右下角交互按钮",
+                    (
+                        hud_point[0] + INTERACT_HUD_BUTTON_OFFSET[0],
+                        hud_point[1] + INTERACT_HUD_BUTTON_OFFSET[1],
+                    ),
+                ),
+            )
+        for action, (click_x, click_y) in attempts:
+            self._click_reference(click_x, click_y)
+            self.sleep(INTERACT_CLICK_SETTLE_SECONDS)
+            if self._walk_prompt_consumed(threshold):
+                self.log_info(f"自动推主线：点「{action}」后交互生效。")
+                return True
+            self.log_info(f"自动推主线：点「{action}」后提示还在，换下一个入口。")
+        return False
+
+    def _walk_prompt_consumed(self, threshold: float) -> bool:
+        """点完交互入口后的确认：提示条消失或者界面离开野外才算真的点到了。"""
+
+        deadline = monotonic() + max(1.0, INTERACT_CONFIRM_SECONDS)
+        absent_frames = 0
+        while monotonic() < deadline:
+            self.sleep(0.5)
+            try:
+                frame = self.capture_frame()
+            except Exception as exc:
+                self.info_set("推主线截图错误", str(exc))
+                continue
+            state, *_rest = self._walk_state(frame, threshold)
+            if state not in (MainStoryWalkState.FIELD, MainStoryWalkState.UNKNOWN):
+                return True
+            if state is MainStoryWalkState.FIELD and self._walk_interact_target(frame) is None:
+                absent_frames += 1
+                if absent_frames >= 2:
+                    return True
+            else:
+                absent_frames = 0
+        return False
+
+    def _walk_advance(self, mode: str) -> None:
+        """让游戏继续走：点追踪条目标行（行左边的「E」也是点这一行）。
+
+        这个客户端不吃注入的按键，所以「按 E 键」也只实现成点那个 E 键帽——
+        手机版点它和按 E 触发的是同一段逻辑。坐标取实测点，避开「+」。
+        """
+
+        if mode in ("点击追踪条", "两者都试", ""):
+            self._click_reference(*TRACKER_OBJECTIVE_POINT)
+            if mode == "两者都试":
+                self.sleep(0.5)
+        if mode in ("按 E 键", "两者都试"):
+            self._click_reference(*TRACKER_E_POINT)
+
+    def _walk_retry_point(self, frame, threshold: float) -> tuple[float, float] | None:
+        """失败结算页「重试」在哪儿：只认 OCR 到的重试文字，没有兜底点。"""
+
+        boxes, crop = self._main_story_ocr_boxes(
+            frame, RETRY_BUTTON_ROI, "推主线重试按钮", threshold,
+        )
+        for box in boxes:
+            if not _looks_like_retry_button(getattr(box, "name", "")):
+                continue
+            return self._main_story_box_point(RETRY_BUTTON_ROI, crop, box)
+        return None
+
+    def _walk_click_and_confirm(
+        self,
+        previous: MainStoryWalkState,
+        point: tuple[float, float],
+        threshold: float,
+        action: str,
+    ) -> bool:
+        """点一下并确认界面离开了 previous；输入被吞就重试，不一次定生死。"""
+
+        for attempt in range(1, CLICK_RETRY_ATTEMPTS + 1):
+            self._click_reference(*point)
+            if self._walk_wait_change(previous, CLICK_CONFIRM_SECONDS, threshold):
+                return True
+            if attempt < CLICK_RETRY_ATTEMPTS:
+                self.log_info(
+                    f"自动推主线：「{action}」点击后界面未变化，"
+                    f"重试 {attempt}/{CLICK_RETRY_ATTEMPTS - 1}。",
+                )
+                self.sleep(1.0)
+        self.log_info(
+            f"自动推主线：「{action}」连续 {CLICK_RETRY_ATTEMPTS} 次点击均无响应。",
+        )
+        return False
+
+    def _walk_wait_change(
+        self,
+        previous: MainStoryWalkState,
+        timeout: float,
+        threshold: float,
+    ) -> bool:
+        deadline = monotonic() + max(1.0, timeout)
+        while monotonic() < deadline:
+            self.sleep(0.5)
+            try:
+                frame = self.capture_frame()
+            except Exception as exc:
+                self.info_set("推主线截图错误", str(exc))
+                continue
+            state, *_rest = self._walk_state(frame, threshold)
+            if state is not previous:
+                return True
+        return False
+
+    def _walk_set_stats(
+        self,
+        battles: int,
+        advances: int,
+        failures: int,
+        interactions: int = 0,
+    ) -> None:
+        self.info_set("推主线战斗次数", battles)
+        self.info_set("推主线推进次数", advances)
+        self.info_set("推主线失败次数", failures)
+        self.info_set("推主线交互次数", interactions)
+
+    def _main_story_walk_stuck(
+        self,
+        frame,
+        reason: str,
+        evidence: str = "",
+        objective: str = "",
+    ) -> bool:
+        """卡住出口：存图 → 托盘通知 → 置顶弹框 → 停任务等玩家处理。"""
+
+        path = self.save_frame("main_story_walk_stuck", frame)
+        self.write_probe_text(
+            "main_story_walk_stuck.txt",
+            [
+                f"原因：{reason}",
+                f"目标：{objective or '<未识别>'}",
+                f"界面：{evidence or '<无>'}",
+                f"截图：{path}",
+            ],
+            info_label="推主线存证文件",
+        )
+        self.info_set("推主线停止原因", reason)
+        message = (
+            f"自动推主线已停止：{reason}。\n\n"
+            f"当前目标：{objective or '未识别'}\n"
+            "可能需要在游戏里手动处理（解谜、机关、对话选项等），"
+            "处理完后可以重新启动本任务。\n"
+            "如果这是刚启动就停：请确认人物已经站在主线野外场景里"
+            "（右上角追踪条写着「主线」和当前目标），"
+            "或者改用「主线模式 = 快速探索」进已通关关卡刷取。\n"
+            f"截图已保存：{path}"
+        )
+        self.log_error(
+            f"自动推主线卡住：{reason}；已保存 probe_outputs/main_story_walk_stuck.png",
+            notify=True,
+        )
+        if bool(self.config.get("主线置顶弹框", True)):
+            show_topmost_alert(message)
+        return False

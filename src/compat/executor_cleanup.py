@@ -18,6 +18,8 @@ from ok.task.TaskExecutor import TaskExecutor
 from ok.util.logger import Logger
 from ok.util.process import prevent_sleeping
 
+from src.utils.topmost_alert import show_task_failure_alert
+
 logger = Logger.get_logger(__name__)
 
 
@@ -107,6 +109,10 @@ def _execute(self):
             logger.error(f"{name} exception stopped", error)
             if self._frame is not None:
                 communicate.screenshot.emit(self._frame, name, True, None)
+            if not is_trigger_task:
+                # The app's own failure dialog stays behind the game window;
+                # raise an always-on-top box so a crash is actually noticed.
+                show_task_failure_alert(name, message)
             self.current_task = None
             communicate.task.emit(None)
         finally:
