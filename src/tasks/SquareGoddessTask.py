@@ -341,6 +341,7 @@ class SquareGoddessTask(BaseBD2Task):
                 brightness_threshold=self._home_p95_threshold(),
                 gacha_ocr_text=last_gacha_text,
                 context="广场女神像返回主页",
+                frame=frame,
             )
             still_in_square = False
             if remaining_home_clicks > 0:

@@ -69,6 +69,23 @@ from src.utils.cartridge_quick_switch import (
 
 
 class FiendRewardEntryTest(unittest.TestCase):
+    def test_default_policy_closes_season_reward_on_non_monday(self):
+        season = [
+            SimpleNamespace(name=name, x=930, y=990, width=60, height=30)
+            for name in ("赛季奖励", "点击画面即可返回")
+        ]
+        task = self.make_task(
+            [season, self.normal_boxes(), self.normal_boxes()], recent_pvp=True,
+        )
+        # 周二登录也必须能退出奖励页；该路径不应受旧版周一限制影响。
+        with patch("src.tasks.BaseBD2Task.datetime", create=True) as clock:
+            clock.now.return_value = datetime(2026, 11, 17, 4, tzinfo=timezone.utc)
+            self.assertIs(
+                CartridgeSpecialPageResult.HANDLED,
+                task._handle_recent_cartridge_special_pages(timeout=.1, interval=.01),
+            )
+        self.assertEqual(1, len(self.clicks))
+
     def make_task(self, screens, *, size=(1920, 1080), recent_pvp=False):
         task = object.__new__(SquareGoddessTask)
         task._executor = SimpleNamespace(method=SimpleNamespace(width=size[0], height=size[1]))

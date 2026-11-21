@@ -235,7 +235,7 @@ class DailyBatchTaskTest(unittest.TestCase):
         self.assertEqual("第一项、第二项", task.info.get("完成"))
 
     def test_cancellation_preserves_finished_children_and_stops_the_batch(self):
-        for boundary in ("auto_return_main_home", "run"):
+        for boundary in ("finish_gameplay_at_home", "run"):
             with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as directory:
                 classes = [type(name, (), {}) for name in ("First", "Cancelled", "Later")]
                 calls = []
@@ -254,11 +254,17 @@ class DailyBatchTaskTest(unittest.TestCase):
                 ), mock.patch.object(scheduler, "default_store"):
                     with self.assertRaises(TaskDisabledException):
                         DailyBatchTask.run(task)
-                self.assertEqual([("first", True)], calls)
+                expected = [("first", True)]
+                if boundary == "finish_gameplay_at_home":
+                    expected.append(("cancelled", True))
+                self.assertEqual(expected, calls)
                 self.assertIs(original_config, cancelled.config)
                 self.assertEqual(2, len(resets))
                 self.assertTrue(RunHistoryStore(history.path).last_run("first")["ok"])
-                self.assertIsNone(history.last_run("cancelled"))
+                if boundary == "finish_gameplay_at_home":
+                    self.assertTrue(history.last_run("cancelled")["ok"])
+                else:
+                    self.assertIsNone(history.last_run("cancelled"))
                 self.assertIsNone(history.last_run("later"))
                 task._maybe_shutdown_after_daily.assert_not_called()
 
@@ -275,6 +281,9 @@ class DailyBatchTaskTest(unittest.TestCase):
         calls = []
         skipped = _ChildTask("skipped", calls)
         failed = _ChildTask("failed", calls, result=False)
+        failed.auto_return_main_home = mock.Mock(return_value=False)
+        failed.recover_daily_home = mock.Mock(return_value=False)
+        failed.try_return_home_with_back = mock.Mock(return_value=True)
         later = _ChildTask("later", calls)
         specs = (
             DailyBatchChild("关闭项", Skipped),
@@ -289,6 +298,9 @@ class DailyBatchTaskTest(unittest.TestCase):
 
         self.assertFalse(DailyBatchTask.run(task))
         self.assertEqual([("failed", True)], calls)
+        failed.auto_return_main_home.assert_not_called()
+        failed.recover_daily_home.assert_called_once_with()
+        failed.try_return_home_with_back.assert_not_called()
 
     def test_child_completion_is_silent_and_batch_emits_one_overview(self):
         class NotifyingChild:

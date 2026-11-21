@@ -74,6 +74,8 @@ class AutoLoginTask(BaseBD2Task):
         "小屋按钮点击 Y 百分比",
         "公告清理点击 X 百分比",
         "公告清理点击 Y 百分比",
+        "主页弹窗",
+        "整页退出",
         "匹配错误",
         "Log",
         "Warning",
@@ -144,6 +146,8 @@ class AutoLoginTask(BaseBD2Task):
         self._missing_template_names: set[str] = set()
         self._match_error_names: set[str] = set()
         self._match_pause_until = 0.0
+        self._news_page_back_attempts = 0
+        self._news_page_back_exhausted = False
 
     def on_create(self):
         self._enabled = bool(self.config.get("_enabled", True))
@@ -286,6 +290,10 @@ class AutoLoginTask(BaseBD2Task):
             self._set_stage("等待更新或登录页")
             self._set_action("Confirm 已处理，等待更新下载提示或 TOUCH TO START。")
         else:
+            if self._escape_news_page(frame, boxes=boxes, text=login_text):
+                return False
+            if getattr(self, "_news_page_back_exhausted", False):
+                return False
             if self._maybe_return_home(frame):
                 return False
             self._state = "waiting"
@@ -578,7 +586,7 @@ class AutoLoginTask(BaseBD2Task):
                 ratio = self._home_brightness_ratio(frame)
                 self.info_set("小屋亮度比例", f"{ratio:.3f}")
                 if ratio < self._home_ratio_threshold():
-                    self._clear_home_popup(ratio)
+                    self._clear_home_popup(ratio, frame)
                     return False
 
             self._home_bright_since = None
@@ -629,7 +637,7 @@ class AutoLoginTask(BaseBD2Task):
             return False
 
         self._home_bright_since = None
-        self._clear_home_popup(ratio)
+        self._clear_home_popup(ratio, frame)
         return False
 
     def _home_confirmation_signals(
@@ -686,14 +694,57 @@ class AutoLoginTask(BaseBD2Task):
         self.info_set("主页抽抽乐 OCR 尝试", result.trace)
         return result.text
 
-    def _clear_home_popup(self, ratio: float) -> None:
+    def _clear_home_popup(self, ratio: float, frame=None) -> None:
+        """主页被弹窗遮挡时优先点弹窗右上角关闭，识别不到面板再走固定清理点。"""
         self._home_bright_since = None
         now = monotonic()
         if now - self._last_clear_click_at < 1.0:
             return
 
         self._state = "clearing"
-        self._set_stage("清理公告")
+        self._set_stage("清理弹窗")
+        if frame is not None and self.dismiss_home_modal_popup(
+            frame, context="自动登录",
+        ):
+            # dismiss 内部自带 1 秒节流，这里同步本状态机的节流时间戳。
+            self._last_clear_click_at = now
+            self._set_action(
+                f"主页疑被弹窗遮挡，点击弹窗右上角关闭，ratio={ratio:.3f}。"
+            )
+            return
+
+        if frame is not None and getattr(self, "_home_modal_unlocated", False):
+            # 面板在但叉号定位不到：固定清理点会点到公告条目上，把公告打开，
+            # 退出后又回到同一个弹窗，形成死循环。这里只等待，不盲点。
+            self._set_action("检测到弹窗但找不到关闭叉号，等待其消失，不盲点。")
+            self._last_clear_click_at = now
+            return
+
+        if frame is not None and self.dismiss_fullscreen_news_page(
+            frame, context="自动登录",
+        ):
+            self._last_clear_click_at = now
+            self._set_action("检测到新闻/公告整页，点击左上角返回。")
+            return
+
+        if getattr(self, "_news_page_back_exhausted", False):
+            self._set_action("新闻/公告页返回次数已用尽，等待人工处理。")
+            self._last_clear_click_at = now
+            return
+
+        if getattr(self, "_news_page_loop_detected", False):
+            # 已经在「弹窗 -> 公告详情 -> 退出 -> 弹窗」之间循环过，停止一切点击，
+            # 让状态机按超时结束，避免继续点开公告。
+            self._set_action("检测到公告页与弹窗循环，停止点击等待人工处理。")
+            self._last_clear_click_at = now
+            return
+
+        # 刚退出新闻/公告页时不要马上按固定清理点盲点：那个位置在主页上
+        # 很可能正是打开公告的入口，会来回打开关不掉。
+        if now - float(getattr(self, "_news_page_back_at", 0.0)) < 3.0:
+            self._set_action("刚退出新闻/公告页，等待主页刷新后再判断。")
+            return
+
         clear_x = self._percent_config("公告清理点击 X 百分比")
         clear_y = self._percent_config("公告清理点击 Y 百分比")
         self._set_action(f"主页三项信号未齐全，点击公告清理位置，ratio={ratio:.3f}。")
@@ -832,6 +883,28 @@ class AutoLoginTask(BaseBD2Task):
         self.info_set("BrownDustX Confirm 点击", f"{x},{y}")
         self.operate_click(x, y, after_sleep=after_sleep)
 
+    def _escape_news_page(self, frame, *, boxes=None, text=None) -> bool:
+        """退出「新闻/公告」整页；有明确返回控件的子页不消耗返回主页重试预算。
+
+        2026-11-16 实机：登录后停在新闻/公告页，旧逻辑找不到房子按钮、
+        也匹配不到左上角返回条，3 次「返回主页」用尽后永久停在提示上。
+        """
+        if not self.dismiss_fullscreen_news_page(
+            frame,
+            boxes=boxes,
+            ocr_text=text,
+            context="自动登录",
+        ):
+            if getattr(self, "_news_page_back_exhausted", False):
+                self._set_stage("等待手动返回主页")
+                self._set_action("新闻/公告页返回次数已用尽，请手动返回主页。")
+            return False
+        if int(getattr(self, "_news_page_back_attempts", 0)) <= 2:
+            self._esc_home_attempts = 0
+        self._set_stage("退出新闻/公告页")
+        self._set_action("检测到新闻/公告整页，点击左上角返回回到主页。")
+        return True
+
     def _maybe_return_home(self, frame) -> bool:
         """既非登录页也非主页（如格鲁菲餐厅）时自动返回主页。
 
@@ -927,6 +1000,8 @@ class AutoLoginTask(BaseBD2Task):
         self._esc_home_wait_since = None
         self._esc_hold_until = 0.0
         self._esc_home_user_notified_at = 0.0
+        self._news_page_back_attempts = 0
+        self._news_page_back_exhausted = False
         self._finished = False
         self._set_stage("等待登录页")
         self._set_action(action)

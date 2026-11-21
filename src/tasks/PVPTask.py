@@ -445,6 +445,7 @@ class PVPTask(BaseBD2Task):
                 brightness_threshold=self._home_p95_threshold(),
                 gacha_ocr_text=gacha_text,
                 context="镜中之战确认主页",
+                frame=frame,
             )
             self.sleep(interval)
 
@@ -1299,6 +1300,7 @@ class PVPTask(BaseBD2Task):
                 brightness_threshold=self._home_p95_threshold(),
                 gacha_ocr_text=gacha_text,
                 context="PVP 返回主页",
+                frame=frame,
             )
             self.sleep(interval)
         return False
