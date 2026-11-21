@@ -59,7 +59,9 @@ def batch_items(executor, store=None, now: float | None = None) -> list[dict]:
             {
                 "key": child.config_key,
                 "name": name,
-                "enabled": bool(config.get(child.config_key, True)),
+                "enabled": bool(
+                    config.get(child.config_key, getattr(child, "default_enabled", True))
+                ),
                 "done": bool(
                     store.is_completed(name, now=now, scope=configuration_scope(task))
                 ),

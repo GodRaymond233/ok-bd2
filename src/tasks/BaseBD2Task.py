@@ -24,6 +24,7 @@ from src.diagnostics.runtime import (
 from src.scene.BD2Scene import BD2Scene
 from src.scene.ScreenPosition import ScreenPosition
 from src.tasks.task_notifications import log_task_completion
+from src.utils.activity_screen import ACTIVITY_DAILY_OWNER, QUICK_BATTLE_STEP, ActivityScreen
 from src.utils.home_confirmation import (
     HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT,
     HOME_DIMMED_P95_THRESHOLD_DEFAULT,
@@ -423,7 +424,8 @@ class BaseBD2Task(BaseTask):
 
         规则：
         - 主页判定使用同帧左列关键词、亮度和抽抽乐；已确认主页直接成功。
-        - 非主页时：优先用房子按钮图像识别，OCR ``H`` 仅作辅助；也可命中左上角
+        - 活动页面按已确认的取消或返回控件逐级退出；有未核对的活动AP时保留现场。
+        - 其他非主页页面优先用房子按钮图像识别，OCR ``H`` 仅作辅助；也可命中左上角
           “返回”模板。证据不足时安全停止，绝不盲点。
         - 重试过程只记普通日志；失败后进入冷却，避免连续弹系统提示。
         """
@@ -441,6 +443,7 @@ class BaseBD2Task(BaseTask):
         )
         settle = float(self.config.get("返回主页步间等待秒数", 2.5))
         acted = False
+        activity_clicks = {}
         failure_reason = "未能确认主页或返回控件。"
 
         for step in range(1, step_limit + 1):
@@ -458,6 +461,50 @@ class BaseBD2Task(BaseTask):
                 if acted:
                     self.log_info("自动返回主页：已回到主页。")
                 return True
+
+            activity = self._activity_return_control(frame)
+            if activity is not None:
+                from src.tasks import run_history
+
+                try:
+                    pending = run_history.default_store().stage(
+                        ACTIVITY_DAILY_OWNER, QUICK_BATTLE_STEP,
+                    ).get("state") == "pending"
+                except RuntimeError:
+                    pending = True
+                if pending:
+                    return self._finish_auto_return_failure(
+                        "活动快速战斗仍待核对，保留当前页面。", notify=notify_failure,
+                    )
+                action, point = activity
+                if activity_clicks.get(action, 0) >= 2:
+                    failure_reason = f"{action}已点击两次，仍未确认离开。"
+                    break
+                if point is None:
+                    failure_reason = f"已识别活动页面，但未确认可用的{action}按钮。"
+                    break
+                try:
+                    self.sleep(0.35)
+                    probe = self._activity_return_control(self.capture_frame())
+                    if probe is None or probe[0] != action:
+                        continue
+                    fresh_point = probe[1]
+                    if fresh_point is None or max(
+                        abs(current - previous) for current, previous in zip(fresh_point, point)
+                    ) > 0.015:
+                        continue
+                    self.operate_click(
+                        *fresh_point, name=f"自动返回主页-{action}",
+                        after_sleep=settle, require_fresh_target=True,
+                    )
+                except (TaskDisabledException, FinishedException):
+                    raise
+                except Exception as exc:
+                    failure_reason = f"{action}失败：{exc}"
+                    break
+                activity_clicks[action] = activity_clicks.get(action, 0) + 1
+                acted = True
+                continue
 
             if self._clear_dimmed_home_announcement(frame):
                 acted = True
@@ -545,6 +592,24 @@ class BaseBD2Task(BaseTask):
             failure_reason,
             notify=notify_failure,
         )
+
+    def _activity_return_control(self, frame):
+        """Recognize the event header before OCRing possible event exit controls."""
+        try:
+            header = ActivityScreen(frame, self.ocr(
+                x=0.10, y=0.012, to_x=0.88, to_y=0.09, target_height=1080,
+                frame=frame, threshold=0.55, name="活动页面标题", log=False,
+            ))
+            if not (header.menu_header or header.activity_mode):
+                return None
+            boxes = self.ocr(
+                frame=frame, threshold=0.55, target_height=1080, name="活动返回页面", log=False,
+            )
+            return ActivityScreen(frame, boxes).home_return_control
+        except (TaskDisabledException, FinishedException):
+            raise
+        except Exception:
+            return None
 
     def _confirm_home_after_return_action(self) -> bool:
         """Confirm the final return click instead of relying on another loop step."""
