@@ -16,6 +16,13 @@ from src.utils.activity_screen import (
     STAGES,
     ActivityScreen,
 )
+from src.utils.image_utils import crop_relative
+from src.utils.ocr_utils import normalize_ocr_text
+
+STAGE_ROW_SPACING = 0.0915
+STAGE_ROW_OFFSETS = (0.0, -0.006, 0.006, -0.012, 0.012)
+STAGE_DIGIT_CROPS = ((0.1275, 0.1495, 0.021), (0.128, 0.1535, 0.023))
+STAGE_DIGIT_MIN_CONFIDENCE = 0.88
 
 
 class ActivityDailyTask(BaseBD2Task):
@@ -151,6 +158,40 @@ class ActivityDailyTask(BaseBD2Task):
             rows.update({number: point for number, point in cropped.items() if number not in rows})
         return rows
 
+    def _read_stage_digit(self, view, rows, stage):
+        if not rows:
+            return None
+        # Anchor the search to a recognized row, including when it is the only one.
+        anchor = min(rows, key=lambda number: abs(number - stage))
+        expected_y = rows[anchor][1] + (stage - anchor) * STAGE_ROW_SPACING
+        _, top, _, bottom = STAGE_LIST
+        centers = [
+            expected_y + offset for offset in STAGE_ROW_OFFSETS
+            if top + 0.023 <= expected_y + offset <= bottom - 0.023
+        ]
+        if not centers:
+            return None
+        crops = [
+            crop_relative(view.frame, (left, y - radius, right, y + radius))
+            for y in centers
+            for left, right, radius in STAGE_DIGIT_CROPS
+        ]
+        # Run recognition on the row crops directly. The text detector can omit
+        # unselected digits even when given a small crop of the correct row.
+        reads = self.executor.ocr_lib().ocr(crops, det=False, cls=False)[0]
+        if len(reads) != len(crops):
+            return None
+        count = len(STAGE_DIGIT_CROPS)
+        for index, y in enumerate(centers):
+            row_reads = reads[index * count:(index + 1) * count]
+            if all(
+                confidence >= STAGE_DIGIT_MIN_CONFIDENCE
+                and normalize_ocr_text(text).rstrip(">»〉》+") == str(stage)
+                for text, confidence in row_reads
+            ):
+                return 0.142, y
+        return None
+
     @staticmethod
     def _stage_point(rows, stage):
         if stage in rows:
@@ -184,6 +225,10 @@ class ActivityDailyTask(BaseBD2Task):
                 return None
             rows = self._stage_rows(view, stage)
             point = self._stage_point(rows, stage)
+            if point is None:
+                point = self._read_stage_digit(view, rows, stage)
+                if point:
+                    self.info_set("活动找关", f"{mode}{stage}关 · 局部关号复核")
             if point:
                 self.operate_click(
                     *point,

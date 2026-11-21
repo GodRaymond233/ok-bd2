@@ -253,6 +253,45 @@ class ActivityFlowTest(unittest.TestCase):
         task.operate_click.assert_called_once()
         self.assertEqual(top.stage_rows()[5], task.operate_click.call_args.args)
 
+    def test_checks_visible_5_with_single_line_ocr_when_the_detector_only_finds_10(self):
+        for matched_header in (True, False):
+            with self.subTest(matched_header=matched_header):
+                task = self.task()
+                initial = challenge_list(10, ((10, 0.961),))
+                selected = challenge_list(5, ((5, 0.504),))
+                next_view = selected if matched_header else SimpleNamespace(stage_page=(NORMAL, 5))
+                digit_ocr = Mock(return_value=[[('5', .97), ('5》', .96)] + [('', .0)] * 8])
+                task._executor = SimpleNamespace(ocr_lib=lambda: SimpleNamespace(ocr=digit_ocr))
+                task._region = Mock(return_value=initial)
+                task._wait_activity = Mock(
+                    side_effect=lambda predicate, **_: next_view if predicate(next_view) else None,
+                )
+                task._read_activity = Mock(return_value=next_view)
+                task.scroll_client = Mock()
+
+                self.assertIs(
+                    selected if matched_header else None,
+                    task._select_stage(initial, CHALLENGE, 5),
+                )
+                task.operate_click.assert_called_once()
+                task._wait_activity.assert_called_once()
+                task.scroll_client.assert_not_called()
+                x, y = task.operate_click.call_args.args
+                self.assertAlmostEqual(.142, x)
+                self.assertAlmostEqual(.504, y, delta=.002)
+                self.assertTrue(task.operate_click.call_args.kwargs['require_fresh_target'])
+                digit_ocr.assert_called_once()
+                self.assertEqual(dict(det=False, cls=False), digit_ocr.call_args.kwargs)
+
+    def test_rejects_unconfirmed_digits_and_does_not_read_an_offscreen_row(self):
+        task = self.task()
+        view = challenge_list(10, ((10, .961),))
+        digit_ocr = Mock(return_value=[[('5', .97), ('15', .99)] * 5])
+        task._executor = SimpleNamespace(ocr_lib=lambda: SimpleNamespace(ocr=digit_ocr))
+        self.assertIsNone(task._read_stage_digit(view, view.stage_rows(), 5))
+        self.assertIsNone(task._read_stage_digit(view, view.stage_rows(), 15))
+        digit_ocr.assert_called_once()
+
     def home_task(self, views, home=None):
         task = object.__new__(BaseBD2Task)
         task.config = {}
