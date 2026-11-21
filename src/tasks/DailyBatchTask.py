@@ -11,6 +11,7 @@ from ok.task.exceptions import FinishedException, TaskDisabledException
 
 from src.diagnostics.runtime import observe_run, task_error
 from src.icons import TaskIcon as FluentIcon
+from src.tasks.ActivityDailyTask import ACTIVITY_DAILY_NAME, ActivityDailyTask
 from src.tasks.BaseBD2Task import task_info_snapshot
 from src.tasks.DailyTask import DailyTask
 from src.tasks.FreeGachaTask import FreeGachaTask
@@ -66,6 +67,7 @@ def _schedule_system_shutdown(seconds: int) -> bool:
 class DailyBatchChild:
     config_key: str
     task_class: type[BaseTask]
+    default_enabled: bool = True
 
 
 DAILY_BATCH_CHILDREN = (
@@ -76,6 +78,7 @@ DAILY_BATCH_CHILDREN = (
     DailyBatchChild("跑图", MapCollectionTask),
     DailyBatchChild("跑商", MapTradeTask),
     DailyBatchChild("自动PVP", PVPTask),
+    DailyBatchChild(ACTIVITY_DAILY_NAME, ActivityDailyTask, default_enabled=False),
     DailyBatchChild("领取每日及每周奖励", MissionRewardTask),
 )
 
@@ -102,7 +105,7 @@ class DailyBatchTask(BaseTask):
         self.name = "一键完成日常"
         self.description = (
             "按顺序执行已开启的公会、小屋、酒馆、抽抽乐、快速狩猎、"
-            "广场、跑图、跑商和PVP，最后领取每日及每周奖励。"
+            "广场、跑图、跑商、PVP和每日活动，最后领取每日及每周奖励。"
         )
         self.icon = FluentIcon.COMPLETED
         self.group_name = "日常/周常"
@@ -118,7 +121,7 @@ class DailyBatchTask(BaseTask):
                 "启用": True,
                 "启动自动执行日常": False,
                 "完成日常后自动关机": False,
-                **{key: True for key in child_keys},
+                **{child.config_key: child.default_enabled for child in self.child_tasks},
             }
         )
         self.config_description.update(
@@ -142,6 +145,7 @@ class DailyBatchTask(BaseTask):
                     "沿用每周跑图卡片的配置；执行剩余时，今日额度已用尽或本周已完成则跳过。"
                     "技能次数每日08:00、资源周一08:00刷新（北京时间）。"
                 ),
+                ACTIVITY_DAILY_NAME: "优先挑战战斗，按15、10、5关查找快速战斗并使用免费活动AP。",
                 "领取每日及每周奖励": "在日常流程最后领取奖励；同日再次执行也会复查新增奖励。",
             }
         )
@@ -300,7 +304,7 @@ class DailyBatchTask(BaseTask):
         )
 
         for child in self.child_tasks:
-            taking_part = bool(self.config.get(child.config_key, True))
+            taking_part = bool(self.config.get(child.config_key, child.default_enabled))
             if not taking_part or stop_remaining:
                 skipped.append(child.config_key)
                 self._skip_reasons[child.config_key] = {
@@ -477,7 +481,7 @@ class DailyBatchTask(BaseTask):
         enabled_children = [
             child
             for child in self.child_tasks
-            if bool(self.config.get(child.config_key, True))
+            if bool(self.config.get(child.config_key, child.default_enabled))
         ]
         if not enabled_children:
             self.log_info("一键完成日常：没有已启用子任务，不执行自动关机。")
