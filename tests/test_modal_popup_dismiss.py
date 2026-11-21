@@ -10,8 +10,10 @@
 """
 
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
+import cv2
 import numpy as np
 
 from src.tasks.BaseBD2Task import BaseBD2Task
@@ -31,6 +33,12 @@ REAL_PANEL = (424, 178, 1081, 641)
 BIG_HEIGHT, BIG_WIDTH = 2160, 3840
 BOARD_PANEL = (1120, 460, 1600, 1220)
 BOARD_CLOSE = (2656, 531)
+ANNIVERSARY_CLOSE = (1479, 288)
+
+
+def _anniversary_frame():
+    fixture = Path(__file__).parent / "fixtures" / "home_modal" / "anniversary_check_in.png"
+    return cv2.imdecode(np.fromfile(fixture, dtype=np.uint8), cv2.IMREAD_COLOR)
 
 
 def _dimmed_frame(value: int = 70, size=(HEIGHT, WIDTH)):
@@ -178,6 +186,27 @@ class ModalPanelDetectionTest(unittest.TestCase):
 
 
 class ModalPopupClickTest(unittest.TestCase):
+    def test_anniversary_check_in_clicks_the_cross_outside_the_bright_panel(self):
+        task = _base_task()
+        frame = _anniversary_frame()
+        left, top, width, _ = modal_panel_bbox(frame)
+        self.assertGreater(ANNIVERSARY_CLOSE[0], left + width)
+        self.assertLess(ANNIVERSARY_CLOSE[1], top)
+        self.assertTrue(task.dismiss_home_modal_popup(frame))
+        self.assertEqual(1, len(task.clicks))
+        x, y = task.clicks[0]
+        self.assertAlmostEqual(ANNIVERSARY_CLOSE[0], x * WIDTH, delta=2)
+        self.assertAlmostEqual(ANNIVERSARY_CLOSE[1], y * HEIGHT, delta=2)
+
+    def test_anniversary_check_in_does_not_click_the_day_label_without_a_cross(self):
+        task = _login_task()
+        frame = _anniversary_frame()
+        # Hide only the real cross. The day label that used to match is still visible.
+        frame[260:310, 1450:1505] = 0
+        task._clear_home_popup(0.234, frame)
+        self.assertEqual([], task.clicks)
+        self.assertTrue(task._home_modal_unlocated)
+
     def test_dismiss_clicks_the_panel_close_button(self):
         task = _base_task()
         frame = _popup_frame()

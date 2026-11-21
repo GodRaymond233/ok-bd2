@@ -60,14 +60,13 @@ MODAL_PANEL_DETECT_MAX_SIDE = 960
 # 两者纵向差 3 倍（头部高度不同），用同一个比例必然点到第一条公告上，
 # 于是「打开公告 -> 退出 -> 再打开」的死循环。改成在面板右上角区域直接找
 # 叉号字形：用局部中值背景差分，深色 ✕（白底）和浅色 ✕（彩色底）都命中。
-MODAL_CLOSE_GLYPH_ROI = (0.60, 0.0, 1.0, 0.26)
+# 亮度估出的面板可能只覆盖内容区，签到弹窗的叉号位于其上边界和右边界之外。
+MODAL_CLOSE_GLYPH_ROI = (0.60, -0.14, 1.07, 0.26)
 MODAL_CLOSE_GLYPH_CONTRAST = 32
 MODAL_CLOSE_GLYPH_MEDIAN_RATIO = 0.035
 MODAL_CLOSE_GLYPH_SIDE_RATIO = (0.010, 0.050)
 MODAL_CLOSE_GLYPH_ASPECT_RANGE = (0.6, 1.7)
 MODAL_CLOSE_GLYPH_FILL_RANGE = (0.10, 0.65)
-# 距面板右上角太近的连通域是圆角/描边伪影，不是按钮字形。
-MODAL_CLOSE_GLYPH_EDGE_INSET = (0.018, 0.030)
 # 仅在没有传入画面（旧调用/离线标定）时使用的估算比例。
 MODAL_CLOSE_RELATIVE_IN_PANEL = (0.977, 0.167)
 
@@ -720,7 +719,8 @@ def modal_close_glyph(
     different header heights and the guess lands on content), the glyph is
     found by local-contrast blobs: the crop is compared against its own median
     background, so a dark ✕ on white and a light ✕ on a coloured bar both
-    survive.  Corner-radius shadows are dropped by an edge-inset rule.
+    survive. The brightness bounds can omit a dark header, so the search
+    extends slightly above and to the right of the estimated panel.
 
     Returns ``None`` when no confident glyph exists — callers must then not
     click at all instead of guessing, because a wrong click lands on the
@@ -756,7 +756,7 @@ def modal_close_glyph(
     difference = np.abs(crop.astype(np.int16) - background)
     mask = (difference >= MODAL_CLOSE_GLYPH_CONTRAST).astype(np.uint8)
     try:
-        count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(
+        count, labels, stats, _centroids = cv2.connectedComponentsWithStats(
             mask, 8,
         )
     except cv2.error:
@@ -766,7 +766,6 @@ def modal_close_glyph(
     min_side, max_side = MODAL_CLOSE_GLYPH_SIDE_RATIO
     min_aspect, max_aspect = MODAL_CLOSE_GLYPH_ASPECT_RANGE
     min_fill, max_fill = MODAL_CLOSE_GLYPH_FILL_RANGE
-    inset_x, inset_y = MODAL_CLOSE_GLYPH_EDGE_INSET
     best_key: float | None = None
     best_point: tuple[float, float] | None = None
     for index in range(1, count):
@@ -792,14 +791,13 @@ def modal_close_glyph(
         fill = area / float(width * height)
         if not (min_fill <= fill <= max_fill):
             continue
+        component = labels[y:y + height, x:x + width] == index
+        if not _has_close_cross_strokes(component):
+            continue
         center_x = roi_x0 + x + width / 2.0
         center_y = roi_y0 + y + height / 2.0
-        relative_x = (center_x - left) / float(panel_width)
-        relative_y = (center_y - top) / float(panel_height)
-        if (1.0 - relative_x) < inset_x or relative_y < inset_y:
-            continue
         # 关闭按钮是离右上角最近的那个字形。
-        key = (left + panel_width - center_x) + (center_y - top) * 0.5
+        key = abs(left + panel_width - center_x) + abs(center_y - top) * 0.5
         if best_key is None or key < best_key:
             best_key = key
             best_point = (
@@ -807,6 +805,23 @@ def modal_close_glyph(
                 min(1.0, max(0.0, center_y / frame_height)),
             )
     return best_point
+
+
+def _has_close_cross_strokes(component) -> bool:
+    """Check for two crossing diagonals with four arms and little extra ink."""
+    height, width = component.shape
+    rows, columns = np.nonzero(component)
+    x = columns / (width - 1) - 0.5
+    y = rows / (height - 1) - 0.5
+    on_diagonal = np.abs(np.abs(x) - np.abs(y)) <= 0.17
+    if on_diagonal.mean() < 0.88:
+        return False
+    if not np.any((np.abs(x) <= 0.12) & (np.abs(y) <= 0.12)):
+        return False
+    return all(
+        np.mean(on_diagonal & (x * x_sign >= 0.22) & (y * y_sign >= 0.22)) >= 0.05
+        for x_sign, y_sign in ((-1, -1), (-1, 1), (1, -1), (1, 1))
+    )
 
 
 def modal_close_point(
