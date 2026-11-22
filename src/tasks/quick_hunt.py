@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 from ok.task.exceptions import FinishedException, TaskDisabledException
 
+from src.interaction.BD2Interaction import InputTargetChanged
 from src.tasks import run_history
 from src.tasks.map_trade.models import TemplateSpec
 from src.tasks.quick_hunt_plan import (
@@ -1780,7 +1781,11 @@ class QuickHuntFeatureMixin:
                 point = self._quick_hunt_box_center(box)
                 if point is None:
                     continue
-                vision.click_client(point, frame.shape, after_sleep=0.8)
+                try:
+                    vision.click_client(point, frame.shape, after_sleep=0.8)
+                except InputTargetChanged:
+                    # 鼠标松开后旧画面已过期，下一轮重新截图再找同一控件。
+                    break
                 return True
             self.sleep(0.4)
         self.log_info(f"快速狩猎：未找到可点击 OCR 目标：{name}")

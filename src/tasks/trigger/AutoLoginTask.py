@@ -611,6 +611,7 @@ class AutoLoginTask(BaseBD2Task):
             gacha_ocr_text=gacha_text,
         )
         if confirmed:
+            self._home_modal_backdrop_bbox = None
             now = monotonic()
             if self._home_bright_since is None:
                 self._home_bright_since = now
@@ -695,7 +696,7 @@ class AutoLoginTask(BaseBD2Task):
         return result.text
 
     def _clear_home_popup(self, ratio: float, frame=None) -> None:
-        """主页被弹窗遮挡时优先点弹窗右上角关闭，识别不到面板再走固定清理点。"""
+        """主页被弹窗遮挡时，根据识别结果选择清理位置。"""
         self._home_bright_since = None
         now = monotonic()
         if now - self._last_clear_click_at < 1.0:
@@ -709,14 +710,12 @@ class AutoLoginTask(BaseBD2Task):
             # dismiss 内部自带 1 秒节流，这里同步本状态机的节流时间戳。
             self._last_clear_click_at = now
             self._set_action(
-                f"主页疑被弹窗遮挡，点击弹窗右上角关闭，ratio={ratio:.3f}。"
+                f"主页疑被弹窗遮挡，正在清理，ratio={ratio:.3f}。"
             )
             return
 
         if frame is not None and getattr(self, "_home_modal_unlocated", False):
-            # 面板在但叉号定位不到：固定清理点会点到公告条目上，把公告打开，
-            # 退出后又回到同一个弹窗，形成死循环。这里只等待，不盲点。
-            self._set_action("检测到弹窗但找不到关闭叉号，等待其消失，不盲点。")
+            self._set_action("等待弹窗消失，再确认主页。")
             self._last_clear_click_at = now
             return
 

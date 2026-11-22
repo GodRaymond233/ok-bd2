@@ -22,6 +22,7 @@ from src.diagnostics.runtime import (
     task_error,
     task_stopped,
 )
+from src.interaction.BD2Interaction import InputTargetChanged
 from src.scene.BD2Scene import BD2Scene
 from src.scene.ScreenPosition import ScreenPosition
 from src.tasks.task_notifications import log_task_completion
@@ -37,6 +38,7 @@ from src.utils.home_confirmation import (
     home_left_column_hits,
     home_left_column_p95_brightness,
     home_temporary_announcement_detected,
+    modal_backdrop_point,
     modal_cancel_point,
     modal_close_point,
     modal_overlay_dimmed,
@@ -801,14 +803,7 @@ class BaseBD2Task(BaseTask):
         *,
         context: str = "自动返回主页",
     ) -> bool:
-        """主页被模态弹窗遮挡时，点它右上角的关闭 X。
-
-        只在调用方已确认「主页左列关键词 + 抽抽乐命中，但亮度不足」时调用。
-        关闭点由面板右上角的叉号字形定位（见 ``modal_close_glyph``），
-        找不到就绝不点击：这类弹窗的内容就是公告条目，猜偏一点就会把公告
-        打开，退出后又回到同一个弹窗，形成「点开公告 → 退出 → 再点开」的
-        死循环。连续多帧同一个面板仍关不掉时停止点击，交给调用方处理。
-        """
+        """优先点主页弹窗的关闭叉；没有叉时试点一次左侧空白遮罩。"""
         if frame is None:
             return False
         now = monotonic()
@@ -831,6 +826,7 @@ class BaseBD2Task(BaseTask):
         self._home_modal_panel_repeats = repeats
         if bbox is None:
             self._home_modal_unlocated = False
+            self._home_modal_backdrop_bbox = None
             self.info_set("主页弹窗", f"{context}：未检测到居中亮面板")
             return False
         if repeats >= 4:
@@ -843,38 +839,49 @@ class BaseBD2Task(BaseTask):
 
         frame_h, frame_w = frame.shape[:2]
         point = modal_close_point(bbox, frame_w, frame_h, frame=frame)
+        backdrop = point is None
+        action = "右上角关闭叉"
+        if backdrop:
+            previous = getattr(self, "_home_modal_backdrop_bbox", None)
+            same_backdrop = previous is not None and all(
+                abs(a - b) <= frame_h * .01 for a, b in zip(previous, bbox)
+            )
+            if not same_backdrop:
+                point = modal_backdrop_point(frame, bbox)
+            action = "左侧空白遮罩"
         if point is None:
             self._home_modal_unlocated = True
             self.info_set(
                 "主页弹窗",
-                f"{context}：面板 {bbox}，未定位到关闭叉号，不点击。",
+                f"{context}：面板 {bbox}，等待确认弹窗消失。",
             )
             self.log_info(
-                f"{context}：检测到弹窗面板 {bbox} 但找不到关闭叉号，"
-                "为避免点到公告条目，本次不点击。"
+                f"{context}：面板 {bbox} 无可用关闭点，等待画面变化。"
             )
             return False
         self._home_modal_unlocated = False
 
         if now - last_click_at < 1.0:
             return True
-        self._last_home_modal_close_at = now
-
         self.info_set(
             "主页弹窗",
-            f"{context}：面板 {bbox}，点击关闭 "
+            f"{context}：面板 {bbox}，点击{action} "
             f"({point[0]:.3f},{point[1]:.3f})",
         )
         self.log_info(
             f"{context}：主页被弹窗遮挡（面板 {bbox}），"
-            f"点击右上角关闭 x={point[0]:.2%}, y={point[1]:.2%}。"
+            f"点击{action} x={point[0]:.2%}, y={point[1]:.2%}。"
         )
-        self.operate_click(
-            point[0],
-            point[1],
-            name="主页弹窗关闭",
-            after_sleep=0.6,
-        )
+        try:
+            self.operate_click(
+                *point, name="主页弹窗关闭", after_sleep=0.6, require_fresh_target=True,
+            )
+        except InputTargetChanged:
+            self.sleep(0.2)
+            return True
+        self._last_home_modal_close_at = now
+        if backdrop:
+            self._home_modal_backdrop_bbox = bbox
         return True
 
     def dismiss_blocking_modal(
@@ -1112,6 +1119,8 @@ class BaseBD2Task(BaseTask):
             brightness_threshold=self._home_p95_threshold(),
             gacha_ocr_text=gacha_text,
         )
+        if confirmed:
+            self._home_modal_backdrop_bbox = None
         return confirmed, left_hits, p95_brightness, gacha_text
 
     def _home_p95_threshold(self) -> float:
@@ -1227,8 +1236,6 @@ class BaseBD2Task(BaseTask):
                 current_context = self._input_target_context()
                 self.info_set("输入投递", f"准备={expected_context}；当前={current_context}")
                 if expected_context != current_context:
-                    from src.interaction.BD2Interaction import InputTargetChanged
-
                     self.info_set("输入状态", "输入等待或窗口变化，取消旧目标并重新识别")
                     raise InputTargetChanged("目标准备后输入环境变化，本次点击尚未发送")
             return self.click(
@@ -1409,16 +1416,13 @@ class BaseBD2Task(BaseTask):
             if self.dismiss_home_modal_popup(frame, context=context):
                 return True
             if getattr(self, "_home_modal_unlocated", False):
-                # 面板还在、关闭叉号也定位不到：固定清理点在「公告板」这类弹窗上
-                # 正好落在公告条目里，点下去会打开公告，退出后又回到同一个弹窗，
-                # 于是「打开公告 -> 退出 -> 再打开」无限循环。宁可等它自己消失。
+                # 面板仍在，等待下一帧验证这次关闭是否生效。
                 self.info_set(
                     "主页临时公告",
-                    f"{context}：弹窗未能关闭，跳过固定清理点（避免点开公告）。",
+                    f"{context}：等待弹窗消失。",
                 )
                 self.log_info(
-                    f"{context}：弹窗面板存在但无法定位关闭按钮，"
-                    "跳过固定清理点，等待弹窗自行消失。"
+                    f"{context}：等待弹窗消失，再确认主页。"
                 )
                 self.sleep(1.0)
                 return True

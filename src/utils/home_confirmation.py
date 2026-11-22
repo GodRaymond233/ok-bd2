@@ -853,6 +853,24 @@ def modal_close_point(
     )
 
 
+def modal_backdrop_point(
+    frame: np.ndarray,
+    bbox: tuple[int, int, int, int],
+) -> tuple[float, float] | None:
+    """Find an empty spot in the dark margin to the left of a home popup."""
+    height, width = frame.shape[:2]
+    if bbox[0] < width * .05:
+        return None
+    margin = frame[round(height * .48):round(height * .52),
+                   round(width * .005):round(width * .015)]
+    if margin.size == 0:
+        return None
+    gray = to_gray(margin)
+    if np.max(gray) <= 64 and np.ptp(gray) <= 18:
+        return .01, .50
+    return None
+
+
 def news_page_detected(ocr_text: object) -> bool:
     """Detect the full-screen 新闻/公告 page (a sub page, not a modal).
 
