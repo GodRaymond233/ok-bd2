@@ -131,7 +131,8 @@ class ActivityScreen:
             r"result|reward|快速战斗结果|战斗结果|获得奖励", (0.36, 0.17, 0.64, 0.45)
         )
         _, count = self.find(r"获得[1-9]\d*种", (0.40, 0.29, 0.60, 0.48))
-        _, footer = self.find(r"点击画面即可返回[。.]?", RESULT_FOOTER)
+        # The footer overlaps the dimmed 角色 button; OCR can join its leading text.
+        _, footer = self.find(r"(?:角(?:色)?)?点击画面即可返回[。.]?", RESULT_FOOTER)
         return bool(title or count or footer), footer if title or count else None
 
     @cached_property

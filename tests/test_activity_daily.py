@@ -62,6 +62,19 @@ def challenge_list(selected, rows):
 
 
 class EventRecognitionTest(unittest.TestCase):
+    def test_rewards_footer_accepts_only_the_overlapping_role_label(self):
+        for text in ("点击画面即可返回。", "角点击画面即可返回。", "角色点击画面即可返回"):
+            with self.subTest(text=text):
+                view = screen((("REWARD", 0.50, 0.31), (text, 0.49, 0.916)))
+                self.assertEqual((True, (0.49, 0.916)), view.result)
+
+        unknown = screen((
+            ("REWARD", 0.50, 0.31), ("设置点击画面即可返回", 0.49, 0.916),
+        ))
+        self.assertEqual((True, None), unknown.result)
+        no_reward = screen((("角点击画面即可返回。", 0.49, 0.916),))
+        self.assertEqual((True, None), no_reward.result)
+
     def test_menu_back_requires_the_dark_arrow_on_the_white_button(self):
         self.assertEqual(MENU_BACK_POINT, event_menu().menu_back)
         plain = screen(MENU_LABELS, fill=255)
@@ -366,7 +379,7 @@ class ActivityFlowTest(unittest.TestCase):
         result_labels = (
             ("RESULT", 0.50, 0.30),
             ("获得1种", 0.50, 0.36),
-            ("点击画面即可返回。", 0.50, 0.91),
+            ("角点击画面即可返回。", 0.49, 0.916),
         )
         self.assertIsNone(screen(result_labels).home_return_control)
         result = screen(((NORMAL, 0.174, 0.038), ("活动服装", 0.636, 0.038), *result_labels))
@@ -561,6 +574,32 @@ class ActivityFlowTest(unittest.TestCase):
         self.assertTrue(task.run())
         self.assertEqual("done", run_history.read_stage(task, QUICK_BATTLE_STEP)["state"])
         task.operate_click.assert_not_called()
+
+    def test_pending_challenge_reward_clicks_footer_then_reconciles_ap(self):
+        task = self.task()
+        evidence = {
+            "mode": CHALLENGE, "stage": 10, "before": 5, "capacity": 5, "amount": 5,
+        }
+        run_history.save_stage(
+            task, QUICK_BATTLE_STEP, "pending", scope=CYCLE, evidence=evidence
+        )
+        labels = (
+            (CHALLENGE, 0.174, 0.046), ("活动服装", 0.64, 0.046),
+            ("挑战战斗10", 0.51, 0.13), ("0/5", 0.91, 0.046),
+        )
+        reward = screen((
+            *labels, ("REWARD", 0.50, 0.31), ("角点击画面即可返回。", 0.49, 0.916),
+        ))
+        battle = screen(labels)
+        task._read_activity = Mock(side_effect=[reward, reward, reward, battle, battle])
+        task.sleep = Mock()
+
+        self.assertTrue(task.run())
+        self.assertEqual(5, task._read_activity.call_count)
+        task.operate_click.assert_called_once_with(
+            0.49, 0.916, name="关闭活动战斗结果", after_sleep=1.2,
+        )
+        self.assertEqual("done", run_history.read_stage(task, QUICK_BATTLE_STEP)["state"])
 
     def test_spend_confirmation_requires_two_consecutive_ap_reads(self):
         task = self.task()
