@@ -204,12 +204,16 @@ class MissionRewardFlowTest(unittest.TestCase):
                     elif not ignore_switch:
                         selected = [(.10, .16), (.10, .26)].index((center_x, center_y))
 
-                rows = (("邮箱", 12, 3, 8, 6), ("一般", 16, 13, 8, 6),
-                        ("商品", 16, 23, 8, 6), ("全部领取", 150, 83, 20, 8))
-                task.ocr = Mock(return_value=[
-                    SimpleNamespace(name=name, x=left, y=top, width=width, height=height)
-                    for name, left, top, width, height in rows
-                ])
+                def ocr(**_):
+                    title = ("o普通邮箱", "商品邮箱")[selected] if products else "邮箱"
+                    rows = ((title, 12, 3, 8, 6), ("普通邮箱", 16, 13, 8, 6),
+                            ("商品邮箱", 16, 23, 8, 6), ("全部领取", 150, 83, 20, 8))
+                    return [
+                        SimpleNamespace(name=name, x=left, y=top, width=width, height=height)
+                        for name, left, top, width, height in rows
+                    ]
+
+                task.ocr = ocr
                 task.capture_frame = capture
                 task.operate_click = click
                 with patch("src.tasks.MailRewardTask.monotonic", self.clock):

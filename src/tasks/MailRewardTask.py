@@ -1,4 +1,5 @@
 """Claim ordinary and product mail from the PC mailbox."""
+import re
 from time import monotonic
 
 import numpy as np
@@ -75,8 +76,12 @@ class MailboxTaskBase(TaskVisionMixin, BaseBD2Task):
 
     @staticmethod
     def _on_mailbox(labels):
-        return any(text in ("邮箱", "信箱") and center_x < .40 and center_y < .12
-                   for text, center_x, center_y, _ in labels)
+        # OCR can include the envelope icon as a leading Latin letter.
+        return any(
+            center_x < .40 and center_y < .12
+            and re.fullmatch(r"[a-z]?(?:(?:普通|商品)?邮箱|信箱)", text)
+            for text, center_x, center_y, _ in labels
+        )
 
     def _wait_mailbox(self):
         deadline = monotonic() + 10
@@ -101,7 +106,9 @@ class MailboxTaskBase(TaskVisionMixin, BaseBD2Task):
         if not self._passes(match, MAIL_ICON):
             return None
         height, width = frame.shape[:2]
-        self.operate_click(match.center[0] / width, match.center[1] / height, after_sleep=.8)
+        self.operate_click(
+            match.center[0] / width, match.center[1] / height, name="打开邮箱", after_sleep=.8,
+        )
         return self._wait_mailbox()
 
     def _fail(self, stage):
