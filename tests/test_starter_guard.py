@@ -390,6 +390,41 @@ class GameWindowWaitTest(unittest.TestCase):
         controller._do_start.assert_not_called()
         self.assertFalse(controller.starting)
 
+    def test_finishing_start_preserves_a_new_queued_request(self):
+        from ok.core.start_controller import StartController
+
+        original_do_start = inspect.unwrap(StartController.do_start)
+        first, second = object(), object()
+
+        def finish_first_then_queue_second(controller, task, exit_after, **kwargs):
+            result = original_do_start(controller, task, exit_after, **kwargs)
+            if task is first:
+                controller.start(second)
+            return result
+
+        controller_class = type("Controller", (StartController,), {
+            "start": inspect.unwrap(StartController.start),
+            "do_start": finish_first_then_queue_second,
+            "cancel_start": inspect.unwrap(StartController.cancel_start),
+        })
+        starter_guard._patch_start_cancellation(types.SimpleNamespace(
+            StartController=controller_class, communicate=Mock(),
+        ))
+        controller = controller_class.__new__(controller_class)
+        controller.starting = False
+        queue = []
+        controller.handler = types.SimpleNamespace(post=queue.append)
+        controller._do_start = Mock(return_value=True)
+
+        controller.start(first)
+        self.assertTrue(queue.pop(0)())
+        self.assertTrue(controller.starting)
+        self.assertTrue(controller.is_task_pending(second))
+        self.assertFalse(controller.start(object()))
+        self.assertTrue(controller.cancel_start())
+        self.assertFalse(queue.pop(0)())
+        self.assertFalse(controller.starting)
+
     def run_wait(self, game_at=None, cancel_at=None, observation=None, exit_at=None,
                  controller_cancel_at=None):
         now = [0.0]

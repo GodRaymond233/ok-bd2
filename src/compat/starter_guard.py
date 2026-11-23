@@ -131,6 +131,7 @@ def _patch_start_cancellation(module) -> None:
         with lock(controller):
             if controller.starting:
                 return False
+            controller._bd2_start_owner = object()
             controller._bd2_cancel_phase = "queued"
             controller._bd2_cancelled = False
             try:
@@ -151,13 +152,15 @@ def _patch_start_cancellation(module) -> None:
                 controller.starting = False
                 module.communicate.starting_emulator.emit(True, None, 0)
                 return False
+            owner = controller._bd2_start_owner = object()
         try:
             return original_do_start(controller, task, exit_after, **kwargs)
         finally:
-            # ok-script returns early, leaving ``starting`` set, when a queued request
-            # was dropped before it ran. BD2 queues one start at a time (``start``
-            # refuses while starting), so nothing is starting once this returns.
-            controller.starting = False
+            # A dropped queued request bypasses upstream cleanup. On normal exit
+            # upstream clears starting itself, which can already admit a new owner.
+            with lock(controller):
+                if controller._bd2_start_owner is owner:
+                    controller.starting = False
 
     @wraps(original_start_device)
     def start_device(controller, *args, **kwargs):
