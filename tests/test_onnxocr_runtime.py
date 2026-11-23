@@ -167,7 +167,7 @@ class OnnxOcrRuntimeTest(unittest.TestCase):
             self.assertFalse(_cache_is_current(model_path, cache_path))
 
     def test_ok_script_does_not_forward_unknown_onnxocr_params(self):
-        self.assertEqual("3.0.4", importlib.metadata.version("ok-script"))
+        self.assertEqual("3.0.10", importlib.metadata.version("ok-script"))
         spec = importlib.util.find_spec("ok.task.TaskExecutor")
         self.assertIsNotNone(spec)
         source = Path(spec.origin).read_text(encoding="utf-8")

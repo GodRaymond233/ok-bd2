@@ -102,6 +102,11 @@ def _execute(self):
                     communicate.quit.emit()
         except TaskDisabledException:
             logger.info(f"TaskDisabledException, continue {task}")
+            if not is_trigger_task:
+                # As in ok-script 3.0.10: a one-time task that raised it itself is
+                # finished, otherwise the executor would pick it again; trigger tasks
+                # keep their enabled setting.
+                task.disable()
             if not returned:
                 _record_interrupted(task, is_trigger_task, "已中止")
             self._finish_task(task, is_trigger_task)

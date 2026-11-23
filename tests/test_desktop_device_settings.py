@@ -91,10 +91,14 @@ class SettingsTextTest(unittest.TestCase):
         groups = {group["name"]: group for group in client.get("/api/settings").json()}
         self.assertEqual("基本设置", groups["Basic Options"]["label"])
         basic = {field["key"]: field for field in groups["Basic Options"]["fields"]}
-        self.assertEqual("用显卡加速识别（DirectML）", basic["Use DirectML"]["label"])
-        self.assertEqual(
-            {"Auto": "自动", "Yes": "是", "No": "否"}, basic["Use DirectML"]["option_labels"])
+        self.assertEqual("游戏退出时关闭客户端", basic["Exit App when Game Exits"]["label"])
+        self.assertEqual({"None": "不使用"}, basic["Start/Stop"]["option_labels"])
+        # ok-script 3.0.5 dropped the DirectML switch; DirectML is used where Windows has it.
+        self.assertNotIn("Use DirectML", basic)
         self.assertNotIn("Launch with DX11", basic)
+        # The launcher writes ok-bd2's shortcuts (src.compat.app_shortcuts).
+        self.assertNotIn("Create Start Menu Shortcut", basic)
+        self.assertNotIn("Create Desktop Shortcut", basic)
         notify = {field["key"]: field for field in groups["Notification"]["fields"]}
         self.assertNotIn("QQ Desktop Notification (Not Reliable)", notify)
         self.assertNotIn("WeChat Desktop Notification (Not Reliable)", notify)

@@ -1,5 +1,4 @@
 import inspect
-import threading
 import types
 import unittest
 from dataclasses import replace
@@ -326,19 +325,20 @@ class GameWindowWaitTest(unittest.TestCase):
 
         for phase in ("queued", "waiting", "activation"):
             with self.subTest(phase=phase):
-                controller_class = type("Controller", (), {
+                # A subclass keeps ok-script's pending-task helpers (3.0.5+) while the
+                # patched entry points start from the unpatched originals.
+                controller_class = type("Controller", (StartController,), {
                     name: inspect.unwrap(getattr(StartController, name))
                     for name in ("start", "do_start", "cancel_start")
                 })
-                controller_class.start_device = lambda self: (
+                controller_class.start_device = lambda self, **_kwargs: (
                     self.cancel_start() if phase == "waiting" else None) or True
                 events = Mock()
                 starter_guard._patch_start_cancellation(types.SimpleNamespace(
                     StartController=controller_class, communicate=events,
                 ))
-                controller = controller_class()
+                controller = controller_class.__new__(controller_class)
                 controller.starting = False
-                controller._cancel_requested = threading.Event()
                 queue = []
                 controller.handler = types.SimpleNamespace(post=queue.append)
                 activations = []
@@ -359,9 +359,36 @@ class GameWindowWaitTest(unittest.TestCase):
                 self.assertEqual(activations, [True] if phase == "activation" else [])
                 self.assertFalse(controller.starting)
                 self.assertFalse(controller.cancel_start())
-                controller.start_device = lambda: True
+                controller.start_device = lambda **_kwargs: True
                 controller.start()
                 self.assertTrue(queue.pop()())
+                self.assertFalse(controller.starting)
+
+    def test_queued_start_dropped_by_ok_script_clears_starting(self):
+        # ok-script returns from a dropped queued do_start without clearing ``starting``,
+        # which would refuse every later start in BD2.
+        from ok.core.start_controller import StartController
+
+        controller_class = type("Controller", (StartController,), {
+            name: inspect.unwrap(getattr(StartController, name))
+            for name in ("start", "do_start", "cancel_start")
+        })
+        controller_class.start_device = lambda self, **_kwargs: True
+        starter_guard._patch_start_cancellation(types.SimpleNamespace(
+            StartController=controller_class, communicate=Mock(),
+        ))
+        controller = controller_class.__new__(controller_class)
+        controller.starting = False
+        queue = []
+        controller.handler = types.SimpleNamespace(post=queue.append)
+        controller._do_start = Mock(return_value=True)
+        task = object()
+        controller.start(task)
+        self.assertTrue(controller.is_task_pending(task))
+        self.assertTrue(controller.cancel_task(task))
+        self.assertFalse(queue.pop()())
+        controller._do_start.assert_not_called()
+        self.assertFalse(controller.starting)
 
     def run_wait(self, game_at=None, cancel_at=None, observation=None, exit_at=None,
                  controller_cancel_at=None):

@@ -185,6 +185,36 @@ wheels = [
 ]
 
 [[package]]
+name = "dulwich"
+version = "1.2.21"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "urllib3", marker = "sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/01/d1/01adf1db003374db4c2a70f7bae757ddfc39a33d9fb5ab765522b4d339e6/dulwich-1.2.21.tar.gz", hash = "sha256:5d3939f64883e6799614cab708ef4ee9ef415dd6dcad47527cdbb0eea43bf3a2", size = 1451069, upload-time = "2026-11-05T02:26:59.899Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/eb/4e/bc692f443e5f38ffa960e7412cd76f96084686dac3c5101bf6bc24c48597/dulwich-1.2.21-cp312-cp312-win32.whl", hash = "sha256:3206426faf4cb2474458f2dacf5c1b597a076831f2e7afa2a350df5fff2cce1a", size = 1173883, upload-time = "2026-11-05T02:25:38.006Z" },
+    { url = "https://files.pythonhosted.org/packages/80/67/42d9eca568488e960c9726c27355536e8e239b780e937f6b84896729cb69/dulwich-1.2.21-cp312-cp312-win_amd64.whl", hash = "sha256:b3d30d40384cee2e8aa3722f87cef2f3d71717a0b45ac88eba457d62acf65dda", size = 1128317, upload-time = "2026-11-05T02:25:39.986Z" },
+    { url = "https://files.pythonhosted.org/packages/a2/cc/a55ab15df42fb6d7ea74f9e6cfd0b4b665ba3b26f67322b9ffa09fb8d2aa/dulwich-1.2.21-cp312-cp312-win_arm64.whl", hash = "sha256:4747b1f94dbbf06e90d49247199db458bd9fefc588a4368669cb551ba4b6439f", size = 1123847, upload-time = "2026-11-05T02:25:41.613Z" },
+    { url = "https://files.pythonhosted.org/packages/fc/1d/eb5a085dbb789f162991f991d99c5e435365e92be31d1e1ae42f253f35e5/dulwich-1.2.21-cp313-cp313-win32.whl", hash = "sha256:4d900b322f73e817560d54b6e975354084da3390b1197513f863fba143ba9ebf", size = 1173604, upload-time = "2026-11-05T02:25:53.597Z" },
+    { url = "https://files.pythonhosted.org/packages/d9/04/f520d539ff3acf4c3e25cf6de4cdba651a0dc2654e30feccbfdf04d0d044/dulwich-1.2.21-cp313-cp313-win_amd64.whl", hash = "sha256:d32a96474226da594065e34c6c83b76bf9422e930cedadf481cb4f1b60de7e31", size = 1128289, upload-time = "2026-11-05T02:25:55.25Z" },
+    { url = "https://files.pythonhosted.org/packages/cb/31/83c743abd234087d303c5a7894180f6b9fcdefb2aa883da47799bc0d0a7d/dulwich-1.2.21-cp313-cp313-win_arm64.whl", hash = "sha256:a3ae7882440c711927111c70c09b65486093a6a49df4efcb46914b8c433b8bd9", size = 1123433, upload-time = "2026-11-05T02:25:56.877Z" },
+    { url = "https://files.pythonhosted.org/packages/ba/77/be5db7298d31b08664fa33ff01cffec8318f75c7ce3286c282ed0ee5bf63/dulwich-1.2.21-cp314-cp314-win32.whl", hash = "sha256:f8686c722d1612e75e1fdcfda0be0264cf8c390eebd0df03237dc8a45f996881", size = 1186030, upload-time = "2026-11-05T02:26:08.322Z" },
+    { url = "https://files.pythonhosted.org/packages/c7/57/8c0803d14f70f3f7a437ab9062d7b19710ac54d9e7aee2dddf0948bbf1ee/dulwich-1.2.21-cp314-cp314-win_amd64.whl", hash = "sha256:d5caa0b8dcd956f5d8adfbc3c9ab82d69dedd340011928ada3d0a94e09afdb18", size = 1198943, upload-time = "2026-11-05T02:26:09.946Z" },
+    { url = "https://files.pythonhosted.org/packages/66/a7/8cc84718d1dc304e3e4fb73eee27818519d97b77edc7111d825ad4070f94/dulwich-1.2.21-cp314-cp314-win_arm64.whl", hash = "sha256:0d4a23851d272f82a07dec2be136e590beff9c00e05c95c4f7d3bb54c084c885", size = 1135516, upload-time = "2026-11-05T02:26:11.751Z" },
+    { url = "https://files.pythonhosted.org/packages/f3/d6/bde8f2fc37537dcf10495ba5d4335f2941e7f80dccc03b4bc35e46f25046/dulwich-1.2.21-cp314-cp314t-win32.whl", hash = "sha256:f7708c8318ab9ea6b0fb2cd77e40b06ff64aae6ba6c269cd3d3a18c619b83eea", size = 1185353, upload-time = "2026-11-05T02:26:21.024Z" },
+    { url = "https://files.pythonhosted.org/packages/e1/dc/1268696ed6a22edd5d89051c9e6f6cbddab40dc13e6accdf6eb2e28af6e7/dulwich-1.2.21-cp314-cp314t-win_amd64.whl", hash = "sha256:cd7070dabeba6e5cef6ab70b4968b42bf342a5585914b517c86ae429b92a7c20", size = 1139138, upload-time = "2026-11-05T02:26:22.518Z" },
+    { url = "https://files.pythonhosted.org/packages/96/9f/3069a81a1263e72fc2072102917dc7ff1208d88f290f0802cd6026c6db43/dulwich-1.2.21-cp314-cp314t-win_arm64.whl", hash = "sha256:adf4318d7da19f1b63f3f7ed7290a9f7bfdbf9219d98d7ed8b172c1df917a6c0", size = 1193385, upload-time = "2026-11-05T02:26:25.555Z" },
+    { url = "https://files.pythonhosted.org/packages/bf/f2/208af25f7b3648c2c65f1af1252a1b6399d751d6aeeacbc730c42aac5ac5/dulwich-1.2.21-cp315-cp315-win32.whl", hash = "sha256:69405adb23f62a624fb5f95f1b49748fef823d7c5eace2025b5c77845c6eb972", size = 1186478, upload-time = "2026-11-05T02:26:40.968Z" },
+    { url = "https://files.pythonhosted.org/packages/6c/21/949a54ed21fee947f56c101b4e68f8ce8565478ee07c66699b907a7b0cca/dulwich-1.2.21-cp315-cp315-win_amd64.whl", hash = "sha256:634f4da28d67150f6145eb833a6d24b3575024120fa9a7a496e4f3e7f1e3d6c2", size = 1138741, upload-time = "2026-11-05T02:26:42.539Z" },
+    { url = "https://files.pythonhosted.org/packages/0a/68/14b9431f3e30431f984ff39c901799833383104931bd49f5972995c8a8e3/dulwich-1.2.21-cp315-cp315-win_arm64.whl", hash = "sha256:375f3e6e2b7e1c886d2c3a22bb12351427f655d4e2323236a2ff677f54ef5789", size = 1135581, upload-time = "2026-11-05T02:26:44.046Z" },
+    { url = "https://files.pythonhosted.org/packages/37/d8/fee4654027a924484115d41a6f19e11cf6628b5a4ba1bc8987a75f42021a/dulwich-1.2.21-cp315-cp315t-win32.whl", hash = "sha256:7f71ee62a8d3ee250b7c92fae167bc7db07667d46ad4c226d02c583b864010f9", size = 1185632, upload-time = "2026-11-05T02:26:53.55Z" },
+    { url = "https://files.pythonhosted.org/packages/a2/92/a96cc2790b7a80cad5e07f9037510c2053564fdaefb173d07ac91f76a95a/dulwich-1.2.21-cp315-cp315t-win_amd64.whl", hash = "sha256:b77a927cc52857c884568548be8dcb3c832c6fe1b4ccf64c1c4c1756f7952a7d", size = 1139598, upload-time = "2026-11-05T02:26:55.109Z" },
+    { url = "https://files.pythonhosted.org/packages/61/da/ee87f516ba90cb3b1bcc90a2ec9c8440da3fb67079881e0d3f613ef01cfa/dulwich-1.2.21-cp315-cp315t-win_arm64.whl", hash = "sha256:3e9c211334624a327447fbf0bed2e672ad81edb5cd65a87dde43e8953f29f90d", size = 1193895, upload-time = "2026-11-05T02:26:56.915Z" },
+    { url = "https://files.pythonhosted.org/packages/6d/0e/e44bc7c8619596af498738917bb21f8511d0f928f32cae0c4a2ba01fdebd/dulwich-1.2.21-py3-none-any.whl", hash = "sha256:31a522b9611e8032a43b8fb6941469c24e65ff4f14e0427986c58e90c22e154f", size = 762744, upload-time = "2026-11-05T02:26:58.412Z" },
+]
+
+[[package]]
 name = "evdev"
 version = "1.9.3"
 source = { registry = "https://pypi.org/simple" }
@@ -380,7 +410,7 @@ dependencies = [
     { name = "msvc-runtime", marker = "sys_platform == 'win32'" },
     { name = "numpy", marker = "sys_platform == 'win32'" },
     { name = "ok-script", extra = ["ocr"], marker = "sys_platform == 'win32'" },
-    { name = "onnxocr-ppocrv5", marker = "sys_platform == 'win32'" },
+    { name = "onnxocr-ppocrv6", marker = "sys_platform == 'win32'" },
     { name = "opencc", marker = "sys_platform == 'win32'" },
     { name = "opencv-python", marker = "sys_platform == 'win32'" },
     { name = "openvino", marker = "sys_platform == 'win32'" },
@@ -407,14 +437,14 @@ requires-dist = [
     { name = "fastapi", specifier = "==0.143.0" },
     { name = "msvc-runtime", specifier = ">=14.44.35112" },
     { name = "numpy", specifier = ">=2.4.0" },
-    { name = "ok-script", extras = ["ocr"], specifier = "==3.0.4" },
-    { name = "onnxocr-ppocrv5", specifier = "==0.0.23" },
+    { name = "ok-script", extras = ["ocr"], specifier = "==3.0.10" },
+    { name = "onnxocr-ppocrv6", specifier = "==0.0.1" },
     { name = "opencc", specifier = ">=1.2.0" },
     { name = "opencv-python", specifier = ">=4.13.0.92" },
     { name = "openvino", specifier = "==2026.4.1" },
     { name = "pillow", specifier = ">=12.0.0" },
     { name = "psutil", specifier = ">=7.2.2" },
-    { name = "pyappify", specifier = "==1.0.13" },
+    { name = "pyappify", specifier = "==1.0.20" },
     { name = "pydirectinput", specifier = ">=1.0.4" },
     { name = "pynput", specifier = ">=1.8.1" },
     { name = "pywin32", marker = "sys_platform == 'win32'", specifier = "==311" },
@@ -430,13 +460,13 @@ dev = [
 
 [[package]]
 name = "ok-script"
-version = "3.0.4"
+version = "3.0.10"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "mcp", marker = "sys_platform == 'win32'" },
     { name = "mouse", marker = "sys_platform == 'win32'" },
     { name = "psutil", marker = "sys_platform == 'win32'" },
-    { name = "pyappify", marker = "sys_platform == 'win32'" },
+    { name = "pyappify", extra = ["standalone"], marker = "sys_platform == 'win32'" },
     { name = "pycaw", marker = "sys_platform == 'win32'" },
     { name = "pydirectinput", marker = "sys_platform == 'win32'" },
     { name = "pynput", marker = "sys_platform == 'win32'" },
@@ -444,28 +474,28 @@ dependencies = [
     { name = "requests", marker = "sys_platform == 'win32'" },
     { name = "typing-extensions", marker = "sys_platform == 'win32'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/5d/3e/3addf085262ea85c2b8d45cf09a23ebd80e0188d2780e91be2e2ee0feabf/ok_script-3.0.4.tar.gz", hash = "sha256:6d9d8bbe06b5628d16e70b8823b9771c9996e407cced6c882b2662c5e912980d", size = 1120440, upload-time = "2026-11-05T17:14:18.126Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/fc/9b/76d01044cf2b1c37505348f8421389d7e709beee35672683003bc98b70de/ok_script-3.0.10.tar.gz", hash = "sha256:350a1a317999ae3dbbceabfbae92d21aabc0182a34a60267200aa87fb042bc70", size = 1159669, upload-time = "2026-11-22T05:46:52.729Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c1/34/a5a8225100cddc1499b89ec6c4a8d8fc11a373ae691c9c3ba2636227c6ba/ok_script-3.0.4-py3-none-any.whl", hash = "sha256:28bc4dcc52a636e1a1730e0f8125dce4d415024d28021661d130f0423e54d5b3", size = 1093415, upload-time = "2026-11-05T17:14:16.377Z" },
+    { url = "https://files.pythonhosted.org/packages/13/02/c918cd27f90441a1e8d29949481b1caa5e16da33d9be0a736ec18b3de713/ok_script-3.0.10-py3-none-any.whl", hash = "sha256:fa0c7bb62a253f8d2ea93408c9548a0224ed7ec0e62cdf3218f87d975f8b1033", size = 1120451, upload-time = "2026-11-22T05:46:51.134Z" },
 ]
 
 [package.optional-dependencies]
 ocr = [
-    { name = "onnxocr-ppocrv5", marker = "sys_platform == 'win32'" },
+    { name = "onnxocr-ppocrv6", marker = "sys_platform == 'win32'" },
 ]
 
 [[package]]
-name = "onnxocr-ppocrv5"
-version = "0.0.23"
+name = "onnxocr-ppocrv6"
+version = "0.0.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pillow", marker = "sys_platform == 'win32'" },
     { name = "pyclipper", marker = "sys_platform == 'win32'" },
     { name = "shapely", marker = "sys_platform == 'win32'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e6/28/15c72d90384e06b0596a0ca1f60964c21e0049c249e9bd51cc692a4f818d/onnxocr_ppocrv5-0.0.23.tar.gz", hash = "sha256:e7d4d4f521bd29a8c5849121e0111ed9d307e68737a79786a2abb38781bc1559", size = 19168471, upload-time = "2026-11-04T17:25:01.13Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/bd/1f/2c8a999c9e9925b5387a7bc69bad74ce1908f2f75d75a72bf1820f017776/onnxocr_ppocrv6-0.0.1.tar.gz", hash = "sha256:a31336c3fec5368b696089c63be26052ad414ded25be9c881bbab75bd8f7bcfd", size = 32603680, upload-time = "2026-11-14T18:39:51.196Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8b/69/9e21a9884769a604ca43928da8eb6c4917188bde21d4d649b2a436849f4c/onnxocr_ppocrv5-0.0.23-py3-none-any.whl", hash = "sha256:63476d092e2194756775ac57af0500389054b5ba0fe9f777f882ccd33067263f", size = 19176650, upload-time = "2026-11-04T17:24:58.335Z" },
+    { url = "https://files.pythonhosted.org/packages/9a/a5/a1afd12a25901a7a6f47c88e21b8e490790ad08705f56988eff86f2afeee/onnxocr_ppocrv6-0.0.1-py3-none-any.whl", hash = "sha256:0574fe622a0be6a1017bb04c3941ed5efd6740fd2388a6b8041a5acee882678d", size = 32669447, upload-time = "2026-11-14T18:39:47.794Z" },
 ]
 
 [[package]]
@@ -588,11 +618,16 @@ wheels = [
 
 [[package]]
 name = "pyappify"
-version = "1.0.13"
+version = "1.0.20"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/a1/df/a93ed9c7a61e62f4be33a016a16f61b7af9b584cc7707297a3c32482fe1c/pyappify-1.0.13.tar.gz", hash = "sha256:6cf27666e63f090d591680a5d73cbd090047359ea0af817e46d36b76924b0603", size = 9305, upload-time = "2026-08-17T05:18:10.446Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e7/0b/d4d32e620ec9ddd79fd1d5225af345f6453136b0c66332453266ba640c7a/pyappify-1.0.20.tar.gz", hash = "sha256:351dfcfbc92f9e09e6cfee434cb554cebd4ae047a0d97ec1b2a7e433f6f18b87", size = 64334, upload-time = "2026-11-12T06:30:11.788Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/49/9d/0354fd829ca45d9747bf829837ca058ffff5cf546e34e393e612ccbc67f4/pyappify-1.0.13-py3-none-any.whl", hash = "sha256:bd10bdefd71fd774a299a52fa42a1e64280b9979fe22c181c3ef6f2094890654", size = 9920, upload-time = "2026-08-17T05:18:09.44Z" },
+    { url = "https://files.pythonhosted.org/packages/87/b1/3117ccc625b08e1fa22556dfa1b496bc5a5be311a5937392f068b1babd70/pyappify-1.0.20-py3-none-any.whl", hash = "sha256:2550d4cca836a717e263beb6d6415505935faeab349602c4efa5e952b4f2dbdf", size = 70889, upload-time = "2026-11-12T06:30:10.309Z" },
+]
+
+[package.optional-dependencies]
+standalone = [
+    { name = "dulwich", marker = "sys_platform == 'win32'" },
 ]
 
 [[package]]

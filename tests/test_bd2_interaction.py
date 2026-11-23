@@ -413,7 +413,7 @@ class BD2InteractionActivationTest(unittest.TestCase):
         with patch.object(PostMessageInteraction, "try_activate") as parent_activate:
             interaction.try_activate()
             self.assertTrue(interaction._activate_required)
-            parent_activate.assert_called_once_with()
+            parent_activate.assert_called_once_with(force=True)
 
             interaction.try_activate()
 
@@ -422,8 +422,34 @@ class BD2InteractionActivationTest(unittest.TestCase):
         interaction.hwnd_window.is_foreground = lambda: False
         with patch.object(PostMessageInteraction, "try_activate") as parent_activate:
             interaction.try_activate()
-        parent_activate.assert_called_once_with()
+        parent_activate.assert_called_once_with(force=True)
         self.assertTrue(interaction._activate_required)
+
+    def test_background_game_is_activated_before_every_input(self):
+        # ok-script 3.0.10 skips WM_ACTIVATE until the foreground changes; BD2 keeps
+        # sending it before each input to the background game, as on 3.0.4.
+        interaction, _calls = make_interaction()
+        interaction._activated_hwnds = ()
+        interaction._dynamic_target_hwnd = 0
+        interaction.hwnd_window = SimpleNamespace(
+            hwnd=100, top_hwnd=200, is_foreground=lambda: False, visible_monitors=[],
+        )
+        activated = []
+        with patch.object(PostMessageInteraction, "activate",
+                          lambda _self, hwnd=None: activated.append(hwnd)):
+            interaction.try_activate()
+            interaction.try_activate()
+        self.assertEqual([100, 200, 100, 200], activated)
+
+    def test_visibility_change_reaches_ok_script_and_bd2(self):
+        interaction, _calls = make_interaction()
+        interaction._activated_hwnds = (100,)
+        interaction._activate_required = False
+        interaction.on_visible(False)
+        self.assertEqual((), interaction._activated_hwnds)
+        self.assertTrue(interaction._activate_required)
+        interaction.on_visible(True)
+        self.assertFalse(interaction._activate_required)
 
 
 if __name__ == "__main__":

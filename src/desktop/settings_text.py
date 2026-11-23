@@ -27,10 +27,6 @@ FIELD_TEXT = {
         "连上游戏时，画面不是支持的大小就自动调到最接近的 16:9。",
     ),
     "Exit App when Game Exits": ("游戏退出时关闭客户端", ""),
-    "Use DirectML": (
-        "用显卡加速识别（DirectML）",
-        "文字识别用显卡计算。改了之后重新打开客户端生效。",
-    ),
     "Trigger Interval": (
         "触发任务检查间隔",
         "自动登录等触发任务每次检查之间等待的毫秒数，调大可以降低占用。",
@@ -90,7 +86,6 @@ OPTION_LABELS = {
         "Automatic Update(Release Only)": "自动更新（只装正式版）",
         "Automatic Update (Pre-release)": "自动更新（包括预发布版）",
     },
-    "Use DirectML": {"Auto": "自动", "Yes": "是", "No": "否"},
     "Start/Stop": {"None": "不使用"},
     "Blur Algorithm": {"Blur": "模糊", "Inpaint": "修补"},
 }
@@ -118,6 +113,10 @@ OMITTED_KEYS = {
     "Launch with DX11",
     # MCP has its own confirmation and runtime control, not a plain config switch.
     "Enable MCP Server",
+    # ok-script 3.0.5+ writes shortcuts only for a headless start, which ok-bd2 skips:
+    # the PyAppify launcher writes them (src.compat.app_shortcuts).
+    "Create Start Menu Shortcut",
+    "Create Desktop Shortcut",
 }
 
 # Notification channels the client can send a test message through, with the settings

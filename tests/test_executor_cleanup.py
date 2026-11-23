@@ -106,6 +106,28 @@ class ExecutorCleanupTest(unittest.TestCase):
                 self.assertIsNone(executor.current_task)
                 executor.destroy.assert_called_once_with()
 
+    def test_task_disabled_exception_finishes_onetime_tasks_but_not_trigger_tasks(self):
+        # As in ok-script 3.0.10: otherwise the executor picks the one-time task again.
+        for trigger in (False, True):
+            with self.subTest(trigger=trigger):
+                executor, task = self.make_executor(trigger=trigger)
+                task._start_after_login = False
+
+                def run():
+                    executor.exit_event.set()
+                    raise TaskDisabledException("stopped by the task itself")
+
+                task.run = Mock(side_effect=run)
+                with (
+                    patch.object(executor_cleanup, "prevent_sleeping"),
+                    patch.object(executor_cleanup, "communicate"),
+                    patch.object(executor_cleanup, "_record_interrupted") as interrupted,
+                ):
+                    executor.execute()
+                self.assertEqual(0 if trigger else 1, task.disable.call_count)
+                interrupted.assert_called_once_with(task, trigger, "已中止")
+                self.assertFalse(task.running)
+
     def test_trigger_completion_and_missing_frame_reset_task_without_marking_done(self):
         for missing_frame in (False, True):
             with self.subTest(missing_frame=missing_frame):

@@ -269,6 +269,23 @@ class InstalledGuardsTest(unittest.TestCase):
         self.original_do_start.assert_called_once_with(controller, "task", False)
         self.assertEqual(emitted, [(True, "检测到正在运行的旧版 ok-bd2", 0)])
 
+    def test_refused_start_leaves_no_task_waiting_for_the_next_launch(self):
+        controller = object.__new__(self.StartController)
+        task = object()
+        with patch("ok.core.events.communicate.task.emit"), \
+                patch("ok.core.events.communicate.starting_emulator.emit"):
+            controller._add_pending(task)
+            self.messages.append("检测到正在运行的旧版 ok-bd2")
+            self.assertFalse(controller.do_start(task, False, from_queue=True))
+        self.assertFalse(controller.is_task_pending(task))
+        self.original_do_start.assert_not_called()
+
+    def test_queued_start_keeps_ok_scripts_queue_flag(self):
+        # ok-script 3.0.5+ start() posts do_start(task, exit_after, from_queue=True).
+        controller = object.__new__(self.StartController)
+        self.assertTrue(controller.do_start("task", True, from_queue=True))
+        self.original_do_start.assert_called_once_with(controller, "task", True, from_queue=True)
+
     def test_executor_picks_pause_while_legacy_runs(self):
         executor = SimpleNamespace(paused=False)
         executor.pause = Mock(side_effect=lambda: setattr(executor, "paused", True))

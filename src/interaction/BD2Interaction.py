@@ -40,9 +40,12 @@ class BD2Interaction(PostMessageInteraction):
         self._click_mode_provider: Callable[[], str] | None = None
         self.user32 = ctypes.windll.user32
         self._activate_required = True
-        self.hwnd_window.visible_monitors.append(self)
+        # ok-script 3.0.10's PostMessageInteraction registers itself already.
+        if self not in self.hwnd_window.visible_monitors:
+            self.hwnd_window.visible_monitors.append(self)
 
     def on_visible(self, visible):
+        super().on_visible(visible)
         self._activate_required = not visible
 
     def target_context(self):
@@ -354,9 +357,12 @@ class BD2Interaction(PostMessageInteraction):
             i = INPUT(0, mi)
             SendInput(1, ctypes.pointer(i), ctypes.sizeof(INPUT))
 
-    def try_activate(self):
+    def try_activate(self, force=False):
         if self.hwnd_window.is_foreground():
             self._activate_required = False
             return
-        super().try_activate()
+        # ok-script 3.0.10 sends WM_ACTIVATE once per foreground change; BD2 keeps
+        # activating the background game before every input, the behaviour its
+        # background clicks were verified with on ok-script 3.0.4.
+        super().try_activate(force=True)
         self._activate_required = not self.hwnd_window.is_foreground()

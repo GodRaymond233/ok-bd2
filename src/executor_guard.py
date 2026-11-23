@@ -472,14 +472,20 @@ def install_executor_guards(guard: LegacyGuard | None = None) -> bool:
         original_do_start = StartController.do_start
         original_next_task = TaskExecutor.next_task
 
-    def guarded_do_start(controller, task=None, exit_after=False):
+    def guarded_do_start(controller, task=None, exit_after=False, **kwargs):
         message = legacy_guard().blocking_message(force=True)
         if message is not None:
             controller.starting = False
+            # ok-script 3.0.5+ start() lists the task as waiting for the game before
+            # queueing this call, and the next launch would run every listed task.
+            discard = getattr(controller, "_discard_pending", None)
+            if callable(discard) and task is not None and not isinstance(task, int):
+                discard(task)
             logger.warning(message)
             communicate.starting_emulator.emit(True, message, 0)
             return False
-        return original_do_start(controller, task, exit_after)
+        # ok-script 3.0.5+ start() queues do_start(..., from_queue=True).
+        return original_do_start(controller, task, exit_after, **kwargs)
 
     def guarded_next_task(executor):
         picked = original_next_task(executor)

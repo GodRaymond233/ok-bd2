@@ -30,7 +30,7 @@ CORE_MODULE_PACKAGES = {
     "win32ui": "pywin32",
     "cv2": "opencv-python",
     "openvino": "openvino",
-    "onnxocr": "onnxocr-ppocrv5",
+    "onnxocr": "onnxocr-ppocrv6",
 }
 
 # Electron 的自动化核心只需要本机接口栈。

@@ -244,7 +244,8 @@ class DesktopTools:
                     return super()._prepare_device()
 
         server = DesktopMcpServer(ok, config)
-        for name in ("run_task", "reload_tasks"):
+        # run_code (ok-script 3.0.10) runs a snippet as a task, like run_task.
+        for name in ("run_task", "run_code", "reload_tasks"):
             operation = getattr(server.runner, name)
 
             def guarded(*args, _operation=operation, **kwargs):

@@ -127,20 +127,21 @@ def _patch_start_cancellation(module) -> None:
         return controller.__dict__.setdefault("_bd2_cancel_lock", threading.RLock())
 
     @wraps(original_start)
-    def start(controller, task=None, exit_after=False):
+    def start(controller, task=None, exit_after=False, **kwargs):
         with lock(controller):
             if controller.starting:
                 return False
             controller._bd2_cancel_phase = "queued"
             controller._bd2_cancelled = False
             try:
-                return original_start(controller, task, exit_after)
+                return original_start(controller, task, exit_after, **kwargs)
             except BaseException:
                 controller._bd2_cancel_phase = None
                 raise
 
     @wraps(original_do_start)
-    def do_start(controller, task=None, exit_after=False):
+    def do_start(controller, task=None, exit_after=False, **kwargs):
+        # ok-script 3.0.5+ start() queues do_start(..., from_queue=True).
         with lock(controller):
             cancelled = (getattr(controller, "_bd2_cancel_phase", None) == "queued"
                          and controller._bd2_cancelled)
@@ -150,7 +151,13 @@ def _patch_start_cancellation(module) -> None:
                 controller.starting = False
                 module.communicate.starting_emulator.emit(True, None, 0)
                 return False
-        return original_do_start(controller, task, exit_after)
+        try:
+            return original_do_start(controller, task, exit_after, **kwargs)
+        finally:
+            # ok-script returns early, leaving ``starting`` set, when a queued request
+            # was dropped before it ran. BD2 queues one start at a time (``start``
+            # refuses while starting), so nothing is starting once this returns.
+            controller.starting = False
 
     @wraps(original_start_device)
     def start_device(controller, *args, **kwargs):

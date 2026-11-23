@@ -32,6 +32,8 @@ decorator==5.3.1 ; sys_platform == 'win32'
     # via retry2
 deprecation==2.1.0 ; sys_platform == 'win32'
     # via adbutils
+dulwich==1.2.21 ; sys_platform == 'win32'
+    # via pyappify
 evdev==1.9.3 ; sys_platform == 'win32' and 'linux' in sys_platform
     # via pynput
 fastapi==0.143.0 ; sys_platform == 'win32'
@@ -68,9 +70,9 @@ numpy==2.4.6 ; sys_platform == 'win32'
     #   opencv-python
     #   openvino
     #   shapely
-ok-script==3.0.4 ; sys_platform == 'win32'
+ok-script==3.0.10 ; sys_platform == 'win32'
     # via ok-bd2
-onnxocr-ppocrv5==0.0.23 ; sys_platform == 'win32'
+onnxocr-ppocrv6==0.0.1 ; sys_platform == 'win32'
     # via
     #   ok-bd2
     #   ok-script
@@ -92,20 +94,20 @@ pillow==12.3.0 ; sys_platform == 'win32'
     # via
     #   adbutils
     #   ok-bd2
-    #   onnxocr-ppocrv5
+    #   onnxocr-ppocrv6
 psutil==7.2.2 ; sys_platform == 'win32'
     # via
     #   ok-bd2
     #   ok-script
     #   pycaw
-pyappify==1.0.13 ; sys_platform == 'win32'
+pyappify==1.0.20 ; sys_platform == 'win32'
     # via
     #   ok-bd2
     #   ok-script
 pycaw==20240210 ; sys_platform == 'win32'
     # via ok-script
 pyclipper==1.4.0 ; sys_platform == 'win32'
-    # via onnxocr-ppocrv5
+    # via onnxocr-ppocrv6
 pycparser==3.12 ; implementation_name != 'PyPy' and platform_python_implementation != 'PyPy' and sys_platform == 'win32'
     # via cffi
 pydantic==2.14.3 ; sys_platform == 'win32'
@@ -149,7 +151,7 @@ rpds-py==2026.9.1 ; sys_platform == 'win32'
     #   jsonschema
     #   referencing
 shapely==2.1.2 ; sys_platform == 'win32'
-    # via onnxocr-ppocrv5
+    # via onnxocr-ppocrv6
 six==1.17.0 ; sys_platform == 'win32'
     # via
     #   pynput
@@ -185,7 +187,9 @@ typing-inspection==0.4.4 ; sys_platform == 'win32'
     #   mcp
     #   pydantic
 urllib3==2.7.0 ; sys_platform == 'win32'
-    # via requests
+    # via
+    #   dulwich
+    #   requests
 uvicorn==0.54.0 ; sys_platform == 'win32'
     # via
     #   mcp
