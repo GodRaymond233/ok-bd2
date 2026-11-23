@@ -380,7 +380,7 @@ class EquipmentDailyTask(TaskVisionMixin, BaseBD2Task):
         if detail is None:
             return False
         self.operate_click(*detail.detail_refine, name="打开精炼装备分数", after_sleep=0.6)
-        badge_scores = (None, None)
+        badge_scores = None
 
         def score_confirmed(screen):
             nonlocal badge_scores
@@ -392,7 +392,12 @@ class EquipmentDailyTask(TaskVisionMixin, BaseBD2Task):
 
         refine = self._wait_equipment(score_confirmed)
         if refine is None:
-            self.info_set(REFINE_STEP, f"精炼页分数复核未通过，两枚徽章读数 {badge_scores}")
+            reason = (
+                "未确认精炼页余额、消耗或精炼按钮"
+                if badge_scores is None
+                else f"精炼页分数复核未通过，两枚徽章读数 {badge_scores}"
+            )
+            self.info_set(REFINE_STEP, reason)
             return False
         score = badge_scores[0]
         if not 6 <= score <= MAX_REFINABLE_SCORE:

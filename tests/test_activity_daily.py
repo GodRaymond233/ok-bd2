@@ -63,6 +63,24 @@ def challenge_list(selected, rows):
 
 
 class EventRecognitionTest(unittest.TestCase):
+    def test_stage_page_accepts_the_help_mark_joined_to_the_mode_title(self):
+        for mode in MODES:
+            for suffix in ("", "？", "?"):
+                with self.subTest(mode=mode, suffix=suffix):
+                    view = screen((
+                        (mode + suffix, 0.174, 0.073),
+                        ("活动服装", 0.636, 0.073),
+                        (f"{mode}10", 0.508, 0.155),
+                    ))
+                    self.assertEqual((mode, 10), view.stage_page)
+
+        unknown = screen((
+            ("挑战战斗说明", 0.174, 0.073),
+            ("活动服装", 0.636, 0.073),
+            ("挑战战斗10", 0.508, 0.155),
+        ))
+        self.assertIsNone(unknown.stage_page)
+
     def test_rewards_footer_accepts_only_the_overlapping_role_label(self):
         for text in ("点击画面即可返回。", "角点击画面即可返回。", "角色点击画面即可返回"):
             with self.subTest(text=text):

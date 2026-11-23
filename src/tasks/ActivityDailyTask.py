@@ -3,6 +3,7 @@
 from datetime import datetime
 from time import monotonic
 
+from src.diagnostics.runtime import capture_failure_frame
 from src.icons import TaskIcon
 from src.tasks import run_history
 from src.tasks.BaseBD2Task import BaseBD2Task
@@ -415,6 +416,7 @@ class ActivityDailyTask(BaseBD2Task):
     def _stop(self, reason):
         self.info_set("状态", f"每日活动未完成：{reason}。")
         self.log_warning(reason)
+        capture_failure_frame(self, "activity_daily_failed")
         return False
 
     def _complete(self, reason):

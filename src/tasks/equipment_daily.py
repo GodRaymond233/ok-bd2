@@ -49,6 +49,8 @@ GRID_ROWS = 6
 EMPTY_CELL_MEAN = 45.0
 REFINE_BALANCE_BOUNDS = (0.775, 0.022, 0.965, 0.082)
 REFINE_SCORE_BOUNDS = ((0.875, 0.226, 0.935, 0.292), (0.738, 0.719, 0.803, 0.775))
+REFINE_MATERIAL_LABEL = r"所需材料([1-9]\d*)?"
+REFINE_MATERIAL_BOUNDS = (0.71, 0.80, 0.789, 0.874)
 MAX_REFINABLE_SCORE = 23
 
 
@@ -271,7 +273,7 @@ class EquipmentScreen:
             return True
         # The title and item name can remain hidden after the forge animation.
         score, _ = self.find(r"装备分数.*", (0.58, 0.22, 0.71, 0.29))
-        material, _ = self.find(r"所需材料", (0.71, 0.80, 0.789, 0.874))
+        material, _ = self.find(REFINE_MATERIAL_LABEL, REFINE_MATERIAL_BOUNDS)
         trace, _ = self.find(r"精炼痕迹\d*", (0.08, 0.899, 0.205, 0.966))
         return bool(score and material and trace)
 
@@ -301,8 +303,12 @@ class EquipmentScreen:
         if self.refine_balances is None:
             return None
         score, _ = self.find(r"装备分数.*", (0.58, 0.22, 0.71, 0.29))
-        material, _ = self.find(r"所需材料", (0.71, 0.80, 0.789, 0.874))
+        material, _ = self.find(REFINE_MATERIAL_LABEL, REFINE_MATERIAL_BOUNDS)
         powder, _ = self.find(r"([1-9]\d*)", (0.787, 0.80, 0.847, 0.874))
+        if material and material[1]:
+            if powder and powder[1] != material[1]:
+                return None
+            powder = material
         gold, point = self.find(r"精炼[^\d]{0,4}([1-9]\d*)", (0.78, 0.90, 0.91, 0.97))
         if score and material and powder and gold and self._light_button(point):
             return (int(powder.group(1)), int(gold.group(1))), point

@@ -106,7 +106,7 @@ class ActivityScreen:
 
     @cached_property
     def activity_mode(self):
-        title, _ = self.find(r".{0,2}(挑战战斗|普通战斗)", (0.105, 0.012, 0.25, 0.09))
+        title, _ = self.find(r".{0,2}(挑战战斗|普通战斗)[?？]?", (0.105, 0.012, 0.25, 0.09))
         _, clothes = self.find(r".{0,2}活动服装", (0.56, 0.014, 0.76, 0.09))
         _, countdown = self.find(r".{0,2}活动还剩\d+(?:天|小时|分钟).*", (0.68, 0.014, 0.87, 0.09))
         return title[1] if title and (clothes or countdown) else None

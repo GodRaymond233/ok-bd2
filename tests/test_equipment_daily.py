@@ -109,6 +109,18 @@ class EquipmentRecognitionTest(unittest.TestCase):
             with self.subTest(labels=labels):
                 self.assertIsNone(screen(labels).detail_refine)
 
+    def test_refinement_reads_joined_or_separate_material_cost(self):
+        base = (*REFINEMENT_RESULT_LABELS[:3], REFINEMENT_RESULT_LABELS[-1],
+                ("精炼80", 0.84, 0.93))
+        separate = (("所需材料", 0.75, 0.839), ("30", 0.807, 0.839))
+        joined = (("所需材料 30", 0.77, 0.839),)
+        for material in (separate, joined):
+            with self.subTest(material=material):
+                self.assertEqual((30, 80), screen((*base, *material)).refine_once[0])
+
+        uncertain = screen((*base, *joined, ("80", 0.807, 0.839)))
+        self.assertIsNone(uncertain.refine_once)
+
     def test_grid_excludes_24_point_gear_and_unmarked_numbers(self):
         labels = (("24", 0.65, 0.20), ("23", 0.71, 0.20), ("17", 0.77, 0.20), ("12", 0.83, 0.20))
         inventory = screen(labels)
