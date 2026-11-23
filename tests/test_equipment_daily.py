@@ -422,6 +422,20 @@ class EquipmentFlowTest(unittest.TestCase):
                 task._record_step.assert_not_called()
                 self.assertEqual(2, task.operate_click.call_count)
 
+    def test_refinement_uses_aligned_frame_scores_when_a_badge_crop_is_unreadable(self):
+        task = self.task()
+        score_22 = SimpleNamespace(name="22", x=40, y=40, width=20, height=20)
+        score_21 = SimpleNamespace(name="21", x=40, y=40, width=20, height=20)
+        for upper_x, upper_crop, expected in (
+            (0.902, [], (22, 22)),
+            (0.902, [score_21], (None, 22)),
+            (0.850, [], (None, 22)),
+        ):
+            with self.subTest(upper_x=upper_x, upper_crop=upper_crop):
+                view = screen((("22", upper_x, 0.258), ("22", 0.772, 0.745)))
+                task.ocr = Mock(side_effect=[upper_crop, [score_22]])
+                self.assertEqual(expected, task._read_refinement_badges(view))
+
     def test_refinement_rechecks_missing_amounts_and_requires_two_matching_frames(self):
         task = self.task()
         result = screen(REFINEMENT_RESULT_LABELS)

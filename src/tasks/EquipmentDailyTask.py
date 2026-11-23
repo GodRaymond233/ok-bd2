@@ -19,6 +19,7 @@ from src.tasks.equipment_daily import (
     GRID_COLUMNS,
     MAX_REFINABLE_SCORE,
     REFINE_BALANCE_BOUNDS,
+    REFINE_SCORE_BOUNDS,
     REFINE_STEP,
     REFINEMENT_BACK_POINT,
     SELECTION_BACK_POINT,
@@ -419,9 +420,16 @@ class EquipmentDailyTask(TaskVisionMixin, BaseBD2Task):
 
     def _read_refinement_badges(self, screen):
         scores = []
-        for badge in screen.refinement_score_badges():
+        number = r"[0-9]{1,2}"
+        badges = screen.refinement_score_badges()
+        for bounds, badge in zip(REFINE_SCORE_BOUNDS, badges, strict=True):
+            # The stylized badge can be detected at one image scale only.
+            full, _ = screen.find(number, bounds)
             boxes = self.ocr(frame=badge, threshold=0.55, name="精炼装备分数徽章")
-            value, _ = EquipmentScreen(badge, boxes).find(r"[0-9]{1,2}", (0, 0, 1, 1))
+            crop, _ = EquipmentScreen(badge, boxes).find(number, (0, 0, 1, 1))
+            value = crop or full
+            if full and crop and full.group() != crop.group():
+                value = None
             scores.append(int(value.group()) if value else None)
         return tuple(scores)
 
