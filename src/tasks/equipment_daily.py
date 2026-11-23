@@ -168,9 +168,9 @@ class EquipmentScreen:
 
     @property
     def dismantle_entry(self):
-        if self.inventory is None or self.dismantle_result_visible:
+        if self.inventory is None or self.selection_page or self.dismantle_result_visible:
             return None
-        _, point = self.find(r"[一\-―]键分解", (0.83, 0.90, 0.95, 0.98))
+        _, point = self.find(r"[一\-―]?键分解", (0.83, 0.90, 0.95, 0.98))
         return point if point and self._light_button(point) else None
 
     @property
@@ -225,7 +225,12 @@ class EquipmentScreen:
     @property
     def dismantle_result(self):
         title, count, dismiss = self._dismantle_result_labels
-        return dismiss if title and count else None
+        if dismiss and (title or count):
+            return dismiss
+        if title and count:
+            # The overlay closes on any tap. This point is left of the equipment grid.
+            return (0.30, 0.15)
+        return None
 
     def scored_gear(self):
         """Read eligible score badges with their gear card positions, lowest score first."""

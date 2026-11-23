@@ -304,12 +304,7 @@ class EquipmentDailyTask(TaskVisionMixin, BaseBD2Task):
         if any(template is None for template in self._grade_templates.values()):
             self.info_set(DISMANTLE_STEP, "缺少装备品质识别素材")
             return False
-        if getattr(inventory, "selection_page", None) is not None:
-            # 残留的选择页：已经在这一页了，不用再点「一键分解」。
-            selecting = inventory
-        else:
-            self.operate_click(*inventory.dismantle_entry, name="进入装备分解选择", after_sleep=0.6)
-            selecting = self._wait_equipment(lambda screen: screen.selection_count == 0)
+        selecting = self._enter_dismantle_selection(inventory)
         if selecting is None or selecting.inventory != before:
             return False
         selected = self._scan_selection_tab(selecting, before)
@@ -330,6 +325,23 @@ class EquipmentDailyTask(TaskVisionMixin, BaseBD2Task):
         self.operate_click(*dialog.dismantle_dialog[1], name="分解一件装备", after_sleep=0.8)
         expected = (before[0] - 1, before[1])
         return self._close_dismantle_result(expected_inventory=expected) is not None
+
+    def _enter_dismantle_selection(self, inventory):
+        if inventory.selection_page is not None:
+            return inventory
+        before = inventory.inventory
+        screen = inventory
+        for attempt in range(2):
+            entry = screen.dismantle_entry
+            if entry is None or screen.inventory != before:
+                return None
+            self.operate_click(*entry, name="进入装备分解选择", after_sleep=0.6)
+            selecting = self._wait_equipment(lambda view: view.selection_count == 0)
+            if selecting is not None:
+                return selecting
+            if attempt == 0:
+                screen = self._read_equipment()
+        return None
 
     def _close_dismantle_result(self, *, expected_inventory=None):
         max_clicks = 3

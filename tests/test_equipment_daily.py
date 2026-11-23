@@ -242,23 +242,29 @@ class EquipmentFlowTest(unittest.TestCase):
         task.operate_click.assert_not_called()
 
     def test_dismantle_result_stops_clicking_when_the_page_never_closes(self):
-        task = self.task()
-        result = screen(DISMANTLE_RESULT_LABELS)
-        task._wait_equipment = Mock(
-            side_effect=lambda predicate, **_kwargs: next(
-                (view for view in (result, result) if predicate(view)), None
-            )
-        )
-        self.assertIsNone(task._close_dismantle_result(expected_inventory=(738, 814)))
-        self.assertEqual(3, task.operate_click.call_count)
-        self.assertEqual(4, task._wait_equipment.call_count)
-        self.assertTrue(
-            all(call.kwargs["name"] == "关闭分解结果" for call in task.operate_click.call_args_list)
-        )
+        title, count, dismiss = DISMANTLE_RESULT_LABELS
+        for labels, point in (
+            ((("ESULT", *title[1:]), count, dismiss), dismiss[1:]),
+            ((title, count), (0.30, 0.15)),
+            ((dismiss,), None),
+        ):
+            with self.subTest(labels=labels):
+                task = self.task()
+                result = screen(labels)
+                task._wait_equipment = Mock(
+                    side_effect=lambda predicate, **_kwargs: next(
+                        (view for view in (result, result) if predicate(view)), None
+                    )
+                )
+                self.assertIsNone(task._close_dismantle_result(expected_inventory=(738, 814)))
+                self.assertEqual(3 if point else 0, task.operate_click.call_count)
+                for call in task.operate_click.call_args_list:
+                    self.assertEqual("关闭分解结果", call.kwargs["name"])
+                    self.assertEqual(point, call.args)
 
     def test_dismantle_result_requires_two_consecutive_frames_of_the_expected_count(self):
         task = self.task()
-        entry = ("一键分解", 0.889, 0.928)
+        entry = ("键分解", 0.889, 0.928)
         expected = screen((("装备738/814", 0.20, 0.05), entry))
         unexpected = screen((("装备737/814", 0.20, 0.05), entry))
         observations = iter((expected, unexpected, unexpected, expected))
@@ -277,7 +283,7 @@ class EquipmentFlowTest(unittest.TestCase):
         task._record_step(DISMANTLE_STEP, cycle, "pending", {"inventory": [739, 814]})
         task._dismantle_once = Mock()
         task._refine_once = Mock(return_value=True)
-        inventory = screen((("装备738/814", 0.20, 0.05), ("一键分解", 0.889, 0.928)))
+        inventory = screen((("装备738/814", 0.20, 0.05), ("键分解", 0.889, 0.928)))
         result = screen(DISMANTLE_RESULT_LABELS)
         task._read_equipment = Mock(side_effect=[result, inventory])
         observations = iter((result, result, inventory, inventory, inventory))
@@ -337,9 +343,29 @@ class EquipmentFlowTest(unittest.TestCase):
         )
         outline.assert_called_once_with(selected.frame, (0.55, 0.50))
 
+    def test_dismantle_entry_retries_only_when_the_same_equipment_bag_is_still_open(self):
+        title = ("装备100/500", 0.20, 0.05)
+        entry = ("键分解", 0.889, 0.928)
+        prompt = ("请选择需要分解的装备。", 0.45, 0.92)
+        inventory = screen((title, entry))
+        selecting = screen((title, prompt, ("0/2000", 0.39, 0.96)))
+        for labels, retry in (
+            ((title, entry), True),
+            ((title, entry, prompt), False),
+            ((("装备99/500", 0.20, 0.05), entry), False),
+        ):
+            with self.subTest(labels=labels):
+                task = self.task()
+                task._read_equipment = Mock(return_value=screen(labels))
+                task._wait_equipment = Mock(side_effect=[None, selecting])
+
+                actual = task._enter_dismantle_selection(inventory)
+                self.assertIs(actual, selecting if retry else None)
+                self.assertEqual(2 if retry else 1, task.operate_click.call_count)
+
     def test_does_not_submit_dismantle_when_dialog_count_is_not_one(self):
         task = self.task()
-        inventory = SimpleNamespace(inventory=(100, 500), dismantle_entry=(0.89, 0.93))
+        inventory = screen((("装备100/500", 0.20, 0.05), ("一键分解", 0.89, 0.93)))
         selecting = SimpleNamespace(
             inventory=(100, 500),
             frame=np.zeros((1080, 1920, 3), dtype=np.uint8),
