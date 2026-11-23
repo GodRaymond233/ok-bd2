@@ -33,13 +33,6 @@ from src.utils.goddess_navigation import (
 )
 from src.utils.home_confirmation import (
     HOME_DIMMED_P95_THRESHOLD_DEFAULT,
-    HOME_GACHA_OCR_REFERENCE_ROI,
-    HOME_LEFT_COLUMN_OCR_REFERENCE_ROI,
-    HOME_LEFT_COLUMN_REQUIRED_HITS,
-    home_confirmation_passes,
-    home_gacha_ocr_with_fallback,
-    home_left_column_hits,
-    home_left_column_p95_brightness,
 )
 from src.utils.image_utils import (
     reference_roi_frame,
@@ -71,6 +64,7 @@ TEMPLATE_DIR = PROJECT_ROOT / "recognition-assets" / "template-assets"
 
 
 class SquareGoddessTask(BaseBD2Task):
+    waits_for_login = True
     status_keys = [
         "启用",
         "状态",
@@ -201,22 +195,18 @@ class SquareGoddessTask(BaseBD2Task):
 
     def _return_home_from_square(self) -> bool:
         self.info_set("当前阶段", "广场返回主页")
-        max_clicks = max(
-            1,
-            int(self.config.get("广场返回主页最多点击次数", 3)),
+        return self.prepare_home(
+            "广场主页", timeout=float(self.config.get("广场返回主页等待秒数", 15.0)),
+            recover=False, exit_scene=self._click_square_home,
+            max_clicks=max(1, int(self.config.get("广场返回主页最多点击次数", 3))),
+            retry_interval=float(self.config.get("广场返回主页重试间隔秒数", 2.0)),
         )
-        retry_interval = max(
-            0.0,
-            float(self.config.get("广场返回主页重试间隔秒数", 2.0)),
-        )
-        self.info_set("广场主页点击次数", f"1/{max_clicks}")
+
+    def _click_square_home(self, frame) -> bool:
+        if not self._passes(self._match(frame, QUICK_SWITCH_TEMPLATE), QUICK_SWITCH_TEMPLATE):
+            return False
         self.operate_click(*SQUARE_HOME_POINT, after_sleep=1.0)
-        return self._wait_for_cartridge_home(
-            timeout=float(self.config.get("广场返回主页等待秒数", 15.0)),
-            retry_home_clicks=max_clicks - 1,
-            retry_interval=retry_interval,
-            total_home_clicks=max_clicks,
-        )
+        return True
 
     def _enter_square_from_home(self) -> bool:
         self.info_set("当前阶段", "打开卡带快速切换")
@@ -268,117 +258,8 @@ class SquareGoddessTask(BaseBD2Task):
 
         return False
 
-    def _wait_for_cartridge_home(
-        self,
-        interval: float = 0.35,
-        timeout: float | None = None,
-        retry_home_clicks: int = 0,
-        retry_interval: float = 2.0,
-        total_home_clicks: int = 1,
-    ) -> bool:
-        self.info_set("当前阶段", "确认主页")
-        wait_seconds = (
-            float(self.config.get("主页确认等待秒数", 10.0))
-            if timeout is None
-            else max(0.0, float(timeout))
-        )
-        end_at = self._active_time(monotonic) + wait_seconds
-        last_left_hits = 0
-        last_p95 = 0.0
-        last_gacha_text = ""
-        remaining_home_clicks = max(0, int(retry_home_clicks))
-        total_home_clicks = max(
-            remaining_home_clicks + 1,
-            int(total_home_clicks),
-        )
-        completed_home_clicks = total_home_clicks - remaining_home_clicks
-        retry_interval = max(0.0, float(retry_interval))
-        next_home_retry_at = (
-            self._active_time(monotonic) + retry_interval
-            if remaining_home_clicks > 0
-            else float("inf")
-        )
-        while self._active_time(monotonic) <= end_at:
-            frame = self.capture_frame()
-            left_text = self._ocr_text(
-                frame,
-                name="主页左列",
-                roi=HOME_LEFT_COLUMN_OCR_REFERENCE_ROI,
-            )
-            last_left_hits = home_left_column_hits(left_text)
-            last_p95 = home_left_column_p95_brightness(frame)
-            gacha_result = home_gacha_ocr_with_fallback(
-                lambda scale: self._ocr_text(
-                    frame,
-                    name=f"主页抽抽乐 x{scale:g}",
-                    roi=HOME_GACHA_OCR_REFERENCE_ROI,
-                    ocr_scale=scale,
-                )
-            )
-            last_gacha_text = gacha_result.text
-            self.info_set("主页抽抽乐 OCR 尝试", gacha_result.trace)
-            self.info_set(
-                "主页左列关键词",
-                f"{last_left_hits}/{HOME_LEFT_COLUMN_REQUIRED_HITS}",
-            )
-            self.info_set(
-                "主页亮度p95",
-                f"{last_p95:.0f}/{self._home_p95_threshold():.0f}",
-            )
-            self.info_set("主页抽抽乐 OCR", last_gacha_text or "-")
-            if home_confirmation_passes(
-                left_hits=last_left_hits,
-                required_left_hits=HOME_LEFT_COLUMN_REQUIRED_HITS,
-                brightness=last_p95,
-                brightness_threshold=self._home_p95_threshold(),
-                gacha_ocr_text=last_gacha_text,
-            ):
-                return True
-            self.clear_temporary_home_announcement_if_needed(
-                left_hits=last_left_hits,
-                required_left_hits=HOME_LEFT_COLUMN_REQUIRED_HITS,
-                brightness=last_p95,
-                brightness_threshold=self._home_p95_threshold(),
-                gacha_ocr_text=last_gacha_text,
-                context="广场女神像返回主页",
-            )
-            still_in_square = False
-            if remaining_home_clicks > 0:
-                quick_switch_result = self._match(frame, QUICK_SWITCH_TEMPLATE)
-                self.info_set(
-                    "快速切换按钮",
-                    f"{quick_switch_result.score:.3f}/{quick_switch_result.pixel_score:.3f}",
-                )
-                still_in_square = self._passes(
-                    quick_switch_result,
-                    QUICK_SWITCH_TEMPLATE,
-                )
-            if (
-                remaining_home_clicks > 0
-                and still_in_square
-                and self._active_time(monotonic) >= next_home_retry_at
-            ):
-                completed_home_clicks += 1
-                remaining_home_clicks -= 1
-                self.info_set(
-                    "广场主页点击次数",
-                    f"{completed_home_clicks}/{total_home_clicks}",
-                )
-                self.log_info(
-                    "广场女神像：返回主页点击未生效，"
-                    f"仍识别到快速切换卡带按钮，执行第{completed_home_clicks}次点击。"
-                )
-                self.operate_click(*SQUARE_HOME_POINT, after_sleep=1.0)
-                next_home_retry_at = self._active_time(monotonic) + retry_interval
-                continue
-            self.sleep(interval)
-
-        self.log_info(
-            "广场女神像：未同时确认左列关键词、亮度和抽抽乐文字，"
-            f"left={last_left_hits}/{HOME_LEFT_COLUMN_REQUIRED_HITS}, "
-            f"p95={last_p95:.0f}, ocr={last_gacha_text or '-'}。"
-        )
-        return False
+    def _wait_for_cartridge_home(self, interval: float = 0.35) -> bool:
+        return self.prepare_home("广场入口", interval=interval, recover=False)
 
     def _wait_for_quick_switch_page(self, interval: float = 0.5) -> bool:
         self.info_set("当前阶段", "确认卡带选择页")
@@ -918,9 +799,6 @@ class SquareGoddessTask(BaseBD2Task):
             max(0.0, min(1.0, y / max(1, frame_height))),
             after_sleep=after_sleep,
         )
-
-    def _home_p95_threshold(self) -> float:
-        return float(self.config.get("主页压暗阈值", HOME_DIMMED_P95_THRESHOLD_DEFAULT))
 
     @staticmethod
     def _mf_point(x: int, y: int) -> tuple[int, int]:

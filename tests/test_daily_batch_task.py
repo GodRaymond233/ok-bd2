@@ -16,6 +16,7 @@ from src.tasks.DailyBatchTask import (
     DailyBatchChild,
     DailyBatchTask,
 )
+from src.tasks.login_gate import defer_until_login, release_after_login
 from src.tasks.MapCollectionTask import MapCollectionTask
 from src.tasks.PVPTask import PVPTask
 from src.tasks.run_history import BEIJING_TZ, RunHistoryStore, set_default_store
@@ -235,7 +236,7 @@ class DailyBatchTaskTest(unittest.TestCase):
         self.assertEqual("第一项、第二项", task.info.get("完成"))
 
     def test_cancellation_preserves_finished_children_and_stops_the_batch(self):
-        for boundary in ("auto_return_main_home", "run"):
+        for boundary in ("finish_gameplay_at_home", "run"):
             with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as directory:
                 classes = [type(name, (), {}) for name in ("First", "Cancelled", "Later")]
                 calls = []
@@ -254,11 +255,17 @@ class DailyBatchTaskTest(unittest.TestCase):
                 ), mock.patch.object(scheduler, "default_store"):
                     with self.assertRaises(TaskDisabledException):
                         DailyBatchTask.run(task)
-                self.assertEqual([("first", True)], calls)
+                expected = [("first", True)]
+                if boundary == "finish_gameplay_at_home":
+                    expected.append(("cancelled", True))
+                self.assertEqual(expected, calls)
                 self.assertIs(original_config, cancelled.config)
                 self.assertEqual(2, len(resets))
                 self.assertTrue(RunHistoryStore(history.path).last_run("first")["ok"])
-                self.assertIsNone(history.last_run("cancelled"))
+                if boundary == "finish_gameplay_at_home":
+                    self.assertTrue(history.last_run("cancelled")["ok"])
+                else:
+                    self.assertIsNone(history.last_run("cancelled"))
                 self.assertIsNone(history.last_run("later"))
                 task._maybe_shutdown_after_daily.assert_not_called()
 
@@ -275,6 +282,9 @@ class DailyBatchTaskTest(unittest.TestCase):
         calls = []
         skipped = _ChildTask("skipped", calls)
         failed = _ChildTask("failed", calls, result=False)
+        failed.auto_return_main_home = mock.Mock(return_value=False)
+        failed.recover_daily_home = mock.Mock(return_value=False)
+        failed.try_return_home_with_back = mock.Mock(return_value=True)
         later = _ChildTask("later", calls)
         specs = (
             DailyBatchChild("关闭项", Skipped),
@@ -289,6 +299,9 @@ class DailyBatchTaskTest(unittest.TestCase):
 
         self.assertFalse(DailyBatchTask.run(task))
         self.assertEqual([("failed", True)], calls)
+        failed.auto_return_main_home.assert_not_called()
+        failed.recover_daily_home.assert_called_once_with()
+        failed.try_return_home_with_back.assert_not_called()
 
     def test_child_completion_is_silent_and_batch_emits_one_overview(self):
         class NotifyingChild:
@@ -568,14 +581,15 @@ class DailyBatchTaskTest(unittest.TestCase):
 
         calls = []
         first = _ChildTask("first", calls)
-        login = SimpleNamespace(_enabled=True, _finished=False)
+        login = SimpleNamespace(login_pending=True)
         task, _resets = self.make_task(
             {First: first, AutoLoginTask: login},
             (DailyBatchChild("第一项", First),),
             {"启用": True, "第一项": True},
         )
 
-        self.assertTrue(DailyBatchTask.run(task))
+        task._enabled = True
+        self.assertTrue(defer_until_login(task))
         self.assertEqual([], calls)
         self.assertTrue(task._start_after_login)
         self.assertIn("等待自动登录", task.info.get("状态"))
@@ -584,19 +598,21 @@ class DailyBatchTaskTest(unittest.TestCase):
         task, _resets = self.make_task({}, (), {"启用": True})
         task._start_after_login = True
         task._enabled = False
+        task.park_run_mode()
         enqueued = []
         task._executor = SimpleNamespace(
+            onetime_tasks=[task],
             get_task_by_class=lambda cls: task if cls is DailyBatchTask else None,
             enqueue_onetime_task=lambda t: enqueued.append(t) or True,
         )
 
-        self.assertTrue(DailyBatchTask.release_after_login(task._executor))
+        self.assertTrue(release_after_login(task._executor))
         self.assertEqual([task], enqueued)
         self.assertTrue(task._enabled)
         self.assertFalse(task._start_after_login)
 
         task._enabled = False
-        self.assertFalse(DailyBatchTask.release_after_login(task._executor))
+        self.assertFalse(release_after_login(task._executor))
         self.assertEqual(1, len(enqueued))
 
     def test_all_mode_records_child_schedule_after_success_and_failure(self):

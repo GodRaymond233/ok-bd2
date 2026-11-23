@@ -15,7 +15,8 @@ export const SEAL_TEXT: Record<Seal, string> = {
 };
 
 export function sealOf(task: TaskPayload, currentTask: string | null): Seal {
-  if (task.enabled) {
+  if (task.trigger && currentTask === task.name) return "run";
+  if (!task.trigger && task.enabled) {
     return task.paused ? "pause" : "run";
   }
   if (currentTask === task.name) {

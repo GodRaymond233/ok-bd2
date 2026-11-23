@@ -18,10 +18,15 @@ from ok.task.TaskExecutor import TaskExecutor
 from ok.util.logger import Logger
 from ok.util.process import prevent_sleeping
 
+from src.tasks.login_gate import defer_until_login
+from src.utils.topmost_alert import show_task_failure_alert
+
 logger = Logger.get_logger(__name__)
 
 
 def _execute(self):
+    from src.tasks.run_history import record_finished_task
+
     logger.info("start execute")
     while not self.exit_event.is_set():
         wake_version = self._get_wake_version()
@@ -34,6 +39,8 @@ def _execute(self):
             continue
         task, cycled, is_trigger_task = self.next_task()
         if not task:
+            if self.scene is not None:
+                self.scene.observe_home(self)
             self._wait_for_activity(self.next_trigger_delay(), wake_version)
             continue
         if cycled:
@@ -42,6 +49,9 @@ def _execute(self):
             self.reset_scene()
         returned = False
         try:
+            if not is_trigger_task and defer_until_login(task):
+                communicate.task.emit(task)
+                continue
             task.start_time = time.time()
             task.running = True
             self.current_task = task
@@ -62,13 +72,26 @@ def _execute(self):
                 prevent_sleeping(True)
                 try:
                     logger.debug(f"start running onetime_task {task.name}")
-                    task.run()
+                    result = task.run()
                     returned = True
+                    record_finished_task(task, result)
+                    finish_at_home = getattr(task, "finish_gameplay_at_home", None)
+                    if finish_at_home is not None:
+                        try:
+                            finish_at_home()
+                        except (TaskDisabledException, FinishedException):
+                            raise
+                        except Exception as error:
+                            logger.warning(f"{task.name}结束后回主页失败: {error}")
                     logger.debug(f"end running onetime_task {task.name}")
                 finally:
-                    prevent_sleeping(False)
-                task.disable()
-                communicate.task_done.emit(task)
+                    try:
+                        prevent_sleeping(False)
+                        if returned:
+                            task.disable()
+                    finally:
+                        if returned:
+                            communicate.task_done.emit(task)
                 if task.exit_after_task or task.config.get("Exit After Task"):
                     message = "Successfully Executed Task, Exiting Game and App!"
                     logger.info(message)
@@ -107,6 +130,10 @@ def _execute(self):
             logger.error(f"{name} exception stopped", error)
             if self._frame is not None:
                 communicate.screenshot.emit(self._frame, name, True, None)
+            if not is_trigger_task:
+                # The app's own failure dialog stays behind the game window;
+                # raise an always-on-top box so a crash is actually noticed.
+                show_task_failure_alert(name, message)
             self.current_task = None
             communicate.task.emit(None)
         finally:
@@ -133,6 +160,8 @@ def _finish_task(self, task, is_trigger_task):
     self.current_task = None
     if not is_trigger_task:
         communicate.task.emit(task)
+    elif after_trigger := getattr(task, "after_trigger", None):
+        after_trigger()
 
 
 def enable_executor_cleanup() -> None:

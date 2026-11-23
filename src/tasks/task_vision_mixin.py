@@ -12,9 +12,6 @@ from ok.task.exceptions import FinishedException, TaskDisabledException
 from src.tasks.map_trade.models import MatchResult, TemplateSpec
 from src.utils import task_vision
 from src.utils.calibration import FHD_1080
-from src.utils.home_confirmation import (
-    HOME_LEFT_COLUMN_REQUIRED_HITS,
-)
 from src.utils.image_utils import to_gray
 from src.utils.ocr_utils import keyword_match_count, normalize_ocr_text
 
@@ -51,11 +48,6 @@ class TaskVisionMixin:
             self.info_set(key, value)
         except AttributeError:
             pass
-
-    def _home_confirmation_signals(
-        self, frame, ocr_name: str,
-    ) -> tuple[bool, int, float, str]:
-        return self._read_home_confirmation_signals(frame, ocr_name)
 
     def _click_reference(self, x: int, y: int, after_sleep: float = 0.0):
         self.operate_click(
@@ -115,13 +107,6 @@ class TaskVisionMixin:
 
         self.log_info(f"{task_name}：UI_loading_black.png 未在限定时间内消失。")
         return "stuck", False
-
-    def _frame_confirms_home(self, frame, name: str) -> bool:
-        confirmed, _left_hits, _p95, _gacha = self._home_confirmation_signals(
-            frame,
-            f"{name} 主页误检",
-        )
-        return confirmed
 
     def _wait_loading_or_template_or_ocr(
         self,
@@ -284,76 +269,6 @@ class TaskVisionMixin:
                 return True, text
             self.sleep(interval)
         return False, last_text
-
-    def _wait_for_home_confirmation(
-        self,
-        name: str,
-        interval: float = 0.35,
-        timeout: float | None = None,
-        auto_return: bool = True,
-    ) -> bool:
-        if timeout is None:
-            timeout = float(self.config.get("主页确认等待秒数", 10.0))
-        end_at = monotonic() + timeout
-        last_left_hits = 0
-        last_p95 = 0.0
-        last_gacha_text = ""
-        while monotonic() <= end_at:
-            frame = self.capture_frame()
-            (
-                confirmed,
-                last_left_hits,
-                last_p95,
-                last_gacha_text,
-            ) = self._home_confirmation_signals(frame, f"{name} 抽抽乐")
-            self.info_set(
-                f"{name} 左列关键词",
-                f"{last_left_hits}/{HOME_LEFT_COLUMN_REQUIRED_HITS}",
-            )
-            self.info_set(
-                f"{name} 亮度p95",
-                f"{last_p95:.0f}/{self._home_p95_threshold():.0f}",
-            )
-            self.info_set(f"{name} 抽抽乐 OCR", last_gacha_text or "-")
-            if confirmed:
-                return True
-            self.clear_temporary_home_announcement_if_needed(
-                left_hits=last_left_hits,
-                required_left_hits=HOME_LEFT_COLUMN_REQUIRED_HITS,
-                brightness=last_p95,
-                brightness_threshold=self._home_p95_threshold(),
-                gacha_ocr_text=last_gacha_text,
-                context=name,
-            )
-            self.sleep(interval)
-
-        if auto_return:
-            return self._auto_return_home_after_timeout(name, interval=interval)
-
-        self.log_info(
-            f"{name}：未同时确认左列关键词、亮度和抽抽乐文字，"
-            f"left={last_left_hits}/{HOME_LEFT_COLUMN_REQUIRED_HITS}, "
-            f"p95={last_p95:.0f}/{self._home_p95_threshold():.0f}, "
-            f"ocr={last_gacha_text or '-'}。"
-        )
-        return False
-
-    def _auto_return_home_after_timeout(
-        self,
-        name: str,
-        interval: float = 0.35,
-    ) -> bool:
-        """主页确认超时后，自动点击右上角主页按钮把角色带回主页面再确认。"""
-        self._save_flow_diagnostic("home_confirmation_failed")
-        self.log_info(f"{name}：未确认到主页，尝试自动返回主页。")
-        if self.auto_return_main_home():
-            return self._wait_for_home_confirmation(
-                name,
-                interval=interval,
-                timeout=float(self.config.get("主页确认等待秒数", 10.0)),
-                auto_return=False,
-            )
-        return False
 
     @staticmethod
     def _empty_match() -> MatchResult:

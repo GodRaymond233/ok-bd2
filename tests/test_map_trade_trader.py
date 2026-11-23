@@ -10,6 +10,7 @@ import cv2
 import numpy as np
 from ok.task.exceptions import TaskDisabledException
 
+from src.tasks.BaseBD2Task import BaseBD2Task
 from src.tasks.map_trade.models import (
     CalendarEntry,
     MapPageMode,
@@ -33,9 +34,6 @@ from src.tasks.map_trade.navigator import (
     Q_SP6_SHOP_PRIORITY_TIMEOUT,
     Q_SP6_STORY_NUMBER,
     QUICK_SWITCH_TEMPLATE,
-    RETURN_HOME_ANNOUNCEMENT_KEYWORD_GROUPS,
-    RETURN_HOME_ANNOUNCEMENT_MAX_CLICKS,
-    RETURN_HOME_ANNOUNCEMENT_OCR_REGION,
     RETURN_HOME_TIMEOUT,
     SANDBOX_TEMPLATES,
     STORY_CATEGORY_HIGHLIGHT_MIN_RATIO,
@@ -81,7 +79,12 @@ from src.tasks.map_trade.trader_constants import (
 from src.tasks.map_trade.vision import Vision
 from src.tasks.MapTradeTask import BD2MapTradeSellTestTask, MapTradeTask
 from src.utils.calibration import FHD_1080
-from src.utils.home_confirmation import HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT
+from src.utils.home_confirmation import (
+    HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT,
+    RETURN_HOME_ANNOUNCEMENT_KEYWORD_GROUPS,
+    RETURN_HOME_ANNOUNCEMENT_MAX_CLICKS,
+    RETURN_HOME_ANNOUNCEMENT_OCR_REGION,
+)
 from src.utils.image_utils import scale_reference_roi
 from tests.helpers import FakeClock, StageHistoryTestCase
 from tests.helpers.map_trade import create_trader
@@ -2665,56 +2668,19 @@ class PurchaseFlowTest(StageHistoryTestCase):
 class TradeHomeConfirmationTest(unittest.TestCase):
 
     def test_return_home_update_notice_is_cleared_then_strictly_reconfirmed(self):
-        frames = iter(("notice", "home"))
-        clicks = []
-        result = MatchResult(0.80, (10, 10), (20, 20), pixel_score=0.90)
-        task = SimpleNamespace(
-            config={},
-            sleep=lambda *_args: None,
-            log_warning=lambda *_args, **_kwargs: None,
-            log_info=lambda *_args, **_kwargs: None,
-            operate_click=lambda x, y, after_sleep=0: clicks.append(
-                (x, y, after_sleep)
-            ),
-            clear_temporary_home_announcement_if_needed=lambda **_kwargs: False,
-        )
-
-        def ocr_text(frame, name, **_kwargs):
-            if name == "返回主页公告":
-                return "更新 抢先看 7天内不再显示 前往查看"
-            if name == "主页抽抽乐" and frame == "home":
-                return "抽抽乐"
-            return ""
-
-        vision = SimpleNamespace(
-            capture=lambda: next(frames),
-            match=lambda *_args: result,
-            passes=lambda _match, _spec: False,
-            template_brightness_ratio=lambda frame, *_args: (
-                0.0 if frame == "notice" else 0.80
-            ),
-            ocr_text=ocr_text,
-            simplify=lambda value: value,
-        )
-        navigator = Navigator(task, vision)
-
-        def signals(frame, clear_context=None):
-            if frame == "notice":
-                return False, 0, 0.0, ""
-            return True, 3, 253.0, "抽抽乐"
-
-        navigator._home_confirmation_signals = signals
-
-        self.assertTrue(
-            navigator._wait_for_cartridge_home(
-                timeout=1.0,
-                allow_return_announcement_cleanup=True,
-            )
-        )
-        self.assertEqual(
-            [(*HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT, 0.2)],
-            clicks,
-        )
+        task = object.__new__(BaseBD2Task)
+        task.config = {}
+        task.capture_frame = Mock(return_value=np.zeros((72, 128, 3), np.uint8))
+        task._read_home_confirmation_signals = Mock(side_effect=[
+            (False, 0, 80, ""), (True, 3, 253, "抽抽乐"),
+        ])
+        task.ocr = Mock(return_value=[SimpleNamespace(name="更新 抢先看")])
+        task.operate_click = Mock()
+        task.info_set = Mock()
+        task.sleep = Mock()
+        self.assertTrue(Navigator(task, Vision(task))._wait_for_cartridge_home())
+        task.operate_click.assert_called_once_with(*HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT,
+                                                   after_sleep=0.2)
 
     def test_return_home_notice_cleanup_requires_explicit_notice_keywords(self):
         clicks = []
@@ -2728,21 +2694,16 @@ class TradeHomeConfirmationTest(unittest.TestCase):
             ocr_text=lambda _frame, name, relative_roi: text["value"],
             simplify=lambda value: value,
         )
-        navigator = Navigator(task, vision)
+        task._home_p95_threshold = lambda: 185
+        task._quick_vision = lambda: vision
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
 
         self.assertFalse(
-            navigator._clear_return_home_announcement_if_needed(
-                frame,
-                brightness=0.0,
-            )
+            BaseBD2Task.dismiss_home_announcement(task, frame, (False, 0, 0.0, ""), "跑商")
         )
         text["value"] = "更新 抢先看"
         self.assertTrue(
-            navigator._clear_return_home_announcement_if_needed(
-                frame,
-                brightness=0.0,
-            )
+            BaseBD2Task.dismiss_home_announcement(task, frame, (False, 0, 0.0, ""), "跑商")
         )
         self.assertEqual([(*HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT, 0.2)], clicks)
         self.assertIn(("更新", "抢先看"), RETURN_HOME_ANNOUNCEMENT_KEYWORD_GROUPS)
@@ -2775,14 +2736,10 @@ class TradeHomeConfirmationTest(unittest.TestCase):
             log_info=lambda *_args, **_kwargs: None,
             operate_click=lambda *_args, **_kwargs: None,
         )
-        navigator = Navigator(task, Vision(task))
-
-        self.assertTrue(
-            navigator._clear_return_home_announcement_if_needed(
-                frame,
-                brightness=0.0,
-            )
-        )
+        task._home_p95_threshold = lambda: 185
+        task._quick_vision = lambda: Vision(task)
+        self.assertTrue(BaseBD2Task.dismiss_home_announcement(
+            task, frame, (False, 0, 0.0, ""), "跑商"))
         self.assertEqual([(720, 1200, 3)], ocr_shapes)
 
 class TradeScreenClassificationTest(unittest.TestCase):
@@ -2796,7 +2753,7 @@ class TradeScreenClassificationTest(unittest.TestCase):
         left_text = {"value": "我的小屋 格鲁TALK 街机游戏"}
 
         def ocr_text(_frame, name, **_kwargs):
-            if name == "主页左列":
+            if name == "跑图跑商主页 左列":
                 return left_text["value"]
             return gacha_text["value"]
 
@@ -2958,6 +2915,17 @@ class TradeScreenClassificationTest(unittest.TestCase):
         self.assertEqual(ScreenState.COOKING, navigator.classify(frame))
 
 class TradeHomeRecoveryTest(unittest.TestCase):
+    def test_chapter_return_skips_the_calibrated_click_if_scene_changed(self):
+        frame = np.zeros((72, 128, 3), np.uint8)
+        task = SimpleNamespace(config={}, sleep=Mock(), info_set=Mock(), operate_click=Mock())
+        vision = SimpleNamespace(capture=lambda: frame, passes=lambda *_: False,
+                                 match=lambda *_: MatchResult(-1, (0, 0), (0, 0)))
+        navigator = Navigator(task, vision)
+        navigator.classify = Mock(return_value=ScreenState.UNKNOWN)
+        self.assertFalse(navigator._click_chapter_home_button())
+        navigator.classify.assert_called_once_with(frame)
+        task.operate_click.assert_not_called()
+
     def test_return_home_from_shop_closes_discount_shop_then_uses_home_button(self):
         actions = []
         task = SimpleNamespace(
@@ -2973,7 +2941,9 @@ class TradeHomeRecoveryTest(unittest.TestCase):
             passes=lambda *_args: False,
         )
         navigator = Navigator(task, vision)
-        navigator.classify = lambda: ScreenState.SHOP
+        navigator.classify = lambda frame=None: (
+            ScreenState.SHOP if frame is None else ScreenState.SANDBOX
+        )
         navigator._wait_for_ocr_keywords = (
             lambda keywords, timeout, name, interval=0.5, relative_roi=None: (
                 actions.append(("ocr", keywords, timeout, name, interval, relative_roi)) or True
@@ -3008,7 +2978,7 @@ class TradeHomeRecoveryTest(unittest.TestCase):
                 (
                     "home",
                     RETURN_HOME_TIMEOUT,
-                    {"allow_return_announcement_cleanup": True},
+                    {},
                 ),
             ],
             actions,
@@ -3110,7 +3080,7 @@ class TradeHomeRecoveryTest(unittest.TestCase):
             passes=lambda *_args: False,
         )
         navigator = Navigator(task, vision)
-        navigator.classify = lambda: ScreenState.SANDBOX
+        navigator.classify = lambda frame=None: ScreenState.SANDBOX
         navigator._wait_for_cartridge_home = lambda timeout, **kwargs: (
             actions.append(("wait_home", timeout, kwargs)) or True
         )
@@ -3124,7 +3094,7 @@ class TradeHomeRecoveryTest(unittest.TestCase):
                 (
                     "wait_home",
                     RETURN_HOME_TIMEOUT,
-                    {"allow_return_announcement_cleanup": True},
+                    {},
                 ),
             ],
             actions,
@@ -3153,7 +3123,7 @@ class TradeHomeRecoveryTest(unittest.TestCase):
                     vision.click_client = Mock()
                     navigator = Navigator(task, vision)
                     navigator.require_home_match = True
-                    navigator.classify = lambda: ScreenState.SANDBOX
+                    navigator.classify = lambda frame=None: ScreenState.SANDBOX
                     navigator._wait_for_cartridge_home = Mock(return_value=True)
 
                     result = navigator.return_home()
@@ -3201,7 +3171,9 @@ class TradeHomeRecoveryTest(unittest.TestCase):
                     passes=lambda *_args: False,
                 )
                 navigator = Navigator(task, vision)
-                navigator.classify = lambda: state
+                navigator.classify = lambda frame=None: (
+                    state if frame is None else ScreenState.SANDBOX
+                )
                 navigator._close_confirmed_map_page = (
                     lambda received_modes, **kwargs: (
                         self.assertEqual(expected_modes, received_modes)
@@ -3223,7 +3195,7 @@ class TradeHomeRecoveryTest(unittest.TestCase):
                         (
                             "home",
                             RETURN_HOME_TIMEOUT,
-                            {"allow_return_announcement_cleanup": True},
+                            {},
                         ),
                     ],
                     actions,
@@ -3277,7 +3249,9 @@ class TradeHomeRecoveryTest(unittest.TestCase):
             passes=lambda *_args: False,
         )
         navigator = Navigator(task, vision)
-        navigator.classify = lambda: ScreenState.LOADING
+        navigator.classify = lambda frame=None: (
+            ScreenState.LOADING if frame is None else ScreenState.SANDBOX
+        )
         navigator.wait_state = lambda wanted, timeout: (
             actions.append((wanted, timeout)) or ScreenState.SANDBOX
         )
@@ -3295,7 +3269,7 @@ class TradeHomeRecoveryTest(unittest.TestCase):
                 (
                     "wait_home",
                     RETURN_HOME_TIMEOUT,
-                    {"allow_return_announcement_cleanup": True},
+                    {},
                 ),
             ],
             actions,

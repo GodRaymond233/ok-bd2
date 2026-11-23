@@ -30,6 +30,7 @@ CLICK_MODE_KEY = "点击方式"
 
 
 class _BD2InputProbeTask(BaseBD2Task):
+    return_home_after_run = False
     icon = FluentIcon.GAME
     output_prefix = "bd2_input_test"
     output_latest = "bd2_input_test_latest.txt"
@@ -308,6 +309,8 @@ class BD2BackgroundMouseClickInputTestTask(BD2MouseClickInputTestTask):
 
 
 class BD2ClickModeSelectorTask(BaseBD2Task):
+    return_home_after_run = False
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.name = "点击方式切换"

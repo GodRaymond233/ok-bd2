@@ -245,7 +245,8 @@ class RunHistoryStoreTest(unittest.TestCase):
                     for method in methods:
                         value = False if method == failed_method else True
                         if method == "_start_auto_battle":
-                            value = "failed" if method == failed_method else "started"
+                            state = "failed" if method == failed_method else "started"
+                            value = (state, 4)
                         setattr(task, method, lambda *args, value=value: value)
                     self.assertFalse(task_class.run(task))
                     self.store.record_task_done(task, finished=finished)
@@ -293,9 +294,7 @@ class RunHistoryStoreTest(unittest.TestCase):
 
     def test_collection_recorder_schedules_daily_weekly_and_crossed_refresh(self):
         from src.tasks import scheduler
-        from src.tasks.run_history import install_run_history_recorder
-
-        install_run_history_recorder()
+        from src.tasks.run_history import record_finished_task
         schedule = scheduler.TaskScheduleStore(os.path.join(self.dir, "schedule.json"))
         for period, cycle, day, expected in (
             ("今日", "2026-08-19", 19, _beijing_ts(2026, 8, 20, 8)),
@@ -310,7 +309,7 @@ class RunHistoryStoreTest(unittest.TestCase):
                 with patch("src.tasks.run_history.default_store", return_value=self.store), patch(
                     "src.tasks.scheduler.default_store", return_value=schedule,
                 ), patch("time.time", return_value=now):
-                    install_run_history_recorder._recorder.on_task_done(task)
+                    record_finished_task(task, True)
                 self.assertEqual(expected, schedule.next_run(task.name))
 
     def test_batch_completion_keeps_each_child_actual_finish_time(self):

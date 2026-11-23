@@ -299,7 +299,7 @@ class RunDueTasksOnceTest(unittest.TestCase):
         from src.tasks.trigger.AutoLoginTask import AutoLoginTask
 
         batch, executor = self._build({})
-        login = SimpleNamespace(_enabled=login_enabled, _finished=login_finished)
+        login = SimpleNamespace(login_pending=login_enabled and not login_finished)
         executor._tasks_by_class[AutoLoginTask] = login
         return batch, executor
 

@@ -462,7 +462,7 @@ class TradeNavigationMixin:
         self._status("折扣商店关闭按钮", "模板未命中，回退到FHD标定点(172,50)")
         self.task.operate_click(*DISCOUNT_SHOP_BACK_POINT, after_sleep=after_sleep)
 
-    def _click_chapter_home_button(self, after_sleep: float = 0.0) -> bool | None:
+    def _click_chapter_home_button(self, after_sleep: float = 0.0) -> bool:
         """Click the chapter home button, template-first with a calibrated fallback."""
 
         for attempt in range(1, SHOP_CLOSE_CLICK_RETRIES + 1):
@@ -488,14 +488,21 @@ class TradeNavigationMixin:
                         frame.shape,
                         after_sleep=after_sleep,
                     )
-                    return
+                    return True
             if attempt < SHOP_CLOSE_CLICK_RETRIES:
                 self.task.sleep(SHOP_CLOSE_CLICK_INTERVAL)
+        state = self.classify(frame)
+        if state == ScreenState.HOME:
+            return True
         if getattr(self, "require_home_match", False):
             self._status("箱庭主页按钮", "未识别到主页按钮，保留当前画面")
             return False
-        self._status("箱庭主页按钮", "模板未命中，回退到标定相对点(1797,63)")
+        if state != ScreenState.SANDBOX:
+            self._status("箱庭主页按钮", "当前帧未确认箱庭，等待重新定位")
+            return False
+        self._status("箱庭主页按钮", "当前帧已确认箱庭，使用标定主页按钮")
         self.task.operate_click(*CHAPTER_HOME_POINT, after_sleep=after_sleep)
+        return True
 
     def return_home(self) -> NavigationResult:
         state = self.classify()
@@ -556,7 +563,6 @@ class TradeNavigationMixin:
             return NavigationResult(False, state, "未确认箱庭主页按钮，未执行返回点击")
         if self._wait_for_cartridge_home(
             timeout=RETURN_HOME_TIMEOUT,
-            allow_return_announcement_cleanup=True,
         ):
             return NavigationResult(True, ScreenState.HOME, "已从箱庭返回主页")
         return NavigationResult(
@@ -592,10 +598,10 @@ class TradeNavigationMixin:
         closed = self.leave_discount_shop()
         if not closed.success:
             return closed
-        self._click_chapter_home_button()
+        if self._click_chapter_home_button() is False:
+            return NavigationResult(False, self.classify(), "退出商店后未确认箱庭主页按钮")
         if self._wait_for_cartridge_home(
             timeout=RETURN_HOME_TIMEOUT,
-            allow_return_announcement_cleanup=True,
         ):
             return NavigationResult(True, ScreenState.HOME, "已关闭折扣商店并返回主页")
         return NavigationResult(False, self.classify(), "关闭折扣商店后未在10秒内返回主页")

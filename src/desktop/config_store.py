@@ -18,6 +18,8 @@ config_lock = threading.RLock()
 
 def task_config_busy(task) -> bool:
     executor = task.executor
+    if getattr(task, "_start_after_login", False):
+        return True
     if task.running or (task.enabled and task not in executor.trigger_tasks):
         return True
     # Batch children use temporary configs without setting their own running flags.

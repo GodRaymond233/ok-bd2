@@ -95,7 +95,7 @@ export function DailyPage({
   const rows = dailyProgressRows(summary, run, core.tasks, core.current, core.childStage, core.now);
   const current = rows.find((row) => row.current);
   const locked = core.busy || Boolean(batch.config_busy);
-  const startReason = core.startBlocked;
+  const startReason = core.homeTaskStartBlocked;
   const setBatch = (key: string, value: boolean) => void core.act(() => core.setConfig(batch.name, key, value));
   const startDaily = (mode: "all" | "incomplete") => void core.act(() => core.startDaily(mode));
 

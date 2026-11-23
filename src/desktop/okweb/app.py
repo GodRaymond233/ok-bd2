@@ -393,6 +393,7 @@ class WebRuntime:
             "running": self.executor.thread is not None and self.executor.thread.is_alive(),
             "starting": bool(start_controller.starting),
             "current_task": current.name if current else None,
+            "at_home": getattr(getattr(self.executor, "scene", None), "at_home", None),
             "task_count": len(self.executor.get_all_tasks()),
             "hotkey": hotkey if hotkey and hotkey != "None" else None,
         }

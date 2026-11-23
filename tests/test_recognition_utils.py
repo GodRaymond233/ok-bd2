@@ -214,6 +214,7 @@ class OcrUtilsTest(unittest.TestCase):
 
         from src.tasks.BargainLevelTask import BargainLevelTask
         from src.tasks.FreeGachaTask import FreeGachaTask
+        from src.tasks.map_trade.vision import Vision
         from src.tasks.PVPTask import PVPTask
         from src.tasks.QuickSuppressionTask import QuickSuppressionTask
         from src.tasks.SquareGoddessTask import SquareGoddessTask
@@ -230,7 +231,7 @@ class OcrUtilsTest(unittest.TestCase):
             (SquareGoddessTask._observe_goddess_navigation, {}),
             (TaskVisionMixin._ocr_text, {"name": "取消"}),
             (AutoLoginTask._login_page_ocr, {}),
-            (AutoLoginTask._home_gacha_ocr_text, {}),
+            (AutoLoginTask._read_home_confirmation_signals, {"ocr_name": "登录主页"}),
             (AutoLoginTask._ocr_match_region_text, {
                 "name": "取消", "result": MatchResult(1.0, (0, 0), (100, 100)),
             }),
@@ -242,6 +243,8 @@ class OcrUtilsTest(unittest.TestCase):
                     info_set=Mock(), _normalize_text=str, _match=Mock(), _passes=Mock(),
                     _crop_relative=crop_relative,
                 )
+                task._quick_vision = lambda: Vision(task)
+                task._home_p95_threshold = lambda: 185.0
                 with self.assertRaises(TaskDisabledException):
                     method(task, frame, **kwargs)
                 task.info_set.assert_not_called()

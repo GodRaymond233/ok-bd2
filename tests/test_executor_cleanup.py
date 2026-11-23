@@ -12,7 +12,7 @@ from ok.task.exceptions import FinishedException, TaskDisabledException
 from ok.task.TaskExecutor import TaskExecutor
 
 from src.compat import executor_cleanup
-from src.tasks.run_history import RunHistoryStore, install_run_history_recorder
+from src.tasks.run_history import RunHistoryStore
 
 
 class ExecutorCleanupTest(unittest.TestCase):
@@ -44,19 +44,25 @@ class ExecutorCleanupTest(unittest.TestCase):
         return executor, task
 
     def test_onetime_completion_and_exceptions_release_sleep_and_task_state(self):
-        for exception in (
-            None, "waiting for login", TaskDisabledException, FinishedException, RuntimeError,
+        for exception, cleanup_error, success in (
+            (None, None, True), ("waiting for login", None, False),
+            (TaskDisabledException, None, False), (FinishedException, None, False),
+            (RuntimeError, None, False), (None, TaskDisabledException, True),
+            (None, FinishedException, False),
         ):
-            with self.subTest(exception=exception):
+            with self.subTest(exception=exception, cleanup_error=cleanup_error):
                 executor, task = self.make_executor()
-                task.info = {"状态": "任务完成。"}
+                task.info = {"状态": "任务完成。" if success else "任务失败。"}
                 task.info_set.side_effect = task.info.__setitem__
                 task._start_after_login = exception == "waiting for login"
+                if cleanup_error:
+                    task.finish_gameplay_at_home = Mock(side_effect=cleanup_error)
 
                 def run():
                     executor.exit_event.set()
                     if exception is not None and not task._start_after_login:
                         raise exception("stop test")
+                    return success
 
                 task.run = Mock(side_effect=run)
                 events = EventBus()
@@ -66,23 +72,26 @@ class ExecutorCleanupTest(unittest.TestCase):
                     patch.object(executor_cleanup, "communicate", events),
                     patch("ok.core.events.communicate", events),
                     patch("ok.core.events._dispatcher", None),
-                    patch.object(install_run_history_recorder, "_installed", False, create=True),
-                    patch.object(install_run_history_recorder, "_recorder", None, create=True),
-                    patch("src.tasks.scheduler.default_store"),
+                    patch("src.tasks.scheduler.default_store") as schedules,
                     patch.object(
                         events.task_done, "emit", wraps=events.task_done.emit,
                     ) as completed,
                 ):
                     store = RunHistoryStore(os.path.join(directory, "history.json"))
                     with patch("src.tasks.run_history.default_store", return_value=store):
-                        install_run_history_recorder()
+                        if cleanup_error:
+                            def interrupt_cleanup():
+                                self.assertEqual(success, store.last_run(task.name)["ok"])
+                                raise cleanup_error
+
+                            task.finish_gameplay_at_home.side_effect = interrupt_cleanup
                         executor.execute()
                     recent = store.recent_runs()
                     if task._start_after_login:
                         self.assertEqual([], recent)
                     else:
                         self.assertEqual(1, len(recent))
-                        self.assertEqual(exception is None, recent[0]["ok"])
+                        self.assertEqual(success, recent[0]["ok"])
                         self.assertGreaterEqual(recent[0]["duration"], 0)
                         if exception in (TaskDisabledException, FinishedException):
                             self.assertEqual("已中止", recent[0]["status"])
@@ -90,6 +99,8 @@ class ExecutorCleanupTest(unittest.TestCase):
                             self.assertEqual("stop test", recent[0]["details"]["Error"])
                     self.assertEqual(1 if exception is None or task._start_after_login else 0,
                                      completed.call_count)
+                    self.assertEqual(int(exception is None),
+                                     schedules.return_value.delay_after_record.call_count)
                 self.assertEqual([call(True), call(False)], prevent_sleep.call_args_list)
                 self.assertFalse(task.running)
                 self.assertIsNone(executor.current_task)

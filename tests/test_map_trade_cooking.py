@@ -24,7 +24,7 @@ from src.tasks.map_trade.trader_cooking import (
     CookingRecipeOutcome,
     _character_coverage,
 )
-from tests.helpers import StageHistoryTestCase
+from tests.helpers import FakeClock, StageHistoryTestCase
 from tests.helpers.map_trade import create_trader
 from tests.helpers.recognition_fixtures import load_bgr
 
@@ -407,6 +407,36 @@ class CookingFlowTest(StageHistoryTestCase):
                 trader._wait_for_cooking_result = lambda *_args: frame
                 self.assertTrue(trader.run_cooking())
                 self.assertEqual(4, len(clicks))
+
+    def test_large_batch_waits_for_delayed_result(self):
+        recipe = "土豆汤"
+        frame = np.zeros((900, 1600, 3), dtype=np.uint8)
+        start = MatchResult(0.99, (939, 835), (300, 45), pixel_score=0.95)
+        detail = CookingDetailSnapshot(frame, start, True, 0.7)
+        clock = FakeClock()
+        trader = create_trader()
+        trader.task = CookingTask()
+        trader.task.sleep = clock.sleep
+        trader.vision = SimpleNamespace(
+            capture=lambda: frame,
+            click_client=Mock(),
+            ocr_text=lambda *_args, **_kwargs: f"{recipe}×10000" if clock() >= 51.0 else "",
+            simplify=lambda text: text,
+        )
+        trader._open_recipe_detail = Mock(return_value=detail)
+        trader._select_max_cooking_quantity = Mock(return_value=detail)
+        trader._wait_for_cooking_started = Mock(return_value=True)
+        trader._cooking_detail_snapshot = Mock(return_value=detail)
+        trader._return_from_detail_to_list = Mock(return_value=True)
+        trader._recover_cooking_list = Mock(return_value=True)
+
+        with patch("src.tasks.map_trade.trader_cooking.monotonic", clock):
+            self.assertIs(CookingRecipeOutcome.COOKED, trader._cook_one_recipe(recipe))
+
+        trader.vision.click_client.assert_called_once_with(
+            start.center, frame.shape, after_sleep=0.0,
+        )
+        trader._return_from_detail_to_list.assert_called_once_with(recipe)
 
     def test_lost_max_click_retries_and_never_starts_without_confirmation(self):
         recipe = "巧克力鸡尾酒"

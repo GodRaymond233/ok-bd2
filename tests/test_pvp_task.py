@@ -22,7 +22,6 @@ from src.tasks.map_trade.navigator_constants import CHAPTER_HOME_POINT
 from src.tasks.MapCollectionTask import MapCollectionTask
 from src.tasks.MapTradeTask import MapTradeTask
 from src.tasks.PVPTask import (
-    HOME_GACHA_OCR_ROI,
     PVP_AUTO_BATTLE_CLICK_REFERENCE,
     PVP_AUTO_BATTLE_MENU_VERIFY_SECONDS,
     PVP_AUTO_BATTLE_SCREEN_ROI,
@@ -66,9 +65,28 @@ from src.utils.cartridge_quick_switch import (
     FIXED_CARTRIDGE_SLOT_PRE_CLICK_DELAY_SECONDS,
     GAMEPLAY_CATEGORY_HIGHLIGHT_MIN_RATIO,
 )
+from src.utils.home_confirmation import HOME_GACHA_OCR_RELATIVE_ROI
+from tests.helpers import FakeClock
 
 
 class FiendRewardEntryTest(unittest.TestCase):
+    def test_default_policy_closes_season_reward_on_non_monday(self):
+        season = [
+            SimpleNamespace(name=name, x=930, y=990, width=60, height=30)
+            for name in ("赛季奖励", "点击画面即可返回")
+        ]
+        task = self.make_task(
+            [season, self.normal_boxes(), self.normal_boxes()], recent_pvp=True,
+        )
+        # 周二登录也必须能退出奖励页；该路径不应受旧版周一限制影响。
+        with patch("src.tasks.BaseBD2Task.datetime", create=True) as clock:
+            clock.now.return_value = datetime(2026, 11, 17, 4, tzinfo=timezone.utc)
+            self.assertIs(
+                CartridgeSpecialPageResult.HANDLED,
+                task._handle_recent_cartridge_special_pages(timeout=.1, interval=.01),
+            )
+        self.assertEqual(1, len(self.clicks))
+
     def make_task(self, screens, *, size=(1920, 1080), recent_pvp=False):
         task = object.__new__(SquareGoddessTask)
         task._executor = SimpleNamespace(method=SimpleNamespace(width=size[0], height=size[1]))
@@ -304,13 +322,14 @@ class PVPTaskHelperTest(unittest.TestCase):
 
     def test_weekly_settlement_skips_entry_and_opening_clears_skip_state(self):
         task = object.__new__(PVPTask)
-        task.config = {"启用": True}
+        # 倍率显式指定，避免本用例与默认倍率取值耦合。
+        task.config = {"启用": True, "竞技场战斗倍数": 1}
         task.info = {}
         task.info_set = lambda key, value: task.info.__setitem__(key, value)
         task.log_info = Mock()
         task.log_completion = Mock()
         task._ensure_pvp_hub = Mock(return_value=True)
-        task._start_auto_battle = Mock(return_value="started")
+        task._start_auto_battle = Mock(return_value=("started", 1))
         task._wait_result_and_leave = Mock(return_value=True)
         opens = datetime(2026, 11, 2, 0, tzinfo=timezone.utc).timestamp()
         with patch("src.tasks.PVPTask.pvp_settlement_end_ts", return_value=opens):
@@ -324,6 +343,21 @@ class PVPTaskHelperTest(unittest.TestCase):
         task._start_auto_battle.assert_called_once_with(1)
         task._wait_result_and_leave.assert_called_once_with(1)
 
+    def test_target_multiplier_defaults_to_40_and_clamps_invalid_values(self):
+        task = object.__new__(PVPTask)
+        for config, expected in (
+            ({}, 40),
+            ({"竞技场战斗倍数": 40}, 40),
+            ({"竞技场战斗倍数": 20}, 20),
+            ({"竞技场战斗倍数": "10倍"}, 10),
+            ({"竞技场战斗倍数": "abc"}, 40),
+            ({"竞技场战斗倍数": 0}, 40),
+            ({"竞技场战斗倍数": 41}, 40),
+        ):
+            with self.subTest(config=config):
+                task.config = config
+                self.assertEqual(expected, task._target_multiplier())
+
     def test_settlement_during_preparation_blocks_battle_start(self):
         task = object.__new__(PVPTask)
         task.config = {}
@@ -332,6 +366,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         task.log_info = Mock()
         task._click_pvp_stage_once = Mock(return_value=True)
         task._wait_for_ocr_patterns = Mock(return_value=(True, "鲜血鸡尾酒 自动战斗"))
+        task._confirm_free_ap_balance = Mock(return_value=None)
         task._ensure_free_ap_enabled = Mock(return_value=True)
         task._ensure_multiplier = Mock(return_value=True)
         task._select_max_battle_count = Mock()
@@ -339,7 +374,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         task._wait_battle_start_or_ap_shortage = Mock()
         opens = datetime(2026, 11, 2, 0, tzinfo=timezone.utc).timestamp()
         with patch("src.tasks.PVPTask.pvp_settlement_end_ts", side_effect=[None, opens]):
-            self.assertEqual("settlement", task._start_auto_battle(40))
+            self.assertEqual(("settlement", 40), task._start_auto_battle(40))
         self.assertTrue(task.info["PVP 结算休战"])
         task._wait_battle_start_or_ap_shortage.assert_not_called()
         self.assertNotIn(call(*PVP_BATTLE_START_SCREEN_POINT, after_sleep=2.0),
@@ -365,7 +400,7 @@ class PVPTaskHelperTest(unittest.TestCase):
                 if ap_retry:
                     def start(multiplier):
                         if multiplier == 40:
-                            return "ap_shortage"
+                            return "ap_shortage", 40
                         return PVPTask._start_auto_battle(task, 1)
                     task._start_auto_battle = start
                 with patch("src.tasks.PVPTask.pvp_settlement_end_ts", side_effect=[None, opens]):
@@ -920,14 +955,16 @@ class PVPTaskHelperTest(unittest.TestCase):
         task.capture_frame = lambda: frame["value"]
         ocr_calls = []
 
-        def fake_ocr(_frame, name, roi=None, **_kwargs):
-            ocr_calls.append((name, roi))
-            if name == "主页左列":
+        def fake_ocr(_frame, name, relative_roi=None, **_kwargs):
+            ocr_calls.append((name, relative_roi))
+            if name == "镜中之战入口 左列":
                 return "我的小屋 经营管理格鲁TALK 街机游戏"
-            return gacha_text["value"]
+            return gacha_text["value"] if name.startswith("镜中之战入口 x") else ""
 
         gacha_text = {"value": "抽抽乐"}
-        task._ocr_text = fake_ocr
+        task._quick_vision = lambda: SimpleNamespace(ocr_text=fake_ocr)
+        task.dismiss_home_modal_popup = Mock(return_value=False)
+        task.dismiss_fullscreen_news_page = Mock(return_value=False)
         task.sleep = lambda *_args, **_kwargs: None
         task._sleep_after_recognition = lambda: None
         announcement_clicks = []
@@ -936,7 +973,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         )
 
         self.assertFalse(PVPTask._wait_for_cartridge_home(task))
-        self.assertEqual([(169 / 1920, 615 / 1080, 0.2)], announcement_clicks)
+        self.assertEqual([], announcement_clicks)
 
         frame["value"] = bright_frame
         gacha_text["value"] = ""
@@ -944,7 +981,7 @@ class PVPTaskHelperTest(unittest.TestCase):
 
         gacha_text["value"] = "抽抽乐"
         self.assertTrue(PVPTask._wait_for_cartridge_home(task))
-        self.assertIn(("主页抽抽乐 x1", HOME_GACHA_OCR_ROI), ocr_calls)
+        self.assertIn(("镜中之战入口 x1", HOME_GACHA_OCR_RELATIVE_ROI), ocr_calls)
 
     def test_battle_gameplay_category_requires_ocr_and_visual_highlight(self):
         task = object.__new__(PVPTask)
@@ -1066,6 +1103,7 @@ class PVPTaskHelperTest(unittest.TestCase):
 
         task._wait_for_ocr_patterns = fake_wait_for_ocr_patterns
         task._click_ocr_pattern_center = lambda *_args, **_kwargs: True
+        task._confirm_free_ap_balance = Mock(return_value=None)
         task._ensure_free_ap_enabled = lambda: True
         starts = []
         task._ensure_multiplier = lambda multiplier: starts.append(multiplier) or True
@@ -1085,13 +1123,11 @@ class PVPTaskHelperTest(unittest.TestCase):
             "battle should not start"
         )
 
+        task._skip_cocktail_battle = Mock(return_value="free_ap_unavailable")
         self.assertTrue(PVPTask.run(task))
         self.assertEqual([10, 1], starts)
         self.assertEqual("鲜血鸡尾酒不足", infos["PVP AP不足 OCR"])
-        self.assertEqual(
-            ("镜中之战：免费 AP 已耗尽，流程结束。", True),
-            notifications[-1],
-        )
+        task._skip_cocktail_battle.assert_called_once_with("1 倍战斗所需的鲜血鸡尾酒不足")
 
     def _make_battle_window_task(self):
         harness = SimpleNamespace(
@@ -1119,16 +1155,17 @@ class PVPTaskHelperTest(unittest.TestCase):
         )
         self.assertEqual("鲜血鸡尾酒不足", harness.infos["PVP AP不足 OCR"])
 
-    def test_battle_start_window_times_out_to_settlement_wait(self):
+    def test_battle_start_window_stops_when_start_and_result_are_unconfirmed(self):
         task, harness = self._make_battle_window_task()
         task.config = {"PVP 战斗开始等待秒数": 30.0}
+        task._save_flow_diagnostic = Mock()
 
         with patch(
             "src.tasks.PVPTask.monotonic",
             side_effect=(0.0, 0.0, 100.0),
         ):
             self.assertEqual(
-                "started",
+                "failed",
                 PVPTask._wait_battle_start_or_ap_shortage(task, 1),
             )
 
@@ -1365,29 +1402,7 @@ class PVPTaskHelperTest(unittest.TestCase):
             clicks,
         )
 
-    def test_return_home_from_pvp_hub_clicks_top_right_home_and_checks_home(self):
-        task = object.__new__(PVPTask)
-        task.config = {}
-        task.info_set = lambda *_args, **_kwargs: None
-        wait_calls = []
-        clicks = []
-        loading_calls = []
-        home_calls = []
-
-        def fake_wait_for_template(spec, timeout, name, **_kwargs):
-            wait_calls.append((spec, timeout, name))
-            return True
-
-        task._wait_for_template = fake_wait_for_template
-        task.operate_click = lambda x, y, after_sleep=0.0: clicks.append(
-            (x, y, after_sleep)
-        )
-        task._wait_loading_if_present = lambda name: loading_calls.append(name)
-        task._wait_for_home = lambda timeout: home_calls.append(timeout) or True
-
-        self.assertTrue(PVPTask._return_home_from_pvp_hub(task))
-        self.assertEqual([(PVP_MEDALS_TEMPLATE, 10.0, "PVP 箱庭")], wait_calls)
-        self.assertEqual([(*CHAPTER_HOME_POINT, 2.0)], clicks)
+    def test_return_home_retries_only_while_pvp_hub_remains_visible(self):
         self.assertEqual(
             CHAPTER_HOME_POINT,
             (
@@ -1395,62 +1410,30 @@ class PVPTaskHelperTest(unittest.TestCase):
                 PVP_BACK_HOME_REFERENCE_POINT[1] / REFERENCE_HEIGHT,
             ),
         )
-        self.assertEqual(["PVP 返回主页"], loading_calls)
-        self.assertEqual([10.0], home_calls)
-
-    def test_return_home_from_pvp_hub_retries_once_when_hub_remains(self):
-        task = object.__new__(PVPTask)
-        task.config = {}
-        task.info_set = lambda *_args, **_kwargs: None
-        clicks = []
-        loading_calls = []
-        home_calls = []
-        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-
-        task._wait_for_template = lambda *_args, **_kwargs: True
-        task._click_reference = lambda x, y, after_sleep=0.0: clicks.append(
-            (x, y, after_sleep)
-        )
-        task._wait_loading_if_present = lambda name: loading_calls.append(name)
-        task._wait_for_home = lambda timeout: home_calls.append(timeout) or (
-            len(home_calls) == 2
-        )
-        task.capture_frame = lambda: frame
-        task._match = lambda _frame, _spec: SimpleNamespace(score=0.9)
-        task._passes = lambda _result, _spec: True
-
-        self.assertTrue(PVPTask._return_home_from_pvp_hub(task))
-        self.assertEqual(
-            [(*PVP_BACK_HOME_REFERENCE_POINT, 2.0)] * 2,
-            clicks,
-        )
-        self.assertEqual(["PVP 返回主页"] * 2, loading_calls)
-        self.assertEqual(10.0, home_calls[0])
-        self.assertAlmostEqual(10.0, home_calls[1], places=5)
-
-    def test_return_home_without_hub_signal_uses_remaining_time_without_second_click(self):
-        task = object.__new__(PVPTask)
-        task.config = {}
-        task.info_set = lambda *_args, **_kwargs: None
-        clicks = []
-        home_calls = []
-
-        task._wait_for_template = lambda *_args, **_kwargs: True
-        task._click_reference = lambda x, y, after_sleep=0.0: clicks.append(
-            (x, y, after_sleep)
-        )
-        task._wait_loading_if_present = lambda _name: None
-        task._wait_for_home = lambda timeout: home_calls.append(timeout) or (
-            len(home_calls) == 2
-        )
-        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        task._match = lambda _frame, _spec: SimpleNamespace(score=0.1)
-        task._passes = lambda _result, _spec: False
-
-        self.assertTrue(PVPTask._return_home_from_pvp_hub(task))
-        self.assertEqual([(*PVP_BACK_HOME_REFERENCE_POINT, 2.0)], clicks)
-        self.assertEqual(10.0, home_calls[0])
-        self.assertAlmostEqual(10.0, home_calls[1], places=5)
+        for home_at, hub_visible_until, expected_clicks in ((1, 1, 1), (12, 12, 2), (12, 1, 1)):
+            with self.subTest(home_at=home_at, hub_visible_until=hub_visible_until):
+                clock = FakeClock()
+                task = object.__new__(PVPTask)
+                task.config = {}
+                task.info_set = Mock()
+                task.capture_frame = Mock()
+                task._read_home_confirmation_signals = lambda *_: (clock() >= home_at, 0, 0, "")
+                task.dismiss_home_announcement = Mock(return_value=False)
+                task._wait_for_template = Mock(return_value=True)
+                task._match = Mock()
+                task._passes = lambda *_: clock() < hub_visible_until
+                task._click_reference = Mock()
+                task._wait_loading_if_present = Mock()
+                task.sleep = clock.sleep
+                with patch("src.tasks.BaseBD2Task.monotonic", clock):
+                    self.assertTrue(task._return_home_from_pvp_hub())
+                task._wait_for_template.assert_called_once_with(
+                    PVP_MEDALS_TEMPLATE, timeout=10.0, name="PVP 箱庭")
+                home_click = call(*PVP_BACK_HOME_REFERENCE_POINT, after_sleep=2.0)
+                self.assertEqual([home_click] * expected_clicks,
+                                 task._click_reference.call_args_list)
+                self.assertEqual([call("PVP 返回主页")] * expected_clicks,
+                                 task._wait_loading_if_present.call_args_list)
 
     def test_click_leave_button_checks_both_regions_and_clicks_failure_target(self):
         task = object.__new__(PVPTask)
@@ -1703,6 +1686,7 @@ class PVPTaskHelperTest(unittest.TestCase):
             return True
 
         task._click_template_until = fake_click_template_until
+        task._confirm_free_ap_balance = Mock(return_value=None)
         task._ensure_free_ap_enabled = lambda: True
         task._ensure_multiplier = lambda _multiplier: True
         task._select_max_battle_count = lambda: None
@@ -1734,7 +1718,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         task._wait_for_ocr_patterns = fake_wait_for_ocr_patterns
         task._click_screen_reference = fake_click_screen_reference
 
-        self.assertEqual("started", PVPTask._start_auto_battle(task, 1))
+        self.assertEqual(("started", 1), PVPTask._start_auto_battle(task, 1))
         self.assertEqual(
             PVP_STAGE_CLICK_REFERENCE_OFFSET,
             template_clicks[0][1]["target_reference_offset"],
@@ -1754,6 +1738,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         task.log_info = lambda *_args, **_kwargs: None
         task.log_warning = lambda *_args, **_kwargs: None
         task._click_template_until = lambda *_args, **_kwargs: True
+        task._confirm_free_ap_balance = Mock(return_value=None)
         task._ensure_free_ap_enabled = lambda: True
         task._ensure_multiplier = lambda _multiplier: True
         task._select_max_battle_count = lambda: None
@@ -1786,7 +1771,7 @@ class PVPTaskHelperTest(unittest.TestCase):
 
         task._wait_for_ocr_patterns = fake_wait_for_ocr_patterns
 
-        self.assertEqual("started", PVPTask._start_auto_battle(task, 1))
+        self.assertEqual(("started", 1), PVPTask._start_auto_battle(task, 1))
         self.assertIn((*PVP_AUTO_BATTLE_CLICK_REFERENCE, 1.0), clicks)
         self.assertEqual(
             [
@@ -1818,7 +1803,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         diagnostics = []
         task._save_flow_diagnostic = diagnostics.append
 
-        self.assertEqual("failed", PVPTask._start_auto_battle(task, 1))
+        self.assertEqual(("failed", 1), PVPTask._start_auto_battle(task, 1))
         self.assertEqual(["pvp_auto_battle_failed"], diagnostics)
 
     def test_start_auto_battle_stage_reclick_budget_gives_up(self):
@@ -1839,7 +1824,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         diagnostics = []
         task._save_flow_diagnostic = diagnostics.append
 
-        self.assertEqual("failed", PVPTask._start_auto_battle(task, 1))
+        self.assertEqual(("failed", 1), PVPTask._start_auto_battle(task, 1))
         # BUG-20260908-04：重试预算用尽才判失败，保留 pvp_auto_battle_failed 落帧。
         self.assertEqual(PVP_CLICK_VERIFY_ATTEMPTS, len(menu_waits))
         self.assertEqual(["pvp_auto_battle_failed"], diagnostics)
@@ -1869,7 +1854,7 @@ class PVPTaskHelperTest(unittest.TestCase):
         diagnostics = []
         task._save_flow_diagnostic = diagnostics.append
 
-        self.assertEqual("failed", PVPTask._start_auto_battle(task, 1))
+        self.assertEqual(("failed", 1), PVPTask._start_auto_battle(task, 1))
         self.assertEqual(PVP_CLICK_VERIFY_ATTEMPTS, len(menu_calls))
         self.assertEqual([PVP_AUTO_BATTLE_CLICK_REFERENCE] * 2, clicks)
         self.assertEqual(["pvp_auto_battle_failed"], diagnostics)
@@ -1891,6 +1876,7 @@ class PVPTaskHelperTest(unittest.TestCase):
 
         task._wait_for_ocr_patterns = fake_wait_for_ocr_patterns
         task._click_ocr_pattern_center = lambda *_args, **_kwargs: True
+        task._confirm_free_ap_balance = Mock(return_value=None)
         task._ensure_free_ap_enabled = lambda: True
         multiplier_calls = []
         task._ensure_multiplier = (
@@ -1905,7 +1891,7 @@ class PVPTaskHelperTest(unittest.TestCase):
             (x, y, after_sleep)
         )
 
-        self.assertEqual("failed", PVPTask._start_auto_battle(task, 10))
+        self.assertEqual(("failed", 10), PVPTask._start_auto_battle(task, 10))
         self.assertEqual([10], multiplier_calls)
         self.assertNotIn((1381, 1061, 2.0), clicks)
 

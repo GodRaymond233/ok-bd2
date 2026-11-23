@@ -45,6 +45,7 @@ from src.tasks.DailyBatchTask import RUN_MODE_ALL, RUN_MODE_INCOMPLETE, DailyBat
 from src.tasks.quick_hunt_plan import PLAN_KEY, describe_plan, load_book
 from src.tasks.run_history import RECENT_LIMIT, default_store, run_state
 from src.tasks.today import find_batch, today_summary
+from src.tasks.trigger.AutoLoginTask import AutoLoginTask
 from src.ui.hide_config_rows import mark_hidden_config_keys
 from src.window_resolution import (
     DEFAULT_MANUAL_RESOLUTION,
@@ -134,6 +135,9 @@ def task_payload(task):
             task.executor.waiting_for_task(task) if task in task.executor.onetime_tasks else None
         )
         info = task_info_snapshot(task)
+        pending_login = bool(getattr(task, "_start_after_login", False))
+        if pending_login:
+            waiting = task.executor.get_task_by_class(AutoLoginTask)
         fields = build_config_fields(
             task.config,
             task.config_description,
@@ -148,7 +152,8 @@ def task_payload(task):
         return {
             "name": task.name,
             "class_name": type(task).__name__,
-            "enabled": bool(task.enabled),
+            "enabled": bool(task.enabled or pending_login),
+            "waits_for_login": bool(getattr(task, "waits_for_login", False)),
             "running": bool(task.running),
             "paused": bool(task.paused),
             "trigger": task in task.executor.trigger_tasks,
@@ -275,10 +280,12 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
     def stop(task):
         runtime.prevent_report_resume()
         task._bd2_stopped_run = (id(task), getattr(task, "start_time", 0))
-        if isinstance(task, DailyBatchTask):
+        if getattr(task, "waits_for_login", False):
             with task.lock:
                 task._start_after_login = False
                 task._enabled = False
+                if isinstance(task, DailyBatchTask):
+                    task.request_run_mode(RUN_MODE_ALL)
         task.disable()
         if task.paused:
             # disable wakes sleep/check_enabled even while the executor is paused.
@@ -380,9 +387,10 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
             save_config(config, config.default, allow_private=True)
             return next(item for item in runtime.settings() if item["name"] == group)
 
-    def ensure_task_slot(resuming=None):
+    def ensure_task_slot(resuming=None, *, waits_for_login=False):
         current = runtime.executor.current_task
-        if current is not None and current is not resuming:
+        login_can_yield = waits_for_login and isinstance(current, AutoLoginTask)
+        if current is not None and current is not resuming and not login_can_yield:
             raise ValueError("已有任务在运行或排队，请先停止")
         if any(
             task is not resuming
@@ -400,7 +408,10 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
             if task.enabled and not task.paused:
                 raise ValueError("任务已在运行或排队")
             refuse_legacy()
-            ensure_task_slot(resuming=task if task is runtime.executor.current_task else None)
+            ensure_task_slot(
+                resuming=task if task is runtime.executor.current_task else None,
+                waits_for_login=getattr(task, "waits_for_login", False),
+            )
             if controller.start(task) is False:
                 raise ValueError("任务未启动，请等待启动流程结束")
             return task_payload(task)
@@ -447,7 +458,7 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
                 raise ValueError("没有一键完成日常任务")
             if controller.starting:
                 raise ValueError("正在启动游戏，请等待或取消启动")
-            ensure_task_slot()
+            ensure_task_slot(waits_for_login=True)
             refuse_legacy()
             batch.request_run_mode(mode)
             if controller.start(batch) is False:

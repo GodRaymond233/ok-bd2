@@ -86,6 +86,10 @@ export function t(text: string, values?: Values): string {
 
 /** Text from the core or a task, line by line, with the values inside translated too. */
 export function coreText(text: string): string {
+  // The core task name also identifies saved settings and run history.
+  if (text === "每日活动") {
+    return language === "en_US" ? "Daily Fiend Normal/Challenge Battles ×5" : "每日魔兽普通/挑战战斗5次";
+  }
   if (!patterns.length) {
     return text;
   }

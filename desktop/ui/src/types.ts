@@ -47,6 +47,7 @@ export interface TaskPayload {
   description: string;
   visible: boolean;
   group_name: string | null;
+  waits_for_login?: boolean;
   waiting_for: string | null;
   start_time: number;
   info: Record<string, unknown>;
@@ -269,6 +270,7 @@ export interface ExecutorStatus {
   running: boolean;
   starting: boolean;
   current_task: string | null;
+  at_home?: boolean | null;
   task_count: number;
   hotkey: string | null;
 }

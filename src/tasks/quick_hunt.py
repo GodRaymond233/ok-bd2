@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 from ok.task.exceptions import FinishedException, TaskDisabledException
 
+from src.interaction.BD2Interaction import InputTargetChanged
 from src.tasks import run_history
 from src.tasks.map_trade.models import TemplateSpec
 from src.tasks.quick_hunt_plan import (
@@ -535,53 +536,11 @@ class QuickHuntFeatureMixin:
         self._status_set("快速狩猎结果", "完成" if success else "失败")
         return success
 
-    def _quick_hunt_home_signals(
-        self,
-        frame,
-    ) -> tuple[bool, int, float, str]:
-        return self._home_confirmation_signals(frame, "快速狩猎主页抽抽乐")
+    def _quick_hunt_home_signals(self, frame):
+        return self._read_home_confirmation_signals(frame, "快速狩猎主页")
 
     def _wait_for_quick_hunt_home(self, interval: float = 0.35) -> bool:
-        end_at = self._active_time(monotonic) + float(self.config.get("主页确认等待秒数", 10.0))
-        last_left_hits = 0
-        last_p95 = 0.0
-        last_gacha_text = ""
-        while self._active_time(monotonic) <= end_at:
-            frame = self.capture_frame()
-            home_ok, last_left_hits, last_p95, last_gacha_text = (
-                self._quick_hunt_home_signals(frame)
-            )
-            self._status_set(
-                "快速狩猎首页按钮",
-                f"左列关键词 {last_left_hits}/{HOME_LEFT_COLUMN_REQUIRED_HITS}",
-            )
-            self._status_set(
-                "快速狩猎主页亮度",
-                f"p95={last_p95:.0f}/{self._home_p95_threshold():.0f}",
-            )
-            self._status_set(
-                "快速狩猎主页抽抽乐 OCR",
-                last_gacha_text or "-",
-            )
-            if home_ok:
-                return True
-            self.clear_temporary_home_announcement_if_needed(
-                left_hits=last_left_hits,
-                required_left_hits=HOME_LEFT_COLUMN_REQUIRED_HITS,
-                brightness=last_p95,
-                brightness_threshold=self._home_p95_threshold(),
-                gacha_ocr_text=last_gacha_text,
-                context="快速狩猎确认主页",
-            )
-            self.sleep(interval)
-
-        self.log_info(
-            "快速狩猎：未同时确认左列关键词、亮度和抽抽乐文字，"
-            f"left={last_left_hits}/{HOME_LEFT_COLUMN_REQUIRED_HITS}, "
-            f"p95={last_p95:.0f}/{self._home_p95_threshold():.0f}, "
-            f"ocr={last_gacha_text or '-'}。"
-        )
-        return False
+        return self.prepare_home("快速狩猎主页", interval=interval, recover=False)
 
     @staticmethod
     def _quick_hunt_entry_red_state(
@@ -1779,7 +1738,11 @@ class QuickHuntFeatureMixin:
                 point = self._quick_hunt_box_center(box)
                 if point is None:
                     continue
-                vision.click_client(point, frame.shape, after_sleep=0.8)
+                try:
+                    vision.click_client(point, frame.shape, after_sleep=0.8)
+                except InputTargetChanged:
+                    # 鼠标松开后旧画面已过期，下一轮重新截图再找同一控件。
+                    break
                 return True
             self.sleep(0.4)
         self.log_info(f"快速狩猎：未找到可点击 OCR 目标：{name}")
@@ -1836,26 +1799,10 @@ class QuickHuntFeatureMixin:
                 "快速狩猎返回位置 OCR",
                 self._quick_hunt_current_map_context(frame),
             )
-            home_ok, left_hits, p95_brightness, gacha_text = self._quick_hunt_home_signals(frame)
-            self._status_set(
-                "快速狩猎首页按钮",
-                f"左列关键词 {left_hits}/{HOME_LEFT_COLUMN_REQUIRED_HITS}",
-            )
-            self._status_set(
-                "快速狩猎主页亮度",
-                f"p95={p95_brightness:.0f}/{self._home_p95_threshold():.0f}",
-            )
-            self._status_set("快速狩猎主页抽抽乐 OCR", gacha_text or "-")
-            if home_ok:
+            signals = self._quick_hunt_home_signals(frame)
+            if signals[0]:
                 return True
-            if self.clear_temporary_home_announcement_if_needed(
-                left_hits=left_hits,
-                required_left_hits=HOME_LEFT_COLUMN_REQUIRED_HITS,
-                brightness=p95_brightness,
-                brightness_threshold=self._home_p95_threshold(),
-                gacha_ocr_text=gacha_text,
-                context="快速狩猎返回主页",
-            ):
+            if self.dismiss_home_announcement(frame, signals, "快速狩猎返回主页"):
                 self.sleep(0.35)
                 continue
             reward = self._normalize_text(self._quick_hunt_ocr_text(

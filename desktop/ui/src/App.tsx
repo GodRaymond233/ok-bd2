@@ -61,6 +61,7 @@ export interface Core {
   busy: boolean;
   /** Why starting a task is refused right now, if it is. */
   startBlocked: string | null;
+  homeTaskStartBlocked: string | null;
   batchRun: BatchRun | null;
   allDone: boolean;
   device: Device | null;
@@ -179,6 +180,7 @@ export function App() {
   const [dockExpanded, setDockExpanded] = useState(initialDockExpanded);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const taskRevision = useRef(0);
+  const uiRevision = useRef(0);
   // Each counter names the newest read of its part, so a late response never undoes a newer one.
   const fullSequence = useRef(0);
   const taskSequence = useRef(0);
@@ -194,6 +196,7 @@ export function App() {
 
   const refresh = useCallback(async () => {
     const sequence = ++fullSequence.current;
+    const uiRead = uiRevision.current;
     const tasksRead = ++taskSequence.current;
     const revision = taskRevision.current;
     try {
@@ -207,7 +210,7 @@ export function App() {
       ]);
       applyTasks(tasksRead, revision, taskList, summary);
       if (sequence !== fullSequence.current) return;
-      setUi(capture);
+      if (uiRead === uiRevision.current) setUi(capture);
       setInfo(desktop);
       setSettings(groups);
       setReportState(report);
@@ -222,8 +225,12 @@ export function App() {
     const tasksRead = ++taskSequence.current;
     const revision = taskRevision.current;
     try {
-      const [taskList, summary] = await Promise.all([api.tasks(), api.today()]);
+      const uiRead = uiRevision.current;
+      const [taskList, summary, status] = await Promise.all([api.tasks(), api.today(), api.status()]);
       applyTasks(tasksRead, revision, taskList, summary);
+      if (uiRead === uiRevision.current) {
+        setUi((previous) => previous && { ...previous, status });
+      }
     } catch {
       // The next read or the event stream reports a lost core.
     }
@@ -272,9 +279,13 @@ export function App() {
             }
           }
           if (CAPTURE_EVENTS.has(payload.event)) {
-            void api.capture().then(setUi, () => undefined);
+            const uiRead = uiRevision.current;
+            void api.capture().then((next) => {
+              if (uiRead === uiRevision.current) setUi(next);
+            }, () => undefined);
           }
           if (payload.ui) {
+            uiRevision.current += 1;
             setUi(payload.ui);
           }
           const notice = noticeFromEvent(payload);
@@ -466,6 +477,9 @@ export function App() {
     current,
     busy,
     startBlocked,
+    homeTaskStartBlocked: !queued && !starting && !legacy && !ui?.maintenance && !ui?.tools_busy &&
+      !ui?.diagnostic_pause && tasks.some((task) => task.name === current && task.class_name === "AutoLoginTask")
+      ? null : startBlocked,
     batchRun,
     allDone: taking.length > 0 && taking.every((item) => item.done),
     device,

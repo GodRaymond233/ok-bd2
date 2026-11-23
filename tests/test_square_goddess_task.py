@@ -1,7 +1,7 @@
 import unittest
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import numpy as np
 
@@ -28,7 +28,7 @@ from src.utils.cartridge_quick_switch import (
     LIFE_GAMEPLAY_CATEGORY_POINT,
 )
 from src.utils.goddess_navigation import NavigationObservation
-from tests.helpers import StageHistoryTestCase
+from tests.helpers import FakeClock, StageHistoryTestCase
 
 
 class SquareGoddessEntryTest(StageHistoryTestCase):
@@ -331,115 +331,27 @@ class SquareGoddessEntryTest(StageHistoryTestCase):
         self.assertEqual([5.0], notice_calls)
         self.assertEqual(["广场女神像：已确认女神像许愿任务完成。"], messages)
 
-    def test_square_return_home_retries_when_quick_switch_confirms_still_in_square(self):
-        task = object.__new__(SquareGoddessTask)
-        task.config = {"主页压暗阈值": 185.0}
-        statuses = {}
-        task.info_set = lambda key, value: statuses.__setitem__(key, value)
-        logs = []
-        task.log_info = logs.append
-        task.sleep = lambda *_args, **_kwargs: None
-        task.capture_frame = lambda: np.full((1080, 1920, 3), 255, dtype=np.uint8)
-        ocr_texts = iter(("", "", "", "抽抽乐"))
-
-        def fake_ocr(_frame, name, roi=None, **_kwargs):
-            if name == "主页左列":
-                return "我的小屋 格鲁TALK 街机游戏"
-            return next(ocr_texts)
-
-        task._ocr_text = fake_ocr
-        task.clear_temporary_home_announcement_if_needed = (
-            lambda **_kwargs: False
-        )
-        task._match = lambda _frame, _spec: MatchResult(
-            score=0.95,
-            pixel_score=0.90,
-            position=(760, 960),
-            size=(64, 60),
-            zncc_score=0.90,
-        )
-        task._passes = lambda *_args, **_kwargs: True
-        clicks = []
-        task.operate_click = lambda *args, **kwargs: clicks.append((args, kwargs))
-
-        with patch(
-            "src.tasks.SquareGoddessTask.monotonic",
-            side_effect=[0.0] * 10,
-        ):
-            self.assertTrue(
-                SquareGoddessTask._wait_for_cartridge_home(
-                    task,
-                    timeout=10.0,
-                    retry_home_clicks=2,
-                    retry_interval=0.0,
-                    total_home_clicks=3,
+    def test_square_return_home_requires_scene_evidence_and_bounds_clicks(self):
+        for home_after, in_square, expected, clicks in ((2, True, True, 2), (4, True, False, 3),
+                                                       (2, False, False, 0)):
+            with self.subTest(home_after=home_after, in_square=in_square):
+                clock = FakeClock()
+                task = object.__new__(SquareGoddessTask)
+                task.config = {}
+                task.info_set = Mock()
+                task.capture_frame = Mock()
+                task.operate_click = Mock()
+                task._read_home_confirmation_signals = lambda *_: (
+                    task.operate_click.call_count >= home_after, 0, 0, "",
                 )
-            )
-
-        self.assertEqual(
-            [((*SQUARE_HOME_POINT,), {"after_sleep": 1.0})],
-            clicks,
-        )
-        self.assertEqual("2/3", statuses["广场主页点击次数"])
-        self.assertTrue(any("执行第2次点击" in message for message in logs))
-
-    def test_square_return_home_stops_after_retry_budget_is_exhausted(self):
-        task = object.__new__(SquareGoddessTask)
-        task.config = {"主页压暗阈值": 185.0}
-        task.info_set = lambda *_args, **_kwargs: None
-        logs = []
-        task.log_info = logs.append
-        task.sleep = lambda *_args, **_kwargs: None
-        task.capture_frame = lambda: np.full((1080, 1920, 3), 255, dtype=np.uint8)
-
-        def fake_ocr(_frame, name, roi=None, **_kwargs):
-            if name == "主页左列":
-                return "我的小屋 格鲁TALK 街机游戏"
-            return "输入"
-
-        task._ocr_text = fake_ocr
-        task.clear_temporary_home_announcement_if_needed = (
-            lambda **_kwargs: False
-        )
-        task._match = lambda _frame, _spec: MatchResult(
-            score=0.95,
-            pixel_score=0.90,
-            position=(760, 960),
-            size=(64, 60),
-            zncc_score=0.90,
-        )
-        task._passes = lambda *_args, **_kwargs: True
-        clicks = []
-        task.operate_click = lambda *args, **kwargs: clicks.append((args, kwargs))
-        clock = {"value": 0.0}
-
-        def advance_clock():
-            clock["value"] += 0.1
-            return clock["value"]
-
-        with patch(
-            "src.tasks.SquareGoddessTask.monotonic",
-            side_effect=advance_clock,
-        ):
-            self.assertFalse(
-                SquareGoddessTask._wait_for_cartridge_home(
-                    task,
-                    timeout=1.0,
-                    retry_home_clicks=2,
-                    retry_interval=0.0,
-                    total_home_clicks=3,
-                )
-            )
-
-        self.assertEqual(
-            [
-                ((*SQUARE_HOME_POINT,), {"after_sleep": 1.0}),
-                ((*SQUARE_HOME_POINT,), {"after_sleep": 1.0}),
-            ],
-            clicks,
-        )
-        self.assertEqual(1, sum("执行第2次点击" in message for message in logs))
-        self.assertEqual(1, sum("执行第3次点击" in message for message in logs))
+                task.dismiss_home_announcement = Mock(return_value=False)
+                task._match = Mock()
+                task._passes = lambda _, spec: in_square and spec is QUICK_SWITCH_TEMPLATE
+                task.sleep = clock.sleep
+                with patch("src.tasks.BaseBD2Task.monotonic", clock):
+                    self.assertIs(task._return_home_from_square(), expected)
+                self.assertEqual([call(*SQUARE_HOME_POINT, after_sleep=1.0)] * clicks,
+                                 task.operate_click.call_args_list)
 
     def test_prayer_without_prompt_never_clicks_or_completes(self):
         task = object.__new__(SquareGoddessTask)

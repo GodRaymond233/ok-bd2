@@ -71,6 +71,7 @@ function Status({ core, task }: { core: Core; task: TaskPayload }) {
 function TaskRow({ core, task, selected, onSelect }: { core: Core; task: TaskPayload; selected: boolean; onSelect: () => void }) {
   const running = task.enabled && !task.paused;
   const paused = task.enabled && task.paused;
+  const startReason = task.waits_for_login ? core.homeTaskStartBlocked : core.startBlocked;
   return (
     <div className={selected ? "ti on" : "ti"}>
       <button type="button" className="ti-open" aria-current={selected} title={coreText(task.description || task.name)} onClick={onSelect}>
@@ -96,8 +97,8 @@ function TaskRow({ core, task, selected, onSelect }: { core: Core; task: TaskPay
         <button
           type="button"
           className="btn sm icon"
-          disabled={Boolean(core.startBlocked) && !paused}
-          title={paused ? t("继续") : core.startBlocked ?? t("开始")}
+          disabled={Boolean(startReason) && !paused}
+          title={paused ? t("继续") : startReason ?? t("开始")}
           aria-label={`${paused ? t("继续") : t("开始")} ${coreText(task.name)}`}
           onClick={() => void core.act(() => paused ? core.taskAction(task.name, "resume") : core.startTask(task.name))}
         >

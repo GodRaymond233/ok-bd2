@@ -34,12 +34,6 @@ from src.utils.cartridge_quick_switch import (
 from src.utils.home_confirmation import (
     HOME_DIMMED_P95_THRESHOLD_DEFAULT,
     HOME_GACHA_OCR_REFERENCE_ROI,
-    HOME_LEFT_COLUMN_OCR_REFERENCE_ROI,
-    HOME_LEFT_COLUMN_REQUIRED_HITS,
-    home_confirmation_passes,
-    home_gacha_ocr_with_fallback,
-    home_left_column_hits,
-    home_left_column_p95_brightness,
 )
 from src.utils.image_utils import (
     reference_roi_frame,
@@ -77,6 +71,10 @@ PVP_AUTO_BATTLE_CLICK_REFERENCE = (2026, 1291)  # 2560×1440 参考
 PVP_STAGE_CLICK_REFERENCE_OFFSET = (0, -75)  # 1920×1080 参考位移
 PVP_BATTLE_START_SCREEN_POINT = (1381, 1061)  # 2560×1440 参考
 PVP_FREE_AP_SWITCH_SCREEN_POINT = (1732, 557)  # 2560×1440 参考
+PVP_FREE_AP_BALANCE_SCREEN_ROI = (2218, 56, 122, 49)
+PVP_AUTO_BATTLE_CANCEL_SCREEN_ROI = (970, 1040, 203, 85)
+PVP_FORMATION_LABEL_SCREEN_ROI = (190, 1245, 185, 84)
+PVP_FORMATION_BATTLE_SCREEN_ROI = (2270, 1274, 150, 80)
 PVP_MULTIPLIER_BUTTON_SCREEN_POINT = (1719, 465)  # 2560×1440 参考
 PVP_MULTIPLIER_40_OPTION_SCREEN_POINT = (1584, 715)  # 2560×1440 参考
 PVP_MULTIPLIER_1_OPTION_SCREEN_POINT = (980, 712)  # 2560×1440 参考
@@ -113,6 +111,7 @@ TEMPLATE_DIR = PROJECT_ROOT / "recognition-assets" / "template-assets"
 
 
 class PVPTask(BaseBD2Task):
+    waits_for_login = True
     status_keys = [
         "启用",
         "状态",
@@ -174,7 +173,8 @@ class PVPTask(BaseBD2Task):
         self.default_config.update(
             {
                 "启用": True,
-                "竞技场战斗倍数": 1,
+                # 本机默认直接拉满 40 倍；配置仍可覆盖（1～40）。
+                "竞技场战斗倍数": 40,
                 "加载页面阈值": 0.72,
                 "主页压暗阈值": HOME_DIMMED_P95_THRESHOLD_DEFAULT,
                 "PVP OCR 阈值": 0.2,
@@ -248,13 +248,12 @@ class PVPTask(BaseBD2Task):
             self.info_set("状态", "镜中之战失败：未能进入 PVP 箱庭。")
             return False
 
-        current_multiplier = target_multiplier
-        start_state = self._start_auto_battle(current_multiplier)
+        start_state, current_multiplier = self._start_auto_battle(target_multiplier)
         if start_state == "ap_shortage" and current_multiplier != 1:
             self.log_info("镜中之战：当前倍率 AP 不足，降到 1 倍重试。")
             current_multiplier = 1
             self.info_set("目标倍率", current_multiplier)
-            start_state = self._start_auto_battle(current_multiplier)
+            start_state, current_multiplier = self._start_auto_battle(current_multiplier)
         if start_state == "settlement":
             return self._return_home_after_settlement()
         if start_state == "free_ap_unavailable":
@@ -264,9 +263,8 @@ class PVPTask(BaseBD2Task):
             self.info_set("状态", "镜中之战跳过失败：未能确认返回主页。")
             return False
         if start_state == "ap_depleted":
-            self.info_set("状态", "免费 AP 已耗尽。")
-            self.log_completion("镜中之战：免费 AP 已耗尽，流程结束。")
-            return True
+            outcome = self._skip_cocktail_battle("1 倍战斗所需的鲜血鸡尾酒不足")
+            return outcome != "home_recovery_failed"
         if start_state == "ap_shortage":
             self.info_set("状态", "1 倍仍 AP 不足。")
             self.log_completion("镜中之战：1 倍 AP 仍不足，流程结束。")
@@ -316,6 +314,9 @@ class PVPTask(BaseBD2Task):
             self._clear_pvp_hub_notice_if_present()
             return True
 
+        formation_arrow = self._formation_return_arrow(self.capture_frame())
+        if formation_arrow is not None and not self._leave_unstarted_battle():
+            return False
         return self._enter_pvp_from_home()
 
     def _enter_pvp_from_home(self) -> bool:
@@ -417,43 +418,7 @@ class PVPTask(BaseBD2Task):
 
     def _wait_for_cartridge_home(self, interval: float = 0.35) -> bool:
         self.info_set("当前阶段", "确认主页")
-        end_at = monotonic() + float(self.config.get("主页确认等待秒数", 10.0))
-        last_left_hits = 0
-        last_p95 = 0.0
-        last_gacha_text = ""
-        while monotonic() <= end_at:
-            frame = self.capture_frame()
-            home_ok, last_left_hits, last_p95, gacha_text = (
-                self._home_confirmation_signals(frame)
-            )
-            last_gacha_text = gacha_text or last_gacha_text
-            self.info_set(
-                "主页左列关键词",
-                f"{last_left_hits}/{HOME_LEFT_COLUMN_REQUIRED_HITS}",
-            )
-            self.info_set(
-                "主页亮度p95",
-                f"{last_p95:.0f}/{self._home_p95_threshold():.0f}",
-            )
-            self.info_set("主页抽抽乐 OCR", gacha_text or "-")
-            if home_ok:
-                return True
-            self.clear_temporary_home_announcement_if_needed(
-                left_hits=last_left_hits,
-                required_left_hits=HOME_LEFT_COLUMN_REQUIRED_HITS,
-                brightness=last_p95,
-                brightness_threshold=self._home_p95_threshold(),
-                gacha_ocr_text=gacha_text,
-                context="镜中之战确认主页",
-            )
-            self.sleep(interval)
-
-        self.log_info(
-            "镜中之战：未联合确认左列关键词、亮度和抽抽乐文字，"
-            f"left={last_left_hits}/{HOME_LEFT_COLUMN_REQUIRED_HITS}, "
-            f"p95={last_p95:.0f}, ocr={last_gacha_text or '-'}。"
-        )
-        return False
+        return self.prepare_home("镜中之战入口", interval=interval, recover=False)
 
     def _wait_for_pvp_hub_after_cart(
         self,
@@ -588,9 +553,9 @@ class PVPTask(BaseBD2Task):
             after_sleep=3.0,
         )
 
-    def _start_auto_battle(self, multiplier: int) -> str:
+    def _start_auto_battle(self, multiplier: int) -> tuple[str, int]:
         if self._skip_weekly_settlement():
-            return "settlement"
+            return "settlement", multiplier
         self.info_set("当前阶段", "寻找 PVP 舞台")
         if not self._click_pvp_stage_once(12.0):
             self._recover_stage_position()
@@ -599,7 +564,7 @@ class PVPTask(BaseBD2Task):
                 # 箱庭实景以定位根因（对照 pvp_hub_entry_failed 等埋点）。
                 self._save_flow_diagnostic("pvp_stage_not_found")
                 self.log_info("镜中之战：未找到 PVP 舞台物件。")
-                return "failed"
+                return "failed", multiplier
 
         self.info_set("当前阶段", "打开自动战斗")
         menu_timeout = float(self.config.get("PVP 菜单等待秒数", 12.0))
@@ -629,11 +594,11 @@ class PVPTask(BaseBD2Task):
                 if not self._click_pvp_stage_once(8.0):
                     self._save_flow_diagnostic("pvp_stage_not_found")
                     self.log_info("镜中之战：重试点击时未找到 PVP 舞台物件。")
-                    return "failed"
+                    return "failed", multiplier
         if not found_auto:
             self.log_info("镜中之战：多次点击舞台后自动战斗菜单仍未出现。")
             self._save_flow_diagnostic("pvp_auto_battle_failed")
-            return "failed"
+            return "failed", multiplier
 
         menu_roi = self._mf_roi(*PVP_AUTO_BATTLE_MENU_OCR_REFERENCE_ROI)
         # 2026-09 客户端改版把按钮热区收到图标/背板上（RPT-20260905-201103），
@@ -690,29 +655,51 @@ class PVPTask(BaseBD2Task):
         if not found_menu:
             self.log_info("镜中之战：多次点击后自动战斗菜单仍未出现。")
             self._save_flow_diagnostic("pvp_auto_battle_failed")
-            return "failed"
+            return "failed", multiplier
 
         if self._allow_paid_cocktail():
             # 允许消耗背包内的非免费鸡尾酒：不再强制勾住「仅用免费鸡尾酒」。
             self._ensure_free_ap_disabled()
-        elif not self._ensure_free_ap_enabled():
-            # 未能开启免费模式不等于确认次数耗尽；不发送开始战斗，
-            # 退出弹窗并确认回主页后，才允许按跳过处理。
-            return self._skip_unavailable_free_cocktail()
+        else:
+            balance = self._confirm_free_ap_balance()
+            if balance == 0:
+                return self._skip_cocktail_battle("免费鲜血鸡尾酒已耗尽"), multiplier
+            if balance is not None and balance < multiplier:
+                multiplier = 1
+                self.info_set("目标倍率", multiplier)
+                self.log_info(f"镜中之战：免费鲜血鸡尾酒剩余 {balance}，按 1 倍执行。")
+            if not self._ensure_free_ap_enabled():
+                return self._skip_cocktail_battle("未能开启仅用免费鸡尾酒"), multiplier
         if not self._ensure_multiplier(multiplier):
-            return "failed"
+            return "failed", multiplier
         self._select_max_battle_count()
 
         if self._skip_weekly_settlement():
-            return "settlement"
+            return "settlement", multiplier
         self.info_set("当前阶段", "点击战斗开始")
         self.info_set("PVP 开始战斗 OCR", "跳过前置 OCR，按固定比例点击")
         self._click_screen_reference(*PVP_BATTLE_START_SCREEN_POINT, after_sleep=2.0)
-        return self._wait_battle_start_or_ap_shortage(multiplier)
+        return self._wait_battle_start_or_ap_shortage(multiplier), multiplier
+
+    def _confirm_free_ap_balance(self) -> int | None:
+        roi = self._screen_reference_roi_to_reference_roi(PVP_FREE_AP_BALANCE_SCREEN_ROI)
+        previous = None
+        for attempt in range(3):
+            frame = self.capture_frame()
+            text = normalize_ocr_text(self._ocr_text(frame, name="PVP 免费鸡尾酒余额", roi=roi))
+            values = re.findall(r"(?<![\d/])(\d{1,2})/40(?!\d)", text)
+            balance = int(values[0]) if len(values) == 1 and int(values[0]) <= 40 else None
+            if balance is not None and balance == previous:
+                return balance
+            previous = balance
+            if attempt < 2:
+                self.sleep(.35)
+        return None
 
     def _wait_battle_start_or_ap_shortage(self, multiplier: int) -> str:
         timeout = float(self.config.get("PVP 战斗开始等待秒数", 30.0))
         deadline = monotonic() + max(0.0, timeout)
+        frame = None
         while monotonic() <= deadline:
             frame = self.capture_frame()
             if frame is not None:
@@ -734,11 +721,16 @@ class PVPTask(BaseBD2Task):
 
             self.sleep(0.5)
 
-        self.log_warning(
-            "镜中之战：点击开始后未识别到战斗开始或 AP 不足信号，"
-            "按结算等待继续。"
-        )
-        return "started"
+        if frame is not None:
+            result = self._ocr_text(
+                frame, name="PVP 快速结算确认",
+                roi=self._screen_reference_roi_to_reference_roi(PVP_RESULT_SCREEN_ROI),
+            )
+            if self._ocr_pattern_match_count(result, self._pvp_result_patterns(multiplier)) >= 4:
+                return "started"
+        self.log_warning("镜中之战：开始后未确认战斗或结算，停止等待。")
+        self._save_flow_diagnostic("pvp_battle_start_unconfirmed")
+        return "failed"
 
     def _allow_paid_cocktail(self) -> bool:
         return bool(self.config.get("允许使用非免费鸡尾酒", False))
@@ -765,32 +757,77 @@ class PVPTask(BaseBD2Task):
         self.log_info("镜中之战：仅用免费鸡尾酒开关未能关闭，按当前状态继续战斗。")
         return False
 
-    def _skip_unavailable_free_cocktail(self) -> str:
-        """免费模式无法开启时退出弹窗，确认主页后才按跳过收尾。"""
-        message = "镜中之战：未能开启仅用免费鸡尾酒，跳过本次自动战斗。"
+    def _skip_cocktail_battle(self, reason: str) -> str:
+        """Cancel the automatic battle menu and confirm home before recording a skip."""
         self.info_set("当前阶段", "跳过并尝试返回主页")
-        self.log_info(message)
-        try:
-            self.back(after_sleep=1.0)
-        except (TaskDisabledException, FinishedException):
-            raise
-        except Exception as exc:
-            self.log_warning(f"镜中之战：关闭自动战斗弹窗失败：{exc}")
+        self.log_info(f"镜中之战：{reason}，跳过本次自动战斗。")
         self._auto_return_home_cooldown_until = 0.0
-        recovered = False
         try:
-            recovered = self.recover_daily_home()
+            recovered = self._leave_unstarted_battle()
         except (TaskDisabledException, FinishedException):
             raise
         except Exception as exc:
-            self.log_warning(f"镜中之战：跳过后返回主页异常：{exc}")
+            self.log_warning(f"镜中之战：返回主页异常：{exc}")
+            recovered = False
         if not recovered:
-            self.info_set("状态", "免费模式无法开启，且未能确认返回主页。")
-            self.log_warning("镜中之战：未确认返回主页，本次按失败处理。")
+            self.info_set("状态", f"{reason}，且未能确认返回主页。")
+            self._save_flow_diagnostic("pvp_skip_return_home_failed")
             return "home_recovery_failed"
-        self.info_set("状态", "免费模式无法开启，已跳过并确认返回主页。")
-        self.log_completion(message + "已确认返回主页。")
+        self.info_set("状态", f"{reason}，已跳过。")
         return "free_ap_unavailable"
+
+    def _leave_unstarted_battle(self) -> bool:
+        menu_roi = self._mf_roi(*PVP_AUTO_BATTLE_MENU_OCR_REFERENCE_ROI)
+        cancel_roi = self._screen_reference_roi_to_reference_roi(PVP_AUTO_BATTLE_CANCEL_SCREEN_ROI)
+        frame = self.capture_frame()
+        for _ in range(2):
+            menu = self._ocr_text(frame, name="PVP 退出自动战斗菜单", roi=menu_roi)
+            menu = normalize_ocr_text(menu)
+            if "自动战斗" not in menu or "鲜血鸡尾酒" not in menu:
+                break
+            if not self._click_ocr_pattern_center(
+                [r"^取消$"], "PVP 取消自动战斗", cancel_roi, after_sleep=.8,
+            ):
+                self.sleep(.4)
+            frame = self.capture_frame()
+
+        clicked_arrow = False
+        for _ in range(2):
+            # The formation controls can be visible through the dimmed popup.
+            menu = self._ocr_text(frame, name="PVP 自动战斗菜单复核", roi=menu_roi)
+            if "鲜血鸡尾酒" in normalize_ocr_text(menu):
+                break
+            point = self._formation_return_arrow(frame)
+            if point is None:
+                break
+            self._click_frame_point(frame, point, after_sleep=1.0)
+            clicked_arrow = True
+            frame = self.capture_frame()
+            if self._frame_confirms_home(frame, "镜中之战结算"):
+                return True
+            if self._passes(self._match(frame, PVP_MEDALS_TEMPLATE), PVP_MEDALS_TEMPLATE):
+                break
+        if clicked_arrow and self._return_home_from_pvp_hub():
+            return True
+        return self.recover_daily_home()
+
+    def _formation_return_arrow(self, frame) -> tuple[int, int] | None:
+        arrow = self._match(frame, PVP_FORMATION_BACK_TEMPLATE)
+        if not self._passes(arrow, PVP_FORMATION_BACK_TEMPLATE):
+            return None
+        battle_roi = self._screen_reference_roi_to_reference_roi(PVP_FORMATION_BATTLE_SCREEN_ROI)
+        battle = self._ocr_text(frame, name="PVP 战斗入口", roi=battle_roi)
+        battle_visible = self._matches_any(battle, [r"battle"])
+        formation_roi = self._screen_reference_roi_to_reference_roi(PVP_FORMATION_LABEL_SCREEN_ROI)
+        formation = self._ocr_text(frame, name="PVP 阵形设置", roi=formation_roi)
+        formation_visible = "形设置" in normalize_ocr_text(formation)
+        if battle_visible and formation_visible:
+            return arrow.center
+        if battle_visible or formation_visible:
+            auto = self._ocr_text(frame, name="PVP 布阵页自动战斗", roi=PVP_AUTO_BATTLE_SCREEN_ROI)
+            if "自动战斗" in normalize_ocr_text(auto):
+                return arrow.center
+        return None
 
     def _ensure_free_ap_enabled(self) -> bool:
         self.info_set("当前阶段", "确认仅用免费鸡尾酒")
@@ -1225,110 +1262,27 @@ class PVPTask(BaseBD2Task):
 
     def _return_home_from_pvp_hub(self) -> bool:
         self.info_set("当前阶段", "返回主页")
-        in_pvp_hub = self._wait_for_template(
-            PVP_MEDALS_TEMPLATE,
-            timeout=float(self.config.get("PVP 返回箱庭等待秒数", 10.0)),
+        timeout = float(self.config.get("PVP 返回主页等待秒数", 20.0))
+        if self._frame_confirms_home(self.capture_frame(), "PVP 退出前"):
+            return True
+        hub = self._wait_for_template(
+            PVP_MEDALS_TEMPLATE, timeout=float(self.config.get("PVP 返回箱庭等待秒数", 10.0)),
             name="PVP 箱庭",
         )
-        if not in_pvp_hub:
-            self.info_set("PVP 返回主页", "未确认 PVP 箱庭")
-            return self._wait_for_home(
-                timeout=float(self.config.get("PVP 返回主页等待秒数", 20.0))
-            )
-
-        self.info_set("PVP 返回主页", "已确认 PVP 箱庭")
-        home_timeout = max(
-            0.0,
-            float(self.config.get("PVP 返回主页等待秒数", 20.0)),
+        home = self.prepare_home(
+            "PVP 返回主页", timeout=timeout, interval=0.5, recover=False,
+            exit_scene=self._click_pvp_home if hub else None, max_clicks=2,
+            retry_interval=timeout / 2,
         )
+        self.info_set("PVP 返回主页", "通过" if home else "失败")
+        return home
+
+    def _click_pvp_home(self, frame) -> bool:
+        if not self._passes(self._match(frame, PVP_MEDALS_TEMPLATE), PVP_MEDALS_TEMPLATE):
+            return False
         self._click_reference(*PVP_BACK_HOME_REFERENCE_POINT, after_sleep=2.0)
         self._wait_loading_if_present("PVP 返回主页")
-        home_deadline = monotonic() + home_timeout
-        home_ok = self._wait_for_home(timeout=home_timeout / 2.0)
-        if not home_ok:
-            remaining = home_deadline - monotonic()
-            if remaining > 0.0:
-                second_home_timeout = min(
-                    remaining,
-                    max(0.0, home_timeout - home_timeout / 2.0),
-                )
-                frame = self.capture_frame()
-                hub = self._match(frame, PVP_MEDALS_TEMPLATE)
-                self.info_set("PVP 箱庭", f"{hub.score:.3f}")
-                if self._passes(hub, PVP_MEDALS_TEMPLATE):
-                    self.info_set("PVP 返回主页", "首次点击后仍在PVP箱庭，重试一次")
-                    self._click_reference(
-                        *PVP_BACK_HOME_REFERENCE_POINT,
-                        after_sleep=2.0,
-                    )
-                    self._wait_loading_if_present("PVP 返回主页")
-                    second_home_timeout = min(
-                        second_home_timeout,
-                        home_deadline - monotonic(),
-                    )
-                    home_ok = self._wait_for_home(timeout=second_home_timeout)
-                else:
-                    self.info_set("PVP 返回主页", "未确认主页且未确认仍处PVP箱庭")
-                    home_ok = self._wait_for_home(timeout=second_home_timeout)
-
-        self.info_set("PVP 返回主页", "通过" if home_ok else "失败")
-        return home_ok
-
-    def _wait_for_home(self, timeout: float, interval: float = 0.5) -> bool:
-        end_at = monotonic() + max(0.0, timeout)
-        while monotonic() <= end_at:
-            frame = self.capture_frame()
-            home_ok, left_hits, p95_brightness, gacha_text = (
-                self._home_confirmation_signals(frame)
-            )
-            self.info_set(
-                "主页左列关键词",
-                f"{left_hits}/{HOME_LEFT_COLUMN_REQUIRED_HITS}",
-            )
-            self.info_set(
-                "主页亮度p95",
-                f"{p95_brightness:.0f}/{self._home_p95_threshold():.0f}",
-            )
-            self.info_set("主页抽抽乐 OCR", gacha_text or "-")
-            if home_ok:
-                return True
-            self.clear_temporary_home_announcement_if_needed(
-                left_hits=left_hits,
-                required_left_hits=HOME_LEFT_COLUMN_REQUIRED_HITS,
-                brightness=p95_brightness,
-                brightness_threshold=self._home_p95_threshold(),
-                gacha_ocr_text=gacha_text,
-                context="PVP 返回主页",
-            )
-            self.sleep(interval)
-        return False
-
-    def _home_confirmation_signals(self, frame) -> tuple[bool, int, float, str]:
-        left_text = self._ocr_text(
-            frame,
-            name="主页左列",
-            roi=HOME_LEFT_COLUMN_OCR_REFERENCE_ROI,
-        )
-        left_hits = home_left_column_hits(left_text)
-        p95_brightness = home_left_column_p95_brightness(frame)
-        gacha_result = home_gacha_ocr_with_fallback(
-            lambda scale: self._ocr_text(
-                frame,
-                name=f"主页抽抽乐 x{scale:g}",
-                roi=HOME_GACHA_OCR_REFERENCE_ROI,
-                ocr_scale=scale,
-            )
-        )
-        gacha_text = gacha_result.text
-        self.info_set("主页抽抽乐 OCR 尝试", gacha_result.trace)
-        confirmed = home_confirmation_passes(
-            left_hits=left_hits,
-            required_left_hits=HOME_LEFT_COLUMN_REQUIRED_HITS,
-            brightness=p95_brightness,
-            brightness_threshold=self._home_p95_threshold(),
-            gacha_ocr_text=gacha_text,
-        )
-        return confirmed, left_hits, p95_brightness, gacha_text
+        return True
 
     def _recover_stage_position(self) -> None:
         if self._click_template_until(
@@ -1770,9 +1724,6 @@ class PVPTask(BaseBD2Task):
             after_sleep=after_sleep,
         )
 
-    def _home_p95_threshold(self) -> float:
-        return float(self.config.get("主页压暗阈值", HOME_DIMMED_P95_THRESHOLD_DEFAULT))
-
     @staticmethod
     def _matches_any(text: str, patterns: list[str]) -> bool:
         normalized = PVPTask._normalize_text(text)
@@ -1794,12 +1745,13 @@ class PVPTask(BaseBD2Task):
         return normalized.replace("倍", "").replace("o", "0")
 
     def _target_multiplier(self) -> int:
-        raw = str(self.config.get("竞技场战斗倍数", 1)).replace("倍", "")
+        # 本机默认 40 倍；配置损坏或越界时也回到 40，避免悄悄打成 1 倍。
+        raw = str(self.config.get("竞技场战斗倍数", 40)).replace("倍", "")
         try:
             multiplier = int(raw)
         except ValueError:
-            multiplier = 1
-        return multiplier if 1 <= multiplier <= 40 else 1
+            multiplier = 40
+        return multiplier if 1 <= multiplier <= 40 else 40
 
     @staticmethod
     def _roi_frame(
@@ -1850,6 +1802,16 @@ QUICK_PACK_TEMPLATE = TemplateSpec(
     # 圆底样式在 1600x901 实机帧 zncc 最高 0.838（RPT-20260902-225925），
     # 0.85 门禁确定性误拒；同帧误检 zncc 最高 0.43，0.78 仍有足够余量。
     min_zncc_score=0.78,
+)
+
+PVP_FORMATION_BACK_TEMPLATE = TemplateSpec(
+    name="pvp_formation_back_arrow",
+    file_name="pvp_formation_back_arrow.png",
+    default_threshold=0.88,
+    relative_roi=(.043, .023, .075, .082),
+    scale_ratios=(.90, .95, 1.0, 1.05, 1.10),
+    min_pixel_score=0.78,
+    min_zncc_score=0.82,
 )
 
 PVP_MEDALS_TEMPLATE = TemplateSpec(

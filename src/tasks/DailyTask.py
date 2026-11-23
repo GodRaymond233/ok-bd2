@@ -86,6 +86,10 @@ BUSINESS_COLLECT_KEYWORDS = [
 GUILD_SIGN_IN_ENTRY_REFERENCE_POINT = (370, 155)
 GUILD_SIGN_IN_SUCCESS_ACKNOWLEDGE_REFERENCE_POINT = (450, 650)
 BACK_BUTTON_REFERENCE_POINT = (100, 50)
+# 「我的小屋」左上角那条返回条比公会页更宽，可点的 ‹ 箭头在参考 (172, 48)；
+# 共用 (100, 50) 会点进返回条左侧的空白，2026-11-16 实机表现为「点了没反应、
+# 一直停在小屋」，随后整批日常被判失败。实测 (344,97)@4K = (172,48.5)@1080p。
+MY_HOME_BACK_REFERENCE_POINT = (172, 48)
 MY_HOME_ENTRY_REFERENCE_POINT = (166, 158)
 MY_HOME_TITLE_RELATIVE_ROI = (0.11, 0.01, 0.25, 0.10)
 MY_HOME_TITLE_OCR_RETRIES = 3
@@ -100,6 +104,7 @@ BUSINESS_GUEST_RELATIVE_ROI = (0.08, 0.19, 0.23, 0.35)
 
 
 class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
+    waits_for_login = True
     include_quick_hunt_config = False
 
     vision_threshold_key = "快速狩猎模板阈值"
@@ -115,6 +120,7 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
         "公会入口",
         "公会入口模板",
         "公会入口阈值",
+        "公会入口点击次数",
         "公会签到 loading 状态",
         "公会签到_loading_appear",
         "公会签到_loading_gone",
@@ -198,6 +204,7 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
                 '执行小屋签到': True,
                 '执行一键收菜': True,
                 '小屋进入最大点击次数': 3,
+                '公会进入最大点击次数': 3,
                 '公会入口阈值': 0.78,
                 '公会签到成功阈值': 0.76,
                 '小屋页面阈值': 0.76,
@@ -217,6 +224,7 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
                 '执行公会签到': "从主页进入公会，领取每日签到奖励。",
                 '执行小屋签到': "从主页进入小屋，确认到达后返回主页。",
                 '小屋进入最大点击次数': "小屋入口点击后未确认到达时的补点上限（转场可能吞点击）。",
+                '公会进入最大点击次数': "公会入口点击后仍停在主页时的补点上限（转场可能吞点击）。",
                 '执行一键收菜': "一键领取经营奖励，随后进入餐厅领取常客圣石。",
             }
         )
@@ -300,7 +308,7 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
         return not failed
 
     def run_guild_sign_in(self) -> bool:
-        if not self._wait_for_home_confirmation("公会签到入口前主页确认"):
+        if not self.prepare_home("公会签到入口前主页确认"):
             return False
 
         frame = self.capture_frame()
@@ -317,28 +325,32 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
 
         self._status_set("公会判断", "已识别入口，进入公会")
         self._sleep_after_recognition()
-        self._click_reference(*GUILD_SIGN_IN_ENTRY_REFERENCE_POINT, after_sleep=0.5)
-        loading_state, success_found, text = self._wait_loading_or_template_or_ocr(
-            "公会签到",
-            GUILD_SIGNUP_SUCCESS_TEMPLATE,
-            GUILD_SUCCESS_KEYWORDS,
-            name="guild_sign_in_early",
-            reject_template_on_home=True,
-        )
-        if loading_state == "none" and not success_found:
-            frame = self.capture_frame()
-            if self._frame_confirms_home(frame, "公会入口重试前"):
-                guild, guild_spec = self._match_best(frame, GUILD_ENTRY_TEMPLATES)
-                if self._passes(guild, guild_spec):
-                    self.log_info("公会入口点击后仍在主页，按新识别中心重试一次。")
-                    height, width = frame.shape[:2]
-                    self.operate_click(
-                        guild.center[0] / width, guild.center[1] / height, after_sleep=0.5,
-                    )
-                    loading_state, success_found, text = self._wait_loading_or_template_or_ocr(
-                        "公会签到", GUILD_SIGNUP_SUCCESS_TEMPLATE, GUILD_SUCCESS_KEYWORDS,
-                        name="guild_sign_in_retry", reject_template_on_home=True,
-                    )
+
+        entry_clicks = max(1, int(self.config.get("公会进入最大点击次数", 3)))
+        loading_state = "none"
+        success_found = False
+        text = ""
+        for attempt in range(1, entry_clicks + 1):
+            if attempt == 1:
+                self._click_reference(*GUILD_SIGN_IN_ENTRY_REFERENCE_POINT, after_sleep=0.5)
+            else:
+                point = self._guild_entry_retry_point(attempt)
+                if point is None:
+                    break
+                self.log_info(
+                    f"公会签到：仍在主页，按新识别中心第 {attempt} 次点击公会入口。"
+                )
+                self.operate_click(*point, after_sleep=0.5)
+            self._status_set("公会入口点击次数", attempt)
+            loading_state, success_found, text = self._wait_loading_or_template_or_ocr(
+                "公会签到",
+                GUILD_SIGNUP_SUCCESS_TEMPLATE,
+                GUILD_SUCCESS_KEYWORDS,
+                name="guild_sign_in_early" if attempt == 1 else f"guild_sign_in_early{attempt}",
+                reject_template_on_home=True,
+            )
+            if success_found or loading_state != "none":
+                break
         self._status_set("公会签到 loading 状态", loading_state)
         if loading_state == "stuck":
             self._status_set("公会签到成功", "否")
@@ -376,6 +388,22 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
         # 与运行历史误记为成功，并在当日跳过补跑。
         home_ok = self._return_home_from_guild()
         return bool(success_found and home_ok)
+
+    def _guild_entry_retry_point(self, attempt: int) -> tuple[float, float] | None:
+        """只在新帧仍确认主页时返回公会入口的识别中心。"""
+        try:
+            frame = self.capture_frame()
+        except (TaskDisabledException, FinishedException):
+            raise
+        except Exception:
+            return None
+        if not self._frame_confirms_home(frame, f"公会签到第{attempt}次点击前主页确认"):
+            return None
+        guild, guild_spec = self._match_best(frame, GUILD_ENTRY_TEMPLATES)
+        if not self._passes(guild, guild_spec):
+            return None
+        height, width = frame.shape[:2]
+        return guild.center[0] / width, guild.center[1] / height
 
     def _wait_for_existing_guild_visit(self) -> bool:
         deadline = monotonic() + 3.0
@@ -420,7 +448,7 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
             return False
         for attempt in range(1, 4):
             self._click_reference(*BACK_BUTTON_REFERENCE_POINT, after_sleep=1.0)
-            if self._wait_for_home_confirmation("公会签到返回主页", timeout=4.0):
+            if self.prepare_home("公会签到返回主页", timeout=4.0):
                 home_ok = True
                 break
             if attempt >= 3:
@@ -436,7 +464,7 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
         return home_ok
 
     def run_my_home_sign_in(self) -> bool:
-        if not self._wait_for_home_confirmation("小屋签到入口前主页确认"):
+        if not self.prepare_home("小屋签到入口前主页确认"):
             return False
 
         entry_clicks = int(self.config.get("小屋进入最大点击次数", 3))
@@ -490,13 +518,13 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
         if found:
             self.log_info("小屋签到：已进入小屋页面，返回主页。")
             self._sleep_after_recognition()
-            self._click_reference(*BACK_BUTTON_REFERENCE_POINT, after_sleep=1.0)
+            self._click_reference(*MY_HOME_BACK_REFERENCE_POINT, after_sleep=1.0)
         else:
             self.log_info("小屋签到：未确认小屋页面标题，不执行返回点击。")
             self._status_set("小屋签到返回主页结果", "未执行")
             return False
 
-        home_ok = self._wait_for_home_confirmation("小屋签到返回主页")
+        home_ok = self.prepare_home("小屋签到返回主页")
         self._status_set("小屋签到返回主页结果", "通过" if home_ok else "失败")
         return home_ok
 
@@ -560,7 +588,7 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
     def run_business_collect(self) -> bool:
         self.info_set("常客圣石结果", "未执行")
         self.info_set("常客圣石奖励", "-")
-        if not self._wait_for_home_confirmation("一键收菜入口前主页确认"):
+        if not self.prepare_home("一键收菜入口前主页确认"):
             return False
 
         self._click_reference(*BUSINESS_COLLECT_ENTRY_REFERENCE_POINT, after_sleep=1.0)
@@ -581,7 +609,7 @@ class DailyTask(TaskVisionMixin, QuickHuntConfigMixin, BaseBD2Task):
         stones_ok = claimed and self._collect_business_guest_stones()
         home_ok = (
             self.recover_daily_home() if claimed
-            else self._wait_for_home_confirmation("一键收菜返回主页")
+            else self.prepare_home("一键收菜返回主页")
         )
         self._status_set("一键收菜领取结果", "已领取或无待领取奖励" if claimed else "未确认")
         self._status_set("一键收菜返回主页结果", "通过" if home_ok else "失败")

@@ -463,50 +463,23 @@ def set_default_store(store: RunHistoryStore | None) -> None:
         _default_store = store
 
 
-def install_run_history_recorder(exit_event=None) -> bool:
-    """Record every finished one-time task into the default store."""
+def record_finished_task(task, result):
+    """Persist the business outcome and its schedule before optional navigation."""
+    if not getattr(task, "name", None) or getattr(task, "_start_after_login", False):
+        return
+    from src.tasks import scheduler
 
-    from ok.core.events import communicate
-
-    if getattr(install_run_history_recorder, "_installed", False):
-        return False
-
-    class _Recorder:
-        def stop(self):
-            communicate.task_done.disconnect(self.on_task_done)
-            install_run_history_recorder._installed = False
-
-        def on_task_done(self, task):
-            if task is None or not getattr(task, "name", None):
-                return
-            if getattr(task, "_start_after_login", False):
-                return
-            name = str(task.name)
-            try:
-                default_store().record_task_done(task)
-                record = default_store().last_run(name)
-            except Exception as exc:
-                logger.error(f"record run history failed: {exc}")
-                record = None
-            try:
-                # 记录本次完成状态后，再计算并保存下次运行时间。
-                from src.tasks import scheduler as task_scheduler
-
-                if record is not None:
-                    ok = bool(record.get("ok"))
-                else:
-                    ok = is_successful_run(task_info_snapshot(task))
-                task_scheduler.default_store().delay_after_record(
-                    name, ok=ok, history=default_store(),
-                )
-            except Exception as exc:
-                logger.error(f"record schedule failed: {exc}")
-
-    recorder = _Recorder()
-    communicate.task_done.connect(recorder.on_task_done)
-    if exit_event is not None:
-        exit_event.bind_stop(recorder)
-    # Keep the receiver alive for the app's lifetime.
-    install_run_history_recorder._recorder = recorder
-    install_run_history_recorder._installed = True
-    return True
+    name = str(task.name)
+    try:
+        history = default_store()
+        history.record_task_done(task, ok=False if result is False else None)
+        record = history.last_run(name)
+    except Exception as exc:
+        logger.error(f"record run history failed: {exc}")
+        record = None
+    try:
+        ok = (bool(record["ok"]) if record is not None
+              else result is not False and is_successful_run(task_info_snapshot(task)))
+        scheduler.default_store().delay_after_record(name, ok=ok, history=default_store())
+    except Exception as exc:
+        logger.error(f"record schedule failed: {exc}")

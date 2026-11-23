@@ -10,6 +10,7 @@ from src.tasks.FreeGachaTask import (
     FREE_ENTRY_RETRY_BLOCKED,
     FREE_ENTRY_RETRY_LOADING,
     FREE_ENTRY_RETRY_READY,
+    FREE_ENTRY_RETRY_STEP_UP,
     FREE_ENTRY_RETRY_UNKNOWN,
     RESULT_BACK_TEMPLATE,
     FreeDrawConfirmation,
@@ -53,6 +54,18 @@ def confirmation_boxes(pool="装备", count=3, cost=None, scale=1):
                             width=w * scale, height=h * scale) for name, x, y, w, h in rows]
 
 
+def step_up_boxes(scale=1, ownership=("未拥有",)):
+    rows = [
+        ("服装抽抽乐", 200, 20, 110, 30),
+        ("step1抽抽乐", 840, 680, 80, 30),
+        ("付费钻石90", 840, 710, 80, 20),
+    ]
+    rows.extend((label, 175 + index * 15, 305, 50, 30)
+                for index, label in enumerate(ownership))
+    return [SimpleNamespace(name=name, x=x * scale, y=y * scale,
+                            width=w * scale, height=h * scale) for name, x, y, w, h in rows]
+
+
 class FreeGachaTaskHelperTest(StageHistoryTestCase):
     def test_paid_event_pool_uses_only_the_free_batch_entry(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -92,6 +105,54 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
                             if free:
                                 self.assertAlmostEqual(.2, observed.point[0])
                                 self.assertAlmostEqual(.91875, observed.point[1])
+
+    def test_paid_step_up_banner_locates_the_free_clothing_banner(self):
+        frame = np.zeros((800, 1000, 3), dtype=np.uint8)
+        boxes = step_up_boxes()
+        observed = FreeGachaTask._step_up_observation(
+            frame, boxes, [box.name for box in boxes], "")
+        self.assertEqual(FREE_ENTRY_RETRY_STEP_UP, observed.state)
+        self.assertAlmostEqual(.165, observed.point[0])
+        self.assertAlmostEqual(.373, observed.point[1])
+        self.assertEqual(FREE_ENTRY_RETRY_STEP_UP,
+                         FreeGachaTask._pool_observation(frame, boxes, "服装抽抽乐").state)
+        self.assertNotEqual(FREE_ENTRY_RETRY_STEP_UP,
+                            FreeGachaTask._pool_observation(frame, boxes, "装备抽抽乐").state)
+
+    def test_paid_step_up_requires_title_draw_price_and_one_ownership_label(self):
+        frame = np.zeros((800, 1000, 3), dtype=np.uint8)
+        for dropped in ("服装抽抽乐", "step1抽抽乐", "付费钻石90"):
+            with self.subTest(dropped=dropped):
+                boxes = [box for box in step_up_boxes() if box.name != dropped]
+                self.assertIsNone(FreeGachaTask._step_up_observation(
+                    frame, boxes, [box.name for box in boxes], ""))
+        for ownership in ((), ("未拥有", "已拥有")):
+            with self.subTest(ownership=ownership):
+                boxes = step_up_boxes(ownership=ownership)
+                observed = FreeGachaTask._step_up_observation(
+                    frame, boxes, [box.name for box in boxes], "")
+                self.assertEqual(FREE_ENTRY_RETRY_STEP_UP, observed.state)
+                self.assertIsNone(observed.point)
+
+    def test_pool_waiter_switches_the_step_up_banner_once(self):
+        frame = np.zeros((800, 1000, 3), dtype=np.uint8)
+        boxes = step_up_boxes()
+        step_up = FreeGachaTask._step_up_observation(
+            frame, boxes, [box.name for box in boxes], "")
+        task = object.__new__(FreeGachaTask)
+        task.config = {}
+        task.info_set = Mock()
+        task.log_info = Mock()
+        task.sleep = Mock()
+        task.operate_click = Mock()
+        task._observe_free_pool = Mock(
+            side_effect=[step_up, step_up, SimpleNamespace(pool_confirmed=True, text="")])
+        self.assertTrue(task._wait_for_pool_page("服装抽抽乐", "确认服装池"))
+        args, kwargs = task.operate_click.call_args
+        self.assertAlmostEqual(.165, args[0])
+        self.assertAlmostEqual(.373, args[1])
+        self.assertEqual("切换普通服装横幅", kwargs.get("name"))
+        self.assertEqual(.8, kwargs.get("after_sleep"))
 
     def test_single_draw_ocr_typo_requires_same_pool_and_neighbor_layout(self):
         frame = np.zeros((800, 1000, 3), dtype=np.uint8)
@@ -173,7 +234,7 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
         task.info_set = info.__setitem__
         task.log_info = lambda *_args, **_kwargs: None
         task._click_reference = Mock()
-        task._wait_for_home_confirmation = lambda *_args, **_kwargs: True
+        task.prepare_home = lambda *_args, **_kwargs: True
         task._wait_loading_or_gacha_page = lambda *_args, **_kwargs: (
             "target",
             True,
@@ -222,7 +283,7 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
                 task.log_completion = Mock()
                 task._click_reference = Mock()
                 task._sleep_after_recognition = Mock()
-                task._wait_for_home_confirmation = Mock(return_value=True)
+                task.prepare_home = Mock(return_value=True)
                 task._wait_loading_or_gacha_page = Mock(return_value=("target", True, ""))
                 task._wait_for_clothing_pool_page = Mock(side_effect=[True, recovered])
                 task._wait_for_equipment_pool_page = Mock(return_value=True)
@@ -253,7 +314,7 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
         task = object.__new__(FreeGachaTask)
         task.config = {"启用": True}
         confirmations = []
-        task._wait_for_home_confirmation = (
+        task.prepare_home = (
             lambda name, *_args, **_kwargs: confirmations.append(name) or False
         )
         statuses = []
@@ -285,7 +346,7 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
                 task.info_set = lambda key, value: statuses.append((key, value))
                 task.log_info = lambda *_args, **_kwargs: None
                 task._click_reference = lambda *_args, **_kwargs: None
-                task._wait_for_home_confirmation = lambda *_args, **_kwargs: True
+                task.prepare_home = lambda *_args, **_kwargs: True
                 task._wait_loading_or_gacha_page = lambda *_args, **_kwargs: (
                     loading_state,
                     gacha_found,
@@ -564,13 +625,24 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
         task.info_set = Mock()
         no_free = free_gacha_module.FreePoolObservation(
             free_gacha_module.FREE_ENTRY_RETRY_NO_FREE, "complete", "pool")
+        missing_single = free_gacha_module.FreePoolObservation(
+            FREE_ENTRY_RETRY_UNKNOWN, "single-draw label missing", "pool")
         now = [0.0]
         task.sleep = lambda seconds: now.__setitem__(0, now[0] + seconds)
-        task._observe_free_pool = Mock(return_value=no_free)
+        observations = iter([
+            (0.615, no_free), (1.749, no_free), (2.790, no_free),
+            (3.997, no_free), (5.159, missing_single), (6.282, no_free),
+        ])
+
+        def observe(*_args):
+            now[0], observation = next(observations)
+            return observation
+
+        task._observe_free_pool = Mock(side_effect=observe)
         with patch.object(free_gacha_module, "monotonic", lambda: now[0]):
             self.assertEqual((False, "pool", True), task._wait_for_free_gacha("装备抽抽乐"))
-        self.assertEqual(3.5, now[0])
-        self.assertEqual(8, task._observe_free_pool.call_count)
+        self.assertEqual(3.997, now[0])
+        self.assertEqual(4, task._observe_free_pool.call_count)
 
     def test_run_free_section_skips_when_ocr_confirms_no_free_entry(self):
         task = object.__new__(FreeGachaTask)
@@ -618,8 +690,8 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
                     available, _, judged = task._wait_for_free_gacha("装备抽抽乐")
                 self.assertEqual(expected, (available, judged))
                 if expected == (False, True):
-                    self.assertEqual(8, task._gacha_ocr_boxes.call_count)
-                    self.assertEqual(1.5, now["value"])
+                    self.assertEqual(6, task._gacha_ocr_boxes.call_count)
+                    self.assertEqual(1.0, now["value"])
 
         for scale in (.72, 2):
             task.capture_frame = lambda: np.zeros(
@@ -717,7 +789,7 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
         task.log_info = lambda *_args, **_kwargs: None
         clicks = []
         task._click_reference = lambda x, y, after_sleep=0: clicks.append((x, y))
-        task._wait_for_home_confirmation = lambda *_args, **_kwargs: True
+        task.prepare_home = lambda *_args, **_kwargs: True
         task._wait_loading_or_gacha_page = lambda *_args, **_kwargs: (
             "target",
             True,

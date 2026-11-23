@@ -11,8 +11,11 @@ from ok.task.exceptions import FinishedException, TaskDisabledException
 
 from src.diagnostics.runtime import observe_run, task_error
 from src.icons import TaskIcon as FluentIcon
+from src.tasks.ActivityDailyTask import ACTIVITY_DAILY_NAME, ActivityDailyTask
 from src.tasks.BaseBD2Task import task_info_snapshot
 from src.tasks.DailyTask import DailyTask
+from src.tasks.equipment_daily import EQUIPMENT_DAILY_NAME
+from src.tasks.EquipmentDailyTask import EquipmentDailyTask
 from src.tasks.FreeGachaTask import FreeGachaTask
 from src.tasks.MapCollectionTask import MapCollectionTask
 from src.tasks.MapTradeTask import MapTradeTask
@@ -66,6 +69,7 @@ def _schedule_system_shutdown(seconds: int) -> bool:
 class DailyBatchChild:
     config_key: str
     task_class: type[BaseTask]
+    default_enabled: bool = True
 
 
 DAILY_BATCH_CHILDREN = (
@@ -76,11 +80,14 @@ DAILY_BATCH_CHILDREN = (
     DailyBatchChild("跑图", MapCollectionTask),
     DailyBatchChild("跑商", MapTradeTask),
     DailyBatchChild("自动PVP", PVPTask),
+    DailyBatchChild(EQUIPMENT_DAILY_NAME, EquipmentDailyTask, default_enabled=False),
+    DailyBatchChild(ACTIVITY_DAILY_NAME, ActivityDailyTask, default_enabled=False),
     DailyBatchChild("领取每日及每周奖励", MissionRewardTask),
 )
 
 
 class DailyBatchTask(BaseTask):
+    waits_for_login = True
     """Run the selected home-to-home daily tasks in a fixed safe order."""
 
     status_keys = [
@@ -102,7 +109,7 @@ class DailyBatchTask(BaseTask):
         self.name = "一键完成日常"
         self.description = (
             "按顺序执行已开启的公会、小屋、酒馆、抽抽乐、快速狩猎、"
-            "广场、跑图、跑商和PVP，最后领取每日及每周奖励。"
+            "广场、跑图、跑商、PVP和每日活动，最后领取每日及每周奖励。"
         )
         self.icon = FluentIcon.COMPLETED
         self.group_name = "日常/周常"
@@ -118,7 +125,7 @@ class DailyBatchTask(BaseTask):
                 "启用": True,
                 "启动自动执行日常": False,
                 "完成日常后自动关机": False,
-                **{key: True for key in child_keys},
+                **{child.config_key: child.default_enabled for child in self.child_tasks},
             }
         )
         self.config_description.update(
@@ -142,6 +149,7 @@ class DailyBatchTask(BaseTask):
                     "沿用每周跑图卡片的配置；执行剩余时，今日额度已用尽或本周已完成则跳过。"
                     "技能次数每日08:00、资源周一08:00刷新（北京时间）。"
                 ),
+                ACTIVITY_DAILY_NAME: "优先挑战战斗，按15、10、5关查找快速战斗并使用免费活动AP。",
                 "领取每日及每周奖励": "在日常流程最后领取奖励；同日再次执行也会复查新增奖励。",
             }
         )
@@ -212,40 +220,9 @@ class DailyBatchTask(BaseTask):
         except Exception as exc:  # 调度账本失败不影响子任务结果
             self.log_error(f"一键完成日常：记录 {child_name} 的调度时间失败。", exc)
 
-    def _auto_login_pending(self) -> bool:
-        """自动登录启用且未完成时为 True（与 auto_scheduler 的启动门控同语义）。
-
-        执行器中 onetime 出队优先于登录 trigger，且 onetime 运行期间 trigger
-        不执行：手动点开始且游戏冷启动时立即跑子任务，只会在登录页/公告页上
-        把主页确认烧超时并中止整批，登录完成后也没有任何机制重新拉起批次。
-        """
-        try:
-            from src.tasks.trigger.AutoLoginTask import AutoLoginTask
-        except ImportError:  # pragma: no cover - 任务注册表缺失时的极端场景
-            return False
-        login_task = self.executor.get_task_by_class(AutoLoginTask)
-        if login_task is None:
-            return False
-        if not bool(getattr(login_task, "_enabled", True)):
-            return False
-        return not bool(getattr(login_task, "_finished", False))
-
-    @classmethod
-    def release_after_login(cls, executor) -> bool:
-        """自动登录落定后放行被门控挂起的批次；返回是否有批次被放行。"""
-        batch = executor.get_task_by_class(cls)
-        if batch is None:
-            return False
-        # 与停止请求共用任务锁：停止后不得再被登录完成事件重新放行。
-        with batch.lock:
-            if not getattr(batch, "_start_after_login", False):
-                return False
-            batch._enabled = True
-            batch._start_after_login = False
-            if not executor.enqueue_onetime_task(batch):
-                return False
-        batch.log_info("一键完成日常：自动登录已完成，开始执行。")
-        return True
+    def park_run_mode(self):
+        self._requested_run_mode = self._take_run_mode(None)
+        self._requested_run_mode_deadline = float("inf")
 
     def log_error(self, *args, **kwargs):
         task_error()
@@ -253,16 +230,6 @@ class DailyBatchTask(BaseTask):
 
     @observe_run
     def run(self, run_mode: str | None = None):
-        if self._auto_login_pending():
-            # 门控期间不消费注入的 run_mode，放行后的正式运行再取。
-            with self.lock:
-                if getattr(self.executor, "current_task", None) is self:
-                    # 已被停止时直接抛出，不再登记登录后放行。
-                    self.executor.check_enabled(check_pause=False)
-                self._start_after_login = True
-            self.info_set("状态", "等待自动登录完成，完成后自动开始。")
-            self.log_info("一键完成日常：自动登录未完成，待登录完成后自动开始。")
-            return True
         run_mode = self._take_run_mode(run_mode)
         if not bool(self.config.get("启用", True)):
             self.info_set("状态", "一键完成日常已禁用。")
@@ -300,7 +267,7 @@ class DailyBatchTask(BaseTask):
         )
 
         for child in self.child_tasks:
-            taking_part = bool(self.config.get(child.config_key, True))
+            taking_part = bool(self.config.get(child.config_key, child.default_enabled))
             if not taking_part or stop_remaining:
                 skipped.append(child.config_key)
                 self._skip_reasons[child.config_key] = {
@@ -364,22 +331,6 @@ class DailyBatchTask(BaseTask):
                 task.config = ChainMap({"启用": True, "_仅执行未完成步骤": only_incomplete},
                                        original_config or {})
                 task.info_clear()
-                # 每个子任务开始前先尝试自动回主页（找不到入口也不硬失败，
-                # 子任务自身的入口主页确认/回主页逻辑仍会兜底）。
-                ensure_home = getattr(task, "auto_return_main_home", None)
-                if ensure_home is not None:
-                    try:
-                        if not ensure_home():
-                            self.log_warning(
-                                f"一键完成日常：{child.config_key} 自动回主页未成功，"
-                                "继续执行该子任务（由子任务自身兜底）。"
-                            )
-                    except (TaskDisabledException, FinishedException):
-                        raise
-                    except Exception as ensure_exc:
-                        self.log_warning(
-                            f"一键完成日常：{child.config_key} 自动回主页异常：{ensure_exc}"
-                        )
                 with suppress_task_completion_notifications(task):
                     child_result = bool(task.run())
                     child_finished = time.time()
@@ -398,12 +349,9 @@ class DailyBatchTask(BaseTask):
                     else:
                         failed.append(child.config_key)
                         publish_outcome()
-                        stop_remaining = not self._recover_failed_child(task)
-                        self.log_warning(
-                            f"一键完成日常：{child.config_key} 失败，"
-                            + ("停止后续子任务。" if stop_remaining
-                               else "已恢复主页，继续后续子任务。")
-                        )
+                        self.log_warning(f"一键完成日常：{child.config_key} 失败。")
+                at_home = self._finish_child_at_home(task)
+                stop_remaining = child_result is False and not at_home
             except (TaskDisabledException, FinishedException):
                 raise
             except Exception as exc:
@@ -411,7 +359,7 @@ class DailyBatchTask(BaseTask):
                 child_finished = time.time()
                 failed.append(child.config_key)
                 publish_outcome()
-                stop_remaining = not self._recover_failed_child(task)
+                stop_remaining = not self._finish_child_at_home(task)
                 self.log_error(
                     f"一键完成日常：{child.config_key} 异常。",
                     exc,
@@ -449,8 +397,10 @@ class DailyBatchTask(BaseTask):
         return True
 
     @staticmethod
-    def _recover_failed_child(task) -> bool:
-        recover = getattr(task, "recover_daily_home", None)
+    def _finish_child_at_home(task) -> bool:
+        recover = getattr(task, "finish_gameplay_at_home", None)
+        if recover is None:
+            recover = getattr(task, "recover_daily_home", None)
         try:
             return bool(recover and recover())
         except (TaskDisabledException, FinishedException):
@@ -463,21 +413,13 @@ class DailyBatchTask(BaseTask):
         completed: list[str],
         pre_completed: list[str] | tuple[str, ...] = (),
     ) -> None:
-        """全部已启用子任务今日均已完成时按配置执行倒计时关机。
-
-        「今日已完成」= 本轮运行完成（以 ``completed`` 保留跨日运行结果）、
-        运行前已有今日完成记录
-        （``pre_completed``，由 run() 循环即时采集）或判定时刻的历史记录；
-        任一已启用子任务两者皆不满足（含调度未到期跳过）时不关机。
-        没有任何已启用子任务时不关机：全称判定对空集合为真，但一次没有
-        执行任何日常的成功运行不应触发关机。
-        """
+        """Keep completed work from the same run if it crossed the daily reset."""
         if not bool(self.config.get("完成日常后自动关机", False)):
             return
         enabled_children = [
             child
             for child in self.child_tasks
-            if bool(self.config.get(child.config_key, True))
+            if bool(self.config.get(child.config_key, child.default_enabled))
         ]
         if not enabled_children:
             self.log_info("一键完成日常：没有已启用子任务，不执行自动关机。")
@@ -491,9 +433,7 @@ class DailyBatchTask(BaseTask):
             task = self.executor.get_task_by_class(child.task_class)
             name = str(getattr(task, "name", None) or child.config_key)
             if not history.is_completed(name, scope=configuration_scope(task)):
-                self.log_info(
-                    f"一键完成日常：{child.config_key} 今日未完成，不执行自动关机。"
-                )
+                self.log_info(f"一键完成日常：{child.config_key} 今日未完成，不执行自动关机。")
                 return
         try:
             scheduled = _schedule_system_shutdown(SHUTDOWN_COUNTDOWN_SECONDS)

@@ -16,6 +16,7 @@ class QuickHuntTask(
     TaskVisionMixin,
     BaseBD2Task,
 ):
+    waits_for_login = True
     """Standalone quick-hunt task backed by the migrated quick-hunt flow."""
 
     include_quick_hunt_config = True

@@ -115,6 +115,7 @@ export function TaskDetail({
   const tabs = useSlider<HTMLDivElement>('[aria-selected="true"]', shownTab);
   const history = useHistory(core, task.name, 8);
   const locked = core.busy || Boolean(task.config_busy);
+  const startReason = task.waits_for_login ? core.homeTaskStartBlocked : core.startBlocked;
   const fields = task.config ?? [];
   const changed = modifiedFields(fields);
   const status = statusSummary(statusRows);
@@ -177,14 +178,14 @@ export function TaskDetail({
         <button
           type="button"
           className="btn primary"
-          disabled={Boolean(core.startBlocked)}
-          title={core.startBlocked ?? undefined}
+          disabled={Boolean(startReason)}
+          title={startReason ?? undefined}
           onClick={() => void core.act(() => core.startTask(task.name))}
         >
           <Icon name="play" />
           {runLabel ?? t("运行任务")}
         </button>
-        {core.startBlocked && <div className="why">{core.startBlocked}</div>}
+        {startReason && <div className="why">{startReason}</div>}
       </div>
     );
   }

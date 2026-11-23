@@ -58,10 +58,11 @@ exit_event = ExitEvent()
 og.handler = Handler(exit_event, 'service-mode-test')
 og.device_manager = SimpleNamespace(config={}, get_preferred_device=lambda: None)
 from src.globals import Globals
-from src.tasks import auto_scheduler, run_history
+from src.compat import executor_cleanup
+from src.tasks import auto_scheduler
 Globals(exit_event)
 assert auto_scheduler.install_auto_scheduler._installed
-assert run_history.install_run_history_recorder._installed
+assert TaskExecutor.execute is executor_cleanup._execute
 exit_event.set()
 
 loaded = sorted(m for m in sys.modules if m.split('.')[0] in {'PySide6', 'qfluentwidgets'})

@@ -6,7 +6,9 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import cv2
+import numpy as np
 
+from src.tasks.MailRewardTask import MAIL_ICON, MailRewardTask
 from src.tasks.mission_rewards import (
     DISABLED_BUTTON_FILE,
     DISABLED_BUTTON_ROI,
@@ -16,6 +18,7 @@ from src.tasks.mission_rewards import (
     mission_reward_view,
 )
 from src.tasks.MissionRewardTask import MissionRewardTask
+from src.utils.task_vision import match_template
 from tests.helpers import FakeClock
 
 MODULE = importlib.import_module("src.tasks.MissionRewardTask")
@@ -156,11 +159,70 @@ class MissionRewardVisionTest(unittest.TestCase):
         self.assertEqual("unknown", view.state)
         self.assertIn("禁用态素材", view.diagnostics)
 
+    def test_mail_icon_is_localized_on_home_only(self):
+        fixtures = FIXTURES.parent / "scene_home_button"
+        templates = DISABLED_BUTTON_FILE.parent.parent
+        home = cv2.imread(str(fixtures / "home_720p.png"))
+        house = cv2.imread(str(fixtures / "my_home_720p.png"))
+        found = match_template(home, MAIL_ICON, {}, templates)
+        self.assertGreaterEqual(found.score, MAIL_ICON.threshold)
+        self.assertEqual(found.center, (1071, 39))
+        self.assertLess(match_template(house, MAIL_ICON, {}, templates).score, MAIL_ICON.threshold)
+
 
 class MissionRewardFlowTest(unittest.TestCase):
+    def test_mail_only_claims_both_tabs_and_requires_home_before_completion(self):
+        for start, products, ignore_switch, reaches_home, expected_claims in (
+            (0, True, False, True, [0, 1]), (1, True, False, False, [0, 1]),
+            (1, False, False, True, [0]), (1, False, True, True, []),
+        ):
+            with self.subTest(start=start, products=products, ignored=ignore_switch):
+                task = self.make_task([], 领取每日奖励=False, 领取每周奖励=False)
+                if not products:
+                    task = object.__new__(MailRewardTask)
+                    task.config = {"领取商品邮箱": False}
+                    task.info_set = Mock()
+                    task.sleep = self.clock.sleep
+                task.name = "邮件测试"
+                task.auto_return_main_home = Mock(return_value=reaches_home)
+                task.log_completion = Mock()
+                selected = start
+                claimed = []
+
+                def capture():
+                    frame = np.full((100, 200, 3), 100, np.uint8)
+                    top = (13, 23)[selected]
+                    frame[top:top + 6, 16:24] = 235
+                    if selected not in claimed:
+                        frame[91:96, 150:170] = 230
+                    return frame
+
+                def click(center_x, center_y, **_):
+                    nonlocal selected
+                    if (center_x, center_y) == (.8, .87):
+                        claimed.append(selected)
+                    elif not ignore_switch:
+                        selected = [(.10, .16), (.10, .26)].index((center_x, center_y))
+
+                rows = (("邮箱", 12, 3, 8, 6), ("一般", 16, 13, 8, 6),
+                        ("商品", 16, 23, 8, 6), ("全部领取", 150, 83, 20, 8))
+                task.ocr = Mock(return_value=[
+                    SimpleNamespace(name=name, x=left, y=top, width=width, height=height)
+                    for name, left, top, width, height in rows
+                ])
+                task.capture_frame = capture
+                task.operate_click = click
+                with patch("src.tasks.MailRewardTask.monotonic", self.clock):
+                    self.assertIs(task.run(), reaches_home and not ignore_switch)
+                self.assertEqual(expected_claims, claimed)
+                self.assertEqual(int(not ignore_switch), task.auto_return_main_home.call_count)
+                self.assertEqual(int(reaches_home and not ignore_switch),
+                                 task.log_completion.call_count)
+
     def make_task(self, views, **config):
         task = object.__new__(MissionRewardTask)
-        task.config = {"领奖等待秒数": 4, "最多领取次数": 2, **config}
+        task.config = {"领奖等待秒数": 4, "最多领取次数": 2,
+                       "领取赛季通行证奖励": False, **config}
         task.info = {}
         task.info_set = task.info.__setitem__
         task.operate_click = Mock()
@@ -209,7 +271,7 @@ class MissionRewardFlowTest(unittest.TestCase):
         view = RewardView("empty", SECTIONS[1])
         task = self.make_task([view], 领取每日奖励=False)
         task._disabled_button = object()
-        task._wait_page = Mock(return_value=view)
+        task._wait_mission_page = Mock(return_value=view)
         task._claim_section = Mock(return_value=True)
         task.auto_return_main_home = Mock(return_value=False)
         task.log_completion = Mock()
@@ -220,9 +282,9 @@ class MissionRewardFlowTest(unittest.TestCase):
     def test_both_sections_are_checked_in_order_and_then_return_home(self):
         daily = RewardView("empty", SECTIONS[0], tabs=((SECTIONS[1], (.14, .20)),))
         weekly = RewardView("empty", SECTIONS[1])
-        task = self.make_task([daily])
+        task = self.make_task([daily], 领取邮件=False)
         task._disabled_button = object()
-        task._wait_page = Mock(side_effect=[daily, daily, weekly])
+        task._wait_mission_page = Mock(side_effect=[daily, daily, weekly])
         task._claim_section = Mock(return_value=True)
         task.auto_return_main_home = Mock(return_value=True)
         task.log_completion = Mock()
@@ -233,15 +295,15 @@ class MissionRewardFlowTest(unittest.TestCase):
         task.auto_return_main_home.assert_called_once_with(notify_failure=False)
 
     def test_starting_from_home_uses_the_observed_label_and_rechecks_home(self):
-        task = self.make_task([])
+        task = self.make_task([], 领取邮件=False)
         task._disabled_button = object()
         entry = SimpleNamespace(name="任务", x=658, y=1005, width=44, height=26)
         frame = SimpleNamespace(shape=(1080, 1920, 3))
         task._read_view = Mock(return_value=(RewardView(), [entry], frame))
-        task._wait_for_home_confirmation = Mock(return_value=True)
+        task.prepare_home = Mock(return_value=True)
         task._frame_confirms_home = Mock(return_value=True)
-        task._wait_page = Mock(return_value=RewardView("empty", SECTIONS[0],
-                                                      tabs=((SECTIONS[1], (.14, .20)),)))
+        task._wait_mission_page = Mock(return_value=RewardView("empty", SECTIONS[0],
+                                                              tabs=((SECTIONS[1], (.14, .20)),)))
         task._claim_section = Mock(return_value=True)
         task.auto_return_main_home = Mock(return_value=True)
         task.log_completion = Mock()

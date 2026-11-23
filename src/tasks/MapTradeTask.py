@@ -105,6 +105,7 @@ def _migrate_collection_config(legacy: dict) -> None:
 
 
 class MapAutomationTaskBase(BaseBD2Task):
+    waits_for_login = True
     """Shared mouse-only plumbing for the daily trade and weekly map cards."""
 
     vision_threshold_key = LEGACY_VISION_THRESHOLD_KEY

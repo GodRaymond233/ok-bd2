@@ -355,7 +355,9 @@ class RuntimeControlTest(unittest.TestCase):
             response = client.post(f"/api/tasks/{batch.name}/action", json={"action": "stop"})
             self.assertEqual(response.status_code, 200, response.text)
             self.assertFalse(batch._start_after_login)
-            self.assertFalse(DailyBatchTask.release_after_login(executor))
+            from src.tasks.login_gate import release_after_login
+
+            self.assertFalse(release_after_login(executor))
             child.config = config
             response = client.post(
                 f"/api/tasks/{child.name}/config", json={"key": "value", "value": 2}

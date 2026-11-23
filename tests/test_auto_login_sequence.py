@@ -6,12 +6,6 @@ from types import SimpleNamespace
 import numpy as np
 
 from src.tasks.trigger.AutoLoginTask import (
-    BROWNDUSTX_TEMPLATE,
-    CONFIRM_TEMPLATE,
-    HOME_BUTTON_TEMPLATE,
-    HOME_BUTTON_TEMPLATES,
-    LOADING_TEMPLATE,
-    TOUCH_TO_START_TEMPLATE,
     AutoLoginTask,
     MatchResult,
 )
@@ -53,144 +47,129 @@ class AutoLoginSequenceTest(unittest.TestCase):
         task._last_clear_click_at = 0.0
         task._last_confirm_click_at = 0.0
         task._last_download_click_at = 0.0
-        task._finished = False
+        task._state = "waiting"
+        task._session_window = (None, None)
         task._executor = SimpleNamespace(get_task_by_class=lambda _cls: None)
-        task._home_brightness_ratio = lambda _frame: 0.0
-        task._home_gacha_ocr_text = lambda _frame: ""
+        task._read_home_confirmation_signals = lambda *_: (False, 0, 0, "")
         return task
 
-    def test_waiting_loading_checks_home_before_loading(self):
+    def test_finished_login_only_rearms_for_a_new_game_window(self):
         task = self._task()
-        task._state = "waiting_loading"
-        task._login_clicked_at = monotonic()
-        calls = []
-
-        def fake_match(_frame, spec):
-            calls.append(spec.name)
-            return MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
-
-        task._match = fake_match
-
-        AutoLoginTask._wait_loading_then_home(
-            task,
-            np.zeros((10, 10, 3), dtype=np.uint8),
-        )
-
-        self.assertEqual(
-            [spec.name for spec in HOME_BUTTON_TEMPLATES] + [LOADING_TEMPLATE.name],
-            calls,
-        )
-        self.assertEqual("waiting_home", task._state)
-
-    def test_browndustx_branch_checks_confirm_and_touch_only(self):
-        task = self._task()
-        task._state = "waiting"
-        task.capture_frame = lambda: np.zeros((10, 10, 3), dtype=np.uint8)
-        calls = []
-
-        def fake_match(_frame, spec):
-            calls.append(spec.name)
-            if spec is BROWNDUSTX_TEMPLATE:
-                return MatchResult(0.9, (0, 0), (1, 1), pixel_score=0.9)
-            if spec is CONFIRM_TEMPLATE:
-                return MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
-            if spec is TOUCH_TO_START_TEMPLATE:
-                return MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
-            if spec in HOME_BUTTON_TEMPLATES:
-                return MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
-            self.fail(f"unexpected match: {spec.name}")
-
-        task._match = fake_match
-
-        AutoLoginTask.run(task)
-
-        self.assertEqual(
-            [
-                spec.name for spec in HOME_BUTTON_TEMPLATES
-            ] + [
-                BROWNDUSTX_TEMPLATE.name,
-                CONFIRM_TEMPLATE.name,
-                TOUCH_TO_START_TEMPLATE.name,
-            ],
-            calls,
-        )
-
-    def test_finished_task_is_not_scheduled_or_captured_again(self):
-        task = self._task()
-        task._finished = True
+        task._state = "done"
         task.trigger_interval = 0
-        task.capture_frame = lambda: self.fail("finished auto-login must not capture")
-
-        self.assertFalse(AutoLoginTask.should_trigger(task))
-        self.assertFalse(AutoLoginTask.run(task))
-
-    def test_waiting_task_detects_existing_home_and_stops_after_confirmation(self):
-        task = self._task()
-        task._state = "waiting"
-        task.trigger_interval = 0
-        task.capture_frame = lambda: np.zeros((10, 10, 3), dtype=np.uint8)
-        task._home_brightness_ratio = lambda _frame: 1.0
-        task._home_gacha_ocr_text = lambda _frame: "抽抽乐"
-        logged_in = []
-        task.mark_logged_in = lambda: logged_in.append(True)
-
-        def fake_match(_frame, spec):
-            if spec in (BROWNDUSTX_TEMPLATE, TOUCH_TO_START_TEMPLATE):
-                return MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
-            if spec is HOME_BUTTON_TEMPLATE:
-                return MatchResult(0.9, (0, 0), (1, 1), pixel_score=0.9)
-            if spec in HOME_BUTTON_TEMPLATES:
-                return MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
-            self.fail(f"unexpected match: {spec.name}")
-
-        task._match = fake_match
-
-        AutoLoginTask.run(task)
-
-        self.assertEqual("done", task._state)
-        self.assertEqual([True], logged_in)
-        self.assertTrue(task._finished)
-        self.assertFalse(AutoLoginTask.should_trigger(task))
-
-    def test_waiting_task_does_not_accept_home_without_gacha_ocr(self):
-        task = self._task()
-        task._state = "waiting"
-        task.capture_frame = lambda: np.zeros((10, 10, 3), dtype=np.uint8)
-        task._home_brightness_ratio = lambda _frame: 1.0
-
-        def fake_match(_frame, spec):
-            if spec is HOME_BUTTON_TEMPLATE:
-                return MatchResult(0.9, (0, 0), (1, 1), pixel_score=0.9)
-            return MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
-
-        task._match = fake_match
-
-        AutoLoginTask.run(task)
-
+        task.capture_frame = lambda: self.fail("finished login requested input")
+        self.assertFalse(task.should_trigger())
+        self.assertFalse(task.run())
+        task._executor.device_manager = SimpleNamespace(hwnd_window=SimpleNamespace(hwnd=32, pid=5))
+        self.assertTrue(task.should_trigger())
         self.assertEqual("waiting", task._state)
-        self.assertFalse(task._finished)
 
-    def test_confirm_is_checked_even_when_browndustx_parent_does_not_match(self):
+    def test_idle_home_observation_follows_gameplay_without_claiming_input(self):
+        from unittest.mock import Mock, patch
+
+        from src.scene.BD2Scene import BD2Scene
+
+        scene = BD2Scene()
         task = self._task()
-        task._state = "waiting"
-        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        task._is_browndustx_confirm = lambda _frame, _confirm: True
-        task._sleep_after_recognition = lambda: None
-        clicks = []
-        confirm = MatchResult(0.99, (650, 685), (606, 76), pixel_score=0.99)
+        task._enabled = True
+        task._state = "done"
+        task._match = lambda *_: MatchResult(-1.0, (0, 0), (0, 0))
+        backend = Mock(return_value=([], []))
+        task.ocr_fun = Mock(return_value=backend)
+        task.operate_click = lambda *_args, **_kwargs: self.fail("observer sent input")
+        executor = SimpleNamespace(
+            current_task=None, trigger_tasks=[task], can_capture=lambda: True,
+            method=SimpleNamespace(get_frame=lambda **_: np.zeros((10, 10, 3), np.uint8)),
+            exit_event=threading.Event(), _ocr_lib={"default": object()},
+            _get_wake_version=lambda: 0,
+        )
+        task._executor = executor
+        signals = iter((True, False, False, False))
 
-        def fake_match(_frame, spec):
-            if spec is CONFIRM_TEMPLATE:
-                return confirm
-            return MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
+        def read(frame, vision, *_):
+            vision.task.ocr(frame=frame, threshold=.2, target_height=720)
+            return next(signals), 0, 0, ""
 
-        task._match = fake_match
-        task.operate_click = lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep))
+        with patch("src.scene.BD2Scene.read_home_signals", side_effect=read), \
+             patch("src.scene.BD2Scene.monotonic", return_value=10) as clock:
+            scene.observe_home(executor)
+            scene._pending_home_sample[0].result(timeout=2)
+            scene.observe_home(executor)
+            self.assertIs(scene.at_home, True)
+            clock.return_value = 13
+            scene.observe_home(executor)
+            scene._pending_home_sample[0].result(timeout=2)
+            scene.observe_home(executor)
+            self.assertIs(scene.at_home, False)
+            self.assertIsNone(executor.current_task)
+            self.assertTrue(task._finished)
+            clock.return_value = 20
+            self.assertIsNone(scene.at_home)
+            scene.observe_home(executor)
+            scene.record_home(True)
+            scene._pending_home_sample[0].result(timeout=2)
+            scene.observe_home(executor)
+            self.assertIs(scene.at_home, True)
+            clock.return_value = 23
+            scene.observe_home(executor)
+            scene._pending_home_sample[0].result(timeout=2)
+            executor.device_manager = SimpleNamespace(hwnd_window=SimpleNamespace(pid=9, hwnd=80))
+            scene.observe_home(executor)
+            self.assertIs(scene.at_home, True)
+            self.assertEqual({"home_observer"}, {call.args[-1] for call in backend.call_args_list})
 
-        AutoLoginTask.run(task)
+    def test_daily_dispatches_while_idle_observation_is_waiting(self):
+        from unittest.mock import Mock, patch
 
-        self.assertEqual([(953, 723, 1.0)], clicks)
-        self.assertEqual("waiting_update", task._state)
+        from src.compat.executor_cleanup import _execute
+        from src.scene.BD2Scene import BD2Scene
+
+        scene = BD2Scene()
+        login = self._task()
+        login._enabled = True
+        login._state = "done"
+        observing, release, queued, ran = (threading.Event() for _ in range(4))
+        executor = Mock(scene=scene, current_task=None, paused=False, _exclusive_owner=None)
+        executor.exit_event = threading.Event()
+        executor.trigger_tasks = [login]
+        executor._ocr_lib = {"default": object()}
+        executor._last_frame_time = 0
+        executor._pop_job.return_value = None
+        executor._wait_for_activity.side_effect = lambda *_: queued.wait(2)
+        login._executor = executor
+        executor.device_manager.hwnd_window = None
+        daily = Mock(waits_for_login=False, exit_after_task=False, config={})
+
+        def run_daily():
+            ran.set()
+            executor.exit_event.set()
+
+        daily.run.side_effect = run_daily
+        executor.next_task.side_effect = lambda: (daily if queued.is_set() else None, False, False)
+
+        def slow_ocr(*_):
+            observing.set()
+            release.wait(3)
+            return False, 0, 0, ""
+
+        with patch("src.scene.BD2Scene.read_home_signals", side_effect=slow_ocr), \
+             patch("src.compat.executor_cleanup.prevent_sleeping"), \
+             patch("src.tasks.run_history.record_finished_task"), \
+             patch("src.compat.executor_cleanup.communicate"):
+            thread = threading.Thread(target=_execute, args=(executor,), daemon=True)
+            thread.start()
+            try:
+                self.assertTrue(observing.wait(2))
+                queued.set()
+                self.assertTrue(ran.wait(1))
+            finally:
+                release.set()
+                queued.set()
+                executor.exit_event.set()
+                thread.join(2)
+        self.assertFalse(thread.is_alive())
+        daily.run.assert_called_once()
+
 
     def test_update_prompt_clicks_download_box_right_of_cancel(self):
         task = self._task()
@@ -234,49 +213,6 @@ class AutoLoginSequenceTest(unittest.TestCase):
 
         self.assertIsNone(AutoLoginTask._find_update_download_button(task, boxes))
 
-    def test_download_progress_waits_without_clicking(self):
-        task = self._task()
-        task._state = "downloading"
-        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        task._match = lambda _frame, _spec: MatchResult(-1.0, (0, 0), (0, 0))
-        task.ocr = lambda *_args, **_kwargs: [
-            self._ocr_box("正在下载", 100, 960, 90, 30),
-            self._ocr_box("0.11%", 1740, 965, 75, 30),
-        ]
-        clicks = []
-        task.operate_click = lambda *args, **kwargs: clicks.append((args, kwargs))
-
-        AutoLoginTask.run(task)
-
-        self.assertEqual([], clicks)
-        self.assertEqual("downloading", task._state)
-
-    def test_touch_to_start_resumes_after_download_finishes(self):
-        task = self._task()
-        task._state = "downloading"
-        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        task._sleep_after_recognition = lambda: None
-
-        def fake_match(_frame, spec):
-            if spec is TOUCH_TO_START_TEMPLATE:
-                return MatchResult(0.92, (700, 600), (400, 80), pixel_score=0.92)
-            return MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
-
-        task._match = fake_match
-        clicks = []
-        task.operate_click = lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep))
-
-        AutoLoginTask.run(task)
-
-        self.assertEqual(1, len(clicks))
-        self.assertAlmostEqual(0.722396, clicks[0][0])
-        self.assertAlmostEqual(0.650926, clicks[0][1])
-        self.assertEqual(2.0, clicks[0][2])
-        self.assertEqual("waiting_loading", task._state)
-        self.assertIsNotNone(task._login_clicked_at)
-        self.assertGreater(task._login_clicked_at, 0.0)
-        self.assertEqual(0.0, task._login_retry_not_before)
-
     def test_login_wait_hard_timeout_resets_state_and_backs_off(self):
         task = self._task()
         task._state = "waiting_home"
@@ -292,15 +228,12 @@ class AutoLoginSequenceTest(unittest.TestCase):
         )
         task._match = lambda _frame, _spec: MatchResult(-1.0, (0, 0), (0, 0))
 
-        AutoLoginTask._wait_loading_then_home(
-            task,
-            np.zeros((1440, 2560, 3), dtype=np.uint8),
-        )
+        task.capture_frame = lambda: np.zeros((20, 20, 3), np.uint8)
+        task.run()
 
         self.assertEqual("waiting", task._state)
         self.assertEqual([("auto_login_home_timeout_failed", "waiting_home")], snapshots)
         self.assertIsNone(task._login_clicked_at)
-        self.assertIsNone(task._waiting_home_since)
         self.assertEqual("登录后等待主页超时", statuses["状态"])
         self.assertEqual("等待登录页", statuses["阶段"])
         self.assertEqual(1, len(warnings))
@@ -319,117 +252,124 @@ class AutoLoginSequenceTest(unittest.TestCase):
         self.assertFalse(AutoLoginTask.run(task))
         self.assertEqual([], info_calls)
 
-    def test_clearing_state_still_enforces_login_wait_budget(self):
-        # 进入 clearing 后总预算继续有效：三信号长时间凑不齐时走统一的
-        # 超时重置+退避，而不是无界点击公告清理位置（BUG-20260912-04）。
+    def test_stable_home_hands_off_once_after_releasing_executor(self):
+        # The batch keeps the chosen mode throughout login.
+        from unittest.mock import patch
+
+        from src.compat.executor_cleanup import _finish_task
+        from src.tasks.DailyBatchTask import RUN_MODE_INCOMPLETE, DailyBatchTask
+
         task = self._task()
-        task._state = "clearing"
-        task._login_clicked_at = monotonic() - 301.0
-        statuses = {}
-        task.info_set = lambda key, value: statuses.__setitem__(key, value)
-        warnings = []
-        task.log_warning = lambda message, notify=False: warnings.append(
-            (message, notify)
-        )
         task.capture_frame = lambda: np.zeros((10, 10, 3), dtype=np.uint8)
-        cleared = []
-        task._clear_popups_until_home = (
-            lambda *_args, **_kwargs: cleared.append(1) or False
-        )
-
-        self.assertFalse(AutoLoginTask.run(task))
-
-        self.assertEqual([], cleared)
-        self.assertEqual("waiting", task._state)
-        self.assertIsNone(task._login_clicked_at)
-        self.assertEqual("登录后等待主页超时", statuses["状态"])
-        self.assertEqual(1, len(warnings))
-        self.assertIn("超时", warnings[0][0])
-        self.assertGreaterEqual(
-            task._login_retry_not_before,
-            monotonic() + 60.0 - 1.0,
-        )
-
-    def test_run_resumes_login_flow_after_backoff_expires(self):
-        task = self._task()
-        task._state = "waiting"
-        task._login_retry_not_before = monotonic() - 1.0
-        task.trigger_interval = 0
-        task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
-        task._match = lambda _frame, _spec: MatchResult(-1.0, (0, 0), (0, 0))
-        task.ocr = lambda *_args, **_kwargs: []
-        info_calls = []
-        task.info_set = lambda key, value: info_calls.append((key, value))
-
-        self.assertFalse(AutoLoginTask.run(task))
-
-        self.assertIn(("内部状态", "waiting"), info_calls)
-        self.assertFalse(task._finished)
-
-    def test_finishing_releases_login_gated_batch(self):
-        from src.tasks.DailyBatchTask import DailyBatchTask
-
-        task = self._task()
-        task._state = "waiting"
-        task.trigger_interval = 0
-        task.capture_frame = lambda: np.zeros((10, 10, 3), dtype=np.uint8)
-        task._home_brightness_ratio = lambda _frame: 1.0
-        task._home_gacha_ocr_text = lambda _frame: "抽抽乐"
+        task._read_home_confirmation_signals = lambda *_: (True, 2, 250, "抽抽乐")
+        task.operate_click = lambda *args, **kwargs: self.fail("clicked stable home")
         task.mark_logged_in = lambda: None
-
-        def fake_match(_frame, spec):
-            if spec is HOME_BUTTON_TEMPLATE:
-                return MatchResult(0.9, (0, 0), (1, 1), pixel_score=0.9)
-            return MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
-
-        task._match = fake_match
-        batch = SimpleNamespace(
-            _start_after_login=True,
-            _enabled=False,
-            lock=threading.Lock(),
-            log_info=lambda *_args, **_kwargs: None,
-        )
-        enqueued = []
-        task._executor = SimpleNamespace(
-            get_task_by_class=lambda cls: batch if cls is DailyBatchTask else None,
-            enqueue_onetime_task=lambda t: enqueued.append(t) or True,
-        )
-
-        AutoLoginTask.run(task)
-
+        batch = object.__new__(DailyBatchTask)
+        batch._start_after_login = True
+        batch.request_run_mode(RUN_MODE_INCOMPLETE)
+        batch.park_run_mode()
+        batch.lock = threading.Lock()
+        batch.log_info = lambda *_: None
+        owners = []
+        executor = task._executor
+        executor.onetime_tasks = [batch]
+        executor.current_task = task
+        executor.get_task_by_class = lambda cls: batch if cls is DailyBatchTask else None
+        executor.enqueue_onetime_task = lambda _: owners.append(executor.current_task) or True
+        task.running = True
+        with patch("src.tasks.trigger.AutoLoginTask.monotonic", side_effect=[10, 10, 13, 13]):
+            task.run()
+            self.assertFalse(task._finished)
+            task.run()
         self.assertTrue(task._finished)
-        self.assertEqual([batch], enqueued)
-        self.assertTrue(batch._enabled)
-        self.assertFalse(batch._start_after_login)
+        self.assertEqual([], owners)
+        with patch("src.compat.executor_cleanup.communicate.task.emit"):
+            _finish_task(executor, task, True)
+            _finish_task(executor, task, True)
+        self.assertEqual([None], owners)
+        self.assertEqual(RUN_MODE_INCOMPLETE, batch._take_run_mode(None))
 
-    def test_successful_home_confirmation_clears_login_retry_backoff(self):
-        task = self._task()
-        task._state = "clearing"
-        task._login_retry_not_before = monotonic() + 60.0
-        task._home_bright_since = monotonic() - 5.0
-        task._home_brightness_ratio = lambda _frame: 1.0
-        task._home_gacha_ocr_text = lambda _frame: "抽抽乐"
-        statuses = {}
-        task.info_set = lambda key, value: statuses.__setitem__(key, value)
-        task.log_info = lambda *_args, **_kwargs: None
-        logged_in = []
-        task.mark_logged_in = lambda: logged_in.append(True)
-        task._match = lambda _frame, _spec: MatchResult(
-            0.9,
-            (120, 130),
-            (90, 90),
-            pixel_score=0.9,
+    def test_check_in_card_covering_the_left_hud_interrupts_home_confirmation(self):
+        from unittest.mock import Mock, patch
+
+        from tests.test_modal_popup_dismiss import _draw_close_glyph
+
+        def ocr_text(_frame, name, **_):
+            return "我的小屋 格鲁TALK" if "左列" in name else "抽抽乐"
+
+        for width, height in ((1920, 1080), (1280, 720)):
+            with self.subTest(size=(width, height)):
+                task = self._task()
+                del task._read_home_confirmation_signals
+                task._quick_vision = lambda: SimpleNamespace(ocr_text=ocr_text)
+                task.operate_click = Mock()
+                task.mark_logged_in = Mock()
+                popup = np.full((height, width, 3), 55, np.uint8)
+                popup[round(.24 * height):round(.76 * height),
+                      round(.22 * width):round(.78 * width)] = 255
+                # Bright home artwork with an illuminated gacha label also crosses the OCR region.
+                home = popup.copy()
+                home[round(.90 * height):round(.98 * height),
+                     round(.05 * width):round(.12 * width)] = 230
+                no_cross = popup.copy()
+                # A cross-shaped HUD icon remains visible beyond the card's right edge.
+                _draw_close_glyph(
+                    no_cross, (round(.816 * width), round(.26 * height)),
+                    size=round(.02 * height), value=120,
+                )
+                cross = (round(.76 * width), round(.26 * height))
+                _draw_close_glyph(popup, cross, size=round(.025 * height))
+                bright_hud = popup.copy()
+                bright_hud[height // 6:height // 4, width // 12:width // 6] = 255
+                frames = iter((home, popup, bright_hud, no_cross, home, home))
+                task.capture_frame = lambda: next(frames)
+                with (
+                    patch("src.tasks.trigger.AutoLoginTask.monotonic") as clock,
+                    patch("src.tasks.BaseBD2Task.monotonic", new=clock),
+                ):
+                    for now in (10, 12, 16, 17, 19):
+                        clock.return_value = now
+                        task.run()
+                        task.mark_logged_in.assert_not_called()
+                    clock.return_value = 22.1
+                    task.run()
+                task.mark_logged_in.assert_called_once()
+                self.assertTrue(task._finished)
+                self.assertEqual(2, task.operate_click.call_count)
+                for click in task.operate_click.call_args_list:
+                    x, y = click.args
+                    self.assertAlmostEqual(cross[0], x * width, delta=2)
+                    self.assertAlmostEqual(cross[1], y * height, delta=2)
+                    self.assertTrue(click.kwargs["require_fresh_target"])
+
+    def test_home_tasks_resume_in_request_order_and_skip_cancelled_requests(self):
+        from src.tasks.BargainLevelTask import BargainLevelTask
+        from src.tasks.DailyTask import DailyTask
+        from src.tasks.FreeGachaTask import FreeGachaTask
+        from src.tasks.login_gate import defer_until_login, release_after_login
+        from src.tasks.PVPTask import PVPTask
+
+        login = SimpleNamespace(login_pending=True)
+        queued = []
+        executor = SimpleNamespace(
+            onetime_tasks=[], get_task_by_class=lambda _: login,
+            enqueue_onetime_task=lambda task: queued.append(task) or True,
         )
-
-        AutoLoginTask._clear_popups_until_home(
-            task,
-            np.zeros((1440, 2560, 3), dtype=np.uint8),
-        )
-
-        self.assertEqual([True], logged_in)
-        self.assertTrue(task._finished)
-        self.assertEqual("done", task._state)
-        self.assertEqual(0.0, task._login_retry_not_before)
+        for kind in (PVPTask, DailyTask, FreeGachaTask, BargainLevelTask):
+            task = object.__new__(kind)
+            task._enabled = True
+            task.lock = threading.Lock()
+            task.info_set = lambda *_: None
+            task._executor = executor
+            executor.onetime_tasks.append(task)
+        pvp, daily, gacha, merchant = executor.onetime_tasks
+        self.assertFalse(defer_until_login(merchant))
+        for task in (gacha, daily, pvp):
+            self.assertTrue(defer_until_login(task))
+        daily._start_after_login = False
+        self.assertTrue(release_after_login(executor))
+        self.assertFalse(release_after_login(executor))
+        self.assertEqual([gacha, pvp], queued)
 
     def test_login_page_ocr_error_keeps_task_schedulable(self):
         task = self._task()
@@ -443,40 +383,6 @@ class AutoLoginSequenceTest(unittest.TestCase):
 
         self.assertFalse(task._finished)
         self.assertTrue(AutoLoginTask.should_trigger(task))
-
-    def test_waiting_home_clicks_notice_clear_position_after_grace(self):
-        task = self._task()
-        task._state = "waiting_home"
-        task._waiting_home_since = monotonic() - 20.0
-        task._home_brightness_ratio = lambda _frame: 0.235
-        task._sleep_after_recognition = lambda: None
-        clicks = []
-
-        def fake_match(_frame, spec):
-            if spec in HOME_BUTTON_TEMPLATES:
-                return MatchResult(0.72, (120, 130), (90, 90), pixel_score=0.72)
-            if spec is LOADING_TEMPLATE:
-                return MatchResult(-1.0, (0, 0), (0, 0), pixel_score=-1.0)
-            self.fail(f"unexpected match: {spec.name}")
-
-        task._match = fake_match
-        task.operate_click = lambda x, y, after_sleep=0: clicks.append((x, y, after_sleep))
-        task.send_key = lambda *_args, **_kwargs: self.fail("popup clearing must not send keys")
-
-        AutoLoginTask._wait_loading_then_home(
-            task,
-            np.zeros((1440, 2560, 3), dtype=np.uint8),
-        )
-
-        self._assert_notice_clear_click(clicks)
-        self.assertEqual("clearing", task._state)
-
-    def _assert_notice_clear_click(self, clicks):
-        self.assertEqual(1, len(clicks))
-        x, y, after_sleep = clicks[0]
-        self.assertAlmostEqual(169 / 1920, x)
-        self.assertAlmostEqual(615 / 1080, y)
-        self.assertEqual(0.2, after_sleep)
 
     @staticmethod
     def _ocr_box(name, x, y, width, height):
@@ -492,6 +398,7 @@ class AutoLoginSequenceTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 
 class AutoLoginEscRecoveryTest(unittest.TestCase):
     """自动返回主页逻辑：宽限、auto_return_main_home 调用、等待加载、次数上限。"""
@@ -520,21 +427,6 @@ class AutoLoginEscRecoveryTest(unittest.TestCase):
 
     def _frame(self):
         return np.zeros((10, 10, 3), dtype=np.uint8)
-
-    def test_calls_auto_return_after_grace_then_holds_for_load(self):
-        task = self._task()
-        task._esc_home_wait_since = monotonic() - 30.0
-        calls = []
-        task.auto_return_main_home = lambda **_kwargs: calls.append(True)
-
-        self.assertTrue(AutoLoginTask._maybe_return_home(task, self._frame()))
-        self.assertEqual([True], calls)
-        self.assertEqual(1, task._esc_home_attempts)
-
-        # 紧接着再调用：处于“等待加载”保持期，不重复动作
-        self.assertTrue(AutoLoginTask._maybe_return_home(task, self._frame()))
-        self.assertEqual([True], calls)
-        self.assertEqual(1, task._esc_home_attempts)
 
     def test_attempt_cap_stops_and_asks_manual(self):
         task = self._task()

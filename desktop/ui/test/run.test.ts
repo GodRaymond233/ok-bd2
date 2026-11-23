@@ -34,6 +34,9 @@ test("what 每日跑商 sold is always shown and leaves room for two other value
 });
 
 test("the seal follows the task and the core's result state", () => {
+  const login = task({ name: "自动登录游戏", enabled: true, trigger: true });
+  assert.equal(sealOf(login, login.name), "run");
+  assert.equal(sealOf(login, null), "done");
   assert.equal(sealOf(task({ enabled: true }), "白嫖抽抽乐"), "run");
   assert.equal(sealOf(task({ enabled: true, paused: true }), "白嫖抽抽乐"), "pause");
   assert.equal(sealOf(task({ run_state: "abort" }), "白嫖抽抽乐"), "stopping");

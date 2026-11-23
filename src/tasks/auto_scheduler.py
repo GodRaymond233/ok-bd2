@@ -10,6 +10,8 @@ from __future__ import annotations
 import threading
 import time
 
+from src.tasks.login_gate import login_ready, login_settled
+
 # 安装后等待窗口与场景稳定，再执行首次调度检查。
 INSTALL_DELAY_SECONDS = 20.0
 # 首次检查若执行器忙（自动登录等 trigger 任务未结束）或暂无到期任务，按该
@@ -42,6 +44,9 @@ def run_due_tasks_once(og=None) -> str | None:
         return None
     if getattr(executor, "current_task", None) is not None:
         return None
+    if any(task.enabled or getattr(task, "_start_after_login", False)
+           for task in getattr(executor, "onetime_tasks", ())):
+        return None
 
     from src.tasks import scheduler as task_scheduler
     from src.tasks.DailyBatchTask import DailyBatchTask
@@ -61,7 +66,7 @@ def run_due_tasks_once(og=None) -> str | None:
         # start -> run() 立即返回 -> task_done -> 再 start 的空转循环。
         return None
 
-    if not _login_settled(executor):
+    if not login_settled(executor):
         # 自动登录未完成时绝不启动任务：登录 trigger 是逐帧推进的状态机，
         # 周期间有约 1 秒的执行器空闲窗口，仅靠 current_task 忙检测必然
         # 漏判；批处理一旦抢先启动会顶掉登录 trigger（onetime 先于
@@ -84,31 +89,12 @@ def run_due_tasks_once(og=None) -> str | None:
     return None
 
 
-def _login_settled(executor) -> bool:
-    """Whether it is safe to auto-start a task right now.
-
-    自动登录 trigger（AutoLoginTask）启用且尚未完成（``_finished``）时返回
-    False，让调用方继续等待；其余情况（无登录任务、已停用、已完成）一律
-    放行，避免停用自动登录的用户永远等不到自动执行。
-    """
-    try:
-        from src.tasks.trigger.AutoLoginTask import AutoLoginTask
-    except ImportError:  # pragma: no cover - 任务注册表缺失时的极端场景
-        return True
-    login_task = executor.get_task_by_class(AutoLoginTask)
-    if login_task is None:
-        return True
-    if not bool(getattr(login_task, "_enabled", True)):
-        return True
-    return bool(getattr(login_task, "_finished", False))
-
-
 def _any_batch_child_due(batch, executor, history, schedule_store, now=None) -> bool:
     """Whether any enabled batch child still needs to run today and is due."""
     from src.tasks.run_history import configuration_scope
 
     for child in getattr(batch, "child_tasks", ()) or ():
-        if not bool(batch.config.get(child.config_key, True)):
+        if not bool(batch.config.get(child.config_key, getattr(child, "default_enabled", True))):
             continue
         task = executor.get_task_by_class(child.task_class)
         if task is None:
@@ -178,14 +164,19 @@ def install_auto_scheduler(handler=None, exit_event=None) -> bool:
             self.schedule_startup_check()
             handler.post(self._recheck, delay=RECHECK_DELAY_SECONDS, remove_existing=True)
 
+        def on_login_ready(self):
+            handler.post(self._recheck, remove_existing=True)
+
         def stop(self):
             self._stopped = True
             communicate.task_done.disconnect(self.on_task_done)
+            login_ready.disconnect(self.on_login_ready)
             communicate.start_success.disconnect(self.on_first_app_signal)
             install_auto_scheduler._installed = False
 
     runner = _AutoRunner()
     communicate.task_done.connect(runner.on_task_done)
+    login_ready.connect(runner.on_login_ready)
     communicate.start_success.connect(runner.on_first_app_signal)
     if exit_event is not None:
         exit_event.bind_stop(runner)

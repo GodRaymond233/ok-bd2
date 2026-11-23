@@ -11,9 +11,11 @@ from ok.util.config import Config
 
 from src.tasks.DailyTask import (
     BUSINESS_GUEST_RELATIVE_ROI,
+    GUILD_SIGN_IN_ENTRY_REFERENCE_POINT,
     GUILD_SIGNUP_SUCCESS_TEMPLATE,
     GUILD_SUCCESS_KEYWORDS,
     GUILD_TEMPLATE,
+    MY_HOME_BACK_REFERENCE_POINT,
     MY_HOME_TEMPLATE,
     DailyTask,
 )
@@ -245,7 +247,7 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         task.capture_frame = lambda: np.zeros((10, 10, 3), dtype=np.uint8)
         task.info_set = lambda *_args, **_kwargs: None
         task.log_info = lambda *_args, **_kwargs: None
-        task._wait_for_home_confirmation = lambda *_args, **_kwargs: True
+        task.prepare_home = lambda *_args, **_kwargs: True
         task._match = lambda _frame, _spec: MatchResult(-1.0, (0, 0), (0, 0))
         task._click_reference = lambda *_args, **_kwargs: self.fail("should not click")
 
@@ -255,7 +257,7 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         task = object.__new__(DailyTask)
         task.config = config
         confirmations = []
-        task._wait_for_home_confirmation = (
+        task.prepare_home = (
             lambda name, *_args, **_kwargs: confirmations.append(name) or False
         )
         task.info_set = lambda *_args, **_kwargs: None
@@ -290,7 +292,7 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         task.log_error = lambda *_args, **_kwargs: None
         task._save_flow_diagnostic = Mock()
         task.recover_daily_home = lambda: False
-        task._wait_for_home_confirmation = lambda *_args, **_kwargs: False
+        task.prepare_home = lambda *_args, **_kwargs: False
         actions = []
         task.capture_frame = lambda: actions.append("capture")
         task._click_reference = lambda *_args, **_kwargs: actions.append("click")
@@ -309,7 +311,7 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         task.log_info = lambda *_args, **_kwargs: None
         task.capture_frame = lambda: object()
         task._ocr_text = lambda _frame, name: ""
-        task._home_confirmation_signals = lambda _frame, _name: (True, 3, 255.0, "抽抽乐")
+        task._read_home_confirmation_signals = lambda _frame, _name: (True, 3, 255.0, "抽抽乐")
         task.sleep = lambda *_args, **_kwargs: None
 
         def fake_match(_frame, spec):
@@ -343,7 +345,7 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         task.log_info = lambda *_args, **_kwargs: None
         task.capture_frame = lambda: object()
         task._ocr_text = lambda _frame, name: ""
-        task._home_confirmation_signals = lambda _frame, _name: (False, 0, 120.0, "-")
+        task._read_home_confirmation_signals = lambda _frame, _name: (False, 0, 120.0, "-")
         task.sleep = lambda *_args, **_kwargs: None
 
         def fake_match(_frame, spec):
@@ -395,10 +397,12 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         task._wait_for_template_or_ocr = lambda *_args, **_kwargs: (False, "")
         task._ocr_text = lambda _frame, name: "公告事项 进入公会联合战 公会商店"
         task._keyword_match_count = lambda text, keywords: 3
+        # 本用例只验证返回主页流程，入口后已离开主页（不触发补点）。
+        task._frame_confirms_home = lambda *_args, **_kwargs: False
         # 依次为：入口前主页确认、返回主页第 1/2/3 次确认。
         wait_results = iter([True, False, False, True])
         waited_names = []
-        task._wait_for_home_confirmation = (
+        task.prepare_home = (
             lambda name, **_kwargs: waited_names.append(name) or next(wait_results)
         )
 
@@ -436,9 +440,11 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         task._wait_for_template_or_ocr = lambda *_args, **_kwargs: (False, "")
         task._ocr_text = lambda _frame, name: ""
         task._keyword_match_count = lambda text, keywords: 0
+        # 本用例只验证未知页面不盲点返回键，入口后已离开主页。
+        task._frame_confirms_home = lambda *_args, **_kwargs: False
         # 依次为：入口前主页确认（通过）、返回主页第 1 次确认（失败）。
         confirm_results = iter([True, False])
-        task._wait_for_home_confirmation = lambda name, **_kwargs: next(confirm_results)
+        task.prepare_home = lambda name, **_kwargs: next(confirm_results)
 
         self.assertFalse(DailyTask.run_guild_sign_in(task))
         self.assertEqual([(370, 155)], clicks)
@@ -448,12 +454,12 @@ class DailyTaskHelperTest(StageHistoryTestCase):
             for found in (False, True):
                 with self.subTest(width=width, found=found):
                     task = object.__new__(DailyTask)
-                    task.config = {}
+                    task.config = {"公会进入最大点击次数": 2}
                     task.capture_frame = lambda: np.zeros((height, width, 3), dtype=np.uint8)
                     task.info_set = Mock()
                     task.log_info = Mock()
                     task.sleep = Mock()
-                    task._wait_for_home_confirmation = Mock(return_value=True)
+                    task.prepare_home = Mock(return_value=True)
                     task._frame_confirms_home = Mock(return_value=True)
                     task._match_best = Mock(return_value=(MatchResult(
                         .99, (width // 5, height // 5), (width // 20, height // 20),
@@ -475,6 +481,49 @@ class DailyTaskHelperTest(StageHistoryTestCase):
                         call.args == (100, 50) for call in task._click_reference.call_args_list
                     ))
 
+    def _guild_entry_task(self, still_home):
+        """公会入口重试用例的公共装配：模板命中、主页确认通过。"""
+        task = object.__new__(DailyTask)
+        task.config = {"公会入口阈值": 0.78, "公会进入最大点击次数": 3}
+        task.info_set = lambda *_args, **_kwargs: None
+        task._status_set = lambda *_args, **_kwargs: None
+        task.log_info = lambda *_args, **_kwargs: None
+        task.sleep = lambda *_args, **_kwargs: None
+        task._sleep_after_recognition = lambda: None
+        task.capture_frame = lambda: np.zeros((10, 10, 3), dtype=np.uint8)
+        task.prepare_home = lambda *_args, **_kwargs: True
+        task._match_best = lambda *_args, **_kwargs: (
+            MatchResult(0.95, (2, 2), (2, 2)),
+            SimpleNamespace(file_name="image/green/MainBotmUnionGE.png"),
+        )
+        task._passes = lambda *_args, **_kwargs: True
+        clicks = []
+        task._click_reference = lambda x, y, **_kwargs: clicks.append((x, y))
+        task.operate_click = lambda x, y, **_kwargs: clicks.append((x, y))
+        task._wait_loading_or_template_or_ocr = lambda *_a, **_k: ("none", False, "")
+        task._frame_confirms_home = lambda *_a: still_home
+        task._wait_for_template_or_ocr = lambda *_a, **_k: (False, "")
+        task._wait_for_existing_guild_visit = lambda: False
+        task._return_home_from_guild = lambda: True
+        task._save_flow_diagnostic = Mock()
+        return task, clicks
+
+    def test_guild_entry_retries_while_still_on_home(self):
+        # 2026-11-17 实机：任务启动后第一次点公会入口被转场吞掉——18 秒后画面
+        # 仍是主页、公会入口模板原位命中（0.957），签到整条被判失败。旧实现只
+        # 点一次就转入签到检测，没有任何补点机会。
+        task, clicks = self._guild_entry_task(still_home=True)
+
+        self.assertFalse(DailyTask.run_guild_sign_in(task))
+        self.assertEqual([GUILD_SIGN_IN_ENTRY_REFERENCE_POINT, (0.3, 0.3), (0.3, 0.3)], clicks)
+
+    def test_guild_entry_stops_retrying_once_home_is_left(self):
+        # 已确认离开主页说明点击生效，不得再补点，否则会在公会页面上乱点。
+        task, clicks = self._guild_entry_task(still_home=False)
+
+        self.assertFalse(DailyTask.run_guild_sign_in(task))
+        self.assertEqual([GUILD_SIGN_IN_ENTRY_REFERENCE_POINT], clicks)
+
     def test_my_home_retry_stops_when_no_longer_on_home(self):
         task = object.__new__(DailyTask)
         task.config = {"小屋页面等待秒数": 1.0, "小屋进入最大点击次数": 3}
@@ -484,7 +533,7 @@ class DailyTaskHelperTest(StageHistoryTestCase):
         task._click_reference = lambda x, y, **_kwargs: clicks.append((x, y))
         task._wait_loading_or_template = lambda *_args, **_kwargs: ("none", False)
         task._wait_for_template = lambda *_args, **_kwargs: False
-        task._wait_for_home_confirmation = lambda *_args, **_kwargs: True
+        task.prepare_home = lambda *_args, **_kwargs: True
         task._frame_confirms_home = lambda *_args, **_kwargs: False
         task.capture_frame = lambda: np.zeros((10, 10, 3), dtype=np.uint8)
 
@@ -504,7 +553,7 @@ class DailyTaskHelperTest(StageHistoryTestCase):
                 task.capture_frame = lambda: np.zeros((1080, 1920, 3), dtype=np.uint8)
                 task._wait_loading_or_template = lambda *_args, **_kwargs: ("none", False)
                 task._wait_for_template = lambda *_args, **_kwargs: False
-                task._wait_for_home_confirmation = lambda *_args, **_kwargs: True
+                task.prepare_home = lambda *_args, **_kwargs: True
                 task._frame_confirms_home = lambda *_args, **_kwargs: False
                 clicks = []
                 task._click_reference = lambda x, y, **_kwargs: clicks.append((x, y))
@@ -517,8 +566,13 @@ class DailyTaskHelperTest(StageHistoryTestCase):
                 task._quick_vision = lambda: SimpleNamespace(ocr_text=ocr_text)
 
                 self.assertIs(expected, DailyTask.run_my_home_sign_in(task))
+                # 小屋的返回条比自己更宽，箭头在参考 (172,48)；
+                # 旧值 (100,50) 点在返回条左侧空白上，实机点不动。
                 self.assertEqual(
-                    [(166, 158), (100, 50)] if expected else [(166, 158)], clicks
+                    [(166, 158), MY_HOME_BACK_REFERENCE_POINT]
+                    if expected
+                    else [(166, 158)],
+                    clicks,
                 )
                 self.assertEqual(1 if expected else 3, len(ocr_calls))
                 self.assertEqual((0.11, 0.01, 0.25, 0.10), ocr_calls[0]["relative_roi"])
@@ -591,7 +645,7 @@ class DailyTaskHelperTest(StageHistoryTestCase):
             return current[0][0]
 
         task.capture_frame = capture
-        task._wait_for_home_confirmation = lambda name: (
+        task.prepare_home = lambda name: (
             True if "入口前" in name else current[0][2]
         )
         task.ocr = lambda **_kwargs: current[0][1]
@@ -1520,7 +1574,7 @@ class DailyTaskHelperTest(StageHistoryTestCase):
                 task._save_flow_diagnostic = Mock()
                 task._home_p95_threshold = Mock(return_value=185)
                 task._quick_hunt_current_map_context = Mock(return_value="-")
-                task.clear_temporary_home_announcement_if_needed = Mock(return_value=False)
+                task.dismiss_home_announcement = Mock(return_value=False)
                 frames = iter(states)
                 task.capture_frame = Mock(side_effect=lambda: next(frames, states[-1]))
                 task._quick_hunt_home_signals = lambda frame: (frame == "home", 0, 0, "")
@@ -2111,7 +2165,7 @@ class QuickHuntRecoveryTest(StageHistoryTestCase):
                 self.task._home_p95_threshold = lambda: 185
                 self.task._quick_hunt_current_map_context = lambda frame: "哥布林遗迹"
                 self.task._quick_hunt_home_signals = lambda frame: (home[0], 3, 255, "抽抽乐")
-                self.task.clear_temporary_home_announcement_if_needed = Mock(return_value=False)
+                self.task.dismiss_home_announcement = Mock(return_value=False)
                 self.task._quick_hunt_ocr_text = lambda frame, roi, name: (
                     "REWARD" if case != "cancel" and roi == QUICK_HUNT_REWARD_TITLE_ROI else "")
                 self.task._quick_hunt_menu_still_open = lambda frame: False

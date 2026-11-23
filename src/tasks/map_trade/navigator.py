@@ -34,7 +34,6 @@ from src.tasks.map_trade.navigator_constants import (
     FIRST_CARD_CONFIRM_REGION,
     FIRST_CARD_INSERT_REGION,
     FIRST_CARD_SKIP_TEMPLATE,
-    HOME_DIMMED_P95_THRESHOLD,
     LOADING_TEMPLATE,
     MERCHANT_CLICK_LOCATION_FAILURE_MESSAGE,
     MERCHANT_CLICK_LOCATION_TEMPLATE,
@@ -60,10 +59,6 @@ from src.tasks.map_trade.navigator_constants import (
     QUICK_SWITCH_SCROLL_UP_AMOUNT,
     QUICK_SWITCH_SCROLL_UP_COUNT,
     QUICK_SWITCH_TEMPLATE,
-    RETURN_HOME_ANNOUNCEMENT_KEYWORD_GROUPS,
-    RETURN_HOME_ANNOUNCEMENT_MAX_CLICKS,
-    RETURN_HOME_ANNOUNCEMENT_OCR_INTERVAL,
-    RETURN_HOME_ANNOUNCEMENT_OCR_REGION,
     RETURN_HOME_TIMEOUT,
     SANDBOX_LARGE_MAP_FOOTER_OCR_RELATIVE_ROI,
     SANDBOX_LARGE_MAP_LEFT_TEMPLATE,
@@ -119,16 +114,7 @@ from src.tasks.map_trade.navigator_sandbox import SandboxNavigationMixin
 from src.tasks.map_trade.navigator_story import StoryCardNavigationMixin
 from src.tasks.map_trade.navigator_trade import TradeNavigationMixin
 from src.tasks.map_trade.vision import Vision, normalize_text
-from src.utils.home_confirmation import (
-    HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT,
-    HOME_GACHA_OCR_RELATIVE_ROI,
-    HOME_LEFT_COLUMN_OCR_RELATIVE_ROI,
-    HOME_LEFT_COLUMN_REQUIRED_HITS,
-    home_confirmation_passes,
-    home_gacha_ocr_with_fallback,
-    home_left_column_hits,
-    home_left_column_p95_brightness,
-)
+from src.utils.home_confirmation import HOME_DIMMED_P95_THRESHOLD_DEFAULT, read_home_signals
 
 __all__ = [
     "BARGAIN_CONFIRM_POINT",
@@ -555,175 +541,14 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
     def _loading_timeout(self) -> float:
         return max(10.0, float(self.task.config.get("加载页面等待秒数", 45.0)))
 
-    def _wait_for_cartridge_home(
-        self,
-        timeout: float = 10.0,
-        interval: float = 0.35,
-        *,
-        allow_return_announcement_cleanup: bool = False,
-    ) -> bool:
-        end_at = monotonic() + max(0.0, timeout)
-        last_left_hits = 0
-        last_p95 = 0.0
-        last_gacha_text = ""
-        announcement_clicks = 0
-        while monotonic() <= end_at:
-            frame = self.vision.capture()
-            (
-                confirmed,
-                last_left_hits,
-                last_p95,
-                last_gacha_text,
-            ) = self._home_confirmation_signals(
-                frame,
-                clear_context=(
-                    None
-                    if allow_return_announcement_cleanup
-                    else "跑商/跑图确认主页"
-                ),
-            )
-            if confirmed:
-                return True
-            return_announcement_detected = (
-                allow_return_announcement_cleanup
-                and self._clear_return_home_announcement_if_needed(
-                    frame,
-                    brightness=last_p95,
-                    allow_click=(
-                        announcement_clicks < RETURN_HOME_ANNOUNCEMENT_MAX_CLICKS
-                    ),
-                )
-            )
-            if return_announcement_detected:
-                if announcement_clicks < RETURN_HOME_ANNOUNCEMENT_MAX_CLICKS:
-                    announcement_clicks += 1
-                self.task.sleep(RETURN_HOME_ANNOUNCEMENT_OCR_INTERVAL)
-                continue
-            if allow_return_announcement_cleanup:
-                clear_announcement = getattr(
-                    self.task,
-                    "clear_temporary_home_announcement_if_needed",
-                    None,
-                )
-                if callable(clear_announcement) and clear_announcement(
-                    left_hits=last_left_hits,
-                    required_left_hits=HOME_LEFT_COLUMN_REQUIRED_HITS,
-                    brightness=last_p95,
-                    brightness_threshold=HOME_DIMMED_P95_THRESHOLD,
-                    gacha_ocr_text=last_gacha_text,
-                    context="跑商/跑图确认主页",
-                ):
-                    self.task.sleep(interval)
-                    continue
-            self.task.sleep(interval)
-        self.task.log_warning(
-            "跑商：未同时确认左列关键词、亮度和抽抽乐文字，"
-            f"left={last_left_hits}/{HOME_LEFT_COLUMN_REQUIRED_HITS}, "
-            f"p95={last_p95:.0f}/{HOME_DIMMED_P95_THRESHOLD:.0f}, ocr={last_gacha_text or '-'}。"
+    def _wait_for_cartridge_home(self, timeout: float = 10.0, interval: float = 0.35) -> bool:
+        return self.task.prepare_home(
+            "跑商/跑图主页", interval=interval, timeout=timeout, recover=False,
         )
-        return False
 
-    def _clear_return_home_announcement_if_needed(
-        self,
-        frame: np.ndarray,
-        *,
-        brightness: float,
-        allow_click: bool = True,
-    ) -> bool:
-        """Dismiss a verified update notice only inside an explicit home return."""
-
-        if brightness >= HOME_DIMMED_P95_THRESHOLD:
-            return False
-        text = self.vision.ocr_text(
-            frame,
-            "返回主页公告",
-            relative_roi=RETURN_HOME_ANNOUNCEMENT_OCR_REGION,
-        )
-        normalized = normalize_text(self.vision.simplify(text))
-        matched_group = next(
-            (
-                keywords
-                for keywords in RETURN_HOME_ANNOUNCEMENT_KEYWORD_GROUPS
-                if all(
-                    normalize_text(self.vision.simplify(keyword)) in normalized
-                    for keyword in keywords
-                )
-            ),
-            None,
-        )
-        self._status("返回主页公告 OCR", text or "-")
-        if matched_group is None:
-            return False
-        if not allow_click:
-            self._status(
-                "返回主页公告清理",
-                f"已达到{RETURN_HOME_ANNOUNCEMENT_MAX_CLICKS}次上限",
-            )
-            return True
-        self.task.log_info(
-            "跑商：返回主页时确认更新公告遮挡，点击公告清理位置后重新严格确认主页，"
-            f"keywords={'+'.join(matched_group)}, p95={brightness:.0f}。"
-        )
-        self.task.operate_click(
-            *HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT,
-            after_sleep=0.2,
-        )
-        return True
-
-    def _home_confirmation_signals(
-        self,
-        frame: np.ndarray,
-        clear_context: str | None = None,
-    ) -> tuple[bool, int, float, str]:
-        left_text = self.vision.ocr_text(
-            frame,
-            "主页左列",
-            relative_roi=HOME_LEFT_COLUMN_OCR_RELATIVE_ROI,
-        )
-        left_hits = home_left_column_hits(left_text)
-        p95_brightness = home_left_column_p95_brightness(frame)
-        gacha_result = home_gacha_ocr_with_fallback(
-            lambda scale: self.vision.ocr_text(
-                frame,
-                f"主页抽抽乐 x{scale:g}",
-                relative_roi=HOME_GACHA_OCR_RELATIVE_ROI,
-                ocr_scale=scale,
-            )
-        )
-        gacha_text = gacha_result.text
-        self._status(
-            "主页左列关键词",
-            f"{left_hits}/{HOME_LEFT_COLUMN_REQUIRED_HITS}",
-        )
-        self._status("主页亮度p95", f"{p95_brightness:.0f}")
-        self._status("主页抽抽乐 OCR", gacha_text or "-")
-        confirmed = home_confirmation_passes(
-            left_hits=left_hits,
-            required_left_hits=HOME_LEFT_COLUMN_REQUIRED_HITS,
-            brightness=p95_brightness,
-            brightness_threshold=HOME_DIMMED_P95_THRESHOLD,
-            gacha_ocr_text=gacha_text,
-        )
-        clear_announcement = getattr(
-            self.task,
-            "clear_temporary_home_announcement_if_needed",
-            None,
-        )
-        if clear_context is not None and not confirmed and callable(clear_announcement):
-            clear_announcement(
-                left_hits=left_hits,
-                required_left_hits=HOME_LEFT_COLUMN_REQUIRED_HITS,
-                brightness=p95_brightness,
-                brightness_threshold=HOME_DIMMED_P95_THRESHOLD,
-                gacha_ocr_text=gacha_text,
-                context=clear_context,
-            )
-        return (
-            confirmed,
-            left_hits,
-            p95_brightness,
-            gacha_text,
-        )
+    def _home_confirmation_signals(self, frame):
+        threshold = float(self.task.config.get("主页压暗阈值", HOME_DIMMED_P95_THRESHOLD_DEFAULT))
+        return read_home_signals(frame, self.vision, threshold, "跑图跑商主页", self._status)
 
     def _wait_for_ocr_keywords(
         self,

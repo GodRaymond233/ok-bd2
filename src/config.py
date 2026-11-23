@@ -162,7 +162,12 @@ config = {
         ["src.tasks.MapCollectionTask", "MapCollectionTask"],
         ["src.tasks.MapTradeTask", "MapTradeTask"],
         ["src.tasks.PVPTask", "PVPTask"],
+        ["src.tasks.EquipmentDailyTask", "EquipmentDailyTask"],
+        ["src.tasks.ActivityDailyTask", "ActivityDailyTask"],
         ["src.tasks.MissionRewardTask", "MissionRewardTask"],
+        ["src.tasks.MailRewardTask", "MailRewardTask"],
+        ["src.tasks.MainStoryFarmTask", "MainStoryFarmTask"],
+        ["src.tasks.GlutalkTask", "GlutalkTask"],
         ["src.tasks.BD2InputTestTask", "BD2MouseClickInputTestTask"],
         ["src.tasks.BD2InputTestTask", "BD2MouseWheelInputTestTask"],
         ["src.tasks.LauncherTask", "LauncherTask"],
@@ -180,3 +185,5 @@ config = {
         "sha256": "98d13a723d28e3c6f41c73869024d6bdbca91239719dad547d994dccf95aa862",
     },
 }
+
+config["ocr"]["home_observer"] = config["ocr"]["default"]
