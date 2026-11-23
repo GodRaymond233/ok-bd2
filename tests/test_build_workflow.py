@@ -4,6 +4,7 @@ import os
 import runpy
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -236,6 +237,46 @@ class DesktopReleaseTest(unittest.TestCase):
             requirements.write_text("PySide6==6.10.0", "utf-8")
             with self.assertRaisesRegex(ValueError, "Qt dependencies"):
                 prepare(root)
+
+    @unittest.skipUnless(os.name == "nt", "Windows update payload")
+    def test_update_payload_carries_ocr_in_its_own_tree(self):
+        from importlib.machinery import PathFinder
+
+        from src.compat import dependency_guard
+
+        inline = self.release["inline_core_requirements"]
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "src").mkdir()
+            config = root / "src/config.py"
+            config.write_text('version = "release-tag-unset"\n', "utf-8")
+            requirements = root / "requirements.txt"
+            shutil.copyfile(ROOT / "requirements.txt", requirements)
+
+            inline(root, "v99.0.1")
+
+            self.assertEqual('version = "v99.0.1"\n', config.read_text("utf-8"))
+            bundle = root / dependency_guard.OCR_BUNDLE_DIR
+            ocr = bundle / "onnxocr"
+            self.assertIn(ocr.relative_to(root).as_posix(),
+                          (root / "deploy.txt").read_text("utf-8").splitlines())
+            pins = requirements.read_text("utf-8")
+            self.assertNotIn("onnxocr-ppocrv6==", pins)
+            self.assertIn("openvino==", pins)
+            models = ocr / "models/ppocrv6/small"
+            for filename in (ocr / "LICENSE", models / "det/det.onnx", models / "rec/rec.onnx",
+                             models / "ppocrv6_dict.txt"):
+                with self.subTest(filename=filename.name):
+                    self.assertTrue(filename.is_file())
+            search_path = [str(root), *sys.path]
+            self.assertNotEqual(ocr / "__init__.py",
+                                Path(PathFinder.find_spec("onnxocr", search_path).origin))
+            guard_path = str(root / "src/compat/dependency_guard.py")
+            with (patch.object(dependency_guard, "__file__", guard_path),
+                  patch.object(sys, "path", search_path)):
+                self.assertNotIn("onnxocr", dependency_guard.find_missing_modules())
+                self.assertEqual(ocr / "__init__.py",
+                                 Path(PathFinder.find_spec("onnxocr", search_path).origin))
 
 
 if __name__ == "__main__":

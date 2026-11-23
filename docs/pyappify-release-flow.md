@@ -23,12 +23,13 @@ No separate update UI is needed in `main.py`.
 The main repository keeps source code, tests, docs, and training material. The
 update repository is intentionally smaller and is generated during release.
 
-`deploy.txt` is the sync list for that update repository. During the release
-workflow, `python -m ok.update.inline_ok_requirements --tag <tag>` copies
-`ok-script` and `pyappify` into local `ok/` and `pyappify/` directories, removes
-the external `ok-script` dependency from the update requirements, and replaces
-the source `src/config.py` marker `version = "release-tag-unset"` with the tag
-being released in the generated update content. The source package version has
+`deploy.txt` is the sync list for the update repository. The core payload builder
+bundles `ok-script`, `pyappify`, and PP-OCRv6 in the update tree and removes their
+pins from the payload requirements. Releases using PP-OCRv6 add `ocr_bundle/`
+at startup. Older releases keep loading their installed PP-OCRv5 even if the
+launcher preserves that directory when switching tags.
+The builder replaces the `src/config.py` marker `version = "release-tag-unset"`
+with the tag being released. The source package version has
 one authority: `pyproject.toml` (currently `0.1.1`), which
 `src.config.runtime_version()` reads whenever that file is present. Generated
 update content excludes `pyproject.toml`, so `runtime_version()` falls back to

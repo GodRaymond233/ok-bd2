@@ -3,7 +3,7 @@
 # The package never talks to the official update sources: the pyappify.yml next to the
 # launcher and the one inside the local update repo both point git_url at
 # <Output>\update-repo.git. The update repo is built like the release one: the deploy.txt
-# set, ok-script and pyappify inlined from the worktree venv, the version set to the tag.
+# set, ok-script, pyappify and ONNX OCR inlined from the worktree venv, version set to the tag.
 # Run desktop\scripts\windows-checks.ps1 first so the UI bundle and the packaged shell exist.
 #
 #   New package:  build-test-package.ps1 -Output D:\ok-bd2-desktop-test
@@ -74,7 +74,7 @@ function Write-TestYml {
 }
 
 # Fills $Destination (empty apart from .git) the way the release workflow fills the update
-# repo: deploy.txt entries, then ok.update.inline_ok_requirements --tag <tag>.
+# repo from the deploy.txt entries and the shared payload builder.
 function Write-UpdateTree {
     param([string]$Destination, [string]$Version)
     $entries = Get-Content -Encoding UTF8 (Join-Path $root 'deploy.txt') |
@@ -92,16 +92,15 @@ function Write-UpdateTree {
     Get-ChildItem -Recurse -Directory -Filter '__pycache__' $Destination |
         Where-Object { $_.FullName -notlike '*\.git\*' } | Remove-Item -Recurse -Force
     Copy-Item (Join-Path $root 'deploy.txt') (Join-Path $Destination 'deploy.txt')
-    Invoke-Native $python @('-m', 'ok.update.inline_ok_requirements', '--tag', $Version) $Destination
     Invoke-Native $python @((Join-Path $PSScriptRoot 'build-shell-release.py'),
-        '--prepare-core-payload', '--core-root', $Destination)
+        '--prepare-core-payload', '--core-root', $Destination, '--tag', $Version)
     Remove-Item -Force (Join-Path $Destination 'deploy.txt')
-    foreach ($inlined in @('ok', 'pyappify')) {
+    foreach ($inlined in @('ok', 'pyappify', 'ocr_bundle\onnxocr')) {
         if (-not (Test-Path (Join-Path $Destination $inlined))) {
             throw "Inlining did not produce the $inlined folder."
         }
     }
-    if (Select-String -Quiet -Pattern '^\s*(ok-script|pyappify)\b' (Join-Path $Destination 'requirements.txt')) {
+    if (Select-String -Quiet -Pattern '^\s*(ok-script|pyappify|onnxocr-ppocrv6)\b' (Join-Path $Destination 'requirements.txt')) {
         throw 'requirements.txt still lists an inlined package.'
     }
     if (-not (Test-Path (Join-Path $Destination 'src\desktop\ui_dist\index.html'))) {

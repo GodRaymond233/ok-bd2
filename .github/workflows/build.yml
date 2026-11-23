@@ -168,14 +168,10 @@ jobs:
           compression-level: 0
           retention-days: 1
 
-      - name: Inline ok-script for update repository
-        run: |
-          python -m ok.update.inline_ok_requirements --tag ${{ github.ref_name }}
-
-      - name: Validate inlined update repository
+      - name: Prepare and validate update repository
         shell: pwsh
         run: |
-          python desktop/scripts/build-shell-release.py --prepare-core-payload
+          python desktop/scripts/build-shell-release.py --prepare-core-payload --tag ${{ github.ref_name }}
           if ($LASTEXITCODE -ne 0) { throw "Electron core payload validation failed." }
           if (-not (Test-Path -LiteralPath "ok" -PathType Container)) {
             throw "Inlined ok-script package folder is missing."

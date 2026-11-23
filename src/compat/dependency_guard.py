@@ -22,6 +22,7 @@ import sys
 from pathlib import Path
 
 LOG_NAME = "dependency_guard.log"
+OCR_BUNDLE_DIR = "ocr_bundle"
 
 # 核心模块 -> pip 发行包。覆盖捕获/OCR/UI 主链路上没有替代路径、损坏即裸崩的包。
 CORE_MODULE_PACKAGES = {
@@ -74,6 +75,11 @@ def _log(line: str) -> None:
 
 def find_missing_modules() -> list[str]:
     """返回核心清单里无法定位的模块名（spec 缺失或定位即抛错）。"""
+    # Older PyAppify versions can leave a whole directory behind on downgrade.
+    # This private path lets older ok-bd2 releases keep importing pip's v5.
+    bundle = Path(__file__).resolve().parents[2] / OCR_BUNDLE_DIR
+    if (bundle / "onnxocr/__init__.py").is_file() and str(bundle) not in sys.path:
+        sys.path.insert(0, str(bundle))
     missing = []
     for module_name in core_module_packages():
         try:

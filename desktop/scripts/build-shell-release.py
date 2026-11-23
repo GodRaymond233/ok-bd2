@@ -11,11 +11,14 @@ import tempfile
 import urllib.error
 import urllib.request
 import zipfile
+from contextlib import chdir
+from importlib.metadata import distribution
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from src.compat.dependency_guard import OCR_BUNDLE_DIR  # noqa: E402
 from src.desktop.backups import file_hash, regular_tree  # noqa: E402
 from src.desktop.bootstrap import REQUIRED_SHELL_VERSION, check_shell  # noqa: E402
 from src.desktop.shell_install import install_shell  # noqa: E402
@@ -32,6 +35,23 @@ def source_hash():
         digest.update(path.relative_to(ROOT).as_posix().encode() + b"\0")
         digest.update(bytes.fromhex(file_hash(path)))
     return digest.hexdigest()
+
+
+def inline_core_requirements(root, tag):
+    from ok.update.inline_ok_requirements import remove_ok_requirements
+
+    root = root.resolve()
+    ocr_dist = distribution("onnxocr-ppocrv6")
+    ocr_target = root / OCR_BUNDLE_DIR / "onnxocr"
+    shutil.copytree(ocr_dist.locate_file("onnxocr"), ocr_target,
+                    ignore=shutil.ignore_patterns("__pycache__"), dirs_exist_ok=True)
+    ocr_license = next(path for path in ocr_dist.files
+                       if path.parts[-2:] == ("licenses", "LICENSE"))
+    shutil.copyfile(ocr_license.locate(), ocr_target / "LICENSE")
+    with chdir(root):
+        remove_ok_requirements(root, tag, {
+            "onnxocr-ppocrv6": ocr_target.relative_to(root).as_posix(),
+        })
 
 
 def prepare_core_payload(root=ROOT):
@@ -154,6 +174,7 @@ def main():
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--prepare-core-payload", action="store_true")
     parser.add_argument("--core-root", type=Path, default=ROOT)
+    parser.add_argument("--tag")
     parser.add_argument("--url", action="append", default=[])
     parser.add_argument("--local", action="store_true")
     parser.add_argument("--offline-app-base", type=Path)
@@ -162,6 +183,9 @@ def main():
         "GITHUB_REPOSITORY", "GodRaymond233/ok-bd2"))
     arguments = parser.parse_args()
     if arguments.prepare_core_payload:
+        if not arguments.tag:
+            parser.error("--prepare-core-payload requires --tag")
+        inline_core_requirements(arguments.core_root, arguments.tag)
         prepare_core_payload(arguments.core_root)
         return
     if arguments.output is None or arguments.manifest is None:
