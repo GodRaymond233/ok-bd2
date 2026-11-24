@@ -91,7 +91,6 @@ class GlutalkTask(TaskVisionMixin, BaseBD2Task):
             "格鲁TALK OCR 阈值": 0.35,
             "主页确认等待秒数": 10.0,
             "页面等待秒数": 12.0,
-            "扫描最长秒数": 180.0,
             "每段对话最长秒数": 90.0,
             "整轮最长秒数": 300.0,
             "回复点击间隔秒数": 0.8,
@@ -656,7 +655,7 @@ class GlutalkTask(TaskVisionMixin, BaseBD2Task):
         self.info_set("推进点击数", 0)
         completed = 0
         stage = 0
-        rechecked_idle = False
+        rechecked_without_progress = False
 
         while completed < limit:
             stage += 1
@@ -665,17 +664,20 @@ class GlutalkTask(TaskVisionMixin, BaseBD2Task):
             if result in ("failed", "limit"):
                 return False
             already_home = result == "home"
-            if result in ("ended", "home"):
-                # A previous run's end marker is a cue to reopen, not a
-                # conversation completed by this run.
-                if self._click_total > before_clicks:
+            if self._click_total > before_clicks:
+                rechecked_without_progress = False
+                if result in ("ended", "home"):
                     completed += 1
                     self.info_set("完成对话数", completed)
-                rechecked_idle = False
-            elif result == "idle":
-                if rechecked_idle:
+            elif rechecked_without_progress:
+                if result == "idle":
                     break
-                rechecked_idle = True
+                message = "格鲁TALK 未完成：重进后仍未推进对话。"
+                self.info_set("状态", message)
+                self.log_warning(message)
+                return False
+            else:
+                rechecked_without_progress = True
             if completed >= limit or not bool(self.config.get("每段结束后回主页重进", True)):
                 break
             if monotonic() >= deadline:

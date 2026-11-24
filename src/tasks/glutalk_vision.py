@@ -76,8 +76,6 @@ AVAILABLE_TASK_RELATIVE_ROI = (0.25, 0.28, 0.52, 0.84)
 # Blue numeric badge at the right edge of an unread conversation row.
 # Measured: "1" at (1916,1192,68,66) -> center (0.508, 0.567) on 3840x2160.
 UNREAD_BADGE_RELATIVE_ROI = (0.42, 0.28, 0.60, 0.80)
-UNREAD_BADGE_MIN = 1
-UNREAD_BADGE_MAX = 9
 
 # Lower-right reply button of the selected conversation.
 # Measured: "对不起…" at (2444,1600,180,56) -> center (0.661, 0.754).
@@ -448,7 +446,7 @@ def reply_message_state(boxes, width, height):
         point = _point(box, width, height)
         if point is not None and _inside(point, (.54, .34, .79, .70)):
             text = _norm(getattr(box, "name", ""))
-            if len(text) >= 2:
+            if len(text) >= 2 and text != "发送消息":
                 messages.append((point[1], point[0], text))
     return tuple(text for _, _, text in sorted(messages))
 

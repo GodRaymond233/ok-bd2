@@ -478,20 +478,54 @@ class GlutalkTest(unittest.TestCase):
                 task = make_probe_task()
                 task.log_warning = Mock()
                 task.operate_click = Mock()
+                missed_message = False
+                seen_counts = []
 
                 def read():
+                    nonlocal missed_message
                     count = task.operate_click.call_count
+                    seen_counts.append(count)
                     if count == 30:
                         return frame, [], "GLU TALK 未读消息0 EP2.对话结束"
                     message = f"新消息{count}" if progressing else "同一条消息"
                     boxes = [box("发送消息", 650, 690), box("好的", 660, 750)]
+                    text = "GLU TALK 今日的剩余相遇0 未读消息1"
+                    if count == 1 and not missed_message:
+                        missed_message = True
+                        return frame, boxes, text
                     boxes.append(box(message, 620, 540))
-                    return frame, boxes, "GLU TALK 今日的剩余相遇0 未读消息1"
+                    return frame, boxes, text
 
                 task._read = read
                 with patch.object(module, "monotonic", return_value=1.0):
                     self.assertEqual(expected, task._advance_stage(1))
                 self.assertEqual(clicks, task.operate_click.call_count)
+                self.assertEqual([0, 1, 1], seen_counts[:3])
+
+    def test_scan_reopens_only_once_between_zero_click_stages(self):
+        for stages, expected, reopens, completed in (
+            ((("ended", 0), ("ended", 0)), False, 1, 0),
+            ((("home", 0), ("home", 0)), False, 1, 0),
+            ((("home", 0), ("idle", 0)), True, 1, 0),
+            ((("ended", 0), ("ended", 1), ("home", 0), ("idle", 0)), True, 3, 1),
+        ):
+            with self.subTest(stages=stages):
+                task = make_probe_task()
+                remaining = iter(stages)
+
+                def advance(_stage, _deadline):
+                    result, clicks = next(remaining)
+                    task._click_total += clicks
+                    return result
+
+                task._advance_stage = Mock(side_effect=advance)
+                task._restart_from_home = Mock(return_value=True)
+                task._wait_for_next_stage = Mock(return_value=True)
+                self.assertEqual(expected, task._scan())
+                self.assertEqual(reopens, task._restart_from_home.call_count)
+                self.assertEqual(completed, task.info["完成对话数"])
+                if not expected:
+                    self.assertIn("重进后仍未推进", task.info["状态"])
 
     def test_probe_and_completed_dialogue_never_dispatch_clicks(self):
         frame = np.zeros((HEIGHT, WIDTH, 3), np.uint8)
