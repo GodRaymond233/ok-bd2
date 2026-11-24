@@ -463,6 +463,36 @@ class GlutalkTest(unittest.TestCase):
             available_task_point(entries, WIDTH, HEIGHT, AVAILABLE_TASK_DEFAULT_KEYWORDS)[0]
         )
 
+    def test_unread_badge_skips_malformed_digits_and_keeps_valid_candidate(self):
+        boxes = [box("⑨1454289", 1950, 1030), box("１", 1950, 1190)]
+        point, evidence = unread_badge_point(boxes, REAL_W, REAL_H, unread=1)
+        self.assertIsNotNone(point)
+        self.assertIn("角标 1", evidence)
+        self.assertIsNone(unread_badge_point(boxes[:1], REAL_W, REAL_H, unread=1)[0])
+
+    def test_reply_stops_after_five_stalled_attempts_or_finishes_a_long_dialogue(self):
+        module = importlib.import_module("src.tasks.GlutalkTask")
+        frame = np.zeros((1000, 1000, 3), np.uint8)
+        for progressing, expected, clicks in ((False, "failed", 5), (True, "ended", 30)):
+            with self.subTest(progressing=progressing):
+                task = make_probe_task()
+                task.log_warning = Mock()
+                task.operate_click = Mock()
+
+                def read():
+                    count = task.operate_click.call_count
+                    if count == 30:
+                        return frame, [], "GLU TALK 未读消息0 EP2.对话结束"
+                    message = f"新消息{count}" if progressing else "同一条消息"
+                    boxes = [box("发送消息", 650, 690), box("好的", 660, 750)]
+                    boxes.append(box(message, 620, 540))
+                    return frame, boxes, "GLU TALK 今日的剩余相遇0 未读消息1"
+
+                task._read = read
+                with patch.object(module, "monotonic", return_value=1.0):
+                    self.assertEqual(expected, task._advance_stage(1))
+                self.assertEqual(clicks, task.operate_click.call_count)
+
     def test_probe_and_completed_dialogue_never_dispatch_clicks(self):
         frame = np.zeros((HEIGHT, WIDTH, 3), np.uint8)
         for probe, text in (

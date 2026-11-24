@@ -426,20 +426,31 @@ def unread_badge_point(
         return None, "未读消息为 0，没有可对话会话"
     candidates = []
     for box in boxes:
-        name = _norm(getattr(box, "name", ""))
-        if not name.isdigit():
-            continue
-        value = int(name)
-        if not (UNREAD_BADGE_MIN <= value <= UNREAD_BADGE_MAX):
-            continue
         point = _point(box, width, height)
         if point is None or not _inside(point, roi):
             continue
+        name = str(getattr(box, "name", "")).strip()
+        if not re.fullmatch(r"[1-9１-９]", name):
+            continue
+        value = int(name)
         candidates.append((point[1], point[0], point, value))
     if not candidates:
         return None, "未找到会话列表中的未读角标"
     _, _, point, value = min(candidates)
     return point, f"未读消息{unread}：会话角标 {value}"
+
+
+
+def reply_message_state(boxes, width, height):
+    """Read message-pane text above the reply controls in visual order."""
+    messages = []
+    for box in boxes:
+        point = _point(box, width, height)
+        if point is not None and _inside(point, (.54, .34, .79, .70)):
+            text = _norm(getattr(box, "name", ""))
+            if len(text) >= 2:
+                messages.append((point[1], point[0], text))
+    return tuple(text for _, _, text in sorted(messages))
 
 
 def encounter_button_point(
