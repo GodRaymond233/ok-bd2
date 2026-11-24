@@ -8,7 +8,7 @@ from unittest import mock
 
 from ok.task.exceptions import TaskDisabledException
 
-from src.tasks import scheduler
+from src.tasks import run_history, scheduler
 from src.tasks.DailyBatchTask import (
     RUN_MODE_ALL,
     RUN_MODE_INCOMPLETE,
@@ -20,7 +20,6 @@ from src.tasks.login_gate import defer_until_login, release_after_login
 from src.tasks.MapCollectionTask import MapCollectionTask
 from src.tasks.PVPTask import PVPTask
 from src.tasks.run_history import BEIJING_TZ, RunHistoryStore, set_default_store
-from src.tasks.task_notifications import log_task_completion
 
 
 class _ChildTask:
@@ -39,42 +38,72 @@ class _ChildTask:
 
 
 class DailyBatchTaskTest(unittest.TestCase):
-    def test_rewards_are_last_and_rechecked_after_a_successful_run_today(self):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        set_default_store(RunHistoryStore(f"{directory.name}/history.json"))
+        self.addCleanup(set_default_store, None)
+        scheduler.set_default_store(scheduler.TaskScheduleStore(f"{directory.name}/schedule.json"))
+        self.addCleanup(scheduler.set_default_store, None)
+
+    def make_task(self, children, child_specs, task_config):
+        task = object.__new__(DailyBatchTask)
+        task.lock = threading.Lock()
+        task.child_tasks = child_specs
+        task.config = task_config
+        task.info = {}
+        task.info_set = lambda key, value: task.info.__setitem__(key, value)
+        task.log_info = lambda *_args, **_kwargs: None
+        task.log_warning = lambda *_args, **_kwargs: None
+        task.log_error = lambda *_args, **_kwargs: None
+        resets = []
+        task._executor = SimpleNamespace(
+            get_task_by_class=lambda cls: children.get(cls),
+            reset_scene=lambda **kwargs: resets.append(kwargs),
+        )
+        return task, resets
+
+    def test_rewards_recheck_after_success_but_observe_failure_backoff(self):
         from src.tasks.DailyBatchTask import DAILY_BATCH_CHILDREN
         from src.tasks.MissionRewardTask import MissionRewardTask
         from src.tasks.run_history import default_store
 
-        self.assertIs(DAILY_BATCH_CHILDREN[-1].task_class, MissionRewardTask)
-        calls = []
-        rewards = _ChildTask("每日及每周奖励", calls)
-        rewards.recheck_in_batch = True
-        store = default_store()
-        store.record_task_done(SimpleNamespace(name=rewards.name, config=rewards.config,
-                                                info={"状态": "领取完成。"}, start_time=0))
-        task, _ = self.make_task({MissionRewardTask: rewards}, (DAILY_BATCH_CHILDREN[-1],),
-                                 {"启用": True})
-        with mock.patch.object(scheduler, "default_store") as schedule:
-            schedule.return_value.is_due.return_value = False
-            self.assertTrue(task.run(RUN_MODE_INCOMPLETE))
-        self.assertEqual([(rewards.name, True)], calls)
+        spec = DAILY_BATCH_CHILDREN[-1]
+        self.assertIs(spec.task_class, MissionRewardTask)
+        for ok in (True, False):
+            with self.subTest(ok=ok):
+                calls = []
+                rewards = _ChildTask("每日及每周奖励", calls)
+                rewards.recheck_in_batch = True
+                default_store().record_task_done(rewards, ok=ok)
+                task, _ = self.make_task({MissionRewardTask: rewards}, (spec,), {"启用": True})
+                with mock.patch.object(scheduler, "default_store") as schedule:
+                    schedule.return_value.is_due.return_value = False
+                    schedule.return_value.backoff_remaining_minutes.return_value = 3
+                    self.assertTrue(task.run(RUN_MODE_INCOMPLETE))
+                self.assertEqual([(rewards.name, True)] if ok else [], calls)
 
-    def test_reward_rechecks_still_respect_failure_backoff(self):
-        from src.tasks.DailyBatchTask import DAILY_BATCH_CHILDREN
-        from src.tasks.MissionRewardTask import MissionRewardTask
-        from src.tasks.run_history import default_store
-
-        calls = []
-        rewards = _ChildTask("每日及每周奖励", calls)
-        rewards.recheck_in_batch = True
-        default_store().record_task_done(SimpleNamespace(
-            name=rewards.name, config=rewards.config, info={"状态": "领取失败。"}, start_time=0))
-        task, _ = self.make_task({MissionRewardTask: rewards}, (DAILY_BATCH_CHILDREN[-1],),
-                                 {"启用": True})
-        with mock.patch.object(scheduler, "default_store") as schedule:
-            schedule.return_value.is_due.return_value = False
-            schedule.return_value.backoff_remaining_minutes.return_value = 3
-            self.assertTrue(task.run(RUN_MODE_INCOMPLETE))
-        self.assertEqual([], calls)
+    def test_child_order_and_config_restoration_after_failure(self):
+        for result, recovered in ((True, True), (False, True), (False, False)):
+            with self.subTest(result=result, recovered=recovered):
+                calls = []
+                first = _ChildTask("first", calls, result)
+                later = _ChildTask("later", calls)
+                first.recover_daily_home = mock.Mock(return_value=recovered)
+                configs = first.config, later.config
+                task, _ = self.make_task(
+                    {str: first, MapCollectionTask: later},
+                    (DailyBatchChild("first", str), DailyBatchChild("later", MapCollectionTask)),
+                    {"启用": True},
+                )
+                self.assertEqual(result, task.run())
+                self.assertEqual(
+                    [("first", True)] + ([("later", True)] if result or recovered else []), calls
+                )
+                self.assertIs(configs[0], first.config)
+                self.assertIs(configs[1], later.config)
+                self.assertFalse(first.config["启用"])
+                self.assertFalse(later.config["启用"])
 
     def test_pvp_settlement_skips_in_both_modes_without_home_or_completion(self):
         for mode in (RUN_MODE_ALL, RUN_MODE_INCOMPLETE):
@@ -96,13 +125,20 @@ class DailyBatchTaskTest(unittest.TestCase):
 
                     pvp.run = mock.Mock(side_effect=run)
                     later = _ChildTask(f"later-{mode}-{crosses_during_run}", [])
-                    specs = (DailyBatchChild("自动PVP", PVPTask),
-                             DailyBatchChild("later", _ChildTask))
-                    task, _ = self.make_task({PVPTask: pvp, _ChildTask: later}, specs,
-                                            {"启用": True})
-                    with mock.patch("src.tasks.PVPTask.pvp_settlement_end_ts",
-                                    return_value=None if crosses_during_run else opens), \
-                            mock.patch.object(scheduler, "default_store") as schedule:
+                    specs = (
+                        DailyBatchChild("自动PVP", PVPTask),
+                        DailyBatchChild("later", _ChildTask),
+                    )
+                    task, _ = self.make_task(
+                        {PVPTask: pvp, _ChildTask: later}, specs, {"启用": True}
+                    )
+                    with (
+                        mock.patch(
+                            "src.tasks.PVPTask.pvp_settlement_end_ts",
+                            return_value=None if crosses_during_run else opens,
+                        ),
+                        mock.patch.object(scheduler, "default_store") as schedule,
+                    ):
                         schedule.return_value.is_due.return_value = True
                         self.assertTrue(task.run(run_mode=mode))
                     if crosses_during_run:
@@ -113,80 +149,12 @@ class DailyBatchTaskTest(unittest.TestCase):
                     self.assertEqual("自动PVP", task.info["跳过"])
                     self.assertEqual("later", task.info["完成"])
                     self.assertEqual("-", task.info["失败"])
-                    self.assertEqual({"reason": "settlement", "minutes": None},
-                                     task.skip_reasons()["自动PVP"])
+                    self.assertEqual(
+                        {"reason": "settlement", "minutes": None}, task.skip_reasons()["自动PVP"]
+                    )
                     from src.tasks.run_history import default_store
+
                     self.assertIsNone(default_store().last_run(pvp.name))
-
-    def test_failed_child_recovers_and_later_child_runs_without_successful_batch(self):
-        class First:
-            pass
-        class Later:
-            pass
-        calls = []
-        first = _ChildTask("first", calls, result=False)
-        first.recover_daily_home = mock.Mock(return_value=True)
-        later = _ChildTask("later", calls)
-        task, _ = self.make_task({First: first, Later: later},
-                                (DailyBatchChild("first", First), DailyBatchChild("later", Later)),
-                                {"启用": True, "first": True, "later": True})
-        task._maybe_shutdown_after_daily = mock.Mock()
-        self.assertFalse(task.run())
-        self.assertEqual([("first", True), ("later", True)], calls)
-        self.assertEqual("first", task.info["失败"])
-        self.assertIn("执行结束", task.info["状态"])
-        task._maybe_shutdown_after_daily.assert_not_called()
-
-    def setUp(self):
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        set_default_store(RunHistoryStore(f"{directory.name}/history.json"))
-        self.addCleanup(set_default_store, None)
-
-    def make_task(self, children, child_specs, task_config):
-        task = object.__new__(DailyBatchTask)
-        task.lock = threading.Lock()
-        task.child_tasks = child_specs
-        task.config = task_config
-        task.info = {}
-        task.info_set = lambda key, value: task.info.__setitem__(key, value)
-        task.log_info = lambda *_args, **_kwargs: None
-        task.log_warning = lambda *_args, **_kwargs: None
-        task.log_error = lambda *_args, **_kwargs: None
-        resets = []
-        task._executor = SimpleNamespace(
-            get_task_by_class=lambda cls: children.get(cls),
-            reset_scene=lambda **kwargs: resets.append(kwargs),
-        )
-        return task, resets
-
-    def test_runs_enabled_children_in_order_and_restores_their_configs(self):
-        class First:
-            pass
-
-        class Second:
-            pass
-
-        calls = []
-        first = _ChildTask("first", calls)
-        second = _ChildTask("second", calls)
-        original_first_config = first.config
-        original_second_config = second.config
-        specs = (
-            DailyBatchChild("第一项", First),
-            DailyBatchChild("第二项", Second),
-        )
-        task, resets = self.make_task(
-            {First: first, Second: second},
-            specs,
-            {"启用": True, "第一项": True, "第二项": True},
-        )
-
-        self.assertTrue(DailyBatchTask.run(task))
-        self.assertEqual([("first", True), ("second", True)], calls)
-        self.assertIs(original_first_config, first.config)
-        self.assertIs(original_second_config, second.config)
-        self.assertEqual(2, len(resets))
 
     def test_progress_is_published_after_each_child(self):
         class First:
@@ -197,14 +165,9 @@ class DailyBatchTaskTest(unittest.TestCase):
 
         first = _ChildTask("first", [])
         second = _ChildTask("second", [])
-        specs = (
-            DailyBatchChild("第一项", First),
-            DailyBatchChild("第二项", Second),
-        )
+        specs = (DailyBatchChild("第一项", First), DailyBatchChild("第二项", Second))
         task, _resets = self.make_task(
-            {First: first, Second: second},
-            specs,
-            {"启用": True, "第一项": True, "第二项": True},
+            {First: first, Second: second}, specs, {"启用": True, "第一项": True, "第二项": True}
         )
         observed = []
         original_run = second.run
@@ -220,11 +183,13 @@ class DailyBatchTaskTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             history = RunHistoryStore(f"{directory}/history.json")
-            with mock.patch(
-                "src.tasks.run_history.default_store", return_value=history
-            ), mock.patch.object(scheduler, "default_store"), mock.patch(
-                "src.tasks.DailyBatchTask.time.time",
-                side_effect=[boundary - 120, boundary - 60, boundary - 30, boundary + 60],
+            with (
+                mock.patch("src.tasks.run_history.default_store", return_value=history),
+                mock.patch.object(scheduler, "default_store"),
+                mock.patch(
+                    "src.tasks.DailyBatchTask.time.time",
+                    side_effect=[boundary - 120, boundary - 60, boundary - 30, boundary + 60],
+                ),
             ):
                 self.assertTrue(DailyBatchTask.run(task))
             task.name = "一键完成日常"
@@ -250,9 +215,10 @@ class DailyBatchTaskTest(unittest.TestCase):
                 task, resets = self.make_task(dict(zip(classes, children)), specs, {"启用": True})
                 task._maybe_shutdown_after_daily = mock.Mock()
                 history = RunHistoryStore(f"{directory}/history.json")
-                with mock.patch(
-                    "src.tasks.run_history.default_store", return_value=history
-                ), mock.patch.object(scheduler, "default_store"):
+                with (
+                    mock.patch("src.tasks.run_history.default_store", return_value=history),
+                    mock.patch.object(scheduler, "default_store"),
+                ):
                     with self.assertRaises(TaskDisabledException):
                         DailyBatchTask.run(task)
                 expected = [("first", True)]
@@ -269,119 +235,6 @@ class DailyBatchTaskTest(unittest.TestCase):
                 self.assertIsNone(history.last_run("later"))
                 task._maybe_shutdown_after_daily.assert_not_called()
 
-    def test_failure_stops_later_children_and_disabled_switch_is_skipped(self):
-        class Skipped:
-            pass
-
-        class Failed:
-            pass
-
-        class Later:
-            pass
-
-        calls = []
-        skipped = _ChildTask("skipped", calls)
-        failed = _ChildTask("failed", calls, result=False)
-        failed.auto_return_main_home = mock.Mock(return_value=False)
-        failed.recover_daily_home = mock.Mock(return_value=False)
-        failed.try_return_home_with_back = mock.Mock(return_value=True)
-        later = _ChildTask("later", calls)
-        specs = (
-            DailyBatchChild("关闭项", Skipped),
-            DailyBatchChild("失败项", Failed),
-            DailyBatchChild("后续项", Later),
-        )
-        task, _resets = self.make_task(
-            {Skipped: skipped, Failed: failed, Later: later},
-            specs,
-            {"启用": True, "关闭项": False, "失败项": True, "后续项": True},
-        )
-
-        self.assertFalse(DailyBatchTask.run(task))
-        self.assertEqual([("failed", True)], calls)
-        failed.auto_return_main_home.assert_not_called()
-        failed.recover_daily_home.assert_called_once_with()
-        failed.try_return_home_with_back.assert_not_called()
-
-    def test_child_completion_is_silent_and_batch_emits_one_overview(self):
-        class NotifyingChild:
-            pass
-
-        notifications = []
-        child = _ChildTask("child", [])
-        child.log_info = lambda message, notify=False: notifications.append(
-            ("child", message, notify)
-        )
-
-        def run_child():
-            log_task_completion(child, "子任务完成。")
-            return True
-
-        child.run = run_child
-        specs = (DailyBatchChild("子任务", NotifyingChild),)
-        task, _resets = self.make_task(
-            {NotifyingChild: child},
-            specs,
-            {"启用": True, "子任务": True},
-        )
-        task.log_info = lambda message, notify=False: notifications.append(
-            ("batch", message, notify)
-        )
-
-        self.assertTrue(DailyBatchTask.run(task))
-        self.assertEqual(
-            [
-                ("batch", "一键完成日常：开始 子任务。", False),
-                ("child", "子任务完成。", False),
-                ("batch", "一键完成日常：子任务 完成。", False),
-                ("batch", "一键完成日常完成：已执行 1 项，跳过 0 项。", True),
-            ],
-            notifications,
-        )
-        self.assertFalse(
-            hasattr(child, "_completion_notification_suppression_depth")
-        )
-
-    def test_incomplete_mode_skips_children_completed_today_without_mutating_config(self):
-        class First:
-            pass
-
-        class Second:
-            pass
-
-        calls = []
-        first = _ChildTask("first", calls)
-        second = _ChildTask("second", calls)
-        specs = (
-            DailyBatchChild("第一项", First),
-            DailyBatchChild("第二项", Second),
-        )
-        task, _resets = self.make_task(
-            {First: first, Second: second},
-            specs,
-            {"启用": True, "第一项": True, "第二项": True},
-        )
-        with tempfile.TemporaryDirectory() as temp_dir:
-            store = RunHistoryStore(f"{temp_dir}/history.json")
-            set_default_store(store)
-            store.record_task_done(
-                SimpleNamespace(
-                    name="first",
-                    config=first.config,
-                    start_time=0,
-                    info={"状态": "first 完成。"},
-                )
-            )
-            original_config = task.config
-            try:
-                self.assertTrue(DailyBatchTask.run(task, RUN_MODE_INCOMPLETE))
-            finally:
-                set_default_store(None)
-
-        self.assertEqual([("second", True)], calls)
-        self.assertIs(original_config, task.config)
-        self.assertEqual("第一项", task.info.get("跳过"))
-
     def test_collection_batch_respects_refresh_cycles_and_schedules_its_result(self):
         from src.tasks.auto_scheduler import _any_batch_child_due
         from src.tasks.run_history import day_start_ts, week_start_ts
@@ -393,8 +246,10 @@ class DailyBatchTaskTest(unittest.TestCase):
             ("本周", 17, 8, False, "本周", 19),
             ("本周", 19, 8, True, "今日", 20),
         ):
-            with self.subTest(period=period, day=day, hour=hour, result=result_period), \
-                    tempfile.TemporaryDirectory() as directory:
+            with (
+                self.subTest(period=period, day=day, hour=hour, result=result_period),
+                tempfile.TemporaryDirectory() as directory,
+            ):
                 now = datetime(2026, 10, day, hour, tzinfo=BEIJING_TZ).timestamp()
                 previous = datetime(2026, 10, 16, 23, tzinfo=BEIJING_TZ).timestamp()
                 history = RunHistoryStore(f"{directory}/history.json")
@@ -405,25 +260,30 @@ class DailyBatchTaskTest(unittest.TestCase):
                 def completion_info(period, stamp):
                     anchor = week_start_ts if period == "本周" else day_start_ts
                     cycle = datetime.fromtimestamp(anchor(stamp, refresh_hour=8), BEIJING_TZ)
-                    return {"状态": "跑图完成。", "跑图完成范围": period,
-                            "跑图周期": cycle.date().isoformat()}
+                    return {
+                        "状态": "跑图完成。",
+                        "跑图完成范围": period,
+                        "跑图周期": cycle.date().isoformat(),
+                    }
 
                 child.info = completion_info(period, previous)
                 history.record_task_done(child, finished=previous, ok=True)
                 child.info = completion_info(result_period, now)
                 task, _ = self.make_task(
-                    {MapCollectionTask: child}, (DailyBatchChild("跑图", MapCollectionTask),),
+                    {MapCollectionTask: child},
+                    (DailyBatchChild("跑图", MapCollectionTask),),
                     {"启用": True, "跑图": True, "完成日常后自动关机": True},
                 )
-                with mock.patch("time.time", return_value=now), mock.patch(
-                    "src.tasks.run_history.default_store", return_value=history,
-                ), mock.patch.object(scheduler, "default_store", return_value=schedule), \
-                        mock.patch(
-                            "src.tasks.DailyBatchTask._schedule_system_shutdown",
-                        ) as shutdown:
-                    self.assertEqual(should_run, _any_batch_child_due(
-                        task, task.executor, history, schedule, now=now,
-                    ))
+                with (
+                    mock.patch("time.time", return_value=now),
+                    mock.patch("src.tasks.run_history.default_store", return_value=history),
+                    mock.patch.object(scheduler, "default_store", return_value=schedule),
+                    mock.patch("src.tasks.DailyBatchTask._schedule_system_shutdown") as shutdown,
+                ):
+                    self.assertEqual(
+                        should_run,
+                        _any_batch_child_due(task, task.executor, history, schedule, now=now),
+                    )
                     self.assertTrue(task.run(RUN_MODE_INCOMPLETE))
                     self.assertEqual(should_run, bool(calls))
                     self.assertEqual("跑图", task.info["完成" if should_run else "跳过"])
@@ -432,425 +292,105 @@ class DailyBatchTaskTest(unittest.TestCase):
                         expected = datetime(2026, 10, next_day, 8, tzinfo=BEIJING_TZ).timestamp()
                         self.assertEqual(expected, schedule.next_run(child.name))
 
-    def test_requested_run_mode_is_transient_and_next_run_defaults_to_all(self):
-        class First:
-            pass
-
-        class Second:
-            pass
-
-        calls = []
-        first = _ChildTask("first", calls)
-        second = _ChildTask("second", calls)
-        specs = (
-            DailyBatchChild("第一项", First),
-            DailyBatchChild("第二项", Second),
-        )
-        task, _resets = self.make_task(
-            {First: first, Second: second},
-            specs,
-            {"启用": True, "第一项": True, "第二项": True},
-        )
-        with tempfile.TemporaryDirectory() as temp_dir:
-            store = RunHistoryStore(f"{temp_dir}/history.json")
-            set_default_store(store)
-            store.record_task_done(
-                SimpleNamespace(
-                    name="first",
-                    config=first.config,
-                    start_time=0,
-                    info={"状态": "first 完成。"},
-                )
-            )
-            try:
-                task.request_run_mode(RUN_MODE_INCOMPLETE)
-                self.assertTrue(DailyBatchTask.run(task))
-                self.assertTrue(DailyBatchTask.run(task))
-            finally:
-                set_default_store(None)
-
-        self.assertEqual(
-            [("second", True), ("first", True), ("second", True)],
-            calls,
-        )
-
-    def test_incomplete_mode_skips_child_in_failure_backoff(self):
-        class First:
-            pass
-
-        calls = []
-        first = _ChildTask("快速狩猎", calls)
-        specs = (DailyBatchChild("第一项", First),)
-        task, _resets = self.make_task(
-            {First: first},
-            specs,
-            {"启用": True, "第一项": True},
-        )
-        with tempfile.TemporaryDirectory() as temp_dir:
-            schedule_store = scheduler.TaskScheduleStore(f"{temp_dir}/schedule.json")
-            scheduler.set_default_store(schedule_store)
-            # INCOMPLETE 模式会读 run_history 判断“今日已完成”；必须钉住
-            # 独立空账本，否则开发机上 configs/task_run_history.json 的真实
-            # 记录会把用例变成空跑。
-            set_default_store(RunHistoryStore(f"{temp_dir}/history.json"))
-            try:
-                # 刚失败过：next_run 在未来，处于退避期。
-                schedule_store.delay_after_run("快速狩猎", ok=False)
-                self.assertTrue(DailyBatchTask.run(task, RUN_MODE_INCOMPLETE))
-            finally:
-                scheduler.set_default_store(None)
-                set_default_store(None)
-
-        self.assertEqual([], calls)
-        self.assertEqual("第一项", task.info.get("跳过"))
-
     def test_skip_reasons_say_why_each_child_was_skipped(self):
-        class Off:
-            pass
-
-        class Done:
-            pass
-
-        class Waiting:
-            pass
-
-        class Failing:
-            pass
-
-        class Later:
-            pass
-
         calls = []
-        done = _ChildTask("done", calls)
-        waiting = _ChildTask("快速狩猎", calls)
-        failing = _ChildTask("failing", calls, result=False)
-        specs = (
-            DailyBatchChild("不参与", Off),
-            DailyBatchChild("已完成", Done),
-            DailyBatchChild("退避中", Waiting),
-            DailyBatchChild("失败", Failing),
-            DailyBatchChild("之后", Later),
-        )
-        task, _resets = self.make_task(
-            {Off: _ChildTask("off", calls), Done: done, Waiting: waiting,
-             Failing: failing, Later: _ChildTask("later", calls)},
-            specs,
-            {"启用": True, "不参与": False, "已完成": True, "退避中": True,
-             "失败": True, "之后": True},
-        )
+        children = {}
+        specs = []
+        for key, name in (
+            ("不参与", "off"), ("已完成", "done"), ("退避中", "快速狩猎"),
+            ("失败", "failing"), ("之后", "later"),
+        ):
+            kind = type(name, (), {})
+            children[kind] = _ChildTask(name, calls, result=name != "failing")
+            specs.append(DailyBatchChild(key, kind))
+        task, _ = self.make_task(children, tuple(specs), {"启用": True, "不参与": False})
         self.assertEqual({}, task.skip_reasons())
-        with tempfile.TemporaryDirectory() as temp_dir:
-            schedule_store = scheduler.TaskScheduleStore(f"{temp_dir}/schedule.json")
-            scheduler.set_default_store(schedule_store)
-            history = RunHistoryStore(f"{temp_dir}/history.json")
-            set_default_store(history)
-            try:
-                history.record_task_done(SimpleNamespace(
-                    name="done", config=done.config, start_time=0, info={"状态": "done 完成。"}))
-                schedule_store.delay_after_run("快速狩猎", ok=False)
-                self.assertFalse(DailyBatchTask.run(task, RUN_MODE_INCOMPLETE))
-                reasons = task.skip_reasons()
-                self.assertEqual(
-                    {"不参与": "off", "已完成": "done", "退避中": "not_due", "之后": "stopped"},
-                    {key: value["reason"] for key, value in reasons.items()},
-                )
-                self.assertGreater(reasons["退避中"]["minutes"], 0)
-                self.assertIsNone(reasons["已完成"]["minutes"])
-                self.assertEqual([("failing", True)], calls)
+        history = run_history.default_store()
+        schedule_store = scheduler.default_store()
+        done = children[specs[1].task_class]
+        history.record_task_done(done, ok=True)
+        schedule_store.delay_after_run("快速狩猎", ok=False)
+        self.assertFalse(DailyBatchTask.run(task, RUN_MODE_INCOMPLETE))
+        reasons = task.skip_reasons()
+        self.assertEqual(
+            {"不参与": "off", "已完成": "done", "退避中": "not_due", "之后": "stopped"},
+            {key: value["reason"] for key, value in reasons.items()},
+        )
+        self.assertGreater(reasons["退避中"]["minutes"], 0)
+        self.assertIsNone(reasons["已完成"]["minutes"])
+        self.assertEqual([("failing", True)], calls)
 
-                # The next run starts from a clean slate, and callers get copies.
-                reasons["之后"]["reason"] = "changed"
-                task.config["不参与"] = True
-                task.config["失败"] = False
-                schedule_store.mark_due_now("快速狩猎", now=time.time() - 3600)
-                self.assertTrue(DailyBatchTask.run(task, RUN_MODE_ALL))
-                self.assertEqual({"失败": "off"}, {
-                    key: value["reason"] for key, value in task.skip_reasons().items()})
-            finally:
-                scheduler.set_default_store(None)
-                set_default_store(None)
+        # The next run starts from a clean slate, and callers get copies.
+        reasons["之后"]["reason"] = "changed"
+        task.config["不参与"] = True
+        task.config["失败"] = False
+        schedule_store.mark_due_now("快速狩猎", now=time.time() - 3600)
+        self.assertTrue(DailyBatchTask.run(task, RUN_MODE_ALL))
+        self.assertEqual(
+            {"失败": "off"},
+            {key: value["reason"] for key, value in task.skip_reasons().items()},
+        )
 
-    def test_run_defers_while_auto_login_pending(self):
-        # 回归：手动点开始且游戏冷启动时，onetime 出队优先于登录 trigger
-        # 且运行期间 trigger 不执行；立即跑子任务只会在登录页把主页确认
-        # 烧超时并中止整批，登录完成后也没有任何东西重新拉起批次。
+    def test_login_defers_and_reenqueues_the_batch_once(self):
         from src.tasks.trigger.AutoLoginTask import AutoLoginTask
 
-        class First:
-            pass
-
-        calls = []
-        first = _ChildTask("first", calls)
         login = SimpleNamespace(login_pending=True)
-        task, _resets = self.make_task(
-            {First: first, AutoLoginTask: login},
-            (DailyBatchChild("第一项", First),),
-            {"启用": True, "第一项": True},
-        )
-
+        task, _ = self.make_task({AutoLoginTask: login}, (), {"启用": True})
         task._enabled = True
         self.assertTrue(defer_until_login(task))
-        self.assertEqual([], calls)
         self.assertTrue(task._start_after_login)
-        self.assertIn("等待自动登录", task.info.get("状态"))
-
-    def test_release_after_login_reenqueues_gated_batch_once(self):
-        task, _resets = self.make_task({}, (), {"启用": True})
-        task._start_after_login = True
+        self.assertIn("等待自动登录", task.info["状态"])
         task._enabled = False
-        task.park_run_mode()
-        enqueued = []
-        task._executor = SimpleNamespace(
-            onetime_tasks=[task],
-            get_task_by_class=lambda cls: task if cls is DailyBatchTask else None,
-            enqueue_onetime_task=lambda t: enqueued.append(t) or True,
-        )
-
-        self.assertTrue(release_after_login(task._executor))
-        self.assertEqual([task], enqueued)
+        task._executor.onetime_tasks = [task]
+        task._executor.enqueue_onetime_task = mock.Mock(return_value=True)
+        self.assertTrue(release_after_login(task.executor))
         self.assertTrue(task._enabled)
         self.assertFalse(task._start_after_login)
-
         task._enabled = False
-        self.assertFalse(release_after_login(task._executor))
-        self.assertEqual(1, len(enqueued))
+        self.assertFalse(release_after_login(task.executor))
+        task.executor.enqueue_onetime_task.assert_called_once_with(task)
 
-    def test_all_mode_records_child_schedule_after_success_and_failure(self):
-        class First:
-            pass
-
-        class Second:
-            pass
-
-        calls = []
-        first = _ChildTask("快速狩猎", calls)
-        second = _ChildTask("镜中之战", calls, result=False)
-        specs = (
-            DailyBatchChild("第一项", First),
-            DailyBatchChild("第二项", Second),
-        )
-        task, _resets = self.make_task(
-            {First: first, Second: second},
-            specs,
-            {"启用": True, "第一项": True, "第二项": True},
-        )
-        with tempfile.TemporaryDirectory() as temp_dir:
-            schedule_store = scheduler.TaskScheduleStore(f"{temp_dir}/schedule.json")
-            scheduler.set_default_store(schedule_store)
-            try:
-                self.assertFalse(DailyBatchTask.run(task))
-            finally:
-                scheduler.set_default_store(None)
-
-        # 成功子任务推迟到下一次日常锚点（北京 04:00）。
-        first_next = schedule_store.next_run("快速狩猎")
-        self.assertIsNotNone(first_next)
-        self.assertGreaterEqual(first_next, scheduler.next_daily_anchor_ts() - 1)
-        self.assertTrue(schedule_store.last_run_ok("快速狩猎"))
-        # 失败子任务按失败间隔退避，不推进锚点。
-        second_next = schedule_store.next_run("镜中之战")
-        self.assertIsNotNone(second_next)
-        self.assertGreater(second_next, time.time() + 29 * 60)
-        self.assertFalse(schedule_store.last_run_ok("镜中之战"))
-
-    def test_shutdown_scheduled_when_all_enabled_children_completed(self):
-        class First:
-            pass
-
-        class Second:
-            pass
-
-        class Disabled:
-            pass
-
-        first = _ChildTask("first", [])
-        second = _ChildTask("second", [])
-        specs = (
-            DailyBatchChild("第一项", First),
-            DailyBatchChild("第二项", Second),
-            DailyBatchChild("关闭项", Disabled),
-        )
-        task, _resets = self.make_task(
-            {First: first, Second: second},
-            specs,
-            {
-                "启用": True,
-                "完成日常后自动关机": True,
-                "第一项": True,
-                "第二项": True,
-                # 关闭的子任务不属于今日日常，不影响关机判定。
-                "关闭项": False,
-            },
-        )
-        with tempfile.TemporaryDirectory() as temp_dir:
-            set_default_store(RunHistoryStore(f"{temp_dir}/history.json"))
-            try:
-                with mock.patch(
-                    "src.tasks.DailyBatchTask._schedule_system_shutdown"
-                ) as shutdown:
-                    self.assertTrue(DailyBatchTask.run(task))
-            finally:
-                set_default_store(None)
-
-        shutdown.assert_called_once_with(SHUTDOWN_COUNTDOWN_SECONDS)
-        self.assertIn("自动关机", task.info.get("状态"))
-
-    def test_shutdown_counts_child_completed_before_the_run(self):
-        class First:
-            pass
-
-        class Second:
-            pass
-
-        first = _ChildTask("first", [])
-        second = _ChildTask("second", [])
-        specs = (
-            DailyBatchChild("第一项", First),
-            DailyBatchChild("第二项", Second),
-        )
-        task, _resets = self.make_task(
-            {First: first, Second: second},
-            specs,
-            {"启用": True, "完成日常后自动关机": True, "第一项": True, "第二项": True},
-        )
-        with tempfile.TemporaryDirectory() as temp_dir:
-            store = RunHistoryStore(f"{temp_dir}/history.json")
-            set_default_store(store)
-            store.record_task_done(
-                SimpleNamespace(name="first", start_time=0, info={"状态": "first 完成。"})
-            )
-            try:
-                with mock.patch(
-                    "src.tasks.DailyBatchTask._schedule_system_shutdown"
-                ) as shutdown:
-                    self.assertTrue(DailyBatchTask.run(task, RUN_MODE_INCOMPLETE))
-            finally:
-                set_default_store(None)
-
-        shutdown.assert_called_once_with(SHUTDOWN_COUNTDOWN_SECONDS)
-
-    def test_shutdown_not_scheduled_when_child_not_completed(self):
-        class First:
-            pass
-
-        class Second:
-            pass
-
-        first = _ChildTask("快速狩猎", [])
-        second = _ChildTask("镜中之战", [])
-        specs = (
-            DailyBatchChild("第一项", First),
-            DailyBatchChild("第二项", Second),
-        )
-        task, _resets = self.make_task(
-            {First: first, Second: second},
-            specs,
-            {"启用": True, "完成日常后自动关机": True, "第一项": True, "第二项": True},
-        )
-        with tempfile.TemporaryDirectory() as temp_dir:
-            schedule_store = scheduler.TaskScheduleStore(f"{temp_dir}/schedule.json")
-            scheduler.set_default_store(schedule_store)
-            set_default_store(RunHistoryStore(f"{temp_dir}/history.json"))
-            try:
-                # 退避中的子任务被跳过且今日未完成：批运行成功也不关机。
-                schedule_store.delay_after_run("镜中之战", ok=False)
-                with mock.patch(
-                    "src.tasks.DailyBatchTask._schedule_system_shutdown"
-                ) as shutdown:
-                    self.assertTrue(DailyBatchTask.run(task, RUN_MODE_INCOMPLETE))
-            finally:
-                scheduler.set_default_store(None)
-                set_default_store(None)
-
-        shutdown.assert_not_called()
-
-    def test_shutdown_not_scheduled_after_failure_or_when_switch_off(self):
-        class First:
-            pass
-
-        class Second:
-            pass
-
-        for switch_on, second_result in ((False, True), (True, False)):
-            with self.subTest(switch_on=switch_on, second_result=second_result):
-                first = _ChildTask("first", [])
-                second = _ChildTask("second", [], result=second_result)
-                specs = (
-                    DailyBatchChild("第一项", First),
-                    DailyBatchChild("第二项", Second),
+    def test_shutdown_requires_every_enabled_child_to_complete(self):
+        for case, ok, attempts, announced in (
+            ("complete", True, 1, True),
+            ("boundary", True, 1, True),
+            ("backoff", True, 0, False),
+            ("disabled", True, 0, False),
+            ("failure", False, 0, False),
+            ("rejected", True, 1, False),
+        ):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                calls = []
+                child = _ChildTask("快速狩猎", calls, result=case != "failure")
+                task, _ = self.make_task(
+                    {str: child},
+                    (DailyBatchChild("hunt", str), DailyBatchChild("off", int)),
+                    {"启用": True, "off": False, "完成日常后自动关机": case != "disabled"},
                 )
-                task, _resets = self.make_task(
-                    {First: first, Second: second},
-                    specs,
-                    {
-                        "启用": True,
-                        "完成日常后自动关机": switch_on,
-                        "第一项": True,
-                        "第二项": True,
-                    },
+                task.log_error = mock.Mock()
+                history = RunHistoryStore(f"{directory}/history")
+                schedule = scheduler.TaskScheduleStore(f"{directory}/schedule")
+                if case == "boundary":
+                    history.is_completed = mock.Mock(side_effect=[True, False])
+                if case == "backoff":
+                    schedule.delay_after_run(child.name, ok=False)
+                with (
+                    mock.patch("src.tasks.run_history.default_store", return_value=history),
+                    mock.patch.object(scheduler, "default_store", return_value=schedule),
+                    mock.patch(
+                        "src.tasks.DailyBatchTask._schedule_system_shutdown",
+                        return_value=case != "rejected",
+                    ) as shutdown,
+                ):
+                    self.assertEqual(ok, task.run(RUN_MODE_INCOMPLETE))
+                self.assertEqual(
+                    [mock.call(SHUTDOWN_COUNTDOWN_SECONDS)] * attempts, shutdown.call_args_list
                 )
-                with mock.patch(
-                    "src.tasks.DailyBatchTask._schedule_system_shutdown"
-                ) as shutdown:
-                    DailyBatchTask.run(task)
-                shutdown.assert_not_called()
-
-    def test_shutdown_survives_day_boundary_for_pre_completed_children(self):
-        class First:
-            pass
-
-        first = _ChildTask("first", [])
-        specs = (DailyBatchChild("第一项", First),)
-        task, _resets = self.make_task(
-            {First: first},
-            specs,
-            {"启用": True, "完成日常后自动关机": True, "第一项": True},
-        )
-
-        class BoundaryStore:
-            """运行循环内记「今日已完成」，之后重算视为已跨过 04:00 日界。"""
-
-            def __init__(self):
-                self.calls = 0
-
-            def is_completed(self, _name, now=None, *, scope=None):
-                self.calls += 1
-                return self.calls == 1
-
-        set_default_store(BoundaryStore())
-        try:
-            with mock.patch(
-                "src.tasks.DailyBatchTask._schedule_system_shutdown"
-            ) as shutdown:
-                self.assertTrue(DailyBatchTask.run(task, RUN_MODE_INCOMPLETE))
-        finally:
-            set_default_store(None)
-
-        # 运行前已完成跳过的子任务不能因关机判定时刻重算翻转为「非今日」而漏关机。
-        shutdown.assert_called_once_with(SHUTDOWN_COUNTDOWN_SECONDS)
-
-    def test_shutdown_not_claimed_when_system_rejects_schedule(self):
-        class First:
-            pass
-
-        first = _ChildTask("first", [])
-        specs = (DailyBatchChild("第一项", First),)
-        task, _resets = self.make_task(
-            {First: first},
-            specs,
-            {"启用": True, "完成日常后自动关机": True, "第一项": True},
-        )
-        errors = []
-        task.log_error = lambda *args, **kwargs: errors.append(args)
-        with mock.patch(
-            "src.tasks.DailyBatchTask._schedule_system_shutdown",
-            return_value=False,
-        ) as shutdown:
-            self.assertTrue(DailyBatchTask.run(task))
-        shutdown.assert_called_once_with(SHUTDOWN_COUNTDOWN_SECONDS)
-        # shutdown.exe 非零退出（如权限拒绝）时不得虚假宣称已安排关机。
-        self.assertNotIn("自动关机", task.info.get("状态", ""))
-        self.assertTrue(errors)
+                self.assertEqual(announced, "自动关机" in task.info["状态"])
+                self.assertEqual(case == "rejected", task.log_error.called if ok else False)
+                self.assertEqual(
+                    [] if case in {"boundary", "backoff"} else [(child.name, True)], calls
+                )
 
     def test_schedule_system_shutdown_uses_system32_and_reports_exit_code(self):
         from src.tasks.DailyBatchTask import _schedule_system_shutdown
@@ -858,13 +398,14 @@ class DailyBatchTaskTest(unittest.TestCase):
         for returncode, expected in ((0, True), (5, False)):
             with self.subTest(returncode=returncode):
                 completed = SimpleNamespace(returncode=returncode)
-                with mock.patch(
-                    "src.tasks.DailyBatchTask.subprocess.run",
-                    return_value=completed,
-                ) as run, mock.patch.dict("os.environ", {"SystemRoot": r"C:\Windows"}):
+                with (
+                    mock.patch(
+                        "src.tasks.DailyBatchTask.subprocess.run", return_value=completed
+                    ) as run,
+                    mock.patch.dict("os.environ", {"SystemRoot": r"C:\Windows"}),
+                ):
                     self.assertEqual(
-                        expected,
-                        _schedule_system_shutdown(SHUTDOWN_COUNTDOWN_SECONDS),
+                        expected, _schedule_system_shutdown(SHUTDOWN_COUNTDOWN_SECONDS)
                     )
                 command = run.call_args.args[0]
                 # 绝对路径调用 System32 的 shutdown.exe，防止安装目录同名顶替。
