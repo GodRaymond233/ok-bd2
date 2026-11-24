@@ -171,7 +171,7 @@ jobs:
       - name: Prepare and validate update repository
         shell: pwsh
         run: |
-          python desktop/scripts/build-shell-release.py --prepare-core-payload --tag ${{ github.ref_name }}
+          python desktop/scripts/build-shell-release.py --prepare-core-payload --core-root . --tag ${{ github.ref_name }}
           if ($LASTEXITCODE -ne 0) { throw "Electron core payload validation failed." }
           if (-not (Test-Path -LiteralPath "ok" -PathType Container)) {
             throw "Inlined ok-script package folder is missing."

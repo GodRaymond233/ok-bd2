@@ -198,7 +198,7 @@ def main():
     parser.add_argument("--output", type=Path)
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--prepare-core-payload", action="store_true")
-    parser.add_argument("--core-root", type=Path, default=ROOT)
+    parser.add_argument("--core-root", type=Path)
     parser.add_argument("--tag")
     parser.add_argument("--url", action="append", default=[])
     parser.add_argument("--local", action="store_true")
@@ -208,8 +208,8 @@ def main():
         "GITHUB_REPOSITORY", "GodRaymond233/ok-bd2"))
     arguments = parser.parse_args()
     if arguments.prepare_core_payload:
-        if not arguments.tag:
-            parser.error("--prepare-core-payload requires --tag")
+        if arguments.core_root is None or not arguments.tag:
+            parser.error("--prepare-core-payload requires --core-root and --tag")
         inline_core_requirements(arguments.core_root, arguments.tag)
         prepare_core_payload(arguments.core_root)
         return

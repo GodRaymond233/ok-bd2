@@ -25,8 +25,8 @@ update repository is intentionally smaller and is generated during release.
 
 `deploy.txt` is the sync list for the update repository. The core payload builder
 bundles `ok-script`, `pyappify`, and PP-OCRv6 in the update tree and removes their
-pins from the payload requirements. Releases using PP-OCRv6 add `ocr_bundle/`
-at startup. Older releases keep loading their installed PP-OCRv5 even if the
+pins from the payload requirements. Installed releases load PP-OCRv6 from the
+versioned `ocr_bundle/onnxocr` directory. Older releases keep loading their installed PP-OCRv5 even if the
 launcher preserves that directory when switching tags.
 The builder replaces the `src/config.py` marker `version = "release-tag-unset"`
 with the tag being released. The source package version has
@@ -111,7 +111,8 @@ The workflow will:
 
 1. Install dependencies and run the final quality gate on Windows.
 2. Validate the dependency lock and inline `ok-script` and PyAppify for the update repository.
-3. Validate the inlined update payload.
+3. Validate the inlined update payload, including the PP-OCRv6 models, dictionary
+   and license, and check that the visualization font, orientation model and demo are excluded.
 4. Sync the update repositories using `deploy.txt`.
 5. Resolve `PACKAGE_BUILD_MODE` and safely reuse or compile the PyAppify launcher.
 6. Prepare the exact application tag and build both China and Global installer assets from `pyappify.yml`.
