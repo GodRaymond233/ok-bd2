@@ -122,6 +122,8 @@ def _patch_start_cancellation(module) -> None:
     original_do_start = controller_class.do_start
     original_start_device = controller_class.start_device
     original_cancel = controller_class.cancel_start
+    controller_class._bd2_cancel_phase = None
+    controller_class._bd2_cancelled = False
 
     def lock(controller):
         return controller.__dict__.setdefault("_bd2_cancel_lock", threading.RLock())
@@ -165,6 +167,10 @@ def _patch_start_cancellation(module) -> None:
     @wraps(original_start_device)
     def start_device(controller, *args, **kwargs):
         with lock(controller):
+            # MCP prepares a device directly, outside do_start's request lifecycle.
+            if not controller.starting and controller._bd2_cancel_phase is None:
+                controller._bd2_cancelled = False
+                controller._cancel_requested.clear()
             controller._bd2_cancel_phase = "waiting"
         try:
             result = original_start_device(controller, *args, **kwargs)

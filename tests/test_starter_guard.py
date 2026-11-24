@@ -320,6 +320,34 @@ class NotifyStarterWizardTest(unittest.TestCase):
 
 
 class GameWindowWaitTest(unittest.TestCase):
+    def test_mcp_device_prepare_starts_cold_and_recovers_after_cancellation(self):
+        from ok.core import start_controller as upstream
+        from ok.core.mcp_server import LocalMcpServer
+
+        class Controller(upstream.StartController):
+            pass
+
+        for name in ("start", "do_start", "start_device", "cancel_start"):
+            setattr(Controller, name, inspect.unwrap(getattr(Controller, name)))
+        starter_guard._patch_start_cancellation(types.SimpleNamespace(StartController=Controller, communicate=Mock()))
+        with patch.object(upstream, "Handler"):
+            controller = Controller({"windows": {"start_exe": True}}, Mock())
+        manager = Mock()
+        manager.get_preferred_device.return_value = {"device": "windows", "connected": True}
+        server = types.SimpleNamespace(runtime=types.SimpleNamespace(task_executor=Mock(), device_manager=manager),
+                                       runner=types.SimpleNamespace(app=types.SimpleNamespace(start_controller=controller)))
+        def ready(**_kwargs):
+            return not controller._cancel_requested.is_set()
+
+        with patch.object(upstream.og, "device_manager", manager):
+            controller._wait_until_device_ready = ready
+            LocalMcpServer._prepare_device(server)
+            controller._wait_until_device_ready = lambda **_: controller.cancel_start() and ready()
+            with self.assertRaisesRegex(RuntimeError, "could not be started"):
+                LocalMcpServer._prepare_device(server)
+            controller._wait_until_device_ready = ready
+            LocalMcpServer._prepare_device(server)
+
     def test_cancellation_stops_queued_and_waiting_starts_and_rejects_activation(self):
         from ok.core.start_controller import StartController
 
