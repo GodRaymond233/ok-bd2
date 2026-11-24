@@ -402,7 +402,7 @@ class DesktopReleaseTest(unittest.TestCase):
             )
             command = [sys.executable, "-c", probe, str(root / "src/compat/dependency_guard.py")]
             positive = subprocess.check_output(command, cwd=ROOT, text=True)
-            self.assertEqual(ocr / "__init__.py", Path(positive.strip()))
+            self.assertTrue((ocr / "__init__.py").samefile(positive.strip()), positive)
             # An earlier pip wheel occupies the very same import name.
             ocr.rename(root / "onnxocr")
             env = {**os.environ, "PYTHONPATH": str(root), "PYTHONUTF8": "1"}
