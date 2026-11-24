@@ -178,7 +178,11 @@ def startup_notice(message):
 
 
 def repair_dependencies():
-    from src.compat.dependency_guard import OcrComponentError, ensure_core_dependencies, find_missing_modules
+    from src.compat.dependency_guard import (
+        OcrComponentError,
+        ensure_core_dependencies,
+        find_missing_modules,
+    )
     from src.executor_guard import acquire_executor_lock, release_executor_lock
 
     try:

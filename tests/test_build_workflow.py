@@ -282,8 +282,8 @@ class DesktopReleaseTest(unittest.TestCase):
             self.assertEqual(ocr / "__init__.py", Path(positive.strip()))
             # An earlier pip wheel occupies the very same import name.
             ocr.rename(root / "onnxocr")
-            negative = subprocess.run(command, cwd=ROOT, capture_output=True, text=True,
-                                      env={**os.environ, "PYTHONPATH": str(root), "PYTHONUTF8": "1"},
+            env = {**os.environ, "PYTHONPATH": str(root), "PYTHONUTF8": "1"}
+            negative = subprocess.run(command, cwd=ROOT, capture_output=True, env=env,
                                       encoding="utf-8")
             self.assertNotEqual(0, negative.returncode)
             self.assertIn("OCR 组件不完整", negative.stderr)

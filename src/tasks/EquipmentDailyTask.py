@@ -29,8 +29,8 @@ from src.tasks.equipment_daily import (
     dismantle_check_point,
     dismantle_grade_points,
     equipment_daily_cycle,
-    refinement_value,
     grid_blank_rows,
+    refinement_value,
 )
 from src.tasks.task_vision_mixin import TaskVisionMixin
 from src.utils import task_vision

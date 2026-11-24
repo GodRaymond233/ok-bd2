@@ -31,7 +31,7 @@ OCR_MODEL_FILES = ("det/det.onnx", "rec/rec.onnx", "ppocrv6_dict.txt")
 
 
 class OcrComponentError(RuntimeError):
-    """The installed OCR payload requires a launcher repair."""
+    """The OCR source or its dependency lock cannot support this launch."""
 
 # 核心模块 -> pip 发行包。覆盖捕获/OCR/UI 主链路上没有替代路径、损坏即裸崩的包。
 CORE_MODULE_PACKAGES = {
@@ -88,6 +88,9 @@ def find_missing_modules() -> list[str]:
     # This private path lets older ok-bd2 releases keep importing pip's v5.
     root = Path(__file__).resolve().parents[2]
     installed = installed_base(root) is not None
+    locked = None if installed else read_locked_versions().get("onnxocr-ppocrv6")
+    if not installed and not locked:
+        raise OcrComponentError("源码依赖锁损坏，请恢复项目根目录的 requirements.txt。")
     bundle = root / OCR_BUNDLE_DIR
     if installed:
         if str(bundle) in sys.path:
@@ -106,11 +109,9 @@ def find_missing_modules() -> list[str]:
                 if installed:
                     valid = origin == bundle / "onnxocr/__init__.py"
                 else:
-                    locked = read_locked_versions().get("onnxocr-ppocrv6")
-                    if not locked:
-                        raise OcrComponentError("源码依赖锁损坏，请恢复项目根目录的 requirements.txt。")
                     dist = importlib.metadata.distribution("onnxocr-ppocrv6")
-                    valid = dist.version == locked and origin == dist.locate_file("onnxocr/__init__.py").resolve()
+                    expected = dist.locate_file("onnxocr/__init__.py").resolve()
+                    valid = dist.version == locked and origin == expected
                 if valid and all((models / name).is_file() for name in OCR_MODEL_FILES):
                     _log(f"OCR preflight: origin={origin}, det={models / OCR_MODEL_FILES[0]}, "
                          f"rec={models / OCR_MODEL_FILES[1]}")
@@ -119,7 +120,11 @@ def find_missing_modules() -> list[str]:
         except (ImportError, ValueError, ModuleNotFoundError):
             missing.append(module_name)
     if installed and "onnxocr" in missing:
-        message = "OCR 组件不完整。请关闭客户端，在启动器中重新同步当前版本的文件，然后重新打开客户端。"
+        message = (
+            "OCR 组件不完整。请关闭客户端，重新同步当前版本。"
+            "若仍缺失，请确认 repo 和 working 是同一版本，"
+            "将 repo\\ocr_bundle 完整复制到 working 目录后再启动。"
+        )
         _log(f"{message} expected={bundle}")
         raise OcrComponentError(message)
     return missing
@@ -137,7 +142,8 @@ def parse_locked_versions(requirements_text: str) -> dict[str, str]:
 
 def read_locked_versions() -> dict[str, str]:
     try:
-        text = (Path(__file__).resolve().parents[2] / "requirements.txt").read_text(encoding="utf-8")
+        requirements = Path(__file__).resolve().parents[2] / "requirements.txt"
+        text = requirements.read_text(encoding="utf-8")
     except OSError:
         return {}
     return parse_locked_versions(text)

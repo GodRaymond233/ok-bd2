@@ -48,8 +48,8 @@ def inline_core_requirements(root, tag):
     regular_tree(ocr_target.parent)
     with tempfile.TemporaryDirectory(dir=root) as staging:
         package = Path(staging) / "onnxocr"
-        shutil.copytree(ocr_dist.locate_file("onnxocr"), package,
-                        ignore=shutil.ignore_patterns("__pycache__", "fonts", "ppocrv5", "ocr_images_pdfs.py"))
+        exclusions = shutil.ignore_patterns("__pycache__", "fonts", "ppocrv5", "ocr_images_pdfs.py")
+        shutil.copytree(ocr_dist.locate_file("onnxocr"), package, ignore=exclusions)
         shutil.copyfile(ocr_license.locate(), package / "LICENSE")
         validate_ocr_bundle(package)
         ocr_target.parent.mkdir(exist_ok=True)

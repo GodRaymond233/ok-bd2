@@ -329,13 +329,16 @@ class GameWindowWaitTest(unittest.TestCase):
 
         for name in ("start", "do_start", "start_device", "cancel_start"):
             setattr(Controller, name, inspect.unwrap(getattr(Controller, name)))
-        starter_guard._patch_start_cancellation(types.SimpleNamespace(StartController=Controller, communicate=Mock()))
+        module = types.SimpleNamespace(StartController=Controller, communicate=Mock())
+        starter_guard._patch_start_cancellation(module)
         with patch.object(upstream, "Handler"):
             controller = Controller({"windows": {"start_exe": True}}, Mock())
         manager = Mock()
         manager.get_preferred_device.return_value = {"device": "windows", "connected": True}
-        server = types.SimpleNamespace(runtime=types.SimpleNamespace(task_executor=Mock(), device_manager=manager),
-                                       runner=types.SimpleNamespace(app=types.SimpleNamespace(start_controller=controller)))
+        runtime = types.SimpleNamespace(task_executor=Mock(), device_manager=manager)
+        app = types.SimpleNamespace(start_controller=controller)
+        server = types.SimpleNamespace(runtime=runtime, runner=types.SimpleNamespace(app=app))
+
         def ready(**_kwargs):
             return not controller._cancel_requested.is_set()
 

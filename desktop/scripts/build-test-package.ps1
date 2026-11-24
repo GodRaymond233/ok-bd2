@@ -181,7 +181,14 @@ if ($AddUpdateTag) {
         $published = ($publishedJson -join "`n") | ConvertFrom-Json
         $candidate = Get-Content -Raw (Join-Path $work $relative) | ConvertFrom-Json
         if ($published.version -eq $candidate.version) {
-            if ($published.source_sha256 -ne $candidate.source_sha256) {
+            # The release runner checks out LF. Compare Git inputs for local CRLF checkouts.
+            $inputs = @('desktop/shell/src', 'desktop/shell/static', 'desktop/shell/scripts',
+                'desktop/shell/package.json', 'desktop/shell/package-lock.json',
+                'desktop/shell/tsconfig.json', 'icons')
+            $extra = @(& git -C $root ls-files --others --exclude-standard -- @inputs)
+            if ($LASTEXITCODE) { throw 'Could not inspect shell sources.' }
+            & git -C $root diff --quiet 494d0d75ef43cd3c96bf6675502aeacb07efa74a -- @inputs
+            if ($LASTEXITCODE -or $extra.Count) {
                 throw 'Shell sources changed under the same version.'
             }
             [IO.File]::WriteAllText((Join-Path $work $relative), ($publishedJson -join "`n"),
