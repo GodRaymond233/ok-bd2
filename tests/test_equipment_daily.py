@@ -247,7 +247,8 @@ class EquipmentFlowTest(unittest.TestCase):
         title, count, dismiss = DISMANTLE_RESULT_LABELS
         for labels, point in (
             ((("ESULT", *title[1:]), count, dismiss), dismiss[1:]),
-            ((title, count), (0.30, 0.15)),
+            ((title, count), title[1:]),
+            ((count,), None),
             ((dismiss,), None),
         ):
             with self.subTest(labels=labels):
@@ -260,6 +261,7 @@ class EquipmentFlowTest(unittest.TestCase):
                 )
                 self.assertIsNone(task._close_dismantle_result(expected_inventory=(738, 814)))
                 self.assertEqual(3 if point else 0, task.operate_click.call_count)
+                self.assertEqual(4 if point else 1, task._wait_equipment.call_count)
                 for call in task.operate_click.call_args_list:
                     self.assertEqual("关闭分解结果", call.kwargs["name"])
                     self.assertEqual(point, call.args)

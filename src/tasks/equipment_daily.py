@@ -242,8 +242,7 @@ class EquipmentScreen:
         if dismiss and (title or count):
             return dismiss
         if title and count:
-            # The overlay closes on any tap. This point is left of the equipment grid.
-            return (0.30, 0.15)
+            return title
         return None
 
     def scored_gear(self):
