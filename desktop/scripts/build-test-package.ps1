@@ -17,7 +17,8 @@ param(
     [string]$Tag = 'v0.9.0',
     [switch]$AddUpdateTag,
     [string]$UpdateTag = 'v0.9.1',
-    [switch]$SkipSetup
+    [switch]$SkipSetup,
+    [switch]$ReleaseAcceptance
 )
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
@@ -26,6 +27,17 @@ $launcherUrl = 'https://github.com/GodRaymond233/ok-bd2/releases/download/v1.3.1
 # Pinned PyAppify v1.2.3 launcher from the v1.3.19 release: the zip and the ok-bd2.exe in it.
 $launcherZipSha256 = '8fd5997b52f5e2bb1472d8c99c53d8f39d76efff8a763444464ad399ef52954c'
 $launcherSha256 = '9b2acdb0d78122ca8919310ec9c6b57f323d9b83f7c086efc4a72624dcef576a'
+if ($ReleaseAcceptance) {
+    $Tag = 'v2.0.5'
+    $baselineCommit = 'c853802f4b267088f82644f0e1f214faabc039ce'
+    $launcherUrl = "https://github.com/GodRaymond233/ok-bd2/releases/download/$Tag/ok-bd2-win32.zip"
+    $launcherZipSha256 = '72c4b60a087fb4f6164592d1f463c18ea654b248accdb3916257e46d8f43ae40'
+    $launcherSha256 = 'b03b1a783ddb8d4db15112da631593691ab711e7a20492937588a0fa2f1973c3'
+    if ($AddUpdateTag -and ($UpdateTag -notmatch '^v\d+\.\d+\.\d+$' -or
+        [version]$UpdateTag.Substring(1) -le [version]$Tag.Substring(1))) {
+        throw "Pass a candidate -UpdateTag greater than $Tag."
+    }
+}
 if (-not [IO.Path]::IsPathRooted($Output)) {
     $Output = Join-Path (Get-Location).Path $Output
 }
@@ -62,13 +74,17 @@ function Get-SourceLabel {
 }
 
 function Write-TestYml {
-    param([string]$Destination)
-    $text = Get-Content -Raw -Encoding UTF8 (Join-Path $root 'pyappify.yml')
+    param([string]$Destination, [string]$Source = (Join-Path $root 'pyappify.yml'))
+    $text = Get-Content -Raw -Encoding UTF8 $Source
     $text = $text -replace 'git_url:\s*"[^"]*"', "git_url: `"$repoUrl`""
-    $text = $text -replace 'main_script:\s*"main\.py"', 'main_script: "main_desktop.py"'
+    $entry = 'main.py'
+    if (-not $ReleaseAcceptance) {
+        $entry = 'main_desktop.py'
+        $text = $text -replace 'main_script:\s*"main\.py"', 'main_script: "main_desktop.py"'
+    }
     if ($text -notmatch [regex]::Escape($repoUrl) -or $text -match 'cnb\.cool|github\.com' -or
-        $text -notmatch 'main_desktop\.py') {
-        throw 'Could not point every profile at the local update repo and main_desktop.py.'
+        $text -notmatch [regex]::Escape("main_script: `"$entry`"")) {
+        throw "Could not point the profiles at the local update repo and $entry."
     }
     [IO.File]::WriteAllText($Destination, $text, (New-Object Text.UTF8Encoding($false)))
 }
@@ -134,7 +150,7 @@ if ($AddUpdateTag) {
         throw 'The packaged shell version does not match the source. Run windows-checks.ps1 first.'
     }
     $shellTarget = Join-Path $Output "data\apps\ok-bd2\shell\$shellVersion"
-    if (Test-Path $shellTarget) {
+    if (-not $ReleaseAcceptance -and (Test-Path $shellTarget)) {
         $built = @(Get-ChildItem -File -Recurse $shellBuild)
         if (@(Get-ChildItem -File -Recurse $shellTarget).Count -ne $built.Count) {
             throw 'Existing shell version has different contents; bump the shell version first.'
@@ -147,7 +163,7 @@ if ($AddUpdateTag) {
                 throw 'Existing shell version has different contents; bump the shell version first.'
             }
         }
-    } else {
+    } elseif (-not $ReleaseAcceptance) {
         New-Item -ItemType Directory -Force -Path (Split-Path $shellTarget) | Out-Null
         Copy-Item -Recurse -LiteralPath $shellBuild -Destination $shellTarget
     }
@@ -158,6 +174,20 @@ if ($AddUpdateTag) {
     Invoke-Native git @('clone', '--quiet', $repoPath, $work)
     Get-ChildItem -Force $work | Where-Object { $_.Name -ne '.git' } | Remove-Item -Recurse -Force
     Write-UpdateTree -Destination $work -Version $UpdateTag
+    if ($ReleaseAcceptance) {
+        $relative = 'src/desktop/shell-release.json'
+        $publishedJson = & git -C $repoPath show "${Tag}:$relative"
+        if ($LASTEXITCODE) { throw "Missing $Tag shell manifest." }
+        $published = ($publishedJson -join "`n") | ConvertFrom-Json
+        $candidate = Get-Content -Raw (Join-Path $work $relative) | ConvertFrom-Json
+        if ($published.version -eq $candidate.version) {
+            if ($published.source_sha256 -ne $candidate.source_sha256) {
+                throw 'Shell sources changed under the same version.'
+            }
+            [IO.File]::WriteAllText((Join-Path $work $relative), ($publishedJson -join "`n"),
+                [Text.UTF8Encoding]::new($false))
+        }
+    }
     Invoke-Native git @('-c', 'core.autocrlf=false', 'add', '--all') $work
     Invoke-Native git ($identity + @('commit', '--quiet', '--allow-empty', '-m', "test package update $UpdateTag from $(Get-SourceLabel)")) $work
     Invoke-Native git @('tag', $UpdateTag) $work
@@ -189,7 +219,7 @@ if (-not $LauncherZip) {
     Invoke-WebRequest -UseBasicParsing -Uri $launcherUrl -OutFile $LauncherZip
 }
 if ((Get-Sha256 $LauncherZip) -ne $launcherZipSha256) {
-    throw "$LauncherZip is not the pinned v1.3.19 launcher zip ($launcherZipSha256)."
+    throw "$LauncherZip does not match the pinned launcher zip ($launcherZipSha256)."
 }
 Expand-Archive -LiteralPath $LauncherZip -DestinationPath (Join-Path $download 'zip') -Force
 $launcher = Get-ChildItem -Recurse -Filter 'ok-bd2.exe' (Join-Path $download 'zip') | Select-Object -First 1
@@ -207,20 +237,42 @@ Remove-Item -Recurse -Force $download
 $staging = Join-Path $Output 'update-staging'
 New-Item -ItemType Directory -Force -Path $staging | Out-Null
 Invoke-Native git @('init', '--quiet') $staging
-Write-UpdateTree -Destination $staging -Version $Tag
-Invoke-Native git @('-c', 'core.autocrlf=false', 'add', '--all') $staging
-Invoke-Native git ($identity + @('commit', '--quiet', '-m', "test package $Tag from $(Get-SourceLabel)")) $staging
+if ($ReleaseAcceptance) {
+    Invoke-Native git @('fetch', '--depth=1', '--no-tags', 'https://github.com/GodRaymond233/ok-bd2-update.git',
+        "refs/tags/$Tag") $staging
+    $commit = & git -C $staging rev-parse 'FETCH_HEAD^{commit}'
+    if ($LASTEXITCODE -or $commit -ne $baselineCommit) { throw "Unexpected public $Tag payload." }
+    Invoke-Native git @('checkout', '-B', 'main', $baselineCommit) $staging
+    $profilePath = Join-Path $staging 'pyappify.yml'
+    Write-TestYml $profilePath $profilePath
+    Copy-Item -LiteralPath $profilePath -Destination (Join-Path $Output 'pyappify.yml')
+} else {
+    Write-UpdateTree -Destination $staging -Version $Tag
+}
+if ($ReleaseAcceptance) {
+    Invoke-Native git @('add', '--', 'pyappify.yml') $staging
+    $changed = @(& git -C $staging diff --cached --name-only $baselineCommit)
+    if ($LASTEXITCODE -or $changed.Count -ne 1 -or $changed[0] -ne 'pyappify.yml') {
+        throw 'The isolated baseline must differ only in its launcher profile.'
+    }
+} else {
+    Invoke-Native git @('-c', 'core.autocrlf=false', 'add', '--all') $staging
+}
+$sourceLabel = if ($ReleaseAcceptance) { $baselineCommit } else { Get-SourceLabel }
+Invoke-Native git ($identity + @('commit', '--quiet', '-m', "test package $Tag from $sourceLabel")) $staging
 Invoke-Native git @('tag', $Tag) $staging
-Invoke-Native git @('clone', '--quiet', '--bare', $staging, $repoPath)
+Invoke-Native git @('clone', '--quiet', '--bare', '--no-local', $staging, $repoPath)
 Remove-Item -Recurse -Force $staging
 
 # 3. Launcher configuration next to the executable (read before the embedded copy).
-Write-TestYml (Join-Path $Output 'pyappify.yml')
+if (-not $ReleaseAcceptance) { Write-TestYml (Join-Path $Output 'pyappify.yml') }
 
 # 4. Desktop shell, outside the working directory so code syncs never touch it.
 $shellTarget = Join-Path $appBase "shell\$($manifest.version)"
-New-Item -ItemType Directory -Force -Path $shellTarget | Out-Null
-Copy-Item -Recurse -Force (Join-Path $shellBuild '*') $shellTarget
+if (-not $ReleaseAcceptance) {
+    New-Item -ItemType Directory -Force -Path $shellTarget | Out-Null
+    Copy-Item -Recurse -Force (Join-Path $shellBuild '*') $shellTarget
+}
 
 # 5. First-run setup: clone from the local repo, install Python and the locked requirements.
 if (-not $SkipSetup) {
