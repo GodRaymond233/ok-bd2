@@ -24,10 +24,12 @@ from src.tasks.equipment_daily import (
     REFINEMENT_BACK_POINT,
     SELECTION_BACK_POINT,
     EquipmentScreen,
+    RefinementConflict,
     dismantle_card_selected,
     dismantle_check_point,
     dismantle_grade_points,
     equipment_daily_cycle,
+    refinement_value,
     grid_blank_rows,
 )
 from src.tasks.task_vision_mixin import TaskVisionMixin
@@ -399,11 +401,16 @@ class EquipmentDailyTask(TaskVisionMixin, BaseBD2Task):
             nonlocal badge_scores
             if screen.refine_once is None:
                 return False
-            badge_scores = self._read_refinement_badges(screen)
+            badge_scores = self._read_refinement_badges(screen, expected_score)
             upper, lower = badge_scores
+            refinement_value("上下徽章", badge_scores)
             return upper is not None and upper == lower
 
-        refine = self._wait_equipment(score_confirmed)
+        try:
+            refine = self._wait_equipment(score_confirmed)
+        except RefinementConflict as error:
+            self.info_set(REFINE_STEP, str(error))
+            return False
         if refine is None:
             reason = (
                 "未确认精炼页余额、消耗或精炼按钮"
@@ -430,19 +437,20 @@ class EquipmentDailyTask(TaskVisionMixin, BaseBD2Task):
         self.operate_click(*point, name="精炼一次", after_sleep=0.8)
         return self._confirm_refinement(remaining)
 
-    def _read_refinement_badges(self, screen):
+    def _read_refinement_badges(self, screen, expected_score):
         scores = []
+        has_crop = False
         number = r"[0-9]{1,2}"
         badges = screen.refinement_score_badges()
         for bounds, badge in zip(REFINE_SCORE_BOUNDS, badges, strict=True):
             # The stylized badge can be detected at one image scale only.
-            full, _ = screen.find(number, bounds)
+            full = screen.matches(number, bounds)
             boxes = self.ocr(frame=badge, threshold=0.55, name="精炼装备分数徽章")
-            crop, _ = EquipmentScreen(badge, boxes).find(number, (0, 0, 1, 1))
-            value = crop or full
-            if full and crop and full.group() != crop.group():
-                value = None
-            scores.append(int(value.group()) if value else None)
+            crop = EquipmentScreen(badge, boxes).matches(number, (0, 0, 1, 1))
+            has_crop |= bool(crop)
+            scores.append(refinement_value("精炼徽章", (int(m[0]) for m, _ in full + crop)))
+        if not has_crop:
+            refinement_value("背包与精炼徽章", [expected_score, *scores])
         return tuple(scores)
 
     def _confirm_refinement(self, remaining):

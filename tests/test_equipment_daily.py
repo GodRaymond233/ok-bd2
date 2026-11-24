@@ -14,6 +14,7 @@ from src.tasks.equipment_daily import (
     DISMANTLE_STEP,
     REFINE_STEP,
     EquipmentScreen,
+    RefinementConflict,
     dismantle_grade_points,
     equipment_daily_done,
     equipment_ready_for_season_pass,
@@ -448,19 +449,48 @@ class EquipmentFlowTest(unittest.TestCase):
                 task._record_step.assert_not_called()
                 self.assertEqual(2, task.operate_click.call_count)
 
+    def test_refinement_conflict_ends_attempt_before_the_next_clean_frame(self):
+        task = self.task()
+        task._record_step = Mock()
+        inventory = SimpleNamespace(scored_gear=lambda: [(22, (0.6, 0.3))])
+        view = screen((*REFINEMENT_RESULT_LABELS, ("30", 0.807, 0.839),
+                       ("精炼80", 0.84, 0.93), ("22", 0.902, 0.258), ("22", 0.772, 0.745)))
+        detail = screen(EXCLUSIVE_DETAIL_LABELS)
+        task._wait_equipment = Mock(side_effect=lambda predicate: next(
+            (v for v in (detail, view, view) if predicate(v)), None))
+        def box(value):
+            return SimpleNamespace(name=value, x=40, y=40, width=20, height=20)
+        task.ocr = Mock(side_effect=[[box("22"), box("24")], [box("22")], [], []])
+        task._confirm_refinement = Mock(return_value=True)
+        task.info_set = Mock()
+        with patch("src.tasks.EquipmentDailyTask.equipment_daily_cycle", return_value="cycle"):
+            self.assertFalse(task._refine_once(inventory, "cycle"))
+        task._record_step.assert_not_called()
+        self.assertEqual(2, task.operate_click.call_count)
+        self.assertIn("24", str(task.info_set.call_args_list))
+
     def test_refinement_uses_aligned_frame_scores_when_a_badge_crop_is_unreadable(self):
         task = self.task()
         score_22 = SimpleNamespace(name="22", x=40, y=40, width=20, height=20)
         score_21 = SimpleNamespace(name="21", x=40, y=40, width=20, height=20)
         for upper_x, upper_crop, expected in (
             (0.902, [], (22, 22)),
-            (0.902, [score_21], (None, 22)),
+            (0.902, [score_21], None),
             (0.850, [], (None, 22)),
         ):
             with self.subTest(upper_x=upper_x, upper_crop=upper_crop):
                 view = screen((("22", upper_x, 0.258), ("22", 0.772, 0.745)))
                 task.ocr = Mock(side_effect=[upper_crop, [score_22]])
-                self.assertEqual(expected, task._read_refinement_badges(view))
+                if expected is None:
+                    with self.assertRaises(RefinementConflict):
+                        task._read_refinement_badges(view, 22)
+                else:
+                    self.assertEqual(expected, task._read_refinement_badges(view, 22))
+        task.ocr = Mock(return_value=[])
+        view = screen((("22", 0.902, 0.258), ("22", 0.772, 0.745)))
+        self.assertEqual((22, 22), task._read_refinement_badges(view, 22))
+        with self.assertRaises(RefinementConflict):
+            task._read_refinement_badges(view, 21)
 
     def test_refinement_rechecks_missing_amounts_and_requires_two_matching_frames(self):
         task = self.task()

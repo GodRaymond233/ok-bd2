@@ -90,6 +90,17 @@ def equipment_ready_for_season_pass() -> bool:
     )
 
 
+class RefinementConflict(ValueError):
+    """Incompatible numeric readings on the same refinement page."""
+
+
+def refinement_value(label, readings):
+    values = sorted({value for value in readings if value is not None})
+    if len(values) > 1:
+        raise RefinementConflict(f"{label}读数冲突：{values}")
+    return values[0] if values else None
+
+
 class EquipmentScreen:
     def __init__(self, frame, boxes):
         self.frame = frame
@@ -104,14 +115,17 @@ class EquipmentScreen:
             if box.width > 0 and box.height > 0
         ]
 
-    def find(self, pattern, bounds):
+    def matches(self, pattern, bounds):
         left, top, right, bottom = bounds
         found = [
             (re.fullmatch(pattern, text), (x, y))
             for text, x, y in self.labels
             if left < x < right and top < y < bottom
         ]
-        matches = [(match, point) for match, point in found if match]
+        return [(match, point) for match, point in found if match]
+
+    def find(self, pattern, bounds):
+        matches = self.matches(pattern, bounds)
         return matches[0] if len(matches) == 1 else (None, None)
 
     def _light_button(self, point):
