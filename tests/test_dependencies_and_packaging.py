@@ -368,6 +368,12 @@ class DesktopReleaseTest(unittest.TestCase):
             requirements = root / "requirements.txt"
             shutil.copyfile(ROOT / "requirements.txt", requirements)
 
+            source_list = (ROOT / "deploy.txt").read_bytes()
+            self.assertNotIn(b"\r", source_list)
+            self.assertIn(b"ocr_bundle/onnxocr", source_list.split(b"\n"))
+            deploy = root / "deploy.txt"
+            deploy.write_bytes(b"src\r\nok\r\n")
+
             stale = root / dependency_guard.OCR_BUNDLE_DIR / "onnxocr/fonts/simfang.ttf"
             stale.parent.mkdir(parents=True)
             stale.write_bytes(b"previous payload")
@@ -379,10 +385,9 @@ class DesktopReleaseTest(unittest.TestCase):
             self.assertEqual('version = "v99.0.1"\n', config.read_text("utf-8"))
             bundle = root / dependency_guard.OCR_BUNDLE_DIR
             ocr = bundle / "onnxocr"
-            self.assertIn(
-                ocr.relative_to(root).as_posix(),
-                (root / "deploy.txt").read_text("utf-8").splitlines(),
-            )
+            prepared_list = deploy.read_bytes()
+            self.assertNotIn(b"\r", prepared_list)
+            self.assertIn(ocr.relative_to(root).as_posix().encode(), prepared_list.split(b"\n"))
             pins = requirements.read_text("utf-8")
             self.assertNotIn("onnxocr-ppocrv6==", pins)
             self.assertIn("openvino==", pins)

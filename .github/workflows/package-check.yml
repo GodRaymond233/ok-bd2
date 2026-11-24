@@ -51,9 +51,7 @@ jobs:
           if (-not (Test-Path -LiteralPath ok -PathType Container)) {
             throw "The inlined framework is missing."
           }
-          if ((Get-Content -LiteralPath requirements.txt -Raw) -match '(?im)^\s*ok-script\b') {
-            throw "The update payload still depends on ok-script."
-          }
+          .\scripts\check_update_payload.ps1
       - name: Fetch the released Electron shell
         shell: pwsh
         env:

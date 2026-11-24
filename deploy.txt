@@ -11,6 +11,7 @@ LICENSES
 THIRD_PARTY_NOTICES.md
 i18n
 pyappify
+ocr_bundle/onnxocr
 assets
 docs/guides
 docs/images/usage/collection-skill-group.png

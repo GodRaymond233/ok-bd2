@@ -66,6 +66,10 @@ def inline_core_requirements(root, tag):
         remove_ok_requirements(root, tag, {
             "onnxocr-ppocrv6": ocr_target.relative_to(root).as_posix(),
         })
+    # partial-sync-repo splits on LF and uses the remaining bytes as the path.
+    deploy = root / "deploy.txt"
+    entries = [line.strip() for line in deploy.read_text("utf-8").splitlines() if line.strip()]
+    deploy.write_text("\n".join(entries) + "\n", encoding="utf-8", newline="\n")
 
 
 def validate_ocr_bundle(package):

@@ -177,10 +177,7 @@ jobs:
             throw "Inlined ok-script package folder is missing."
           }
 
-          $runtimeRequirements = Get-Content -LiteralPath "requirements.txt" -Raw
-          if ($runtimeRequirements -match '(?im)^\s*ok-script\b') {
-            throw "requirements.txt still contains ok-script after inlining."
-          }
+          .\scripts\check_update_payload.ps1
 
       - name: Validate release secrets
         shell: pwsh
@@ -206,6 +203,32 @@ jobs:
           tag: ${{ github.ref_name }}
           gitignore_file: ".update_repo_gitignore"
           show_author: true
+
+      - name: Verify synced update repositories
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $required = @(
+            'ocr_bundle/onnxocr/__init__.py'
+            'ocr_bundle/onnxocr/LICENSE'
+            'ocr_bundle/onnxocr/models/ppocrv6/small/det/det.onnx'
+            'ocr_bundle/onnxocr/models/ppocrv6/small/rec/rec.onnx'
+            'ocr_bundle/onnxocr/models/ppocrv6/small/ppocrv6_dict.txt'
+          )
+          foreach ($hostName in @('cnb.cool', 'github.com')) {
+            $url = "https://$hostName/GodRaymond233/ok-bd2-update.git"
+            $repo = Join-Path $env:RUNNER_TEMP "verify-update-$hostName"
+            git init --bare --quiet $repo
+            if ($LASTEXITCODE -ne 0) { throw "Cannot initialize verification for $hostName." }
+            git -C $repo fetch --no-tags --depth=1 $url "refs/tags/$env:RELEASE_TAG"
+            if ($LASTEXITCODE -ne 0) { throw "Cannot fetch $env:RELEASE_TAG from $hostName." }
+            $files = @(git -C $repo ls-tree -r --name-only FETCH_HEAD -- ocr_bundle/onnxocr)
+            if ($LASTEXITCODE -ne 0) { throw "Cannot read the update tree from $hostName." }
+            foreach ($path in $required) {
+              if ($files -cnotcontains $path) { throw "$hostName $env:RELEASE_TAG is missing $path" }
+            }
+          }
 
       - name: Find reusable launcher
         id: launcher-reuse

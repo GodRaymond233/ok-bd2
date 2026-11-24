@@ -111,7 +111,7 @@ function Write-UpdateTree {
     Invoke-Native $python @((Join-Path $PSScriptRoot 'build-shell-release.py'),
         '--prepare-core-payload', '--core-root', $Destination, '--tag', $Version)
     Remove-Item -Force (Join-Path $Destination 'deploy.txt')
-    foreach ($inlined in @('ok', 'pyappify')) {
+    foreach ($inlined in @('ok', 'pyappify', 'ocr_bundle\onnxocr')) {
         if (-not (Test-Path (Join-Path $Destination $inlined))) {
             throw "Inlining did not produce the $inlined folder."
         }
