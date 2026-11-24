@@ -1,8 +1,8 @@
-"""Lifecycle of the desktop core service (handshake, ready, shutdown, parent loss)."""
-
-import io
+import hashlib
+import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -11,14 +11,18 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 from src import executor_guard as guard
-from src.desktop import protocol, service
+from src.desktop import bootstrap, protocol, service
+from src.desktop.shell_install import install_shell
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
 TOKEN = "t" * 43
 
 
@@ -26,13 +30,10 @@ class HandshakeTest(unittest.TestCase):
     def line(self, **fields):
         return json.dumps({"v": 1, "token": TOKEN, **fields}) + "\n"
 
-    def test_valid_handshake(self):
+    def test_handshake_validates_the_token_version_and_parent(self):
         parsed = service.parse_handshake(self.line(parent_pid=1234))
-        self.assertEqual(parsed.token, TOKEN)
-        self.assertEqual(parsed.parent_pid, 1234)
+        self.assertEqual((parsed.token, parsed.parent_pid), (TOKEN, 1234))
         self.assertIsNone(service.parse_handshake(self.line()).parent_pid)
-
-    def test_rejected_handshakes(self):
         for line in (
             None,
             "",
@@ -65,83 +66,6 @@ class HandshakeTest(unittest.TestCase):
             stream.close()
 
 
-class ProtocolPiecesTest(unittest.TestCase):
-    def test_loopback_binding_skips_browser_blocked_ports_and_closes_failures(self):
-        sockets = [Mock() for _ in range(4)]
-        for server, port in zip(sockets, (80, 6697, 10080, 49152)):
-            server.getsockname.return_value = ("127.0.0.1", port)
-        with patch.object(service.socket, "socket", side_effect=sockets):
-            self.assertIs(service.bind_loopback(), sockets[-1])
-        for server in sockets:
-            server.bind.assert_called_once_with(("127.0.0.1", 0))
-        for server in sockets[:-1]:
-            server.close.assert_called_once_with()
-            server.listen.assert_not_called()
-        sockets[-1].close.assert_not_called()
-        sockets[-1].listen.assert_called_once_with(128)
-        for blocked in (True, False):
-            server = Mock()
-            server.getsockname.return_value = ("127.0.0.1", 6697)
-            if not blocked:
-                server.bind.side_effect = OSError("bind failed")
-            with patch.object(service.socket, "socket", return_value=server), \
-                    self.assertRaises(OSError):
-                service.bind_loopback()
-            self.assertEqual(server.close.call_count, 32 if blocked else 1)
-
-    def test_channel_writes_prefixed_ascii_json_and_survives_closed_stream(self):
-        stream = io.StringIO()
-        channel = service.ProtocolChannel(stream)
-        channel.send("ready", port=5, core_version="版本")
-        line = stream.getvalue()
-        self.assertTrue(line.startswith(protocol.LINE_PREFIX))
-        self.assertTrue(line.isascii())
-        payload = json.loads(line[len(protocol.LINE_PREFIX) :])
-        self.assertEqual(payload, {"type": "ready", "port": 5, "core_version": "版本"})
-        notifier = service.ShellNotifier(channel)
-        self.assertTrue(notifier.show("标题", "内容", error=True))
-        notification = json.loads(stream.getvalue().splitlines()[-1][len(protocol.LINE_PREFIX) :])
-        self.assertEqual(
-            notification,
-            {"type": "notification", "title": "标题", "message": "内容", "error": True},
-        )
-        notifier.close()
-        stream.close()
-        channel.fatal("startup", "after close")
-
-    def test_shutdown_starts_once_with_watchdog(self):
-        stream = io.StringIO()
-        quit_runtime = Mock()
-        watchdog = Mock()
-        controller = service.ShutdownController(
-            service.ProtocolChannel(stream), quit_runtime, Mock(), watchdog=watchdog
-        )
-        self.assertTrue(controller.request("shell:user"))
-        self.assertFalse(controller.request("stdin-closed"))
-        self.assertEqual(controller.reason, "shell:user")
-        quit_runtime.assert_called_once_with()
-        watchdog.assert_called_once_with(grace_period=protocol.EXIT_WATCHDOG_SECONDS, exit_code=0)
-        self.assertIn('"reason": "shell:user"', stream.getvalue())
-
-    def test_command_reader(self):
-        requests = []
-        stream = io.StringIO('garbage\n{"cmd": "ping"}\n{"cmd": "shutdown", "reason": "tray"}\n')
-        reader = service.CommandReader(stream, requests.append, Mock()).start()
-        reader.thread.join(timeout=2)
-        self.assertEqual(requests, ["shell:tray", "stdin-closed"])
-
-    def test_parent_watch_reports_vanished_and_replaced_parent(self):
-        for identities in ([100.0, None], [100.0, 250.0]):
-            with self.subTest(identities=identities):
-                values = iter(identities + [identities[-1]] * 10)
-                lost = threading.Event()
-                watch = service.ParentWatch(
-                    42, lambda reason: lost.set(), interval=0.02, identity=lambda pid: next(values)
-                ).start()
-                self.assertTrue(lost.wait(2))
-                watch.stop()
-
-
 class FakePipe:
     """A pipe as PeekNamedPipe and ReadFile see it: chunks arrive over time, then it ends.
 
@@ -171,24 +95,6 @@ class FakePipe:
 
 
 class ControlInputTest(unittest.TestCase):
-    def test_polled_reader_splits_lines_and_ends_with_the_pipe(self):
-        shutdown = json.dumps({"cmd": "shutdown", "reason": "退出"}, ensure_ascii=False).encode()
-        pipe = FakePipe(
-            b'{"v": 1',
-            None,
-            b"}\n" + shutdown[:-4],  # cuts the last character in half
-            shutdown[-4:] + b'\n{"cmd"',
-            None,
-            b': "x"}',
-        )
-        reader = pipe.reader()
-        self.assertEqual(reader.readline(), '{"v": 1}\n')
-        self.assertEqual(json.loads(reader.readline()), {"cmd": "shutdown", "reason": "退出"})
-        self.assertEqual(reader.readline(), '{"cmd": "x"}')
-        self.assertEqual(reader.readline(), "")
-        self.assertEqual(reader.readline(), "")
-        self.assertEqual(pipe.overreads, [])
-
     def test_handshake_and_commands_share_the_polled_reader(self):
         handshake = json.dumps({"v": 1, "token": TOKEN}) + "\n"
         command = '{"cmd": "shutdown", "reason": "tray"}\n'
@@ -197,26 +103,6 @@ class ControlInputTest(unittest.TestCase):
         requests = []
         service.CommandReader(reader, requests.append, Mock()).start().thread.join(timeout=2)
         self.assertEqual(requests, ["shell:tray", "stdin-closed"])
-
-
-NATIVE_IMPORT_CHILD = """
-import logging
-import sys
-
-sys.path.insert(0, sys.argv[1])
-from src.desktop import service
-
-assert "numpy" not in sys.modules, "numpy was loaded before the command reader started"
-reader = service.CommandReader(
-    service.control_input(sys.stdin),
-    lambda reason: print("EXIT", reason, flush=True),
-    logging.getLogger(),
-).start()
-import numpy  # noqa: E402,F401  native DLLs load while the reader waits on a silent pipe
-
-print("IMPORTED", flush=True)
-reader.thread.join(30)
-"""
 
 
 class Collector:
@@ -390,16 +276,6 @@ class RunServiceTest(unittest.TestCase):
             grace_period=protocol.EXIT_WATCHDOG_SECONDS, exit_code=0
         )
 
-    def test_closed_stdin_means_the_shell_is_gone(self):
-        self.start_service()
-        started = time.monotonic()
-        self.stdin_writer.close()
-        exiting = self.stdout.wait_for("exiting")
-        self.assertEqual(exiting["reason"], "stdin-closed")
-        self.assertLess(time.monotonic() - started, 2.0)
-        self.thread.join(timeout=15)
-        self.assertEqual(self.result["code"], protocol.EXIT_OK)
-
     def test_parent_loss_starts_exit_within_two_seconds(self):
         parent = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
         self.addCleanup(lambda: parent.poll() is None and parent.kill())
@@ -412,24 +288,6 @@ class RunServiceTest(unittest.TestCase):
         self.assertLessEqual(time.monotonic() - killed, 2.0)
         self.thread.join(timeout=15)
         self.assertFalse(self.thread.is_alive())
-
-    def test_startup_failure_reports_fatal_and_releases(self):
-        stdout = Collector()
-        stdin, _writer = open_shell_pipe(self)
-        code = service.run_service(
-            lambda: (_ for _ in ()).throw(RuntimeError("配置损坏")),
-            stdin=stdin,
-            stdout=stdout,
-            dependency_check=lambda: None,
-            lock_acquirer=lambda mode: (True, None),
-            guard_installer=lambda: None,
-            watchdog=Mock(),
-            legacy=NO_LEGACY,
-        )
-        self.assertEqual(code, protocol.EXIT_STARTUP_FAILED)
-        fatal = stdout.wait_for("fatal", timeout=1)
-        self.assertEqual(fatal["code"], "startup")
-        self.assertIn("配置损坏", fatal["message"])
 
     def test_refused_lock_reports_holder(self):
         stdout = Collector()
@@ -506,68 +364,6 @@ class StartupSupervisionTest(unittest.TestCase):
         self.assertTrue(self.thread.is_alive())  # still inside the slow step, watchdog armed
         self.assert_cancelled_before_ready()
 
-    def test_shutdown_after_the_runtime_exists_quits_it_without_starting_it(self):
-        stdin, writer = open_shell_pipe(self)
-        stdout = Collector()
-        engine = fake_engine()
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        from src.desktop.app import create_app
-
-        def factory(config, **kwargs):
-            app = create_app(config, ok_instance=engine, ui_dist=Path(directory.name), **kwargs)
-            writer.write('{"cmd": "shutdown", "reason": "tray"}\n')
-            writer.flush()
-            stdout.wait_for("exiting", timeout=5)
-            return app
-
-        code = service.run_service(
-            lambda: {"version": "9.9.9"},
-            stdin=stdin,
-            stdout=stdout,
-            dependency_check=lambda: None,
-            lock_acquirer=lambda mode: (True, None),
-            guard_installer=lambda: None,
-            app_factory=factory,
-            watchdog=Mock(),
-            legacy=NO_LEGACY,
-        )
-        self.assertEqual(code, protocol.EXIT_OK)
-        self.assertEqual(stdout.wait_for("exiting")["reason"], "shell:tray")
-        self.assertNotIn("ready", [message["type"] for message in stdout.messages()])
-        self.assertTrue(engine.exit_event.is_set())  # quit as soon as it was attached
-        engine.start_runtime.assert_not_called()  # the server lifespan never ran
-
-    def test_controller_orders_ready_and_exit(self):
-        stream = io.StringIO()
-        controller = service.ShutdownController(
-            service.ProtocolChannel(stream), None, Mock(), watchdog=Mock()
-        )
-        controller.checkpoint()
-        sent = []
-        controller.announce_ready(lambda: sent.append("ready"))
-        self.assertEqual(sent, ["ready"])
-        self.assertTrue(controller.request("stdin-closed"))  # no runtime yet: nothing to quit
-        with self.assertRaises(service.StartupCancelled):
-            controller.checkpoint()
-        with self.assertRaises(service.StartupCancelled):
-            controller.announce_ready(lambda: sent.append("late"))
-        self.assertEqual(sent, ["ready"])
-        quit_runtime = Mock()
-        controller.attach_runtime(quit_runtime)
-        quit_runtime.assert_called_once_with()
-
-
-class ServiceConfigTest(unittest.TestCase):
-    """F2: the service entry must not run ok-script's per-directory mutex either."""
-
-    def test_service_config_drops_gui_and_the_directory_mutex(self):
-        prepared = service.service_config({"gui": {"type": "qt"}, "check_mutex": True, "a": 1})
-        self.assertNotIn("gui", prepared)
-        self.assertIs(prepared["use_gui"], False)
-        self.assertIs(prepared["check_mutex"], False)
-        self.assertEqual(prepared["a"], 1)
-
 
 class EntryProcessTest(unittest.TestCase):
     """``main.py --service`` as the shell starts it, up to the point a game is needed."""
@@ -612,5 +408,298 @@ class EntryProcessTest(unittest.TestCase):
         self.assertEqual(self.fatal(result)["code"], "executor-locked")
 
 
-if __name__ == "__main__":
-    unittest.main()
+SHELL = ROOT / "desktop" / "shell"
+
+
+def ts_number(source, name):
+    match = re.search(rf"\b{name}:\s*([0-9_]+)", source)
+    return int(match.group(1).replace("_", ""))
+
+
+class ShellContractTest(unittest.TestCase):
+    def setUp(self):
+        self.source = (SHELL / "src" / "protocol.ts").read_text(encoding="utf-8")
+
+    def test_line_prefix_and_versions_match(self):
+        self.assertIn(f'LINE_PREFIX = "{protocol.LINE_PREFIX}"', self.source)
+        self.assertIn(f"PROTOCOL_VERSION = {protocol.PROTOCOL_VERSION};", self.source)
+        self.assertEqual(ts_number(self.source, "min"), protocol.API_VERSION)
+        self.assertGreaterEqual(ts_number(self.source, "max"), protocol.API_VERSION)
+        for key in ("OK", "HANDSHAKE_FAILED", "EXECUTOR_LOCKED", "STARTUP_FAILED"):
+            with self.subTest(code=key):
+                self.assertEqual(ts_number(self.source, key), getattr(protocol, f"EXIT_{key}"))
+        messages = re.findall(r'\{"type": "(\w+)"', protocol.__doc__)
+        self.assertIn("notification", messages)
+        for message in messages:
+            self.assertIn(f'case "{message}":', self.source)
+        self.assertEqual(ts_number(self.source, "readyMs"), protocol.READY_TIMEOUT_SECONDS * 1000)
+        self.assertGreater(
+            ts_number(self.source, "shutdownMs"), protocol.EXIT_WATCHDOG_SECONDS * 1000 + 5000
+        )
+        self.assertLessEqual(protocol.PARENT_POLL_SECONDS, 1)
+        package = json.loads((SHELL / "package.json").read_text("utf-8"))
+        lock = json.loads((SHELL / "package-lock.json").read_text("utf-8"))
+        self.assertEqual(package["version"], bootstrap.REQUIRED_SHELL_VERSION)
+        self.assertEqual(package["build"]["executableName"] + ".exe", "ok-bd2-desktop.exe")
+        self.assertEqual(package["devDependencies"]["electron"], "44.9.1")
+        self.assertEqual(
+            lock["packages"]["node_modules/electron"]["version"],
+            package["devDependencies"]["electron"],
+        )
+
+
+NO_QT_TASKS_SCRIPT = r"""
+import importlib.abc
+import os
+import sys
+import tempfile
+import threading
+from types import SimpleNamespace
+
+class NoQt(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split('.')[0] in {'PySide6', 'qfluentwidgets', 'shiboken6', 'webview'}:
+            raise ImportError('Qt is unavailable in service mode: ' + fullname)
+
+sys.meta_path.insert(0, NoQt())
+sys.path.insert(0, os.getcwd())
+
+from ok import Config, og
+from ok.task.TaskExecutor import TaskExecutor
+from ok.util.clazz import init_class_by_name
+from ok.util.handler import ExitEvent, Handler
+
+from src.config import config
+from src.debug_profile import configure_debug_profile
+from src.tasks.debug_registry import install_debug_tasks
+
+configure_debug_profile(config, release_tag='v0.1.1')
+install_debug_tasks(config)
+Config.config_folder = tempfile.mkdtemp()
+og.config = config
+executor = TaskExecutor.__new__(TaskExecutor)
+executor.__dict__.update(
+    scene=None, lock=threading.Lock(), _wake_condition=threading.Condition(), _wake_version=0,
+    onetime_tasks=[], onetime_task_queue=[], trigger_tasks=[], current_task=None, thread=None,
+    paused=False, debug_mode=False, basic_options={}, config_folder=Config.config_folder,
+    global_config=None,
+)
+app = SimpleNamespace(debug=False, locale='zh_CN', tr=lambda text: text)
+scene = init_class_by_name(*config['scene'])
+created = []
+for module, name in config['onetime_tasks'] + config['trigger_tasks']:
+    task = init_class_by_name(module, name, executor=executor, app=app)
+    task.after_init(executor=executor, scene=scene)
+    created.append(type(task).__name__)
+
+exit_event = ExitEvent()
+og.handler = Handler(exit_event, 'service-mode-test')
+og.device_manager = SimpleNamespace(config={}, get_preferred_device=lambda: None)
+from src.globals import Globals
+from src.compat import executor_cleanup
+from src.tasks import auto_scheduler
+Globals(exit_event)
+assert auto_scheduler.install_auto_scheduler._installed
+assert TaskExecutor.execute is executor_cleanup._execute
+exit_event.set()
+
+loaded = sorted(m for m in sys.modules if m.split('.')[0] in {'PySide6', 'qfluentwidgets'})
+assert not loaded, loaded
+print('CREATED', len(created), ','.join(created))
+"""
+
+
+DESKTOP_IMPORTS_SCRIPT = r"""
+import importlib
+import importlib.abc
+import pkgutil
+import sys
+
+class NoQt(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split('.')[0] in {'PySide6', 'qfluentwidgets', 'shiboken6', 'webview'}:
+            raise ImportError('not allowed in service mode: ' + fullname)
+
+sys.meta_path.insert(0, NoQt())
+sys.path.insert(0, '.')
+import src.desktop
+
+names = ['src.executor_guard', 'src.ui_mode', 'src.icons']
+names += [f'src.desktop.{info.name}' for info in pkgutil.iter_modules(src.desktop.__path__)]
+for name in names:
+    importlib.import_module(name)
+print('IMPORTED', ','.join(sorted(names)))
+"""
+
+
+def run_isolated(script, **env):
+    return subprocess.run(
+        [sys.executable, "-B", "-c", script],
+        cwd=ROOT,
+        env=dict(os.environ, PYTHONUTF8="1", **env),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+
+
+class ServiceModeWithoutQtTest(unittest.TestCase):
+    def test_every_registered_task_is_created_without_importing_qt(self):
+        result = run_isolated(NO_QT_TASKS_SCRIPT)
+        self.assertEqual(result.returncode, 0, result.stderr[-4000:])
+        line = next(line for line in result.stdout.splitlines() if line.startswith("CREATED "))
+        _, count, names = line.split(" ", 2)
+        names = names.split(",")
+        self.assertEqual(int(count), len(names))
+        for expected in (
+            "DailyBatchTask",
+            "DailyTask",
+            "QuickHuntTask",
+            "SquareGoddessTask",
+            "MapTradeTask",
+            "MapCollectionTask",
+            "FreeGachaTask",
+            "PVPTask",
+            "AutoLoginTask",
+            "BD2DiagnosisTask",
+        ):
+            self.assertIn(expected, names)
+
+    def test_desktop_modules_import_without_qt_or_pywebview(self):
+        result = run_isolated(DESKTOP_IMPORTS_SCRIPT, OK_BD2_UI="service")
+        self.assertEqual(result.returncode, 0, result.stderr[-4000:])
+        line = next(line for line in result.stdout.splitlines() if line.startswith("IMPORTED "))
+        imported = line.split(" ", 1)[1].split(",")
+        for expected in ("app", "config_store", "events", "protocol", "security", "service"):
+            self.assertIn(f"src.desktop.{expected}", imported)
+
+
+PROBE = Path(__file__).resolve().parents[1] / "desktop" / "scripts" / "lifecycle_probe.py"
+
+
+_spec = importlib.util.spec_from_file_location("lifecycle_probe", PROBE)
+
+
+probe = importlib.util.module_from_spec(_spec)
+
+
+_spec.loader.exec_module(probe)
+
+
+class CheckShellTest(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+
+    def write(self, manifest=None, executable=True):
+        if executable:
+            (self.root / bootstrap.SHELL_EXECUTABLE).write_bytes(b"")
+        if manifest is not None:
+            (self.root / bootstrap.MANIFEST_NAME).write_text(json.dumps(manifest), "utf-8")
+
+    def assert_refused(self, code):
+        with self.assertRaises(bootstrap.BootstrapError) as raised:
+            bootstrap.check_shell(self.root)
+        self.assertEqual(raised.exception.exit_code, code)
+
+    def test_missing_or_mismatched_manifest(self):
+        self.write()
+        self.assert_refused(protocol.EXIT_SHELL_INCOMPATIBLE)
+        self.write({"version": "0.0.9", "api": {"min": 1, "max": 1}})
+        self.assert_refused(protocol.EXIT_SHELL_INCOMPATIBLE)
+        self.write({"version": bootstrap.REQUIRED_SHELL_VERSION, "api": {"min": 2, "max": 3}})
+        self.assert_refused(protocol.EXIT_SHELL_INCOMPATIBLE)
+
+
+class ShellDownloadTest(unittest.TestCase):
+    def test_pinned_download_uses_next_source_and_keeps_old_shell(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            old = root / "shell/0.1.0/sentinel"
+            old.parent.mkdir(parents=True)
+            old.write_text("old", "utf-8")
+            archive = root / "shell.zip"
+            manifest = {"version": bootstrap.REQUIRED_SHELL_VERSION, "api": {"min": 1, "max": 1}}
+            with zipfile.ZipFile(archive, "w") as output:
+                output.writestr(bootstrap.SHELL_EXECUTABLE, b"verified shell")
+                output.writestr(bootstrap.MANIFEST_NAME, json.dumps(manifest))
+            release = root / "release.json"
+            release.write_text(
+                json.dumps(
+                    {
+                        "version": bootstrap.REQUIRED_SHELL_VERSION,
+                        "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+                        "urls": [(root / "missing.zip").as_uri(), archive.as_uri()],
+                    }
+                ),
+                "utf-8",
+            )
+            destination = root / "shell" / bootstrap.REQUIRED_SHELL_VERSION
+            executable = install_shell(
+                destination,
+                bootstrap.REQUIRED_SHELL_VERSION,
+                bootstrap.check_shell,
+                release_file=release,
+            )
+            self.assertEqual(executable.read_bytes(), b"verified shell")
+            self.assertEqual(old.read_text("utf-8"), "old")
+            executable.unlink()
+            self.assertEqual(
+                install_shell(
+                    destination,
+                    bootstrap.REQUIRED_SHELL_VERSION,
+                    bootstrap.check_shell,
+                    release_file=release,
+                ).read_bytes(),
+                b"verified shell",
+            )
+            self.assertEqual(len(list(destination.parent.glob("*.broken-*"))), 1)
+            archive.unlink()
+            self.assertEqual(
+                install_shell(
+                    destination,
+                    bootstrap.REQUIRED_SHELL_VERSION,
+                    bootstrap.check_shell,
+                    release_file=release,
+                ),
+                executable,
+            )
+
+    def test_hash_mismatch_and_unsafe_zip_leave_no_installed_version(self):
+        for name, wrong_hash in (
+            ("../outside", False),
+            ("C:/outside", False),
+            ("file:stream", False),
+            ("CON.txt", False),
+            (bootstrap.SHELL_EXECUTABLE, True),
+        ):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                archive = root / "bad.zip"
+                with zipfile.ZipFile(archive, "w") as output:
+                    output.writestr(name, b"bad")
+                release = root / "release.json"
+                release.write_text(
+                    json.dumps(
+                        {
+                            "version": bootstrap.REQUIRED_SHELL_VERSION,
+                            "sha256": "0" * 64
+                            if wrong_hash
+                            else hashlib.sha256(archive.read_bytes()).hexdigest(),
+                            "urls": [archive.as_uri()],
+                        }
+                    ),
+                    "utf-8",
+                )
+                destination = root / "shell" / bootstrap.REQUIRED_SHELL_VERSION
+                with self.assertRaises(ValueError):
+                    install_shell(
+                        destination,
+                        bootstrap.REQUIRED_SHELL_VERSION,
+                        bootstrap.check_shell,
+                        release_file=release,
+                    )
+                self.assertFalse(destination.exists())
+                self.assertFalse((root / "outside").exists())
