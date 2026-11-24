@@ -2,18 +2,30 @@
 
 from __future__ import annotations
 
+import importlib.util
 import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from src.compat import dependency_guard as guard
 
 
 class FindMissingModulesTest(unittest.TestCase):
+    def test_source_requires_its_own_ocr_lock(self):
+        with tempfile.TemporaryDirectory() as folder:
+            guard_file = str(Path(folder) / "src/compat/dependency_guard.py")
+            with patch.object(guard, "__file__", guard_file), self.assertRaisesRegex(
+                guard.OcrComponentError, "源码依赖锁损坏"
+            ):
+                guard.find_missing_modules()
+
     def test_reports_absent_specs(self):
+        find_spec = importlib.util.find_spec
         with patch(
             "importlib.util.find_spec",
-            lambda name: None if name == "win32con" else object(),
+            lambda name: None if name == "win32con" else find_spec(name),
         ):
             self.assertEqual(guard.find_missing_modules(), ["win32con"])
 

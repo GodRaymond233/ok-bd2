@@ -240,14 +240,12 @@ class DesktopReleaseTest(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "Windows update payload")
     def test_update_payload_carries_ocr_in_its_own_tree(self):
-        from importlib.machinery import PathFinder
-
         from src.compat import dependency_guard
 
         inline = self.release["inline_core_requirements"]
         with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            (root / "src").mkdir()
+            root = Path(folder) / "data/apps/ok-bd2/working"
+            (root / "src").mkdir(parents=True)
             config = root / "src/config.py"
             config.write_text('version = "release-tag-unset"\n', "utf-8")
             requirements = root / "requirements.txt"
@@ -268,15 +266,21 @@ class DesktopReleaseTest(unittest.TestCase):
                              models / "ppocrv6_dict.txt"):
                 with self.subTest(filename=filename.name):
                     self.assertTrue(filename.is_file())
-            search_path = [str(root), *sys.path]
-            self.assertNotEqual(ocr / "__init__.py",
-                                Path(PathFinder.find_spec("onnxocr", search_path).origin))
-            guard_path = str(root / "src/compat/dependency_guard.py")
-            with (patch.object(dependency_guard, "__file__", guard_path),
-                  patch.object(sys, "path", search_path)):
-                self.assertNotIn("onnxocr", dependency_guard.find_missing_modules())
-                self.assertEqual(ocr / "__init__.py",
-                                 Path(PathFinder.find_spec("onnxocr", search_path).origin))
+            probe = (
+                "import sys, importlib.util as u; from src.compat import dependency_guard as g; "
+                "g.__file__ = sys.argv[1]; assert 'onnxocr' not in g.find_missing_modules(); "
+                "print(u.find_spec('onnxocr').origin)"
+            )
+            command = [sys.executable, "-c", probe, str(root / "src/compat/dependency_guard.py")]
+            positive = subprocess.check_output(command, cwd=ROOT, text=True)
+            self.assertEqual(ocr / "__init__.py", Path(positive.strip()))
+            # An earlier pip wheel occupies the very same import name.
+            ocr.rename(root / "onnxocr")
+            negative = subprocess.run(command, cwd=ROOT, capture_output=True, text=True,
+                                      env={**os.environ, "PYTHONPATH": str(root), "PYTHONUTF8": "1"},
+                                      encoding="utf-8")
+            self.assertNotEqual(0, negative.returncode)
+            self.assertIn("OCR 组件不完整", negative.stderr)
 
 
 if __name__ == "__main__":
