@@ -76,6 +76,12 @@ nobell001/YES-BD2 commit `0b58668ce715cd2f38233a9b4ab35563ea40937a`
 game-art rights remain with the respective rights holders. They use ok-bd2's
 existing template scaling and recognition regions.
 
+The Salmon Wasabi Sushi template is cropped and resized from the in-game
+recipe list screenshot `cooking_list_cn_2k_20261110.jpg` in the same YES-BD2
+repository at commit `4ab3e152e69a675e7e48b8e566244a616dc652bb` under
+the same terms. The recipe priority guide
+image is excerpted from the chart by 西巧克力大道 supplied by the maintainer.
+
 ## Game And Platform Materials
 
 BrownDust II names, UI screenshots, icons, and template images belong to their

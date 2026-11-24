@@ -41,6 +41,7 @@ from src.tasks.map_trade.calendar import (
 from src.tasks.map_trade.models import (
     CARD_BY_ID,
     COLLECTABLE_CARDS,
+    COOKING_GROUPS,
     DEFAULT_RECIPES,
     CalendarEntry,
     MatchResult,
@@ -865,8 +866,7 @@ class CalendarTest(unittest.TestCase):
         )
 
     def test_bundled_revisions_select_the_expected_sale_routes(self):
-        revised = BUNDLED_CALENDAR.with_name("price_calendar.20261119.v1.json")
-        client = PriceCalendarClient(BUNDLED_CALENDAR, revised_bundled_path=revised)
+        client = create_trader().calendar_client
         for moment, expected in (
             (datetime(2026, 11, 18, 22, 59, 59, tzinfo=UTC_PLUS_8), "土豆"),
             (datetime(2026, 11, 18, 23, 0, 0, tzinfo=UTC_PLUS_8), "水果冰沙"),
@@ -883,9 +883,6 @@ class CalendarTest(unittest.TestCase):
         manual_calendar = client.load(use_bundled=False, use_online=False, manual_text=manual)
         self.assertEqual("manual", manual_calendar.source)
         calendar = client.load(market_date=date(2026, 11, 19))
-        client.revised_bundled_path = revised.with_name("missing.json")
-        with self.assertRaises(FileNotFoundError):
-            client.load(market_date=date(2026, 11, 19))
         trader = create_trader()
         trader.task = SimpleNamespace(config={})
         trader.vision = SimpleNamespace(simplify=lambda value: value)
@@ -918,7 +915,7 @@ class CalendarTest(unittest.TestCase):
             (24, "吐司"),
             (11, "牛奶"),
         }
-        original = PriceCalendarClient(BUNDLED_CALENDAR).load()
+        original = earlier
         for day, entries in original.days.items():
             with self.subTest(day=day):
                 self.assertEqual(
@@ -927,6 +924,32 @@ class CalendarTest(unittest.TestCase):
                 )
         for day in (29, 30, 31):
             self.assertEqual((), original.entries_for(day))
+        client.now_provider = lambda: datetime(2026, 11, 23, 22, 59, 59, tzinfo=UTC_PLUS_8)
+        self.assertEqual(calendar, client.load())
+        client.now_provider = lambda: datetime(2026, 11, 23, 23, 0, tzinfo=UTC_PLUS_8)
+        latest = client.load()
+        self.assertEqual(PriceCalendarClient(BUNDLED_CALENDAR).load(), latest)
+        self.assertEqual(set(range(1, 32)), set(latest.days))
+        def routes_for(table):
+            return {
+                (day, e.shop.split(":")[0], e.item)
+                for day, entries in table.days.items() for e in entries
+            }
+
+        routes, previous = routes_for(latest), routes_for(calendar)
+        self.assertEqual(63, sum(map(len, latest.days.values())))
+        self.assertEqual({(8, "S13", "海苔"), (11, "S7", "牛奶"), (22, "S5", "三文鱼芥末寿司"),
+                          (25, "E1", "巧克力面包")}, routes - previous)
+        self.assertEqual({(14, "S8", "洋葱"), (17, "S16", "土豆"), (18, "R3", "萝卜缨")},
+                         previous - routes)
+        targets = set(trader._selected_cooking_recipes()) | {"海苔", "牛奶"}
+        for entries in latest.days.values():
+            for entry in entries:
+                if entry.item in targets:
+                    self.assertTrue(entry.sell and trader._entry_allowed(entry, whitelist), entry)
+                    self.assertEqual({entry.item}, trader._sale_title_catalog(entry)[entry.item])
+                    targets.remove(entry.item)
+        self.assertFalse(targets)
 
     def test_conditional_fetch_and_offline_cache_expiry(self):
         url = "https://example.test/calendar.json"
@@ -975,18 +998,26 @@ class CalendarTest(unittest.TestCase):
 
 class MapTradeConfigTest(unittest.TestCase):
     def test_legacy_trade_config_migration_preserves_recipe_selection_and_switches(self):
+        yellow, cyan, blue, red = COOKING_GROUPS
+        none_selected = dict.fromkeys(COOKING_GROUPS, [])
         for migrate, original, expected in (
             (_cooking_migration_values, {"5星料理": [], "额外料理": []}, {}),
             (
                 _cooking_migration_values,
                 {"料理清单": ["泰瑞丝派"]},
-                {"黄框料理": [], "红框料理": ["泰瑞丝派"], "蓝框料理": []},
+                {**none_selected, blue: ["泰瑞丝派"], red: ["三文鱼芥末寿司"]},
             ),
             (
                 _cooking_migration_values,
                 {"料理清单": [], "红框料理": [], "额外料理": "土豆汤"},
-                {"黄框料理": [], "蓝框料理": ["土豆汤"]},
+                {**none_selected, red: ["土豆汤", "三文鱼芥末寿司"]},
             ),
+            (_cooking_migration_values, {"黄框料理": [], "红框料理": [], "蓝框料理": []},
+             none_selected),
+            (_cooking_migration_values, {"黄框料理": list(DEFAULT_RECIPES)}, {}),
+            (_cooking_migration_values,
+             {"黄框料理": [], "红框料理": ["三明治便当", "橄榄油意面"], "蓝框料理": [], yellow: []},
+             {cyan: ["三明治便当"], blue: [], red: ["三文鱼芥末寿司"]}),
             (
                 _trade_section_migration_values,
                 {"执行跑商": True, "低价进货": False, "最高价出售": True, "制作利润料理": False},

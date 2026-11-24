@@ -456,8 +456,7 @@ DEFAULT_RECIPES = (
     "地狱火紫菜包饭",
 )
 
-# Within each priority tier the grid is read row by row.
-COOKING_GROUPS = {
+LEGACY_COOKING_GROUPS = {
     "黄框料理": DEFAULT_RECIPES,
     "红框料理": (
         "巧克力鸡尾酒", "蜂蜜黄油杏仁", "火烤鱼板棒", "鱼子酱蛋包饭",
@@ -468,7 +467,19 @@ COOKING_GROUPS = {
     ),
 }
 
+COOKING_GROUPS = {
+    "黄框料理（橄榄油和洋葱）": ("闪闪铁板虾", "透明沙拉", "街头烤鸡肉串", "橄榄油意面"),
+    "青框料理（吐司）": ("三明治便当", "巧克力面包"),
+    "蓝框料理（肉桂）": ("冰镇甜点", "泰瑞丝派"),
+    "红框料理（无冲突）": (
+        "土豆汤", "水果冰沙", "巧克力鸡尾酒", "黑啤酒炖锅", "蜂蜜黄油杏仁",
+        "火烤鱼板棒", "鱼子酱蛋包饭", "藏红花甜茶", "三文鱼芥末寿司", "凯洛养身汤",
+        "卢戈山参烤串", "煤炭饼干", "地狱火紫菜包饭", "香草牛排",
+    ),
+}
+
 COOKING_RECIPE_TEMPLATES = {
+    "三文鱼芥末寿司": "image/Shop/cook_Salmon Wasabi Sushi.png",
     "巧克力鸡尾酒": "image/Shop/cook_Chocolate Cocktail.png",
     "蜂蜜黄油杏仁": "image/Shop/cook_Honey Butter Almonds.png",
     "鱼子酱蛋包饭": "image/Shop/cook_Caviar Omurice.png",
@@ -513,11 +524,10 @@ DEFAULT_SALE_WHITELIST = (
     "透明沙拉",
     "地狱火紫菜包饭",
     "米",
-    "土豆",
+    "海苔",
+    "牛奶",
     "泰瑞丝派",
     "黄油",
     "甜辣酱",
-    "藏红花",
-    "萝卜缨",
     "哈密瓜",
 )

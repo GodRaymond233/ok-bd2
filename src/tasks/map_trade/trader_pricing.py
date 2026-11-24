@@ -7,7 +7,6 @@ from src.tasks.map_trade.data import (
     ITEM_ALIASES,
 )
 from src.tasks.map_trade.models import (
-    COOKING_GROUPS,
     DEFAULT_SALE_WHITELIST,
     CalendarEntry,
 )
@@ -35,11 +34,9 @@ def parse_sale_reserves(text: str) -> dict[str, int]:
 class PriceDiscoveryMixin:
     def _sale_whitelist(self) -> set[str]:
         raw = self.task.config.get("出售白名单", ",".join(DEFAULT_SALE_WHITELIST))
-        selected_recipes = self.task.config.get("黄框料理", COOKING_GROUPS["黄框料理"])
         configured = (
             set(DEFAULT_SALE_WHITELIST)
-            | set(split_items(selected_recipes))
-            | set(split_items(self.task.config.get("蓝框料理", COOKING_GROUPS["蓝框料理"])))
+            | set(self._selected_cooking_recipes())
             | set(split_items(raw))
         )
         expanded = set(configured)

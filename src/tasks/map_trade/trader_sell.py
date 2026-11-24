@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 
 from src.tasks.map_trade.calendar import (
+    BUNDLED_CALENDAR_HISTORY,
     SALE_PRICE_REFRESH_HOUR,
     parse_calendar_payload,
     sale_price_calendar_date,
@@ -1339,10 +1340,10 @@ class SellFlowMixin:
     def _sale_title_catalog(self, entry: CalendarEntry) -> dict[str, set[str]]:
         if self._sale_title_catalog_cache is not None:
             return self._sale_title_catalog_cache
-        bundled = parse_calendar_payload(
-            (CALENDAR_DIR / "price_calendar.v1.json").read_text(encoding="utf-8")
-        )
-        entries = [item for items in bundled.days.values() for item in items]
+        entries = []
+        for filename in ("price_calendar.v1.json", *(name for _, name in BUNDLED_CALENDAR_HISTORY)):
+            bundled = parse_calendar_payload((CALENDAR_DIR / filename).read_bytes())
+            entries.extend(item for items in bundled.days.values() for item in items)
         entries.extend(CalendarEntry(item, "") for item in ITEM_ALIASES)
         catalog: dict[str, set[str]] = {}
         for item in entries:

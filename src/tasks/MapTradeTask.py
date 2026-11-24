@@ -11,7 +11,7 @@ from ok.util.file import get_relative_path
 from src.icons import TaskIcon as FluentIcon
 from src.tasks.BaseBD2Task import BaseBD2Task
 from src.tasks.map_trade.calendar import parse_manual_calendar
-from src.tasks.map_trade.models import COOKING_GROUPS, DEFAULT_SALE_WHITELIST
+from src.tasks.map_trade.models import COOKING_GROUPS, DEFAULT_SALE_WHITELIST, LEGACY_COOKING_GROUPS
 from src.tasks.map_trade.navigator import Navigator
 from src.tasks.map_trade.progress import ProgressStore
 from src.tasks.map_trade.trader import Trader
@@ -56,17 +56,25 @@ def _trade_section_migration_values(legacy: dict) -> dict[str, bool]:
 
 def _cooking_migration_values(legacy: dict) -> dict[str, list[str]]:
     old_keys = {"黄框料理": "5星料理", "红框料理": "料理清单", "蓝框料理": "额外料理"}
-    if not any(key in legacy for key in old_keys.values()):
+    if not (legacy.keys() & (old_keys.keys() | old_keys.values())):
         return {}
-    old_defaults = {"红框料理": COOKING_GROUPS["红框料理"], "黄框料理": (), "蓝框料理": ()}
-    selected = {
+    old_defaults = {"红框料理": LEGACY_COOKING_GROUPS["红框料理"], "黄框料理": (), "蓝框料理": ()}
+    first_generation = {
         group: set(split_items(legacy.get(key, old_defaults[group]) or ()))
         for group, key in old_keys.items()
     }
-    if all(selected[group] == set(default) for group, default in old_defaults.items()):
+    customized = any(first_generation[g] != set(default) for g, default in old_defaults.items())
+    selected = set()
+    for group, recipes in LEGACY_COOKING_GROUPS.items():
+        fallback = first_generation[group] if customized else recipes
+        values = split_items(legacy[group] or ()) if group in legacy else fallback
+        selected.update(set(recipes).intersection(values))
+    if selected:
+        selected.add("三文鱼芥末寿司")
+    if all(selected.issuperset(recipes) for recipes in COOKING_GROUPS.values()):
         return {}
     return {
-        group: [recipe for recipe in recipes if recipe in selected[group]]
+        group: [recipe for recipe in recipes if recipe in selected]
         for group, recipes in COOKING_GROUPS.items() if group not in legacy
     }
 
@@ -277,10 +285,11 @@ class MapTradeTask(MapAutomationTaskBase):
         )
         self.config_description.update(
             {
-                "制作料理": "按黄框、红框、蓝框顺序制作所选食谱，每批选择 MAX，做到食谱变灰。",
-                "黄框料理": "优先制作，默认全选。",
-                "红框料理": "完成黄框料理后制作，默认全选。",
-                "蓝框料理": "完成红框料理后制作，默认全选。",
+                "制作料理": "按黄、青、蓝、红四组顺序制作已选食谱，每批选择 MAX，做到食谱变灰。",
+                "黄框料理（橄榄油和洋葱）": "优先制作闪闪铁板虾、透明沙拉。",
+                "青框料理（吐司）": "优先制作三明治便当。",
+                "蓝框料理（肉桂）": "优先制作冰镇甜点。",
+                "红框料理（无冲突）": "按图五中从上到下、同排从左到右的顺序制作。",
                 "单道料理批次上限": "单道料理本次最多制作的批数；达到上限后提示尚未确认材料耗尽。",
                 "买": "按每日08:00库存批次砍价购买，收藏表包含31张卡带的190个商品格。",
                 "收藏重建周期": (
@@ -305,7 +314,7 @@ class MapTradeTask(MapAutomationTaskBase):
                     "开启时只出售最高价表和出售白名单的交集；关闭时出售价表中全部允许出售的商品。"
                 ),
                 "出售白名单": (
-                    "用逗号、分号或换行追加物品；已选蓝框料理也纳入出售白名单。"
+                    "用逗号、分号或换行追加物品。所有已选料理均自动纳入出售白名单。"
                 ),
                 "使用出售黑名单": (
                     "开启后排除出售黑名单中的商品；黑名单优先于出售白名单。"

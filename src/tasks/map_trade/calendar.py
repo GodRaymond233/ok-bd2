@@ -17,7 +17,10 @@ UTC_PLUS_8 = timezone(timedelta(hours=8), name="UTC+8")
 SALE_PRICE_REFRESH_HOUR = 23
 PURCHASE_STOCK_REFRESH_HOUR = 8
 MAX_CALENDAR_CACHE_AGE = timedelta(hours=24)
-REVISED_BUNDLED_CALENDAR_FROM = date(2026, 11, 19)
+BUNDLED_CALENDAR_HISTORY = (
+    (date(2026, 11, 19), "price_calendar.20260728.v1.json"),
+    (date(2026, 11, 24), "price_calendar.20261119.v1.json"),
+)
 
 
 def _china_time(now: datetime) -> datetime:
@@ -193,14 +196,14 @@ class PriceCalendarClient:
         sources_path: Path | None = None,
         timeout: float = 5.0,
         now_provider: Callable[[], datetime] | None = None,
-        revised_bundled_path: Path | None = None,
+        bundled_history: tuple[tuple[date, str], ...] = (),
     ) -> None:
         self.bundled_path = bundled_path
         self.cache_path = Path(cache_path)
         self.sources_path = sources_path
         self.timeout = timeout
         self.now_provider = now_provider or (lambda: datetime.now(UTC_PLUS_8))
-        self.revised_bundled_path = revised_bundled_path
+        self.bundled_history = bundled_history
 
     def load(
         self,
@@ -212,11 +215,10 @@ class PriceCalendarClient:
         if use_bundled:
             active_date = market_date or sale_price_calendar_date(self._now())
             path = self.bundled_path
-            if (
-                self.revised_bundled_path is not None
-                and active_date >= REVISED_BUNDLED_CALENDAR_FROM
-            ):
-                path = self.revised_bundled_path
+            for until, filename in self.bundled_history:
+                if active_date < until:
+                    path = self.bundled_path.with_name(filename)
+                    break
             return parse_calendar_payload(
                 path.read_text(encoding="utf-8"), source="bundled"
             )

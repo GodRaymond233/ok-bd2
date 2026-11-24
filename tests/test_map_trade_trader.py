@@ -39,8 +39,10 @@ from src.tasks.map_trade.trader_constants import (
     SHOP_UP_SCROLL_RECOGNITION_INTERVAL,
 )
 from src.tasks.map_trade.trader_cooking import (
+    COOKING_IDENTITY_SPECS,
     COOKING_MAX_QUANTITY_TEMPLATE,
     COOKING_QUANTITY_ATTEMPTS,
+    COOKING_TEMPLATE_DIR,
     CookingDetailSnapshot,
     CookingListSnapshot,
     CookingRecipeOutcome,
@@ -1071,7 +1073,6 @@ class CookingTask:
         self.config = {
             "料理制作周期": "每周",
             "料理保险": True,
-            "黄框料理": list(DEFAULT_RECIPES),
             **config,
         }
         self.clicks = []
@@ -1100,6 +1101,23 @@ class CookingTask:
 
 
 class CookingFlowTest(StageHistoryTestCase):
+    def test_recipe_priority_and_sale_whitelist_follow_the_selected_groups(self):
+        trader = create_trader()
+        recipes = trader._selected_cooking_recipes()
+        self.assertEqual(
+            ("闪闪铁板虾", "透明沙拉", "街头烤鸡肉串", "橄榄油意面", "三明治便当", "巧克力面包",
+             "冰镇甜点", "泰瑞丝派", "土豆汤", "水果冰沙", "巧克力鸡尾酒", "黑啤酒炖锅",
+             "蜂蜜黄油杏仁", "火烤鱼板棒", "鱼子酱蛋包饭", "藏红花甜茶", "三文鱼芥末寿司",
+             "凯洛养身汤", "卢戈山参烤串", "煤炭饼干", "地狱火紫菜包饭", "香草牛排"),
+            recipes,
+        )
+        for recipe in recipes:
+            template = COOKING_TEMPLATE_DIR / COOKING_IDENTITY_SPECS[recipe].file_name
+            self.assertTrue(template.is_file(), recipe)
+        trader.task.config["青框料理（吐司）"] = ["巧克力面包"]
+        self.assertNotIn("三明治便当", trader._sale_whitelist())
+        self.assertIn("巧克力面包", trader._sale_whitelist())
+
     def test_max_quantity_gate_on_recorded_min_and_max_slider_at_client_sizes(self):
         fixtures = Path(__file__).parent / "fixtures/map_trade/cooking_quantity"
         for name, expected in (("min", False), ("max", True)):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from src.tasks.map_trade.calendar import (
+    BUNDLED_CALENDAR_HISTORY,
     PriceCalendarClient,
 )
 from src.tasks.map_trade.models import CalendarEntry
@@ -77,7 +78,7 @@ class Trader(
         self._sale_summary_reason = ""
         self.calendar_client = PriceCalendarClient(
             bundled_path=CALENDAR_DIR / "price_calendar.v1.json",
-            revised_bundled_path=CALENDAR_DIR / "price_calendar.20261119.v1.json",
+            bundled_history=BUNDLED_CALENDAR_HISTORY,
             sources_path=CALENDAR_DIR / "calendar_sources.json",
         )
 

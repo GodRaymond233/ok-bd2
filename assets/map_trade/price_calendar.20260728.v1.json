@@ -1,0 +1,614 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-07-28T00:00:00+08:00",
+  "timezone": "Asia/Shanghai",
+  "source_note": "User-confirmed sale table cross-checked against the supplied 2026-07 cooking and ingredient calendars. Sale day N becomes active at 23:00 UTC+8 on day N-1. Purchase stock refreshes at 08:00 UTC+8.",
+  "source_url": "https://browndust2-db.souseha.com/en/market-data",
+  "days": {
+    "1": [],
+    "2": [
+      {
+        "item": "水果罐头",
+        "shop": "S2",
+        "aliases": [
+          "水果罐頭",
+          "Canned Fruit"
+        ],
+        "reserve": 0
+      }
+    ],
+    "3": [
+      {
+        "item": "能量蘑菇",
+        "shop": "S1",
+        "aliases": [
+          "Energy Boost Mushroom"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "火烤鱼板棒",
+        "shop": "S17",
+        "aliases": [
+          "火烤魚板棒",
+          "Smoky Fish Cake bar"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "橄榄油意面",
+        "shop": "S18",
+        "aliases": [
+          "橄欖油義大利麵",
+          "橄榄油义大利面",
+          "Aglio e Olio"
+        ],
+        "reserve": 0
+      }
+    ],
+    "4": [
+      {
+        "item": "番茄",
+        "shop": "S1",
+        "aliases": [
+          "Tomato"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "大麦",
+        "shop": "S18",
+        "aliases": [
+          "大麥",
+          "Barley"
+        ],
+        "reserve": 0
+      }
+    ],
+    "5": [
+      {
+        "item": "甜椒",
+        "shop": "S11",
+        "aliases": [
+          "Paprika"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "鱼子酱蛋包饭",
+        "shop": "R7",
+        "aliases": [
+          "魚子醬蛋包飯",
+          "Caviar Omelette"
+        ],
+        "reserve": 0
+      }
+    ],
+    "6": [
+      {
+        "item": "闪闪铁板虾",
+        "shop": "S5",
+        "aliases": [
+          "閃耀西班牙蒜味蝦",
+          "闪耀西班牙蒜味虾",
+          "Shiny Gambas"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "能量药水",
+        "shop": "S18",
+        "aliases": [
+          "能量藥水",
+          "Energy Boost Potion"
+        ],
+        "reserve": 0
+      }
+    ],
+    "7": [
+      {
+        "item": "咖啡豆",
+        "shop": "S1",
+        "aliases": [
+          "Coffee Bean"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "街头烤鸡肉串",
+        "shop": "S5",
+        "aliases": [
+          "街頭烤雞串",
+          "街头烤鸡串",
+          "Street Grilled Chicken Skewer"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "西蓝花",
+        "shop": "S8",
+        "aliases": [
+          "花椰菜",
+          "Broccoli"
+        ],
+        "reserve": 0
+      }
+    ],
+    "8": [
+      {
+        "item": "兽肉",
+        "shop": "S3",
+        "aliases": [
+          "獸肉",
+          "Beast Meat"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "辣椒素",
+        "shop": "R3",
+        "aliases": [
+          "Capsaicin"
+        ],
+        "reserve": 0
+      }
+    ],
+    "9": [
+      {
+        "item": "能量粉末",
+        "shop": "S11",
+        "aliases": [
+          "Energy Boost Powder"
+        ],
+        "reserve": 0
+      }
+    ],
+    "10": [
+      {
+        "item": "冰镇甜点",
+        "shop": "S1",
+        "aliases": [
+          "冰品甜點",
+          "冰品甜点",
+          "Frozen Dessert"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "玉米",
+        "shop": "S12",
+        "aliases": [
+          "Corn"
+        ],
+        "reserve": 0
+      }
+    ],
+    "11": [
+      {
+        "item": "牛奶",
+        "shop": "S7",
+        "aliases": [
+          "Milk"
+        ],
+        "reserve": 0
+      }
+    ],
+    "12": [
+      {
+        "item": "巧克力",
+        "shop": "S4",
+        "aliases": [
+          "Chocolate"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "卢戈山参烤串",
+        "shop": "S14",
+        "aliases": [
+          "盧戈烤山蔘串",
+          "卢戈烤山参串",
+          "Lugo Ginseng Grilled Skewer"
+        ],
+        "reserve": 0
+      }
+    ],
+    "13": [
+      {
+        "item": "三文鱼",
+        "shop": "S7",
+        "aliases": [
+          "鮭魚",
+          "鲑鱼",
+          "Salmon"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "巧克力鸡尾酒",
+        "shop": "R5",
+        "aliases": [
+          "巧克力雞尾酒",
+          "Chocolat Cocktail"
+        ],
+        "reserve": 0
+      }
+    ],
+    "14": [
+      {
+        "item": "胡萝卜",
+        "shop": "S7",
+        "aliases": [
+          "红萝卜",
+          "Carrot"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "洋葱",
+        "shop": "S8",
+        "aliases": [
+          "Onion"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "芥末",
+        "shop": "S16",
+        "aliases": [
+          "Wasabi"
+        ],
+        "reserve": 0
+      }
+    ],
+    "15": [
+      {
+        "item": "葡萄",
+        "shop": "S3",
+        "aliases": [
+          "Grape"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "奶酪",
+        "shop": "S19",
+        "aliases": [
+          "起司",
+          "Cheese"
+        ],
+        "reserve": 0
+      }
+    ],
+    "16": [
+      {
+        "item": "白糖",
+        "shop": "S2",
+        "aliases": [
+          "糖",
+          "Sugar"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "煤炭饼干",
+        "shop": "R7",
+        "aliases": [
+          "Coal Cookies"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "维生素B浓缩液",
+        "shop": "E1",
+        "aliases": [
+          "维生素B浓缩溶液",
+          "Vitamin B Concentrate"
+        ],
+        "reserve": 0
+      }
+    ],
+    "17": [
+      {
+        "item": "米",
+        "shop": "S5",
+        "aliases": [
+          "Rice"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "土豆",
+        "shop": "S16",
+        "aliases": [
+          "Potato"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "泰瑞丝派",
+        "shop": "R1",
+        "aliases": [
+          "Teresse Pie"
+        ],
+        "reserve": 0
+      }
+    ],
+    "18": [
+      {
+        "item": "黄油",
+        "shop": "S2",
+        "aliases": [
+          "Butter"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "魅惑粉末",
+        "shop": "S6",
+        "aliases": [
+          "Charm Powder"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "甜辣酱",
+        "shop": "S10",
+        "aliases": [
+          "甜辣醬",
+          "Sweet Chili Sauce"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "藏红花",
+        "shop": "S10",
+        "aliases": [
+          "Saffron"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "萝卜缨",
+        "shop": "R3",
+        "aliases": [
+          "蘿蔔纓",
+          "Radish Greens"
+        ],
+        "reserve": 0
+      }
+    ],
+    "19": [
+      {
+        "item": "哈密瓜",
+        "shop": "R6",
+        "aliases": [
+          "Honeydew Melon"
+        ],
+        "reserve": 0
+      }
+    ],
+    "20": [
+      {
+        "item": "灵魂鲜奶油",
+        "shop": "S19",
+        "aliases": [
+          "靈魂鮮奶油",
+          "Soul Fresh Cream"
+        ],
+        "reserve": 0
+      }
+    ],
+    "21": [
+      {
+        "item": "豆子",
+        "shop": "S12",
+        "aliases": [
+          "Beans"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "姜黄",
+        "shop": "S12",
+        "aliases": [
+          "薑黃",
+          "Turmeric"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "小麦",
+        "shop": "R2",
+        "aliases": [
+          "小麥",
+          "Wheat"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "香草牛排",
+        "shop": "R2",
+        "aliases": [
+          "Vanilla Steak"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "地狱火紫菜包饭",
+        "shop": "R5",
+        "aliases": [
+          "地獄火紫菜包飯",
+          "地狱火海苔饭卷",
+          "Hellfire Gimbap"
+        ],
+        "reserve": 0
+      }
+    ],
+    "22": [
+      {
+        "item": "凯洛药材",
+        "shop": "R2",
+        "aliases": [
+          "凱洛藥材",
+          "Kello Herb"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "料酒",
+        "shop": "R5",
+        "aliases": [
+          "Cooking Wine"
+        ],
+        "reserve": 0
+      }
+    ],
+    "23": [
+      {
+        "item": "蜂蜜黄油杏仁",
+        "shop": "S14",
+        "aliases": [
+          "蜂蜜奶油杏仁",
+          "Honey Butter Almond"
+        ],
+        "reserve": 0
+      }
+    ],
+    "24": [
+      {
+        "item": "吐司",
+        "shop": "S15",
+        "aliases": [
+          "Toast"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "啤酒花",
+        "shop": "S19",
+        "aliases": [
+          "Hops"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "辣椒",
+        "shop": "R4",
+        "aliases": [
+          "Chili Pepper"
+        ],
+        "reserve": 0
+      }
+    ],
+    "25": [
+      {
+        "item": "鸡蛋",
+        "shop": "R1",
+        "aliases": [
+          "雞蛋",
+          "Egg"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "透明沙拉",
+        "shop": "E1",
+        "aliases": [
+          "透明化沙拉",
+          "Transparent Salad"
+        ],
+        "reserve": 0
+      }
+    ],
+    "26": [
+      {
+        "item": "黄金罗勒",
+        "shop": "S6",
+        "aliases": [
+          "黃金羅勒",
+          "Golden Basil"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "金枪鱼罐头",
+        "shop": "S12",
+        "aliases": [
+          "金槍魚罐頭",
+          "鲔鱼罐头",
+          "Canned Tuna"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "三明治便当",
+        "shop": "R7",
+        "aliases": [
+          "Sandwich Lunch Box"
+        ],
+        "reserve": 0
+      }
+    ],
+    "27": [
+      {
+        "item": "苹果",
+        "shop": "S6",
+        "aliases": [
+          "Apple"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "穿山甲鳞片",
+        "shop": "S16",
+        "aliases": [
+          "穿山甲的鱗片",
+          "Pangolin Scale"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "炸三文鱼便当",
+        "shop": "R5",
+        "aliases": [
+          "炸鮭魚便當",
+          "炸鲑鱼便当",
+          "Fried Salmon Lunch Box"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "三角美乃滋饭团",
+        "shop": "E2",
+        "aliases": [
+          "三角美乃滋飯糰",
+          "Triangle Mayo Rice Ball"
+        ],
+        "reserve": 0
+      }
+    ],
+    "28": [
+      {
+        "item": "秃鹫羽毛",
+        "shop": "S9",
+        "aliases": [
+          "禿鷲的羽毛",
+          "Vulture Feather"
+        ],
+        "reserve": 0
+      },
+      {
+        "item": "松露油",
+        "shop": "R1",
+        "aliases": [
+          "Truffle Oil"
+        ],
+        "reserve": 0
+      }
+    ],
+    "29": [],
+    "30": [],
+    "31": []
+  }
+}
