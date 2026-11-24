@@ -251,8 +251,14 @@ class DesktopReleaseTest(unittest.TestCase):
             requirements = root / "requirements.txt"
             shutil.copyfile(ROOT / "requirements.txt", requirements)
 
+            stale = root / dependency_guard.OCR_BUNDLE_DIR / "onnxocr/fonts/simfang.ttf"
+            stale.parent.mkdir(parents=True)
+            stale.write_bytes(b"previous payload")
             inline(root, "v99.0.1")
 
+            self.assertFalse(stale.exists())
+            for entry in ("models/ppocrv5", "ocr_images_pdfs.py"):
+                self.assertFalse((stale.parents[1] / entry).exists())
             self.assertEqual('version = "v99.0.1"\n', config.read_text("utf-8"))
             bundle = root / dependency_guard.OCR_BUNDLE_DIR
             ocr = bundle / "onnxocr"

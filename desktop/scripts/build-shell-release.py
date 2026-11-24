@@ -18,7 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from src.compat.dependency_guard import OCR_BUNDLE_DIR  # noqa: E402
+from src.compat.dependency_guard import OCR_BUNDLE_DIR, OCR_MODEL_DIR, OCR_MODEL_FILES  # noqa: E402
 from src.desktop.backups import file_hash, regular_tree  # noqa: E402
 from src.desktop.bootstrap import REQUIRED_SHELL_VERSION, check_shell  # noqa: E402
 from src.desktop.shell_install import install_shell  # noqa: E402
@@ -43,15 +43,40 @@ def inline_core_requirements(root, tag):
     root = root.resolve()
     ocr_dist = distribution("onnxocr-ppocrv6")
     ocr_target = root / OCR_BUNDLE_DIR / "onnxocr"
-    shutil.copytree(ocr_dist.locate_file("onnxocr"), ocr_target,
-                    ignore=shutil.ignore_patterns("__pycache__"), dirs_exist_ok=True)
     ocr_license = next(path for path in ocr_dist.files
                        if path.parts[-2:] == ("licenses", "LICENSE"))
-    shutil.copyfile(ocr_license.locate(), ocr_target / "LICENSE")
+    regular_tree(ocr_target.parent)
+    with tempfile.TemporaryDirectory(dir=root) as staging:
+        package = Path(staging) / "onnxocr"
+        shutil.copytree(ocr_dist.locate_file("onnxocr"), package,
+                        ignore=shutil.ignore_patterns("__pycache__", "fonts", "ppocrv5", "ocr_images_pdfs.py"))
+        shutil.copyfile(ocr_license.locate(), package / "LICENSE")
+        validate_ocr_bundle(package)
+        ocr_target.parent.mkdir(exist_ok=True)
+        previous = Path(staging) / "previous"
+        if ocr_target.exists():
+            ocr_target.rename(previous)
+        try:
+            package.rename(ocr_target)
+        except OSError:
+            if previous.exists():
+                previous.rename(ocr_target)
+            raise
     with chdir(root):
         remove_ok_requirements(root, tag, {
             "onnxocr-ppocrv6": ocr_target.relative_to(root).as_posix(),
         })
+
+
+def validate_ocr_bundle(package):
+    required = ("__init__.py", "LICENSE", *(OCR_MODEL_DIR / name for name in (
+        *OCR_MODEL_FILES, "manifest.json", "det/inference.yml", "rec/inference.yml")))
+    for name in required:
+        if not (package / name).is_file():
+            raise ValueError(f"Missing OCR bundle file: {name}")
+    for name in ("fonts", "models/ppocrv5", "ocr_images_pdfs.py"):
+        if (package / name).exists():
+            raise ValueError(f"Unexpected OCR bundle entry: {name}")
 
 
 def prepare_core_payload(root=ROOT):
