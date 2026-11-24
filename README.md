@@ -263,6 +263,19 @@ AP 不足时，单次战斗倍数会自动降为 1。
 
 GitHub 的 `Source code` 压缩包只是源码快照，不包含安装器、更新配置和离线依赖。普通用户应下载 `setup.exe`。
 
+## 交流群
+
+- QQ 群：**玩家集结社｜棕尘2**（群号：`1081236717`）— [点击链接加入群聊](https://qm.qq.com/q/VYXd1fHUAM)
+
+<details>
+<summary>查看 QQ 群二维码</summary>
+
+<p align="center">
+  <img src="docs/images/qq-group-qr.png" alt="玩家集结社｜棕尘2 QQ 群二维码" width="260">
+</p>
+
+</details>
+
 ## 问题反馈
 
 遇到异常时，优先在程序首页点击 **生成问题报告**：

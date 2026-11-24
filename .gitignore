@@ -90,3 +90,6 @@ Desktop.ini
 
 # Desktop client: UI bundle built from desktop/ui (npm run build), served by the core
 /src/desktop/ui_dist/
+
+# MkDocs build output
+/site/

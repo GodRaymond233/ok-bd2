@@ -1,0 +1,67 @@
+site_name: ok-bd2
+site_description: BrownDust II Windows PC 自动化辅助工具
+site_url: https://godraymond233.github.io/ok-bd2/
+repo_url: https://github.com/GodRaymond233/ok-bd2
+repo_name: GodRaymond233/ok-bd2
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  language: zh
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - content.action.edit
+    - navigation.footer
+    - navigation.indexes
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - search.suggest
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: 切换到深色模式
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: 切换到浅色模式
+
+nav:
+  - 首页: index.md
+  - 使用指南:
+      - 快速狩猎: guides/quick-hunt.md
+      - 每日跑商: guides/trade.md
+      - 每周跑图: guides/collection.md
+      - 装备分解与精炼: guides/equipment-daily.md
+      - 每日及每周奖励: guides/mission-rewards.md
+      - 推主线与快速探索: guides/main-story.md
+  - 开发说明:
+      - 项目架构: architecture.md
+      - 发布检查清单: release-checklist.md
+      - PyAppify 发布流程: pyappify-release-flow.md
+      - 发布配置指南: release-setup-guide.zh-CN.md
+  - ok-script 首页: https://ok-script.com/
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.details
+  - pymdownx.superfences
+
+exclude_docs: |
+  /handoff/
+  /code-quality-optimization-plan.md
+
+plugins:
+  - search
+
+strict: true
