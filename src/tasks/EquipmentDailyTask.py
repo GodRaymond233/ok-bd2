@@ -19,7 +19,7 @@ from src.tasks.equipment_daily import (
     GRID_COLUMNS,
     MAX_REFINABLE_SCORE,
     REFINE_BALANCE_BOUNDS,
-    REFINE_SCORE_BOUNDS,
+    REFINE_SCORE_TEXT_BOUNDS,
     REFINE_STEP,
     REFINEMENT_BACK_POINT,
     SELECTION_BACK_POINT,
@@ -442,7 +442,7 @@ class EquipmentDailyTask(TaskVisionMixin, BaseBD2Task):
         has_crop = False
         number = r"[0-9]{1,2}"
         badges = screen.refinement_score_badges()
-        for bounds, badge in zip(REFINE_SCORE_BOUNDS, badges, strict=True):
+        for bounds, badge in zip(REFINE_SCORE_TEXT_BOUNDS, badges, strict=True):
             # The stylized badge can be detected at one image scale only.
             full = screen.matches(number, bounds)
             boxes = self.ocr(frame=badge, threshold=0.55, name="精炼装备分数徽章")

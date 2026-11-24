@@ -503,6 +503,13 @@ class EquipmentFlowTest(unittest.TestCase):
                 else:
                     self.assertEqual(expected, task._read_refinement_badges(view, 22))
         task.ocr = Mock(return_value=[])
+        decoration = screen((("2", 0.892, 0.256), ("18", 0.903, 0.257),
+                             ("18", 0.771, 0.742)))
+        self.assertEqual((18, 18), task._read_refinement_badges(decoration, 18))
+        overlapping = screen((("2", 0.900, 0.256), ("18", 0.903, 0.257),
+                              ("18", 0.771, 0.742)))
+        with self.assertRaises(RefinementConflict):
+            task._read_refinement_badges(overlapping, 18)
         view = screen((("22", 0.902, 0.258), ("22", 0.772, 0.745)))
         self.assertEqual((22, 22), task._read_refinement_badges(view, 22))
         with self.assertRaises(RefinementConflict):
