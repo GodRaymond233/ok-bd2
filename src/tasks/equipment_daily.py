@@ -292,7 +292,7 @@ class EquipmentScreen:
             return True
         # The title and item name can remain hidden after the forge animation.
         score, _ = self.find(r"装备分数.*", (0.58, 0.22, 0.71, 0.29))
-        material, _ = self.find(REFINE_MATERIAL_LABEL, REFINE_MATERIAL_BOUNDS)
+        material = self.matches(REFINE_MATERIAL_LABEL, REFINE_MATERIAL_BOUNDS)
         trace, _ = self.find(r"精炼痕迹\d*", (0.08, 0.899, 0.205, 0.966))
         return bool(score and material and trace)
 
@@ -322,15 +322,12 @@ class EquipmentScreen:
         if self.refine_balances is None:
             return None
         score, _ = self.find(r"装备分数.*", (0.58, 0.22, 0.71, 0.29))
-        material, _ = self.find(REFINE_MATERIAL_LABEL, REFINE_MATERIAL_BOUNDS)
-        powder, _ = self.find(r"([1-9]\d*)", (0.787, 0.80, 0.847, 0.874))
-        if material and material[1]:
-            if powder and powder[1] != material[1]:
-                return None
-            powder = material
+        material = self.matches(REFINE_MATERIAL_LABEL, REFINE_MATERIAL_BOUNDS)
+        quantities = self.matches(r"([1-9]\d*)", (0.787, 0.80, 0.847, 0.874))
+        powder = refinement_value("精炼材料", (int(m[1]) for m, _ in material + quantities if m[1]))
         gold, point = self.find(r"精炼[^\d]{0,4}([1-9]\d*)", (0.78, 0.90, 0.91, 0.97))
         if score and material and powder and gold and self._light_button(point):
-            return (int(powder.group(1)), int(gold.group(1))), point
+            return (powder, int(gold.group(1))), point
         return None
 
 

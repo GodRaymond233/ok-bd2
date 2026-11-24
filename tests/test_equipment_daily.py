@@ -120,7 +120,8 @@ class EquipmentRecognitionTest(unittest.TestCase):
                 self.assertEqual((30, 80), screen((*base, *material)).refine_once[0])
 
         uncertain = screen((*base, *joined, ("80", 0.807, 0.839)))
-        self.assertIsNone(uncertain.refine_once)
+        with self.assertRaises(RefinementConflict):
+            _ = uncertain.refine_once
 
     def test_grid_excludes_24_point_gear_and_unmarked_numbers(self):
         labels = (("24", 0.65, 0.20), ("23", 0.71, 0.20), ("17", 0.77, 0.20), ("12", 0.83, 0.20))
@@ -468,6 +469,19 @@ class EquipmentFlowTest(unittest.TestCase):
         task._record_step.assert_not_called()
         self.assertEqual(2, task.operate_click.call_count)
         self.assertIn("24", str(task.info_set.call_args_list))
+
+        conflict = screen((*REFINEMENT_RESULT_LABELS[:3], REFINEMENT_RESULT_LABELS[-1],
+                           ("所需材料30", 0.77, 0.839), ("50", 0.808, 0.839),
+                           ("80", 0.822, 0.839), ("精炼80", 0.84, 0.93)))
+        task.operate_click.reset_mock()
+        task._wait_equipment.side_effect = lambda predicate: next(
+            (v for v in (detail, conflict, view) if predicate(v)), None)
+        task._read_refinement_badges = Mock(return_value=(22, 22))
+        with patch("src.tasks.EquipmentDailyTask.equipment_daily_cycle", return_value="cycle"):
+            self.assertFalse(task._refine_once(inventory, "cycle"))
+        task._record_step.assert_not_called()
+        self.assertEqual(2, task.operate_click.call_count)
+        self.assertIn("50", str(task.info_set.call_args_list))
 
     def test_refinement_uses_aligned_frame_scores_when_a_badge_crop_is_unreadable(self):
         task = self.task()
