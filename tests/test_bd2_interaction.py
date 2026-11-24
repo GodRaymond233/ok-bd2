@@ -1,20 +1,36 @@
+import logging
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import numpy as np
 import win32api
+import win32con
 from ok.device.intercation import PostMessageInteraction
 from ok.task.exceptions import FinishedException, TaskDisabledException
 
+from src.interaction import BD2Interaction as win_input
 from src.interaction.BD2Interaction import (
     CLICK_MODE_BACKGROUND,
     CLICK_MODE_STANDARD,
     BD2Interaction,
     InputTargetChanged,
 )
-from src.tasks.BaseBD2Task import BaseBD2Task
+from src.tasks.BaseBD2Task import BaseBD2Task, task_info_snapshot
+from src.tasks.BD2InputTestTask import (
+    BACKGROUND_MOUSE_MOVE_KEY,
+    CLICK_MODE_KEY,
+    REFERENCE_POINT_MODE_KEY,
+    REFERENCE_POINT_X_KEY,
+    REFERENCE_POINT_Y_KEY,
+    BD2BackgroundMouseClickInputTestTask,
+    BD2ClickModeSelectorTask,
+    BD2MouseWheelInputTestTask,
+)
+from src.tasks.task_notifications import log_task_completion, suppress_task_completion_notifications
 
 
 def make_interaction():
@@ -32,7 +48,16 @@ def make_interaction():
     return interaction, calls
 
 
-class BD2InteractionOperateTest(unittest.TestCase):
+class InputTest(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(patch.object(win_input.logger, "error"))
+        self.get_cursor = self.enterContext(
+            patch.object(win_input, "GetCursorPos", return_value=(1, 2))
+        )
+        self.set_cursor = self.enterContext(patch.object(win_input, "SetCursorPos"))
+        self.api_set = self.enterContext(patch.object(win32api, "SetCursorPos"))
+        self.enterContext(patch.object(win32api, "GetCursorPos", return_value=(1, 2)))
+
     def test_prepared_click_is_discarded_after_input_wait_or_window_change(self):
         for mode in (CLICK_MODE_STANDARD, CLICK_MODE_BACKGROUND):
             changes = ("window", "client", "target", "foreground", "none")
@@ -41,13 +66,18 @@ class BD2InteractionOperateTest(unittest.TestCase):
             for changed in changes:
                 with (
                     self.subTest(mode=mode, changed=changed),
-                    patch("src.interaction.BD2Interaction.GetCursorPos", return_value=(1, 2)),
-                    patch("src.interaction.BD2Interaction.win32gui.GetForegroundWindow",
-                          return_value=456) as foreground,
-                    patch("src.interaction.BD2Interaction.win32gui.GetWindowRect",
-                          return_value=(0, 0, 1920, 1080)) as rect,
-                    patch("src.interaction.BD2Interaction.win32gui.GetClientRect",
-                          return_value=(0, 0, 1920, 1080)) as client,
+                    patch(
+                        "src.interaction.BD2Interaction.win32gui.GetForegroundWindow",
+                        return_value=456,
+                    ) as foreground,
+                    patch(
+                        "src.interaction.BD2Interaction.win32gui.GetWindowRect",
+                        return_value=(0, 0, 1920, 1080),
+                    ) as rect,
+                    patch(
+                        "src.interaction.BD2Interaction.win32gui.GetClientRect",
+                        return_value=(0, 0, 1920, 1080),
+                    ) as client,
                 ):
                     interaction, calls = make_interaction()
                     interaction.set_click_mode_provider(lambda: mode)
@@ -72,231 +102,189 @@ class BD2InteractionOperateTest(unittest.TestCase):
                         foreground.return_value = 789
                     accepted = changed in {"foreground", "none"}
                     if accepted:
-                        task.operate_click(.5, .5, require_fresh_target=True)
+                        task.operate_click(0.5, 0.5, require_fresh_target=True)
                     else:
                         with self.assertRaises(InputTargetChanged) as caught:
-                            task.operate_click(.5, .5, require_fresh_target=True)
+                            task.operate_click(0.5, 0.5, require_fresh_target=True)
                         self.assertTrue(caught.exception.input_not_dispatched)
                     self.assertEqual(int(accepted), task.click.call_count)
                     self.assertEqual(mode == CLICK_MODE_STANDARD, "unblock_input" in calls)
                     self.assertFalse(interaction._operating)
 
-    def test_post_failure_propagates_and_button_release_is_attempted(self):
-        interaction, calls = make_interaction()
-        interaction.try_activate = lambda: None
-        interaction._dynamic_target_hwnd = 0
-        interaction.hwnd_window = SimpleNamespace(top_hwnd=123, hwnd=123)
-        error = RuntimeError("post failed")
-        with (
-            patch("src.interaction.BD2Interaction.win32gui.PostMessage",
-                  side_effect=[error, None]) as post,
-            patch("src.interaction.BD2Interaction.time.sleep"),
-            patch("src.interaction.BD2Interaction.GetCursorPos", return_value=(1, 2)),
+    def test_capture_only_publishes_frames_from_an_accessible_input_desktop(self):
+        denied = win32api.error(5, "GetCursorPos", "access denied")
+        for mode in (CLICK_MODE_STANDARD, CLICK_MODE_BACKGROUND):
+            for positions, count, waited in (
+                ([denied, (1, 2), (1, 2)], 1, 0.25),
+                ([(1, 2), denied, (1, 2), (1, 2), (1, 2)], 2, 0.25),
+                ([(1, 2), (1, 2)], 1, 0.0),
+            ):
+                with self.subTest(mode=mode, reads=positions):
+                    interaction, calls = make_interaction()
+                    interaction.hwnd_window = SimpleNamespace(top_hwnd=123, hwnd=123)
+                    interaction.set_click_mode_provider(lambda: mode)
+                    task = object.__new__(BaseBD2Task)
+                    task.info_set = Mock()
+                    now = [0.0]
+
+                    def wait(seconds):
+                        now[0] += seconds
+
+                    task._executor = SimpleNamespace(
+                        interaction=interaction,
+                        check_enabled=lambda: None,
+                        reset_scene=lambda **_: None,
+                        exit_event=SimpleNamespace(wait=wait),
+                        device_manager=SimpleNamespace(capture_method="test"),
+                    )
+                    frames = [np.zeros((2, 2, 3), np.uint8) for _ in range(count)]
+                    task.next_frame = Mock(side_effect=frames)
+                    self.get_cursor.side_effect = positions
+                    with (
+                        patch.object(
+                            win_input.win32gui, "GetForegroundWindow", side_effect=range(100, 116)
+                        ),
+                        patch.object(
+                            win_input.win32gui, "GetWindowRect", return_value=(0, 0, 1920, 1080)
+                        ),
+                        patch.object(
+                            win_input.win32gui, "GetClientRect", return_value=(0, 0, 1920, 1080)
+                        ),
+                        patch("src.tasks.BaseBD2Task.monotonic", side_effect=lambda: now[0]),
+                        patch("src.tasks.BaseBD2Task.observe_frame") as observe,
+                    ):
+                        self.assertIs(frames[-1], task.capture_frame())
+                    observe.assert_called_once_with(task, frames[-1])
+                    self.assertEqual(count, task.next_frame.call_count)
+                    self.assertEqual(waited, now[0])
+                    self.assertEqual(0.0, task._active_time(lambda: now[0]))
+                    self.assertEqual([], calls)
+
+    def test_operate_tracks_lock_ownership_and_propagates_callback_errors(self):
+        for name, buttons, error, expected in (
+            ("held", [True, False, False], None, ["wait", "block", "outer", "restore", "unblock"]),
+            (
+                "race",
+                [False, True, False, False],
+                None,
+                ["block", "unblock", "wait", "block", "outer", "restore", "unblock"],
+            ),
+            ("denied", [False], RuntimeError, ["block", "restore"]),
+            ("cancel", [True], TaskDisabledException, ["wait", "restore"]),
+            (
+                "nested",
+                [False, False],
+                ValueError,
+                ["block", "outer", "inner", "restore", "unblock"],
+            ),
+            ("unhealthy", [False, False], RuntimeError, ["block", "outer", "restore", "unblock"]),
         ):
-            with self.assertRaises(RuntimeError) as caught:
-                interaction.operate(lambda: interaction.click(10, 10, move=False), block=True)
-        self.assertFalse(caught.exception.input_not_dispatched)
-        self.assertEqual(2, post.call_count)
-        self.assertIn("unblock_input", calls)
-
-    def test_mouse_admission_race_block_failure_and_nested_ownership(self):
-        for scenario in ("held", "race", "denied", "cancel", "nested", "release_failed"):
-            with self.subTest(scenario=scenario):
+            with self.subTest(scenario=name):
                 interaction, calls = make_interaction()
-                samples = iter([True, False, False] if scenario == "held" else
-                               [False, True, False, False] if scenario == "race" else
-                               [True] if scenario == "cancel" else [False, False])
-                interaction._mouse_buttons_down = lambda: next(samples)
-                if scenario == "denied":
-                    interaction.block_input = lambda: False
-                if scenario == "release_failed":
-                    interaction.unblock_input = lambda: False
+                interaction._mouse_buttons_down = Mock(side_effect=buttons)
+                interaction.block_input = lambda: calls.append("block") or name != "denied"
+                interaction.unblock_input = lambda: calls.append("unblock") or name != "unhealthy"
+                interaction._restore_cursor = lambda: calls.append("restore")
 
-                def wait(_seconds):
+                def wait(_):
                     calls.append("wait")
-                    if scenario == "cancel":
+                    if name == "cancel":
                         raise TaskDisabledException()
 
-                def callback():
-                    calls.append("click")
-                    if scenario == "nested":
+                def outer():
+                    calls.append("outer")
+                    if name == "nested":
                         interaction.operate(lambda: calls.append("inner"), block=True)
+                        self.assertTrue(interaction._operating)
+                        raise ValueError("callback failed")
 
-                with patch("src.interaction.BD2Interaction.GetCursorPos", return_value=(1, 2)):
-                    if scenario in {"denied", "cancel", "release_failed"}:
-                        exception = TaskDisabledException if scenario == "cancel" else RuntimeError
-                        with self.assertRaises(exception):
-                            interaction.operate(callback, block=True, input_wait=wait)
-                    else:
-                        interaction.operate(callback, block=True, input_wait=wait)
-                self.assertEqual(int(scenario not in {"denied", "cancel"}), calls.count("click"))
-                self.assertEqual(2 if scenario == "race" else
-                                 0 if scenario in {"denied", "cancel"} else 1,
-                                 calls.count("block_input"))
-                if scenario == "release_failed":
-                    with self.assertRaises(RuntimeError):
-                        interaction.operate(callback)
-                    self.assertEqual(1, calls.count("click"))
-
-    def test_capture_discards_frame_interrupted_by_input_desktop_switch(self):
-        for during_capture in (False, True):
-            with self.subTest(during_capture=during_capture):
-                interaction, calls = make_interaction()
-                task = object.__new__(BaseBD2Task)
-                task.info_set = lambda *_: None
-                now = [0.0]
-                frames = []
-
-                def wait(seconds):
-                    self.assertEqual([], calls)
-                    now[0] += seconds
-
-                def capture():
-                    frame = np.zeros((2, 2, 3), dtype=np.uint8)
-                    frames.append(frame)
-                    return frame
-
-                task.next_frame = capture
-                task._executor = SimpleNamespace(
-                    interaction=interaction, check_enabled=lambda: None,
-                    exit_event=SimpleNamespace(wait=wait), reset_scene=lambda **_: None,
-                    device_manager=SimpleNamespace(capture_method="test"),
-                )
-                denied = win32api.error(5, "GetCursorPos", "access denied")
-                positions = ([(1, 2), denied] if during_capture else [denied])
-                positions += [(1, 2)] * 4
-                with (
-                    patch("src.interaction.BD2Interaction.GetCursorPos", side_effect=positions),
-                    patch("src.tasks.BaseBD2Task.monotonic", side_effect=lambda: now[0]),
-                    patch("src.tasks.BaseBD2Task.observe_frame") as observe,
-                ):
-                    result = task.capture_frame()
-                self.assertEqual(2 if during_capture else 1, len(frames))
-                self.assertIs(frames[-1], result)
-                observe.assert_called_once_with(task, result)
-                self.assertEqual(.25, task._input_wait_seconds)
-                self.assertEqual(0.0, task._active_time(lambda: now[0]))
-
-    def test_task_waits_for_cursor_access_before_dispatching_once(self):
-        interaction, calls = make_interaction()
-        task = object.__new__(BaseBD2Task)
-        task.info_set = lambda key, message: calls.append((key, message))
-
-        def wait(seconds):
-            self.assertEqual(0.25, seconds)
-            self.assertFalse(interaction._operating)
-            self.assertNotIn("block_input", calls)
-            self.assertNotIn("click", calls)
-            calls.append("wait")
-
-        task._executor = SimpleNamespace(
-            interaction=interaction, check_enabled=lambda: None,
-            exit_event=SimpleNamespace(wait=wait), reset_scene=lambda **_kwargs: None,
-        )
-        denied = win32api.error(5, "GetCursorPos", "access denied")
-        with patch(
-            "src.interaction.BD2Interaction.GetCursorPos",
-            side_effect=[denied, denied, (7, 8)],
-        ):
-            self.assertEqual(42, task.operate(lambda: calls.append("click") or 42))
-        self.assertEqual(2, calls.count("wait"))
-        self.assertEqual(1, calls.count("click"))
-        self.assertEqual((7, 8), interaction.cursor_position)
-        self.assertFalse(interaction._operating)
-        self.assertTrue(interaction._activate_required)
-        self.assertEqual(["block_input", "click", "restore_cursor", "unblock_input"], calls[-4:])
-
-    def test_input_wait_timeout_or_cancellation_never_dispatches_or_blocks(self):
-        for interruption in (None, TaskDisabledException(), FinishedException()):
-            with self.subTest(interruption=type(interruption).__name__):
-                interaction, calls = make_interaction()
-
-                def wait(_seconds):
-                    if interruption is not None:
-                        raise interruption
-
-                with (
-                    patch("src.interaction.BD2Interaction.GetCursorPos", side_effect=
-                          win32api.error(5, "GetCursorPos", "access denied")),
-                    patch("src.interaction.BD2Interaction.time.monotonic", side_effect=[0, 0, 30]),
-                ):
-                    with self.assertRaises(type(interruption) if interruption else TimeoutError):
-                        interaction.operate(
-                            lambda: calls.append("click"), block=True, input_wait=wait,
-                        )
-                self.assertEqual([], calls)
+                with self.assertRaises(error) if error else nullcontext():
+                    interaction.operate(outer, block=True, input_wait=wait)
+                self.assertEqual(expected, calls)
                 self.assertFalse(interaction._operating)
                 self.assertTrue(interaction.wait_until_idle(0))
+                if name == "unhealthy":
+                    with self.assertRaises(RuntimeError):
+                        interaction.operate(outer)
+                    self.assertEqual(expected, calls)
 
-    def test_non_access_errors_and_callback_errors_are_not_replayed(self):
-        for from_callback in (False, True):
-            with self.subTest(from_callback=from_callback):
-                interaction, calls = make_interaction()
-                error = win32api.error(5 if from_callback else 1400, "test", "failure")
-
-                def callback():
-                    calls.append("callback")
-                    raise error
-
-                with patch(
-                    "src.interaction.BD2Interaction.GetCursorPos",
-                    side_effect=None if from_callback else error, return_value=(7, 8),
-                ):
-                    with self.assertRaises(win32api.error) as caught:
-                        interaction.operate(
-                            callback, block=True, input_wait=lambda _: calls.append("wait"),
-                        )
-                self.assertIs(error, caught.exception)
-                self.assertNotIn("wait", calls)
-                self.assertEqual(int(from_callback), calls.count("callback"))
-                self.assertFalse(interaction._operating)
-
-    def test_operate_reraises_callback_exception_and_cleans_up(self):
-        interaction, calls = make_interaction()
-        error = ValueError("boom")
-
-        def failing_callback():
-            raise error
-
-        with patch(
-            "src.interaction.BD2Interaction.GetCursorPos",
-            return_value=(7, 8),
+    def test_cursor_admission_recovers_times_out_or_propagates_cancellation(self):
+        locked = win32api.error(5, "GetCursorPos", "denied")
+        bad_window = win32api.error(1400, "GetCursorPos", "invalid window")
+        for label, reads, writes, interruption, error, waits in (
+            ("locked read", [locked, locked, (7, 8)], None, None, None, 2),
+            ("locked write", None, [OSError("SetCursorPos"), None], None, None, 1),
+            ("timeout", locked, None, None, TimeoutError, 120),
+            ("disabled", locked, None, TaskDisabledException, TaskDisabledException, 1),
+            ("finished", locked, None, FinishedException, FinishedException, 1),
+            ("bad window", bad_window, None, None, win32api.error, 0),
         ):
-            with self.assertRaises(ValueError) as caught:
-                interaction.operate(failing_callback, block=True)
+            with self.subTest(case=label):
+                interaction, calls = make_interaction()
+                self.get_cursor.side_effect = reads
+                self.set_cursor.reset_mock()
+                self.set_cursor.side_effect = writes
+                now = [0.0]
 
-        self.assertIs(error, caught.exception)
-        self.assertFalse(interaction._operating)
-        self.assertIn("block_input", calls)
-        self.assertIn("restore_cursor", calls)
-        self.assertIn("unblock_input", calls)
+                def wait(seconds):
+                    self.assertFalse(interaction._operating)
+                    self.assertEqual([], calls)
+                    now[0] += seconds
+                    if interruption:
+                        raise interruption()
 
-    def test_nested_operate_keeps_outer_layer_state_isolated(self):
+                status = Mock()
+                with patch.object(win_input.time, "monotonic", side_effect=lambda: now[0]):
+                    with self.assertRaises(error) if error else nullcontext():
+                        interaction.operate(
+                            lambda: calls.append("click"),
+                            block=True,
+                            input_wait=wait,
+                            input_status=status,
+                        )
+                self.assertEqual(waits * 0.25, now[0])
+                self.assertFalse(interaction._operating)
+                if error:
+                    self.assertEqual([], calls)
+                    self.set_cursor.assert_not_called()
+                    self.assertEqual(0 if error is win32api.error else 1, status.call_count)
+                else:
+                    self.assertEqual(
+                        ["block_input", "click", "restore_cursor", "unblock_input"], calls
+                    )
+                    self.assertTrue(interaction._activate_required)
+                    self.assertEqual((7, 8) if reads else (1, 2), interaction.cursor_position)
+                    self.assertEqual(2, status.call_count)
+
+    def test_failed_mouse_down_posts_release_once_and_propagates_error(self):
         interaction, calls = make_interaction()
-        states_after_inner = []
+        interaction.try_activate = Mock()
+        interaction._dynamic_target_hwnd = 0
+        interaction.hwnd_window = SimpleNamespace(top_hwnd=123, hwnd=123)
+        error = win32api.error(5, "PostMessage", "access denied")
+        with (
+            patch.object(win_input.win32gui, "PostMessage", side_effect=[error, None]) as post,
+            patch.object(win_input.time, "sleep"),
+            self.assertRaises(win32api.error) as caught,
+        ):
+            interaction.operate(lambda: interaction.click(10, 10, move=False), block=True)
+        self.assertIs(error, caught.exception)
+        self.assertFalse(error.input_not_dispatched)
+        self.assertEqual(
+            [win32con.WM_LBUTTONDOWN, win32con.WM_LBUTTONUP],
+            [c.args[1] for c in post.call_args_list],
+        )
+        self.assertEqual(["block_input", "restore_cursor", "unblock_input"], calls)
 
-        def outer_callback():
-            inner_result = interaction.operate(lambda: "inner", block=True)
-            states_after_inner.append((inner_result, interaction._operating))
-            raise RuntimeError("outer boom")
-
-        with patch(
-            "src.interaction.BD2Interaction.GetCursorPos",
-            return_value=(7, 8),
-        ) as get_cursor_pos:
-            with self.assertRaises(RuntimeError):
-                interaction.operate(outer_callback)
-
-        self.assertEqual([("inner", True)], states_after_inner)
-        self.assertFalse(interaction._operating)
-        get_cursor_pos.assert_called_once_with()
-        self.assertEqual(1, calls.count("restore_cursor"))
-
-
-class BD2InteractionClickModeTest(unittest.TestCase):
-    def test_background_scroll_and_drag_leave_physical_cursor_and_buttons_alone(self):
+    def test_background_click_scroll_and_drag_send_only_window_input(self):
         interaction, calls = make_interaction()
         interaction.set_click_mode_provider(lambda: CLICK_MODE_BACKGROUND)
+        with patch.object(PostMessageInteraction, "click", autospec=True) as post:
+            interaction.click(320, 540, move_back=True, down_time=0.02)
+        post.assert_called_once_with(
+            interaction, 320, 540, move_back=False, name=None, down_time=0.02, move=True, key="left"
+        )
+        self.set_cursor.assert_not_called()
         interaction.scroll = Mock()
         interaction.move = Mock()
         interaction.mouse_down = Mock()
@@ -309,15 +297,11 @@ class BD2InteractionClickModeTest(unittest.TestCase):
         task._wait_for_input = Mock()
         task.info_set = Mock()
         task.sleep = Mock()
-        with (
-            patch("src.interaction.BD2Interaction.GetCursorPos", return_value=(10, 20)),
-            patch("win32api.SetCursorPos") as cursor,
-            patch("win32api.mouse_event") as mouse,
-            patch("time.sleep"),
-        ):
-            task.scroll_client((.25, .5), 1, count=2)
-            task.drag_client((100, 100), (200, 300), duration=.1)
-        cursor.assert_not_called()
+        with patch("win32api.mouse_event") as mouse, patch("time.sleep"):
+            task.scroll_client((0.25, 0.5), 1, count=2)
+            task.drag_client((100, 100), (200, 300), duration=0.1)
+        self.api_set.assert_not_called()
+        self.assertEqual([call((1, 2)), call((1, 2))], self.set_cursor.call_args_list)
         mouse.assert_not_called()
         self.assertEqual([], calls)
         self.assertEqual(2, interaction.scroll.call_count)
@@ -326,131 +310,152 @@ class BD2InteractionClickModeTest(unittest.TestCase):
         interaction.mouse_up.assert_called_once()
         self.assertEqual((200, 300), interaction.move.call_args.args)
 
-    def test_capture_keeps_game_frame_when_another_foreground_window_changes(self):
-        for mode in (CLICK_MODE_STANDARD, CLICK_MODE_BACKGROUND):
-            with (
-                self.subTest(mode=mode),
-                patch("src.interaction.BD2Interaction.GetCursorPos", return_value=(1, 2)),
-                patch("src.interaction.BD2Interaction.win32gui.GetForegroundWindow",
-                      return_value=456) as foreground,
-                patch("src.interaction.BD2Interaction.win32gui.GetWindowRect",
-                      return_value=(0, 0, 1920, 1080)),
-                patch("src.interaction.BD2Interaction.win32gui.GetClientRect",
-                      return_value=(0, 0, 1920, 1080)),
-                patch("src.tasks.BaseBD2Task.observe_frame") as observe,
-            ):
-                interaction, _calls = make_interaction()
-                interaction.hwnd_window = SimpleNamespace(top_hwnd=123, hwnd=123)
-                interaction.set_click_mode_provider(lambda: mode)
-                task = object.__new__(BaseBD2Task)
-                task.info_set = Mock()
-                task._executor = SimpleNamespace(
-                    interaction=interaction,
-                    device_manager=SimpleNamespace(capture_method="test"),
-                )
-                frame = np.zeros((2, 2, 3), dtype=np.uint8)
-
-                def capture():
-                    foreground.return_value = 789 if foreground.return_value == 456 else 456
-                    return frame
-
-                task.next_frame = Mock(side_effect=capture)
-                self.assertIs(frame, task.capture_frame())
-                task.next_frame.assert_called_once()
-                observe.assert_called_once_with(task, frame)
-
-    def test_click_throttling_uses_elapsed_time_across_system_clock_changes(self):
-        task = object.__new__(BaseBD2Task)
-        task._action_interval_lock = threading.Lock()
-        task._last_interval_action_time = {}
-        with (
-            patch("src.tasks.BaseBD2Task.monotonic") as elapsed,
-            patch("src.tasks.BaseBD2Task.time.time") as wall_clock,
-            patch.object(BaseBD2Task.__mro__[1], "click", return_value=True) as click,
-        ):
-            for seconds, wall_time, action, accepted in (
-                (0.0, 1000, "claim", True),
-                (0.5, 5000, "claim", False),
-                (0.5, 5000, "other", True),
-                (1.0, 1, "claim", True),
-                (1.4, 10000, "claim", False),
-            ):
-                elapsed.return_value = seconds
-                wall_clock.return_value = wall_time
-                self.assertEqual(accepted, task.click(.25, .75, interval=1, action_name=action))
-        self.assertEqual(3, click.call_count)
-
-    def test_background_mode_routes_click_through_post_message_without_cursor_move(self):
-        interaction, _calls = make_interaction()
-        interaction.set_click_mode_provider(lambda: CLICK_MODE_BACKGROUND)
-
-        with (
-            patch.object(PostMessageInteraction, "click", autospec=True) as post_click,
-            patch("src.interaction.BD2Interaction.SetCursorPos") as set_cursor_pos,
-        ):
-            interaction.click(320, 540, move_back=True, down_time=0.02)
-
-        post_click.assert_called_once_with(
-            interaction,
-            320,
-            540,
-            move_back=False,
-            name=None,
-            down_time=0.02,
-            move=True,
-            key="left",
-        )
-        set_cursor_pos.assert_not_called()
-
-
-class BD2InteractionActivationTest(unittest.TestCase):
-    def test_try_activate_keeps_retry_flag_until_foreground_is_verified(self):
-        interaction, _calls = make_interaction()
-        interaction._activate_required = True
-        foreground = iter((False, False, True))
-        interaction.hwnd_window = SimpleNamespace(is_foreground=lambda: next(foreground))
-
-        with patch.object(PostMessageInteraction, "try_activate") as parent_activate:
-            interaction.try_activate()
-            self.assertTrue(interaction._activate_required)
-            parent_activate.assert_called_once_with(force=True)
-
-            interaction.try_activate()
-
-        self.assertFalse(interaction._activate_required)
-
-        interaction.hwnd_window.is_foreground = lambda: False
-        with patch.object(PostMessageInteraction, "try_activate") as parent_activate:
-            interaction.try_activate()
-        parent_activate.assert_called_once_with(force=True)
-        self.assertTrue(interaction._activate_required)
-
-    def test_background_game_is_activated_before_every_input(self):
-        # ok-script 3.0.10 skips WM_ACTIVATE until the foreground changes; BD2 keeps
-        # sending it before each input to the background game, as on 3.0.4.
-        interaction, _calls = make_interaction()
-        interaction._activated_hwnds = ()
-        interaction._dynamic_target_hwnd = 0
-        interaction.hwnd_window = SimpleNamespace(
-            hwnd=100, top_hwnd=200, is_foreground=lambda: False, visible_monitors=[],
-        )
-        activated = []
-        with patch.object(PostMessageInteraction, "activate",
-                          lambda _self, hwnd=None: activated.append(hwnd)):
-            interaction.try_activate()
-            interaction.try_activate()
-        self.assertEqual([100, 200, 100, 200], activated)
-
-    def test_visibility_change_reaches_ok_script_and_bd2(self):
-        interaction, _calls = make_interaction()
+    def test_activation_retries_each_background_input_until_foreground(self):
+        interaction, _ = make_interaction()
         interaction._activated_hwnds = (100,)
-        interaction._activate_required = False
+        interaction.hwnd_window = SimpleNamespace(
+            hwnd=100, top_hwnd=200, is_foreground=Mock(), visible_monitors=[]
+        )
+        interaction._dynamic_target_hwnd = 0
         interaction.on_visible(False)
         self.assertEqual((), interaction._activated_hwnds)
         self.assertTrue(interaction._activate_required)
+        with patch.object(PostMessageInteraction, "activate", autospec=True) as activate:
+            for samples, required, hwnds in (
+                ([False, False], True, [100, 200]),
+                ([False, True], False, [100, 200]),
+                ([True], False, []),
+                ([False, False], True, [100, 200]),
+            ):
+                with self.subTest(foreground=samples):
+                    interaction.hwnd_window.is_foreground.side_effect = samples
+                    activate.reset_mock()
+                    interaction.try_activate()
+                    self.assertEqual(required, interaction._activate_required)
+                    self.assertEqual(hwnds, [c.args[-1] for c in activate.call_args_list])
         interaction.on_visible(True)
         self.assertFalse(interaction._activate_required)
 
+    def test_input_probes_dispatch_configured_mouse_events(self):
+        interaction, _ = make_interaction()
+        frame = np.zeros((1080, 1920, 3), np.uint8)
+        executor = SimpleNamespace(scene=None, interaction=None)
+        selector = BD2ClickModeSelectorTask(executor, SimpleNamespace())
+        selector.config = {CLICK_MODE_KEY: CLICK_MODE_STANDARD}
+        selector.on_create()
+        executor.interaction = interaction
+        self.assertFalse(selector.should_trigger())
+        self.assertFalse(interaction.background_click_enabled())
+        selector.config[CLICK_MODE_KEY] = CLICK_MODE_BACKGROUND
+        self.assertTrue(interaction.background_click_enabled())
+        for kind, config, posts, scrolls in (
+            (
+                BD2BackgroundMouseClickInputTestTask,
+                {
+                    REFERENCE_POINT_MODE_KEY: True,
+                    REFERENCE_POINT_X_KEY: 173,
+                    REFERENCE_POINT_Y_KEY: 54,
+                    BACKGROUND_MOUSE_MOVE_KEY: False,
+                },
+                [
+                    call(
+                        interaction,
+                        173,
+                        54,
+                        move_back=False,
+                        name="bd2_background_mouse_click",
+                        down_time=0.02,
+                        move=False,
+                        key="left",
+                    )
+                ],
+                [],
+            ),
+            (
+                BD2MouseWheelInputTestTask,
+                {},
+                [
+                    call(
+                        interaction,
+                        346,
+                        538,
+                        move_back=False,
+                        name="bd2_mouse_wheel_focus",
+                        down_time=0.02,
+                        move=True,
+                        key="left",
+                    )
+                ],
+                [call(346, 538, 1)] * 9,
+            ),
+        ):
+            with self.subTest(probe=kind.__name__):
+                task = object.__new__(kind)
+                task._executor = executor
+                task.config = config
+                task.run_input_probe = lambda _, details, action: action(frame)
+                task.operate = lambda action, **_: action()
+                task.sleep = Mock()
+                interaction.scroll = Mock()
+                with patch.object(PostMessageInteraction, "click", autospec=True) as post:
+                    task.run()
+                self.assertEqual(posts, post.call_args_list)
+                self.assertEqual(scrolls, interaction.scroll.call_args_list)
+                self.assertEqual([call(0.1)] * max(0, len(scrolls) - 1), task.sleep.call_args_list)
+                self.set_cursor.assert_not_called()
 
-if __name__ == "__main__":
-    unittest.main()
+
+class TaskFeedbackTest(unittest.TestCase):
+    def test_snapshots_are_independent_during_concurrent_info_updates(self):
+        for instance_lock in (False, True):
+            with self.subTest(instance_lock=instance_lock):
+                task = object.__new__(BaseBD2Task)
+                task.info = {}
+                task.logger = Mock(spec=logging.Logger)
+                if instance_lock:
+                    task._info_lock = threading.RLock()
+                start = threading.Barrier(3)
+
+                def update():
+                    start.wait(timeout=5)
+                    for i in range(300):
+                        task.info_set(f"k{i % 20}", i)
+                        task.info_incr("counter", 2)
+                        task.info_add("added", 3)
+                        task.info_add_to_list("items", i)
+
+                def clear():
+                    start.wait(timeout=5)
+                    for _ in range(200):
+                        task.info_clear()
+
+                with ThreadPoolExecutor(2) as pool:
+                    writes = [pool.submit(update), pool.submit(clear)]
+                    start.wait(timeout=5)
+                    for _ in range(200):
+                        self.assertIsInstance(task_info_snapshot(task), dict)
+                    for writer in writes:
+                        writer.result(timeout=5)
+                task.info_set("状态", "运行中")
+                snapshot = task_info_snapshot(task)
+                self.assertEqual("运行中", snapshot["状态"])
+                snapshot["状态"] = "修改"
+                self.assertEqual("运行中", task.info["状态"])
+
+        class RacyInfo(dict):
+            def keys(self):
+                raise RuntimeError("dictionary changed size during iteration")
+
+            __iter__ = keys
+
+        self.assertEqual({}, task_info_snapshot(SimpleNamespace(info=RacyInfo(a=1))))
+
+    def test_completion_notification_resumes_after_child_finishes(self):
+        task = SimpleNamespace(log_info=Mock())
+        with suppress_task_completion_notifications(task):
+            log_task_completion(task, "子任务完成")
+        log_task_completion(task, "任务完成")
+        self.assertEqual(
+            [call("子任务完成", notify=False), call("任务完成", notify=True)],
+            task.log_info.call_args_list,
+        )
