@@ -502,10 +502,11 @@ Globals(exit_event)
 assert auto_scheduler.install_auto_scheduler._installed
 assert TaskExecutor.execute is executor_cleanup._execute
 exit_event.set()
+og.handler.join(timeout=5)
 
 loaded = sorted(m for m in sys.modules if m.split('.')[0] in {'PySide6', 'qfluentwidgets'})
 assert not loaded, loaded
-print('CREATED', len(created), ','.join(created))
+sys.stdout.write(f"CREATED {len(created)} {','.join(created)}\n")
 """
 
 
