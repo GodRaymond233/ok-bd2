@@ -1,9 +1,11 @@
 import unittest
 from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import numpy as np
 
 from src.tasks.main_story import (
+    BATTLE_TURN_CLICKS,
     LIST_BUTTON_ROI,
     REWARD_POPUP_HINT_ROI,
     SKIP_CONFIRM_OK_ROIS,
@@ -15,6 +17,28 @@ from src.tasks.task_vision_mixin import REFERENCE_HEIGHT, REFERENCE_WIDTH
 
 
 class MainStoryTest(unittest.TestCase):
+    def test_battle_turn_limit_waits_for_progress_with_a_bounded_timeout(self):
+        turn = MainStoryState.IN_BATTLE_TURN
+        for tail, expected in (([MainStoryState.ALL_CLEAR], True), ([turn] * 5, False)):
+            with self.subTest(expected=expected):
+                task = Mock()
+                task.config = {}
+                task._main_story_state.side_effect = [
+                    (state, state.value) for state in [turn] * BATTLE_TURN_CLICKS + tail
+                ]
+                task._main_story_battle_turn_point.return_value = (0, 0)
+                task._main_story_stuck.return_value = False
+                now = [0.0]
+
+                def advance(seconds):
+                    now[0] += max(61, seconds)
+
+                task.sleep.side_effect = advance
+                with patch("src.tasks.main_story.monotonic", side_effect=lambda: now[0]):
+                    self.assertIs(MainStoryFeatureMixin.run_main_story_farm(task), expected)
+                self.assertEqual(BATTLE_TURN_CLICKS, task._click_reference.call_count)
+                self.assertEqual(int(not expected), task._main_story_stuck.call_count)
+
     def test_classifies_overlapping_battle_list_and_reward_regions(self):
         state = MainStoryState
         for button, victory, reward, expected in (

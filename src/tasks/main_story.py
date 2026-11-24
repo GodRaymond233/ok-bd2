@@ -1001,9 +1001,9 @@ class MainStoryFeatureMixin(MainStoryVisionMixin):
                 # 战斗没在自动跑：右下角停在「TURN. N | BATTLE」，回合不走、Boss 血量
                 # 一动不动。点一下 BATTLE 等于替玩家开这一回合，下一回合再点。
                 # 一场战斗的点击次数有上限，用完就交回下面的等待/超时逻辑，不在这里停机。
-                busy_since, busy_announced = None, False
                 unknown_since = None
                 if battle_turn_clicks < BATTLE_TURN_CLICKS:
+                    busy_since, busy_announced = None, False
                     battle_turn_clicks += 1
                     self.log_info(
                         f"主线刷取：战斗停在开回合前，点「BATTLE」"
