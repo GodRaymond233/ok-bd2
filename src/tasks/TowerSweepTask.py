@@ -234,7 +234,7 @@ class TowerSweepTask(CartridgeChallengeTask):
             return self._fail("未确认可用的救赎钥匙")
         if keys <= reserve:
             self.info_set("状态", f"剩余 {keys} 把救赎钥匙，本次全部预留。")
-            return True
+            return self._finish()
         buttons = [(x, y, box) for text, x, y, box in labels
                    if text in {"快速战斗", "快速戰鬥"} and .67 < x < .82 and y > .85]
         if len(buttons) != 1:

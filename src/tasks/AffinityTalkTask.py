@@ -130,7 +130,9 @@ class AffinityTalkTask(HomePageTask):
         daily = [int(match[1]) for _, x, y, box in labels
                  if box is not None and .74 < x < .845 and .87 < y < .96
                  and (match := DAILY.search(re.sub(r"\s+", "", box.name)))]
-        return levels[0], records[0], daily[0] if len(daily) == 1 and not locked else None
+        if locked:
+            return levels[0], records[0], 0
+        return levels[0], records[0], daily[0] if len(daily) == 1 else None
 
     def _detail_page(self, frame, labels, costume):
         if self._detail(labels, costume) is not None:

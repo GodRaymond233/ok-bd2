@@ -331,6 +331,82 @@ class GameplayTrialTest(TestCase):
         self.assertEqual(2, task.scroll_client.call_count)
         self.assertEqual(2, task._read.call_count)
 
+    def test_affinity_skips_locked_costumes_but_fails_when_daily_count_is_unreadable(self):
+        heading = [("亲密度", .16, .04, None), ("今日剩余谈心次数2", .89, .04, None)]
+
+        def detail(costume, level, *, locked=False, daily=None):
+            labels = [
+                *heading,
+                (costume, .56, .132, None),
+                (f"lv{level}0", .53, .18, None),
+                ("谈心记录", .56, .24, SimpleNamespace(name="谈心记录 3/15")),
+            ]
+            if locked:
+                labels.append(("潜力释放", .70, .20, None))
+            if daily is not None:
+                labels.append((f"谈心{daily}1", .78, .92, SimpleNamespace(name=f"谈心 {daily}/1")))
+            return labels
+
+        # 1. Automatic mode: first candidate is locked, skips it and runs the next candidate.
+        auto_task = AffinityTalkTask.__new__(AffinityTalkTask)
+        auto_task.config = {"自动选择服装": True, "服装列表扫描页数上限": 1}
+        list_page = (None, [
+            *heading,
+            ("锁定服装", .25, .30, None), ("lv180", .25, .34, None),
+            ("可用服装", .50, .30, None), ("lv140", .50, .34, None),
+        ])
+        auto_task._read_bank = Mock(return_value={"bank": True})
+        auto_task._start = Mock(return_value=list_page)
+        auto_task._auto_list = Mock(side_effect=[list_page, list_page, list_page])
+        auto_task._questions = Mock(side_effect=lambda name, _: (name, ("question",)))
+        auto_task._detail_page = Mock(side_effect=[
+            (None, detail("锁定服装", 18, locked=True)),
+            (None, detail("可用服装", 14, daily=1)),
+        ])
+        auto_task._confirm_talk = Mock(
+            return_value=(detail("可用服装", 14, daily=0), (14, 4, 0), 1),
+        )
+        auto_task.info_set = Mock()
+        auto_task.operate_click = Mock()
+        auto_task._finish = Mock(return_value=True)
+        auto_task._fail = Mock(return_value=False)
+        with TemporaryDirectory() as directory:
+            store = run_history.RunHistoryStore(Path(directory) / "history.json")
+            with patch.object(run_history, "day_start_ts", return_value=0.0), \
+                 patch.object(run_history, "default_store", return_value=store):
+                self.assertTrue(auto_task.run())
+        self.assertEqual(1, auto_task.operate_click.call_count)
+        auto_task._fail.assert_not_called()
+        auto_task._finish.assert_called_once_with()
+
+        # 2. Manual mode: locked costume finishes cleanly as unavailable; unreadable daily fails.
+        for case, labels, expect_ok in (
+            ("locked", detail("锁定服装", 18, locked=True), True),
+            ("unreadable", detail("普通服装", 18, locked=False, daily=None), False),
+        ):
+            with self.subTest(case=case), TemporaryDirectory() as directory:
+                task = AffinityTalkTask.__new__(AffinityTalkTask)
+                costume = "锁定服装" if case == "locked" else "普通服装"
+                task.config = {"谈心服装": costume}
+                task._questions = Mock(return_value=(costume, ("question",)))
+                task._start = Mock(return_value=(None, labels))
+                task._detail_page = Mock(return_value=(None, labels))
+                task.info_set = Mock()
+                task.operate_click = Mock()
+                task._finish = Mock(return_value=True)
+                task._fail = Mock(return_value=False)
+                store = run_history.RunHistoryStore(Path(directory) / "history.json")
+                with patch.object(run_history, "day_start_ts", return_value=0.0), \
+                     patch.object(run_history, "default_store", return_value=store):
+                    self.assertEqual(expect_ok, task.run())
+                task.operate_click.assert_not_called()
+                if expect_ok:
+                    task._finish.assert_called_once_with()
+                    task._fail.assert_not_called()
+                else:
+                    task._fail.assert_called_once_with("未确认该服装的谈心次数")
+                    task._finish.assert_not_called()
+
     @staticmethod
     def _event_wheel(spins=0, cost="1次免費", button="轉1次"):
         box = SimpleNamespace(name=button, x=1238, y=740, width=64, height=30)
@@ -480,6 +556,7 @@ class GameplayTrialTest(TestCase):
                 task.info_set = Mock()
                 task.log_completion = Mock()
                 task.sleep = Mock()
+                task._finish = Mock(return_value=True)
                 task._highest_cleared = Mock(return_value=(7, (.146, .6892)))
                 screens = (page, page, dialog, dialog, dialog, dialog, result)
                 task._read = Mock(side_effect=[(frame, labels) for labels in screens])
@@ -505,6 +582,7 @@ class GameplayTrialTest(TestCase):
                     [(.75, .91), (.57, .75)] if reserve == 1 else [],
                     [call.args for call in task.operate_click.call_args_list],
                 )
+                self.assertEqual(0 if reserve == 1 else 1, task._finish.call_count)
 
     def test_tower_batch_uses_max_then_preserves_keys_and_checks_result_count(self):
         frame = np.full((1080, 1920, 3), 220, dtype=np.uint8)
