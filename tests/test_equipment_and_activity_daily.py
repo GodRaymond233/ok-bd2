@@ -16,6 +16,9 @@ from src.tasks.equipment_daily import (
     DISMANTLE_GRADE_FILES,
     DISMANTLE_SKIPPED,
     DISMANTLE_STEP,
+    REFINE_MODE_KEY,
+    REFINE_MODE_UNDER_17,
+    REFINE_SKIPPED,
     REFINE_STEP,
     EquipmentScreen,
     dismantle_grade_points,
@@ -256,7 +259,10 @@ class EquipmentFlowTest(unittest.TestCase):
                 )
 
     def test_refine_once_requires_matching_scores_cost_and_exclusive_detail(self):
-        grid = equipment_screen((("24", 0.65, 0.20), ("22", 0.71, 0.20), ("12", 0.83, 0.20)))
+        grid = equipment_screen((
+            ("装备766/814", 0.20, 0.05), ("一键分解", 0.89, 0.93),
+            ("24", 0.65, 0.20), ("22", 0.71, 0.20), ("12", 0.83, 0.20),
+        ))
         for x in (0.65, 0.71):
             px, py = round(x * 1920), round(0.20 * 1080)
             grid.frame[py - 3 : py + 3, px - 3 : px + 3] = (80, 160, 220)
@@ -266,8 +272,6 @@ class EquipmentFlowTest(unittest.TestCase):
                 *REFINEMENT_RESULT_LABELS,
                 ("30", 0.807, 0.839),
                 ("精炼80", 0.84, 0.93),
-                ("22", 0.902, 0.258),
-                ("22", 0.772, 0.745),
             )
         )
         conflict = equipment_screen(
@@ -281,24 +285,27 @@ class EquipmentFlowTest(unittest.TestCase):
             )
         )
         marker, exclusive, button = EXCLUSIVE_DETAIL_LABELS
-        for detail_labels, upper, first, accepted in (
-            ((marker, exclusive, button), ["22"], good, True),
-            ((marker, ("基本能力+9", 0.284, 0.51), button), [], good, True),
-            ((exclusive, button), [], good, False),
-            ((marker, ("专用装备", 0.61, 0.54), button), [], good, False),
-            ((marker, ("基本能力+8", 0.284, 0.51), button), [], good, False),
-            ((marker, exclusive, button), ["22", "24"], good, False),
-            ((marker, exclusive, button), ["21"], good, False),
-            ((marker, exclusive, button), ["22"], conflict, False),
+        for detail_labels, upper, first, lower, accepted in (
+            ((marker, exclusive, button), ["22"], good, "22", True),
+            ((marker, ("基本能力+9", 0.284, 0.51), button), [], good, "22", True),
+            ((exclusive, button), [], good, "22", False),
+            ((marker, ("专用装备", 0.61, 0.54), button), [], good, "22", False),
+            ((marker, ("基本能力+8", 0.284, 0.51), button), [], good, "22", False),
+            ((marker, exclusive, button), ["22", "24"], good, "22", False),
+            ((marker, exclusive, button), ["21"], good, "22", False),
+            ((marker, exclusive, button), ["24"], good, "24", False),
+            ((marker, exclusive, button), ["22"], conflict, "22", False),
         ):
             with self.subTest(
-                detail=detail_labels, upper=upper, material_conflict=first is conflict
+                detail=detail_labels, upper=upper, lower=lower, material_conflict=first is conflict
             ):
                 task = self.task()
                 detail = equipment_screen(detail_labels)
+                task._apply_refinement_filter = Mock(return_value=True)
+                observations = iter((grid, detail, first, good))
                 task._wait_equipment = Mock(
-                    side_effect=lambda predicate: next(
-                        (v for v in (detail, first, good) if predicate(v)), None
+                    side_effect=lambda predicate, **_: next(
+                        (v for v in observations if predicate(v)), None
                     )
                 )
                 task._record_step = Mock()
@@ -306,7 +313,7 @@ class EquipmentFlowTest(unittest.TestCase):
                 def score(value):
                     return SimpleNamespace(name=value, x=40, y=40, width=20, height=20)
 
-                task.ocr = Mock(side_effect=[[score(n) for n in upper], [score("22")], [], []])
+                task.ocr = Mock(side_effect=[[score(n) for n in upper], [score(lower)], [], []])
                 task._confirm_refinement = Mock(return_value=True)
 
                 def click(*_, name, **kwargs):
@@ -328,6 +335,113 @@ class EquipmentFlowTest(unittest.TestCase):
                 self.assertEqual(int(accepted), actions.count("精炼一次"))
                 self.assertEqual(int(accepted), task._record_step.call_count)
                 self.assertEqual(int(accepted), task._confirm_refinement.call_count)
+
+    def test_refinement_filter_confirms_requested_toggles_and_closes_on_failure(self):
+        grid = equipment_screen((("装备766/814", .20, .05), ("一键分解", .89, .93)))
+
+        def filter_screen(enhance, score):
+            screen = equipment_screen((
+                ("装备筛选", .50, .25), ("强化阶段", .54, .29), ("+9▲", .714, .327),
+                ("强化分数", .54, .39), ("17▼", .633, .436),
+                ("保存", .633, .750), ("确认", .715, .750), ("X", .72, .236),
+            ))
+            for x, y, state in ((.714, .327, enhance), (.633, .436, score)):
+                px, py = round(x * 1920), round(y * 1080)
+                screen.frame[py - 15:py + 15, px - 37:px + 37] = 35
+                screen.frame[py - 5:py + 5, px - 17:px + 17] = (
+                    220 if state is True else 60 if state is False else 95
+                )
+            return screen
+
+        for wanted, initial, observed, actions, accepted in (
+            (True, (False, False), ((True, False), (True, True)),
+             ("筛选+9以上装备", "筛选17分以下装备", "确认装备筛选"), True),
+            (False, (True, True), ((True, False),), ("取消17分筛选", "确认装备筛选"), True),
+            (True, (True, True), (), ("确认装备筛选",), True),
+            (False, (None, False), (), ("关闭装备筛选",), False),
+        ):
+            with self.subTest(wanted=wanted, initial=initial):
+                task = self.task()
+                dialog = filter_screen(*initial)
+                reads = iter((dialog, *(filter_screen(*states) for states in observed), grid))
+                task._wait_equipment = Mock(
+                    side_effect=lambda predicate, **_: next(
+                        (view for view in reads if predicate(view)), None
+                    )
+                )
+                task._read_equipment = Mock(return_value=dialog)
+                self.assertIs(accepted, task._apply_refinement_filter(grid, wanted))
+                self.assertEqual(
+                    ["打开装备筛选", *actions],
+                    [c.kwargs["name"] for c in task.operate_click.call_args_list],
+                )
+
+    def test_refinement_requires_two_confirmed_empty_frames_to_skip(self):
+        inventory_label = ("装备766/814", .20, .05)
+        empty = equipment_screen((inventory_label, ("一键分解", .89, .93)), fill=35)
+        missing_control = equipment_screen((inventory_label,), fill=35)
+        occupied = equipment_screen((inventory_label, ("一键分解", .89, .93)))
+        for views, expected in (
+            ((missing_control, empty), False),
+            ((empty, missing_control, empty), False),
+            ((empty, empty), REFINE_SKIPPED),
+            ((occupied,), False),
+        ):
+            with self.subTest(expected=expected, frames=len(views)):
+                task = self.task()
+                task._apply_refinement_filter = Mock(return_value=True)
+                task._read_equipment = Mock(return_value=empty)
+                task._wait_equipment = Mock(
+                    side_effect=lambda predicate, **_: next(
+                        (view for view in views if predicate(view)), None
+                    )
+                )
+                task._record_step = Mock()
+                self.assertIs(expected, task._refine_once(occupied, "cycle"))
+                task._record_step.assert_not_called()
+                task.operate_click.assert_not_called()
+
+    def test_refinement_after_maxed_closes_detail_and_reads_new_candidate_positions(self):
+        def grid(entries):
+            screen = equipment_screen((
+                ("装备766/814", .20, .05), ("一键分解", .89, .93), *entries,
+            ))
+            for _, x, y in entries:
+                px, py = round(x * 1920), round(y * 1080)
+                screen.frame[py - 3:py + 3, px - 3:px + 3] = (80, 160, 220)
+            return screen
+
+        before = grid((("9", .65, .20), ("16", .71, .20)))
+        after = grid((("9", .65, .20), ("16", .78, .20)))
+        detail = equipment_screen((*EXCLUSIVE_DETAIL_LABELS, ("X", .741, .300)))
+        maxed = equipment_screen((*REFINEMENT_RESULT_LABELS, ("达到最大强化级别", .75, .93)))
+        ready = equipment_screen(
+            (*REFINEMENT_RESULT_LABELS, ("30", .807, .839), ("精炼80", .84, .93)),
+        )
+        for mode, badge, accepted in ((None, 22, True), (REFINE_MODE_UNDER_17, 18, False)):
+            with self.subTest(mode=mode):
+                task = self.task()
+                task.config[REFINE_MODE_KEY] = mode
+                task._apply_refinement_filter = Mock(return_value=True)
+                task._leave_refinement = Mock(return_value=detail)
+                task._read_refinement_badges = Mock(return_value=(badge, badge))
+                task._record_step = Mock()
+                task._confirm_refinement = Mock(return_value=True)
+                observations = iter((before, detail, maxed, after, detail, ready))
+                task._wait_equipment = Mock(
+                    side_effect=lambda predicate, **_: next(
+                        (v for v in observations if predicate(v)), None
+                    )
+                )
+                with patch(
+                    "src.tasks.EquipmentDailyTask.equipment_daily_cycle", return_value="cycle"
+                ):
+                    self.assertIs(accepted, task._refine_once(before, "cycle"))
+                task._leave_refinement.assert_called_once_with(maxed)
+                clicks = task.operate_click.call_args_list
+                self.assertEqual("关闭装备详情", clicks[2].kwargs["name"])
+                self.assertEqual(after.scored_gear()[1][1], clicks[3].args)
+                self.assertEqual(int(accepted), task._record_step.call_count)
 
     def test_pass_gate_requires_actual_dismantling_before_refinement_in_same_round(self):
         task = self.task()
