@@ -222,6 +222,38 @@ class EquipmentFlowTest(unittest.TestCase):
                 task._record_step.assert_not_called()
                 self.assertEqual(3, task.operate_click.call_count)
 
+    def test_dismantle_dialog_retries_once_when_selection_remains_unchanged(self):
+        frame = np.full((1080, 1920, 3), 65, dtype=np.uint8)
+        before = (438, 1000)
+        selected = SimpleNamespace(inventory=before, frame=frame, selection_count=1)
+        dialog = equipment_screen(
+            (
+                ("分解", 0.5, 0.419),
+                ("共分解1个装备。", 0.496, 0.468),
+                ("取消", 0.455, 0.589),
+                ("分解", 0.544, 0.589),
+            )
+        )
+        for reread, expected_dialog, expected_clicks in (
+            (SimpleNamespace(inventory=before, frame=frame, selection_count=1), dialog, 2),
+            (SimpleNamespace(inventory=before, frame=frame, selection_count=0), None, 1),
+            (SimpleNamespace(inventory=(437, 1000), frame=frame, selection_count=1), None, 1),
+        ):
+            with self.subTest(selection_count=reread.selection_count, inventory=reread.inventory):
+                task = self.task()
+                task._wait_equipment = Mock(side_effect=[None, dialog])
+                task._read_equipment = Mock(return_value=reread)
+                with patch(
+                    "src.tasks.EquipmentDailyTask.dismantle_check_point",
+                    return_value=(0.926, 0.931),
+                ):
+                    result = task._open_dismantle_dialog(selected, before)
+                self.assertIs(expected_dialog, result)
+                self.assertEqual(
+                    ["核对分解选择"] * expected_clicks,
+                    [c.kwargs["name"] for c in task.operate_click.call_args_list],
+                )
+
     def test_refine_once_requires_matching_scores_cost_and_exclusive_detail(self):
         grid = equipment_screen((("24", 0.65, 0.20), ("22", 0.71, 0.20), ("12", 0.83, 0.20)))
         for x in (0.65, 0.71):
