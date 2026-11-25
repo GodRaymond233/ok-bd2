@@ -8,6 +8,7 @@ from unittest.mock import Mock, call, patch
 
 import numpy as np
 
+from src.interaction.BD2Interaction import InputTargetChanged
 from src.tasks import run_history
 from src.tasks.ActivityDailyTask import ACKNOWLEDGED_AP_DAY, ActivityDailyTask
 from src.tasks.BaseBD2Task import BaseBD2Task
@@ -508,6 +509,20 @@ class ActivityFlowTest(unittest.TestCase):
         task._quick_stage = Mock(side_effect=quick_stage)
         task._fight = Mock(return_value=True)
         return pages
+
+    def test_select_stage_retries_after_input_target_changed(self):
+        task = self.task()
+        task.sleep = Mock()
+        before = challenge_list(10, ((15, 0.24), (10, 0.42)))
+        after = challenge_list(15, ((15, 0.24), (10, 0.42)))
+        task._read_activity = Mock(return_value=before)
+        task._wait_activity = Mock(return_value=after)
+        task.operate_click.side_effect = [InputTargetChanged("focus changed"), None]
+        selected = task._select_stage(before, CHALLENGE, 15)
+        self.assertIs(after, selected)
+        self.assertEqual(2, task.operate_click.call_count)
+        task._read_activity.assert_called_once()
+        task.sleep.assert_called_once_with(0.2)
 
     def test_stage_five_verification_crop_isolates_the_digit_at_client_scale(self):
         task = self.task()
