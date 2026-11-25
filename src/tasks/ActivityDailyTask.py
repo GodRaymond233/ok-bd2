@@ -5,6 +5,7 @@ from time import monotonic
 
 from src.diagnostics.runtime import capture_failure_frame
 from src.icons import TaskIcon
+from src.interaction.BD2Interaction import InputTargetChanged
 from src.tasks import run_history
 from src.tasks.BaseBD2Task import BaseBD2Task
 from src.utils.activity_screen import (
@@ -104,12 +105,17 @@ class ActivityDailyTask(BaseBD2Task):
             if view.stage_page is None:
                 return None
             if view.battle_back:
-                self.operate_click(
-                    *view.battle_back,
-                    name="退出活动战斗列表",
-                    after_sleep=0.7,
-                    require_fresh_target=True,
-                )
+                try:
+                    self.operate_click(
+                        *view.battle_back,
+                        name="退出活动战斗列表",
+                        after_sleep=0.7,
+                        require_fresh_target=True,
+                    )
+                except InputTargetChanged:
+                    self.sleep(0.2)
+                    view = self._read_activity()
+                    continue
             elif not self._click_top_left_back(view.frame, attempt + 1):
                 return None
             view = self._wait_activity(lambda screen: screen.menu, timeout=3.5)
@@ -170,13 +176,18 @@ class ActivityDailyTask(BaseBD2Task):
             if entered(current):
                 return current
             self.info_set("活动战斗入口", f"打开{mode}（{attempt}/2）")
-            self.operate_click(
-                *current.menu[mode],
-                name=mode,
-                down_time=0.12,
-                after_sleep=0.8,
-                require_fresh_target=True,
-            )
+            try:
+                self.operate_click(
+                    *current.menu[mode],
+                    name=mode,
+                    down_time=0.12,
+                    after_sleep=0.8,
+                    require_fresh_target=True,
+                )
+            except InputTargetChanged:
+                last_point = None
+                self.sleep(0.2)
+                continue
             last_point = None
             battle = self._wait_activity(entered, timeout=4)
             if battle:
@@ -274,13 +285,18 @@ class ActivityDailyTask(BaseBD2Task):
                 if point:
                     self.info_set("活动找关", f"{mode}{stage}关 · 局部关号复核")
             if point:
-                self.operate_click(
-                    *point,
-                    name=f"查看{mode}{stage}关",
-                    down_time=0.10,
-                    after_sleep=0.65,
-                    require_fresh_target=True,
-                )
+                try:
+                    self.operate_click(
+                        *point,
+                        name=f"查看{mode}{stage}关",
+                        down_time=0.10,
+                        after_sleep=0.65,
+                        require_fresh_target=True,
+                    )
+                except InputTargetChanged:
+                    self.sleep(0.2)
+                    view = self._read_activity()
+                    continue
                 selected = self._wait_activity(
                     lambda screen: screen.stage_page == target, timeout=3
                 )
@@ -402,12 +418,20 @@ class ActivityDailyTask(BaseBD2Task):
             "amount": amount,
         }
         run_history.save_stage(self, QUICK_BATTLE_STEP, "pending", scope=cycle, evidence=evidence)
-        self.operate_click(
-            *ready.submission()[1],
-            name=f"快速战斗 {amount} 次",
-            after_sleep=1.0,
-            require_fresh_target=True,
-        )
+        pending = run_history.read_stage(self, QUICK_BATTLE_STEP)
+        try:
+            self.operate_click(
+                *ready.submission()[1],
+                name=f"快速战斗 {amount} 次",
+                after_sleep=1.0,
+                require_fresh_target=True,
+            )
+        except InputTargetChanged:
+            run_history.default_store().retire_stages(
+                run_history.stage_owner(self), {QUICK_BATTLE_STEP: pending},
+                "提交前输入环境变化，快速战斗点击未发送",
+            )
+            return self._stop("提交快速战斗前输入环境变化，本次点击尚未发送")
         if not self._confirm_spend(evidence) or str(run_history.day_start_ts()) != cycle:
             return self._stop("已提交快速战斗，活动AP扣除仍待核对")
         run_history.save_stage(self, QUICK_BATTLE_STEP, "done", scope=cycle, evidence=evidence)
