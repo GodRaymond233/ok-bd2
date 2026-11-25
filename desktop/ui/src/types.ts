@@ -402,6 +402,19 @@ export interface ShellBridge {
   quit(): Promise<void>;
 }
 
+export type TradeInventoryReport = {
+  days: string[];
+  day: string | null;
+  comparison_day: string | null;
+  items: {
+    item: string;
+    name: string;
+    quantity: number;
+    observed_at: number;
+    quantity_change: number | null;
+  }[];
+};
+
 /** What the shell applied from the settings; a different thing from the core's DesktopInfo. */
 export interface ShellDesktop {
   zoom: number;

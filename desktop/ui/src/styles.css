@@ -3961,8 +3961,36 @@ mark {
 .dbody > .status-summary,
 .dbody > .status-details,
 .dbody > .hist,
-.dbody > .dempty {
+.dbody > .dempty,
+.dbody > .trade-inventory {
   margin-inline: 24px;
+}
+
+.trade-inventory-day {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-block: 12px;
+}
+
+.trade-inventory-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
+.trade-inventory-table caption {
+  text-align: left;
+  color: var(--ink-faint);
+}
+
+.trade-inventory-table th,
+.trade-inventory-table td {
+  padding: 8px;
+  border-bottom: 1px solid var(--line);
 }
 
 .dbody > .status-summary .kv {

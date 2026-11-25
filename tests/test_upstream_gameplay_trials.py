@@ -1,9 +1,12 @@
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import Mock, patch
 
+import cv2
 import numpy as np
 
 from src.tasks import run_history
@@ -14,8 +17,29 @@ from src.tasks.EventClaimTask import EventClaimTask
 from src.tasks.EventQuickBattlePreviewTask import EventQuickBattlePreviewTask
 from src.tasks.GearRefineTask import GearRefineTask
 from src.tasks.TowerSweepTask import SWEEP_MAX_POINT, SWEEP_MINUS_POINT, TowerSweepTask
+from src.tasks.TradeInventoryTask import TradeInventoryTask
+
+ROOT = Path(__file__).resolve().parents[1]
+
 
 class GameplayTrialTest(TestCase):
+    def test_inventory_catalog_preserves_historical_item_names_and_aliases(self):
+        from src.tasks.map_trade.calendar import BUNDLED_CALENDAR_HISTORY, parse_calendar_payload
+        from src.tasks.map_trade.data import ITEM_ALIASES
+        from src.tasks.map_trade.trader_constants import CALENDAR_DIR
+        from src.utils.ocr_utils import normalize_ocr_text
+
+        catalog = TradeInventoryTask._item_catalog()
+        self.assertEqual("三文鱼芥末寿司", catalog["三文鱼芥末寿司"])
+        names = list(ITEM_ALIASES.items())
+        for _, filename in BUNDLED_CALENDAR_HISTORY:
+            calendar = parse_calendar_payload((CALENDAR_DIR / filename).read_bytes())
+            for day in calendar.days.values():
+                names.extend((entry.item, entry.aliases) for entry in day)
+        for name, aliases in names:
+            for alias in (name, *aliases):
+                self.assertEqual(name, catalog[normalize_ocr_text(alias, alnum_only=True)])
+
     def test_event_quick_battle_preview_only_opens_a_stable_stage(self):
         frame = np.full((720, 1280, 3), 210, dtype=np.uint8)
         button = SimpleNamespace(x=728, y=625, width=80, height=18)
@@ -50,6 +74,120 @@ class GameplayTrialTest(TestCase):
                     task.operate_click.assert_called_once_with(.60, .88, after_sleep=.7)
                 else:
                     task.operate_click.assert_not_called()
+
+    def test_trade_inventory_reads_visible_food_and_saves_only_stable_counts(self):
+        from onnxocr.onnx_paddleocr import ONNXPaddleOcr
+
+        frame = cv2.imread(str(ROOT / "tests/fixtures/map_trade/trade_shop/sell_page.png"))
+        engine = ONNXPaddleOcr(use_angle_cls=False, use_npu=False, use_openvino=True)
+        task = TradeInventoryTask.__new__(TradeInventoryTask)
+        task.config = {"盘点可见出售列表": True}
+        task.info_set = Mock()
+        task._fail = Mock(return_value=False)
+        task.sleep = Mock()
+        task.capture_frame = Mock(return_value=frame)
+        task.operate_click = Mock()
+        boxes = []
+
+        def read_boxes(frame, **_kwargs):
+            for row in engine.ocr(frame):
+                for polygon, (name, confidence) in row or ():
+                    x_range, y_range = zip(*polygon)
+                    x, y = min(x_range), min(y_range)
+                    boxes.append(SimpleNamespace(
+                        name=name, confidence=confidence, x=x, y=y,
+                        width=max(x_range) - x, height=max(y_range) - y,
+                    ))
+            return boxes
+
+        task.ocr = Mock(side_effect=read_boxes)
+        self.assertEqual(({}, {}), task._visible_snapshot(task._item_catalog()))
+        height, width = task.ocr.call_args.kwargs["frame"].shape[:2]
+        title = SimpleNamespace(
+            name="出售", confidence=1, x=.14*width, y=.04*height, width=20, height=10,
+        )
+        fewer = [box for box in boxes if box.name != "2650"]
+        fewer.extend([title, SimpleNamespace(
+            name="0", confidence=1, x=.275*width, y=.249*height, width=8, height=10,
+        )])
+        task.ocr.side_effect = [[title, *boxes], fewer]
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "stock.sqlite3"
+            with patch("src.tasks.TradeInventoryTask.INVENTORY_PATH", path):
+                self.assertTrue(task.run())
+            with closing(sqlite3.connect(path)) as database:
+                actual = dict(database.execute("SELECT name, quantity FROM trade_stock"))
+                self.assertEqual(actual, {
+                    "泰瑞丝派": 50, "冰镇甜点": 40, "火烤鱼板棒": 5501,
+                    "橄榄油意面": 340, "蜂蜜黄油杏仁": 1600,
+                    "地狱火紫菜包饭": 50, "街头烤鸡肉串": 503,
+                })
+        task.operate_click.assert_not_called()
+
+    def test_trade_inventory_records_latest_stable_observation(self):
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "stock.sqlite3"
+            task = TradeInventoryTask.__new__(TradeInventoryTask)
+            task.config = {"盘点商品名称": "香草牛排"}
+            task.info_set = Mock()
+            task._fail = Mock(return_value=False)
+            task.sleep = Mock()
+            task.operate_click = Mock()
+            reads = (
+                (1080, 1920, "香草牛排", "1,250", "1,250", True),
+                (720, 1280, "泰瑞丝派", "950", "950", False),
+                (720, 1280, "香草牛排", "5", "6", False),
+                (720, 1280, "香草牛排", "0", "0", True),
+            )
+            with patch("src.tasks.TradeInventoryTask.INVENTORY_PATH", path), \
+                 patch("src.tasks.TradeInventoryTask.time", side_effect=[3600, 3601]):
+                for h, w, name, first, second, expected in reads:
+                    with self.subTest(name=name, w=w, first=first, second=second):
+                        frame = np.zeros((h, w, 3), dtype=np.uint8)
+                        task.capture_frame = Mock(return_value=frame)
+                        amounts = iter([first, second])
+
+                        def ocr(*, frame, threshold, log):
+                            if frame.shape[0] < h / 10:
+                                return [SimpleNamespace(name=name)]
+                            return [SimpleNamespace(name=text) for text in (
+                                f"拥有 {next(amounts)}", "可购买 50", "出售",
+                            )]
+
+                        task.ocr = ocr
+                        self.assertEqual(expected, task.run())
+            task.operate_click.assert_not_called()
+            with closing(sqlite3.connect(path)) as database:
+                self.assertEqual(
+                    [("1970-01-01", "香草牛排", 0, 3601)],
+                    database.execute(
+                        "SELECT day, name, quantity, observed_at FROM trade_stock"
+                    ).fetchall(),
+                )
+
+    def test_trade_inventory_merges_scrolled_pages_and_stops_on_a_repeated_viewport(self):
+        task = TradeInventoryTask.__new__(TradeInventoryTask)
+        task.config = {"盘点可见出售列表": True, "出售列表扫描页数上限": 5}
+        task.info_set = Mock()
+        task.sleep = Mock()
+        task.scroll_client = Mock()
+        task._item_catalog = Mock(return_value={})
+        first = ({"香草牛排": ("香草牛排", 2650)}, {"香草牛排": (.325, .198)})
+        second = ({"泰瑞丝派": ("泰瑞丝派", 50)}, {"泰瑞丝派": (.496, .198)})
+        task._visible_snapshot = Mock(side_effect=[first, first, second, second, second, second])
+        task._save_observations = Mock()
+        with patch("src.tasks.TradeInventoryTask.day_start_ts", return_value=0):
+            self.assertTrue(task.run())
+        self.assertEqual(
+            [((.325, .198), -2), ((.496, .198), -2)],
+            [wheel.args for wheel in task.scroll_client.call_args_list],
+        )
+        task._save_observations.assert_called_once()
+        self.assertEqual(
+            [("香草牛排", "香草牛排", 2650), ("泰瑞丝派", "泰瑞丝派", 50)],
+            task._save_observations.call_args.args[1],
+        )
+        self.assertIn("未确认滚动后出现新商品", task.info_set.call_args.args[1])
 
     def test_affinity_checks_costume_and_stops_at_ambiguous_answers(self):
         task = AffinityTalkTask.__new__(AffinityTalkTask)

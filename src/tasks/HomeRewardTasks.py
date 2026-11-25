@@ -37,8 +37,9 @@ class HomePageTask(TaskVisionMixin, BaseBD2Task):
         self.visible = True
         self._init_vision_state()
 
-    def _read(self):
-        frame = self.capture_frame()
+    def _read(self, frame=None):
+        if frame is None:
+            frame = self.capture_frame()
         height, width = frame.shape[:2]
         labels = [
             (normalize_ocr_text(box.name, alnum_only=True),

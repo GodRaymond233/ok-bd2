@@ -28,6 +28,7 @@ import type {
   TemplatesInfo,
   TodaySummary,
   ToolState,
+  TradeInventoryReport,
   UpdateCheck,
   WindowInfo,
 } from "./types.ts";
@@ -188,6 +189,10 @@ export const api = {
   resetTaskConfig: (name: string) =>
     request<TaskPayload>(`/api/tasks/${encodeURIComponent(name)}/config/reset`, "POST", {}),
   today: () => request<TodaySummary>("/api/bd2/today"),
+  tradeInventory: (day: string, signal: AbortSignal) => {
+    const query = day ? `?day=${encodeURIComponent(day)}` : "";
+    return request<TradeInventoryReport>(`/api/bd2/trade-inventory${query}`, "GET", undefined, signal);
+  },
   huntPlans: (name: string) => request<HuntPlans>(`/api/bd2/hunt-plans/${encodeURIComponent(name)}`),
   previewHuntPlan: (name: string, book: HuntBook, rice: number, states: Record<string, boolean | null>, signal: AbortSignal) =>
     request<{ text: string; runnable: boolean }>(`/api/bd2/hunt-plans/${encodeURIComponent(name)}/preview`, "POST", { book, rice, states }, signal),

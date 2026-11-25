@@ -216,6 +216,25 @@ class Bd2RoutesTest(unittest.TestCase):
     def post_start(self, mode):
         return self.client.post("/api/bd2/daily/start", json={"mode": mode}, headers=self.headers)
 
+    def test_inventory_report_accepts_optional_day_and_reports_storage_errors(self):
+        route = "/api/bd2/trade-inventory"
+        with patch("src.desktop.app.read_inventory_report") as read:
+            for day in (None, "2026-11-24"):
+                report = {"days": [], "day": day, "comparison_day": None, "items": []}
+                read.return_value = report
+                response = self.client.get(
+                    route, params={"day": day} if day else {}, headers=self.headers,
+                )
+                self.assertEqual(200, response.status_code)
+                self.assertEqual(report, response.json())
+                read.assert_called_with(day)
+            read.reset_mock()
+            invalid = self.client.get(route, params={"day": "bad"}, headers=self.headers)
+            self.assertEqual(422, invalid.status_code)
+            read.assert_not_called()
+            read.side_effect = OSError("inventory unavailable")
+            self.assertEqual(503, self.client.get(route, headers=self.headers).status_code)
+
     def test_task_start_refuses_other_active_or_pending_tasks(self):
         for phase in ("running", "paused", "queued", "login"):
             with self.subTest(phase=phase):

@@ -6,7 +6,9 @@ no ``quick_hunt_plan`` yet).  The React client is served from ``src/desktop/ui_d
 """
 
 import os
+import sqlite3
 import threading
+from datetime import date
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -46,6 +48,7 @@ from src.tasks.DailyBatchTask import RUN_MODE_ALL, RUN_MODE_INCOMPLETE, DailyBat
 from src.tasks.quick_hunt_plan import PLAN_KEY, describe_plan, load_book
 from src.tasks.run_history import RECENT_LIMIT, default_store, run_state
 from src.tasks.today import find_batch, today_summary
+from src.tasks.TradeInventoryTask import read_inventory_report
 from src.tasks.trigger.AutoLoginTask import AutoLoginTask
 from src.ui.hide_config_rows import mark_hidden_config_keys
 from src.window_resolution import (
@@ -791,6 +794,13 @@ def create_app(
     @app.get("/api/bd2/today")
     def today():
         return today_summary(runtime.executor)
+
+    @app.get("/api/bd2/trade-inventory")
+    def trade_inventory(day: date | None = None):
+        try:
+            return read_inventory_report(day.isoformat() if day else None)
+        except (OSError, sqlite3.Error) as error:
+            raise HTTPException(503, "库存日报暂时无法读取") from error
 
     @app.post("/api/bd2/daily/start")
     def start_daily(body: dict):

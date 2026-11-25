@@ -6,6 +6,7 @@ import type { Core } from "./App.tsx";
 import { ConfigForm } from "./ConfigForm.tsx";
 import { GuidePanel } from "./GuidePanel.tsx";
 import { HuntPlanEditor } from "./HuntPlanEditor.tsx";
+import { TradeInventoryPanel } from "./TradeInventoryPanel.tsx";
 import { modifiedFields, valueText } from "./form.ts";
 import { durationText, elapsedText, whenText } from "./format.ts";
 import { coreText, t } from "./i18n.ts";
@@ -14,7 +15,7 @@ import { liveChild } from "./today.ts";
 import type { HistoryRun, StatusRow, TaskPayload } from "./types.ts";
 import { ConfirmDialog, Icon, TaskGlyph, Toggle, useSlider } from "./ui.tsx";
 
-type Tab = "settings" | "status" | "history";
+type Tab = "settings" | "status" | "history" | "inventory";
 
 export function StatusValues({ rows }: { rows: StatusRow[] }) {
   return <div className="kv">{rows.map((row) => (
@@ -194,6 +195,8 @@ export function TaskDetail({
     ...(noSettings ? [] : [["settings", t("设置"), "settings"] as [Tab, string, string]]),
     ...(hasStatus ? [["status", t("运行状态"), "target"] as [Tab, string, string]] : []),
     ...(task.trigger ? [] : [["history", t("运行记录"), "history"] as [Tab, string, string]]),
+    ...(task.class_name === "TradeInventoryTask"
+      ? [["inventory", t("库存日报"), "history"] as [Tab, string, string]] : []),
   ];
 
   return (
@@ -274,6 +277,7 @@ export function TaskDetail({
               <button className="linkbtn more" onClick={() => core.navigate("records")}>{t("查看全部运行记录")}</button>
             </>
           )}
+          {shownTab === "inventory" && <TradeInventoryPanel historyVersion={core.historyVersion} />}
         </div>
       </div>
       {editingPlan && <HuntPlanEditor core={core} task={task} onClose={() => setEditingPlan(false)} />}
