@@ -3,7 +3,7 @@ import json
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import cv2
 import numpy as np
@@ -13,10 +13,12 @@ from src.tasks.glutalk_vision import (
     AVAILABLE_TASK_DEFAULT_KEYWORDS,
     available_task_point,
     classify_talk_page,
+    close_button_point,
     dialogue_decision,
     home_talk_entry,
     is_exhausted,
     remaining_encounters,
+    reply_button_point,
     unread_badge_point,
     unread_count,
 )
@@ -478,23 +480,193 @@ class GlutalkTest(unittest.TestCase):
                 task = make_probe_task()
                 task.log_warning = Mock()
                 task.operate_click = Mock()
+                missed_message = False
+                seen_counts = []
 
                 def read():
+                    nonlocal missed_message
                     count = task.operate_click.call_count
+                    seen_counts.append(count)
                     if count == 30:
                         return frame, [], "GLU TALK 未读消息0 EP2.对话结束"
                     message = f"新消息{count}" if progressing else "同一条消息"
                     boxes = [box("发送消息", 650, 690), box("好的", 660, 750)]
+                    text = "GLU TALK 今日的剩余相遇0 未读消息1"
+                    if count == 1 and not missed_message:
+                        missed_message = True
+                        return frame, boxes, text
                     boxes.append(box(message, 620, 540))
-                    return frame, boxes, "GLU TALK 今日的剩余相遇0 未读消息1"
+                    return frame, boxes, text
 
                 task._read = read
                 with patch.object(module, "monotonic", return_value=1.0):
                     self.assertEqual(expected, task._advance_stage(1))
                 self.assertEqual(clicks, task.operate_click.call_count)
+                self.assertEqual([0, 1, 1], seen_counts[:3])
+
+    def test_scan_reopens_only_once_between_zero_click_stages(self):
+        for stages, expected, reopens, completed in (
+            ((("ended", 0), ("ended", 0)), False, 1, 0),
+            ((("home", 0), ("home", 0)), False, 1, 0),
+            ((("home", 0), ("idle", 0)), True, 1, 0),
+            ((("ended", 0), ("ended", 1), ("home", 0), ("idle", 0)), True, 3, 1),
+            ((("ended", 1),) * 4 + (("idle", 0), ("idle", 0)), True, 5, 4),
+        ):
+            with self.subTest(stages=stages):
+                task = make_probe_task()
+                remaining = iter(stages)
+
+                def advance(_stage, _deadline):
+                    result, clicks = next(remaining)
+                    task._click_total += clicks
+                    return result
+
+                task._advance_stage = Mock(side_effect=advance)
+                task._restart_from_home = Mock(return_value=True)
+                task._wait_for_next_stage = Mock(return_value=True)
+                self.assertEqual(expected, task._scan())
+                self.assertEqual(reopens, task._restart_from_home.call_count)
+                self.assertEqual(completed, task.info["完成对话数"])
+                if not expected:
+                    self.assertIn("重进后仍未推进", task.info["状态"])
+
+    def test_scan_stays_incomplete_when_deadline_expires_after_a_completed_episode(self):
+        task = make_probe_task(整轮最长秒数=10.0)
+        clock = FakeClock()
+
+        def advance(_stage, _deadline):
+            task._click_total += 1
+            return "ended"
+
+        task._advance_stage = Mock(side_effect=advance)
+        task._restart_from_home = Mock(return_value=True)
+        task._wait_for_next_stage = Mock(side_effect=lambda _: clock.sleep(10.0))
+        with patch("src.tasks.GlutalkTask.monotonic", clock):
+            self.assertFalse(task._scan())
+        self.assertEqual(1, task.info["完成对话数"])
+        self.assertIn("整轮对话等待超时", task.info["状态"])
+
+    def test_reply_button_accepts_ellipsis_ocr_and_sky_blue_pill_fallback(self):
+        send_box = [box("发送消息", int(0.56 * WIDTH), int(0.70 * HEIGHT))]
+        # Layer 1: pure punctuation reply ("...") recognized by OCR below 发送消息.
+        ellipsis_boxes = [*send_box, box("...", int(0.66 * WIDTH), int(0.76 * HEIGHT))]
+        point, evidence = reply_button_point(
+            ellipsis_boxes, WIDTH, HEIGHT, require_send_control=True,
+        )
+        self.assertIsNotNone(point)
+        self.assertIn("...", evidence)
+
+        # Layer 2: OCR misses "..." completely, but sky-blue reply pill is visible below 发送消息.
+        frame = np.full((HEIGHT, WIDTH, 3), (198, 184, 172), dtype=np.uint8)
+        frame[int(HEIGHT * 0.74) : int(HEIGHT * 0.79), int(WIDTH * 0.54) : int(WIDTH * 0.78)] = (
+            255, 231, 177,
+        )
+        pill_point, pill_evidence = reply_button_point(
+            send_box, WIDTH, HEIGHT, require_send_control=True, frame=frame,
+        )
+        self.assertIsNotNone(pill_point)
+        self.assertAlmostEqual(0.66, pill_point[0], delta=0.02)
+        self.assertAlmostEqual(0.765, pill_point[1], delta=0.02)
+        self.assertEqual("回复按钮：浅蓝回复条", pill_evidence)
+
+        # Safety gate: without 发送消息, the same sky-blue pill must NOT be clicked.
+        blocked_point, _ = reply_button_point(
+            [], WIDTH, HEIGHT, require_send_control=True, frame=frame,
+        )
+        self.assertIsNone(blocked_point)
+
+        # Unread badge visual fallback: cyan circle at right edge of row when OCR misses "1".
+        list_frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+        cv2.circle(
+            list_frame,
+            (int(WIDTH * 0.508), int(HEIGHT * 0.394)),
+            int(HEIGHT * 0.012),
+            (193, 158, 33),
+            -1,
+        )
+        badge_pt, badge_ev = unread_badge_point([], WIDTH, HEIGHT, unread=1, frame=list_frame)
+        self.assertIsNotNone(badge_pt)
+        self.assertAlmostEqual(0.508, badge_pt[0], delta=0.01)
+        self.assertAlmostEqual(0.394, badge_pt[1], delta=0.01)
+        self.assertIn("会话蓝色未读角标", badge_ev)
+        self.assertIsNone(unread_badge_point([], WIDTH, HEIGHT, unread=0, frame=list_frame)[0])
+
+        # Close X visual fallback on blue GLU TALK header bar when OCR misses "X".
+        header_frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+        y1, y2 = int(HEIGHT * 0.22), int(HEIGHT * 0.29)
+        x1, x2 = int(WIDTH * 0.20), int(WIDTH * 0.80)
+        header_frame[y1:y2, x1:x2] = (180, 110, 40)
+        cx, cy = int(WIDTH * 0.780), int(HEIGHT * 0.253)
+        cv2.line(header_frame, (cx - 10, cy - 10), (cx + 10, cy + 10), (255, 255, 255), 3)
+        cv2.line(header_frame, (cx - 10, cy + 10), (cx + 10, cy - 10), (255, 255, 255), 3)
+        close_pt = close_button_point([], WIDTH, HEIGHT, frame=header_frame)
+        self.assertIsNotNone(close_pt)
+        self.assertAlmostEqual(0.780, close_pt[0], delta=0.01)
+        self.assertAlmostEqual(0.253, close_pt[1], delta=0.01)
+        # Non-blue background must not produce a visual close click.
+        self.assertIsNone(close_button_point([], WIDTH, HEIGHT, frame=list_frame))
+
+    def test_report_counters_recovers_remaining_quota_with_crop_ocr(self):
+        for fallback in (False, True):
+            with self.subTest(fallback=fallback):
+                task = make_probe_task(仅探测模式=False)
+                task.config["格鲁TALK OCR 阈值"] = 0.42
+                frame = np.zeros((HEIGHT, WIDTH, 3), np.uint8)
+                task.ocr = Mock(
+                    return_value=[] if fallback else [box("今日的剩余相遇|3 +", 10, 10)]
+                )
+                digit_ocr = Mock(return_value=[[("｜3＋", 0.96)]])
+                task._executor = SimpleNamespace(ocr_lib=lambda: SimpleNamespace(ocr=digit_ocr))
+                remaining, unread = task._report_counters(
+                    "GLU TALK 今日的剩余相遇 未读消息1", frame=frame
+                )
+                self.assertEqual((3, 1), (remaining, unread))
+                self.assertEqual(0.42, task.ocr.call_args.kwargs["threshold"])
+                self.assertEqual(int(fallback), digit_ocr.call_count)
+                if fallback:
+                    self.assertEqual({"det": False, "cls": False}, digit_ocr.call_args.kwargs)
+
+    def test_restart_from_home_retries_close_and_reopen(self):
+        task = make_probe_task(仅探测模式=False, 重进后等待秒数=0.0, 页面等待秒数=12.0)
+        task.operate_click = Mock()
+        clock = FakeClock()
+        task.sleep = clock.sleep
+        task.prepare_home = Mock(return_value=True)
+        task._frame_confirms_home = Mock(side_effect=[True, False, True])
+        frame = np.zeros((HEIGHT, WIDTH, 3), np.uint8)
+        list_text = "GLU TALK 未读消息0 今日的剩余相遇1"
+        header_frame = frame.copy()
+        header_frame[int(.22 * HEIGHT):int(.29 * HEIGHT), int(.20 * WIDTH):int(.80 * WIDTH)] = (
+            180, 110, 40,
+        )
+        cx, cy = int(.78 * WIDTH), int(.253 * HEIGHT)
+        cv2.line(header_frame, (cx - 10, cy - 10), (cx + 10, cy + 10), (255, 255, 255), 3)
+        cv2.line(header_frame, (cx - 10, cy + 10), (cx + 10, cy - 10), (255, 255, 255), 3)
+        home_boxes = [box("格鲁TALK", int(0.205 * WIDTH) - 60, int(0.35 * HEIGHT) - 16)]
+        reads = iter(
+            [
+                (frame, [], list_text),
+                (header_frame, [], list_text),
+                (frame, [], "主页"),
+                (frame, home_boxes, "主页"),
+                (frame, home_boxes, "GLU TALK"),
+                (frame, home_boxes, "主页"),
+            ]
+        )
+        task._read = Mock(side_effect=lambda: next(reads))
+        task._wait_for_page = Mock(side_effect=[False, True])
+        with patch("src.tasks.GlutalkTask.monotonic", clock):
+            self.assertTrue(task._restart_from_home())
+        names = [c.kwargs["name"] for c in task.operate_click.call_args_list]
+        self.assertEqual(["格鲁TALK关闭", "格鲁TALK入口", "格鲁TALK入口"], names)
+        self.assertEqual([call("list", 12.0, float("inf"))] * 2, task._wait_for_page.call_args_list)
 
     def test_probe_and_completed_dialogue_never_dispatch_clicks(self):
         frame = np.zeros((HEIGHT, WIDTH, 3), np.uint8)
+        frame[int(HEIGHT * .74):int(HEIGHT * .79), int(WIDTH * .54):int(WIDTH * .78)] = (
+            255, 231, 177,
+        )
+        boxes = [box("发送消息", int(.56 * WIDTH), int(.70 * HEIGHT))]
         for probe, text in (
             (True, "联系方式 好感度"),
             (False, "GLU TALK 未读消息0 今日的剩余相遇0 EP2.对话结束"),
@@ -504,7 +676,7 @@ class GlutalkTest(unittest.TestCase):
                 patch.object(BaseBD2Task, "capture_method_name", "unit-test"),
             ):
                 task = make_probe_task(仅探测模式=probe)
-                task._read = Mock(return_value=(frame, [], text))
+                task._read = Mock(return_value=(frame, [] if probe else boxes, text))
                 if probe:
                     self.assertTrue(task.run())
                     self.assertEqual("list", task.info["页面判断"])
@@ -514,7 +686,7 @@ class GlutalkTest(unittest.TestCase):
                 else:
                     self.assertEqual("ended", task._advance_stage(1))
                     self.assertEqual(2, task._last_episode)
-                    self.assertFalse(task._has_new_stage(text, [], WIDTH, HEIGHT, 2))
+                    self.assertFalse(task._has_new_stage(text, boxes, WIDTH, HEIGHT, 0))
                 task.operate_click.assert_not_called()
 
 
