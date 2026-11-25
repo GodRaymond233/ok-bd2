@@ -174,12 +174,17 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
                         frame, boxes, [box.name for box in boxes], ""
                     )
                 )
-        for ownership in ((), ("未拥有", "已拥有")):
+        for ownership in (("+0拥有",), ("+4拥有",), ("+5拥有",), ("4拥",), ("已拥",)):
             with self.subTest(ownership=ownership):
                 boxes = step_up_boxes(ownership=ownership)
-                observed = FreeGachaTask._step_up_observation(
-                    frame, boxes, [box.name for box in boxes], ""
-                )
+                observed = FreeGachaTask._pool_observation(frame, boxes, "服装抽抽乐")
+                self.assertEqual(FREE_ENTRY_RETRY_STEP_UP, observed.state)
+                self.assertAlmostEqual(0.165, observed.point[0])
+                self.assertAlmostEqual(0.373, observed.point[1])
+        for ownership in ((), ("未拥有", "已拥有"), ("拥",), ("+9拥有",)):
+            with self.subTest(ownership=ownership):
+                boxes = step_up_boxes(ownership=ownership)
+                observed = FreeGachaTask._pool_observation(frame, boxes, "服装抽抽乐")
                 self.assertEqual(FREE_ENTRY_RETRY_STEP_UP, observed.state)
                 self.assertIsNone(observed.point)
         frame = np.zeros((800, 1000, 3), dtype=np.uint8)
@@ -201,6 +206,52 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
         self.assertAlmostEqual(0.373, args[1])
         self.assertEqual("切换普通服装横幅", kwargs.get("name"))
         self.assertEqual(0.8, kwargs.get("after_sleep"))
+
+    def test_step_up_banner_switches_during_free_recheck_and_counts_as_returned_pool(self):
+        frame = np.zeros((800, 1000, 3), dtype=np.uint8)
+        boxes = step_up_boxes(ownership=("+4拥有",))
+        step_up = FreeGachaTask._pool_observation(frame, boxes, "服装抽抽乐")
+        no_free = free_gacha_module.FreePoolObservation(
+            free_gacha_module.FREE_ENTRY_RETRY_NO_FREE, "无免费", "服装抽抽乐", pool_confirmed=True
+        )
+
+        task = gacha_task()
+        task._gacha_ocr_boxes = Mock(return_value=boxes)
+        self.assertEqual(("pool", None), task._result_return_state(frame, "服装抽抽乐"))
+
+        for persisted, expected_judged in ((False, True), (True, False)):
+            with self.subTest(persisted=persisted):
+                recheck = gacha_task(**{"免费抽按钮等待秒数": 1.0})
+                now = [0.0]
+
+                def advance(seconds):
+                    now[0] += seconds
+
+                recheck.sleep = advance
+                recheck.operate_click = Mock(
+                    side_effect=lambda *_a, **kw: advance(kw.get("after_sleep", 0.0))
+                )
+                frames = (
+                    [step_up] * 20
+                    if persisted
+                    else [step_up, no_free, no_free, no_free, no_free]
+                )
+                idx = [0]
+
+                def observe(*_args):
+                    obs = frames[min(idx[0], len(frames) - 1)]
+                    idx[0] += 1
+                    return obs
+
+                recheck._observe_free_pool = Mock(side_effect=observe)
+                with patch.object(free_gacha_module, "monotonic", lambda: now[0]):
+                    available, _, judged = recheck._wait_for_free_gacha("服装抽抽乐")
+                self.assertEqual((False, expected_judged), (available, judged))
+                recheck.operate_click.assert_called_once()
+                args, kwargs = recheck.operate_click.call_args
+                self.assertAlmostEqual(0.165, args[0])
+                self.assertAlmostEqual(0.373, args[1])
+                self.assertEqual("切换普通服装横幅", kwargs.get("name"))
 
     def test_pool_scale_recheck_is_same_frame_and_cannot_erase_free_or_modal_evidence(self):
         for scale in (1, 0.72, 2):

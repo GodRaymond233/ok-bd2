@@ -386,6 +386,7 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
         end_at = settle_at + window
         last_text = ""
         no_free_frames = 0
+        switched_banner = False
         while monotonic() < end_at:
             observation = self._observe_free_pool(section_name, name)
             last_text = observation.text
@@ -394,6 +395,14 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
                 return True, last_text, True
             if observation.state in (FREE_ENTRY_RETRY_BLOCKED, FREE_ENTRY_RETRY_DIALOG):
                 break
+            if (observation.state == FREE_ENTRY_RETRY_STEP_UP and observation.point
+                    and not switched_banner):
+                self.operate_click(*observation.point, name="切换普通服装横幅", after_sleep=0.8)
+                switched_banner = True
+                no_free_frames = 0
+                settle_at = max(settle_at, monotonic() + window)
+                end_at = max(end_at, settle_at + window)
+                continue
             # Consecutive observations can straddle the settling deadline.
             no_free_frames = (no_free_frames + 1
                               if observation.state == FREE_ENTRY_RETRY_NO_FREE else 0)
@@ -513,8 +522,9 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
             return None
         # The ownership label in the next banner anchors a click inside its card.
         # Draw buttons are on the other side of the screen.
+        ownership_pattern = r"(?:未|已|[0-5])?拥有|(?:未|已|[0-5])拥"
         targets = [(x - .035, y - .027) for label, x, y in points
-                   if label in ("未拥有", "已拥有", "未拥", "拥有")
+                   if re.fullmatch(ownership_pattern, label)
                    and .18 < x < .23 and .38 < y < .43]
         point = targets[0] if len(targets) == 1 else None
         reason = "付费 STEP UP，已定位下方服装横幅" if point else "付费 STEP UP，横幅未确认"
@@ -782,7 +792,9 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
         if self._keyword_match_count(text, BACK_PAGE_KEYWORDS) == len(BACK_PAGE_KEYWORDS):
             return "detail", (RESULT_PAGE_CLOSE_REFERENCE_POINT[0] / REFERENCE_WIDTH,
                               RESULT_PAGE_CLOSE_REFERENCE_POINT[1] / REFERENCE_HEIGHT)
-        if self._pool_observation(frame, boxes, section_name).pool_confirmed:
+        pool_observation = self._pool_observation(frame, boxes, section_name)
+        if (pool_observation.pool_confirmed
+                or pool_observation.state == FREE_ENTRY_RETRY_STEP_UP):
             return "pool", None
         other_pool = "装备抽抽乐" if section_name == "服装抽抽乐" else "服装抽抽乐"
         normalized = normalize_ocr_text(text)
