@@ -18,6 +18,8 @@ from __future__ import annotations
 from datetime import datetime
 from time import monotonic
 
+import cv2
+
 from src.icons import TaskIcon
 from src.tasks.BaseBD2Task import BaseBD2Task
 from src.tasks.glutalk_vision import (
@@ -171,8 +173,56 @@ class GlutalkTask(TaskVisionMixin, BaseBD2Task):
             if part.strip()
         )
 
-    def _report_counters(self, text: str) -> tuple[int | None, int | None]:
+    def _read_remaining_encounters_crop(self, frame) -> int | None:
+        if frame is None or getattr(frame, "ndim", 0) != 3 or frame.shape[2] < 3:
+            return None
+        height, width = frame.shape[:2]
+        if width <= 0 or height <= 0:
+            return None
+        crop = frame[
+            int(height * 0.22) : int(height * 0.29),
+            int(width * 0.62) : int(width * 0.77),
+        ]
+        if not crop.size:
+            return None
+        # Normalize crop height to ~68px so both 1080p and 4K frames hit OCR's sweet spot.
+        scale = 68.0 / max(1, crop.shape[0])
+        normalized = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        try:
+            boxes = self.ocr(
+                frame=normalized,
+                threshold=float(self.config.get("OCR 阈值", 0.2)),
+                name="格鲁TALK剩余相遇",
+            )
+        except Exception:
+            boxes = []
+        text = " ".join(str(getattr(box, "name", "")) for box in (boxes or []))
+        parsed = remaining_encounters(text)
+        if parsed is not None:
+            return parsed
+        # Fallback: direct single-digit recognition (det=False) between '|' and '+'.
+        digit_crop = frame[
+            int(height * 0.236) : int(height * 0.272),
+            int(width * 0.733) : int(width * 0.747),
+        ]
+        if not digit_crop.size:
+            return None
+        try:
+            ocr_lib = self.executor.ocr_lib()
+            reads = ocr_lib.ocr([digit_crop], det=False, cls=False)[0]
+        except Exception:
+            return None
+        if reads:
+            raw, confidence = reads[0]
+            cleaned = str(raw).strip().lstrip("|｜丨")
+            if confidence >= 0.80 and cleaned in ("0", "1", "2", "3"):
+                return int(cleaned)
+        return None
+
+    def _report_counters(self, text: str, frame=None) -> tuple[int | None, int | None]:
         remaining = remaining_encounters(text)
+        if remaining is None and frame is not None and "剩余相遇" in str(text):
+            remaining = self._read_remaining_encounters_crop(frame)
         unread = unread_count(text)
         self.info_set("剩余相遇", "-" if remaining is None else str(remaining))
         self.info_set("未读消息", "-" if unread is None else str(unread))
@@ -207,10 +257,10 @@ class GlutalkTask(TaskVisionMixin, BaseBD2Task):
         view = classify_talk_page(text)
         self.info_set("页面判断", view.page)
         self._diagnose(view.diagnostics)
-        remaining, unread = self._report_counters(text)
-        reply, reply_evidence = reply_button_point(boxes, width, height)
+        remaining, unread = self._report_counters(text, frame=frame)
+        reply, reply_evidence = reply_button_point(boxes, width, height, frame=frame)
         badge, badge_evidence = unread_badge_point(
-            boxes, width, height, unread=unread,
+            boxes, width, height, unread=unread, frame=frame,
         )
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         if bool(self.config.get("保存探测截图", True)):
@@ -306,6 +356,7 @@ class GlutalkTask(TaskVisionMixin, BaseBD2Task):
         tab_attempts = 0
         encounter_attempts = 0
         encounter_confirm_attempts = 0
+        unreadable_quota = 0
         unlock_attempts = 0
         conversation_attempts: dict[tuple[float, float], int] = {}
 
@@ -316,7 +367,7 @@ class GlutalkTask(TaskVisionMixin, BaseBD2Task):
                 continue
             height, width = frame.shape[:2]
             current_reply, _ = reply_button_point(
-                boxes, width, height, require_send_control=True,
+                boxes, width, height, require_send_control=True, frame=frame,
             )
             encounter, encounter_evidence = encounter_button_point(boxes, width, height)
             view = classify_talk_page(text)
@@ -342,7 +393,7 @@ class GlutalkTask(TaskVisionMixin, BaseBD2Task):
                 break
             self.info_set("页面判断", view.page)
             self._diagnose(view.diagnostics)
-            remaining, unread = self._report_counters(text)
+            remaining, unread = self._report_counters(text, frame=frame)
             action: TalkAction | None = None
 
             if view.page == "unlock":
@@ -416,7 +467,15 @@ class GlutalkTask(TaskVisionMixin, BaseBD2Task):
             elif view.page == "list":
                 if encounter is not None:
                     self.info_set("可对话证据", encounter_evidence)
-                    if remaining is None or remaining <= 0:
+                    if remaining is None:
+                        unreadable_quota += 1
+                        if unreadable_quota < 3:
+                            self.sleep(interval)
+                            continue
+                        self.info_set("状态", "相遇入口已出现，但未确认有剩余相遇次数，停止点击。")
+                        return "failed"
+                    unreadable_quota = 0
+                    if remaining <= 0:
                         self.info_set("状态", "相遇入口已出现，但未确认有剩余相遇次数，停止点击。")
                         return "failed"
                     if encounter_attempts >= 2:
@@ -436,7 +495,7 @@ class GlutalkTask(TaskVisionMixin, BaseBD2Task):
                     self.config.get("自动发送回复", True)
                 ):
                     reply, evidence = reply_button_point(
-                        boxes, width, height, require_send_control=True,
+                        boxes, width, height, require_send_control=True, frame=frame,
                     )
                     self.info_set("回复证据", evidence)
                     if reply is not None:
@@ -451,7 +510,7 @@ class GlutalkTask(TaskVisionMixin, BaseBD2Task):
                         action = TalkAction("character", target, character)
                 if action is None:
                     badge, badge_evidence = unread_badge_point(
-                        boxes, width, height, unread=unread,
+                        boxes, width, height, unread=unread, frame=frame,
                     )
                     self.info_set("可对话证据", badge_evidence)
                     if badge is not None:
@@ -581,7 +640,7 @@ class GlutalkTask(TaskVisionMixin, BaseBD2Task):
             if frame is None:
                 return False
             height, width = frame.shape[:2]
-            close = close_button_point(boxes, width, height)
+            close = close_button_point(boxes, width, height, frame=frame)
             if close is not None:
                 self.operate_click(*close, name="格鲁TALK关闭", after_sleep=0.6)
                 end_at = min(deadline, monotonic() + 5.0)
@@ -608,12 +667,15 @@ class GlutalkTask(TaskVisionMixin, BaseBD2Task):
 
     def _has_new_stage(
         self, text, boxes, width: int, height: int, previous_episode: int | None,
+        *, frame=None,
     ) -> bool:
         """Look for an actionable chat or encounter, not just unused quota."""
         encounter, _ = encounter_button_point(boxes, width, height)
         if encounter is not None and (remaining_encounters(text) or 0) > 0:
             return True
-        reply, _ = reply_button_point(boxes, width, height, require_send_control=True)
+        reply, _ = reply_button_point(
+            boxes, width, height, require_send_control=True, frame=frame,
+        )
         if reply is not None or (unread_count(text) or 0) > 0:
             return True
         if (remaining_encounters(text) or 0) > 0:
@@ -633,9 +695,10 @@ class GlutalkTask(TaskVisionMixin, BaseBD2Task):
             if frame is None:
                 self.sleep(.5)
                 continue
-            self._report_counters(text)
+            self._report_counters(text, frame=frame)
             if self._has_new_stage(
                 text, boxes, frame.shape[1], frame.shape[0], self._last_episode,
+                frame=frame,
             ):
                 return True
             tab, _ = conversation_tab_point(frame, boxes)
@@ -705,7 +768,7 @@ class GlutalkTask(TaskVisionMixin, BaseBD2Task):
         view = classify_talk_page(text)
         self.info_set("页面判断", view.page)
         self._diagnose(view.diagnostics)
-        self._report_counters(text)
+        self._report_counters(text, frame=frame)
         if view.page in ("list", "unlock"):
             self.info_set(
                 "当前阶段", "退出好感度特效解锁页" if view.page == "unlock"

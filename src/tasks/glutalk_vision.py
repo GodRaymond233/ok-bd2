@@ -20,6 +20,7 @@ import re
 from dataclasses import dataclass
 
 import cv2
+import numpy as np
 
 from src.utils.image_utils import relative_roi_frame
 from src.utils.ocr_utils import normalize_ocr_text
@@ -109,6 +110,7 @@ _EPISODE_RE = re.compile(r"ep(\d+)[.．、]?\s*对话结[束来東]")
 _CHAPTER_MARKER_RE = re.compile(r"^ep\d+")
 _NEW_FATE_RE = re.compile(r"^新的缘分([1-9]\d*)$")
 _FATE_HEADER_RE = re.compile(r"^(?:新的)?缘分(?:列表)?\d*$")
+_PUNCTUATION_REPLY_RE = re.compile(r"^[.。…·•?!？！~～\-—]+$")
 CONVERSATION_TAB_BADGE_ROI = (.21, .36, .25, .45)
 
 
@@ -191,13 +193,48 @@ def episode_number(text: object) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def _visual_close_button_point(frame) -> tuple[float, float] | None:
+    """Locate the white X on the blue GLU TALK header bar when OCR misses 'X'."""
+    if frame is None or getattr(frame, "ndim", 0) != 3 or frame.shape[2] < 3:
+        return None
+    height, width = frame.shape[:2]
+    if width <= 0 or height <= 0:
+        return None
+    left, top, crop = relative_roi_frame(frame, (0.765, 0.23, 0.795, 0.28))
+    if not crop.size:
+        return None
+    patch = crop[..., :3].astype(np.int16)
+    blue, red = patch[:, :, 0], patch[:, :, 2]
+    blue_bg = (blue >= 130) & (blue - red >= 60)
+    if float(blue_bg.mean()) < 0.50:
+        return None
+    gray = cv2.cvtColor(crop[..., :3], cv2.COLOR_BGR2GRAY)
+    white = (gray >= 200).astype(np.uint8)
+    count, _, stats, centroids = cv2.connectedComponentsWithStats(white, 8)
+    matches = []
+    for idx in range(1, count):
+        _, _, bw, bh, area = stats[idx]
+        if area < 12 or not (0.008 * height <= bh <= 0.035 * height):
+            continue
+        if not (0.60 <= bw / max(1, bh) <= 1.50):
+            continue
+        cx, cy = centroids[idx]
+        matches.append((area, (left + cx) / width, (top + cy) / height))
+    if not matches:
+        return None
+    _, rx, ry = max(matches)
+    return (rx, ry)
+
+
 def close_button_point(
     boxes,
     width: int,
     height: int,
     roi=CLOSE_RELATIVE_ROI,
+    *,
+    frame=None,
 ) -> tuple[float, float] | None:
-    """Locate the GLU TALK title-bar X button by positive OCR evidence."""
+    """Locate the GLU TALK title-bar X button by OCR or blue-header visual fallback."""
     candidates = []
     for box in boxes:
         name = _norm(getattr(box, "name", ""))
@@ -208,7 +245,7 @@ def close_button_point(
             continue
         candidates.append((point[0], point[1], point))
     if not candidates:
-        return None
+        return _visual_close_button_point(frame) if frame is not None else None
     return min(candidates)[2]
 
 
@@ -331,6 +368,27 @@ def unavailable_contact(text: object) -> bool:
     return bool(matched_keywords(text, ("未拥有", "未持有", "持有该服装时")))
 
 
+def _cyan_badge_boxes(frame, roi: tuple[float, float, float, float]):
+    """Locate cyan circular unread badges inside ``roi`` as pixel boxes."""
+    if frame is None or getattr(frame, "ndim", 0) != 3 or frame.shape[2] < 3:
+        return []
+    height, width = frame.shape[:2]
+    left, top, crop = relative_roi_frame(frame, roi)
+    if not crop.size:
+        return []
+    blue, green, red = (crop[..., index] for index in range(3))
+    mask = ((blue >= 140) & (green >= 100) & (red <= 100)).astype("uint8")
+    count, _, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
+    found = []
+    for x, y, w, h, area in stats[1:count]:
+        if not (.012 * height <= w <= .04 * height and .012 * height <= h <= .04 * height):
+            continue
+        if not (.65 <= w / h <= 1.45) or area < .4 * w * h:
+            continue
+        found.append((left + x, top + y, w, h))
+    return sorted(found, key=lambda item: (item[1], item[0]))
+
+
 def conversation_tab_point(frame, boxes) -> tuple[tuple[float, float] | None, str]:
     """Enter the chat tab when a cyan unread badge is visible beside contacts."""
     text = _norm(" ".join(str(getattr(box, "name", "")) for box in boxes))
@@ -339,24 +397,12 @@ def conversation_tab_point(frame, boxes) -> tuple[tuple[float, float] | None, st
     if frame is None or frame.ndim != 3 or frame.shape[2] < 3:
         return None, "没有可识别的聊天标签画面"
     height, width = frame.shape[:2]
-    left, top, crop = relative_roi_frame(frame, CONVERSATION_TAB_BADGE_ROI)
-    if not crop.size:
-        return None, "聊天标签区域为空"
-    blue, green, red = (crop[..., index] for index in range(3))
-    mask = ((blue >= 140) & (green >= 100) & (red <= 100)).astype("uint8")
-    count, _, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
-    candidates = []
-    for x, y, w, h, area in stats[1:count]:
-        if not (.012 * height <= w <= .04 * height and .012 * height <= h <= .04 * height):
-            continue
-        if not (.65 <= w / h <= 1.45) or area < .4 * w * h:
-            continue
+    candidates = [
         # The badge itself does not forward clicks to the tab. Its associated
         # speech-bubble button sits immediately below and to its left.
-        candidates.append((
-            (left + x + w / 2 - .8 * w) / width,
-            (top + y + h / 2 + .55 * h) / height,
-        ))
+        ((x + w / 2 - .8 * w) / width, (y + h / 2 + .55 * h) / height)
+        for x, y, w, h in _cyan_badge_boxes(frame, CONVERSATION_TAB_BADGE_ROI)
+    ]
     if len(candidates) != 1:
         return None, "未识别到唯一的未读聊天标签角标"
     return candidates[0], "角色列表左侧有未读聊天角标，切换到会话列表"
@@ -413,6 +459,7 @@ def unread_badge_point(
     *,
     unread: int | None = None,
     roi=UNREAD_BADGE_RELATIVE_ROI,
+    frame=None,
 ) -> tuple[tuple[float, float] | None, str]:
     """Click target for the unread conversation row (blue numeric badge).
 
@@ -435,6 +482,16 @@ def unread_badge_point(
         value = int(name)
         candidates.append((point[1], point[0], point, value))
     if not candidates:
+        if frame is not None and width > 0 and height > 0:
+            # Restrict visual badge fallback to the right-edge badge column below the header.
+            badge_roi = (max(roi[0], 0.48), max(roi[1], 0.33), min(roi[2], 0.53), roi[3])
+            cyan_badges = _cyan_badge_boxes(frame, badge_roi)
+            if cyan_badges:
+                x, y, w, h = cyan_badges[0]
+                return (
+                    ((x + w / 2) / width, (y + h / 2) / height),
+                    f"未读消息{unread}：会话蓝色未读角标",
+                )
         return None, "未找到会话列表中的未读角标"
     _, _, point, value = min(candidates)
     return point, f"未读消息{unread}：会话角标 {value}"
@@ -478,6 +535,50 @@ def encounter_button_point(
     return point, "当前会话的相遇卡片：进行相遇事件"
 
 
+def _blue_reply_pill_point(
+    frame,
+    roi: tuple[float, float, float, float],
+    min_y: float = 0.0,
+) -> tuple[float, float] | None:
+    """Locate the wide sky-blue reply pill below '发送消息' when OCR misses '...'."""
+    if frame is None or getattr(frame, "ndim", 0) != 3 or frame.shape[2] < 3:
+        return None
+    height, width = frame.shape[:2]
+    if width <= 0 or height <= 0:
+        return None
+    x1 = max(0, min(width, int(round(roi[0] * width))))
+    y1 = max(0, min(height, int(round(max(roi[1], min_y) * height))))
+    x2 = max(x1, min(width, int(round(roi[2] * width))))
+    y2 = max(y1, min(height, int(round(roi[3] * height))))
+    if x2 - x1 < 20 or y2 - y1 < 8:
+        return None
+    patch = frame[y1:y2, x1:x2, :3].astype(np.int16)
+    blue, green, red = patch[:, :, 0], patch[:, :, 1], patch[:, :, 2]
+    # Real sky-blue reply pill interior: BGR ≈ (255, 231, 177), gray bg ≈ (198, 184, 172).
+    mask = (
+        (blue >= 225)
+        & (green >= 205)
+        & (blue - red >= 45)
+        & (green - red >= 25)
+    ).astype(np.uint8)
+    count, _, stats, centroids = cv2.connectedComponentsWithStats(mask)
+    matches = []
+    min_w = 0.14 * width
+    min_h, max_h = 0.020 * height, 0.085 * height
+    for idx in range(1, count):
+        _, _, bw, bh, area = stats[idx]
+        if bw < min_w or not (min_h <= bh <= max_h):
+            continue
+        if area / max(1, bw * bh) < 0.65:
+            continue
+        cx, cy = centroids[idx]
+        matches.append(((y1 + cy) / height, (x1 + cx) / width))
+    if not matches:
+        return None
+    ry, rx = min(matches)
+    return (rx, ry)
+
+
 def reply_button_point(
     boxes,
     width: int,
@@ -485,32 +586,51 @@ def reply_button_point(
     roi=REPLY_RELATIVE_ROI,
     *,
     require_send_control: bool = False,
+    frame=None,
 ) -> tuple[tuple[float, float] | None, str]:
     """Click target for the lower-right reply button of the selected chat."""
-    if require_send_control and not any(
-        _norm(getattr(box, "name", "")) == "发送消息"
+    send_points = [
+        point
+        for box in boxes
+        if _norm(getattr(box, "name", "")) == "发送消息"
         and (point := _point(box, width, height)) is not None
         and _inside(point, (.50, .65, .80, .82))
-        for box in boxes
-    ):
+    ]
+    if require_send_control and not send_points:
         return None, "尚未出现发送消息控件，等待聊天消息显示完成"
+    send_y = min(point[1] for point in send_points) if send_points else 0.0
     candidates = []
     for box in boxes:
-        name = _norm(getattr(box, "name", ""))
-        if len(name) < 2 and not (
-            require_send_control and len(name) == 1 and "\u4e00" <= name <= "\u9fff"
-        ):
+        raw = getattr(box, "name", "")
+        name = _norm(raw)
+        plain = _plain(raw)
+        point = _point(box, width, height)
+        if point is None or not _inside(point, roi):
+            continue
+        if len(name) < 2:
+            single_han = require_send_control and len(name) == 1 and "\u4e00" <= name <= "\u9fff"
+            punct_reply = (
+                require_send_control
+                and not name
+                and bool(_PUNCTUATION_REPLY_RE.fullmatch(plain))
+                and point[1] > send_y
+            )
+            if not (single_han or punct_reply):
+                continue
+            label = name if single_han else plain
+            candidates.append((point[1], point[0], point, label))
             continue
         # "ep2对话结束" is a chapter separator, never a reply button.
         if _CHAPTER_MARKER_RE.match(name):
             continue
         if any(_norm(word) in name for word in REPLY_EXCLUDE_KEYWORDS):
             continue
-        point = _point(box, width, height)
-        if point is None or not _inside(point, roi):
-            continue
         candidates.append((point[1], point[0], point, name))
     if not candidates:
+        if require_send_control and frame is not None:
+            pill = _blue_reply_pill_point(frame, roi, min_y=send_y)
+            if pill is not None:
+                return pill, "回复按钮：浅蓝回复条"
         return None, "本帧没有回复按钮证据"
     _, _, point, name = min(candidates)
     return point, f"回复按钮：{name}"

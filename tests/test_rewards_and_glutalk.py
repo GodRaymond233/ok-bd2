@@ -13,10 +13,12 @@ from src.tasks.glutalk_vision import (
     AVAILABLE_TASK_DEFAULT_KEYWORDS,
     available_task_point,
     classify_talk_page,
+    close_button_point,
     dialogue_decision,
     home_talk_entry,
     is_exhausted,
     remaining_encounters,
+    reply_button_point,
     unread_badge_point,
     unread_count,
 )
@@ -493,6 +495,73 @@ class GlutalkTest(unittest.TestCase):
                     self.assertEqual(expected, task._advance_stage(1))
                 self.assertEqual(clicks, task.operate_click.call_count)
 
+    def test_reply_button_accepts_ellipsis_ocr_and_sky_blue_pill_fallback(self):
+        send_box = [box("发送消息", int(0.56 * WIDTH), int(0.70 * HEIGHT))]
+        # Layer 1: pure punctuation reply ("...") recognized by OCR below 发送消息.
+        ellipsis_boxes = [*send_box, box("...", int(0.66 * WIDTH), int(0.76 * HEIGHT))]
+        point, evidence = reply_button_point(
+            ellipsis_boxes, WIDTH, HEIGHT, require_send_control=True,
+        )
+        self.assertIsNotNone(point)
+        self.assertIn("...", evidence)
+
+        # Layer 2: OCR misses "..." completely, but sky-blue reply pill is visible below 发送消息.
+        frame = np.full((HEIGHT, WIDTH, 3), (198, 184, 172), dtype=np.uint8)
+        frame[int(HEIGHT * 0.74) : int(HEIGHT * 0.79), int(WIDTH * 0.54) : int(WIDTH * 0.78)] = (
+            255, 231, 177,
+        )
+        pill_point, pill_evidence = reply_button_point(
+            send_box, WIDTH, HEIGHT, require_send_control=True, frame=frame,
+        )
+        self.assertIsNotNone(pill_point)
+        self.assertAlmostEqual(0.66, pill_point[0], delta=0.02)
+        self.assertAlmostEqual(0.765, pill_point[1], delta=0.02)
+        self.assertEqual("回复按钮：浅蓝回复条", pill_evidence)
+
+        # Safety gate: without 发送消息, the same sky-blue pill must NOT be clicked.
+        blocked_point, _ = reply_button_point(
+            [], WIDTH, HEIGHT, require_send_control=True, frame=frame,
+        )
+        self.assertIsNone(blocked_point)
+
+        # Unread badge visual fallback: cyan circle at right edge of row when OCR misses "1".
+        list_frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+        cv2.circle(
+            list_frame,
+            (int(WIDTH * 0.508), int(HEIGHT * 0.394)),
+            int(HEIGHT * 0.012),
+            (193, 158, 33),
+            -1,
+        )
+        badge_pt, badge_ev = unread_badge_point([], WIDTH, HEIGHT, unread=1, frame=list_frame)
+        self.assertIsNotNone(badge_pt)
+        self.assertAlmostEqual(0.508, badge_pt[0], delta=0.01)
+        self.assertAlmostEqual(0.394, badge_pt[1], delta=0.01)
+        self.assertIn("会话蓝色未读角标", badge_ev)
+        self.assertIsNone(unread_badge_point([], WIDTH, HEIGHT, unread=0, frame=list_frame)[0])
+
+        # Close X visual fallback on blue GLU TALK header bar when OCR misses "X".
+        header_frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+        y1, y2 = int(HEIGHT * 0.22), int(HEIGHT * 0.29)
+        x1, x2 = int(WIDTH * 0.20), int(WIDTH * 0.80)
+        header_frame[y1:y2, x1:x2] = (180, 110, 40)
+        cx, cy = int(WIDTH * 0.780), int(HEIGHT * 0.253)
+        cv2.line(header_frame, (cx - 10, cy - 10), (cx + 10, cy + 10), (255, 255, 255), 3)
+        cv2.line(header_frame, (cx - 10, cy + 10), (cx + 10, cy - 10), (255, 255, 255), 3)
+        close_pt = close_button_point([], WIDTH, HEIGHT, frame=header_frame)
+        self.assertIsNotNone(close_pt)
+        self.assertAlmostEqual(0.780, close_pt[0], delta=0.01)
+        self.assertAlmostEqual(0.253, close_pt[1], delta=0.01)
+        # Non-blue background must not produce a visual close click.
+        self.assertIsNone(close_button_point([], WIDTH, HEIGHT, frame=list_frame))
+
+    def test_report_counters_recovers_remaining_quota_with_2x_crop_ocr(self):
+        task = make_probe_task(仅探测模式=False)
+        frame = np.zeros((HEIGHT, WIDTH, 3), np.uint8)
+        task.ocr = Mock(return_value=[box("今日的剩余相遇|3 +", 10, 10)])
+        remaining, unread = task._report_counters("GLU TALK 今日的剩余相遇 未读消息1", frame=frame)
+        self.assertEqual((3, 1), (remaining, unread))
+        task.ocr.assert_called_once()
     def test_probe_and_completed_dialogue_never_dispatch_clicks(self):
         frame = np.zeros((HEIGHT, WIDTH, 3), np.uint8)
         for probe, text in (
