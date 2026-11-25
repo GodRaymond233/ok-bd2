@@ -63,6 +63,38 @@ class DailyBatchTaskTest(unittest.TestCase):
         )
         return task, resets
 
+    def test_opt_in_close_runs_only_after_completed_dailies_with_idle_queue(self):
+        from src.tasks.CloseGameTask import AFTER_DAILY_KEY, CloseGameTask
+
+        class Child:
+            pass
+
+        for case in ("complete", "off", "failed", "queued", "shutdown", "close_error"):
+            with self.subTest(case=case):
+                child = _ChildTask(f"daily-{case}", [], result=case != "failed")
+                close = SimpleNamespace(
+                    config={AFTER_DAILY_KEY: case != "off"},
+                    run=mock.Mock(side_effect=ValueError("退出待确认") if case == "close_error"
+                                  else None),
+                )
+                task, _ = self.make_task(
+                    {Child: child, CloseGameTask: close}, (DailyBatchChild("日常测试项", Child),),
+                    {"启用": True, "完成日常后自动关机": case == "shutdown"},
+                )
+                task.executor.onetime_task_queue = [object()] if case == "queued" else []
+                task.log_warning = mock.Mock()
+                with mock.patch(
+                    "src.tasks.DailyBatchTask._schedule_system_shutdown", return_value=True,
+                ) as shutdown:
+                    self.assertEqual(case != "failed", DailyBatchTask.run(task, RUN_MODE_ALL))
+                self.assertEqual(case in {"complete", "close_error"}, close.run.called)
+                self.assertEqual(case == "shutdown", shutdown.called)
+                if case == "complete":
+                    self.assertIn("游戏已关闭", task.info["状态"])
+                if case == "close_error":
+                    self.assertEqual("一键完成日常完成。", task.info["状态"])
+                    task.log_warning.assert_called_once()
+
     def test_rewards_recheck_after_success_but_observe_failure_backoff(self):
         from src.tasks.DailyBatchTask import DAILY_BATCH_CHILDREN
         from src.tasks.MissionRewardTask import MissionRewardTask

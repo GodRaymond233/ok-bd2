@@ -193,6 +193,26 @@ class RuntimeControlTest(unittest.TestCase):
         adapt_runtime(app.state.runtime, legacy_check=legacy_check)
         return app, executor, app_facade
 
+    def test_close_game_api_preserves_task_queue_and_never_calls_game_start(self):
+        from src.tasks.CloseGameTask import CloseGameTask
+
+        app, executor, _ = self.make_runtime([CloseGameTask, BaseTask])
+        close, other = executor.onetime_tasks
+        close.run = Mock()
+        with TestClient(app) as client:
+            path = f"/api/tasks/{close.name}/start"
+            other._enabled = True
+            response = client.post(path)
+            self.assertEqual(400, response.status_code, response.text)
+            close.run.assert_not_called()
+            self.assertTrue(other.enabled)
+            other._enabled = False
+            response = client.post(path)
+            self.assertEqual(200, response.status_code, response.text)
+        close.run.assert_called_once()
+        self.assertIsNone(executor.exclusive_owner)
+        self.controller_start.assert_not_called()
+
     def test_stop_cancels_current_or_queued_task_without_resuming_executor(self):
         app, executor, facade = self.make_runtime([BaseTask, BaseTask])
         current, queued = executor.onetime_tasks

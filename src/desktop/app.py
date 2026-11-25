@@ -41,6 +41,7 @@ from src.desktop.tools import executor_busy, install_tools
 from src.game_path import resolve_game_exe_path, resolve_launcher_exe_path
 from src.task_guides import GUIDES
 from src.tasks.BaseBD2Task import task_info_snapshot
+from src.tasks.CloseGameTask import CloseGameTask
 from src.tasks.DailyBatchTask import RUN_MODE_ALL, RUN_MODE_INCOMPLETE, DailyBatchTask
 from src.tasks.quick_hunt_plan import PLAN_KEY, describe_plan, load_book
 from src.tasks.run_history import RECENT_LIMIT, default_store, run_state
@@ -412,6 +413,13 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
                 resuming=task if task is runtime.executor.current_task else None,
                 waits_for_login=getattr(task, "waits_for_login", False),
             )
+            if isinstance(task, CloseGameTask):
+                runtime.executor.acquire_exclusive(task.name)
+                try:
+                    task.run()
+                finally:
+                    runtime.executor.release_exclusive(task.name)
+                return task_payload(task)
             if controller.start(task) is False:
                 raise ValueError("任务未启动，请等待启动流程结束")
             return task_payload(task)

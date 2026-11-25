@@ -13,6 +13,7 @@ from src.diagnostics.runtime import observe_run, task_error
 from src.icons import TaskIcon as FluentIcon
 from src.tasks.ActivityDailyTask import ACTIVITY_DAILY_NAME, ActivityDailyTask
 from src.tasks.BaseBD2Task import task_info_snapshot
+from src.tasks.CloseGameTask import AFTER_DAILY_KEY, CloseGameTask
 from src.tasks.DailyTask import DailyTask
 from src.tasks.equipment_daily import EQUIPMENT_DAILY_NAME
 from src.tasks.EquipmentDailyTask import EquipmentDailyTask
@@ -394,6 +395,7 @@ class DailyBatchTask(BaseTask):
             f"一键完成日常完成：已执行 {len(completed)} 项，跳过 {len(skipped)} 项。",
         )
         self._maybe_shutdown_after_daily(completed, pre_completed)
+        self._maybe_close_game_after_daily(completed, pre_completed)
         return True
 
     @staticmethod
@@ -408,22 +410,19 @@ class DailyBatchTask(BaseTask):
         except Exception:
             return False
 
-    def _maybe_shutdown_after_daily(
+    def _daily_completion_block(
         self,
         completed: list[str],
         pre_completed: list[str] | tuple[str, ...] = (),
-    ) -> None:
+    ) -> str | None:
         """Keep completed work from the same run if it crossed the daily reset."""
-        if not bool(self.config.get("完成日常后自动关机", False)):
-            return
         enabled_children = [
             child
             for child in self.child_tasks
             if bool(self.config.get(child.config_key, child.default_enabled))
         ]
         if not enabled_children:
-            self.log_info("一键完成日常：没有已启用子任务，不执行自动关机。")
-            return
+            return "没有已启用子任务"
         from src.tasks.run_history import configuration_scope, default_store
 
         history = default_store()
@@ -433,8 +432,19 @@ class DailyBatchTask(BaseTask):
             task = self.executor.get_task_by_class(child.task_class)
             name = str(getattr(task, "name", None) or child.config_key)
             if not history.is_completed(name, scope=configuration_scope(task)):
-                self.log_info(f"一键完成日常：{child.config_key} 今日未完成，不执行自动关机。")
-                return
+                return f"{child.config_key} 今日未完成"
+        return None
+
+    def _maybe_shutdown_after_daily(
+        self,
+        completed: list[str],
+        pre_completed: list[str] | tuple[str, ...] = (),
+    ) -> None:
+        if not bool(self.config.get("完成日常后自动关机", False)):
+            return
+        if reason := self._daily_completion_block(completed, pre_completed):
+            self.log_info(f"一键完成日常：{reason}，不执行自动关机。")
+            return
         try:
             scheduled = _schedule_system_shutdown(SHUTDOWN_COUNTDOWN_SECONDS)
         except (OSError, subprocess.SubprocessError) as exc:
@@ -451,3 +461,23 @@ class DailyBatchTask(BaseTask):
             "自动关机；取消请在命令行执行 shutdown /a。",
             notify=True,
         )
+
+    def _maybe_close_game_after_daily(self, completed, pre_completed):
+        task = self.executor.get_task_by_class(CloseGameTask)
+        if (task is None or not task.config.get(AFTER_DAILY_KEY, False)
+                or self.config.get("完成日常后自动关机", False)):
+            return
+        if getattr(self.executor, "onetime_task_queue", ()):
+            self.log_info("一键完成日常：有任务排队，游戏继续运行。")
+            return
+        if reason := self._daily_completion_block(completed, pre_completed):
+            self.log_info(f"一键完成日常：{reason}，游戏继续运行。")
+            return
+        if getattr(self.executor, "current_task", None) is self:
+            self.executor.check_enabled(check_pause=False)
+        try:
+            task.run()
+        except (ValueError, OSError) as error:
+            self.log_warning(f"一键完成日常：{error}")
+            return
+        self.info_set("状态", "一键完成日常完成，游戏已关闭。")
