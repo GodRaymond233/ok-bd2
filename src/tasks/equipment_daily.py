@@ -15,6 +15,10 @@ EQUIPMENT_DAILY_OWNER = "EquipmentDailyTask"
 DISMANTLE_STEP = "分解装备一次"
 REFINE_STEP = "精炼装备一次"
 EQUIPMENT_STEPS = (DISMANTLE_STEP, REFINE_STEP)
+REFINE_MODE_KEY = "精炼筛选模式"
+REFINE_MODE_RANDOM = "随机精炼（24分以下）"
+REFINE_MODE_UNDER_17 = "仅精炼17分以下"
+REFINE_MODE_OPTIONS = (REFINE_MODE_RANDOM, REFINE_MODE_UNDER_17)
 _GRADE_ASSETS = (
     Path(__file__).resolve().parents[2] / "recognition-assets/template-assets/equipment_daily"
 )
@@ -24,6 +28,7 @@ DISMANTLE_GRADE_FILES = {
     "SR": _GRADE_ASSETS / "super_rare_grade.png",
 }
 DISMANTLE_SKIPPED = object()
+REFINE_SKIPPED = object()
 _DISMANTLE_GRADE_THRESHOLDS = {"N": 0.84, "R": 0.86, "SR": 0.80}
 # 装备卡片网格（相对坐标），用于限定装备分数的识别范围。
 GRID_BOUNDS = (0.36, 0.10, 1.0, 0.94)
@@ -54,6 +59,10 @@ REFINE_SCORE_TEXT_BOUNDS = ((0.896, 0.226, 0.912, 0.292), REFINE_SCORE_BOUNDS[1]
 REFINE_MATERIAL_LABEL = r"所需材料([1-9]\d*)?"
 REFINE_MATERIAL_BOUNDS = (0.71, 0.80, 0.789, 0.874)
 MAX_REFINABLE_SCORE = 23
+# 装备背包筛选按钮与「装备筛选」弹窗内的固定相对坐标（只点「确认」，绝不点「保存」）。
+FILTER_BUTTON_POINT = (0.8915, 0.0930)
+FILTER_ENHANCE_9_POINT = (0.7136, 0.3270)
+FILTER_SCORE_17_POINT = (0.6328, 0.4357)
 
 
 def equipment_daily_cycle():
@@ -317,6 +326,86 @@ class EquipmentScreen:
                 round(left * width) : round(right * width),
             ]
             yield cv2.resize(badge, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+
+    @property
+    def filter_overlay(self):
+        return self.find(r"装备筛选", (0.43, 0.21, 0.57, 0.28))[0] is not None
+
+    @property
+    def filter_dialog(self):
+        stage, _ = self.find(r"强化阶段", (0.49, 0.26, 0.59, 0.32))
+        score, _ = self.find(r"强化分数", (0.49, 0.36, 0.59, 0.43))
+        return bool(self.filter_overlay and (stage or score))
+
+    def filter_choice(self, *, score):
+        if not self.filter_dialog:
+            return None, None
+        if score:
+            _, point = self.find(r"17.*", (0.58, 0.41, 0.69, 0.47))
+            point = point or FILTER_SCORE_17_POINT
+        else:
+            _, point = self.find(r"\+9.*", (0.66, 0.30, 0.77, 0.36))
+            point = point or FILTER_ENHANCE_9_POINT
+        x, y = point
+        height, width = self.frame.shape[:2]
+        tile = self.frame[
+            round((y - .012) * height):round((y + .012) * height),
+            round((x - .018) * width):round((x + .018) * width),
+        ]
+        if not tile.size:
+            return None, None
+        median, glyph = np.percentile(cv2.cvtColor(tile, cv2.COLOR_BGR2GRAY), (50, 90))
+        if glyph >= 125:
+            return point, True
+        if glyph <= 75 and glyph - median >= 7:
+            return point, False
+        return point, None
+
+    @property
+    def filter_confirm(self):
+        if not self.filter_dialog:
+            return None
+        _, point = self.find(r"确认", (0.67, 0.72, 0.76, 0.78))
+        return point if point and self._light_button(point) else None
+
+    @property
+    def filter_cancel(self):
+        if not self.filter_overlay:
+            return None
+        _, cancel = self.find(r"取消|关闭", (0.29, 0.71, 0.67, 0.81))
+        _, close = self.find(r"[x×]", (0.68, 0.19, 0.78, 0.29))
+        return cancel or close
+
+    @property
+    def equipment_grid_visible(self):
+        if (
+            self.inventory is None or self.filter_overlay or self.selection_page
+            or self.dismantle_result_visible or self.refinement_page
+        ):
+            return False
+        marker, _ = self.find(r"设置自定义标记", (0.25, 0.40, 0.42, 0.49))
+        _, dismantle = self.find(r"[一\-―]?键分解", (0.83, 0.90, 0.95, 0.98))
+        return not marker and dismantle is not None
+
+    @property
+    def first_equipment_cell(self):
+        height, width = self.frame.shape[:2]
+        x, y = GRID_CELL_ORIGIN
+        dx, dy = GRID_CELL_SIZE
+        cell = self.frame[
+            int((y + 0.2 * dy) * height):int((y + 0.8 * dy) * height),
+            int((x + 0.2 * dx) * width):int((x + 0.8 * dx) * width),
+        ]
+        if cell.size and cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY).mean() >= EMPTY_CELL_MEAN:
+            return x + dx / 2, y + dy / 2
+        return None
+
+    @property
+    def refine_maxed(self):
+        if not self.refinement_page:
+            return False
+        maxed, _ = self.find(r"达到最大强化级别", (0.56, 0.88, 0.95, 0.98))
+        return bool(maxed)
 
     @property
     def refine_once(self):

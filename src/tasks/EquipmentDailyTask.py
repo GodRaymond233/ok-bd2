@@ -16,10 +16,17 @@ from src.tasks.equipment_daily import (
     DISMANTLE_STEP,
     EQUIPMENT_DAILY_NAME,
     EQUIPMENT_DAILY_OWNER,
+    FILTER_BUTTON_POINT,
+    GRID_CELL_SIZE,
     GRID_COLUMNS,
     MAX_REFINABLE_SCORE,
     REFINE_BALANCE_BOUNDS,
+    REFINE_MODE_KEY,
+    REFINE_MODE_OPTIONS,
+    REFINE_MODE_RANDOM,
+    REFINE_MODE_UNDER_17,
     REFINE_SCORE_TEXT_BOUNDS,
+    REFINE_SKIPPED,
     REFINE_STEP,
     REFINEMENT_BACK_POINT,
     SELECTION_BACK_POINT,
@@ -47,7 +54,19 @@ class EquipmentDailyTask(TaskVisionMixin, BaseBD2Task):
         self.group_name = "日常/周常"
         self.group_icon = TaskIcon.CALENDAR
         self.visible = True
-        self.default_config.update({"启用": True})
+        self.default_config.update({"启用": True, REFINE_MODE_KEY: REFINE_MODE_RANDOM})
+        self.config_description.update(
+            {
+                REFINE_MODE_KEY: (
+                    "随机精炼（24分以下）：筛选 +9▲ 后选取 24 分以下装备；"
+                    "仅精炼17分以下：筛选 +9▲ 与 17▼，无匹配装备时跳过。"
+                )
+            }
+        )
+        self.config_type[REFINE_MODE_KEY] = {
+            "type": "drop_down",
+            "options": list(REFINE_MODE_OPTIONS),
+        }
         self._init_vision_state()
         self._equipment_templates = {}
         self._grade_templates = {
@@ -97,6 +116,10 @@ class EquipmentDailyTask(TaskVisionMixin, BaseBD2Task):
 
     def _open_inventory(self):
         screen = self._read_equipment()
+        if screen.filter_overlay:
+            screen = self._close_equipment_filter(screen)
+            if screen is None:
+                return None
         if screen.dismantle_result_visible:
             screen = self._close_dismantle_result()
             return self._open_all_equipment(screen) if screen is not None else None
@@ -391,53 +414,91 @@ class EquipmentDailyTask(TaskVisionMixin, BaseBD2Task):
             inventory = self._leave_selection_page(inventory)
             if inventory is None:
                 return False
-        candidates = inventory.scored_gear()
-        if not candidates:
-            inventory = self._scroll_to_bottom(
-                inventory,
-                lambda view: view.dismantle_entry is not None,
-            )
-            candidates = inventory.scored_gear() if inventory else []
-        if not candidates:
-            self.info_set(REFINE_STEP, "装备背包未识别到 6～23 分的装备")
+        under_17_only = self.config.get(REFINE_MODE_KEY) == REFINE_MODE_UNDER_17
+        max_score = 17 if under_17_only else MAX_REFINABLE_SCORE
+        if not self._apply_refinement_filter(inventory, under_17_only):
             return False
-        expected_score, gear_point = candidates[0]
-        self.operate_click(*gear_point, name="查看带分数的装备", after_sleep=0.5)
-        detail = self._wait_equipment(lambda screen: screen.detail_refine is not None)
-        if detail is None:
-            return False
-        self.operate_click(*detail.detail_refine, name="打开精炼装备分数", after_sleep=0.6)
-        badge_scores = None
+        empty_frames = 0
 
-        def score_confirmed(screen):
-            nonlocal badge_scores
-            if screen.refine_once is None:
+        def filtered_grid(screen):
+            nonlocal empty_frames
+            if not screen.equipment_grid_visible:
+                empty_frames = 0
                 return False
-            badge_scores = self._read_refinement_badges(screen, expected_score)
-            upper, lower = badge_scores
-            refinement_value("上下徽章", badge_scores)
-            return upper is not None and upper == lower
+            if not all(grid_blank_rows(screen.frame)):
+                empty_frames = 0
+                return True
+            empty_frames += 1
+            return empty_frames >= 2
 
-        try:
-            refine = self._wait_equipment(score_confirmed)
-        except RefinementConflict as error:
-            self.info_set(REFINE_STEP, str(error))
+        filtered = self._wait_equipment(filtered_grid, timeout=5.0)
+        if filtered is None:
+            self.info_set(REFINE_STEP, "未确认筛选后的装备列表")
+            self._close_equipment_filter(self._read_equipment())
             return False
-        if refine is None:
-            reason = (
-                "未确认精炼页余额、消耗或精炼按钮"
-                if badge_scores is None
-                else f"精炼页分数复核未通过，两枚徽章读数 {badge_scores}"
-            )
-            self.info_set(REFINE_STEP, reason)
+        if empty_frames >= 2:
+            return REFINE_SKIPPED
+
+        tried = []
+        for _ in range(3):
+            candidates = [
+                (score, (x, y)) for score, (x, y) in filtered.scored_gear()
+                if score <= max_score and not any(
+                    abs(x - old_x) < GRID_CELL_SIZE[0] / 2
+                    and abs(y - old_y) < GRID_CELL_SIZE[1] / 2
+                    for old_x, old_y in tried
+                )
+            ]
+            if candidates:
+                expected_score, gear_point = candidates[0]
+            elif under_17_only and not tried and filtered.first_equipment_cell:
+                expected_score, gear_point = None, filtered.first_equipment_cell
+            else:
+                self.info_set(REFINE_STEP, f"筛选列表未识别到 6～{max_score} 分的可用装备")
+                return False
+            tried.append(gear_point)
+            self.operate_click(*gear_point, name="查看筛选后的装备", after_sleep=0.5)
+            detail = self._wait_equipment(lambda screen: screen.detail_refine is not None)
+            if detail is None:
+                return False
+            self.operate_click(*detail.detail_refine, name="打开精炼装备分数", after_sleep=0.6)
+            badge_scores = None
+
+            def forge_ready(screen):
+                nonlocal badge_scores
+                if screen.refine_maxed:
+                    return True
+                if screen.refine_once is None:
+                    return False
+                badge_scores = self._read_refinement_badges(screen, expected_score)
+                upper, lower = badge_scores
+                refinement_value("上下徽章", badge_scores)
+                # 上方徽章可能漏读。此时必须以背包分数和下方徽章互验。
+                return lower is not None and lower == (expected_score if upper is None else upper)
+
+            try:
+                refine = self._wait_equipment(forge_ready)
+            except RefinementConflict as error:
+                self.info_set(REFINE_STEP, str(error))
+                return False
+            if refine is None:
+                self.info_set(REFINE_STEP, f"精炼页复核未通过，分数徽章读数 {badge_scores}")
+                return False
+            if not refine.refine_maxed:
+                score = badge_scores[1]
+                if not 6 <= score <= max_score:
+                    self.info_set(REFINE_STEP, f"精炼页已确认装备为 {score} 分，超过当前筛选范围")
+                    return False
+                self.info_set("精炼装备分数复核", f"精炼页确认 {score} 分")
+                break
+            self.info_set(REFINE_STEP, "精炼页显示已达到最大强化级别，换下一件")
+            filtered = self._leave_refinement(refine)
+            if filtered is not None and filtered.detail_close:
+                filtered = self._close_equipment_detail(filtered)
+            if filtered is None or not filtered.equipment_grid_visible:
+                return False
+        else:
             return False
-        score = badge_scores[0]
-        if not 6 <= score <= MAX_REFINABLE_SCORE:
-            self.info_set(REFINE_STEP, f"精炼页已确认装备为 {score} 分，跳过")
-            return False
-        self.info_set(
-            "精炼装备分数复核", f"背包初读 {expected_score}，精炼页两枚徽章均为 {score} 分"
-        )
         if equipment_daily_cycle() != cycle:
             return False
         costs, point = refine.refine_once
@@ -448,6 +509,48 @@ class EquipmentDailyTask(TaskVisionMixin, BaseBD2Task):
         self._record_step(REFINE_STEP, cycle, "pending", {"remaining": remaining}, attempt=attempt)
         self.operate_click(*point, name="精炼一次", after_sleep=0.8)
         return self._confirm_refinement(remaining)
+
+    def _apply_refinement_filter(self, inventory, under_17_only):
+        if not inventory.equipment_grid_visible:
+            self.info_set(REFINE_STEP, "未确认装备背包筛选入口")
+            return False
+        self.operate_click(*FILTER_BUTTON_POINT, name="打开装备筛选", after_sleep=0.5)
+        dialog = self._wait_equipment(lambda screen: screen.filter_dialog, timeout=5.0)
+        for score, wanted, action in (
+            (False, True, "筛选+9以上装备"),
+            (True, under_17_only, "筛选17分以下装备" if under_17_only else "取消17分筛选"),
+        ):
+            if dialog is None:
+                break
+            point, selected = dialog.filter_choice(score=score)
+            if selected is None:
+                dialog = None
+                break
+            if selected is not wanted:
+                self.operate_click(*point, name=action, after_sleep=0.35)
+                dialog = self._wait_equipment(
+                    lambda screen: screen.filter_choice(score=score)[1] is wanted, timeout=4.0
+                )
+        if (
+            dialog is None or dialog.filter_choice(score=False)[1] is not True
+            or dialog.filter_choice(score=True)[1] is not under_17_only
+            or dialog.filter_confirm is None
+        ):
+            self.info_set(REFINE_STEP, "未确认装备筛选条件或确认按钮")
+            self._close_equipment_filter(self._read_equipment())
+            return False
+        # 「确认」本次筛选，保留游戏的已保存偏好。
+        self.operate_click(*dialog.filter_confirm, name="确认装备筛选", after_sleep=0.6)
+        return True
+
+    def _close_equipment_filter(self, screen):
+        if not screen.filter_overlay:
+            return None
+        if screen.filter_cancel:
+            self.operate_click(*screen.filter_cancel, name="关闭装备筛选", after_sleep=0.6)
+        elif not self.dismiss_blocking_modal(screen.frame, context="装备筛选"):
+            return None
+        return self._wait_equipment(lambda view: view.equipment_grid_visible)
 
     def _read_refinement_badges(self, screen, expected_score):
         scores = []
@@ -519,7 +622,7 @@ class EquipmentDailyTask(TaskVisionMixin, BaseBD2Task):
 
     def _close_equipment_detail(self, screen):
         self.operate_click(*screen.detail_close, name="关闭装备详情", after_sleep=0.6)
-        return self._wait_equipment(lambda view: view.dismantle_entry is not None)
+        return self._wait_equipment(lambda view: view.equipment_grid_visible)
 
     def _leave_equipment(self):
         screen = self._read_equipment()
@@ -620,6 +723,12 @@ class EquipmentDailyTask(TaskVisionMixin, BaseBD2Task):
                     step, cycle, "done", {"skipped": "no_eligible_equipment"}, attempt=attempt
                 )
                 self.info_set(step, "没有可分解的非 UR 装备，已跳过")
+                continue
+            if outcome is REFINE_SKIPPED:
+                self._record_step(
+                    step, cycle, "done", {"skipped": "no_refinable_equipment"}, attempt=attempt
+                )
+                self.info_set(step, "当前筛选条件下没有装备，已跳过")
                 continue
             submission = store.stage(EQUIPMENT_DAILY_OWNER, step)
             evidence = submission.get("evidence") if submission.get("state") == "pending" else None
