@@ -24,6 +24,7 @@ DISMANTLE_GRADE_FILES = {
     "SR": _GRADE_ASSETS / "super_rare_grade.png",
 }
 DISMANTLE_SKIPPED = object()
+REFINE_SKIPPED = object()
 _DISMANTLE_GRADE_THRESHOLDS = {"N": 0.84, "R": 0.86, "SR": 0.80}
 # 装备卡片网格（相对坐标），用于限定装备分数的识别范围。
 GRID_BOUNDS = (0.36, 0.10, 1.0, 0.94)
@@ -54,6 +55,15 @@ REFINE_SCORE_TEXT_BOUNDS = ((0.896, 0.226, 0.912, 0.292), REFINE_SCORE_BOUNDS[1]
 REFINE_MATERIAL_LABEL = r"所需材料([1-9]\d*)?"
 REFINE_MATERIAL_BOUNDS = (0.71, 0.80, 0.789, 0.874)
 MAX_REFINABLE_SCORE = 23
+# 装备背包筛选按钮与「装备筛选」弹窗内的固定相对坐标（只点「确认」，绝不点「保存」）。
+FILTER_BUTTON_POINT = (0.8915, 0.0930)
+FILTER_ENHANCE_9_POINT = (0.7136, 0.3270)
+FILTER_SCORE_17_POINT = (0.6328, 0.4357)
+FILTER_CONFIRM_POINT = (0.7153, 0.7504)
+FIRST_GRID_CELL_POINT = (
+    GRID_CELL_ORIGIN[0] + GRID_CELL_SIZE[0] / 2,
+    GRID_CELL_ORIGIN[1] + GRID_CELL_SIZE[1] / 2,
+)
 
 
 def equipment_daily_cycle():
@@ -317,6 +327,48 @@ class EquipmentScreen:
                 round(left * width) : round(right * width),
             ]
             yield cv2.resize(badge, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+
+    @property
+    def filter_dialog(self):
+        title, _ = self.find(r"装备筛选", (0.43, 0.21, 0.57, 0.28))
+        stage, _ = self.find(r"强化阶段", (0.49, 0.26, 0.59, 0.32))
+        score, _ = self.find(r"强化分数", (0.49, 0.36, 0.59, 0.43))
+        return bool(title and (stage or score))
+
+    @property
+    def filter_enhance_9(self):
+        if not self.filter_dialog:
+            return None
+        _, point = self.find(r"\+9.*", (0.66, 0.30, 0.77, 0.36))
+        return point or FILTER_ENHANCE_9_POINT
+
+    @property
+    def filter_score_17(self):
+        if not self.filter_dialog:
+            return None
+        _, point = self.find(r"17.*", (0.58, 0.41, 0.69, 0.47))
+        return point or FILTER_SCORE_17_POINT
+
+    @property
+    def filter_confirm(self):
+        if not self.filter_dialog:
+            return None
+        _, point = self.find(r"确认", (0.67, 0.72, 0.76, 0.78))
+        return point if point and self._light_button(point) else None
+
+    @property
+    def first_gear_cell(self):
+        if self.inventory is None or self.filter_dialog or self.dismantle_entry is None:
+            return None
+        rows = grid_blank_rows(self.frame)
+        return FIRST_GRID_CELL_POINT if rows and not rows[0] else None
+
+    @property
+    def refine_maxed(self):
+        if not self.refinement_page:
+            return False
+        maxed, _ = self.find(r"达到最大强化级别", (0.56, 0.88, 0.95, 0.98))
+        return bool(maxed)
 
     @property
     def refine_once(self):

@@ -15,6 +15,7 @@ from src.tasks.equipment_daily import (
     DISMANTLE_GRADE_FILES,
     DISMANTLE_SKIPPED,
     DISMANTLE_STEP,
+    REFINE_SKIPPED,
     REFINE_STEP,
     EquipmentScreen,
     dismantle_grade_points,
@@ -222,19 +223,36 @@ class EquipmentFlowTest(unittest.TestCase):
                 task._record_step.assert_not_called()
                 self.assertEqual(3, task.operate_click.call_count)
 
-    def test_refine_once_requires_matching_scores_cost_and_exclusive_detail(self):
-        grid = equipment_screen((("24", 0.65, 0.20), ("22", 0.71, 0.20), ("12", 0.83, 0.20)))
-        for x in (0.65, 0.71):
-            px, py = round(x * 1920), round(0.20 * 1080)
-            grid.frame[py - 3 : py + 3, px - 3 : px + 3] = (80, 160, 220)
-        self.assertEqual([22], [score for score, _ in grid.scored_gear()])
+    def test_refine_once_uses_filter_dialog_and_handles_empty_maxed_and_conflict(self):
+        inventory = equipment_screen((("装备766/814", 0.20, 0.05), ("一键分解", 0.89, 0.93)))
+        empty_inventory = equipment_screen(
+            (("装备766/814", 0.20, 0.05), ("一键分解", 0.89, 0.93)), fill=220
+        )
+        # Make grid cells dark (empty) while keeping the bottom button light.
+        empty_inventory.frame[130:920, 720:1750] = 30
+        filter_open = equipment_screen(
+            (
+                ("装备筛选", 0.50, 0.25),
+                ("强化阶段", 0.54, 0.29),
+                ("+94", 0.714, 0.327),
+                ("强化分数", 0.54, 0.39),
+                ("17V", 0.633, 0.436),
+                ("保存", 0.633, 0.750),
+                ("确认", 0.715, 0.750),
+            ),
+            fill=220,
+        )
         good = equipment_screen(
             (
                 *REFINEMENT_RESULT_LABELS,
                 ("30", 0.807, 0.839),
                 ("精炼80", 0.84, 0.93),
-                ("22", 0.902, 0.258),
-                ("22", 0.772, 0.745),
+            )
+        )
+        maxed = equipment_screen(
+            (
+                *REFINEMENT_RESULT_LABELS,
+                ("达到最大强化级别", 0.75, 0.93),
             )
         )
         conflict = equipment_screen(
@@ -248,32 +266,31 @@ class EquipmentFlowTest(unittest.TestCase):
             )
         )
         marker, exclusive, button = EXCLUSIVE_DETAIL_LABELS
-        for detail_labels, upper, first, accepted in (
-            ((marker, exclusive, button), ["22"], good, True),
-            ((marker, ("基本能力+9", 0.284, 0.51), button), [], good, True),
-            ((exclusive, button), [], good, False),
-            ((marker, ("专用装备", 0.61, 0.54), button), [], good, False),
-            ((marker, ("基本能力+8", 0.284, 0.51), button), [], good, False),
-            ((marker, exclusive, button), ["22", "24"], good, False),
-            ((marker, exclusive, button), ["21"], good, False),
-            ((marker, exclusive, button), ["22"], conflict, False),
+        for detail_labels, filtered_view, refine_view, expected in (
+            ((marker, exclusive, button), inventory, good, True),
+            ((marker, ("基本能力+9", 0.284, 0.51), button), inventory, good, True),
+            ((marker, exclusive, button), empty_inventory, good, REFINE_SKIPPED),
+            ((exclusive, button), inventory, good, False),
+            ((marker, ("专用装备", 0.61, 0.54), button), inventory, good, False),
+            ((marker, ("基本能力+8", 0.284, 0.51), button), inventory, good, False),
+            ((marker, exclusive, button), inventory, maxed, False),
+            ((marker, exclusive, button), inventory, conflict, False),
         ):
             with self.subTest(
-                detail=detail_labels, upper=upper, material_conflict=first is conflict
+                detail=detail_labels,
+                empty=filtered_view is empty_inventory,
+                maxed=refine_view is maxed,
+                conflict=refine_view is conflict,
             ):
                 task = self.task()
                 detail = equipment_screen(detail_labels)
+                observations = iter((filter_open, filter_open, filtered_view, detail, refine_view))
                 task._wait_equipment = Mock(
-                    side_effect=lambda predicate: next(
-                        (v for v in (detail, first, good) if predicate(v)), None
+                    side_effect=lambda predicate, **_: next(
+                        (v for v in observations if predicate(v)), None
                     )
                 )
                 task._record_step = Mock()
-
-                def score(value):
-                    return SimpleNamespace(name=value, x=40, y=40, width=20, height=20)
-
-                task.ocr = Mock(side_effect=[[score(n) for n in upper], [score("22")], [], []])
                 task._confirm_refinement = Mock(return_value=True)
 
                 def click(*_, name, **kwargs):
@@ -290,8 +307,11 @@ class EquipmentFlowTest(unittest.TestCase):
                 with patch(
                     "src.tasks.EquipmentDailyTask.equipment_daily_cycle", return_value="cycle"
                 ):
-                    self.assertEqual(accepted, task._refine_once(grid, "cycle"))
+                    result = task._refine_once(inventory, "cycle")
+                self.assertIs(expected, result)
                 actions = [c.kwargs["name"] for c in task.operate_click.call_args_list]
+                self.assertNotIn("保存", actions)
+                accepted = expected is True
                 self.assertEqual(int(accepted), actions.count("精炼一次"))
                 self.assertEqual(int(accepted), task._record_step.call_count)
                 self.assertEqual(int(accepted), task._confirm_refinement.call_count)
