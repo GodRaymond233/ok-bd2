@@ -8,6 +8,7 @@ from unittest.mock import Mock, call, patch
 
 import numpy as np
 
+from src.interaction.BD2Interaction import InputTargetChanged
 from src.tasks import run_history
 from src.tasks.ActivityDailyTask import ACKNOWLEDGED_AP_DAY, ActivityDailyTask
 from src.tasks.BaseBD2Task import BaseBD2Task
@@ -541,6 +542,20 @@ class ActivityFlowTest(unittest.TestCase):
         task._fight = Mock(return_value=True)
         return pages
 
+    def test_select_stage_retries_after_input_target_changed(self):
+        task = self.task()
+        task.sleep = Mock()
+        before = challenge_list(10, ((15, 0.24), (10, 0.42)))
+        after = challenge_list(15, ((15, 0.24), (10, 0.42)))
+        task._read_activity = Mock(return_value=before)
+        task._wait_activity = Mock(return_value=after)
+        task.operate_click.side_effect = [InputTargetChanged("focus changed"), None]
+        selected = task._select_stage(before, CHALLENGE, 15)
+        self.assertIs(after, selected)
+        self.assertEqual(2, task.operate_click.call_count)
+        task._read_activity.assert_called_once()
+        task.sleep.assert_called_once_with(0.2)
+
     def test_stage_five_verification_crop_isolates_the_digit_at_client_scale(self):
         task = self.task()
         digit_ocr = Mock(return_value=[[("5", 0.97)] * 10])
@@ -608,6 +623,17 @@ class ActivityFlowTest(unittest.TestCase):
         self.assertFalse(task.auto_return_main_home(notify_failure=False))
         task.operate_click.assert_not_called()
         task.back.assert_not_called()
+
+    def test_unsent_quick_battle_retires_pending_spend(self):
+        with isolated_stage_history():
+            task = self.task()
+            dialog = activity_dialog(NORMAL, 15, 5, 5, True, 5)
+            task._wait_activity = Mock(side_effect=lambda pred: dialog if pred(dialog) else None)
+            task._confirm_spend = Mock()
+            task.operate_click.side_effect = [None, None, InputTargetChanged("focus changed")]
+            self.assertFalse(task._fight(activity_battle(NORMAL, 15, 5), (.58, .92), (5, 5), CYCLE))
+            self.assertEqual({}, run_history.read_stage(task, QUICK_BATTLE_STEP))
+            task._confirm_spend.assert_not_called()
 
     def test_max_and_free_ap_are_verified_before_a_single_submission(self):
         for mode, runs, cost, free, ap, accepted in (
