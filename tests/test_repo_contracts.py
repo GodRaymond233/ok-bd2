@@ -192,6 +192,21 @@ class TranslationCatalogTests(unittest.TestCase):
 
 
 class DebugRegistryTest(unittest.TestCase):
+    def test_formal_and_debug_tasks_have_unique_runtime_names(self):
+        from importlib import import_module
+        from unittest.mock import Mock
+
+        registrations = [
+            *config["onetime_tasks"], *config["trigger_tasks"],
+            *DEBUG_ONETIME_TASKS, *DEBUG_TRIGGER_TASKS,
+        ]
+        executor, app = Mock(), Mock()
+        names = {}
+        for module, class_name in registrations:
+            task = getattr(import_module(module), class_name)(executor=executor, app=app)
+            self.assertNotIn(task.name, names, f"Duplicate task name on {class_name}")
+            names[task.name] = class_name
+
     def test_probe_tasks_are_not_registered_in_formal_config(self):
         registered = {tuple(item) for item in config["onetime_tasks"]}
         for registration in DEBUG_ONETIME_TASKS:

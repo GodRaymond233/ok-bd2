@@ -82,6 +82,27 @@ repository at commit `4ab3e152e69a675e7e48b8e566244a616dc652bb` under
 the same terms. The recipe priority guide
 image is excerpted from the chart by 西巧克力大道 supplied by the maintainer.
 
+The pass-reward badge templates are cropped from the PC screenshot fixture
+`tests/fixtures/pass/pass_page_badges_fhd.png` in nobell001/YES-BD2
+commit `4ab3e152e69a675e7e48b8e566244a616dc652bb` (GPL-3.0).
+The underlying game art remains property of its rights holders.
+
+`doom_field_swords.png` is a binary recognition mask derived from the PC capture
+`tests/fixtures/doom/field_red_costume_1440_as_1080.png` in nobell001/YES-BD2
+commit `0b58668ce715cd2f38233a9b4ab35563ea40937a` (GPL-3.0).
+`doom_card_cover.png` is the `recognition-assets/template-assets/doom/last_night_card.png`
+recognition template from the same revision. The underlying game art remains
+property of its rights holders.
+
+`tower_cartridge_cover.png` and `tower_level_tick.png` are recognition templates
+from the `evil_castle` assets in the same YES-BD2 revision. `tower_spawn_steps.png`
+and `tower_altar_marker.png` are derived from the PC screenshots
+`field_spawn_2k.jpg` and `field_altar_marker_2k.jpg` in `tests/fixtures/redemption_tower`.
+
+`event_reward_hand.png` is the YES-BD2 recognition template
+`recognition-assets/template-assets/event/reward_hand.png` from commit
+`0b58668ce715cd2f38233a9b4ab35563ea40937a` (GPL-3.0).
+
 ## Game And Platform Materials
 
 BrownDust II names, UI screenshots, icons, and template images belong to their

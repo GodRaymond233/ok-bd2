@@ -5,6 +5,16 @@ formal app configuration. ``main_debug.py`` installs them for development runs.
 """
 
 DEBUG_ONETIME_TASKS = [
+    ["src.tasks.EventClaimTask", "EventClaimTask"],
+    ["src.tasks.EventQuickBattlePreviewTask", "EventQuickBattlePreviewTask"],
+    ["src.tasks.AffinityTalkTask", "AffinityTalkTask"],
+    ["src.tasks.HomeRewardTasks", "PassRewardTask"],
+    ["src.tasks.HomeRewardTasks", "ArcadeBrowseTask"],
+    ["src.tasks.TowerSweepTask", "TowerSweepTask"],
+    ["src.tasks.GearRefineTask", "GearRefineTask"],
+    ["src.tasks.DoomBookTask", "DoomBookTask"],
+    ["src.tasks.CloseGameTask", "CloseGameTask"],
+    ["src.tasks.TradeInventoryTask", "TradeInventoryTask"],
     ["src.tasks.BD2ProbeTask", "BD2ProbeTask"],
     ["src.tasks.BD2MapCollectionProbeTask", "BD2MapCollectionProbeTask"],
     ["src.tasks.MapTradeTask", "BD2MapTradeSellTestTask"],

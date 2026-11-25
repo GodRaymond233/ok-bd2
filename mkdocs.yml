@@ -59,6 +59,7 @@ markdown_extensions:
 
 exclude_docs: |
   /handoff/
+  /upstream-test-status.md
   /code-quality-optimization-plan.md
 
 plugins:

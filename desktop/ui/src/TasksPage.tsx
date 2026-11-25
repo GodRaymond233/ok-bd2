@@ -7,6 +7,7 @@ import type { Core } from "./App.tsx";
 import { coreText, t } from "./i18n.ts";
 import { maximumTaskListWidth, rememberTaskListWidth, storedTaskListWidth, TASK_LIST_WIDTH } from "./settings.ts";
 import { TaskDetail } from "./TaskDetail.tsx";
+import { taskGroups } from "./taskGroups.ts";
 import { liveChild } from "./today.ts";
 import type { TaskPayload } from "./types.ts";
 import { Icon, PageHead, TaskGlyph, TaskListDivider, Toggle, useSlider } from "./ui.tsx";
@@ -14,6 +15,7 @@ import { Icon, PageHead, TaskGlyph, TaskListDivider, Toggle, useSlider } from ".
 const KIND_ALL = "all";
 const KIND_ONETIME = "onetime";
 const KIND_TRIGGER = "trigger";
+const KIND_UPSTREAM = "upstream";
 const GROUP = "group:";
 const GROUP_ORDER = ["日常/周常", "自动刷级"];
 
@@ -167,30 +169,34 @@ export function TasksPage({
   const width = Math.min(maximum, preferredWidth ?? defaultWidth);
 
   const { onetime, triggers } = listedTasks(core);
-  const all = [...onetime, ...triggers];
+  const { native: all, upstream } = taskGroups([...onetime, ...triggers]);
+  const nativeOnetime = all.filter(task => !task.trigger).length;
+  const nativeTriggers = all.length - nativeOnetime;
   const groups = [...new Set(all.map((task) => task.group_name).filter((name): name is string => Boolean(name)))]
     .sort((a, b) => groupRank(a) - groupRank(b));
   const tabList: [string, string, number][] = [
     [KIND_ALL, t("全部"), all.length],
-    ...(onetime.length && triggers.length ? [
-      [KIND_ONETIME, t("按需"), onetime.length] as [string, string, number],
-      [KIND_TRIGGER, t("触发"), triggers.length] as [string, string, number],
+    ...(nativeOnetime && nativeTriggers ? [
+      [KIND_ONETIME, t("按需"), nativeOnetime] as [string, string, number],
+      [KIND_TRIGGER, t("触发"), nativeTriggers] as [string, string, number],
     ] : []),
+    ...(upstream.length ? [[KIND_UPSTREAM, t("上游扩展"), upstream.length] as [string, string, number]] : []),
     ...groups.map((name): [string, string, number] => [GROUP + name, groupLabel(name), all.filter((task) => task.group_name === name).length]),
   ];
   const key = tabList.some(([value]) => value === filter) ? filter : KIND_ALL;
   const tabs = useSlider<HTMLDivElement>('[aria-selected="true"]', key);
   const needle = query.trim().toLowerCase();
-  const shownOnetime = onetime.filter((task) => matches(task, key, needle));
-  const shownTriggers = triggers.filter((task) => matches(task, key, needle));
-  const shown = [...shownOnetime, ...shownTriggers];
-  const task = shown.find((candidate) => candidate.name === selected) ?? all.find((candidate) => candidate.name === selected) ?? shown[0];
+  const scope = key === KIND_UPSTREAM ? upstream : all;
+  const shown = scope.filter((task) => matches(task, key, needle));
+  const shownOnetime = shown.filter(task => !task.trigger);
+  const shownTriggers = shown.filter(task => task.trigger);
+  const task = shown.find((candidate) => candidate.name === selected) ?? scope.find((candidate) => candidate.name === selected) ?? shown[0];
   const row = (item: TaskPayload) => (
     <TaskRow key={`${item.group_name}:${item.name}`} core={core} task={item} selected={item === task} onSelect={() => onSelect(item.name)} />
   );
   // A group seen as one section takes the group's name, as ok-script titles it.
   const single = key.startsWith(GROUP) && (shownOnetime.length === 0 || shownTriggers.length === 0);
-  const groupTitle = single ? groupLabel(key.slice(GROUP.length)) : null;
+  const groupTitle = key === KIND_UPSTREAM ? t("上游扩展") : single ? groupLabel(key.slice(GROUP.length)) : null;
 
   return (
     <div className="page tasks-page">
