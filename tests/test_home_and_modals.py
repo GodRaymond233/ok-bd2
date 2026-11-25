@@ -24,6 +24,7 @@ from src.utils.home_confirmation import (
     home_temporary_announcement_detected,
     modal_close_glyph,
     modal_close_point,
+    modal_panel_bbox,
     scene_home_button_point,
 )
 from src.utils.vision_models import MatchResult
@@ -405,6 +406,28 @@ class HomeModalTest(unittest.TestCase):
                 for x, y in task.clicks:
                     self.assertAlmostEqual(1480 / WIDTH, x, delta=0.004)
                     self.assertAlmostEqual(285 / HEIGHT, y, delta=0.004)
+
+    def test_dark_centered_panel_on_dimmed_backdrop_uses_fallback_and_hits_close_glyph(self):
+        frame = _dimmed_frame(45)
+        left, top, width, height = (424, 316, 1040, 512)
+        # Dark-brown popup header surrounds the mid-tone card body; white X sits in the header.
+        frame[250:830, 420:1505] = 60
+        frame[top : top + height, left : left + width] = 135
+        draw_close_glyph(frame, (1480, 288), value=250)
+        bbox = modal_panel_bbox(frame)
+        self.assertIsNotNone(bbox)
+        close = modal_close_glyph(frame, bbox)
+        self.assertIsNotNone(close)
+        self.assertAlmostEqual(1480 / WIDTH, close[0], delta=0.004)
+        self.assertAlmostEqual(288 / HEIGHT, close[1], delta=0.004)
+        task = home_task()
+        self.assertTrue(task.dismiss_home_modal_popup(frame))
+        self.assertEqual(1, len(task.clicks))
+
+        mid_backdrop = _dimmed_frame(95)
+        mid_backdrop[top : top + height, left : left + width] = 135
+        self.assertIsNone(modal_panel_bbox(mid_backdrop))
+        self.assertIsNone(modal_panel_bbox(_dimmed_frame(70)))
 
     def test_announcement_waits_for_a_recognized_control(self):
         for kind, frame in (
