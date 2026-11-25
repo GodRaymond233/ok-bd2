@@ -19,6 +19,10 @@ from src.tasks.equipment_daily import (
     FILTER_BUTTON_POINT,
     GRID_COLUMNS,
     REFINE_BALANCE_BOUNDS,
+    REFINE_MODE_KEY,
+    REFINE_MODE_OPTIONS,
+    REFINE_MODE_RANDOM,
+    REFINE_MODE_UNDER_17,
     REFINE_SKIPPED,
     REFINE_STEP,
     REFINEMENT_BACK_POINT,
@@ -46,7 +50,19 @@ class EquipmentDailyTask(TaskVisionMixin, BaseBD2Task):
         self.group_name = "日常/周常"
         self.group_icon = TaskIcon.CALENDAR
         self.visible = True
-        self.default_config.update({"启用": True})
+        self.default_config.update({"启用": True, REFINE_MODE_KEY: REFINE_MODE_RANDOM})
+        self.config_description.update(
+            {
+                REFINE_MODE_KEY: (
+                    "随机精炼（24分以下）：筛选 +9▲ 后选取 24 分以下装备；"
+                    "仅精炼17分以下：筛选 +9▲ 与 17▼，无匹配装备时跳过。"
+                )
+            }
+        )
+        self.config_type[REFINE_MODE_KEY] = {
+            "type": "drop_down",
+            "options": list(REFINE_MODE_OPTIONS),
+        }
         self._init_vision_state()
         self._equipment_templates = {}
         self._grade_templates = {
@@ -378,13 +394,16 @@ class EquipmentDailyTask(TaskVisionMixin, BaseBD2Task):
             inventory = self._leave_selection_page(inventory)
             if inventory is None:
                 return False
+        mode = self.config.get(REFINE_MODE_KEY, REFINE_MODE_RANDOM)
+        under_17_only = mode == REFINE_MODE_UNDER_17
         self.operate_click(*FILTER_BUTTON_POINT, name="打开装备筛选", after_sleep=0.5)
         dialog = self._wait_equipment(lambda screen: screen.filter_dialog, timeout=5.0)
         if dialog is None:
             self.info_set(REFINE_STEP, "未能打开装备筛选弹窗")
             return False
         self.operate_click(*dialog.filter_enhance_9, name="筛选+9以上装备", after_sleep=0.35)
-        self.operate_click(*dialog.filter_score_17, name="筛选17分以下装备", after_sleep=0.35)
+        if under_17_only:
+            self.operate_click(*dialog.filter_score_17, name="筛选17分以下装备", after_sleep=0.35)
         ready_filter = self._wait_equipment(
             lambda screen: screen.filter_confirm is not None, timeout=4.0
         )
@@ -400,27 +419,41 @@ class EquipmentDailyTask(TaskVisionMixin, BaseBD2Task):
         if filtered is None:
             self.info_set(REFINE_STEP, "确认装备筛选后未回到装备背包")
             return False
-        gear_point = filtered.first_gear_cell
-        if gear_point is None:
-            self.info_set(REFINE_STEP, "筛选 +9▲ 且 17▼ 后无可精炼装备，跳过")
+        first_cell = filtered.first_gear_cell
+        if first_cell is None:
+            label = "+9▲ 且 17▼" if under_17_only else "+9▲"
+            self.info_set(REFINE_STEP, f"筛选 {label} 后无可精炼装备，跳过")
             return REFINE_SKIPPED
-        self.operate_click(*gear_point, name="查看筛选后的装备", after_sleep=0.5)
-        detail = self._wait_equipment(lambda screen: screen.detail_refine is not None)
-        if detail is None:
-            return False
-        self.operate_click(*detail.detail_refine, name="打开精炼装备分数", after_sleep=0.6)
-        try:
-            refine = self._wait_equipment(
-                lambda screen: screen.refine_maxed or screen.refine_once is not None
-            )
-        except RefinementConflict as error:
-            self.info_set(REFINE_STEP, str(error))
-            return False
+        if under_17_only:
+            candidate_points = [first_cell]
+        else:
+            candidate_points = [point for _, point in filtered.scored_gear()][:3] or [first_cell]
+
+        refine = None
+        for index, gear_point in enumerate(candidate_points):
+            self.operate_click(*gear_point, name="查看筛选后的装备", after_sleep=0.5)
+            detail = self._wait_equipment(lambda screen: screen.detail_refine is not None)
+            if detail is None:
+                return False
+            self.operate_click(*detail.detail_refine, name="打开精炼装备分数", after_sleep=0.6)
+            try:
+                refine = self._wait_equipment(
+                    lambda screen: screen.refine_maxed or screen.refine_once is not None
+                )
+            except RefinementConflict as error:
+                self.info_set(REFINE_STEP, str(error))
+                return False
+            if refine is None:
+                self.info_set(REFINE_STEP, "未确认精炼页余额、消耗或精炼按钮")
+                return False
+            if not refine.refine_maxed:
+                break
+            self.info_set(REFINE_STEP, "精炼页显示已达到最大强化级别，跳过该装备")
+            if index + 1 >= len(candidate_points):
+                return False
+            if self._leave_refinement(refine) is None:
+                return False
         if refine is None:
-            self.info_set(REFINE_STEP, "未确认精炼页余额、消耗或精炼按钮")
-            return False
-        if refine.refine_maxed:
-            self.info_set(REFINE_STEP, "精炼页显示已达到最大强化级别，跳过")
             return False
         if equipment_daily_cycle() != cycle:
             return False

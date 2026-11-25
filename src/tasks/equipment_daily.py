@@ -15,6 +15,10 @@ EQUIPMENT_DAILY_OWNER = "EquipmentDailyTask"
 DISMANTLE_STEP = "分解装备一次"
 REFINE_STEP = "精炼装备一次"
 EQUIPMENT_STEPS = (DISMANTLE_STEP, REFINE_STEP)
+REFINE_MODE_KEY = "精炼筛选模式"
+REFINE_MODE_RANDOM = "随机精炼（24分以下）"
+REFINE_MODE_UNDER_17 = "仅精炼17分以下"
+REFINE_MODE_OPTIONS = (REFINE_MODE_RANDOM, REFINE_MODE_UNDER_17)
 _GRADE_ASSETS = (
     Path(__file__).resolve().parents[2] / "recognition-assets/template-assets/equipment_daily"
 )

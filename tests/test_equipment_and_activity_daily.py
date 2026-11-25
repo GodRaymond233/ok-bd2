@@ -15,6 +15,9 @@ from src.tasks.equipment_daily import (
     DISMANTLE_GRADE_FILES,
     DISMANTLE_SKIPPED,
     DISMANTLE_STEP,
+    REFINE_MODE_KEY,
+    REFINE_MODE_RANDOM,
+    REFINE_MODE_UNDER_17,
     REFINE_SKIPPED,
     REFINE_STEP,
     EquipmentScreen,
@@ -311,10 +314,76 @@ class EquipmentFlowTest(unittest.TestCase):
                 self.assertIs(expected, result)
                 actions = [c.kwargs["name"] for c in task.operate_click.call_args_list]
                 self.assertNotIn("保存", actions)
+                self.assertNotIn("筛选17分以下装备", actions)
                 accepted = expected is True
                 self.assertEqual(int(accepted), actions.count("精炼一次"))
                 self.assertEqual(int(accepted), task._record_step.call_count)
                 self.assertEqual(int(accepted), task._confirm_refinement.call_count)
+
+    def test_refine_mode_under_17_selects_17_filter_and_random_mode_retries_maxed_candidate(self):
+        filter_open = equipment_screen(
+            (
+                ("装备筛选", 0.50, 0.25),
+                ("强化阶段", 0.54, 0.29),
+                ("+94", 0.714, 0.327),
+                ("强化分数", 0.54, 0.39),
+                ("17V", 0.633, 0.436),
+                ("保存", 0.633, 0.750),
+                ("确认", 0.715, 0.750),
+            ),
+            fill=220,
+        )
+        grid = equipment_screen(
+            (
+                ("装备766/814", 0.20, 0.05),
+                ("一键分解", 0.89, 0.93),
+                ("24", 0.65, 0.20),
+                ("19", 0.71, 0.20),
+                ("22", 0.77, 0.20),
+            )
+        )
+        for x in (0.65, 0.71, 0.77):
+            px, py = round(x * 1920), round(0.20 * 1080)
+            grid.frame[py - 3 : py + 3, px - 3 : px + 3] = (80, 160, 220)
+        detail = equipment_screen(EXCLUSIVE_DETAIL_LABELS)
+        maxed = equipment_screen((*REFINEMENT_RESULT_LABELS, ("达到最大强化级别", 0.75, 0.93)))
+        good = equipment_screen(
+            (*REFINEMENT_RESULT_LABELS, ("30", 0.807, 0.839), ("精炼80", 0.84, 0.93))
+        )
+
+        # Under-17 mode clicks both +9▲ and 17▼.
+        task_under_17 = self.task()
+        task_under_17.config[REFINE_MODE_KEY] = REFINE_MODE_UNDER_17
+        obs17 = iter((filter_open, filter_open, grid, detail, good))
+        task_under_17._wait_equipment = Mock(
+            side_effect=lambda predicate, **_: next((v for v in obs17 if predicate(v)), None)
+        )
+        task_under_17._record_step = Mock()
+        task_under_17._confirm_refinement = Mock(return_value=True)
+        with patch("src.tasks.EquipmentDailyTask.equipment_daily_cycle", return_value="cycle"):
+            self.assertTrue(task_under_17._refine_once(grid, "cycle"))
+        actions17 = [c.kwargs["name"] for c in task_under_17.operate_click.call_args_list]
+        self.assertIn("筛选+9以上装备", actions17)
+        self.assertIn("筛选17分以下装备", actions17)
+
+        # Random (<24) mode skips 24-score grid badge, and if first candidate is maxed, retries 2nd.
+        task_random = self.task()
+        task_random.config[REFINE_MODE_KEY] = REFINE_MODE_RANDOM
+        obs_rand = iter((filter_open, filter_open, grid, detail, maxed, detail, good))
+        task_random._wait_equipment = Mock(
+            side_effect=lambda predicate, **_: next((v for v in obs_rand if predicate(v)), None)
+        )
+        task_random._leave_refinement = Mock(return_value=grid)
+        task_random._record_step = Mock()
+        task_random._confirm_refinement = Mock(return_value=True)
+        with patch("src.tasks.EquipmentDailyTask.equipment_daily_cycle", return_value="cycle"):
+            self.assertTrue(task_random._refine_once(grid, "cycle"))
+        actions_rand = [c.kwargs["name"] for c in task_random.operate_click.call_args_list]
+        self.assertIn("筛选+9以上装备", actions_rand)
+        self.assertNotIn("筛选17分以下装备", actions_rand)
+        self.assertEqual(2, actions_rand.count("查看筛选后的装备"))
+        task_random._leave_refinement.assert_called_once_with(maxed)
+        self.assertEqual(1, actions_rand.count("精炼一次"))
 
     def test_pass_gate_requires_actual_dismantling_before_refinement_in_same_round(self):
         task = self.task()
