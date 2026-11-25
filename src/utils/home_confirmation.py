@@ -60,6 +60,8 @@ HOME_DIMMED_P95_THRESHOLD_DEFAULT = 185.0
 
 # 遮挡主页的模态弹窗（登录加成、签到、公告板等）：面板自身亮、四周被压暗。
 MODAL_PANEL_BRIGHTNESS_THRESHOLD = 150
+MODAL_PANEL_DIM_BORDER_MAX_P75 = 80.0
+MODAL_PANEL_DIM_FALLBACK_THRESHOLD = 110
 MODAL_PANEL_MIN_AREA_RATIO = 0.06
 MODAL_PANEL_MAX_AREA_RATIO = 0.85
 MODAL_PANEL_MIN_SIDE_RATIO = 0.18
@@ -715,58 +717,75 @@ def modal_panel_bbox(frame) -> tuple[int, int, int, int] | None:
     if work_height <= 0 or work_width <= 0:
         return None
 
-    mask = (work >= MODAL_PANEL_BRIGHTNESS_THRESHOLD).astype(np.uint8)
     kernel_size = max(3, int(round(min(work_height, work_width) * 0.02)))
     if kernel_size % 2 == 0:
         kernel_size += 1
     kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-
-    try:
-        count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(
-            mask, 8,
-        )
-    except cv2.error:
-        return None
-
     frame_area = float(work_height * work_width)
     min_center_x, max_center_x, min_center_y, max_center_y = (
         MODAL_PANEL_CENTER_RANGE
     )
-    best_area = 0.0
-    best_bbox: tuple[int, int, int, int] | None = None
-    for index in range(1, count):
-        left, top, panel_width, panel_height, area = (
-            int(value) for value in stats[index][:5]
-        )
-        if panel_width <= 0 or panel_height <= 0:
-            continue
-        area_ratio = float(area) / frame_area
-        if not (
-            MODAL_PANEL_MIN_AREA_RATIO <= area_ratio <= MODAL_PANEL_MAX_AREA_RATIO
-        ):
-            continue
-        if (
-            panel_width / work_width < MODAL_PANEL_MIN_SIDE_RATIO
-            or panel_height / work_height < MODAL_PANEL_MIN_SIDE_RATIO
-        ):
-            continue
-        center_x = (left + panel_width / 2) / work_width
-        center_y = (top + panel_height / 2) / work_height
-        if not (min_center_x <= center_x <= max_center_x):
-            continue
-        if not (min_center_y <= center_y <= max_center_y):
-            continue
-        # The panel must cover the frame centre, not sit off to one side.
-        if not (
-            left < work_width * 0.5 < left + panel_width
-            and top < work_height * 0.5 < top + panel_height
-        ):
-            continue
-        if float(area) > best_area:
-            best_area = float(area)
-            best_bbox = (left, top, panel_width, panel_height)
+
+    def find_bbox(threshold: int, *, require_interior: bool) -> tuple[int, int, int, int] | None:
+        mask = (work >= threshold).astype(np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+
+        try:
+            count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(
+                mask, 8,
+            )
+        except cv2.error:
+            return None
+
+        best_area = 0.0
+        found: tuple[int, int, int, int] | None = None
+        for index in range(1, count):
+            left, top, panel_width, panel_height, area = (
+                int(value) for value in stats[index][:5]
+            )
+            if panel_width <= 0 or panel_height <= 0:
+                continue
+            if require_interior and (
+                left <= 0
+                or top <= 0
+                or left + panel_width >= work_width
+                or top + panel_height >= work_height
+            ):
+                continue
+            area_ratio = float(area) / frame_area
+            if not (
+                MODAL_PANEL_MIN_AREA_RATIO <= area_ratio <= MODAL_PANEL_MAX_AREA_RATIO
+            ):
+                continue
+            if (
+                panel_width / work_width < MODAL_PANEL_MIN_SIDE_RATIO
+                or panel_height / work_height < MODAL_PANEL_MIN_SIDE_RATIO
+            ):
+                continue
+            center_x = (left + panel_width / 2) / work_width
+            center_y = (top + panel_height / 2) / work_height
+            if not (min_center_x <= center_x <= max_center_x):
+                continue
+            if not (min_center_y <= center_y <= max_center_y):
+                continue
+            # The panel must cover the frame centre, not sit off to one side.
+            if not (
+                left < work_width * 0.5 < left + panel_width
+                and top < work_height * 0.5 < top + panel_height
+            ):
+                continue
+            if float(area) > best_area:
+                best_area = float(area)
+                found = (left, top, panel_width, panel_height)
+        return found
+
+    best_bbox = find_bbox(MODAL_PANEL_BRIGHTNESS_THRESHOLD, require_interior=False)
+    if best_bbox is None:
+        margin = max(1, int(round(work_width * 0.08)))
+        border = np.concatenate((work[:, :margin].ravel(), work[:, -margin:].ravel()))
+        if border.size and float(np.percentile(border, 75)) <= MODAL_PANEL_DIM_BORDER_MAX_P75:
+            best_bbox = find_bbox(MODAL_PANEL_DIM_FALLBACK_THRESHOLD, require_interior=True)
     if best_bbox is None or scale >= 1.0:
         return best_bbox
 
