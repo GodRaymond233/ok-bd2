@@ -314,11 +314,7 @@ class EquipmentDailyTask(TaskVisionMixin, BaseBD2Task):
             return DISMANTLE_SKIPPED
         if selected is None or selected.inventory != before:
             return False
-        check = dismantle_check_point(selected.frame)
-        if check is None:
-            return False
-        self.operate_click(*check, name="核对分解选择", after_sleep=0.5)
-        dialog = self._wait_equipment(lambda screen: screen.dismantle_dialog is not None)
+        dialog = self._open_dismantle_dialog(selected, before)
         if dialog is None or dialog.dismantle_dialog[0] != 1 or equipment_daily_cycle() != cycle:
             return False
         self._record_step(
@@ -327,6 +323,22 @@ class EquipmentDailyTask(TaskVisionMixin, BaseBD2Task):
         self.operate_click(*dialog.dismantle_dialog[1], name="分解一件装备", after_sleep=0.8)
         expected = (before[0] - 1, before[1])
         return self._close_dismantle_result(expected_inventory=expected) is not None
+
+    def _open_dismantle_dialog(self, selected, before):
+        screen = selected
+        for attempt in range(2):
+            check = dismantle_check_point(screen.frame)
+            if check is None:
+                return None
+            self.operate_click(*check, name="核对分解选择", after_sleep=0.5)
+            dialog = self._wait_equipment(lambda view: view.dismantle_dialog is not None)
+            if dialog is not None:
+                return dialog
+            if attempt == 0:
+                screen = self._read_equipment()
+                if screen.inventory != before or screen.selection_count != 1:
+                    return None
+        return None
 
     def _enter_dismantle_selection(self, inventory):
         if inventory.selection_page is not None:
