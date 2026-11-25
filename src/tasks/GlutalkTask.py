@@ -95,7 +95,6 @@ class GlutalkTask(TaskVisionMixin, BaseBD2Task):
             "每段对话最长秒数": 90.0,
             "整轮最长秒数": 300.0,
             "回复点击间隔秒数": 0.8,
-            "最多对话次数": 3,
             "每段结束后回主页重进": True,
             "重进后等待秒数": 2.0,
             "重进后检查秒数": 4.0,
@@ -112,7 +111,6 @@ class GlutalkTask(TaskVisionMixin, BaseBD2Task):
                 "不点击游戏。默认关闭，即自动检查并推进对话。"
             ),
             "保存探测截图": "仅探测模式下同时保存一张当前游戏画面。",
-            "最多对话次数": "单次运行最多点开几个会话；官方每天最多 3 次会面活动。",
             "每段结束后回主页重进": (
                 "出现「EPn. 对话结束」后，先返回主界面、再重新打开格鲁TALK，"
                 "才会触发下一阶段对话（游戏机制）。关闭后只处理当前一段。"
@@ -186,8 +184,34 @@ class GlutalkTask(TaskVisionMixin, BaseBD2Task):
     def return_home_after_run(self):
         return self.waits_for_login
 
+    def _close_talk_window(self, deadline: float = float("inf"), max_attempts: int = 3) -> bool:
+        """Close the GLU TALK overlay with bounded retries before home recovery."""
+        for _ in range(max_attempts):
+            if monotonic() >= deadline:
+                return False
+            frame, boxes, text = self._read()
+            if frame is None:
+                self.sleep(0.4)
+                continue
+            if classify_talk_page(text).page != "list":
+                return True
+            height, width = frame.shape[:2]
+            close = close_button_point(boxes, width, height)
+            if close is None:
+                self.sleep(0.4)
+                continue
+            self.operate_click(*close, name="格鲁TALK关闭", after_sleep=0.6)
+            end_at = min(deadline, monotonic() + 3.0)
+            while monotonic() < end_at:
+                _, _, current_text = self._read()
+                if classify_talk_page(current_text).page != "list":
+                    return True
+                self.sleep(0.4)
+        return False
+
     def _safe_return_home(self) -> bool:
         self.info_set("当前阶段", "返回主页")
+        self._close_talk_window(max_attempts=2)
         return self.auto_return_main_home()
 
     def _fail(self, stage: str) -> bool:
@@ -577,34 +601,31 @@ class GlutalkTask(TaskVisionMixin, BaseBD2Task):
             self.info_set("当前阶段", "已回到主界面：重新打开格鲁TALK")
         else:
             self.info_set("当前阶段", "对话结束：返回主界面并重新打开格鲁TALK")
-            frame, boxes, _ = self._read()
-            if frame is None:
-                return False
-            height, width = frame.shape[:2]
-            close = close_button_point(boxes, width, height)
-            if close is not None:
-                self.operate_click(*close, name="格鲁TALK关闭", after_sleep=0.6)
-                end_at = min(deadline, monotonic() + 5.0)
-                while monotonic() < end_at:
-                    _, _, text = self._read()
-                    if classify_talk_page(text).page != "list":
-                        break
-                    self.sleep(0.4)
+            self._close_talk_window(deadline=deadline, max_attempts=3)
             if not self._safe_return_home():
                 return False
         if monotonic() >= deadline or not self.prepare_home("重进格鲁TALK前主页确认"):
             return False
-        frame, boxes, _ = self._read()
-        if frame is None:
-            return False
-        entry = home_talk_entry(boxes, frame.shape[1], frame.shape[0])
-        if entry is None or monotonic() >= deadline:
-            return False
-        self.operate_click(*entry, name="格鲁TALK入口", after_sleep=1.0)
-        self.sleep(float(self.config.get("重进后等待秒数", 2.0)))
-        return self._wait_for_page(
-            "list", float(self.config.get("页面等待秒数", 12.0)), deadline,
-        )
+        reopen_wait = float(self.config.get("重进后等待秒数", 2.0))
+        page_wait = float(self.config.get("页面等待秒数", 12.0))
+        for _ in range(3):
+            if monotonic() >= deadline:
+                return False
+            frame, boxes, text = self._read()
+            if frame is None:
+                self.sleep(0.5)
+                continue
+            if classify_talk_page(text).page == "list":
+                return True
+            entry = home_talk_entry(boxes, frame.shape[1], frame.shape[0])
+            if entry is None:
+                self.sleep(0.5)
+                continue
+            self.operate_click(*entry, name="格鲁TALK入口", after_sleep=1.0)
+            self.sleep(reopen_wait)
+            if self._wait_for_page("list", min(page_wait, 6.0), deadline):
+                return True
+        return False
 
     def _has_new_stage(
         self, text, boxes, width: int, height: int, previous_episode: int | None,
@@ -649,7 +670,6 @@ class GlutalkTask(TaskVisionMixin, BaseBD2Task):
     def _scan(self) -> bool:
         """Episode loop: one EP ends -> back to home -> reopen GLU TALK."""
         deadline = monotonic() + max(10.0, float(self.config.get("整轮最长秒数", 300.0)))
-        limit = max(1, min(10, int(self.config.get("最多对话次数", 3))))
         self._click_total = 0
         self._last_episode = None
         self.info_set("完成对话数", 0)
@@ -658,7 +678,7 @@ class GlutalkTask(TaskVisionMixin, BaseBD2Task):
         stage = 0
         rechecked_idle = False
 
-        while completed < limit:
+        while True:
             stage += 1
             before_clicks = self._click_total
             result = self._advance_stage(stage, deadline)
@@ -676,7 +696,7 @@ class GlutalkTask(TaskVisionMixin, BaseBD2Task):
                 if rechecked_idle:
                     break
                 rechecked_idle = True
-            if completed >= limit or not bool(self.config.get("每段结束后回主页重进", True)):
+            if not bool(self.config.get("每段结束后回主页重进", True)):
                 break
             if monotonic() >= deadline:
                 self.info_set("状态", "格鲁TALK 未完成：整轮对话等待超时。")

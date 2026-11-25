@@ -493,6 +493,35 @@ class GlutalkTest(unittest.TestCase):
                     self.assertEqual(expected, task._advance_stage(1))
                 self.assertEqual(clicks, task.operate_click.call_count)
 
+    def test_restart_from_home_retries_close_and_reopen(self):
+        task = make_probe_task(仅探测模式=False, 重进后等待秒数=0.0, 页面等待秒数=2.0)
+        task.operate_click = Mock()
+        clock = FakeClock()
+        task.sleep = clock.sleep
+        task.prepare_home = Mock(return_value=True)
+        task._safe_return_home = Mock(return_value=True)
+        frame = np.zeros((HEIGHT, WIDTH, 3), np.uint8)
+        list_text = "GLU TALK 未读消息0 今日的剩余相遇1"
+        x_boxes = [box("X", int(0.779 * WIDTH) - 60, int(0.253 * HEIGHT) - 16)]
+        home_boxes = [box("格鲁TALK", int(0.205 * WIDTH) - 60, int(0.35 * HEIGHT) - 16)]
+        # Close: frame 1 misses X -> retry -> frame 2 clicks X -> leaves list.
+        # Reopen: frame 1 misses entry -> retry -> frame 2 clicks entry -> enters list.
+        reads = iter(
+            [
+                (frame, [], list_text),
+                (frame, x_boxes, list_text),
+                (frame, [], "主页"),
+                (frame, [], "主页"),
+                (frame, home_boxes, "主页"),
+            ]
+        )
+        task._read = Mock(side_effect=lambda: next(reads))
+        task._wait_for_page = Mock(side_effect=[True])
+        with patch("src.tasks.GlutalkTask.monotonic", clock):
+            self.assertTrue(task._restart_from_home())
+        names = [c.kwargs["name"] for c in task.operate_click.call_args_list]
+        self.assertEqual(["格鲁TALK关闭", "格鲁TALK入口"], names)
+
     def test_probe_and_completed_dialogue_never_dispatch_clicks(self):
         frame = np.zeros((HEIGHT, WIDTH, 3), np.uint8)
         for probe, text in (
