@@ -815,6 +815,88 @@ class NavigationRecoveryTest(unittest.TestCase):
                     self.assertEqual(success, nav._confirm_portal_interaction("交互").success)
                 self.assertEqual(events, seen)
 
+    def test_navigation_recovery_waits_for_a_confirmed_field_or_map(self):
+        field = np.full((8, 8, 3), 100, np.uint8)
+        illustrated_loading = np.full_like(field, 232)
+        black = np.zeros_like(field)
+        for destination in (ScreenState.SANDBOX, ScreenState.SANDBOX_MAP, None):
+            for initial in (illustrated_loading, black):
+                with self.subTest(destination=destination, black=initial is black):
+                    clock = FakeClock()
+                    nav = frame_navigator(initial, clock, click_client=Mock())
+                    nav.vision.capture = lambda: field if destination and clock() >= 1 else initial
+                    map_mode = MapPageMode.SANDBOX_LARGE_MAP
+                    nav._detect_map_page_mode = lambda frame: SimpleNamespace(mode=(
+                        map_mode if frame is field and destination == ScreenState.SANDBOX_MAP
+                        else MapPageMode.UNKNOWN
+                    ))
+                    nav.classify = lambda frame: (
+                        ScreenState.SANDBOX if frame is field else ScreenState.UNKNOWN
+                    )
+                    nav._auto_moving = Mock(return_value=False)
+                    nav._close_confirmed_map_page = Mock(
+                        return_value=NavigationResult(True, ScreenState.SANDBOX)
+                    )
+
+                    with patch(NAV_CLOCK, clock):
+                        result = nav._restore_navigation_field()
+
+                    self.assertEqual(destination is not None, result.success)
+                    if destination == ScreenState.SANDBOX_MAP:
+                        self.assertEqual(
+                            {map_mode}, nav._close_confirmed_map_page.call_args.args[0],
+                        )
+                    else:
+                        nav._close_confirmed_map_page.assert_not_called()
+                    self.assertGreaterEqual(clock(), 1)
+                    self.assertLessEqual(clock(), 4)
+                    nav.vision.click_client.assert_not_called()
+
+    def test_nightmare_winter_uses_skill_then_fast_travel_before_local_walk(self):
+        card = CARD_BY_ID["Q_ep2"]
+        target, current = card.targets[1:]
+        arrived = NavigationResult(True, ScreenState.SANDBOX)
+        failed = NavigationResult(False, ScreenState.UNKNOWN, "技能未到达目标")
+        direct = NavigationResult(
+            True, ScreenState.AREA_MAP, map_page_mode=MapPageMode.DIRECT_TELEPORT,
+        )
+        skill = replace(direct, map_page_mode=MapPageMode.GENERATE_TELEPORT)
+        for ground, skill_entry, skill_arrival, menu_arrival, expected in (
+            (direct, skill, arrived, False, ["circle", "teleport"]),
+            (failed, skill, arrived, False, ["circle", "skill", "teleport"]),
+            (failed, failed, failed, True, ["circle", "skill", "狩猎场"]),
+            (failed, skill, failed, True, ["circle", "skill", "teleport", "狩猎场"]),
+            (failed, skill, failed, False,
+             ["circle", "skill", "teleport", "狩猎场", "艾琳", "walk", "teleport"]),
+        ):
+            with self.subTest(expected=expected):
+                navigator = frame_navigator(np.full((8, 8, 3), 100, np.uint8))
+                navigator._detect_map_page_mode = Mock(
+                    return_value=SimpleNamespace(mode=MapPageMode.UNKNOWN)
+                )
+                navigator._restore_navigation_field = Mock(return_value=arrived)
+                navigator.current_collection_target = Mock(return_value=current.key)
+                navigator._confirm_collection_arrival = Mock(return_value=arrived)
+                navigator._collection_field_title = Mock(return_value=target.title)
+                navigator._walk_to_circle_neighbour = Mock(return_value=None)
+                events = []
+                navigator.open_teleport_map_from_sandbox = lambda: events.append("circle") or ground
+                navigator._open_teleport_skill = lambda _: events.append("skill") or skill_entry
+                navigator._travel_via_nav_menu = lambda entry: events.append(entry) or (
+                    entry if menu_arrival else None
+                )
+                navigator._walk_to_sandbox_teleport_interaction = lambda: (
+                    events.append("walk") or direct
+                )
+
+                def teleport(_, __, opened):
+                    events.append("teleport")
+                    return skill_arrival if opened is skill else arrived
+
+                navigator._teleport_collection_target = teleport
+                self.assertTrue(navigator._navigate_collection_target(card, target).success)
+                self.assertEqual(expected, events)
+
     def test_chapter_eighteen_recovers_the_circle_before_changing_maps(self):
         card = CARD_BY_ID["Q_sp18"]
         town, sanctuary, memory = card.targets
@@ -989,6 +1071,75 @@ class NavigationRecoveryTest(unittest.TestCase):
 
 
 class CollectionTravelTest(unittest.TestCase):
+    def test_portal_walk_counts_distinct_patrol_catches_and_cancels_after_reload(self):
+        for scenario, timeout, message in (
+            ("success", 45, ""),
+            ("patrol limit", 45, "巡逻驱逐"),
+            ("timeout", 3.5, "自动移动超时"),
+        ):
+            with self.subTest(scenario=scenario):
+                clock = FakeClock()
+                field = np.full((8, 8, 3), 120, dtype=np.uint8)
+                loading = np.full_like(field, 232)
+                phases = ["moving", "caught", "caught", "loading", "caught", "moving"]
+                phases += {
+                    "success": ["idle"],
+                    "patrol limit": ["caught", "loading", "loading", "moving"],
+                    "timeout": ["moving", "loading", "loading", "moving"],
+                }[scenario]
+
+                def phase():
+                    if nav.vision.click_client.called:
+                        return "idle"
+                    return phases[min(int(clock() * 2), len(phases) - 1)]
+
+                def read_walk(frame, *_args, **_kwargs):
+                    if frame is loading:
+                        return ""
+                    return {
+                        "moving": "自动移动中：魔法阵",
+                        "caught": "被监视型康德D02发现，已遭驱逐。自动移动中：魔法阵",
+                    }.get(phase(), "")
+
+                def cancel(_, __, *, after_sleep):
+                    self.assertGreaterEqual(clock(), 4.5)
+                    clock.sleep(after_sleep)
+
+                nav = frame_navigator(
+                    field, clock, click_client=Mock(side_effect=cancel), ocr_text=read_walk,
+                    simplify=str,
+                )
+                nav.vision.capture = lambda: loading if phase() == "loading" else field
+                nav.classify = lambda frame: (
+                    ScreenState.UNKNOWN if frame is loading else ScreenState.SANDBOX
+                )
+                nav._select_sandbox_teleport_walk = Mock(return_value=True)
+                nav._sandbox_navigation_page_has_keyword = Mock(return_value=False)
+                nav._field_battle_visible = Mock(return_value=False)
+                nav._click_sandbox_teleport_interaction = Mock(return_value=True)
+                nav._confirm_portal_interaction = Mock(
+                    return_value=NavigationResult(True, ScreenState.AREA_MAP)
+                )
+
+                with (
+                    patch(NAV_CLOCK, clock),
+                    patch(
+                        "src.tasks.map_trade.navigator_sandbox.SANDBOX_NAVIGATION_WALK_TIMEOUT",
+                        timeout,
+                    ),
+                ):
+                    result = nav._walk_to_sandbox_teleport_interaction()
+
+                self.assertEqual(scenario == "success", result.success)
+                if message:
+                    self.assertIn(message, result.message)
+                    nav._click_sandbox_teleport_interaction.assert_not_called()
+                    nav.vision.click_client.assert_called_once()
+                    self.assertLess(clock(), 8)
+                else:
+                    nav._click_sandbox_teleport_interaction.assert_called_once()
+                    nav.vision.click_client.assert_not_called()
+
     @staticmethod
     def _area_context(
         text: str,
@@ -1216,6 +1367,7 @@ class CollectionTravelTest(unittest.TestCase):
                     navigator._close_field_map = Mock(return_value=True)
                     navigator._leave_walk_battle_result = Mock(return_value=True)
                     navigator._retreat_from_field_battle = Mock(return_value=frame)
+                    navigator._cancel_walk = Mock()
                     opened = []
 
                     def open_map():
@@ -1239,6 +1391,7 @@ class CollectionTravelTest(unittest.TestCase):
                     self.assertEqual(1 if name == "timeout" else 2, len(opened))
                     if name == "timeout":
                         self.assertIn("徒步等待超时", result.message)
+                        navigator._cancel_walk.assert_called_once()
                         self.assertLessEqual(clock(), 4.5)
                         navigator._close_field_map.assert_not_called()
                     if name == "battle":
@@ -1377,10 +1530,11 @@ class CollectionTravelTest(unittest.TestCase):
                         side_effect=lambda: clock[0],
                     ):
                         if mode in {"title_only", "body_only"}:
-                            self.assertFalse(navigator._wait_resuming_walk(1))
+                            with patch.object(navigator, "_cancel_walk"):
+                                self.assertEqual("timeout", navigator._wait_auto_move_finished(1))
                         else:
                             with self.assertRaisesRegex(RuntimeError, "消耗品背包已满.*清理背包"):
-                                navigator._wait_resuming_walk(30)
+                                navigator._wait_auto_move_finished(30)
                             self.assertLessEqual(clock[0], 0.8)
                             task.log_warning.assert_called_once()
                     self.assertEqual(1 if mode == "paired" else 0, len(clicks))
