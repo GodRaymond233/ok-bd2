@@ -161,6 +161,9 @@ def parse_stone_rows(boxes) -> tuple[int, ...] | None:
         text = str(getattr(box, "name", "")).strip()
         if bounds is None or not text:
             return None
+        normalized = unicodedata.normalize("NFKC", text)
+        if not re.search(r"[0-9]", normalized) and not re.fullmatch(r"[,.kKmM万]+", normalized):
+            continue
         entries.append((*bounds, text))
     entries.sort(key=lambda entry: entry[1] + entry[3] / 2)
     rows = []
