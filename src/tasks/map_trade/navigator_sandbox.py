@@ -130,6 +130,7 @@ from src.tasks.map_trade.navigator_constants import (
     WALK_LABEL_READ_INTERVAL,
     WALK_LABEL_READ_TIMEOUT,
     WALK_MAP_OPEN_TIMEOUT,
+    WALK_PATROL_EXPULSION_LIMIT,
     AreaMapContext,
 )
 from src.tasks.map_trade.vision import normalize_text
@@ -144,6 +145,9 @@ PORTAL_INTERACTION_ATTEMPTS = 3
 NAV_MENU_OPEN_ATTEMPTS = 3
 NAV_DESTINATION_ATTEMPTS = 3
 NAV_MENU_ENTRY_ALIASES = {"狩猎场": ("狩猎", "猎场")}
+# 恶梦之城2的回阵路线经过监视型康德D02的巡逻区。
+TELEPORT_SKILL_FIRST_CARD_IDS = frozenset({"Q_ep2"})
+WALK_PATROL_LIMIT_MESSAGE = "自动移动连续遭巡逻驱逐，已达次数上限"
 
 
 class SandboxNavigationMixin:
@@ -726,12 +730,15 @@ class SandboxNavigationMixin:
         # 交互按钮可能在行走结束前出现；先等移动停止，避免传送后仍沿旧路线行走。
         walk_state = self._wait_auto_move_finished(max(0.0, walk_end_at - monotonic()))
         if walk_state != "done":
-            self._cancel_walk()
-            return NavigationResult(False, ScreenState.UNKNOWN, "走向传送阵的自动移动超时")
+            return NavigationResult(
+                False, ScreenState.UNKNOWN,
+                WALK_PATROL_LIMIT_MESSAGE if walk_state == "patrol_limit"
+                else "走向传送阵的自动移动超时",
+            )
         if not self._click_sandbox_teleport_interaction(timeout=self._loading_timeout()):
             # A walk still going (resumed after an unseen catch) would fight
             # the caller's next step (the ≡ menu).
-            self._cancel_walk()
+            self._cancel_walk(settle_timeout=SANDBOX_NAVIGATION_CONFIRM_TIMEOUT)
             return NavigationResult(
                 False,
                 ScreenState.SANDBOX,
@@ -1085,17 +1092,27 @@ class SandboxNavigationMixin:
                     if walked.success:
                         return walked
         opened = self._open_teleport_map_anywhere(card, target=target)
-        if opened.success:
+        skill_failure = None
+        while opened.success:
             if opened.state == ScreenState.SANDBOX:
                 return self._confirm_collection_arrival(card, target)
             result = self._teleport_collection_target(card, target, opened)
             if result.success:
                 return result
+            if (
+                skill_failure is not None
+                or card.card_id not in TELEPORT_SKILL_FIRST_CARD_IDS
+                or opened.map_page_mode != MapPageMode.GENERATE_TELEPORT
+            ):
+                break
+            skill_failure = result.message
+            opened = self._open_teleport_map_anywhere(card, target=target, resume_after_skill=True)
         else:
             result = opened
+        failure = f"{skill_failure}；{result.message}" if skill_failure else result.message
         ready = self._restore_navigation_field()
         if not ready.success:
-            return NavigationResult(False, ready.state, f"{result.message}；{ready.message}")
+            return NavigationResult(False, ready.state, f"{failure}；{ready.message}")
         current = self.current_collection_target(card)
         if current == target.key:
             return NavigationResult(True, ScreenState.SANDBOX, f"已核实到达{target.title}")
@@ -1114,7 +1131,7 @@ class SandboxNavigationMixin:
         if walked.success:
             return walked
         return NavigationResult(
-            False, walked.state, f"{result.message}；徒步恢复：{walked.message}",
+            False, walked.state, f"{failure}；徒步恢复：{walked.message}",
         )
 
 
@@ -1221,7 +1238,25 @@ class SandboxNavigationMixin:
                     return NavigationResult(False, ScreenState.UNKNOWN, "导航菜单关闭未确认")
                 self.task.sleep(SANDBOX_NAVIGATION_OCR_INTERVAL)
             self._navigation_menu_open = False
-        detection = self._detect_map_page_mode(frame)
+        end_at = monotonic() + SANDBOX_NAVIGATION_CONFIRM_TIMEOUT
+        while True:
+            if not self._black_frame(frame):
+                detection = self._detect_map_page_mode(frame)
+                if detection.mode != MapPageMode.UNKNOWN:
+                    break
+                state = self.classify(frame)
+                if state == ScreenState.SANDBOX:
+                    return self._wait_for_current_sandbox(timeout=max(0.0, end_at - monotonic()))
+                if state not in {ScreenState.LOADING, ScreenState.UNKNOWN}:
+                    return NavigationResult(
+                        False, state, "导航恢复前未确认箱庭或地图，未执行点击",
+                    )
+            if monotonic() >= end_at:
+                return NavigationResult(
+                    False, ScreenState.UNKNOWN, "导航恢复前未确认箱庭或地图，未执行点击",
+                )
+            self.task.sleep(SANDBOX_NAVIGATION_OCR_INTERVAL)
+            frame = self.vision.capture()
         if detection.mode == MapPageMode.GENERATE_TELEPORT:
             _, keywords, _ = self._teleport_generation_boxes(frame)
             if keywords:
@@ -1241,12 +1276,10 @@ class SandboxNavigationMixin:
             return self._close_confirmed_map_page(
                 {detection.mode}, timeout=SANDBOX_NAVIGATION_CONFIRM_TIMEOUT,
             )
-        state = self.classify(frame)
-        if state not in {ScreenState.SANDBOX, ScreenState.LOADING} and not self._black_frame(frame):
-            return NavigationResult(
-                False, ScreenState.UNKNOWN, "导航恢复前未确认箱庭或地图，未执行点击",
-            )
-        return self._wait_for_current_sandbox(timeout=SANDBOX_NAVIGATION_CONFIRM_TIMEOUT)
+        state = ScreenState.LOADING if self._black_frame(frame) else self.classify(frame)
+        if state in {ScreenState.SANDBOX, ScreenState.LOADING}:
+            return self._wait_for_current_sandbox(timeout=SANDBOX_NAVIGATION_CONFIRM_TIMEOUT)
+        return NavigationResult(False, state, "生成弹窗取消后未确认箱庭或地图")
 
     def _confirm_portal_interaction(self, trigger_name: str) -> NavigationResult:
         """每次交互都确认直传页，只在恢复箱庭后重试当前手势。"""
@@ -2324,10 +2357,6 @@ class SandboxNavigationMixin:
         return self._walk_flags(frame)[0]
 
     def _wait_auto_move_finished(self, timeout: float) -> str:
-        """Wait through patrol reloads within the same movement deadline."""
-        return "done" if self._wait_resuming_walk(timeout) else "timeout"
-
-    def _wait_resuming_walk(self, timeout: float) -> bool:
         """等待可自动续走的路线结束，背包满时关闭提示并停止任务。
 
         被驱逐后游戏会重新加载并继续移动；横幅、加载和巡逻提示均消失后再确认停止。
@@ -2335,6 +2364,10 @@ class SandboxNavigationMixin:
 
         end_at = monotonic() + max(0.0, timeout)
         idle = 0
+        expulsions = 0
+        # 加载、漏读和未确认续走的帧可能夹在同一次驱逐提示之间。
+        caught = False
+        result = "timeout"
         while monotonic() <= end_at:
             frame = self.vision.capture()
             if self._black_frame(frame):
@@ -2350,12 +2383,18 @@ class SandboxNavigationMixin:
                     raise RuntimeError(message)
                 if walk_state in {"moving", "caught"}:
                     idle = 0
-                    if walk_state == "caught":
+                    if walk_state == "caught" and not caught:
+                        expulsions += 1
+                        if expulsions >= WALK_PATROL_EXPULSION_LIMIT:
+                            self._status("导航状态", WALK_PATROL_LIMIT_MESSAGE)
+                            result = "patrol_limit"
+                            break
                         self._status("导航状态", "被巡逻发现，等游戏自己继续走")
+                    caught = walk_state == "caught"
                 elif walk_state == "idle":
                     idle += 1
                     if idle >= AUTO_MOVE_IDLE_READS:
-                        return True
+                        return "done"
                 else:
                     # A loading screen with art (not black), a dialog...
                     idle = 0
@@ -2364,8 +2403,10 @@ class SandboxNavigationMixin:
                     else:
                         self._leave_walk_battle_result(frame)
             self.task.sleep(0.5)
-        self._status("导航状态", f"自动移动{timeout:.0f}秒仍未结束，停止本次徒步")
-        return False
+        if result == "timeout":
+            self._status("导航状态", f"自动移动{timeout:.0f}秒仍未结束，停止本次徒步")
+        self._cancel_walk(settle_timeout=SANDBOX_NAVIGATION_CONFIRM_TIMEOUT)
+        return result
 
     def _leave_walk_battle_result(self, frame: np.ndarray) -> bool:
         text = normalize_text(self.vision.ocr_text(frame, "徒步战斗结果"))
@@ -2380,24 +2421,33 @@ class SandboxNavigationMixin:
         self.vision.click_client(point, frame.shape, after_sleep=1.0)
         return True
 
-    def _cancel_walk(self) -> bool:
-        """Press the ✕ under "自动移动中" while the banner shows; True when a
-        walk was stopped."""
-
+    def _cancel_walk(self, *, settle_timeout: float = 0.0) -> bool:
+        """Cancel on a confirmed field, allowing time for a patrol reload to finish."""
+        end_at = monotonic() + settle_timeout
         stopped = False
-        for _attempt in range(AUTO_MOVE_CANCEL_ATTEMPTS):
+        attempts = idle = 0
+        while attempts < AUTO_MOVE_CANCEL_ATTEMPTS:
             frame = self.vision.capture()
-            if not self._walk_flags(frame)[0]:
+            state = "unknown"
+            if not self._black_frame(frame) and self.classify(frame) == ScreenState.SANDBOX:
+                state = self._walk_state(frame, field_confirmed=True)
+            if state == "moving":
+                self._status("导航状态", "取消自动移动")
+                height, width = frame.shape[:2]
+                x, y = AUTO_MOVE_CANCEL_REFERENCE_POINT
+                self.vision.click_client(
+                    (round(x * width / FHD_1080.width), round(y * height / FHD_1080.height)),
+                    frame.shape,
+                    after_sleep=0.8,
+                )
+                attempts += 1
+                idle = 0
+                stopped = True
+                continue
+            idle = idle + 1 if state == "idle" else 0
+            if idle >= AUTO_MOVE_IDLE_READS or monotonic() >= end_at:
                 break
-            self._status("导航状态", "取消自动移动")
-            height, width = frame.shape[:2]
-            x, y = AUTO_MOVE_CANCEL_REFERENCE_POINT
-            self.vision.click_client(
-                (round(x * width / 1920), round(y * height / 1080)),
-                frame.shape,
-                after_sleep=0.8,
-            )
-            stopped = True
+            self.task.sleep(0.5)
         return stopped
 
     @staticmethod
@@ -2476,17 +2526,33 @@ class SandboxNavigationMixin:
 
     def _open_teleport_map_anywhere(
         self, card: CardSpec | None = None, *, target: CollectionMapTarget | None = None,
+        resume_after_skill: bool = False,
     ) -> NavigationResult:
-        """Return to the local circle before changing maps to recover a route."""
+        """Choose a confirmed teleport entry for the current cartridge."""
         entered = getattr(self, "_entered_card_id", None)
         if card is not None and entered is not None and entered != card.card_id:
             return NavigationResult(False, ScreenState.UNKNOWN, "实际入场卡带与传送请求不符")
-        opened = self.open_teleport_map_from_sandbox()
-        if opened.success:
-            return opened
-        failures = [opened.message]
+        skill_first = card is not None and target is not None and (
+            card.card_id in TELEPORT_SKILL_FIRST_CARD_IDS
+        )
+        if resume_after_skill:
+            opened = NavigationResult(False, ScreenState.UNKNOWN)
+            failures = []
+        else:
+            opened = self.open_teleport_map_from_sandbox()
+            if opened.success:
+                return opened
+            failures = [opened.message]
+        if skill_first and not resume_after_skill:
+            ready = self._restore_navigation_field()
+            if not ready.success:
+                return NavigationResult(False, ready.state, "；".join([*failures, ready.message]))
+            opened = self._open_teleport_skill(card)
+            if opened.success:
+                return opened
+            failures.append(opened.message)
         # 返城有明确的NPC落点；去其他目标时先保留当前地图，避免绕回无阵安全区。
-        if card is None or target != card.targets[0]:
+        if not skill_first and (card is None or target != card.targets[0]):
             ready = self._restore_navigation_field()
             if not ready.success:
                 return NavigationResult(False, ready.state, "；".join([*failures, ready.message]))
@@ -2530,7 +2596,7 @@ class SandboxNavigationMixin:
         ready = self._restore_navigation_field()
         if not ready.success:
             return NavigationResult(False, ready.state, "；".join([*failures, ready.message]))
-        if card is not None:
+        if card is not None and not skill_first:
             opened = self._open_teleport_skill(card)
             if opened.success:
                 return opened
@@ -2657,7 +2723,10 @@ class SandboxNavigationMixin:
         # An NPC entry walks on to the NPC after the loading screen.
         walk_state = self._wait_auto_move_finished(SANDBOX_NAVIGATION_WALK_TIMEOUT)
         if walk_state != "done":
-            self._navigation_failure = f"前往{entry}的自动移动未完成：{walk_state}"
+            self._navigation_failure = (
+                f"前往{entry}：{WALK_PATROL_LIMIT_MESSAGE}" if walk_state == "patrol_limit"
+                else f"前往{entry}的自动移动超时"
+            )
             return None
         return entry
 
@@ -2814,8 +2883,14 @@ class SandboxNavigationMixin:
                 if card.card_id in RESUMING_WALK_CARD_IDS
                 else SANDBOX_NAVIGATION_WALK_TIMEOUT
             )
-            if not self._wait_resuming_walk(walk_timeout):
-                return NavigationResult(False, self.classify(), f"前往{target.title}徒步等待超时")
+            walk_state = self._wait_auto_move_finished(walk_timeout)
+            if walk_state != "done":
+                return NavigationResult(
+                    False, self.classify(),
+                    f"前往{target.title}：{WALK_PATROL_LIMIT_MESSAGE}"
+                    if walk_state == "patrol_limit"
+                    else f"前往{target.title}徒步等待超时",
+                )
             arrived = self._wait_for_field_hud(
                 timeout=self._loading_timeout(),
                 interval=0.5,
