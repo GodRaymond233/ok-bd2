@@ -372,9 +372,17 @@ class QuickHuntTest(StageHistoryTestCase):
         ):
             with self.subTest(texts=texts):
                 self.assertEqual(expected, parse_stone_rows(stone_boxes(texts)))
+        stone_counts = ("3,437", "2,066", "1,971", "1,370", "1,495")
+        for name, noisy_boxes in (
+            ("stray_chinese_row", [box("处", y=60)] + stone_boxes(stone_counts)),
+            ("stray_chinese_same_row", [box("处", x=20, y=100)] + stone_boxes(stone_counts)),
+        ):
+            with self.subTest(name=name):
+                self.assertEqual((3437, 2066, 1971, 1370, 1495), parse_stone_rows(noisy_boxes))
         for name, boxes in (
             ("missing_row", baseline[:-1]),
             ("extra_row", baseline + [box("6", y=300)]),
+            ("stray_unit_row", baseline + [box("K", y=300)]),
             ("duplicate", baseline + [baseline[0]]),
             ("overlap", baseline + [box("00", x=130)]),
             ("separate_column", baseline + [box("00", x=200)]),
