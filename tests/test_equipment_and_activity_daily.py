@@ -710,5 +710,65 @@ class QuickSuppressionTaskTest(unittest.TestCase):
                     self.assertEqual([call(2.0)] * (2 if loaded else 0), task.sleep.call_args_list)
 
 
+class ActivityBannerFallbackTest(unittest.TestCase):
+    def test_activity_banner_tolerates_noisy_countdown_and_roi_fallback(self):
+        def make_screen(items):
+            frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+            boxes = [
+                SimpleNamespace(
+                    name=name, x=round(x * 1920), y=round(y * 1080), width=40, height=20
+                )
+                for name, x, y in items
+            ]
+            return ActivityScreen(frame, boxes)
+
+        clean = make_screen([("D-6", 0.84, 0.50), ("魔兽追踪者解锁", 0.84, 0.58)])
+        self.assertIsNotNone(clean.banner)
+        self.assertAlmostEqual(0.549, clean.banner[1], places=2)
+
+        noisy = make_screen([("S D-6", 0.83, 0.50), ("魔兽追踪者解锁", 0.84, 0.58)])
+        self.assertIsNotNone(noisy.banner)
+        self.assertAlmostEqual(0.549, noisy.banner[1], places=2)
+
+        merged = make_screen([("S D-6 魔兽追踪者解锁", 0.84, 0.55)])
+        self.assertIsNotNone(merged.banner)
+        self.assertAlmostEqual(0.559, merged.banner[1], places=2)
+
+        unlock_only = make_screen([("魔兽追踪者解锁", 0.84, 0.58)])
+        self.assertIsNotNone(unlock_only.banner)
+        self.assertAlmostEqual(0.534, unlock_only.banner[1], places=2)
+
+        announcement = make_screen([("魔兽追踪者战斗活动任务已开始", 0.35, 0.10)])
+        self.assertIsNone(announcement.banner)
+
+        wrong_side = make_screen([("D-20", 0.10, 0.50), ("魔兽追踪者解锁", 0.20, 0.58)])
+        self.assertIsNone(wrong_side.banner)
+
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        home_no_banner = ActivityScreen(frame, [])
+        region_banner = ActivityScreen(
+            frame,
+            [SimpleNamespace(name="魔兽追踪者解锁", x=1600, y=620, width=160, height=30)],
+        )
+        menu_screen = ActivityScreen(
+            frame,
+            [
+                SimpleNamespace(
+                    name=label, x=round(x * 1920), y=round(0.88 * 1080), width=60, height=25
+                )
+                for label, x in (("普通战斗", 0.35), ("挑战战斗", 0.45), ("活动商店", 0.74))
+            ],
+        )
+        act_task = ActivityDailyTask.__new__(ActivityDailyTask)
+        act_task.info_set = Mock()
+        act_task.operate_click = Mock()
+        act_task.sleep = Mock()
+        act_task._frame_confirms_home = Mock(return_value=True)
+        act_task._read_activity = Mock(side_effect=[home_no_banner, menu_screen])
+        act_task._region = Mock(return_value=region_banner)
+        self.assertIs(menu_screen, act_task._open_menu(home_no_banner))
+        act_task.operate_click.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

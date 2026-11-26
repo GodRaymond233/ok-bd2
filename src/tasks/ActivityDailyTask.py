@@ -12,6 +12,7 @@ from src.utils.activity_screen import (
     ACTIVITY_DAILY_OWNER,
     AP_COUNTER,
     FREE_AP_SWITCH,
+    HOME_BANNER_ROI,
     MODES,
     QUICK_BATTLE_STEP,
     QUICK_BUTTON_BOUNDS,
@@ -118,6 +119,12 @@ class ActivityDailyTask(BaseBD2Task):
             view = self._read_activity()
         return view if view.menu else None
 
+    def _home_banner_point(self, view):
+        if view.banner:
+            return view.banner, None
+        region = self._region(view, HOME_BANNER_ROI, "每日活动入口横幅")
+        return region.banner, region.labels
+
     def _open_menu(self, view):
         if view.menu:
             return view
@@ -133,10 +140,32 @@ class ActivityDailyTask(BaseBD2Task):
         if not (self._frame_confirms_home(view.frame, "每日活动入口") or self.recover_daily_home()):
             return None
         for _ in range(2):
-            home = self._wait_activity(lambda screen: screen.banner or screen.menu)
-            if home is None or home.menu:
+            banner_point = None
+            last_region_labels = None
+
+            def ready(screen):
+                nonlocal banner_point, last_region_labels
+                if screen.menu:
+                    return True
+                point, region_labels = self._home_banner_point(screen)
+                if region_labels is not None:
+                    last_region_labels = region_labels
+                if point is not None:
+                    banner_point = point
+                    return True
+                return False
+
+            home = self._wait_activity(ready)
+            if home is None:
+                if last_region_labels is not None:
+                    self.info_set(
+                        "每日活动入口 OCR",
+                        " ".join(text for text, _ in last_region_labels) or "-",
+                    )
+                continue
+            if home.menu:
                 return home
-            self.operate_click(*home.banner, name="打开每日活动", after_sleep=0.8)
+            self.operate_click(*banner_point, name="打开每日活动", after_sleep=0.8)
             menu = self._wait_activity(lambda screen: screen.menu)
             if menu:
                 return menu
