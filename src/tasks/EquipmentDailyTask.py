@@ -178,13 +178,29 @@ class EquipmentDailyTask(TaskVisionMixin, BaseBD2Task):
 
     def _scroll_to_bottom(self, screen, is_expected_page):
         stable_frames = 0
+        scrolled = False
         previous = self._grid_sample(screen.frame)
         for _ in range(24):
             rows = grid_blank_rows(screen.frame)
             if rows and rows[-1]:
                 # 可见的最后一行已经是空格子：装备列表到底了（整页空也一样）。
+                if not scrolled:
+                    return screen
+                # ScrollRect 触底可能先过冲再回弹，等网格画面稳定后再返回。
+                for _ in range(4):
+                    self.sleep(0.35)
+                    settled = self._read_equipment()
+                    if not is_expected_page(settled):
+                        return None
+                    current = self._grid_sample(settled.frame)
+                    settled_now = float(np.abs(current - previous).mean()) < 0.7
+                    screen = settled
+                    previous = current
+                    if settled_now:
+                        return screen
                 return screen
             self.scroll_client((0.70, 0.62), -4, count=4, after_sleep=0.5)
+            scrolled = True
             screen = self._read_equipment()
             if not is_expected_page(screen):
                 return None
@@ -223,7 +239,12 @@ class EquipmentDailyTask(TaskVisionMixin, BaseBD2Task):
                     timeout=2.5,
                 )
                 if selected is not None:
-                    return selected if dismantle_card_selected(selected.frame, target) else None
+                    if any(
+                        dismantle_card_selected(selected.frame, (target[0], target[1] + dy))
+                        for dy in (0.0, 0.03, 0.06)
+                    ):
+                        return selected
+                    return None
                 screen = self._read_equipment()
                 if (
                     not unselected_page(screen)
