@@ -12,6 +12,7 @@ from src.tasks.FreeGachaTask import (
     FREE_ENTRY_RETRY_READY,
     FREE_ENTRY_RETRY_STEP_UP,
     FREE_ENTRY_RETRY_UNKNOWN,
+    GACHA_SKIP_TEMPLATE,
     RESULT_BACK_TEMPLATE,
     FreeGachaTask,
 )
@@ -297,40 +298,43 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
             for scale in (0.72, 1, 2):
                 good = confirmation_boxes(pool, scale=scale)
                 other = "装备" if pool == "服装" else "服装"
-                for scenario, sequence, still_open, success, clicks in (
+                for scenario, sequence, status, success, clicks in (
                     (
-                        "closes",
+                        "entered",
                         [good, [], confirmation_boxes(pool, 2, scale=scale), good, good],
-                        False,
+                        "entered",
                         True,
                         1,
                     ),
-                    ("stuck", [good] * 4, True, False, 2),
+                    ("transition", [good, good], "transition", True, 1),
+                    ("stuck", [good] * 4, "dialog", False, 2),
+                    ("pool_ready_retry", [good] * 4, "pool_ready", False, 2),
+                    ("blocked", [good, good], "blocked", False, 1),
                     (
                         "changed",
                         [good, good, confirmation_boxes(pool, 2, scale=scale)],
-                        True,
+                        "dialog",
                         False,
                         1,
                     ),
-                    ("wrong_pool", [confirmation_boxes(other, scale=scale)], False, False, 0),
-                    ("zero", [confirmation_boxes(pool, 0, scale=scale)], False, False, 0),
+                    ("wrong_pool", [confirmation_boxes(other, scale=scale)], "entered", False, 0),
+                    ("zero", [confirmation_boxes(pool, 0, scale=scale)], "entered", False, 0),
                     (
                         "wrong_count",
                         [confirmation_boxes(pool, cost="免费2次", scale=scale)],
-                        False,
+                        "entered",
                         False,
                         0,
                     ),
                     (
                         "paid",
                         [confirmation_boxes(pool, cost="消耗钻石90", scale=scale)],
-                        False,
+                        "entered",
                         False,
                         0,
                     ),
-                    ("missing", [good[:-4]], False, False, 0),
-                    ("duplicate", [good + [good[-3]]], False, False, 0),
+                    ("missing", [good[:-4]], "entered", False, 0),
+                    ("duplicate", [good + [good[-3]]], "entered", False, 0),
                 ):
                     with self.subTest(pool=pool, scale=scale, scenario=scenario):
                         task = gacha_task(确认弹窗等待秒数=1.0, 确认提交重试次数=1)
@@ -345,7 +349,8 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
                         task._gacha_ocr_boxes = Mock(
                             side_effect=lambda *_: next(reads, sequence[-1])
                         )
-                        task._confirm_dialog_still_open = Mock(return_value=still_open)
+                        task._observe_post_confirm_transition = Mock(return_value=status)
+                        task._open_confirm_dialog_with_retry = Mock(return_value=True)
                         with patch.object(free_gacha_module, "monotonic", clock):
                             self.assertEqual(
                                 success, task._confirm_dialog_submission(pool + "抽抽乐")
@@ -353,36 +358,101 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
                         self.assertEqual(clicks, task.operate_click.call_count)
                         for click in task.operate_click.call_args_list:
                             np.testing.assert_allclose(click.args, (0.695, 0.55625))
-                        if scenario == "closes":
+                        if scenario == "entered":
                             self.assertEqual(5, task.capture_frame.call_count)
+                        if scenario == "pool_ready_retry":
+                            task._open_confirm_dialog_with_retry.assert_called_once_with(
+                                pool + "抽抽乐"
+                            )
+
+    def test_post_confirm_transition_and_pool_ready_recovery(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        miss = MatchResult(-1.0, (0, 0), (0, 0))
+        hit_skip = MatchResult(0.95, (1700, 30), (80, 60), zncc_score=0.95)
+        hit_loading = MatchResult(0.95, (100, 100), (40, 40), pixel_score=0.95)
+
+        for case, boxes_seq, match_fn, expected in (
+            (
+                "loading",
+                [],
+                lambda _f, s: hit_loading if s.name == "ui_loading_black" else miss,
+                "entered",
+            ),
+            ("skip", [], lambda _f, s: hit_skip if s == GACHA_SKIP_TEMPLATE else miss, "entered"),
+            ("dialog", [confirmation_boxes("服装")], lambda *_: miss, "dialog"),
+            ("no_free", [pool_boxes("服装", free=False)], lambda *_: miss, "entered"),
+            ("blocked", [pool_boxes("装备", free=True)], lambda *_: miss, "blocked"),
+            (
+                "pool_ready",
+                [pool_boxes("服装", free=True), pool_boxes("服装", free=True)],
+                lambda *_: miss,
+                "pool_ready",
+            ),
+            ("transition", [[]], lambda *_: miss, "transition"),
+        ):
+            with self.subTest(case=case):
+                task = gacha_task(确认弹窗等待秒数=0.6)
+                clock = FakeClock()
+                task.sleep = clock.sleep
+                task.capture_frame = Mock(return_value=frame)
+                task._match = Mock(side_effect=match_fn)
+                task._passes = Mock(side_effect=lambda res, _s: res is not None and res.score > 0.7)
+                reads = iter(boxes_seq)
+                task._gacha_ocr_boxes = Mock(
+                    side_effect=lambda *_: next(reads, boxes_seq[-1] if boxes_seq else [])
+                )
+                with patch.object(free_gacha_module, "monotonic", clock):
+                    self.assertEqual(expected, task._observe_post_confirm_transition("服装抽抽乐"))
+
+        # pool_ready triggers safe reopen + re-verify before second click, then enters.
+        good = confirmation_boxes("服装")
+        task = gacha_task(确认弹窗等待秒数=1.0, 确认提交重试次数=1)
+        clock = FakeClock()
+        task.sleep = clock.sleep
+        task.capture_frame = Mock(return_value=frame)
+        task._gacha_ocr_boxes = Mock(side_effect=[good, good, good, good])
+        task._observe_post_confirm_transition = Mock(side_effect=["pool_ready", "entered"])
+        task._open_confirm_dialog_with_retry = Mock(return_value=True)
+        with patch.object(free_gacha_module, "monotonic", clock):
+            self.assertTrue(task._confirm_dialog_submission("服装抽抽乐"))
+        task._open_confirm_dialog_with_retry.assert_called_once_with("服装抽抽乐")
+        self.assertEqual(2, task.operate_click.call_count)
 
     def test_result_return_recovers_lost_clicks_and_stops_at_pool_or_budget(self):
         for case, expected, counts in (
-            ("lost_clicks", True, (2, 2)),
-            ("late_detail", True, (1, 1)),
-            ("already_pool", True, (0, 0)),
-            ("unknown", False, (0, 0)),
-            ("loading", False, (0, 0)),
-            ("blocked", False, (0, 0)),
-            ("detail_stuck", False, (3, 0)),
-            ("result_stuck", False, (0, 3)),
-            ("ocr_over_budget", False, (0, 0)),
+            ("lost_clicks", True, (2, 2, 0)),
+            ("skip_detected", True, (0, 1, 2)),
+            ("auto_finish_no_skip", True, (0, 1, 0)),
+            ("late_detail", True, (1, 1, 0)),
+            ("already_pool", True, (0, 0, 0)),
+            ("unknown", False, (0, 0, 0)),
+            ("loading", False, (0, 0, 0)),
+            ("blocked", False, (0, 0, 0)),
+            ("detail_stuck", False, (3, 0, 0)),
+            ("result_stuck", False, (0, 3, 0)),
+            ("ocr_over_budget", False, (0, 0, 0)),
         ):
             with self.subTest(case=case):
                 task = object.__new__(FreeGachaTask)
-                task.config = {}
+                task.config = {"跳过点击间隔秒数": 0.2}
                 task.info_set = Mock()
                 task.log_info = Mock()
                 task._save_flow_diagnostic = Mock()
-                task._click_skip_until_back_page = Mock(return_value=(case != "late_detail", ""))
+                task._click_reference = Mock()
                 now, clicks = [0.0], []
                 task.sleep = lambda seconds: now.__setitem__(0, now[0] + seconds)
                 task.capture_frame = Mock(return_value=np.zeros((10, 10, 3), dtype=np.uint8))
                 task.operate_click = lambda x, y, **_: clicks.append((x, y))
+                unknown_polls = [0]
+
+                def find_skip(_frame):
+                    if case == "skip_detected":
+                        return (0.91, 0.05)
+                    return None
 
                 def observe(_frame, _pool):
                     if case == "ocr_over_budget":
-                        now[0] += 20
+                        now[0] += 25
                         return "detail", (0.74, 0.30)
                     if case == "already_pool":
                         return "pool", None
@@ -390,6 +460,12 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
                         return case, None
                     if case == "late_detail" and now[0] < 0.75:
                         return "unknown", None
+                    if case in ("skip_detected", "auto_finish_no_skip"):
+                        unknown_polls[0] += 1
+                        if unknown_polls[0] <= 2:
+                            return "unknown", None
+                        back_count = clicks.count((0.09, 0.05))
+                        return ("result", (0.09, 0.05)) if back_count < 1 else ("pool", None)
                     close_count = clicks.count((0.74, 0.30))
                     back_count = clicks.count((0.09, 0.05))
                     needed = 2 if case == "lost_clicks" else 1
@@ -399,24 +475,20 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
                         return "result", (0.09, 0.05)
                     return "pool", None
 
-                if case == "lost_clicks":
-                    del task._click_skip_until_back_page
-                    task.config.update({"跳过点击间隔秒数": .2, "结果跳过连续点击秒数": 3.,
-                                        "结果页 OCR 等待秒数": 1., "结果页 OCR 间隔秒数": .1})
-                    task._click_reference = Mock()
-                    task._ocr_keywords_in_frame = Mock(
-                        side_effect=[(False, ""), (True, "抽抽乐券")]
-                    )
+                task._find_gacha_skip_button = find_skip
                 task._result_return_state = observe
                 with patch.object(free_gacha_module, "monotonic", side_effect=lambda: now[0]):
                     self.assertEqual(expected, task._handle_result_until_back("装备抽抽乐"))
-                self.assertEqual(counts, (clicks.count((0.74, 0.30)), clicks.count((0.09, 0.05))))
-                self.assertLessEqual(now[0], 20 if case == "ocr_over_budget" else 12)
-                if case == "lost_clicks":
-                    self.assertEqual(15, task._click_reference.call_count)
-                    self.assertEqual([(1770, 60)] * 15,
-                                     [c.args for c in task._click_reference.call_args_list])
-                    self.assertEqual(2, task._ocr_keywords_in_frame.call_count)
+                self.assertEqual(
+                    counts,
+                    (
+                        clicks.count((0.74, 0.30)),
+                        clicks.count((0.09, 0.05)),
+                        clicks.count((0.91, 0.05)),
+                    ),
+                )
+                task._click_reference.assert_not_called()
+                self.assertLessEqual(now[0], 25 if case == "ocr_over_budget" else 20)
                 if expected:
                     task._save_flow_diagnostic.assert_not_called()
                 else:
@@ -442,10 +514,24 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
             cases = (
                 (["付费4025", "免费137312", "160", "UR0/100"], "result"),
                 (["付费4025", "免费137312", "160", "0/100"], "result"),
+                (
+                    [
+                        "付费0",
+                        "免费88,790",
+                        "682",
+                        "65/100",
+                        "抽抽乐点数",
+                        "付费抽抽乐",
+                        "抽1次",
+                        "抽10次",
+                    ],
+                    "result",
+                ),
                 (BACK_PAGE_KEYWORDS, "detail"),
                 (["付费4025", "免费137312", "0/100", "抽抽乐券"], "unknown"),
                 (["付费4025", "免费137312", "0/100", "抽抽乐记录"], "unknown"),
                 (["付费4025", "免费137312", "0/100", "抽1次"], "unknown"),
+                (["付费4025", "免费137312", "0/100", "抽抽乐点数", "免费1次"], "unknown"),
                 (["付费4025", "免费137312", "0/100", "取消"], "unknown"),
                 (["付费4025", "免费137312", "101/100"], "unknown"),
                 (["付费4025", "免费137312", "0/100", "1/100"], "unknown"),

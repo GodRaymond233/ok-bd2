@@ -32,7 +32,6 @@ GACHA_ENTRY_REFERENCE_POINT = (162, 986)
 EQUIPMENT_TAB_REFERENCE_POINT = (175, 432)
 BACK_BUTTON_REFERENCE_POINT = (105, 51)
 RESULT_PAGE_CLOSE_REFERENCE_POINT = (1420, 326)
-SKIP_BUTTON_REFERENCE_POINT = (1770, 60)
 RESULT_RETURN_ATTEMPTS = 3
 RESULT_RETURN_RETRY_INTERVAL = 2.0
 RESULT_BACK_TEMPLATE = TemplateSpec(
@@ -41,6 +40,33 @@ RESULT_BACK_TEMPLATE = TemplateSpec(
     # Keep the arrow's surrounding contrast; a white-only mask also matches bright backgrounds.
     crop=(0.72, 0.16, 0.88, 0.84), scale_ratios=(0.95, 1.0, 1.05),
     min_zncc_score=0.88, minimum_safe_threshold=0.88,
+)
+GACHA_SKIP_TEMPLATE = TemplateSpec(
+    "抽抽乐跳过图标",
+    "field/story_skip_icon.png",
+    0.72,
+    relative_roi=(0.82, 0.0, 1.0, 0.16),
+    reference_scale=0.5,
+    scale_ratios=(0.9, 1.0, 1.1),
+    min_zncc_score=0.72,
+    minimum_safe_threshold=0.72,
+)
+RESULT_FORBIDDEN_WORDS = (
+    "服装抽抽乐",
+    "装备抽抽乐",
+    "抽抽乐记录",
+    "所有免费抽抽乐",
+    "抽抽乐券",
+    "查看概率",
+    "兑换",
+    "未拥有",
+    "已拥有",
+    "重新贩售",
+    "pickup",
+    "免费1次",
+    "确认",
+    "取消",
+    "获取途径",
 )
 
 
@@ -683,26 +709,93 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
                 return False
             count = confirmation.count
             self.operate_click(*confirmation.point, after_sleep=1.0)
-            if not self._confirm_dialog_still_open(section_name):
-                # An unknown transition permits result observation, never another submission.
+            status = self._observe_post_confirm_transition(section_name)
+            if status == "entered":
+                self.log_info(f"{section_name}：已确认进入抽卡界面。")
                 return True
-            self.log_info(
-                f"{section_name}：确认弹窗未关闭，重试确认点击（{attempt}/{retries}）。"
-            )
-        self.log_info(f"{section_name}：多次确认点击后弹窗仍未关闭。")
+            if status == "transition":
+                # An unknown transition permits result observation, never another submission.
+                self.log_info(f"{section_name}：确认弹窗已关闭，转入结果观察。")
+                return True
+            if status == "blocked":
+                self.log_info(f"{section_name}：确认提交后页面状态异常，停止重试。")
+                return False
+            if attempt > retries:
+                break
+            if status == "dialog":
+                self.log_info(
+                    f"{section_name}：确认弹窗未关闭，重试确认点击（{attempt}/{retries}）。"
+                )
+                continue
+            if status == "pool_ready":
+                self.log_info(
+                    f"{section_name}：点击确认后未进入抽卡界面且原卡池免费入口仍在，"
+                    f"安全重试开框（{attempt}/{retries}）。"
+                )
+                if not self._open_confirm_dialog_with_retry(section_name):
+                    return False
+                continue
+        self.log_info(f"{section_name}：多次确认提交后仍未进入抽卡界面。")
         return False
 
-    def _confirm_dialog_still_open(self, section_name: str) -> bool:
-        """A missing dialog only permits observing results; it never proves completion."""
-        frame = self.capture_frame()
-        loading = self._match(frame, LOADING_TEMPLATE)
-        self.info_set(f"{section_name}_submit_loading", f"{loading.score:.3f}")
-        if self._passes(loading, LOADING_TEMPLATE):
-            return False
-        text = self._ocr_text(frame, name=f"{section_name}_submit")
-        dialog_hits = self._keyword_match_count(text, CONFIRM_DIALOG_KEYWORDS)
-        self.info_set(f"{section_name}_submit 关键字", f"弹窗{dialog_hits}")
-        return dialog_hits >= int(self.config.get("确认弹窗关键词最低命中数", 2))
+    def _find_gacha_skip_button(self, frame) -> tuple[float, float] | None:
+        match = self._match(frame, GACHA_SKIP_TEMPLATE)
+        if match is None or not self._passes(match, GACHA_SKIP_TEMPLATE):
+            return None
+        height, width = frame.shape[:2]
+        if width <= 0 or height <= 0:
+            return None
+        x = (match.position[0] + match.size[0] / 2) / width
+        y = (match.position[1] + match.size[1] / 2) / height
+        if not (0 < x < 1 and 0 < y < 1):
+            return None
+        return (x, y)
+
+    def _observe_post_confirm_transition(self, section_name: str) -> str:
+        """Verify whether confirm submission entered gacha, stayed open, or fell back to pool."""
+        window = min(2.5, max(0.5, float(self.config.get("确认弹窗等待秒数", 8.0))))
+        end_at = monotonic() + window
+        pool_ready_frames = 0
+        while monotonic() <= end_at:
+            frame = self.capture_frame()
+            loading = self._match(frame, LOADING_TEMPLATE)
+            self.info_set(
+                f"{section_name}_submit_loading",
+                f"{loading.score:.3f}" if loading is not None else "-1.000",
+            )
+            if loading is not None and self._passes(loading, LOADING_TEMPLATE):
+                return "entered"
+            if self._find_gacha_skip_button(frame) is not None:
+                return "entered"
+            boxes = self._gacha_ocr_boxes(frame, f"{section_name}_submit")
+            text = " ".join(box.name for box in boxes)
+            dialog_hits = self._keyword_match_count(text, CONFIRM_DIALOG_KEYWORDS)
+            self.info_set(f"{section_name}_submit 关键字", f"弹窗{dialog_hits}")
+            if dialog_hits >= int(self.config.get("确认弹窗关键词最低命中数", 2)):
+                return "dialog"
+            obs = self._pool_observation(frame, boxes, section_name)
+            if obs.state == FREE_ENTRY_RETRY_NO_FREE:
+                return "entered"
+            if obs.state == FREE_ENTRY_RETRY_BLOCKED:
+                return "blocked"
+            if obs.state == FREE_ENTRY_RETRY_READY:
+                pool_ready_frames += 1
+                if pool_ready_frames >= 2:
+                    return "pool_ready"
+            else:
+                pool_ready_frames = 0
+                result_state, _ = self._result_return_state_from_boxes(
+                    frame, boxes, section_name
+                )
+                if result_state in ("result", "detail"):
+                    return "entered"
+                if result_state == "blocked":
+                    return "blocked"
+            remaining = end_at - monotonic()
+            if remaining <= 0:
+                break
+            self.sleep(min(0.25, remaining))
+        return "transition"
 
     def _free_entry_retry_state(self, section_name: str):
         observation = self._observe_free_pool(section_name, f"{section_name}_retry")
@@ -733,14 +826,17 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
         return False
 
     def _handle_result_until_back(self, section_name: str) -> bool:
-        found, text = self._click_skip_until_back_page(section_name)
-        self.info_set(f"{section_name} 结果 OCR", text or "-")
-        if not found:
-            self.log_info(f"{section_name}：券详情尚未确认，继续有界观察结果和原卡池。")
-        end_at = monotonic() + max(0.0, float(self.config.get("抽卡页面等待秒数", 12.0)))
-        clicks = {"detail": 0, "result": 0}
+        budget = max(
+            0.0,
+            float(self.config.get("抽卡页面等待秒数", 12.0))
+            + float(self.config.get("结果跳过连续点击秒数", 3.0))
+            + float(self.config.get("结果页 OCR 等待秒数", 5.0)),
+        )
+        skip_interval = max(0.2, float(self.config.get("跳过点击间隔秒数", 0.2)))
+        end_at = monotonic() + budget
+        clicks = {"detail": 0, "result": 0, "skip": 0}
         previous, hits = None, 0
-        ready_at = next_click = 0.0
+        ready_at = next_click = next_skip_click = 0.0
         while monotonic() < end_at:
             frame = self.capture_frame()
             state, point = self._result_return_state(frame, section_name)
@@ -752,85 +848,99 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
                 return True
             if state == "blocked":
                 break
-            if state != previous:
-                hits = 0
-                delay_key = ("结果页关闭前等待秒数" if state == "detail"
-                             else "结果页返回前等待秒数")
-                ready_at = now + max(0.0, float(self.config.get(delay_key, 1.0)))
-            previous, hits = state, hits + 1
-            # Retry only on fresh, stable evidence; never back out of a returned pool.
-            if (point is not None and hits >= 2 and now >= max(ready_at, next_click)
-                    and clicks[state] < RESULT_RETURN_ATTEMPTS):
-                self.operate_click(*point, after_sleep=0.0)
-                clicks[state] += 1
-                action = "关闭券详情" if state == "detail" else "返回卡池"
-                self.info_set(f"{section_name} 结果收尾", f"{action} {clicks[state]}/3")
-                next_click = monotonic() + RESULT_RETURN_RETRY_INTERVAL
-                hits = 0
+            if state in ("detail", "result"):
+                if state != previous:
+                    hits = 0
+                    delay_key = (
+                        "结果页关闭前等待秒数"
+                        if state == "detail"
+                        else "结果页返回前等待秒数"
+                    )
+                    ready_at = now + max(0.0, float(self.config.get(delay_key, 1.0)))
+                previous, hits = state, hits + 1
+                # Retry only on fresh, stable evidence; never back out of a returned pool.
+                if (
+                    point is not None
+                    and hits >= 2
+                    and now >= max(ready_at, next_click)
+                    and clicks[state] < RESULT_RETURN_ATTEMPTS
+                ):
+                    self.operate_click(*point, after_sleep=0.0)
+                    clicks[state] += 1
+                    action = "关闭券详情" if state == "detail" else "返回卡池"
+                    self.info_set(f"{section_name} 结果收尾", f"{action} {clicks[state]}/3")
+                    next_click = monotonic() + RESULT_RETURN_RETRY_INTERVAL
+                    hits = 0
+            else:
+                previous, hits = state, 0
+                if state == "unknown":
+                    skip_point = self._find_gacha_skip_button(frame)
+                    if skip_point is not None and now >= next_skip_click:
+                        self.operate_click(*skip_point, after_sleep=0.0)
+                        clicks["skip"] += 1
+                        self.info_set(
+                            f"{section_name} 跳过按钮", f"已点击 {clicks['skip']} 次"
+                        )
+                        next_skip_click = monotonic() + skip_interval
             self.sleep(min(0.25, max(0.0, end_at - monotonic())))
-        self.log_info(f"{section_name}：结果收尾未确认原卡池，关闭详情{clicks['detail']}次、"
-                      f"返回{clicks['result']}次。")
+        self.log_info(
+            f"{section_name}：结果收尾未确认原卡池，跳过{clicks['skip']}次、"
+            f"关闭详情{clicks['detail']}次、返回{clicks['result']}次。"
+        )
         self._save_flow_diagnostic("gacha_result_return_failed")
         return False
 
     def _result_return_state(self, frame, section_name: str):
-        if self._passes(self._match(frame, LOADING_TEMPLATE), LOADING_TEMPLATE):
+        loading = self._match(frame, LOADING_TEMPLATE)
+        if loading is not None and self._passes(loading, LOADING_TEMPLATE):
             return "loading", None
         boxes = self._gacha_ocr_boxes(frame, f"{section_name} 结果收尾")
         text = " ".join(box.name for box in boxes)
         self.info_set(f"{section_name} 结果收尾 OCR", text or "-")
+        return self._result_return_state_from_boxes(frame, boxes, section_name)
+
+    def _result_return_state_from_boxes(self, frame, boxes, section_name: str):
+        text = " ".join(box.name for box in boxes)
         if self._keyword_match_count(text, BACK_PAGE_KEYWORDS) == len(BACK_PAGE_KEYWORDS):
-            return "detail", (RESULT_PAGE_CLOSE_REFERENCE_POINT[0] / REFERENCE_WIDTH,
-                              RESULT_PAGE_CLOSE_REFERENCE_POINT[1] / REFERENCE_HEIGHT)
+            return "detail", (
+                RESULT_PAGE_CLOSE_REFERENCE_POINT[0] / REFERENCE_WIDTH,
+                RESULT_PAGE_CLOSE_REFERENCE_POINT[1] / REFERENCE_HEIGHT,
+            )
         if self._pool_observation(frame, boxes, section_name).pool_confirmed:
             return "pool", None
         other_pool = "装备抽抽乐" if section_name == "服装抽抽乐" else "服装抽抽乐"
         normalized = normalize_ocr_text(text)
         if other_pool in normalized or "确认抽抽乐" in normalized:
             return "blocked", None
-        # The result has balances and a /100 counter, but no pool controls or covering dialog.
-        if (any(word in normalized for word in ("抽抽乐", "抽1次", "抽10次", "查看概率",
-                                                "兑换", "确认", "取消", "获取途径"))
-                or not all(word in normalized for word in ("付费", "免费"))):
+        if (
+            any(word in normalized for word in RESULT_FORBIDDEN_WORDS)
+            or not all(word in normalized for word in ("付费", "免费"))
+        ):
             return "unknown", None
-        counters = [(box, value) for box in boxes for value in re.findall(
-            r"(?<!\d)(\d{1,3})/100(?!\d)", normalize_ocr_text(box.name))]
+        if (
+            any(word in normalized for word in ("抽1次", "抽10次", "付费抽抽乐"))
+            and "抽抽乐点" not in normalized
+        ):
+            return "unknown", None
+        counters = [
+            (box, value)
+            for box in boxes
+            for value in re.findall(r"(?<!\d)(\d{1,3})/100(?!\d)", normalize_ocr_text(box.name))
+        ]
         height, width = frame.shape[:2]
-        if (len(counters) != 1 or int(counters[0][1]) > 100
-                or counters[0][0].x + counters[0][0].width >= width / 2
-                or counters[0][0].y < height * 0.8):
+        if (
+            len(counters) != 1
+            or int(counters[0][1]) > 100
+            or counters[0][0].x + counters[0][0].width >= width / 2
+            or counters[0][0].y < height * 0.8
+        ):
             return "unknown", None
         back = self._match(frame, RESULT_BACK_TEMPLATE)
-        if not self._passes(back, RESULT_BACK_TEMPLATE):
+        if back is None or not self._passes(back, RESULT_BACK_TEMPLATE):
             return "unknown", None
-        return "result", ((back.position[0] + back.size[0] / 2) / width,
-                          (back.position[1] + back.size[1] / 2) / height)
-
-    def _click_skip_until_back_page(self, section_name: str) -> tuple[bool, str]:
-        duration = max(0.0, float(self.config.get("结果跳过连续点击秒数", 3.0)))
-        interval = max(0.05, float(self.config.get("跳过点击间隔秒数", 0.2)))
-        minimum_matches = max(
-            1,
-            min(
-                len(BACK_PAGE_KEYWORDS),
-                int(self.config.get("结果页关键词最低命中数", len(BACK_PAGE_KEYWORDS))),
-            ),
-        )
-        end_at = monotonic() + duration
-
-        while monotonic() < end_at:
-            self._click_reference(*SKIP_BUTTON_REFERENCE_POINT, after_sleep=0.0)
-            remaining = end_at - monotonic()
-            if remaining <= 0:
-                break
-            self.sleep(min(interval, remaining))
-
-        return self._wait_for_ocr_keywords(
-            BACK_PAGE_KEYWORDS,
-            timeout=max(0.0, float(self.config.get("结果页 OCR 等待秒数", 5.0))),
-            minimum_matches=minimum_matches,
-            name=f"{section_name}_result",
-            interval=max(0.05, float(self.config.get("结果页 OCR 间隔秒数", 0.1))),
+        return "result", (
+            (back.position[0] + back.size[0] / 2) / width,
+            (back.position[1] + back.size[1] / 2) / height,
         )
 
     def _wait_for_ocr_keywords(
