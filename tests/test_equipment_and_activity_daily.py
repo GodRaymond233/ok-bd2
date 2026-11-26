@@ -21,6 +21,7 @@ from src.tasks.equipment_daily import (
     REFINE_SKIPPED,
     REFINE_STEP,
     EquipmentScreen,
+    dismantle_card_selected,
     dismantle_grade_points,
     equipment_ready_for_season_pass,
 )
@@ -876,6 +877,78 @@ class QuickSuppressionTaskTest(unittest.TestCase):
                     )
                     self.assertEqual(2 if loaded else 0, task._ocr_text.call_count)
                     self.assertEqual([call(2.0)] * (2 if loaded else 0), task.sleep.call_args_list)
+
+
+class DismantleScrollBounceAndClipTest(unittest.TestCase):
+    def test_dismantle_card_selected_tolerates_viewport_clipped_rows(self):
+        gold_bgr = (30, 170, 210)
+
+        def draw_gold_edges(center_x, center_y, *, top=True, bottom=True, left=True, right=True):
+            frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+            if top:
+                frame[center_y - 58 : center_y - 54, center_x - 45 : center_x + 45] = gold_bgr
+            if bottom:
+                frame[center_y + 54 : center_y + 58, center_x - 45 : center_x + 45] = gold_bgr
+            if left:
+                frame[center_y - 45 : center_y + 45, center_x - 58 : center_x - 54] = gold_bgr
+            if right:
+                frame[center_y - 45 : center_y + 45, center_x + 54 : center_x + 58] = gold_bgr
+            return frame
+
+        interior = (0.735, 0.50)
+        ix, iy = round(interior[0] * 1920), round(interior[1] * 1080)
+        self.assertTrue(dismantle_card_selected(draw_gold_edges(ix, iy), interior))
+        self.assertFalse(dismantle_card_selected(draw_gold_edges(ix, iy, top=False), interior))
+
+        clipped_top = (0.735, 0.202)
+        cx, cy = round(clipped_top[0] * 1920), round(clipped_top[1] * 1080)
+        self.assertTrue(
+            dismantle_card_selected(draw_gold_edges(cx, cy, top=False), clipped_top)
+        )
+        self.assertFalse(
+            dismantle_card_selected(draw_gold_edges(cx, cy, top=False, left=False), clipped_top)
+        )
+
+    def test_scroll_to_bottom_settles_bounce_and_scan_tolerates_snap_back(self):
+        def grid_frame(row_y_list):
+            frame = np.full((1080, 1920, 3), 25, dtype=np.uint8)
+            for y in row_y_list:
+                frame[y : y + 80, 740:1700] = 180
+            return SimpleNamespace(inventory=(100, 500), selection_count=0, frame=frame)
+
+        task = EquipmentDailyTask.__new__(EquipmentDailyTask)
+        task.sleep = Mock()
+        task.scroll_client = Mock()
+        task._read_equipment = Mock()
+        bottom_already = grid_frame([150])
+        self.assertIs(
+            bottom_already,
+            task._scroll_to_bottom(bottom_already, lambda view: view.selection_count == 0),
+        )
+        task.sleep.assert_not_called()
+
+        full_page = grid_frame([150, 280, 410, 540, 670, 800])
+        overshot = grid_frame([150])
+        snapped_1 = grid_frame([220])
+        snapped_2 = grid_frame([220])
+        task._read_equipment = Mock(side_effect=[overshot, snapped_1, snapped_2])
+        result = task._scroll_to_bottom(full_page, lambda view: view.selection_count == 0)
+        self.assertIs(snapped_2, result)
+        self.assertEqual(2, task.sleep.call_count)
+
+        selecting = SimpleNamespace(inventory=(100, 500), selection_count=0, frame=full_page.frame)
+        selected = SimpleNamespace(inventory=(100, 500), selection_count=1, frame=full_page.frame)
+        scan_task = EquipmentDailyTask.__new__(EquipmentDailyTask)
+        scan_task.operate_click = Mock()
+        scan_task.scroll_client = Mock()
+        scan_task._scroll_to_bottom = Mock(return_value=selecting)
+        scan_task._grade_points = Mock(return_value=[(0.735, 0.199)])
+        scan_task._wait_equipment = Mock(return_value=selected)
+        with patch(
+            "src.tasks.EquipmentDailyTask.dismantle_card_selected",
+            side_effect=lambda _f, pt: abs(pt[1] - 0.259) < 0.005,
+        ):
+            self.assertIs(selected, scan_task._scan_selection_tab(selecting, (100, 500)))
 
 
 if __name__ == "__main__":

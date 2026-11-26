@@ -503,10 +503,20 @@ def dismantle_card_selected(frame, point):
     patch = scaled[y - 66 : y + 67, x - 66 : x + 67].astype(np.int16)
     blue, green, red = patch.transpose(2, 0, 1)
     gold = (red > 145) & (green > 105) & (red - blue > 25) & (green - blue > 11)
-    for edge in (gold[:16, 27:106], gold[-16:, 27:106], gold[27:106, :16].T, gold[27:106, -16:].T):
-        if np.count_nonzero(np.any(edge, axis=0)) < 55:
-            return False
-    return True
+    edges = (
+        gold[:16, 27:106],
+        gold[-16:, 27:106],
+        gold[27:106, :16].T,
+        gold[27:106, -16:].T,
+    )
+    top_ok, bottom_ok, left_ok, right_ok = (
+        np.count_nonzero(np.any(edge, axis=0)) >= 55 for edge in edges
+    )
+    if not (left_ok and right_ok):
+        return False
+    if y < 235 or y > 860:
+        return bool(top_ok or bottom_ok)
+    return bool(top_ok and bottom_ok)
 
 
 def dismantle_check_point(frame):
