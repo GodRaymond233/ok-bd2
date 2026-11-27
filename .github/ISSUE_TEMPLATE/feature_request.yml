@@ -1,0 +1,34 @@
+name: 功能建议 / Feature Request
+description: 提出新任务、交互体验优化或适配需求
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        欢迎提出改进建议！请注意：BrownDust II PC 客户端无法可靠接收自动化键盘输入，本项目的正式自动化交互均基于鼠标点击与图像/OCR 识别。
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 想解决什么问题 / Problem or Motivation
+      description: 描述你在日常使用中遇到的痛点，或希望自动化的游戏流程。
+      placeholder: "例如：目前每次 ... 都需要手动操作，希望支持..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: 期望的行为或方案 / Proposed Behavior
+      description: 描述你希望该功能如何配置、触发以及在异常时如何处理。
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: 补充信息与参考截图 / Additional Context
+      description: 如有相关游戏界面截图（推荐 1920x1080 原图）或参考思路，请直接拖入此处。
+    validations:
+      required: false

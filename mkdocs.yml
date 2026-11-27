@@ -58,6 +58,7 @@ markdown_extensions:
   - pymdownx.superfences
 
 exclude_docs: |
+  /archive/
   /handoff/
   /upstream-test-status.md
   /code-quality-optimization-plan.md

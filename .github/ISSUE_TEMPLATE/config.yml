@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 在线使用文档 / Documentation
+    url: https://godraymond233.github.io/ok-bd2/
+    about: 安装指南、各任务配置说明与使用前检查
+  - name: QQ 交流群（玩家集结社｜棕尘2）
+    url: https://qm.qq.com/q/VYXd1fHUAM
+    about: 日常使用答疑、发送“生成问题报告”ZIP 反馈故障（群号：1081236717）
