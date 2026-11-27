@@ -689,6 +689,21 @@ class GlutalkTest(unittest.TestCase):
                     self.assertFalse(task._has_new_stage(text, boxes, WIDTH, HEIGHT, 0))
                 task.operate_click.assert_not_called()
 
+    def test_click_skip_template_falls_back_to_story_skip_icon(self):
+        from src.tasks.GlutalkTask import SKIP_TEMPLATE, STORY_SKIP_TEMPLATE
+
+        task = make_probe_task()
+        frame = np.zeros((HEIGHT, WIDTH, 3), np.uint8)
+        called = []
+
+        def fake_click(_frame, spec):
+            called.append(spec)
+            return spec == STORY_SKIP_TEMPLATE
+
+        task._click_template = fake_click
+        self.assertTrue(task._click_skip_template(frame))
+        self.assertEqual([SKIP_TEMPLATE, STORY_SKIP_TEMPLATE], called)
+
 
 if __name__ == "__main__":
     unittest.main()

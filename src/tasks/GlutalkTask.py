@@ -55,6 +55,16 @@ logger = getLogger(__name__)
 SKIP_TEMPLATE = TemplateSpec(
     "格鲁TALK跳过", "image/UI_Skip.png", 0.72, roi=(1372, 14, 398, 102),
 )
+STORY_SKIP_TEMPLATE = TemplateSpec(
+    "格鲁TALK剧情跳过图标",
+    "field/story_skip_icon.png",
+    0.72,
+    relative_roi=(0.78, 0.0, 0.94, 0.14),
+    reference_scale=0.5,
+    scale_ratios=(0.9, 1.0, 1.1),
+    min_zncc_score=0.72,
+    minimum_safe_threshold=0.72,
+)
 TALK_TEMPLATE = TemplateSpec(
     "格鲁TALK快进", "image/UI_talk.png", 0.72,
     relative_roi=(0.45, 0.68, 1.0, 1.0),
@@ -364,6 +374,11 @@ class GlutalkTask(TaskVisionMixin, BaseBD2Task):
         )
         return True
 
+    def _click_skip_template(self, frame) -> bool:
+        return self._click_template(frame, SKIP_TEMPLATE) or self._click_template(
+            frame, STORY_SKIP_TEMPLATE,
+        )
+
     def _advance_stage(self, stage: int, deadline: float = float("inf")) -> str:
         """Advance one EP.
 
@@ -465,7 +480,7 @@ class GlutalkTask(TaskVisionMixin, BaseBD2Task):
             if (
                 view.page == "unknown"
                 and bool(self.config.get("使用跳过按钮", True))
-                and self._click_template(frame, SKIP_TEMPLATE)
+                and self._click_skip_template(frame)
             ):
                 replies.reset()
                 clicks += 1
@@ -487,7 +502,7 @@ class GlutalkTask(TaskVisionMixin, BaseBD2Task):
                         return "failed"
             elif view.page == "dialogue":
                 if bool(self.config.get("使用跳过按钮", True)):
-                    if self._click_template(frame, SKIP_TEMPLATE) or self._click_template(
+                    if self._click_skip_template(frame) or self._click_template(
                         frame, TALK_TEMPLATE,
                     ):
                         replies.reset()
