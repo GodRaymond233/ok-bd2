@@ -1,0 +1,50 @@
+name: PR Title
+
+on:
+  pull_request:
+    types:
+      - opened
+      - edited
+      - synchronize
+      - reopened
+
+permissions: {}
+
+concurrency:
+  group: pr-title-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate PR title
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check Conventional Commits prefix
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import sys
+
+          title = os.environ.get("PR_TITLE", "").strip()
+          pattern = re.compile(
+              r"^(feat|fix|refactor|perf|docs|test|ci|build|chore)"
+              r"(\([a-z0-9][a-z0-9._/-]*\))?!?: .+"
+          )
+          if pattern.match(title):
+              print(f"PR title OK: {title}")
+              sys.exit(0)
+
+          print("::error::PR 标题不符合规范 / PR title does not follow Conventional Commits format.")
+          print(f"当前标题 / Current: {title!r}")
+          print("期望格式 / Expected: <type>(<scope>): <简明描述> (支持中文或英文，scope 可选)")
+          print("允许的 type: feat, fix, refactor, perf, docs, test, ci, build, chore")
+          print("示例 / Examples:")
+          print("  - fix(glutalk): 跳过全屏相遇并关闭满好感约会奖励页")
+          print("  - feat(desktop): 新增任务执行耗时汇总卡片")
+          print("  - docs: 更新贡献指南")
+          sys.exit(1)
+          PY
