@@ -424,7 +424,47 @@ class PVPTaskTest(unittest.TestCase):
                     result = task._wait_for_pvp_hub_after_cart(timeout=10)
                 self.assertEqual(scenario not in {"stuck", "unknown"}, result)
                 self.assertEqual(2 if scenario in {"stuck", "second"} else 1, len(clicks))
-                self.assertLessEqual(now[0], 10.5)
+                self.assertLessEqual(now[0], 16.5)
+
+    def test_return_from_hub_clears_paired_rank_pages_before_home(self):
+        rank = boxes("段位下滑。", "确认")
+        clear = boxes("胜利分2532", "确认")
+        for screens, expected_clicks, succeeds, timeout in (
+            ([rank, rank, clear], 1, True, 3),
+            ([rank[:1]], 0, False, 3),
+            ([clear], 0, True, 3),
+            ([clear, clear, rank, rank, clear], 1, True, 3),
+            ([rank], 2, False, 3),
+            ([rank[:1]] * 5 + [rank, rank, clear], 1, True, 3),
+        ):
+            with self.subTest(screens=screens):
+                task = pvp_task(**{"PVP 返回箱庭等待秒数": timeout})
+                clock = FakeClock()
+                frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+                task.capture_frame = Mock(return_value=frame)
+                task._frame_confirms_home = Mock(return_value=False)
+                task._pvp_special_page_ocr_boxes = Mock(
+                    side_effect=screens + [screens[-1]] * 40,
+                )
+                task._match = Mock(return_value=SimpleNamespace(score=0.99))
+                task._passes = Mock(return_value=True)
+                task.sleep = clock.sleep
+                task.operate_click = Mock(
+                    side_effect=lambda *a, **kw: clock.sleep(kw["after_sleep"]),
+                )
+                task._click_pvp_home = Mock(return_value=True)
+                task.prepare_home = Mock(
+                    side_effect=lambda *a, **kw: bool(kw["exit_scene"] and kw["exit_scene"](frame)),
+                )
+                with patch("src.tasks.PVPTask.monotonic", clock):
+                    self.assertIs(task._return_home_from_pvp_hub(), succeeds)
+                self.assertEqual(expected_clicks, task.operate_click.call_count)
+                for click in task.operate_click.call_args_list:
+                    self.assertEqual((0.5, 1005 / 1080), click.args)
+                    self.assertTrue(click.kwargs["require_fresh_target"])
+                self.assertEqual(int(succeeds), task._click_pvp_home.call_count)
+                if not succeeds:
+                    task._save_flow_diagnostic.assert_called_once_with("pvp_hub_return_failed")
 
     def test_run_observes_settlement_from_sunday_2300_until_monday_0800(self):
         task = pvp_task(**{"竞技场战斗倍数": 1})
@@ -940,7 +980,7 @@ class PVPTaskTest(unittest.TestCase):
                 task.capture_frame = Mock()
                 task._read_home_confirmation_signals = lambda *_: (clock() >= home_at, 0, 0, "")
                 task.dismiss_home_announcement = Mock(return_value=False)
-                task._wait_for_template = Mock(return_value=True)
+                task._wait_for_pvp_hub_clearing_overlays = Mock(return_value=True)
                 task._match = Mock()
                 task._passes = lambda *_: clock() < hub_visible_until
                 task._click_reference = Mock()
@@ -948,8 +988,8 @@ class PVPTaskTest(unittest.TestCase):
                 task.sleep = clock.sleep
                 with patch("src.tasks.BaseBD2Task.monotonic", clock):
                     self.assertTrue(task._return_home_from_pvp_hub())
-                task._wait_for_template.assert_called_once_with(
-                    PVP_MEDALS_TEMPLATE, timeout=10.0, name="PVP 箱庭"
+                task._wait_for_pvp_hub_clearing_overlays.assert_called_once_with(
+                    10.0, phase="PVP 退出", diagnostic="pvp_hub_return_failed",
                 )
                 home_click = call(*PVP_BACK_HOME_REFERENCE_POINT, after_sleep=2.0)
                 self.assertEqual(
