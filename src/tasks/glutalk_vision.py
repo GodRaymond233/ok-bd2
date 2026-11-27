@@ -57,7 +57,7 @@ EXHAUSTED_KEYWORDS = (
 POPUP_KEYWORDS = (
     "获得物品", "获得奖励", "获得道具", "点击画面即可返回", "奖励获得",
     "是否要进行相遇事件",
-    "获得好感度奖励",
+    "获得好感度奖励", "获得约会奖励",
 )
 
 # Positive evidence that a list row can be talked to. Deliberately narrow:
@@ -671,15 +671,19 @@ def dialogue_decision(
     normalized = _norm(text)
     if not normalized:
         return None
-    if "获得好感度奖励" in normalized and re.search(r"获得.+的好感度奖励", normalized):
-        for box in boxes:
-            point = _point(box, width, height)
-            if (
-                _norm(getattr(box, "name", "")) == "获得好感度奖励"
-                and point is not None and _inside(point, (.35, .25, .65, .45))
-            ):
-                return TalkAction("dismiss_reward", point, "相遇好感度奖励已显示，点击关闭奖励画面")
-        return None
+    for title, pattern, label in (
+        ("获得好感度奖励", r"获得.+的好感度奖励", "相遇好感度奖励已显示，点击关闭奖励画面"),
+        ("获得约会奖励", r"获得.+约会奖励", "相遇约会奖励已显示，点击关闭奖励画面"),
+    ):
+        if title in normalized and re.search(pattern, normalized):
+            for box in boxes:
+                point = _point(box, width, height)
+                if (
+                    _norm(getattr(box, "name", "")) == title
+                    and point is not None and _inside(point, (.35, .25, .80, .48))
+                ):
+                    return TalkAction("dismiss_reward", point, label)
+            return None
     if "是否要进行相遇事件" in normalized:
         point, evidence = encounter_confirmation_point(boxes, width, height)
         return TalkAction("encounter_confirm", point, evidence) if point is not None else None
