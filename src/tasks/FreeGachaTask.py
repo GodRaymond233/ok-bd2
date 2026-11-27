@@ -35,6 +35,8 @@ RESULT_PAGE_CLOSE_REFERENCE_POINT = (1420, 326)
 SKIP_BUTTON_REFERENCE_POINT = (1770, 60)
 RESULT_RETURN_ATTEMPTS = 3
 RESULT_RETURN_RETRY_INTERVAL = 2.0
+RESULT_RETURN_MIN_OBSERVATIONS = 8
+RESULT_RETURN_HARD_TIMEOUT = 45.0
 RESULT_BACK_TEMPLATE = TemplateSpec(
     "抽抽乐结果返回", "back_return_bar_arrow.png", 0.88,
     relative_roi=(0.03, 0.0, 0.13, 0.12),
@@ -756,15 +758,22 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
         self.info_set(f"{section_name} 结果 OCR", text or "-")
         if not found:
             self.log_info(f"{section_name}：券详情尚未确认，继续有界观察结果和原卡池。")
-        end_at = monotonic() + max(0.0, float(self.config.get("抽卡页面等待秒数", 12.0)))
+        started_at = monotonic()
+        window = max(0.0, float(self.config.get("抽卡页面等待秒数", 12.0)))
+        end_at = started_at + window
+        hard_end_at = started_at + max(RESULT_RETURN_HARD_TIMEOUT, window)
         clicks = {"detail": 0, "result": 0}
-        previous, hits = None, 0
-        ready_at = next_click = 0.0
-        while monotonic() < end_at:
+        previous, hits = ("detail", 1) if found else (None, 0)
+        ready_at = started_at + max(0.0, float(self.config.get("结果页关闭前等待秒数", 1.0)))
+        next_click = 0.0
+        observations = 0
+        while (monotonic() < hard_end_at
+               and (observations < RESULT_RETURN_MIN_OBSERVATIONS or monotonic() < end_at)):
             frame = self.capture_frame()
             state, point = self._result_return_state(frame, section_name)
+            observations += 1
             now = monotonic()
-            if now >= end_at:
+            if now >= hard_end_at:
                 break
             if state == "pool":
                 self.log_info(f"{section_name}：结果收尾已确认原卡池。")
@@ -786,7 +795,7 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
                 self.info_set(f"{section_name} 结果收尾", f"{action} {clicks[state]}/3")
                 next_click = monotonic() + RESULT_RETURN_RETRY_INTERVAL
                 hits = 0
-            self.sleep(min(0.25, max(0.0, end_at - monotonic())))
+            self.sleep(min(0.25, max(0.0, hard_end_at - monotonic())))
         self.log_info(f"{section_name}：结果收尾未确认原卡池，关闭详情{clicks['detail']}次、"
                       f"返回{clicks['result']}次。")
         self._save_flow_diagnostic("gacha_result_return_failed")
@@ -815,7 +824,7 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
                 or not all(word in normalized for word in ("付费", "免费"))):
             return "unknown", None
         counters = [(box, value) for box in boxes for value in re.findall(
-            r"(?<!\d)(\d{1,3})/100(?!\d)", normalize_ocr_text(box.name))]
+            r"(?<!\d)(\d{1,3})/100(?=0?(?!\d))", normalize_ocr_text(box.name))]
         height, width = frame.shape[:2]
         if (len(counters) != 1 or int(counters[0][1]) > 100
                 or counters[0][0].x + counters[0][0].width >= width / 2

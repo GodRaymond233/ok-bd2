@@ -464,7 +464,7 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
 
                 def observe(_frame, _pool):
                     if case == "ocr_over_budget":
-                        now[0] += 20
+                        now[0] += 46
                         return "detail", (0.74, 0.30)
                     if case == "already_pool":
                         return "pool", None
@@ -493,7 +493,7 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
                 with patch.object(free_gacha_module, "monotonic", side_effect=lambda: now[0]):
                     self.assertEqual(expected, task._handle_result_until_back("装备抽抽乐"))
                 self.assertEqual(counts, (clicks.count((0.74, 0.30)), clicks.count((0.09, 0.05))))
-                self.assertLessEqual(now[0], 20 if case == "ocr_over_budget" else 12)
+                self.assertLessEqual(now[0], 46 if case == "ocr_over_budget" else 12)
                 if case == "lost_clicks":
                     self.assertEqual(15, task._click_reference.call_count)
                     self.assertEqual([(1770, 60)] * 15,
@@ -503,6 +503,49 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
                     task._save_flow_diagnostic.assert_not_called()
                 else:
                     task._save_flow_diagnostic.assert_called_once_with("gacha_result_return_failed")
+
+    def test_slow_result_return_preserves_detail_evidence_and_counter_stability(self):
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        task = gacha_task()
+        task.capture_frame = Mock(return_value=frame)
+        task._click_skip_until_back_page = Mock(return_value=(True, "抽抽乐券"))
+        task._save_flow_diagnostic = Mock()
+        clock = FakeClock()
+        task.sleep = clock.sleep
+        task._match = lambda _, spec: MatchResult(
+            0.99 if spec == RESULT_BACK_TEMPLATE else -1, (160, 30), (20, 40),
+        )
+        task._passes = lambda match, _: match.score > 0.9
+        pages = [BACK_PAGE_KEYWORDS, ["付费4025", "免费137312", "44/1000"],
+                 ["付费4025", "免费137312", "44/100"], None]
+        seen = []
+
+        def ocr(*_):
+            labels = pages[len(seen)]
+            seen.append(labels)
+            clock.sleep(3.8)
+            return (pool_boxes() if labels is None else [
+                SimpleNamespace(name=label, x=100, y=950, width=100, height=30)
+                for label in labels
+            ])
+
+        task._gacha_ocr_boxes = ocr
+        with patch.object(free_gacha_module, "monotonic", clock):
+            self.assertTrue(task._handle_result_until_back("装备抽抽乐"))
+        self.assertEqual([(1420 / 1920, 326 / 1080), (170 / 1920, 50 / 1080)],
+                         [call.args for call in task.operate_click.call_args_list])
+        self.assertGreater(clock(), 12)
+        task._save_flow_diagnostic.assert_not_called()
+
+        clock.now = 0
+        task.operate_click.reset_mock()
+        task._result_return_state = Mock(
+            side_effect=lambda *_: (clock.sleep(3.8) or "unknown", None),
+        )
+        with patch.object(free_gacha_module, "monotonic", clock):
+            self.assertFalse(task._handle_result_until_back("装备抽抽乐"))
+        self.assertEqual(8, task._result_return_state.call_count)
+        task.operate_click.assert_not_called()
 
     def test_result_return_requires_result_evidence_and_current_back_position(self):
         for scale in (1, 2 / 3, 2):
@@ -524,6 +567,8 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
             cases = (
                 (["付费4025", "免费137312", "160", "UR0/100"], "result"),
                 (["付费4025", "免费137312", "160", "0/100"], "result"),
+                (["付费4025", "免费137312", "44/1000"], "result"),
+                (["付费4025", "免费137312", "44/10000"], "unknown"),
                 (BACK_PAGE_KEYWORDS, "detail"),
                 (["付费4025", "免费137312", "0/100", "抽抽乐券"], "unknown"),
                 (["付费4025", "免费137312", "0/100", "抽抽乐记录"], "unknown"),
