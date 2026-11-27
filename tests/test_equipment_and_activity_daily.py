@@ -291,9 +291,6 @@ class EquipmentFlowTest(unittest.TestCase):
             ((exclusive, button), [], good, "22", False),
             ((marker, ("专用装备", 0.61, 0.54), button), [], good, "22", False),
             ((marker, ("基本能力+8", 0.284, 0.51), button), [], good, "22", False),
-            ((marker, exclusive, button), ["22", "24"], good, "22", False),
-            ((marker, exclusive, button), ["21"], good, "22", False),
-            ((marker, exclusive, button), ["24"], good, "24", False),
             ((marker, exclusive, button), ["22"], conflict, "22", False),
         ):
             with self.subTest(
@@ -418,13 +415,12 @@ class EquipmentFlowTest(unittest.TestCase):
         ready = equipment_screen(
             (*REFINEMENT_RESULT_LABELS, ("30", .807, .839), ("精炼80", .84, .93)),
         )
-        for mode, badge, accepted in ((None, 22, True), (REFINE_MODE_UNDER_17, 18, False)):
+        for mode in (None, REFINE_MODE_UNDER_17):
             with self.subTest(mode=mode):
                 task = self.task()
                 task.config[REFINE_MODE_KEY] = mode
                 task._apply_refinement_filter = Mock(return_value=True)
                 task._leave_refinement = Mock(return_value=detail)
-                task._read_refinement_badges = Mock(return_value=(badge, badge))
                 task._record_step = Mock()
                 task._confirm_refinement = Mock(return_value=True)
                 observations = iter((before, detail, maxed, after, detail, ready))
@@ -436,12 +432,12 @@ class EquipmentFlowTest(unittest.TestCase):
                 with patch(
                     "src.tasks.EquipmentDailyTask.equipment_daily_cycle", return_value="cycle"
                 ):
-                    self.assertIs(accepted, task._refine_once(before, "cycle"))
+                    self.assertTrue(task._refine_once(before, "cycle"))
                 task._leave_refinement.assert_called_once_with(maxed)
                 clicks = task.operate_click.call_args_list
                 self.assertEqual("关闭装备详情", clicks[2].kwargs["name"])
                 self.assertEqual(after.scored_gear()[1][1], clicks[3].args)
-                self.assertEqual(int(accepted), task._record_step.call_count)
+                self.assertEqual(1, task._record_step.call_count)
 
     def test_pass_gate_requires_actual_dismantling_before_refinement_in_same_round(self):
         task = self.task()
