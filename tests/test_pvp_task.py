@@ -79,6 +79,7 @@ def auto_battle_harness(**config):
     task._click_ocr_pattern_center = Mock(return_value=True)
     task.capture_frame = Mock()
     task._ocr_text = Mock(return_value="40/40")
+    task._bd2_ocr_boxes = Mock(return_value=boxes("40/40"))
     task._ensure_free_ap_enabled = Mock(return_value=True)
     task._ensure_free_ap_disabled = Mock(return_value=True)
     task._ensure_multiplier = Mock(return_value=True)
@@ -590,7 +591,7 @@ class PVPTaskTest(unittest.TestCase):
         ):
             with self.subTest(paid=paid, readings=readings, switch_ok=switch_ok):
                 task = auto_battle_harness(**({"允许使用非免费鸡尾酒": True} if paid else {}))
-                task._ocr_text.side_effect = readings
+                task._bd2_ocr_boxes.side_effect = [boxes(text) for text in readings]
                 task._ensure_free_ap_enabled.return_value = switch_ok
                 self.assertEqual((state, multiplier), task._start_auto_battle(40))
                 self.assertEqual(len(readings), task.capture_frame.call_count)
@@ -607,6 +608,37 @@ class PVPTaskTest(unittest.TestCase):
                 if starts:
                     clicks.append(call(*PVP_BATTLE_START_SCREEN_POINT, after_sleep=2.0))
                 self.assertEqual(clicks, task._click_screen_reference.call_args_list)
+
+    def test_free_balance_requires_one_complete_ocr_box_and_scales_its_roi(self):
+        for width, height in ((1920, 1080), (1280, 720), (2560, 1440)):
+            frame = np.zeros((height, width, 3), dtype=np.uint8)
+            left, top = round(1530 * width / 1920), round(36 * height / 1080)
+            right, bottom = round(1815 * width / 1920), round(81 * height / 1080)
+            frame[top:bottom, left:right] = 123
+            task = pvp_task()
+            task.capture_frame = Mock(return_value=frame)
+            task.ocr = Mock(return_value=boxes("40/40"))
+            self.assertEqual(40, task._confirm_free_ap_balance())
+            crop = task.ocr.call_args.kwargs["frame"]
+            self.assertEqual((bottom - top, right - left, 3), crop.shape)
+            self.assertTrue(np.all(crop == 123))
+
+        clipped = SimpleNamespace(name="0/40", x=2, height=20)
+        for readings, expected in (
+            (boxes("3", "40/40"), 40),
+            (boxes("3", "0/40"), 0),
+            ([clipped], None),
+            (boxes("7/40", "40/40"), None),
+            (boxes("40／40"), 40),
+            (boxes("41/40"), None),
+            (boxes("340/40"), None),
+            (boxes("0/40 7/40"), None),
+        ):
+            with self.subTest(readings=readings):
+                task = pvp_task()
+                task.capture_frame = Mock()
+                task._bd2_ocr_boxes = Mock(return_value=readings)
+                self.assertEqual(expected, task._confirm_free_ap_balance())
 
     def test_free_switch_requires_readback_and_has_a_bounded_click_budget(self):
         on = np.full((1440, 2560, 3), (60, 140, 200), dtype=np.uint8)

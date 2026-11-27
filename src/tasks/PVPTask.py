@@ -1,4 +1,5 @@
 import re
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from time import monotonic
@@ -71,7 +72,7 @@ PVP_AUTO_BATTLE_CLICK_REFERENCE = (2026, 1291)  # 2560×1440 参考
 PVP_STAGE_CLICK_REFERENCE_OFFSET = (0, -75)  # 1920×1080 参考位移
 PVP_BATTLE_START_SCREEN_POINT = (1381, 1061)  # 2560×1440 参考
 PVP_FREE_AP_SWITCH_SCREEN_POINT = (1732, 557)  # 2560×1440 参考
-PVP_FREE_AP_BALANCE_SCREEN_ROI = (2218, 56, 122, 49)
+PVP_FREE_AP_BALANCE_SCREEN_ROI = (2040, 48, 380, 60)  # 2560×1440 参考
 PVP_AUTO_BATTLE_CANCEL_SCREEN_ROI = (970, 1040, 203, 85)
 PVP_FORMATION_LABEL_SCREEN_ROI = (190, 1245, 185, 84)
 PVP_FORMATION_BATTLE_SCREEN_ROI = (2270, 1274, 150, 80)
@@ -686,9 +687,16 @@ class PVPTask(BaseBD2Task):
         previous = None
         for attempt in range(3):
             frame = self.capture_frame()
-            text = normalize_ocr_text(self._ocr_text(frame, name="PVP 免费鸡尾酒余额", roi=roi))
-            values = re.findall(r"(?<![\d/])(\d{1,2})/40(?!\d)", text)
-            balance = int(values[0]) if len(values) == 1 and int(values[0]) <= 40 else None
+            boxes = self._bd2_ocr_boxes(frame, name="PVP 免费鸡尾酒余额", roi=roi)
+            values = []
+            for box in boxes:
+                text = normalize_ocr_text(unicodedata.normalize("NFKC", str(box.name)))
+                for match in re.finditer(r"(?<![\d/])(\d{1,2})/40(?!\d)", text):
+                    value = int(match[1])
+                    # A numeral at the crop edge can be the suffix of a clipped balance.
+                    clipped = match.start() == 0 and box.x < max(2, 0.5 * box.height)
+                    values.append(value if value <= 40 and not clipped else None)
+            balance = values[0] if len(values) == 1 else None
             if balance is not None and balance == previous:
                 return balance
             previous = balance
