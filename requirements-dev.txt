@@ -34,7 +34,7 @@ deprecation==2.1.0 ; sys_platform == 'win32'
     # via adbutils
 dulwich==1.2.21 ; sys_platform == 'win32'
     # via pyappify
-evdev==1.9.3 ; sys_platform == 'win32' and 'linux' in sys_platform
+evdev==2.0.0 ; sys_platform == 'win32' and 'linux' in sys_platform
     # via pynput
 fastapi==0.143.0 ; sys_platform == 'win32'
     # via ok-bd2
