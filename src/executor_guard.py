@@ -420,6 +420,10 @@ _install_lock = threading.Lock()
 def acquire_executor_lock(mode: str, lock: ExecutorLock | None = None):
     """Take the session lock; returns ``(True, None)`` or ``(False, holder_or_None)``."""
     global _executor_lock
+    from ok.child_session.win_api import in_child_session
+
+    if in_child_session()[0]:
+        raise RuntimeError("请从宿主桌面启动 ok-bd2；子会话内仅运行游戏和专用 agent")
     mark_current_process()
     lock = lock or ExecutorLock()
     if lock.acquire(mode):

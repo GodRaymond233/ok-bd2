@@ -412,7 +412,7 @@ class ScriptCase(unittest.TestCase):
             task_executor=executor,
             task_manager=self.manager,
             device_manager=SimpleNamespace(
-                capture_method=self.capture, get_hwnd_name=lambda: "BrownDust II"
+                config={}, capture_method=self.capture, get_hwnd_name=lambda: "BrownDust II"
             ),
             headless_app=SimpleNamespace(start_controller=controller),
             start_runtime=Mock(),
@@ -509,6 +509,9 @@ class ScriptRoutesTest(ScriptCase):
         self.assertIsNone(self.manager.imported)
 
     def test_recording_listens_to_the_mouse_only(self):
+        self.engine.device_manager.config["capture"] = "ChildSession"
+        self.assertEqual(400, self.post("/api/scripts-record/start").status_code)
+        self.engine.device_manager.config.clear()
         listener = Mock()
         mouse = SimpleNamespace(
             Listener=Mock(return_value=listener),

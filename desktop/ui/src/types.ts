@@ -290,6 +290,7 @@ export interface Device {
 }
 
 export interface CaptureUi {
+  child_session?: ChildSessionState | null;
   title: string;
   version: string;
   event_session_key: string;
@@ -307,6 +308,15 @@ export interface CaptureUi {
   maintenance?: boolean;
   tools_busy?: boolean;
   overlay?: { boxes: boolean };
+}
+
+export interface ChildSessionState {
+  enabled: boolean;
+  selected: boolean;
+  ready: boolean;
+  viewer: boolean;
+  session: number | null;
+  resolution: [number, number];
 }
 
 export interface StarterWait {

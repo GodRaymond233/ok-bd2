@@ -56,6 +56,9 @@ test("capture choices start with automatic, which is chosen when the core has no
   );
   assert.equal(sizeText([1920, 1080]), "1920 × 1080");
   assert.equal(sizeText(null), "—");
+  const child = captureChoices({ capture_methods: [...methods, { id: "ChildSession", label: "ChildSession", selected: true }], capture_preference: "ChildSession" });
+  assert.equal(child[0].note.includes("ChildSession"), false);
+  assert.deepEqual(child.filter((choice) => choice.selected).map((choice) => choice.id), ["ChildSession"]);
 });
 
 test("the Starter wait says how long it waited and how long it may still wait", () => {

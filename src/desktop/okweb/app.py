@@ -417,6 +417,8 @@ class WebRuntime:
         if not device:
             return []
         methods = self.device_manager.available_interaction_methods(device)
+        child = self.device_manager.config.get("capture") == "ChildSession"
+        methods = [method for method in methods if (_method_name(method) == "ChildSession") == child]
         selected = self.device_manager.config.get("interaction")
         return [{
             "id": _method_name(method),

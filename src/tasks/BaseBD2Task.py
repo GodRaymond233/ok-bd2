@@ -369,6 +369,14 @@ class BaseBD2Task(BaseTask):
 
     def operate(self, func: Callable, block: bool = True, restore_cursor: bool = True):
         interaction = getattr(self.executor, "interaction", None)
+        capture = getattr(self.executor, "method", None)
+        if getattr(getattr(capture, "hwnd_window", None), "is_child_session", False):
+            if not getattr(interaction, "is_child_session", False):
+                raise RuntimeError("子会话截图未配对子会话输入，已拒绝鼠标操作")
+        if getattr(interaction, "is_child_session", False) is True:
+            context = getattr(self, "_frame_input_context", (0, None))[1]
+            return interaction.operate(func, block=False, restore_cursor=False,
+                                       expected_context=context)
         if interaction is not None and hasattr(interaction, "operate"):
             if hasattr(interaction, "wait_for_input"):
                 return interaction.operate(
@@ -1284,6 +1292,11 @@ class BaseBD2Task(BaseTask):
         """Drag in the selected mouse mode."""
 
         interaction = getattr(self.executor, "interaction", None)
+        if getattr(interaction, "is_child_session", False):
+            self.operate(lambda: interaction.swipe(*start, *end, duration * 1000),
+                         block=False, restore_cursor=False)
+            self.sleep(after_sleep)
+            return
         background = bool(
             interaction and hasattr(interaction, "background_click_enabled")
             and interaction.background_click_enabled()

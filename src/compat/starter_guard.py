@@ -401,8 +401,17 @@ def _wait_for_game_window(controller, start_controller) -> bool:
     stable_since = None
     last_status_at = float("-inf")
     events = start_controller.communicate
+    manager = start_controller.og.device_manager
+    window = getattr(manager, "hwnd_window", None)
+    child_session = bool(getattr(window, "is_child_session", False))
+    if child_session:
+        from src.child_session.compat import RemoteStarterWatcher
+
+        watcher_context = RemoteStarterWatcher(manager.child_session_client())
+    else:
+        watcher_context = StarterWizardWatcher()
     try:
-        with StarterWizardWatcher() as watcher:
+        with watcher_context as watcher:
             while not controller.exit_event.is_set() and not cancel.is_set():
                 if controller._cancel_requested.is_set():
                     break
@@ -412,8 +421,12 @@ def _wait_for_game_window(controller, start_controller) -> bool:
                     window.do_update_window_size()
                     width, height = window.width, window.height
                     min_width, min_height = controller.STARTED_WINDOW_MIN_SIZE
-                    if window.hwnd and width >= min_width and height >= min_height:
-                        identity = (window.hwnd, width, height)
+                    found = window.exists if child_session else window.hwnd
+                    if found and width >= min_width and height >= min_height:
+                        identity = (
+                            window.capture_target_signature if child_session else window.hwnd,
+                            width, height,
+                        )
                         if identity != stable_identity:
                             stable_identity, stable_since = identity, now
                         elif now - stable_since >= controller.STARTED_WINDOW_STABLE_SECONDS:

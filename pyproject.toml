@@ -30,7 +30,7 @@ dependencies = [
     "adbutils>=2.8.0",
     "comtypes>=1.4.16",
     "msvc-runtime>=14.44.35112",
-    "ok-script[ocr]==3.0.14",
+    "ok-script[ocr]==3.0.15b1",
     "numpy>=2.4.0",
     "onnxocr-ppocrv6==0.0.1",
     "opencc>=1.2.0",

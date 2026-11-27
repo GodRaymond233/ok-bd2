@@ -89,6 +89,8 @@ DEVICE_KINDS = {"windows": "PC", "adb": "安卓", "browser": "浏览器"}
 # select_capture use. BitBltCaptureMethod serves both BitBlt and BitBlt_RenderFull;
 # ok-script keeps that choice in bitblt.render_full.
 CAPTURE_IDS = {
+    "BD2ChildSessionCapture": "ChildSession",
+    "ChildSessionCaptureMethod": "ChildSession",
     "WindowsGraphicsCaptureMethod": "WGC",
     "ForegroundBitBltCaptureMethod": "ForegroundBitBlt",
     "DesktopDuplicationCaptureMethod": "DXGI",
@@ -149,6 +151,9 @@ def task_payload(task):
             task.default_config,
             serialize=framework._json_value,
         )
+        manager = getattr(task.executor, "device_manager", None)
+        if manager is not None and manager.config.get("capture") == "ChildSession":
+            fields = [field for field in fields if field["key"] != "点击方式"]
         for field in fields:
             if field["key"] in DEDICATED_EDITORS:
                 field["editor"] = DEDICATED_EDITORS[field["key"]]
@@ -246,6 +251,11 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
     original_reset_settings = runtime.reset_settings
     original_about = runtime.about
     original_settings = runtime.settings
+    runtime.child_session = None
+    if runtime.ok.config.get("child_session"):
+        from src.child_session.controller import ChildSessionController
+
+        runtime.child_session = ChildSessionController(runtime.device_manager)
     controller = runtime.ok.headless_app.start_controller
     original_start = controller.start
 
@@ -496,6 +506,8 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
 
     def resize_window(width, height):
         """Resize the game's client area; refused while a task runs unpaused."""
+        if runtime.device_manager.config.get("capture") == "ChildSession":
+            raise ValueError("请在子会话查看器中把游戏设置为 16:9 全屏或无边框")
         app = runtime.ok.headless_app
         with config_lock:
             ensure_config_write()
@@ -582,7 +594,17 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
     runtime.game_paths = game_paths
     runtime.test_notification = test_notification
     runtime.open_launcher = open_launcher
-    runtime.settings = lambda: [describe_group(group) for group in original_settings()]
+    def settings():
+        groups = [describe_group(group) for group in original_settings()]
+        if runtime.device_manager.config.get("capture") == "ChildSession":
+            for group in groups:
+                group["fields"] = [field for field in group["fields"] if field["key"] not in {
+                    "Auto Resize Game Window", "Mute Game while in Background",
+                    "Exit App when Game Exits",
+                }]
+        return groups
+
+    runtime.settings = settings
     runtime.start_daily = start_daily
     runtime.tasks = lambda: [task_payload(task) for task in runtime.executor.get_all_tasks()]
     runtime.set_task_config = task_config
@@ -628,6 +650,7 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
         ui["diagnostic_pause"] = bool(getattr(runtime.ok.headless_app, "diagnostic_pause", False))
         ui["maintenance"] = bool(getattr(runtime.ok.headless_app, "maintenance", False))
         ui["tools_busy"] = executor_busy(runtime.executor)
+        ui["child_session"] = runtime.child_session.state() if runtime.child_session else None
         return ui
 
     # The routes, the select_* operations and the event stream all go through this.
@@ -851,6 +874,34 @@ def create_app(
     @app.post("/api/bd2/reports/{report_id}/reveal")
     def reveal_report(report_id: str):
         return report_call(reports.reveal, report_id)
+
+    @app.get("/api/bd2/child-session")
+    def child_session_state():
+        return runtime.child_session.state() if runtime.child_session else None
+
+    @app.post("/api/bd2/child-session/{action}")
+    def child_session_action(action: str, body: dict):
+        with config_lock:
+            runtime.ensure_config_write()
+            if (runtime.executor.current_task is not None
+                    or runtime.ok.headless_app.start_controller.starting):
+                raise HTTPException(400, "请先停止任务及游戏启动流程")
+            child = runtime.child_session
+            if child is None:
+                raise HTTPException(400, "当前版本未启用子会话")
+            try:
+                if action == "enable":
+                    return child.enable()
+                if action == "connect":
+                    return child.connect(view_only=not bool(body.get("manual")))
+                if action == "disconnect":
+                    child.disconnect()
+                    return child.state()
+                if action == "logoff" and body.get("confirm") is True:
+                    return child.logoff()
+                raise ValueError("未知操作或未确认注销")
+            except (ValueError, RuntimeError, OSError) as error:
+                raise HTTPException(400, str(error)) from error
 
     @app.get("/api/bd2/window")
     def window():

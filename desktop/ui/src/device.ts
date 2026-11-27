@@ -9,6 +9,7 @@ const CAPTURE_NOTES: Record<string, string> = {
   WGC: "Windows 图形捕获。窗口被挡住也能截图。",
   BitBlt_RenderFull: "WGC 不可用时的后备方式。",
   ForegroundBitBlt: "只能截最前面的窗口，运行时游戏不能被挡住。",
+  ChildSession: "在独立 Windows 子会话中运行游戏。请先在下方连接子会话。",
 };
 
 export interface CaptureChoice {
@@ -20,7 +21,7 @@ export interface CaptureChoice {
 
 /** "Automatic" first, then the methods the core offers, each with a short note. */
 export function captureChoices(ui: Pick<CaptureUi, "capture_methods" | "capture_preference">): CaptureChoice[] {
-  const order = ui.capture_methods.map((item) => item.label).join(" → ");
+  const order = ui.capture_methods.filter((item) => item.id !== "ChildSession").map((item) => item.label).join(" → ");
   return [
     {
       id: AUTO_CAPTURE,

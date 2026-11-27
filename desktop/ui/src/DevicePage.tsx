@@ -8,7 +8,7 @@ import { sizeText, starterProgress, starterText } from "./device.ts";
 import { CaptureOptions, WindowOptions } from "./DeviceOptions.tsx";
 import { coreText, t } from "./i18n.ts";
 import { AUTO_RESIZE_KEY, BASIC, DEVICE_KEYS, findGroup, pickFields } from "./settings.ts";
-import type { GamePaths, WindowInfo } from "./types.ts";
+import type { ChildSessionState, GamePaths, WindowInfo } from "./types.ts";
 import { Icon, PageHead, Toggle } from "./ui.tsx";
 import { Preview } from "./Preview.tsx";
 
@@ -178,6 +178,42 @@ function Resolution({ core }: { core: Core }) {
   );
 }
 
+function ChildSession({ core }: { core: Core }) {
+  const [state, setState] = useState<ChildSessionState | null>(core.ui?.child_session ?? null);
+  const [manual, setManual] = useState(false);
+  const [working, setWorking] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () => { void api.childSession().then((value) => { if (!cancelled) setState(value); }, () => undefined); };
+    refresh();
+    const timer = setInterval(refresh, 3000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, []);
+  if (!state) return null;
+  const locked = working || core.busy || Boolean(core.ui?.maintenance || core.ui?.diagnostic_pause);
+  const act = (action: "enable" | "connect" | "disconnect" | "logoff") => {
+    if (action === "logoff" && !window.confirm(t("注销会关闭子会话中的游戏，确定继续？"))) return;
+    setWorking(true);
+    void core.act(async () => setState(await api.childSessionAction(action, { manual, confirm: action === "logoff" })))
+      .finally(() => setWorking(false));
+  };
+  return <div className="card devcard">
+    <div className="bh">{t("Windows 子会话（实验）")}</div>
+    <div className="pad stack">
+      <div className="dsc">{t("游戏在独立桌面中运行。首次连接需 Windows 账号密码（不是 PIN），仅用于本次登录，不保存。家庭版与游戏兼容性尚待验证。")}</div>
+      <div role="status">{state.ready ? t("子会话已就绪") : state.viewer ? t("请在查看器中完成 Windows 登录，等待连接就绪") : t("尚未连接子会话")}</div>
+      <label className="row"><input type="checkbox" checked={manual} disabled={locked || state.viewer} onChange={(event) => setManual(event.target.checked)} />{t("允许在查看器中手动操作（游戏设置完成后用仅查看模式重连）")}</label>
+      <div className="row">
+        {!state.enabled && <button className="btn sm" disabled={locked} onClick={() => act("enable")}>{t("开启 Windows 子会话")}</button>}
+        <button className="btn sm primary" disabled={locked || !state.enabled || state.viewer} onClick={() => act("connect")}>{t("连接查看器")}</button>
+        <button className="btn sm" disabled={locked || !state.viewer} onClick={() => act("disconnect")}>{t("断开查看器")}</button>
+        <button className="btn sm" disabled={locked || state.session === null} onClick={() => act("logoff")}>{t("注销并关闭游戏")}</button>
+      </div>
+      <div className="why">{t("子会话固定 1920 × 1080，请把游戏设为 16:9 全屏或无边框。关闭客户端或查看器会保留游戏；更新、卸载前请先注销子会话。")}</div>
+    </div>
+  </div>;
+}
+
 export function DevicePage({ core }: { core: Core }) {
   const ui = core.ui;
   const [paths, setPaths] = useState<GamePaths | null>(null);
@@ -200,6 +236,7 @@ export function DevicePage({ core }: { core: Core }) {
     <div className="page device-page">
       <PageHead title={t("设备")} />
       <Connection core={core} />
+      {ui?.child_session && <ChildSession core={core} />}
       <div className="grid2">
         <div className="stack">
           <div className="card devcard">
@@ -227,7 +264,7 @@ export function DevicePage({ core }: { core: Core }) {
             <CaptureOptions core={core} locked={locked} notes />
             <div className="fld">
               <div className="lb">{t("交互方式")}</div>
-              <div className="dsc">{t("BD2 专用，只有这一种。")}</div>
+              <div className="dsc">{ui?.child_session?.selected ? t("子会话专用鼠标输入") : t("BD2 专用，只有这一种。")}</div>
               <div className="ctrl">
                 <span className="dsc">{coreText(ui?.interaction_methods.find((item) => item.selected)?.label ?? "—")}</span>
               </div>
@@ -242,7 +279,7 @@ export function DevicePage({ core }: { core: Core }) {
           </div>
         </div>
         <div className="stack">
-          <Resolution core={core} />
+          {!ui?.child_session?.selected && <Resolution core={core} />}
           <div className="card devcard">
             <div className="bh">{t("游戏启动与退出")}</div>
             <ConfigForm fields={pickFields(basic, DEVICE_KEYS)} disabled={false} saveField={(key, value) => core.setSetting(BASIC, key, value)}>

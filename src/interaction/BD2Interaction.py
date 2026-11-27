@@ -32,6 +32,8 @@ class InputTargetChanged(RuntimeError):
 class BD2Interaction(PostMessageInteraction):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        if getattr(self.hwnd_window, "is_child_session", False):
+            raise ValueError("宿主鼠标输入不能操作子会话窗口")
         self.cursor_position = None
         self._operating = False
         self._input_blocked = False

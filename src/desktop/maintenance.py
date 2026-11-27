@@ -146,6 +146,11 @@ def install_maintenance(app, runtime, version, request):
             raise ValueError("请先更新客户端，再进行这个操作")
         launcher = ""
         if operation == "update":
+            if runtime.ok.config.get("child_session"):
+                from ok.child_session.win_api import child_session_id
+
+                if child_session_id() is not None:
+                    raise ValueError("请先在设备页注销子会话，再更新客户端")
             if target not in available or not runtime.about()["update_supported"]:
                 raise ValueError("请重新检查更新，并选择列表中的较新版本")
             launcher = str(runtime.pyappify_module.pyappify_executable)

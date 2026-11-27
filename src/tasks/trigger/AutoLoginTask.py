@@ -153,6 +153,9 @@ class AutoLoginTask(BaseBD2Task):
 
     def _game_window(self):
         window = getattr(getattr(self.executor, "device_manager", None), "hwnd_window", None)
+        if getattr(window, "is_child_session", False):
+            info = window.info(refresh=True)
+            return info.get("session"), info.get("pid"), info.get("hwnd")
         return getattr(window, "pid", None), getattr(window, "hwnd", None)
 
     def check_login_screen(self, frame):

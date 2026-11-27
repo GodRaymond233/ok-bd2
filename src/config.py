@@ -8,6 +8,7 @@ from ok import Box
 from ok.util.GlobalConfig import create_basic_options
 
 from src import GAME_EXE, HWND_CLASS
+from src.child_session.compat import enable_child_session
 from src.compat.app_shortcuts import disable_framework_shortcuts
 from src.compat.executor_cleanup import enable_executor_cleanup
 from src.compat.starter_guard import enable_starter_launch_guard
@@ -38,6 +39,7 @@ disable_framework_shortcuts()
 enable_windows_10_wgc()
 enable_starter_launch_uri()
 enable_starter_launch_guard()
+enable_child_session()
 
 DX11_OPTION = "Launch with DX11"
 
@@ -103,6 +105,7 @@ config = {
         "start_exe": True,
     },
     "start_timeout": 120,
+    "child_session": {"resolution": [1920, 1080]},
     "window_size": {
         "width": 1200,
         "height": 800,

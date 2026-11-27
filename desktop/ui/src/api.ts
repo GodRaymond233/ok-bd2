@@ -5,6 +5,7 @@ import type {
   BackupEntry,
   BackupList,
   CaptureUi,
+  ChildSessionState,
   DesktopInfo,
   ExecutorStatus,
   ExportOptions,
@@ -163,6 +164,9 @@ export const api = {
   tool: (action: "capture" | "export-logs" | "install-folder" | "log-folder" | "screenshot-folder") =>
     request<{ ok: boolean; message: string }>(`/api/tools/${action}`, "POST"),
   window: () => request<WindowInfo>("/api/bd2/window"),
+  childSession: () => request<ChildSessionState | null>("/api/bd2/child-session"),
+  childSessionAction: (action: "enable" | "connect" | "disconnect" | "logoff", body = {}) =>
+    request<ChildSessionState>(`/api/bd2/child-session/${action}`, "POST", body),
   resizeWindow: (width: number, height: number) =>
     request<{ width: number; height: number; changed: boolean }>("/api/bd2/window/resize", "POST", { width, height }),
   game: () => request<GamePaths>("/api/bd2/game"),

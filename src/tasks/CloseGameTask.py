@@ -29,6 +29,11 @@ class CloseGameTask(BaseBD2Task):
         self.default_config[AFTER_DAILY_KEY] = False
 
     def run(self):
+        manager = self.executor.device_manager
+        if manager.config.get("capture") == "ChildSession":
+            manager.stop_hwnd()
+            self.info_set("状态", "游戏已关闭。")
+            return
         names = {name.casefold() for name in get_game_exe_names()}
         processes = {
             process.pid: process

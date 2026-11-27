@@ -417,6 +417,8 @@ def install_scripts(app, runtime):
         }
 
     def start_script_recording():
+        if runtime.device_manager.config.get("capture") == "ChildSession":
+            raise ValueError("子会话暂不支持宿主鼠标录制")
         with recording:
             if not (recorder["current"] and recorder["current"].is_recording):
                 with config_lock:
