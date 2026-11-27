@@ -420,6 +420,57 @@ class QuickHuntTest(StageHistoryTestCase):
                     self.assertRegex("光之洞穴", submitted.kwargs["expected_map_pattern"])
                     self.assertNotRegex("火之洞穴", submitted.kwargs["expected_map_pattern"])
 
+    def test_crystal_retries_same_element_only_after_wrong_map_cancel(self):
+        for results, expected in (
+            (["wrong_map", "done"], True),
+            (["wrong_map", "wrong_map"], False),
+            (["failed"], False),
+            (["budget_limited"], False),
+            (["depleted"], True),
+        ):
+            with self.subTest(results=results):
+                task = hunt_task()
+                task._quick_hunt_enter_crystal_cave = Mock(return_value=True)
+                task._quick_hunt_reconcile_pending = Mock(return_value=True)
+                task._quick_hunt_free_resource = Mock(return_value=60)
+                counts = {"火": 3119, "水": 3457, "风": 4363, "光": 2915, "暗": 2837}
+                task._quick_hunt_stone_counts = Mock(return_value=counts)
+                task._quick_hunt_click_ocr = Mock(return_value=True)
+                task._quick_hunt_execute_current_map = Mock(side_effect=results)
+                self.assertIs(task._quick_hunt_run_crystal_cave(), expected)
+                task._quick_hunt_stone_counts.assert_called_once()
+                self.assertEqual(len(results), task._quick_hunt_click_ocr.call_count)
+                submissions = task._quick_hunt_execute_current_map.call_args_list
+                for attempt, submitted in enumerate(submissions):
+                    self.assertEqual(
+                        ("MAX", "暗属性圣石" + ("重试" if attempt else "")), submitted.args,
+                    )
+                    self.assertEqual("火把", submitted.kwargs["resource"])
+                    self.assertEqual(bool(attempt), submitted.kwargs["diagnose_wrong_map"])
+                    self.assertRegex("暗之洞穴", submitted.kwargs["expected_map_pattern"])
+
+    def test_wrong_map_retry_requires_identified_map_and_successful_cancel(self):
+        for state, cancelled, diagnostic, expected, saved in (
+            ("wrong", True, False, "wrong_map", False),
+            ("wrong", True, True, "wrong_map", True),
+            ("wrong", False, False, "failed", True),
+            ("timeout", True, False, "failed", True),
+        ):
+            with self.subTest(state=state, cancelled=cancelled, diagnostic=diagnostic):
+                task = hunt_task()
+                task._quick_hunt_reconcile_pending = Mock(return_value=True)
+                task._quick_hunt_open_confirmation = Mock(return_value=True)
+                task._quick_hunt_wait_map_confirmation = Mock(return_value=(state, "", "光明洞穴"))
+                task._quick_hunt_cancel_dialog = Mock(return_value=cancelled)
+                task._quick_hunt_prepare_dialog = Mock()
+                self.assertEqual(expected, task._quick_hunt_execute_current_map(
+                    "MAX", "暗属性圣石", expected_map_pattern=r"暗.?之?.?洞穴",
+                    resource="火把", diagnose_wrong_map=diagnostic,
+                ))
+                task._quick_hunt_cancel_dialog.assert_called_once()
+                task._quick_hunt_prepare_dialog.assert_not_called()
+                self.assertEqual(int(saved), task._save_flow_diagnostic.call_count)
+
     def test_rice_scheduler_respects_initial_allowance_and_reselects_wrong_maps(self):
         for steps, balances, reserve, results, map_name, ok, targets, modes, costs in rice_plans():
             with self.subTest(steps=steps, balances=balances, results=results):

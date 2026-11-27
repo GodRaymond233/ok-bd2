@@ -884,19 +884,20 @@ class QuickHuntFeatureMixin:
             self.log_info("快速狩猎：不支持的圣石目标。")
             return False
         expected_map_pattern = rf"{re.escape(element)}.?之?.?洞穴"
-        clicked = self._quick_hunt_click_ocr(
-            [expected_map_pattern],
-            QUICK_HUNT_STONE_LIST_ROI,
-            self._quick_hunt_ui_timeout(),
-            name=f"选择{element}属性洞穴",
-        )
-        if not clicked:
-            return False
         mode = "MIN" if self.config.get("快速狩猎火把分配") == "只刷一次" else "MAX"
-        result = self._quick_hunt_execute_current_map(
-            mode, f"{element}属性圣石", expected_map_pattern=expected_map_pattern,
-            resource="火把",
-        )
+        for attempt in range(2):
+            if not self._quick_hunt_click_ocr(
+                [expected_map_pattern], QUICK_HUNT_STONE_LIST_ROI,
+                self._quick_hunt_ui_timeout(), name=f"选择{element}属性洞穴",
+            ):
+                return False
+            result = self._quick_hunt_execute_current_map(
+                mode, f"{element}属性圣石" + ("重试" if attempt else ""),
+                expected_map_pattern=expected_map_pattern, resource="火把",
+                diagnose_wrong_map=bool(attempt),
+            )
+            if result != "wrong_map":
+                break
         if result not in ("done", "depleted"):
             return False
         self._status_set("快速狩猎火把", "已耗尽" if result == "depleted" else "完成")
@@ -1371,6 +1372,8 @@ class QuickHuntFeatureMixin:
         resource: str = "米饭",
         max_cost: int | None = None,
         checkpoint_name: str | None = None,
+        *,
+        diagnose_wrong_map: bool = True,
     ) -> str:
         self._status_set("快速狩猎当前阶段", stage)
         checkpoint = f"狩猎提交:{resource}:{checkpoint_name or stage.removesuffix('重试')}"
@@ -1402,9 +1405,12 @@ class QuickHuntFeatureMixin:
                     f"快速狩猎：{stage}未确认目标地图 {expected_map_pattern}，"
                     f"当前={actual_map or map_text or '-'}，取消本次快速狩猎。"
                 )
-                self._save_flow_diagnostic("quick_hunt_wrong_map_failed")
+                if diagnose_wrong_map or map_state != "wrong":
+                    self._save_flow_diagnostic("quick_hunt_wrong_map_failed")
                 cancelled = self._quick_hunt_cancel_dialog(f"{stage}-取消错误地图")
-                return "wrong_map" if cancelled else "failed"
+                if not cancelled and not diagnose_wrong_map and map_state == "wrong":
+                    self._save_flow_diagnostic("quick_hunt_wrong_map_failed")
+                return "wrong_map" if cancelled and map_state == "wrong" else "failed"
         if count_mode not in {"MIN", "MAX"}:
             self.log_info(f"快速狩猎：不支持的次数模式：{count_mode}")
             return "failed"
