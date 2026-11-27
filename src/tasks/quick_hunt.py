@@ -112,6 +112,7 @@ QUICK_HUNT_MAP_SCAN_ROI = _quick_hunt_relative_roi(1528, 865, 330, 165)
 QUICK_HUNT_DIALOG_CONFIRM_ATTEMPTS = 3
 QUICK_HUNT_DIALOG_CONFIRM_TIMEOUT = 2.0
 QUICK_HUNT_ACTION_ATTEMPTS = 3
+QUICK_HUNT_INPUT_RECOVERY_ATTEMPTS = 2
 QUICK_HUNT_RETRY_INTERVAL = 2.0
 
 QUICK_HUNT_CRYSTAL_TITLE_ROI = _quick_hunt_relative_roi(340, 452, 235, 128)
@@ -1143,9 +1144,16 @@ class QuickHuntFeatureMixin:
                     return True
             elif (state == "off" and hits >= 2 and not saw_on and snapshot.switch_point
                   and clicks < 2 and self._active_time(monotonic) >= next_click):
-                self._quick_vision().click_client(
-                    snapshot.switch_point, snapshot.frame_shape, after_sleep=0.5,
-                )
+                try:
+                    self._quick_vision().click_client(
+                        snapshot.switch_point, snapshot.frame_shape, after_sleep=0.5,
+                    )
+                except InputTargetChanged as error:
+                    if not error.input_not_dispatched:
+                        raise
+                    hits, previous = 0, None
+                    self.sleep(0.2)
+                    continue
                 clicks += 1
                 hits = 0
                 next_click = self._active_time(monotonic) + QUICK_HUNT_RETRY_INTERVAL
@@ -1240,7 +1248,14 @@ class QuickHuntFeatureMixin:
                     cancel = [box for box in boxes if self._normalize_text(box.name) == "取消"]
                     point = self._quick_hunt_box_center(cancel[0]) if len(cancel) == 1 else None
                     if point:
-                        self._quick_vision().click_client(point, frame.shape, after_sleep=0.5)
+                        try:
+                            self._quick_vision().click_client(point, frame.shape, after_sleep=0.5)
+                        except InputTargetChanged as error:
+                            if not error.input_not_dispatched:
+                                raise
+                            menu_hits = 0
+                            self.sleep(0.2)
+                            continue
                         clicks += 1
                         next_click = self._active_time(monotonic) + QUICK_HUNT_RETRY_INTERVAL
             self.sleep(0.3)
@@ -1414,42 +1429,66 @@ class QuickHuntFeatureMixin:
         if count_mode not in {"MIN", "MAX"}:
             self.log_info(f"快速狩猎：不支持的次数模式：{count_mode}")
             return "failed"
-        submission = self._quick_hunt_prepare_dialog(
-            count_mode, stage, expected_map_pattern, resource, max_cost,
-        )
-        if submission == "budget_limited":
-            return "budget_limited" if self._quick_hunt_cancel_dialog(stage) else "failed"
-        if submission is None:
-            self._status_set("快速狩猎提交", "未通过消耗前核验")
-            self._save_flow_diagnostic("quick_hunt_confirmation_failed")
-            self._quick_hunt_cancel_dialog(stage)
-            return "failed"
-        prepared_at = time()
-        if run_history.day_start_ts(prepared_at) != float(scope.split(":", 1)[0]):
-            self._quick_hunt_cancel_dialog(stage)
-            return "failed"
-        evidence = {"map": submission.map_name, "count": submission.count,
-                    "cost": submission.cost, "pool": submission.pool, "resource": resource,
-                    "prepared_at": prepared_at, "phase": "prepared", "start_clicks": 0}
-        run_history.save_stage(self, checkpoint, "pending", scope=scope, evidence=evidence)
-        self._hunt_checkpoint = (checkpoint, scope, evidence)
-        if not self._quick_hunt_update_submission("attempted", start=True):
-            return "failed"
-        try:
-            self._quick_vision().click_client(
-                submission.start_point, submission.frame_shape, after_sleep=0.3,
+        for recovery in range(QUICK_HUNT_INPUT_RECOVERY_ATTEMPTS + 1):
+            submission = self._quick_hunt_prepare_dialog(
+                count_mode, stage, expected_map_pattern, resource, max_cost,
             )
-        except Exception as error:
-            if getattr(error, "input_not_dispatched", False):
-                current = run_history.read_stage(self, checkpoint)
-                if (current.get("state") == "pending" and current.get("scope") == scope
-                        and current.get("evidence") == self._hunt_checkpoint[2]):
+            if submission == "budget_limited":
+                return "budget_limited" if self._quick_hunt_cancel_dialog(stage) else "failed"
+            if submission is None:
+                self._status_set("快速狩猎提交", "未通过消耗前核验")
+                self._save_flow_diagnostic("quick_hunt_confirmation_failed")
+                self._quick_hunt_cancel_dialog(stage)
+                return "failed"
+            prepared_at = time()
+            if run_history.day_start_ts(prepared_at) != float(scope.split(":", 1)[0]):
+                self._quick_hunt_cancel_dialog(stage)
+                return "failed"
+            evidence = {"map": submission.map_name, "count": submission.count,
+                        "cost": submission.cost, "pool": submission.pool, "resource": resource,
+                        "prepared_at": prepared_at, "phase": "prepared", "start_clicks": 0}
+            run_history.save_stage(self, checkpoint, "pending", scope=scope, evidence=evidence)
+            self._hunt_checkpoint = (checkpoint, scope, evidence)
+            if not self._quick_hunt_update_submission("attempted", start=True):
+                return "failed"
+            attempted = self._hunt_checkpoint
+            try:
+                self._quick_vision().click_client(
+                    submission.start_point, submission.frame_shape, after_sleep=0.3,
+                )
+            except Exception as error:
+                if getattr(error, "input_not_dispatched", False):
+                    current = run_history.read_stage(self, checkpoint)
+                    if (self._hunt_checkpoint != attempted or current.get("state") != "pending"
+                            or current.get("scope") != scope
+                            or current.get("evidence") != attempted[2]):
+                        raise RuntimeError("狩猎提交记录已变化，停止恢复") from error
                     run_history.save_stage(
                         self, checkpoint, "pending", scope=scope, evidence=evidence,
                     )
+                    if isinstance(error, InputTargetChanged):
+                        restored = run_history.read_stage(self, checkpoint)
+                        if (restored.get("state") != "pending" or restored.get("scope") != scope
+                                or restored.get("evidence") != evidence):
+                            raise RuntimeError("狩猎提交记录已变化，停止归档") from error
+                        run_history.default_store().retire_stages(
+                            run_history.stage_owner(self),
+                            {checkpoint: restored},
+                            "输入环境变化，狩猎开始点击未发送",
+                        )
                     self._hunt_checkpoint = None
-            raise
-        return self._quick_hunt_wait_result(stage, submission=submission, resource=resource)
+                if not (isinstance(error, InputTargetChanged)
+                        and error.input_not_dispatched):
+                    raise
+                self._status_set("快速狩猎提交", f"输入环境变化，重新核验（{recovery + 1}）")
+                if recovery < QUICK_HUNT_INPUT_RECOVERY_ATTEMPTS:
+                    self.sleep(0.25)
+                    continue
+                break
+            return self._quick_hunt_wait_result(stage, submission=submission, resource=resource)
+        self._status_set("快速狩猎提交", "输入环境持续变化，点击未发送，停止本次狩猎")
+        self._quick_hunt_cancel_dialog(stage)
+        return "failed"
 
     def _quick_hunt_recover_submission(
         self, record: dict, checkpoint: str, stage: str, resource: str,
@@ -1586,12 +1625,31 @@ class QuickHuntFeatureMixin:
                 elif not may_have_started:
                     same_dialog_hits += 1
                     last_state = "次数弹窗仍在，尚未确认开始"
+                    previous_checkpoint = getattr(self, "_hunt_checkpoint", None)
                     if (same_dialog_hits >= 2 and self._active_time(monotonic) >= next_start
                             and start_clicks < QUICK_HUNT_ACTION_ATTEMPTS
                             and self._quick_hunt_update_submission("attempted", start=True)):
-                        self._quick_vision().click_client(
-                            current.start_point, current.frame_shape, after_sleep=0.3,
-                        )
+                        attempted = self._hunt_checkpoint
+                        try:
+                            self._quick_vision().click_client(
+                                current.start_point, current.frame_shape, after_sleep=0.3,
+                            )
+                        except InputTargetChanged as error:
+                            if not error.input_not_dispatched:
+                                raise
+                            key, scope, evidence = previous_checkpoint
+                            record = run_history.read_stage(self, key)
+                            if (self._hunt_checkpoint != attempted
+                                    or record.get("state") != "pending"
+                                    or record.get("scope") != scope
+                                    or record.get("evidence") != attempted[2]):
+                                raise RuntimeError("狩猎提交记录已变化，停止恢复") from error
+                            run_history.save_stage(self, key, "pending", scope=scope,
+                                                   evidence=evidence)
+                            self._hunt_checkpoint = previous_checkpoint
+                            same_dialog_hits = 0
+                            self.sleep(0.2)
+                            continue
                         start_clicks += 1
                         same_dialog_hits = 0
                         next_start = self._active_time(monotonic) + QUICK_HUNT_RETRY_INTERVAL
@@ -1622,7 +1680,12 @@ class QuickHuntFeatureMixin:
         point = self._quick_hunt_box_center(buttons[0]) if len(buttons) == 1 else None
         if point is None:
             return False
-        self._quick_vision().click_client(point, frame.shape, after_sleep=0.5)
+        try:
+            self._quick_vision().click_client(point, frame.shape, after_sleep=0.5)
+        except InputTargetChanged as error:
+            if not error.input_not_dispatched:
+                raise
+            return False
         return True
 
     def _quick_hunt_stone_counts(self) -> dict[str, int] | None:

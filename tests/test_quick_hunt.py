@@ -1173,6 +1173,177 @@ class QuickHuntRecoveryTest(StageHistoryTestCase):
                     self.assertEqual(stored == 0, click.called)
                     self.assertEqual(stored == 0, task._quick_hunt_open_confirmation.called)
 
+    def test_unsent_start_revalidates_before_retry_and_retires_only_its_own_record(self):
+        for case in ("recovered", "exhausted", "invalid_dialog", "uncertain", "record_changed"):
+            with self.subTest(case=case):
+                self._reset_hunt()
+                task = self.task
+                task.config["快速狩猎界面等待秒数"] = 2.0
+                other_key, other_record = self._seed(resource="火把")
+                task._quick_hunt_cancel_dialog = Mock(return_value=True)
+                first = hunt_dialog()
+                fresh = replace(first, pool=84, start_point=(1100, 780))
+                task._quick_hunt_prepare_dialog.side_effect = [first] + [
+                    None if case == "invalid_dialog" else fresh
+                ] * 2
+                click = task._quick_vision().click_client
+                sent = False
+
+                def send(*args, **kwargs):
+                    nonlocal sent
+                    if case == "exhausted" or click.call_count == 1:
+                        if case == "record_changed":
+                            key, scope, evidence = task._hunt_checkpoint
+                            run_history.save_stage(task, key, "pending", scope=scope,
+                                                   evidence={**evidence, "pool": 84})
+                        error = InputTargetChanged("目标准备后输入环境变化")
+                        error.input_not_dispatched = case != "uncertain"
+                        raise error
+                    sent = True
+
+                click.side_effect = send
+                task._quick_hunt_settlement_signals.side_effect = lambda *_: (
+                    sent and not task.operate_click.called, False,
+                )
+                if case in {"uncertain", "record_changed"}:
+                    with self.assertRaises(RuntimeError):
+                        task._quick_hunt_execute_current_map("MIN", "金币 MIN")
+                else:
+                    self.assertEqual(
+                        "done" if case == "recovered" else "failed",
+                        task._quick_hunt_execute_current_map("MIN", "金币 MIN"),
+                    )
+                store = run_history.RunHistoryStore(self.history.path)
+                self.assertEqual(other_record, store.stage("QuickHuntTask", other_key))
+                record = store.stage("QuickHuntTask", "狩猎提交:米饭:金币 MIN")
+                with open(self.history.path, encoding="utf-8") as stream:
+                    retired = json.load(stream).get("retired_stages", [])
+                expected_retired = 3 if case == "exhausted" else int(
+                    case not in {"uncertain", "record_changed"}
+                )
+                self.assertEqual(expected_retired, len(retired))
+                for entry in retired:
+                    self.assertEqual(("prepared", 0), (
+                        entry["record"]["evidence"]["phase"],
+                        entry["record"]["evidence"]["start_clicks"],
+                    ))
+                if case == "recovered":
+                    self.assertEqual("done", record["state"])
+                    self.assertEqual((84, 1), (record["evidence"]["pool"],
+                                               record["evidence"]["start_clicks"]))
+                    self.assertEqual([first.start_point, fresh.start_point],
+                                     [c.args[0] for c in click.call_args_list])
+                    task._quick_hunt_cancel_dialog.assert_not_called()
+                elif case in {"uncertain", "record_changed"}:
+                    self.assertEqual("pending", record["state"])
+                    self.assertEqual(1, record["evidence"]["start_clicks"])
+                    self.assertEqual(84 if case == "record_changed" else 90,
+                                     record["evidence"]["pool"])
+                    self.assertEqual(1, click.call_count)
+                else:
+                    self.assertFalse(record)
+                    self.assertIsNone(task._hunt_checkpoint)
+                    task._quick_hunt_cancel_dialog.assert_called_once()
+                    self.assertEqual(3 if case == "exhausted" else 1, click.call_count)
+                self.assertEqual(3 if case == "exhausted" else
+                                 1 if case in {"uncertain", "record_changed"} else 2,
+                                 task._quick_hunt_prepare_dialog.call_count)
+
+    def test_unsent_result_retry_restores_durable_count_and_rechecks_dialog(self):
+        for case in ("recovered", "persistent", "changed_dialog", "uncertain"):
+            with self.subTest(case=case):
+                self._reset_hunt()
+                task = self.task
+                task.config["快速狩猎结算等待秒数"] = 5.0
+                task.config["快速狩猎界面等待秒数"] = 2.0
+                key, original = self._seed()
+                task._hunt_checkpoint = (key, original["scope"], original["evidence"])
+                click = task._quick_vision().click_client
+                snapshot_reads = []
+                sent = False
+
+                def snapshot(*_):
+                    if click.called and not sent and case != "uncertain":
+                        stored = run_history.RunHistoryStore(self.history.path).stage(
+                            "QuickHuntTask", key,
+                        )
+                        self.assertEqual(1, stored["evidence"]["start_clicks"])
+                    return None if click.called and case == "changed_dialog" else hunt_dialog()
+
+                def send(*args, **kwargs):
+                    nonlocal sent
+                    snapshot_reads.append(task._quick_hunt_dialog_snapshot.call_count)
+                    if click.call_count == 1 or case == "persistent":
+                        error = InputTargetChanged()
+                        error.input_not_dispatched = case != "uncertain"
+                        raise error
+                    sent = True
+
+                task._quick_hunt_dialog_snapshot.side_effect = snapshot
+                task._quick_hunt_settlement_signals.side_effect = lambda *_: (
+                    sent and not task.operate_click.called, False,
+                )
+                click.side_effect = send
+                if case == "uncertain":
+                    with self.assertRaises(InputTargetChanged):
+                        task._quick_hunt_wait_result("金币 MIN", submission=hunt_dialog())
+                else:
+                    self.assertEqual("done" if case == "recovered" else "failed",
+                                     task._quick_hunt_wait_result(
+                                         "金币 MIN", submission=hunt_dialog()))
+                record = run_history.RunHistoryStore(self.history.path).stage("QuickHuntTask", key)
+                self.assertEqual(2 if case in {"recovered", "uncertain"} else 1,
+                                 record["evidence"]["start_clicks"])
+                self.assertEqual("done" if case == "recovered" else "pending", record["state"])
+                if case == "changed_dialog":
+                    self.assertEqual("transitioned", record["evidence"]["phase"])
+                    self.assertEqual(1, click.call_count)
+                for previous, current in zip(snapshot_reads, snapshot_reads[1:]):
+                    self.assertGreaterEqual(current - previous, 2)
+                self.assertLessEqual(self.clock.now, 5.4)
+
+    def test_dialog_controls_reacquire_after_unsent_clicks_within_existing_deadlines(self):
+        for control in ("switch", "cancel", "shortage"):
+            for persistent in (False, True):
+                with self.subTest(control=control, persistent=persistent):
+                    self._reset_hunt()
+                    task = self.task
+                    task.config["快速狩猎界面等待秒数"] = 5.0
+                    task.capture_frame.side_effect = lambda: np.zeros((108, 192, 3), np.uint8)
+                    task._quick_hunt_menu_still_open = Mock(return_value=False)
+                    task._quick_hunt_dialog_ocr = Mock(return_value=(True, None, None))
+                    task._quick_vision().ocr_boxes = Mock(return_value=[box("取消")])
+                    click = task._quick_vision().click_client
+                    sent = False
+                    frames = []
+
+                    def send(*args, **kwargs):
+                        nonlocal sent
+                        frames.append(task.capture_frame.call_count)
+                        if persistent or click.call_count <= 3:
+                            raise InputTargetChanged()
+                        sent = True
+                        task._quick_hunt_menu_still_open.return_value = True
+
+                    click.side_effect = send
+                    task._quick_hunt_dialog_snapshot.side_effect = lambda *_: hunt_dialog(
+                        free_state="on" if sent else "off",
+                    )
+                    if control == "switch":
+                        result = task._quick_hunt_ensure_free_only("免费开关", "米饭")
+                    elif control == "cancel":
+                        result = task._quick_hunt_cancel_dialog("取消")
+                    else:
+                        task._quick_hunt_settlement_signals.side_effect = lambda *_: (
+                            False, not sent,
+                        )
+                        task._quick_hunt_is_menu_restored.side_effect = lambda *_: sent
+                        result = task._quick_hunt_wait_result("资源不足") == "depleted"
+                    self.assertEqual(not persistent, result)
+                    self.assertEqual(len(frames), len(set(frames)))
+                    self.assertGreaterEqual(click.call_count, 4)
+                    self.assertLessEqual(self.clock.now, 5.4)
+
     def test_late_cleanup_settles_before_close_but_cancellation_does_not_invent_completion(self):
         for case in ("reward", "cross_cycle", "cancel", "unbound", "write_failure", "unknown"):
             with self.subTest(case=case):
