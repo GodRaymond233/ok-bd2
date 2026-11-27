@@ -42,7 +42,7 @@ dependencies = [
     "pynput>=1.8.1",
     "pyappify==1.0.20",
     # Desktop client core service (loopback API for the Electron shell).
-    "fastapi==0.143.0",
+    "fastapi==0.165.0",
     "uvicorn==0.54.0",
     "wsproto==1.3.2",
     # 312 打包回归不再捆绑 mfc140u.dll（上游 mhammond/pywin32#2776），
@@ -59,7 +59,7 @@ Releases = "https://github.com/GodRaymond233/ok-bd2/releases"
 
 [dependency-groups]
 dev = [
-    "httpx2==2.16.0",
+    "httpx2==2.16.2",
     "ruff>=0.13.0",
 ]
 
