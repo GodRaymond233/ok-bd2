@@ -450,9 +450,9 @@ class EquipmentDailyTask(TaskVisionMixin, BaseBD2Task):
                 )
             ]
             if candidates:
-                expected_score, gear_point = candidates[0]
+                _, gear_point = candidates[0]
             elif under_17_only and not tried and filtered.first_equipment_cell:
-                expected_score, gear_point = None, filtered.first_equipment_cell
+                gear_point = filtered.first_equipment_cell
             else:
                 self.info_set(REFINE_STEP, f"筛选列表未识别到 6～{max_score} 分的可用装备")
                 return False
@@ -462,34 +462,17 @@ class EquipmentDailyTask(TaskVisionMixin, BaseBD2Task):
             if detail is None:
                 return False
             self.operate_click(*detail.detail_refine, name="打开精炼装备分数", after_sleep=0.6)
-            badge_scores = None
-
-            def forge_ready(screen):
-                nonlocal badge_scores
-                if screen.refine_maxed:
-                    return True
-                if screen.refine_once is None:
-                    return False
-                badge_scores = self._read_refinement_badges(screen, expected_score)
-                upper, lower = badge_scores
-                refinement_value("上下徽章", badge_scores)
-                # 上方徽章可能漏读。此时必须以背包分数和下方徽章互验。
-                return lower is not None and lower == (expected_score if upper is None else upper)
-
             try:
-                refine = self._wait_equipment(forge_ready)
+                refine = self._wait_equipment(
+                    lambda screen: screen.refine_maxed or screen.refine_once is not None
+                )
             except RefinementConflict as error:
                 self.info_set(REFINE_STEP, str(error))
                 return False
             if refine is None:
-                self.info_set(REFINE_STEP, f"精炼页复核未通过，分数徽章读数 {badge_scores}")
+                self.info_set(REFINE_STEP, "未确认精炼页面状态")
                 return False
             if not refine.refine_maxed:
-                score = badge_scores[1]
-                if not 6 <= score <= max_score:
-                    self.info_set(REFINE_STEP, f"精炼页已确认装备为 {score} 分，超过当前筛选范围")
-                    return False
-                self.info_set("精炼装备分数复核", f"精炼页确认 {score} 分")
                 break
             self.info_set(REFINE_STEP, "精炼页显示已达到最大强化级别，换下一件")
             filtered = self._leave_refinement(refine)
