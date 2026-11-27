@@ -241,8 +241,11 @@ def _run_headless(config_loader, configure) -> None:
             configure(config)
         config["use_gui"] = False
         from src.desktop.backups import prepare_installed_configs
+        from src.telemetry import schedule_startup_telemetry, snapshot_telemetry_context
 
+        telemetry_context = snapshot_telemetry_context(config)
         prepare_installed_configs(config)
+        schedule_startup_telemetry(config, telemetry_context)
         # The session lock replaces ok-script's mutex, which can kill an older instance.
         config["check_mutex"] = False
         install_executor_guards()

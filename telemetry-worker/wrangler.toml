@@ -1,0 +1,15 @@
+name = "ok-bd2-telemetry"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "ok-bd2-telemetry"
+# 执行 `npx wrangler d1 create ok-bd2-telemetry` 后，把返回的 database_id 填到这里：
+database_id = "f0b990f0-4d74-4c1f-a435-c1cdd04ee430"
+
+# 国内网络直连必须绑定自己的自定义域名（裸 *.workers.dev 在国内常被阻断）。
+# 在 Cloudflare 托管域名后取消下面两行注释并改为你的子域名：
+# [[routes]]
+# pattern = "stats.your-domain.com"
+# custom_domain = true

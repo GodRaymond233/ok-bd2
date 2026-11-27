@@ -551,8 +551,11 @@ def _start_and_serve(
         if configure is not None:
             configure(config)
         from src.desktop.backups import prepare_installed_configs
+        from src.telemetry import schedule_startup_telemetry, snapshot_telemetry_context
 
+        telemetry_context = snapshot_telemetry_context(config)
         prepare_installed_configs(config)
+        schedule_startup_telemetry(config, telemetry_context)
         controller.checkpoint()
         guard_installer()
         if guard.instances(force=True):

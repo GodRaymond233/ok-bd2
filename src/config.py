@@ -16,6 +16,7 @@ from src.compat.windows_graphics import WGC_MIN_CAPTURE_SIZE, enable_windows_10_
 from src.game_path import calculate_pc_exe_path
 from src.interaction.BD2Interaction import BD2Interaction
 from src.process_feature import process_feature
+from src.telemetry import TELEMETRY_OPTION, TELEMETRY_OPTION_DESCRIPTION
 
 # This marker is replaced with the Git tag when PyAppify creates the update
 # repository.  Source checkouts always read the project version from pyproject.
@@ -52,8 +53,13 @@ def validate_basic_option(key, value):
 
 basic_options = create_basic_options()
 basic_options.validator = validate_basic_option
+basic_options.default_config = dict(basic_options.default_config or {})
+basic_options.default_config[TELEMETRY_OPTION] = True
+basic_options.config_description = dict(basic_options.config_description or {})
+basic_options.config_description[TELEMETRY_OPTION] = TELEMETRY_OPTION_DESCRIPTION
 basic_options.config_type = dict(basic_options.config_type or {})
 basic_options.config_type[DX11_OPTION] = {"hidden": True}
+basic_options.config_type[TELEMETRY_OPTION] = {"group": "Application"}
 
 def blur_area(width, height):
     return Box(width * 0, height * 0.9769, to_x=width * 0.0943, to_y=height * 1)
