@@ -16,9 +16,9 @@
     "pack:win": "npm run build && electron-builder --win dir && node scripts/write-manifest.mjs"
   },
   "devDependencies": {
-    "@types/node": "24.19.1",
-    "electron": "44.9.1",
-    "electron-builder": "26.17.0",
+    "@types/node": "24.19.2",
+    "electron": "44.11.3",
+    "electron-builder": "26.18.0",
     "typescript": "5.9.3"
   },
   "build": {
