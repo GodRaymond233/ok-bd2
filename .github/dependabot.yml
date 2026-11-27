@@ -3,64 +3,70 @@ updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 5
-    labels:
-      - "area: build-ci"
+      interval: "monthly"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 1
+    labels: ["area: build-ci"]
     commit-message:
       prefix: "ci(deps)"
+    ignore:
+      # 决定安装包与更新仓库内容，PR CI 覆盖不到；随完整打包验证手动升级
+      - dependency-name: "ok-oldking/*"
     groups:
       github-actions:
-        patterns:
-          - "*"
+        patterns: ["*"]
 
   - package-ecosystem: "uv"
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 5
-    labels:
-      - "area: build-ci"
+      interval: "monthly"
+    # 0 = 关闭版本更新；安全更新不受影响
+    open-pull-requests-limit: 0
+    labels: ["area: build-ci"]
     commit-message:
       prefix: "build(deps)"
+    ignore:
+      # 标记恒不成立，Windows 上从不安装
+      - dependency-name: "evdev"
+      - dependency-name: "python-xlib"
     groups:
-      python-minor-and-patch:
-        update-types:
-          - "minor"
-          - "patch"
+      python-security:
+        applies-to: security-updates
+        patterns: ["*"]
 
   - package-ecosystem: "npm"
     directory: "/desktop/ui"
     schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 5
-    labels:
-      - "area: desktop"
-      - "area: build-ci"
+      interval: "monthly"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 1
+    labels: ["area: desktop", "area: build-ci"]
     commit-message:
       prefix: "build(desktop-ui)"
+    ignore:
+      # TypeScript / Vite / React 等大版本按计划迁移；@types/node 随 Node 24 保持 24.x
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
-      desktop-ui-minor-and-patch:
-        update-types:
-          - "minor"
-          - "patch"
+      desktop-ui:
+        patterns: ["*"]
 
   - package-ecosystem: "npm"
     directory: "/desktop/shell"
     schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 5
-    labels:
-      - "area: desktop"
-      - "area: build-ci"
+      # 任何变化都要升外壳版本、用户重下外壳，故低频合并；Electron 安全公告走安全更新，不受此频率限制
+      interval: "quarterly"
+    cooldown:
+      default-days: 14
+    open-pull-requests-limit: 1
+    labels: ["area: desktop", "area: build-ci"]
     commit-message:
       prefix: "build(desktop-shell)"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
-      desktop-shell-minor-and-patch:
-        update-types:
-          - "minor"
-          - "patch"
+      desktop-shell:
+        patterns: ["*"]

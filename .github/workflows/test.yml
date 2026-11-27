@@ -2,6 +2,10 @@ name: test
 
 on:
   push:
+    branches-ignore:
+      - "dependabot/**"
+    tags:
+      - "*"
   pull_request:
 
 permissions:
@@ -26,7 +30,7 @@ jobs:
       - name: Validate commit attribution
         run: python scripts/check_commit_attribution.py
       - name: Set up uv
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           version: "0.11.21"
       - name: Validate dependency lock and exports
@@ -46,7 +50,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: "npm"
