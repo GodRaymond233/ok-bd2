@@ -704,6 +704,17 @@ class GlutalkTest(unittest.TestCase):
         self.assertTrue(task._click_skip_template(frame))
         self.assertEqual([SKIP_TEMPLATE, STORY_SKIP_TEMPLATE], called)
 
+    def test_date_reward_popup_is_classified_and_dismissed(self):
+        text = "获得约会奖励 水上乐园女王威廉明娜 50 已获得水上乐园女王威廉明娜约会奖励。"
+        boxes = [
+            box("获得约会奖励", int(0.675 * WIDTH), int(0.36 * HEIGHT)),
+            box("已获得水上乐园女王威廉明娜约会奖励。", int(0.675 * WIDTH), int(0.69 * HEIGHT)),
+        ]
+        self.assertEqual("popup", classify_talk_page(text).page)
+        action = dialogue_decision(text, boxes, WIDTH, HEIGHT)
+        self.assertIsNotNone(action)
+        self.assertEqual("dismiss_reward", action.kind)
+
 
 if __name__ == "__main__":
     unittest.main()
