@@ -90,7 +90,7 @@ openvino-telemetry==2025.2.0 ; sys_platform == 'win32'
     # via openvino
 packaging==26.2 ; sys_platform == 'win32'
     # via deprecation
-pillow==12.3.0 ; sys_platform == 'win32'
+pillow==13.0.0 ; sys_platform == 'win32'
     # via
     #   adbutils
     #   ok-bd2
