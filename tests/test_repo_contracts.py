@@ -59,9 +59,14 @@ class ProjectStructureTest(unittest.TestCase):
             prepare.index("Build Electron interface and shell"),
             prepare.index("Sync update repositories"),
         )
-        for mode in ("package-fast", "release-compact"):
-            self.assertIn("name: desktop-release", job(mode))
-            self.assertIn("Copy-Item desktop-release/*.zip pyappify_dist/", job(mode))
+        package = job("package")
+        self.assertIn("name: desktop-release", package)
+        self.assertIn("profile: China", package)
+        self.assertIn("profile: Global", package)
+        self.assertIn("needs.prepare.outputs.compression", package)
+        release = job("release")
+        self.assertIn("name: desktop-release", release)
+        self.assertIn("Copy-Item desktop-release/*.zip pyappify_dist/", release)
         expected = [
             "main.py",
             "main_debug.py",

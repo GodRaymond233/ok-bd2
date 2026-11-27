@@ -27,8 +27,15 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.21"
+          enable-cache: true
+          cache-dependency-glob: "requirements-dev.txt"
+
       - name: Install test dependencies
-        run: python scripts/install_dependencies.py requirements-dev.txt
+        run: uv pip install --system -r requirements-dev.txt
 
       - name: Run final quality checks
         shell: pwsh
@@ -121,17 +128,33 @@ jobs:
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           version: "0.11.21"
+          enable-cache: true
+          cache-dependency-glob: "requirements.txt"
 
       - name: Validate dependency lock and exports
         shell: pwsh
         run: .\scripts\check_dependency_exports.ps1
 
       - name: Install dependencies
-        run: python scripts/install_dependencies.py requirements.txt
+        run: uv pip install --system -r requirements.txt
 
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
+          cache: "npm"
+          cache-dependency-path: |
+            desktop/ui/package-lock.json
+            desktop/shell/package-lock.json
+
+      - name: Cache Electron binaries
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/AppData/Local/electron/Cache
+            ~/AppData/Local/electron-builder/Cache
+          key: electron-win-${{ hashFiles('desktop/shell/package-lock.json') }}
+          restore-keys: |
+            electron-win-
 
       - name: Build Electron interface and shell
         shell: pwsh
@@ -272,98 +295,10 @@ jobs:
           "reuse_tag=$previousTag" >> $env:GITHUB_OUTPUT
           Write-Host "Launcher will be reused from $previousTag."
 
-  package-fast:
+  package:
     needs:
       - prepare
       - quality
-    if: needs.prepare.outputs.package_mode == 'fast'
-    runs-on: windows-latest
-    env:
-      GH_TOKEN: ${{ github.token }}
-      REUSE_TAG: ${{ needs.prepare.outputs.reuse_tag }}
-
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - uses: actions/download-artifact@v8
-        with:
-          name: desktop-release
-          path: desktop-release
-
-      - name: Prepare or restore launcher
-        shell: pwsh
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:REUSE_TAG)) {
-            .\scripts\prepare_pyappify_launcher.ps1 -Version v1.2.4 -NsisCompression zlib
-          } else {
-            .\scripts\prepare_pyappify_launcher.ps1 -Version v1.2.4 -NsisCompression zlib -SkipBuild
-            .\scripts\restore_pyappify_launcher.ps1 -ReleaseTag $env:REUSE_TAG
-          }
-
-      - name: Build fast release assets
-        id: build-assets
-        uses: ok-oldking/pyappify-action@33534434fc01d51039285d3f0c9bd3ab4d952bea
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        with:
-          version: v1.2.4
-          app_version: ${{ github.ref_name }}
-          add_version_name: true
-
-      - name: Validate fast release assets
-        shell: pwsh
-        env:
-          APP_VERSION: ${{ needs.prepare.outputs.app_version }}
-        run: |
-          $required = @(
-            "pyappify_dist/ok-bd2-win32-China-setup-$env:APP_VERSION.exe",
-            "pyappify_dist/ok-bd2-win32-Global-setup-$env:APP_VERSION.exe",
-            "pyappify_dist/ok-bd2-win32-online-setup-$env:APP_VERSION.exe",
-            "pyappify_dist/ok-bd2-win32.zip",
-            "pyappify_dist/win32_sha256.txt"
-          )
-          foreach ($path in $required) {
-            if (-not (Test-Path -LiteralPath $path)) {
-              throw "Missing release asset: $path"
-            }
-          }
-
-      - name: Prepare release notes
-        shell: pwsh
-        env:
-          START_TAG: ${{ needs.prepare.outputs.start_tag }}
-          END_TAG: ${{ needs.prepare.outputs.end_tag }}
-          CHANGELOG: ${{ needs.prepare.outputs.changelog }}
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          .\scripts\prepare_release_notes.ps1 `
-            -StartTag $env:START_TAG `
-            -EndTag $env:END_TAG `
-            -Changelog $env:CHANGELOG `
-            -ReleaseTag $env:RELEASE_TAG
-
-      - name: Include shell download in release
-        shell: pwsh
-        run: Copy-Item desktop-release/*.zip pyappify_dist/
-
-      - name: Release fast assets
-        uses: softprops/action-gh-release@v3
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        with:
-          body_path: release-notes.md
-          draft: false
-          prerelease: false
-          make_latest: true
-          files: pyappify_dist/*
-
-  package-compact:
-    needs:
-      - prepare
-      - quality
-    if: needs.prepare.outputs.package_mode == 'compact'
     runs-on: windows-latest
     strategy:
       fail-fast: false
@@ -383,6 +318,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       REUSE_TAG: ${{ needs.prepare.outputs.reuse_tag }}
+      NSIS_COMPRESSION: ${{ needs.prepare.outputs.compression }}
 
     steps:
       - uses: actions/checkout@v7
@@ -401,13 +337,13 @@ jobs:
         shell: pwsh
         run: |
           if ([string]::IsNullOrWhiteSpace($env:REUSE_TAG)) {
-            .\scripts\prepare_pyappify_launcher.ps1 -Version v1.2.4 -NsisCompression lzma
+            .\scripts\prepare_pyappify_launcher.ps1 -Version v1.2.4 -NsisCompression $env:NSIS_COMPRESSION
           } else {
-            .\scripts\prepare_pyappify_launcher.ps1 -Version v1.2.4 -NsisCompression lzma -SkipBuild
+            .\scripts\prepare_pyappify_launcher.ps1 -Version v1.2.4 -NsisCompression $env:NSIS_COMPRESSION -SkipBuild
             .\scripts\restore_pyappify_launcher.ps1 -ReleaseTag $env:REUSE_TAG
           }
 
-      - name: Build ${{ matrix.profile }} compact assets
+      - name: Build ${{ matrix.profile }} ${{ needs.prepare.outputs.package_mode }} assets
         uses: ok-oldking/pyappify-action@33534434fc01d51039285d3f0c9bd3ab4d952bea
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -425,12 +361,12 @@ jobs:
           compression-level: 0
           retention-days: 1
 
-  release-compact:
+  release:
     needs:
       - prepare
-      - package-compact
+      - package
       - quality
-    if: needs.prepare.outputs.package_mode == 'compact' && needs.package-compact.result == 'success'
+    if: needs.package.result == 'success'
     runs-on: windows-latest
 
     steps:
@@ -438,7 +374,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Download compact release assets
+      - name: Download release assets
         uses: actions/download-artifact@v8
         with:
           pattern: release-assets-*
@@ -454,7 +390,7 @@ jobs:
         shell: pwsh
         run: Copy-Item desktop-release/*.zip pyappify_dist/
 
-      - name: Validate compact release assets
+      - name: Validate release assets
         shell: pwsh
         env:
           APP_VERSION: ${{ needs.prepare.outputs.app_version }}
@@ -486,7 +422,7 @@ jobs:
             -Changelog $env:CHANGELOG `
             -ReleaseTag $env:RELEASE_TAG
 
-      - name: Release compact assets
+      - name: Release assets
         uses: softprops/action-gh-release@v3
         env:
           GITHUB_TOKEN: ${{ github.token }}
