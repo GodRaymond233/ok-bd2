@@ -3,7 +3,8 @@ param(
     [ValidateSet("Focused", "Final", "Release")]
     [string]$Mode = "Final",
     [string[]]$Tests = @(),
-    [string]$Python = ""
+    [string]$Python = "",
+    [switch]$IncludeDesktop
 )
 
 $ErrorActionPreference = "Stop"
@@ -143,6 +144,48 @@ try {
 
     Write-Host "==> Keyboard automation restriction scan"
     Assert-NoKeyboardAutomation
+
+    if ($IncludeDesktop) {
+        $npmCommand = Get-Command npm.cmd -ErrorAction SilentlyContinue
+        if ($null -eq $npmCommand) {
+            $npmCommand = Get-Command npm -ErrorAction SilentlyContinue
+        }
+        if ($null -eq $npmCommand) {
+            throw "npm was not found. Install Node.js >= 24 to run -IncludeDesktop checks."
+        }
+        $previousShellTestPython = $env:OKBD2_TEST_PYTHON
+        $env:OKBD2_TEST_PYTHON = $pythonExecutable
+        try {
+            Invoke-NativeCommand `
+                -FilePath $npmCommand.Source `
+                -Arguments @("--prefix", "desktop/ui", "run", "check") `
+                -Description "Desktop UI typecheck"
+            Invoke-NativeCommand `
+                -FilePath $npmCommand.Source `
+                -Arguments @("--prefix", "desktop/ui", "test") `
+                -Description "Desktop UI tests"
+            Invoke-NativeCommand `
+                -FilePath $npmCommand.Source `
+                -Arguments @("--prefix", "desktop/ui", "run", "build") `
+                -Description "Desktop UI build"
+            Invoke-NativeCommand `
+                -FilePath $npmCommand.Source `
+                -Arguments @("--prefix", "desktop/shell", "run", "check") `
+                -Description "Desktop shell typecheck"
+            Invoke-NativeCommand `
+                -FilePath $npmCommand.Source `
+                -Arguments @("--prefix", "desktop/shell", "test") `
+                -Description "Desktop shell tests"
+        }
+        finally {
+            if ($null -eq $previousShellTestPython) {
+                Remove-Item Env:OKBD2_TEST_PYTHON -ErrorAction SilentlyContinue
+            }
+            else {
+                $env:OKBD2_TEST_PYTHON = $previousShellTestPython
+            }
+        }
+    }
 
     if ($Mode -eq "Release") {
         Write-Host "==> Dependency lock and export validation"

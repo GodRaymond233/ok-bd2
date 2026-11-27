@@ -692,14 +692,16 @@ class ProgressStore:
             if not isinstance(value, dict):
                 raise ValueError("账本根节点必须是对象")
             return value
-        except (OSError, ValueError, TypeError):
+        except (OSError, ValueError, TypeError) as err:
             try:
                 stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
                 backup = self.path.with_suffix(f".corrupt-{stamp}.json")
                 shutil.copy2(self.path, backup)
             except OSError:
                 pass
-            raise RuntimeError(f"账本无法读取，已尝试备份；不会新建空进度覆盖：{self.path}")
+            raise RuntimeError(
+                f"账本无法读取，已尝试备份；不会新建空进度覆盖：{self.path}"
+            ) from err
 
     def save(self) -> None:
         if self.state is None:

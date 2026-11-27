@@ -167,10 +167,11 @@ class StarterWizardWatcherTest(unittest.TestCase):
                     watcher.poll_once()
                     self.assertEqual(count, notify.call_count)
             if state == "updating":
-                for elapsed, observation in (
+                for elapsed, next_observation in (
                     (201, replace(observation, bars=(0.5, 0.05))),
                     (400, replace(observation, io_bytes=100000)),
                 ):
+                    observation = next_observation
                     now[0] = 1000 + elapsed
                     watcher.poll_once()
                     self.assertEqual(watcher.latest.progress_at, now[0])

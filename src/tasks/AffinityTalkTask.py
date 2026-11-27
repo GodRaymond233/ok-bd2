@@ -305,11 +305,13 @@ class AffinityTalkTask(HomePageTask):
         visited = set()
         completed = 0
         while True:
-            page = self._auto_list()
-            if page is None:
+            initial_page = self._auto_list()
+            if initial_page is None:
                 return self._fail("未确认返回服装列表")
             candidates = []
-            for page, cards in self._costume_pages(page):
+            page = initial_page
+            for current_page, cards in self._costume_pages(initial_page):
+                page = current_page
                 left_today = self._left_today(page[1])
                 if left_today is None:
                     return self._fail("未确认今日剩余谈心次数")

@@ -143,7 +143,7 @@ def _resize_gate(capture: object) -> ResizeStabilityGate:
     gate = getattr(capture, "_ok_bd2_resize_gate", None)
     if gate is None:
         gate = ResizeStabilityGate()
-        setattr(capture, "_ok_bd2_resize_gate", gate)
+        capture._ok_bd2_resize_gate = gate
     return gate
 
 

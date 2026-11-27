@@ -75,7 +75,7 @@ class FrameGeometry:
 class MatchCandidateEvidence:
     """One candidate retained for a specialized multi-evidence recognizer."""
 
-    result: "MatchResult"
+    result: MatchResult
     scale: float
     interpolation: str = ""
     rejection_reasons: tuple[str, ...] = ()

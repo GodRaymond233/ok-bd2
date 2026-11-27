@@ -226,7 +226,7 @@ def collect(
         for message, count in repeats.most_common(20)
         if count > 1
     ]
-    for item, (message, count) in zip(
+    for item, (message, _count) in zip(
         digest["repeats"], ((m, n) for m, n in repeats.most_common(20) if n > 1)
     ):
         matches = [r for r in records if r["text"].split(" ", 3)[-1].rstrip() == message]
@@ -318,7 +318,7 @@ def collect(
     if skipped:
         omissions.append(f"output_budget_whole_records_omitted:{len(records) - len(used)}")
     digest["ordering"] = "chronological; incidents and recent contain disjoint source records"
-    for name, chunks in outputs.items():
+    for _name, chunks in outputs.items():
         chunks.sort(key=lambda pair: pair[0])
         line = 1
         for index, text in chunks:

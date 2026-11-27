@@ -384,11 +384,9 @@ class Navigator(StoryCardNavigationMixin, SandboxNavigationMixin, TradeNavigatio
             passed = self.vision.passes(result, spec)
             sandbox_confirmed = sandbox_confirmed or passed
             sandbox_signals.append(
-                (
-                    f"{spec.name}={'pass' if passed else 'miss'}"
-                    f"(m={result.score:.3f},p={result.pixel_score:.3f},"
-                    f"z={result.zncc_score:.3f})"
-                )
+                f"{spec.name}={'pass' if passed else 'miss'}"
+                f"(m={result.score:.3f},p={result.pixel_score:.3f},"
+                f"z={result.zncc_score:.3f})"
             )
         if not sandbox_confirmed:
             sandbox_confirmed = all(

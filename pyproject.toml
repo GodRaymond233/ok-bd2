@@ -1,8 +1,30 @@
 [project]
 name = "ok-bd2"
 version = "0.1.1"
-description = "An image-recognition-based automation tool for BD2"
+description = "An image-recognition-based automation tool for BrownDust II on Windows PC"
 readme = "README.md"
+license = "GPL-3.0-or-later"
+authors = [
+    { name = "GodRaymond233" },
+]
+keywords = [
+    "browndust2",
+    "game-automation",
+    "computer-vision",
+    "ocr",
+    "ok-script",
+    "windows",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Games/Entertainment",
+    "Topic :: Utilities",
+]
 requires-python = ">=3.12"
 dependencies = [
     "adbutils>=2.8.0",
@@ -28,6 +50,13 @@ dependencies = [
     "pywin32==311; platform_system == 'Windows'",
 ]
 
+[project.urls]
+Homepage = "https://godraymond233.github.io/ok-bd2/"
+Documentation = "https://godraymond233.github.io/ok-bd2/"
+Repository = "https://github.com/GodRaymond233/ok-bd2"
+Issues = "https://github.com/GodRaymond233/ok-bd2/issues"
+Releases = "https://github.com/GodRaymond233/ok-bd2/releases"
+
 [dependency-groups]
 dev = [
     "httpx2==2.16.0",
@@ -36,11 +65,16 @@ dev = [
 
 [tool.ruff]
 line-length = 100
+target-version = "py312"
 # A copy of ok-script's code, kept comparable with the original.
 extend-exclude = ["src/desktop/okweb"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I"]
+select = ["E", "F", "I", "B", "UP"]
+# Deferred high-churn legacy rules to avoid large diffs across in-flight branches/PRs:
+# B023 (loop closure binding), B905 (zip strict), UP017 (datetime.UTC),
+# UP035 (typing collections.abc), UP042 (StrEnum migration).
+ignore = ["B023", "B905", "UP017", "UP035", "UP042"]
 
 [tool.ruff.format]
 quote-style = "double"

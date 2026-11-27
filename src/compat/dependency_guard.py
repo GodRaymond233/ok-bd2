@@ -224,7 +224,7 @@ def ensure_core_dependencies() -> None:
         raise SystemExit(1)
 
     results: dict[str, bool] = {}
-    for package, modules in _missing_packages(missing_modules).items():
+    for package, _modules in _missing_packages(missing_modules).items():
         version = locked.get(_normalize_dist_name(package))
         if version is None:
             _log(f"repair: no locked version for {package}, skipped")

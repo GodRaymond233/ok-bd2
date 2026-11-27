@@ -4,12 +4,20 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
+    name: Python quality gate
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: actions/setup-python@v7
@@ -28,3 +36,40 @@ jobs:
       - name: Run final quality checks
         shell: pwsh
         run: .\scripts\run_checks.ps1 -Mode Final
+
+  desktop:
+    name: Desktop UI and Electron shell
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: |
+            desktop/ui/package-lock.json
+            desktop/shell/package-lock.json
+      - name: Check, test, and build desktop UI
+        shell: pwsh
+        run: |
+          npm --prefix desktop/ui ci --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw "UI dependency installation failed." }
+          npm --prefix desktop/ui run check
+          if ($LASTEXITCODE -ne 0) { throw "UI typecheck failed." }
+          npm --prefix desktop/ui test
+          if ($LASTEXITCODE -ne 0) { throw "UI tests failed." }
+          npm --prefix desktop/ui run build
+          if ($LASTEXITCODE -ne 0) { throw "UI build failed." }
+      - name: Check and test desktop shell
+        shell: pwsh
+        run: |
+          npm --prefix desktop/shell ci --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw "Shell dependency installation failed." }
+          npm --prefix desktop/shell run check
+          if ($LASTEXITCODE -ne 0) { throw "Shell typecheck failed." }
+          npm --prefix desktop/shell test
+          if ($LASTEXITCODE -ne 0) { throw "Shell tests failed." }
