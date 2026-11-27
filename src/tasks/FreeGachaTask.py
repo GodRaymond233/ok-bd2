@@ -387,8 +387,17 @@ class FreeGachaTask(TaskVisionMixin, BaseBD2Task):
         last_text = ""
         no_free_frames = 0
         switched_banner = False
-        while monotonic() < end_at:
+        observations = 0
+        extra_frames = None
+        while True:
+            if monotonic() >= end_at:
+                if extra_frames is None:
+                    extra_frames = 2 if no_free_frames == 1 or observations < 2 else 0
+                if extra_frames <= 0:
+                    break
+                extra_frames -= 1
             observation = self._observe_free_pool(section_name, name)
+            observations += 1
             last_text = observation.text
             if observation.state == FREE_ENTRY_RETRY_READY:
                 self.info_set(f"{section_name} 免费抽 OCR", last_text)

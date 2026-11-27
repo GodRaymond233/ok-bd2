@@ -253,6 +253,37 @@ class FreeGachaTaskHelperTest(StageHistoryTestCase):
                 self.assertAlmostEqual(0.373, args[1])
                 self.assertEqual("切换普通服装横幅", kwargs.get("name"))
 
+    def test_slow_free_recheck_supplements_at_most_two_frames_and_keeps_pair_gate(self):
+        no_free = free_gacha_module.FREE_ENTRY_RETRY_NO_FREE
+        for states, seconds, expected, reads in (
+            ([no_free, no_free], 5.63, (False, True), 2),
+            ([no_free, FREE_ENTRY_RETRY_UNKNOWN], 5.63, (False, False), 3),
+            ([no_free, FREE_ENTRY_RETRY_READY], 5.63, (True, True), 2),
+            ([FREE_ENTRY_RETRY_BLOCKED], 5.63, (False, False), 1),
+            ([free_gacha_module.FREE_ENTRY_RETRY_DIALOG], 5.63, (False, False), 1),
+            ([FREE_ENTRY_RETRY_UNKNOWN], 8, (False, False), 3),
+            ([no_free], 0.1, (False, True), 6),
+        ):
+            with self.subTest(states=states, seconds=seconds):
+                task = gacha_task()
+                clock = FakeClock()
+                task.sleep = clock.sleep
+                seen = []
+
+                def observe(*_):
+                    state = states[min(len(seen), len(states) - 1)]
+                    seen.append(state)
+                    clock.sleep(seconds)
+                    return free_gacha_module.FreePoolObservation(state, "", state)
+
+                task._observe_free_pool = observe
+                with patch.object(free_gacha_module, "monotonic", clock):
+                    available, text, judged = task._wait_for_free_gacha("服装抽抽乐")
+                self.assertEqual(expected, (available, judged))
+                self.assertEqual(seen[-1], text)
+                self.assertEqual(reads, len(seen))
+                task.operate_click.assert_not_called()
+
     def test_pool_scale_recheck_is_same_frame_and_cannot_erase_free_or_modal_evidence(self):
         for scale in (1, 0.72, 2):
             task = object.__new__(FreeGachaTask)
