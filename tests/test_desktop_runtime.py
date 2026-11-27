@@ -460,6 +460,15 @@ class WindowTest(unittest.TestCase):
 
 
 class TestNotificationTest(unittest.TestCase):
+    def test_automatic_capture_preserves_the_saved_preference(self):
+        client = make_client(self)
+        self.assertEqual("WGC", self.manager.get_preferred_capture())
+        capture = client.get("/api/ui/capture").json()
+        self.assertIsNone(capture["capture_preference"])
+        self.assertFalse(any(item["selected"] for item in capture["capture_methods"]))
+        self.manager.config["capture"] = "WGC"
+        self.assertEqual("WGC", client.get("/api/ui/capture").json()["capture_preference"])
+
     def post(self, client, channel):
         return client.post("/api/bd2/notify/test", json={"channel": channel})
 
@@ -477,6 +486,28 @@ class TestNotificationTest(unittest.TestCase):
         self.assertEqual(200, response.status_code, response.text)
         self.assertEqual(("123:abc", "42"), tg.call_args.args[:2])
         discord.assert_not_called()
+
+    def test_bark_and_pushplus_mask_secrets_and_test_with_optional_topic(self):
+        from src.desktop.settings_text import describe_group
+
+        client = make_client(self)
+        notify = self.executor.global_config.configs["Notification"]
+        for channel, provider, values in (
+            ("bark", "BarkProvider", {
+                "Bark Server URL": "https://bark.example", "Bark Device Key": "key"
+            }),
+            ("pushplus", "PushPlusProvider", {"PushPlus Token": "token", "PushPlus Topic": ""}),
+        ):
+            with self.subTest(channel=channel):
+                notify.update(values)
+                fields = describe_group({"name": "Notification", "fields": [
+                    {"key": key, "value": value} for key, value in values.items()
+                ]})["fields"]
+                self.assertTrue(fields[1 if channel == "bark" else 0]["secret"])
+                with patch(f"ok.notification.providers.{provider}.send", return_value=True) as send:
+                    response = self.post(client, channel)
+                self.assertEqual(200, response.status_code, response.text)
+                self.assertEqual(tuple(values.values()), send.call_args.args[:2])
 
 
 class StarterWaitTest(unittest.TestCase):

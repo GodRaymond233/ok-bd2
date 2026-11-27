@@ -49,6 +49,7 @@ def _execute(self):
             self.reset_scene()
         returned = False
         try:
+            self._last_frame = self._frame
             if not is_trigger_task and defer_until_login(task):
                 communicate.task.emit(task)
                 continue
@@ -133,8 +134,11 @@ def _execute(self):
             if not returned:
                 _record_interrupted(task, is_trigger_task, "失败")
             logger.error(f"{name} exception stopped", error)
-            if self._frame is not None:
-                communicate.screenshot.emit(self._frame, name, True, None)
+            frame = self._frame if self._frame is not None else self._last_frame
+            if frame is not None:
+                communicate.screenshot.emit(
+                    frame, f"error/error_{type(task).__name__}_{type(error).__name__}", True, None
+                )
             if not is_trigger_task:
                 # The app's own failure dialog stays behind the game window;
                 # raise an always-on-top box so a crash is actually noticed.

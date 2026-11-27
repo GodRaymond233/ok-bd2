@@ -78,6 +78,18 @@ FIELD_TEXT = {
     "SMTP Use TLS": ("加密连接", "587 端口用 STARTTLS，465 端口用 SSL。"),
     "SMTP Default Sender": ("发件地址", ""),
     "SMTP Default Recipient": ("收件地址", "多个地址用英文逗号隔开。"),
+    "Bark Notification": ("Bark", "通过 Bark iOS 应用接收文字通知。"),
+    "Bark Server URL": ("服务器地址", "通常使用 Bark 默认服务器。"),
+    "Bark Device Key": ("设备密钥", "在 Bark 应用中查看。"),
+    "Bark Group": ("通知分组", "留空时不分组。"),
+    "Bark Icon": ("图标地址", "留空时使用应用默认图标。"),
+    "Bark Sound": ("提示音", "留空时使用应用默认提示音。"),
+    "Bark Level": ("通知级别", "决定通知是否唤醒屏幕及在专注模式中提醒。"),
+    "Bark URL": ("点击后打开的地址", ""),
+    "Bark Archive": ("通知历史", "是否在 Bark 中保存通知。"),
+    "PushPlus Notification": ("PushPlus", "通过 pushplus.plus 接收文字通知。"),
+    "PushPlus Token": ("Token", "在 pushplus.plus 中查看。"),
+    "PushPlus Topic": ("群组编码", "留空时只发给自己。"),
 }
 
 OPTION_LABELS = {
@@ -88,6 +100,10 @@ OPTION_LABELS = {
     },
     "Start/Stop": {"None": "不使用"},
     "Blur Algorithm": {"Blur": "模糊", "Inpaint": "修补"},
+    "Bark Level": {
+        "active": "普通", "passive": "静默", "timeSensitive": "时效性", "critical": "重要警告"
+    },
+    "Bark Archive": {"App Default": "应用默认", "Save": "保存", "Do Not Save": "不保存"},
 }
 
 # Tokens and webhook addresses: the client masks them until asked to show them.
@@ -97,6 +113,8 @@ SECRET_KEYS = {
     "Enterprise WeChat Webhook URL",
     "QQ Bot API Token",
     "SMTP Password",
+    "Bark Device Key",
+    "PushPlus Token",
 }
 
 # QQ and WeChat desktop notifications drive those programs' windows (OCR, posted clicks,
@@ -122,6 +140,8 @@ OMITTED_KEYS = {
 # Notification channels the client can send a test message through, with the settings
 # each provider reads, in the provider's argument order.
 TEST_CHANNELS = {
+    "bark": ("Bark Notification", ("Bark Server URL", "Bark Device Key")),
+    "pushplus": ("PushPlus Notification", ("PushPlus Token", "PushPlus Topic")),
     "discord": ("Discord Notification", ("Discord Webhook",)),
     "telegram": ("Telegram Notification", ("Telegram Bot Token", "Telegram Chat ID")),
     "wecom": ("Enterprise WeChat Webhook Notification", ("Enterprise WeChat Webhook URL",)),
@@ -143,7 +163,7 @@ TEST_CHANNELS = {
     ),
 }
 # A mail server may take no login, and an unticked box reads as empty.
-OPTIONAL_TEST_KEYS = {"SMTP Username", "SMTP Password", "SMTP Use TLS"}
+OPTIONAL_TEST_KEYS = {"SMTP Username", "SMTP Password", "SMTP Use TLS", "PushPlus Topic"}
 
 
 def describe_group(group):

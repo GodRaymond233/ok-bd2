@@ -70,7 +70,7 @@ numpy==2.4.6 ; sys_platform == 'win32'
     #   opencv-python
     #   openvino
     #   shapely
-ok-script==3.0.10 ; sys_platform == 'win32'
+ok-script==3.0.14 ; sys_platform == 'win32'
     # via ok-bd2
 onnxocr-ppocrv6==0.0.1 ; sys_platform == 'win32'
     # via

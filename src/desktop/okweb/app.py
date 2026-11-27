@@ -406,7 +406,7 @@ class WebRuntime:
         if not device:
             return []
         methods = self.device_manager.available_capture_methods(device)
-        selected = self.device_manager.get_preferred_capture()
+        selected = self.device_manager.config.get("capture")
         return [{
             "id": _method_name(method),
             "label": self.ok.headless_app.tr(_method_name(method)),

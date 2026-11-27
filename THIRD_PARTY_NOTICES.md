@@ -7,7 +7,7 @@ and does not replace the license texts supplied with the specific versions used.
 
 | Project | Use in this project | License / notice | Source |
 |---|---|---|---|
-| ok-script 3.0.10 | Task framework, capture, input, OCR integration, update helpers | ok-script License: Apache License 2.0 as modified by Commons Clause and additional terms. The package's complete notice is preserved in `LICENSES/ok-script-3.0.10.txt`. | https://github.com/ok-oldking/ok-script |
+| ok-script 3.0.14 | Task framework, capture, input, OCR integration, update helpers | ok-script License: Apache License 2.0 as modified by Commons Clause and additional terms. The package's complete notice is preserved in `LICENSES/ok-script-3.0.14.txt`. | https://github.com/ok-oldking/ok-script |
 | ok-script Web runtime (copy) | `src/desktop/okweb` is a copy of the Web runtime of ok-script 2.0.6, which later versions removed; it serves the desktop client | `LICENSES/ok-script-2.0.6.txt` | https://github.com/ok-oldking/ok-script |
 | adbutils | ADB support through ok-script/device workflows | MIT | https://github.com/openatx/adbutils |
 | comtypes | Windows COM support | MIT | https://github.com/enthought/comtypes |

@@ -365,6 +365,35 @@ class ExecutorCleanupTest(unittest.TestCase):
                 interrupted.assert_called_once_with(task, trigger, "已中止")
                 self.assertFalse(task.running)
 
+    def test_failure_keeps_this_tasks_last_frame_after_scene_reset(self):
+        for have_frame in (False, True):
+            with self.subTest(have_frame=have_frame):
+                executor, task = self.make_executor()
+                frame = executor._frame if have_frame else None
+                executor._frame = frame
+                executor._last_frame = np.zeros((3, 3, 3), dtype=np.uint8)
+                executor.next_frame = Mock(return_value=None)
+                task._start_after_login = False
+
+                def run():
+                    executor._frame = None
+                    executor.exit_event.set()
+                    raise RuntimeError("failed after reset")
+
+                task.run = run
+                with (
+                    patch.object(executor_cleanup, "prevent_sleeping"),
+                    patch.object(executor_cleanup, "communicate") as events,
+                    patch.object(executor_cleanup, "_record_interrupted"),
+                    patch.object(executor_cleanup, "show_task_failure_alert"),
+                ):
+                    executor.execute()
+                if have_frame:
+                    self.assertIs(frame, events.screenshot.emit.call_args.args[0])
+                    self.assertTrue(events.screenshot.emit.call_args.args[1].startswith("error/"))
+                else:
+                    events.screenshot.emit.assert_not_called()
+
 
 def pending_read_capture():
     class RequestLock:

@@ -558,6 +558,8 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
             "telegram": providers.TelegramBotProvider,
             "wecom": providers.WeComWebhookProvider,
             "qqbot": providers.QQBotProvider,
+            "bark": providers.BarkProvider,
+            "pushplus": providers.PushPlusProvider,
         }[channel]()
         # The providers log the failure and return False.
         if not provider.send(*values, TEST_TITLE, TEST_MESSAGE, []):
@@ -617,7 +619,7 @@ def adapt_runtime(runtime, legacy_check=None, starter_wait=None):
         preferred = manager.get_preferred_device()
         preferred_id = preferred.get("imei") if preferred else None
         ui["devices"] = [device_payload(device, preferred_id) for device in manager.get_devices()]
-        preference = manager.get_preferred_capture()
+        preference = manager.config.get("capture")
         methods = {item["id"] for item in ui["capture_methods"]}
         # None: no method chosen, the device manager tries capture_methods in order.
         ui["capture_preference"] = preference if preference in methods else None

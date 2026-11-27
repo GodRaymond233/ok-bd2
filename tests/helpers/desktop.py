@@ -64,7 +64,8 @@ class FakeDeviceManager:
         return [self.device]
 
     def get_preferred_capture(self):
-        return self.config["capture"]
+        available = self.available_capture_methods()
+        return self.config["capture"] if self.config["capture"] in available else available[0]
 
     def available_capture_methods(self, device=None):
         return list(bd2_config["windows"]["capture_method"])

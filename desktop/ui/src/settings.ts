@@ -27,6 +27,8 @@ export const SYSTEM_NOTIFICATION_KEY = "System Notification";
 
 /** Channel switches the core can send a test message through (TEST_CHANNELS). */
 export const TEST_CHANNELS: Record<string, string> = {
+  "Bark Notification": "bark",
+  "PushPlus Notification": "pushplus",
   "Discord Notification": "discord",
   "Telegram Notification": "telegram",
   "Enterprise WeChat Webhook Notification": "wecom",

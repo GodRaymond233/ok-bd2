@@ -79,7 +79,7 @@ class DependencyManagementTest(unittest.TestCase):
         project = self.pyproject["project"]["dependencies"]
         locked = {p["name"]: p["version"] for p in self.lock["package"]}
         for name, spec, version in (
-            ("ok-script", "ok-script[ocr]==3.0.10", "3.0.10"),
+            ("ok-script", "ok-script[ocr]==3.0.14", "3.0.14"),
             ("onnxocr-ppocrv6", "onnxocr-ppocrv6==0.0.1", "0.0.1"),
             ("pyappify", "pyappify==1.0.20", "1.0.20"),
             ("msvc-runtime", "msvc-runtime>=14.44.35112", "14.44.35112"),

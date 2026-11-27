@@ -437,7 +437,7 @@ requires-dist = [
     { name = "fastapi", specifier = "==0.143.0" },
     { name = "msvc-runtime", specifier = ">=14.44.35112" },
     { name = "numpy", specifier = ">=2.4.0" },
-    { name = "ok-script", extras = ["ocr"], specifier = "==3.0.10" },
+    { name = "ok-script", extras = ["ocr"], specifier = "==3.0.14" },
     { name = "onnxocr-ppocrv6", specifier = "==0.0.1" },
     { name = "opencc", specifier = ">=1.2.0" },
     { name = "opencv-python", specifier = ">=4.13.0.92" },
@@ -460,7 +460,7 @@ dev = [
 
 [[package]]
 name = "ok-script"
-version = "3.0.10"
+version = "3.0.14"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "mcp", marker = "sys_platform == 'win32'" },
@@ -474,9 +474,9 @@ dependencies = [
     { name = "requests", marker = "sys_platform == 'win32'" },
     { name = "typing-extensions", marker = "sys_platform == 'win32'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/fc/9b/76d01044cf2b1c37505348f8421389d7e709beee35672683003bc98b70de/ok_script-3.0.10.tar.gz", hash = "sha256:350a1a317999ae3dbbceabfbae92d21aabc0182a34a60267200aa87fb042bc70", size = 1159669, upload-time = "2026-11-22T05:46:52.729Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a2/fb/32994d48cdb1225b02a2d49f70bc9c656924aa241b8439419869b90722d4/ok_script-3.0.14.tar.gz", hash = "sha256:c9c4957cf4d81c65a3d788f541c4d48edd0325ef31e86ac2117792e103b73d82", size = 1199873, upload-time = "2026-11-25T12:50:50.52Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/13/02/c918cd27f90441a1e8d29949481b1caa5e16da33d9be0a736ec18b3de713/ok_script-3.0.10-py3-none-any.whl", hash = "sha256:fa0c7bb62a253f8d2ea93408c9548a0224ed7ec0e62cdf3218f87d975f8b1033", size = 1120451, upload-time = "2026-11-22T05:46:51.134Z" },
+    { url = "https://files.pythonhosted.org/packages/6c/f1/17996439130f36250df1287ffc9ea08531c519df3385e607ea25da019c25/ok_script-3.0.14-py3-none-any.whl", hash = "sha256:4fb6460d83f2cb439657dd23e199fe41866c1f25f8b2ff63b67f725607f6f88b", size = 1152454, upload-time = "2026-11-25T12:50:48.32Z" },
 ]
 
 [package.optional-dependencies]
