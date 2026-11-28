@@ -319,6 +319,7 @@ class Collector(SkillExecutionMixin):
             return self._record_visual_completion(card, required_actions)
 
         if refresh_quota:
+            self._forget_skill_evidence()
             failure = self._refresh_collection_quota(refresh_quota)
             if failure is not None:
                 return self._skill_failure(card.card_id, "次数周期核验", failure)
@@ -461,6 +462,7 @@ class Collector(SkillExecutionMixin):
                 continue
             current = target
             self._collection_target = (card, target)
+            self._forget_skill_evidence()
             if not recovery_only and not self.progress.weekly_action_complete(
                 card.card_id, target.role, ABSORB_ACTION.name,
             ):

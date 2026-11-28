@@ -172,6 +172,8 @@ class CollectionRunTest(unittest.TestCase):
                     return NavigationResult(True, ScreenState.SANDBOX)
 
                 def execute(actions, *, card_id, map_role):
+                    self.assertEqual({}, collector._last_skill_observations)
+                    collector._last_skill_observations["吸收"] = {"map": map_role.value}
                     pending = []
                     for action in actions:
                         if progress.weekly_action_complete(card_id, map_role, action.name):
@@ -716,7 +718,7 @@ class CollectionSkillTest(unittest.TestCase):
 
                 def countdown(*_args, **_kwargs):
                     if scenario == "readable" and clock[0] >= 1003.0:
-                        return "8"
+                        return "8）"
                     return "1Q"
 
                 def detect(_frame, _icon):
@@ -771,6 +773,42 @@ class CollectionSkillTest(unittest.TestCase):
                     else:
                         collector._capture_skill_field.assert_not_called()
                 collector.vision.click_client.assert_not_called()
+
+    def test_countdown_accepts_only_a_positive_timer_with_optional_closing_arc(self):
+        collector, *_ = self._skill_collector({}, {})
+        for text, expected in (
+            ("201)", 201), ("200）", 200), (" 1 ", 1), ("999", 999), ("0)", None),
+            ("1Q", None), ("1012", None), ("10/21", None), ("2011)", None),
+            ("20)1", None), (")", None), ("201))", None),
+        ):
+            with self.subTest(text=text):
+                collector.vision.ocr_text = Mock(return_value=text)
+                self.assertEqual(expected, collector._read_search_countdown(None))
+
+    def test_partial_menu_saves_the_observed_frame_and_its_rejection(self):
+        collector, clicks, _, _ = self._skill_collector({}, {})
+        frames = [np.full((16, 16, 3), i, np.uint8) for i in range(3)]
+        collector.vision.capture = Mock(side_effect=frames)
+        collector.task.save_frame = Mock()
+        collector.task.operate_click = Mock()
+
+        def detect(frame, icon):
+            present = frame is frames[1] and icon is ABSORB_ICON
+            return ActionIconDetection(
+                ActionIconState.AVAILABLE if present else ActionIconState.ABSENT,
+                MatchResult(0.98 if present else 0.938, (2, 2), (4, 4)),
+                reason="亮态" if present else "模板身份分过低：0.938<0.940",
+            )
+
+        collector.action_icons.detect = detect
+        self.assertFalse(collector._open_skill_menu(
+            (SEARCH_ICON, ABSORB_ICON), allow_group_one_recovery=True,
+        ))
+        self.assertIs(frames[1], collector.task.save_frame.call_args.args[1])
+        self.assertIn("0.938<0.940", collector._last_skill_observations["探查"]["reason"])
+        self.assertEqual("available", collector._last_skill_observations["吸收"]["state"])
+        collector.task.operate_click.assert_not_called()
+        self.assertEqual([], clicks)
 
     def capacity_hud(self, action, baseline):
         collector, clicks, _, progress = self._skill_collector(
@@ -1104,6 +1142,8 @@ class CollectionSkillTest(unittest.TestCase):
             ("exhausted", False, 0),
             ("unresolved", False, 0),
             ("failed_summon", False, 1),
+            ("stuck_banner", False, 1),
+            ("recovered", True, 1),
         ):
             with self.subTest(case=case):
                 collector, clicks, _, progress = self._skill_collector(
@@ -1114,6 +1154,15 @@ class CollectionSkillTest(unittest.TestCase):
                     },
                 )
                 collector._open_skill_menu = Mock(return_value=True)
+                now = 0.0
+                click_times = []
+                clear_samples = []
+
+                def sleep(seconds):
+                    nonlocal now
+                    now += seconds
+
+                collector.task.sleep = sleep
                 if case == "unresolved":
                     progress.reconcile_pending("压制", (0, 21))
                     progress.arm_action("Q_sp1", role, "压制", baseline=(0, 21))
@@ -1128,10 +1177,30 @@ class CollectionSkillTest(unittest.TestCase):
 
                 def observe(action):
                     events.append(("feedback", action.name))
-                    result = feedback(action)
-                    if action is SUMMON_ACTION and case == "failed_summon":
-                        return SkillFeedbackObservation("无可召集的战场怪物", "failure")
-                    return result
+                    return feedback(action)
+
+                def banner(_frame, _name, **_kwargs):
+                    elapsed = now - click_times[0]
+                    observe(SUMMON_ACTION)
+                    if case == "failed_summon":
+                        return "无可召集的战场怪物。"
+                    if case == "stuck_banner" or elapsed < 3 or 3.25 <= elapsed < 3.5:
+                        clear_samples.clear()
+                        return "召集带奖励的战场怪物。"
+                    clear_samples.append(elapsed)
+                    return ""
+
+                capture = collector._capture_skill_field
+
+                def field():
+                    frame, _ = capture()
+                    if (case == "recovered" and len(click_times) == 1
+                        and not progress.weekly_action_complete("Q_sp1", role, "压制")
+                    ):
+                        collector._skill_field_generation += 1
+                        _seed_action_records(progress, "Q_sp1", role.value, ("压制",))
+                        return frame, True
+                    return frame, False
 
                 send = collector.vision.click_client
 
@@ -1139,23 +1208,32 @@ class CollectionSkillTest(unittest.TestCase):
                     for action in ("召集", "压制"):
                         self.assertIn(("prepare", action), events)
                     if clicks:
+                        self.assertEqual(2, len(clear_samples))
+                        self.assertGreaterEqual(clear_samples[0], 3.5)
                         self.assertIn(("feedback", "召集"), events)
                         self.assertNotIn(("post", "召集"), events)
                         self.assertEqual(
                             "clicked", progress.get_action_record("Q_sp1", role, "召集")["state"]
                         )
+                    click_times.append(now)
                     send(*args, **kwargs)
 
                 collector._read_count_window = read
                 collector._read_action_feedback = observe
+                collector._capture_skill_field = field
+                collector.vision.ocr_text = banner
                 collector.vision.click_client = dispatch
-                result = collector._use_actions(
-                    (SUMMON_ACTION, SUPPRESS_ACTION), card_id="Q_sp1", map_role=role
-                )
+                with patch("src.tasks.map_trade.collector_skills.monotonic", lambda: now):
+                    result = collector._use_actions(
+                        (SUMMON_ACTION, SUPPRESS_ACTION), card_id="Q_sp1", map_role=role
+                    )
                 self.assertEqual(free, result.completed)
                 self.assertEqual(expected, len(clicks))
                 progress.load()
-                if free:
+                if case == "stuck_banner":
+                    self.assertIsNone(progress.get_action_record("Q_sp1", role, "压制"))
+                    self.assertTrue(result.review_required)
+                if case == "both":
                     self.assertLess(
                         events.index(("feedback", "压制")), events.index(("post", "召集"))
                     )

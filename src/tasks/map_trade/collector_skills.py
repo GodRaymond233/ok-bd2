@@ -49,6 +49,8 @@ from src.tasks.map_trade.collector_constants import (
     SKILL_OCR_FALLBACK_UPSCALE,
     SKILL_OCR_UPSCALE,
     SUMMON_ACTION,
+    SUMMON_ANIMATION_MIN_SECONDS,
+    SUMMON_SETTLE_TIMEOUT,
     SUPPRESS_ACTION,
     CountWindowObservation,
     SearchCountdownSession,
@@ -391,6 +393,7 @@ class SkillExecutionMixin:
 
         def inspect_window():
             best_detections = None
+            partial_sample = None
             attempt = recoveries = 0
             while attempt < ACTION_ICON_DETECTION_SAMPLES:
                 frame, recovered = self._capture_skill_field()
@@ -399,10 +402,14 @@ class SkillExecutionMixin:
                     if recoveries > 2:
                         raise RuntimeError("技能栏确认期间反复发生场景切换，停止采集")
                     best_detections = None
+                    partial_sample = None
                     attempt = 0
                 current, opened = inspect(frame)
                 if opened:
-                    return current, True
+                    return current, True, None
+                if any(value.state in {ActionIconState.AVAILABLE, ActionIconState.USED}
+                       for value in current):
+                    partial_sample = (frame, current)
                 if best_detections is None:
                     best_detections = current
                 else:
@@ -421,12 +428,27 @@ class SkillExecutionMixin:
                 if attempt < ACTION_ICON_DETECTION_SAMPLES:
                     self.task.sleep(ACTION_ICON_DETECTION_INTERVAL)
             best_detections = best_detections or ()
-            return best_detections, all(
+            opened = all(
                 value.state not in {ActionIconState.ABSENT, ActionIconState.UNKNOWN}
                 for value in best_detections
             )
+            return best_detections, opened, partial_sample
 
-        detections, opened = inspect_window()
+        def reject_partial(frame, current):
+            reasons = []
+            for icon, detection in zip(expected_icons, current, strict=True):
+                action = SEARCH_ACTION if icon == SEARCH_ICON else COUNT_ACTIONS_BY_ICON[icon.name]
+                self._report_icon_detection(action, detection)
+                reason = detection.reason or "无详情"
+                reasons.append(f"{icon.name}={detection.state.value}（{reason}）")
+            log_failure("地图采集：技能栏部分识别，停止切组：" + "，".join(reasons))
+            try:
+                self.task.save_frame("collection_skill_menu_unconfirmed", frame)
+            except OSError as error:
+                self.task.log_warning(f"地图采集：技能栏诊断图保存失败：{error}")
+            return False
+
+        detections, opened, partial = inspect_window()
         if opened or self._counts_prove_menu(expected_icons):
             self._check_collection_skill_layout()
             return True
@@ -436,6 +458,8 @@ class SkillExecutionMixin:
             f"{icon.name}={value.state.value}"
             for icon, value in zip(expected_icons, detections, strict=True)
         )
+        if partial is not None:
+            return reject_partial(*partial)
         if not allow_group_one_recovery:
             log_failure(f"地图采集：技能栏未确认：{states}。")
             return False
@@ -444,15 +468,6 @@ class SkillExecutionMixin:
         # Never click a fixed group center merely because one action template
         # blinked; recovery is reserved for an all-missing menu in a confirmed
         # story-map context.
-        if not all(
-            value.state in {ActionIconState.ABSENT, ActionIconState.UNKNOWN}
-            for value in detections
-        ):
-            log_failure(
-                f"地图采集：技能栏部分识别但未确认，不执行技能组1回退：{states}。"
-            )
-            return False
-
         # 采集技能可能配置在任意技能组，逐组识别并停留在包含目标技能的一组。
         for group, point in sorted(SKILL_GROUP_RELATIVE_POINTS.items()):
             frame, _recovered = self._capture_skill_field()
@@ -464,15 +479,16 @@ class SkillExecutionMixin:
                 value.state not in {ActionIconState.ABSENT, ActionIconState.UNKNOWN}
                 for value in detections
             ):
-                log_failure("地图采集：技能栏部分识别，停止技能组切换。")
-                return False
+                return reject_partial(frame, detections)
             self._status("技能组切换", f"采集技能未显示，切换到技能组{group}")
             self._forget_skill_evidence()
             self.task.operate_click(*point, after_sleep=SKILL_GROUP_SWITCH_SETTLE_SECONDS)
-            detections, opened = inspect_window()
+            detections, opened, partial = inspect_window()
             if opened or self._counts_prove_menu(expected_icons):
                 self._check_collection_skill_layout()
                 return True
+            if partial is not None:
+                return reject_partial(*partial)
         states = ", ".join(
             f"{icon.name}={value.state.value}"
             for icon, value in zip(expected_icons, detections, strict=True)
@@ -520,37 +536,31 @@ class SkillExecutionMixin:
                 ).ratio())
         return best
 
+    def _sample_action_feedback(self, action, frame):
+        text = self.vision.ocr_text(
+            frame, f"{action.name}执行反馈", relative_roi=ACTION_FEEDBACK_RELATIVE_ROI,
+            target_height=1080,
+        )
+        simplify = getattr(self.vision, "simplify", str)
+        normalized = simplify(text)
+        # 失败需在同一语句中匹配否定短语和词序，避免横幅堆叠时跨句凑字。
+        failure = max(
+            ((self._feedback_failure_ratio(normalized, word), word)
+             for word in ACTION_FAILURE_FEEDBACK.get(action.name, ())), default=(0.0, ""),
+        )
+        success = max(
+            (self._feedback_character_ratio(normalized, word), word)
+            for word in ACTION_SUCCESS_FEEDBACK[action.name]
+        )
+        return text, failure, success
+
     def _read_action_feedback(self, action: SkillAction) -> SkillFeedbackObservation:
         best = SkillFeedbackObservation("", None)
-        keywords = (
-            *(('success', value) for value in ACTION_SUCCESS_FEEDBACK[action.name]),
-            *(('failure', value) for value in ACTION_FAILURE_FEEDBACK.get(action.name, ())),
-        )
         end_at = monotonic() + ACTION_FEEDBACK_TIMEOUT
         while True:
-            text = self.vision.ocr_text(
-                self.vision.capture(),
-                f"{action.name}执行反馈",
-                relative_roi=ACTION_FEEDBACK_RELATIVE_ROI,
-                target_height=1080,
+            text, best_failure, best_success = self._sample_action_feedback(
+                action, self.vision.capture(),
             )
-            # 失败需在同一语句中匹配否定短语和词序，避免横幅堆叠时跨句凑字。
-            try:
-                normalized = self.vision.simplify(text)
-            except AttributeError:
-                normalized = str(text)
-            failure_matches = [
-                (self._feedback_failure_ratio(normalized, keyword), keyword)
-                for outcome, keyword in keywords
-                if outcome == "failure"
-            ]
-            success_matches = [
-                (self._feedback_character_ratio(normalized, keyword), keyword)
-                for outcome, keyword in keywords
-                if outcome == "success"
-            ]
-            best_failure = max(failure_matches, default=(0.0, ""))
-            best_success = max(success_matches, default=(0.0, ""))
             if best_failure[0] >= ACTION_FEEDBACK_CHARACTER_RATIO:
                 best = SkillFeedbackObservation(
                     text,
@@ -915,6 +925,45 @@ class SkillExecutionMixin:
             action, prepared, feedback, card_id=card_id, map_role=map_role,
         )
 
+    def _wait_summon_settled(self, clicked_at):
+        """Observe the cast and its banner together, within one post-click budget."""
+        feedback = SkillFeedbackObservation("", None)
+        clear_frames = 0
+        deadline = clicked_at + SUMMON_SETTLE_TIMEOUT
+        while monotonic() < deadline:
+            sampled_at = monotonic()
+            frame, recovered = self._capture_skill_field()
+            if recovered:
+                return feedback, SkillExecutionResult(
+                    False, message="召集期间遭遇战已恢复，重新核验本图动作", press_again=True,
+                )
+            if monotonic() >= deadline:
+                break
+            text, failure, success = self._sample_action_feedback(SUMMON_ACTION, frame)
+            if failure[0] >= ACTION_FEEDBACK_CHARACTER_RATIO:
+                return SkillFeedbackObservation(text, "failure", *failure), None
+            if success[0] > feedback.ratio:
+                outcome = "success" if success[0] >= ACTION_FEEDBACK_CHARACTER_RATIO else None
+                feedback = SkillFeedbackObservation(text, outcome, *success)
+            elapsed = sampled_at - clicked_at
+            if (elapsed >= SUMMON_ANIMATION_MIN_SECONDS
+                    and success[0] < ACTION_FEEDBACK_RELEVANCE_RATIO):
+                clear_frames += 1
+            else:
+                clear_frames = 0
+            self._status(
+                "召集演出",
+                f"点击后={elapsed:.2f}s；横幅匹配={success[0]:.3f}；退场={clear_frames}/2",
+            )
+            remaining = deadline - monotonic()
+            if clear_frames >= 2 and remaining >= 0:
+                return feedback, None
+            if remaining > 0:
+                self.task.sleep(min(ACTION_OCR_WINDOW_INTERVAL, remaining))
+        return feedback, SkillExecutionResult(
+            False, message="召集演出退场超时，跳过本卡压制", review_required=True,
+        )
+
     def _use_summon_and_suppress(self, *, card_id, map_role) -> SkillExecutionResult:
         """Prepare both quotas before attracting enemies; verify after suppression."""
         kwargs = {"card_id": card_id, "map_role": map_role}
@@ -935,14 +984,22 @@ class SkillExecutionMixin:
             failure = self._click_prepared_action(SUMMON_ACTION, summon, **kwargs)
             if failure is not None:
                 return failure
-            feedback = self._read_action_feedback(SUMMON_ACTION)
-            self._wait_after_feedback_match(SUMMON_ACTION, feedback)
-            if feedback.outcome != "success":
+            clicked_at = monotonic()
+            feedback, stop = self._wait_summon_settled(clicked_at)
+            self._status(
+                "召集执行反馈", f"outcome={feedback.outcome or 'unknown'}; "
+                f"ratio={feedback.ratio:.3f}; text={feedback.text or '-'}",
+            )
+            if stop is not None and stop.press_again:
+                return stop
+            if feedback.outcome != "success" or stop is not None:
                 summon_result = self._verify_clicked_action(
                     SUMMON_ACTION, summon, feedback, **kwargs,
                 )
                 if not summon_result.completed:
                     return summon_result
+                if stop is not None:
+                    return stop
             if isinstance(suppress, SkillExecutionResult):
                 self.progress.review_card_actions(
                     card_id, (SUPPRESS_ACTION.name,), roles={map_role.value},
@@ -957,6 +1014,7 @@ class SkillExecutionMixin:
                         if failure.press_again else failure
                     )
                 else:
+                    self._status("召集到压制点击间隔", f"{monotonic() - clicked_at:.2f}s")
                     suppress_feedback = self._read_action_feedback(SUPPRESS_ACTION)
                     self._wait_after_feedback_match(SUPPRESS_ACTION, suppress_feedback)
                     suppress_result = self._verify_clicked_action(
@@ -1227,7 +1285,15 @@ class SkillExecutionMixin:
             f"{observation.count[0]}/{observation.count[1]}"
             if observation.count is not None else "未读清"
         )
-        message = f"{action.name}旧点击待核验；当前次数={count_text}，保留预留并跳过本卡"
+        baseline = existing.get("baseline")
+        baseline_text = (
+            f"{baseline[0]}/{baseline[1]}"
+            if isinstance(baseline, (list, tuple)) and len(baseline) == 2 else "未知"
+        )
+        message = (
+            f"{action.name}旧点击待核验；点击前={baseline_text}，当前次数={count_text}，"
+            "保留预留并跳过本卡；次日额度重置后重新核验"
+        )
         self.progress.mark_action_blocked(
             card_id,
             map_role,
@@ -1694,8 +1760,9 @@ class SkillExecutionMixin:
         )
         countdown = text.strip()
         self._status("探查倒计时", countdown or "-")
-        if SEARCH_COUNTDOWN_PATTERN.fullmatch(countdown) and int(countdown) > 0:
-            return int(countdown)
+        match = SEARCH_COUNTDOWN_PATTERN.fullmatch(countdown)
+        if match and (seconds := int(match.group(1))) > 0:
+            return seconds
         return None
 
     def _search_running(self) -> bool:
