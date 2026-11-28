@@ -59,11 +59,16 @@ class ActivityScreen:
     def banner(self):
         unlock_phrases = ("普通战斗解锁", "挑战战斗解锁", "魔兽追踪者解锁", "魔兽追蹤者解锁")
         countdown_pattern = r"d-(?:[0-9]{1,3}|day)(?!\d)"
+        left, top, right, bottom = HOME_BANNER_ROI
+        labels = [
+            (text, (x, y)) for text, (x, y) in self.labels
+            if left <= x <= right and top <= y <= bottom
+        ]
         banners = [
             (x, (y + countdown_y) / 2)
-            for text, (x, y) in self.labels
+            for text, (x, y) in labels
             if any(phrase in text for phrase in unlock_phrases)
-            for label, (countdown_x, countdown_y) in self.labels
+            for label, (countdown_x, countdown_y) in labels
             if re.search(countdown_pattern, label)
             and abs(countdown_x - x) < 0.08
             and 0.025 < y - countdown_y < 0.18
@@ -71,17 +76,15 @@ class ActivityScreen:
         if not banners:
             banners = [
                 (x, y)
-                for text, (x, y) in self.labels
+                for text, (x, y) in labels
                 if any(phrase in text for phrase in unlock_phrases)
                 and re.search(countdown_pattern, text)
             ]
         if not banners:
             banners = [
-                (x, max(0.40, y - 0.055))
-                for text, (x, y) in self.labels
+                (x, max(top, y - 0.055))
+                for text, (x, y) in labels
                 if any(phrase in text for phrase in unlock_phrases)
-                and x > 0.60
-                and 0.40 < y < 0.88
             ]
         return banners[0] if len(banners) == 1 else None
 

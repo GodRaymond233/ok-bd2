@@ -1001,11 +1001,13 @@ class ActivityBannerFallbackTest(unittest.TestCase):
         announcement = make_screen([("魔兽追踪者战斗活动任务已开始", 0.35, 0.10)])
         self.assertIsNone(announcement.banner)
 
-        wrong_side = make_screen([("D-20", 0.10, 0.50), ("魔兽追踪者解锁", 0.20, 0.58)])
+        wrong_side = make_screen([("D-20", 0.20, 0.50), ("魔兽追踪者解锁", 0.20, 0.58)])
         self.assertIsNone(wrong_side.banner)
+        mixed = make_screen([("D-6 魔兽追踪者解锁", 0.22, 0.18), ("魔兽追踪者解锁", 0.84, 0.58)])
+        self.assertEqual(unlock_only.banner, mixed.banner)
 
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        home_no_banner = ActivityScreen(frame, [])
+        home_no_banner = make_screen([("D-6 魔兽追踪者解锁", 0.22, 0.18)])
         region_banner = ActivityScreen(
             frame,
             [SimpleNamespace(name="魔兽追踪者解锁", x=1600, y=620, width=160, height=30)],
@@ -1027,7 +1029,9 @@ class ActivityBannerFallbackTest(unittest.TestCase):
         act_task._read_activity = Mock(side_effect=[home_no_banner, menu_screen])
         act_task._region = Mock(return_value=region_banner)
         self.assertIs(menu_screen, act_task._open_menu(home_no_banner))
-        act_task.operate_click.assert_called_once()
+        act_task.operate_click.assert_called_once_with(
+            *region_banner.banner, name="打开每日活动", after_sleep=0.8
+        )
 
 
 if __name__ == "__main__":
