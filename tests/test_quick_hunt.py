@@ -1499,7 +1499,8 @@ class HomePopupRecoveryTest(unittest.TestCase):
             ],
             self.task.operate_click.call_args_list,
         )
-        self.assertEqual(1, self.task._home_modal_panel_repeats)
+        self.assertEqual(0, self.task._home_modal_retry.unchanged)
+        self.assertIsNotNone(self.task._home_modal_retry.pending)
 
 
 class QuickHuntInputRecoveryTest(unittest.TestCase):

@@ -189,12 +189,13 @@ class AutoLoginTest(unittest.TestCase):
                     task.run()
                 task.mark_logged_in.assert_called_once()
                 self.assertTrue(task._finished)
-                self.assertEqual(2, task.operate_click.call_count)
-                for click in task.operate_click.call_args_list:
+                self.assertEqual(3, task.operate_click.call_count)
+                for click in task.operate_click.call_args_list[:2]:
                     x, y = click.args
                     self.assertAlmostEqual(cross[0], x * width, delta=2)
                     self.assertAlmostEqual(cross[1], y * height, delta=2)
                     self.assertTrue(click.kwargs["require_fresh_target"])
+                self.assertEqual((.01, .5), task.operate_click.call_args_list[2].args)
 
     def test_stable_home_releases_live_requests_in_order_after_executor_is_free(self):
         login = self._task()

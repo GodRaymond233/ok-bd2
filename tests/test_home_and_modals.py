@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 from ok.task.exceptions import FinishedException, TaskDisabledException
 
+from src.interaction.BD2Interaction import InputTargetChanged
 from src.tasks.BaseBD2Task import (
     SCENE_HOME_MAX_CLICKS,
     TEMPLATE_DIR,
@@ -22,6 +23,7 @@ from src.utils.home_confirmation import (
     home_gacha_ocr_with_fallback,
     home_left_column_hits,
     home_temporary_announcement_detected,
+    modal_backdrop_point,
     modal_close_glyph,
     modal_close_point,
     modal_panel_bbox,
@@ -40,6 +42,7 @@ def home_task(kind=BaseBD2Task, boxes=()):
     task.log_info = Mock()
     task.log_warning = Mock()
     task.sleep = Mock()
+    task._save_flow_diagnostic = Mock()
     task.operate_click = lambda x, y, **_: task.clicks.append((x, y))
     task._sleep_after_recognition = Mock()
     task._quick_vision = lambda: SimpleNamespace(
@@ -353,6 +356,89 @@ def _board_frame(with_glyph=True):
 
 
 class HomeModalTest(unittest.TestCase):
+    def test_unknown_home_panel_uses_verified_edge_and_stops_after_five_unchanged_clicks(self):
+        for kind in (BaseBD2Task, AutoLoginTask):
+            task = home_task(kind)
+            panel = _popup_frame(with_glyph=False)
+            panel[:, :40] = 30
+            with patch("src.tasks.BaseBD2Task.monotonic", side_effect=range(10, 80, 2)):
+                for _ in range(5):
+                    self.assertTrue(task.dismiss_home_announcement(
+                        panel, (False, 2, 126.0, "抽抽乐"), "测试",
+                    ))
+                with self.assertRaisesRegex(RuntimeError, "5 次.*未变化"):
+                    task.dismiss_home_announcement(panel, (False, 2, 126.0, "抽抽乐"), "测试")
+            self.assertEqual([(.01, .5)] * 5, task.clicks)
+            task._save_flow_diagnostic.assert_called_once_with("home_modal_stuck")
+
+    def test_home_modal_progress_resets_unchanged_clicks(self):
+        task = home_task()
+        panel = _popup_frame()
+        with patch("src.tasks.BaseBD2Task.monotonic", side_effect=range(10, 80, 2)):
+            for i in range(8):
+                changed = panel.copy()
+                changed[400:600, 600:1000] = 30 if i % 2 else 200
+                self.assertTrue(task.dismiss_home_modal_popup(changed))
+        self.assertEqual(8, len(task.clicks))
+
+    def test_unsent_home_click_does_not_count_as_stuck(self):
+        for interrupted in (False, True):
+            task = home_task()
+            task.operate_click = Mock(side_effect=InputTargetChanged) if interrupted else Mock(
+                return_value=False,
+            )
+            with patch("src.tasks.BaseBD2Task.monotonic", side_effect=range(10, 80, 2)):
+                for _ in range(8):
+                    self.assertEqual(interrupted, task.dismiss_home_modal_popup(_popup_frame()))
+            task._save_flow_diagnostic.assert_not_called()
+
+    def test_panel_less_return_prompt_is_supported_but_not_other_buttons(self):
+        for label, expected in (("点击画面即可返回", True), ("返回", False),
+                                ("7天内不再显示", False)):
+            task = home_task(boxes=[SimpleNamespace(
+                name=label, x=800, y=900, width=320, height=40, confidence=.99,
+            )])
+            with patch("src.tasks.BaseBD2Task.monotonic", return_value=10):
+                self.assertEqual(expected, task.dismiss_home_modal_popup(_dimmed_frame()))
+            self.assertEqual(int(expected), len(task.clicks))
+
+    def test_missing_panel_preserves_fullscreen_news_recovery(self):
+        task = home_task()
+        task.dismiss_fullscreen_news_page = Mock(return_value=True)
+        self.assertTrue(task.dismiss_home_announcement(
+            _dimmed_frame(), (False, 2, 126., "抽抽乐"), "测试",
+        ))
+        task.dismiss_fullscreen_news_page.assert_called_once()
+
+    def test_home_modal_text_close_uses_only_explicit_close_labels(self):
+        for label, expected in (("关闭", True), ("点击画面即可返回", True),
+                                ("7天内不再显示", False), ("前往查看", False),
+                                ("购买", False), ("确认", False)):
+            with self.subTest(label=label):
+                box = SimpleNamespace(name=label, x=850, y=740, width=200,
+                                      height=40, confidence=.99)
+                task = home_task(boxes=[box])
+                with patch("src.tasks.BaseBD2Task.monotonic", return_value=10):
+                    self.assertEqual(expected, task.dismiss_home_modal_popup(
+                        _popup_frame(with_glyph=False),
+                    ))
+                self.assertEqual([(950 / WIDTH, 760 / HEIGHT)] if expected else [], task.clicks)
+
+    def test_edge_fallback_rejects_content_and_normal_home(self):
+        frame = _popup_frame(with_glyph=False)
+        self.assertIsNone(modal_backdrop_point(frame, REAL_PANEL))
+        frame[:, :40] = 30
+        self.assertEqual((.01, .5), modal_backdrop_point(frame, REAL_PANEL))
+        frame[520:550, :20] = 55
+        self.assertEqual((.01, .5), modal_backdrop_point(frame, REAL_PANEL))
+        frame[500:570, :40] = 200
+        self.assertIsNone(modal_backdrop_point(frame, REAL_PANEL))
+        task = home_task()
+        self.assertFalse(task.dismiss_home_announcement(
+            frame, (True, 2, 255., "抽抽乐"), "测试",
+        ))
+        self.assertEqual([], task.clicks)
+
     def test_close_glyph_geometry_in_board_and_dark_headers(self):
         point = modal_close_point(
             BOARD_PANEL,
@@ -389,23 +475,18 @@ class HomeModalTest(unittest.TestCase):
         self.assertAlmostEqual(1480 / WIDTH, x, delta=0.002)
         self.assertAlmostEqual(288 / HEIGHT, y, delta=0.002)
 
-    def test_panel_clicks_only_the_close_glyph_within_budget(self):
-        for present, results, message in (
-            (True, [True, True, True, True, False], "停止点击"),
-            (False, [False], "未定位到关闭叉号"),
-        ):
-            with self.subTest(glyph=present):
-                task = home_task()
-                panel = _popup_frame(with_glyph=present)
-                with patch("src.tasks.BaseBD2Task.monotonic", side_effect=(10, 15, 20, 25, 65)):
-                    self.assertEqual(
-                        results, [task.dismiss_home_modal_popup(panel) for _ in results]
-                    )
-                self.assertIn(message, task.info["主页弹窗"])
-                self.assertEqual(sum(results), len(task.clicks))
-                for x, y in task.clicks:
-                    self.assertAlmostEqual(1480 / WIDTH, x, delta=0.004)
-                    self.assertAlmostEqual(285 / HEIGHT, y, delta=0.004)
+    def test_panel_prefers_close_glyph_and_rejects_unsafe_missing_control(self):
+        for present in (True, False):
+            task = home_task()
+            with patch("src.tasks.BaseBD2Task.monotonic", return_value=10):
+                self.assertEqual(present, task.dismiss_home_modal_popup(
+                    _popup_frame(with_glyph=present),
+                ))
+            self.assertEqual(int(present), len(task.clicks))
+            if present:
+                x, y = task.clicks[0]
+                self.assertAlmostEqual(1480 / WIDTH, x, delta=.004)
+                self.assertAlmostEqual(285 / HEIGHT, y, delta=.004)
 
     def test_dark_centered_panel_on_dimmed_backdrop_uses_fallback_and_hits_close_glyph(self):
         frame = _dimmed_frame(45)
