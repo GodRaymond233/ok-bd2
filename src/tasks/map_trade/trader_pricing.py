@@ -16,6 +16,10 @@ from src.tasks.map_trade.trader_constants import split_items
 from src.tasks.map_trade.vision import normalize_text
 
 
+def normalize_trade_name(value: str) -> str:
+    return normalize_text(value).translate(TRADE_ITEM_VARIANT_CHAR_TABLE)
+
+
 def parse_sale_reserves(text: str) -> dict[str, int]:
     """Read item=quantity overrides; -1 excludes an item from sale."""
     result = {}
@@ -26,9 +30,12 @@ def parse_sale_reserves(text: str) -> dict[str, int]:
         name, raw = name.strip(), raw.strip()
         if not name or not separator or not re.fullmatch(r"-1|[0-9]+", raw):
             raise ValueError("商品保留量请按「物品=非负整数」填写；-1表示不出售。")
-        if name in result:
+        key = normalize_trade_name(name)
+        if not key:
+            raise ValueError(f"无法识别商品保留量名称：{name}")
+        if key in result:
             raise ValueError(f"商品保留量重复：{name}")
-        result[name] = int(raw)
+        result[key] = int(raw)
     return result
 
 
@@ -57,9 +64,7 @@ class PriceDiscoveryMixin:
         return any(self._normal(value) in whitelist for value in names)
 
     def _normal(self, value: str) -> str:
-        return normalize_text(self.vision.simplify(value)).translate(
-            TRADE_ITEM_VARIANT_CHAR_TABLE
-        )
+        return normalize_trade_name(self.vision.simplify(value))
 
     def _current_market_time(self) -> datetime:
         provider = getattr(self, "now_provider", None)

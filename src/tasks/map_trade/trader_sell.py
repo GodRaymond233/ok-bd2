@@ -233,6 +233,24 @@ class SellFlowMixin:
             return True
         return self._sell_resolved_entries(entries)
 
+    def _sale_reserve_overrides(self, entries, reserves):
+        if not reserves or not entries:
+            return {}
+        catalog = self._sale_title_catalog(entries[0])
+        overrides = {}
+        for name, quantity in reserves.items():
+            owners = catalog.get(name, set())
+            if len(owners) > 1:
+                raise ValueError(f"商品保留量名称存在歧义：{name}")
+            for entry in entries:
+                identities = catalog.get(self._normal(entry.item), set())
+                if owners.isdisjoint(identities):
+                    continue
+                if len(identities) != 1 or overrides.get(entry.item, quantity) != quantity:
+                    raise ValueError(f"商品保留量冲突：{entry.item}")
+                overrides[entry.item] = quantity
+        return overrides
+
     def _resolve_sale_entries(self) -> list[CalendarEntry] | None:
         try:
             reserves = parse_sale_reserves(str(self.task.config.get("商品保留量", "")))
@@ -257,6 +275,7 @@ class SellFlowMixin:
             entries = list(calendar.entries_for(calendar_date.day))
             self._sale_title_entries = tuple(entries)
             self._sale_title_catalog_cache = None
+            reserves = self._sale_reserve_overrides(entries, reserves)
         except Exception as exc:
             self._sale_summary_reason = f"未出售：价表加载失败（{exc}）"
             self.task.log_warning(f"价表加载失败，为避免误卖已停止出售：{exc}")

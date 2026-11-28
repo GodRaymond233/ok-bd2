@@ -241,8 +241,7 @@ ITEM_ALIASES: dict[str, tuple[str, ...]] = {
 
 # OCR 模型在简体界面小字/弹窗标题上可能将单个汉字识别为繁体或康熙异体字
 # （例如 禿 U+79BF / 鷲 U+9DF2 / 黃 U+9EC3 / 鱗 U+9C57）。
-# 边界：仅用于 PriceDiscoveryMixin._normal 的跑商商品名匹配（应对简体客户端 OCR
-# 吐出繁/异体字形，延续既有姜黄别名容错思路），不扩展到界面关键字，不引入外部繁简库。
+# 商品识别与保留量配置共用此表，以同一商品身份执行出售保护。
 TRADE_ITEM_VARIANT_CHAR_TABLE: dict[int, str] = str.maketrans(
     {
         "禿": "秃",

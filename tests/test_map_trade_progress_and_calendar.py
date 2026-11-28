@@ -823,6 +823,21 @@ class CalendarTest(unittest.TestCase):
         trader.task.config["商品保留量"] = "杏仁=-2"
         self.assertIsNone(trader._resolve_sale_entries())
 
+        entries = (CalendarEntry("禿鷲羽毛", "S9", aliases=("Vulture Feather",)),)
+        trader.task.config.update({"使用出售白名单": True, "出售白名单": "秃鹫羽毛"})
+        for reserve, expected in (
+            ("秃鹫羽毛=-1", []),
+            ("秃鹫羽毛=25", [25]),
+            ("Vulture Feather=30", [30]),
+            ("禿鷲羽毛=25\n秃鹫羽毛=-1", None),
+            ("Vulture Feather=25\n秃鹫羽毛=-1", None),
+        ):
+            with self.subTest(reserve=reserve):
+                trader.task.config["商品保留量"] = reserve
+                result = trader._resolve_sale_entries()
+                actual = None if result is None else [entry.reserve for entry in result]
+                self.assertEqual(expected, actual)
+
     def test_business_dates_use_the_current_beijing_refresh_for_each_operation(self):
         self.assertEqual((23, 8), (SALE_PRICE_REFRESH_HOUR, PURCHASE_STOCK_REFRESH_HOUR))
         # Prices advance at 23:00. Stock and collection quotas advance at 08:00,
