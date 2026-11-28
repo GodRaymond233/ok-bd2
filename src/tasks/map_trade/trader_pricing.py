@@ -5,6 +5,7 @@ from datetime import datetime
 
 from src.tasks.map_trade.data import (
     ITEM_ALIASES,
+    TRADE_ITEM_VARIANT_CHAR_TABLE,
 )
 from src.tasks.map_trade.models import (
     DEFAULT_SALE_WHITELIST,
@@ -56,7 +57,9 @@ class PriceDiscoveryMixin:
         return any(self._normal(value) in whitelist for value in names)
 
     def _normal(self, value: str) -> str:
-        return normalize_text(self.vision.simplify(value))
+        return normalize_text(self.vision.simplify(value)).translate(
+            TRADE_ITEM_VARIANT_CHAR_TABLE
+        )
 
     def _current_market_time(self) -> datetime:
         provider = getattr(self, "now_provider", None)

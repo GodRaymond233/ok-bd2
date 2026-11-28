@@ -501,6 +501,7 @@ class SellFlowMixin:
             before_toast_id = max(before_toast_id or 0, known_toast_id)
         dialog_opened = False
         self._sale_dialog_rejected = False
+        self._last_sale_dialog_title_texts: tuple[str, ...] = ()
         for click_number in range(1, SALE_DIALOG_OPEN_MAX_CLICKS + 1):
             if getattr(candidate.percent_box, "reference_view", False) or click_number > 1:
                 fresh = self.vision.capture()
@@ -513,7 +514,13 @@ class SellFlowMixin:
                           if abs(item.center[0] - candidate.center[0]) <= fresh.shape[1] * 0.004
                           and abs(item.center[1] - candidate.center[1]) <= fresh.shape[0] * 0.004]
                 if len(nearby) != 1:
-                    self._last_sale_reason = "未出售：点击前商品或120%标志未稳定确认"
+                    if click_number > 1 and self._last_sale_dialog_title_texts:
+                        seen = " / ".join(self._last_sale_dialog_title_texts)
+                        self._last_sale_reason = (
+                            f"未出售：出售弹窗标题未确认（OCR：{seen}），补点前无法复核商品标志"
+                        )
+                    else:
+                        self._last_sale_reason = "未出售：点击前商品或120%标志未稳定确认"
                     return None
                 candidate, frame = nearby[0], fresh
             self.vision.click_client(candidate.center, frame.shape, after_sleep=0.5)
@@ -1370,6 +1377,7 @@ class SellFlowMixin:
         _left, _top, original = relative_roi_frame(frame, SALE_DIALOG_TITLE_REGION)
         if original.size == 0:
             return None
+        observed_texts: list[str] = []
         for mode in ("原图", "灰度", "CLAHE"):
             target = original
             if mode != "原图":
@@ -1385,6 +1393,9 @@ class SellFlowMixin:
                 f"出售弹窗商品标题/{mode}",
                 [(box.name, box.confidence) for box in boxes],
             )
+            joined = " ".join(text for text in texts if text).strip()
+            if joined and joined not in observed_texts:
+                observed_texts.append(joined)
             full_name = self._normal(" ".join(texts))
             full_ids = catalog.get(full_name, set())
             if full_ids:
@@ -1401,6 +1412,8 @@ class SellFlowMixin:
                     f"卖：弹窗标题识别到其他或歧义商品：{' '.join(texts)}，停止出售。"
                 )
                 return False
+        if observed_texts:
+            self._last_sale_dialog_title_texts = tuple(observed_texts)
         return None
 
     def _wait_sale_dialog_item(
@@ -1408,6 +1421,7 @@ class SellFlowMixin:
         entry: CalendarEntry,
         timeout: float = SALE_DIALOG_TIMEOUT,
     ) -> bool:
+        self._last_sale_dialog_title_texts = ()
         catalog = self._sale_title_catalog(entry)
         identities = catalog.get(self._normal(entry.item), set())
         if len(identities) != 1:

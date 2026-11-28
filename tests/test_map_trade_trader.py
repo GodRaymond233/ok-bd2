@@ -47,6 +47,7 @@ from src.tasks.map_trade.trader_cooking import (
     CookingListSnapshot,
     CookingRecipeOutcome,
 )
+from src.tasks.map_trade.trader_sell import SaleItemCandidate
 from src.tasks.map_trade.vision import Vision
 from src.utils.home_confirmation import (
     HOME_ANNOUNCEMENT_CLEAR_RELATIVE_POINT,
@@ -227,6 +228,12 @@ class SaleRecognitionTest(unittest.TestCase):
     def test_dialog_title_needs_two_consecutive_unambiguous_frames(self):
         for item, lines, timeout, valid, rejected in (
             *[("姜黄", [word, word], 2, True, False) for word in ("姜黄", "姜黃", "薑黄", "薑黃")],
+            *[
+                ("秃鹫羽毛", [word, word], 2, True, False)
+                for word in ("秃鹫羽毛", "秃鷲羽毛", "禿鹫羽毛", "禿鷲羽毛")
+            ],
+            ("穿山甲鳞片", ["穿山甲鱗片", "穿山甲鱗片"], 2, True, False),
+            ("黑啤酒炖锅", ["黑啤酒燉鍋", "黑啤酒燉鍋"], 2, True, False),
             *[("姜黄", [word], 0, False, False) for word in ("", "姜", "黄", "姜黄油")],
             ("白糖", ["白糖"], 0, False, False),
             ("姜黄", ["豆子"], 2, False, True),
@@ -264,6 +271,45 @@ class SaleRecognitionTest(unittest.TestCase):
                         ["原图"] * 2,
                         [c.args[1].split("/")[-1] for c in trader.vision.ocr_boxes.call_args_list],
                     )
+
+    def test_variant_char_folding_has_no_cross_item_collisions(self):
+        trader = create_trader()
+        catalog = trader._sale_title_catalog(CalendarEntry("秃鹫羽毛", "S9"))
+        collisions = {key: ids for key, ids in catalog.items() if len(ids) > 1}
+        self.assertEqual({}, collisions)
+        for variant in ("秃鹫羽毛", "秃鷲羽毛", "禿鹫羽毛", "禿鷲羽毛"):
+            self.assertEqual({"秃鹫羽毛"}, catalog.get(trader._normal(variant)))
+
+    def test_retry_after_unconfirmed_dialog_title_reports_dialog_ocr_not_marker(self):
+        trader = create_trader()
+        frame = np.full((1080, 1920, 3), (20, 70, 150), np.uint8)
+        trader.vision.capture = Mock(return_value=frame)
+        trader.vision.click_client = Mock()
+        trader._sale_name_signature = Mock(return_value=None)
+        trader._sale_toast_id = Mock(return_value=None)
+        trader._locate_sale_items = Mock(return_value=[])
+        trader.task.log_info = Mock()
+
+        def fake_wait(_entry):
+            trader._last_sale_dialog_title_texts = ("未知异体商品名",)
+            return False
+
+        trader._wait_sale_dialog_item = Mock(side_effect=fake_wait)
+        candidate = SaleItemCandidate(
+            center=(639, 782),
+            name_box=SimpleNamespace(x=600, y=770, width=80, height=24),
+            percent_box=SimpleNamespace(x=540, y=770, width=50, height=24),
+        )
+        outcome = trader._sell_one_candidate(
+            CalendarEntry("秃鹫羽毛", "S9"),
+            candidate,
+            frame,
+            previous_owned=None,
+        )
+        self.assertIsNone(outcome)
+        self.assertEqual(1, trader.vision.click_client.call_count)
+        self.assertIn("出售弹窗标题未确认", trader._last_sale_reason)
+        self.assertIn("未知异体商品名", trader._last_sale_reason)
 
 
 class SaleLedgerTest(StageHistoryTestCase):
