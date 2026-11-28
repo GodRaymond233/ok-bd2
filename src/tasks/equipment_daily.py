@@ -494,6 +494,29 @@ def dismantle_grade_points(frame, grade_templates):
     return sorted(points, key=lambda point: (-round(point[1] / 0.006), -point[0]))
 
 
+def dismantle_selection_matches(before, after, target):
+    """Track the eligible grade badge through scrolling and the dim selection overlay."""
+    if before.shape != after.shape:
+        return False
+    h, w = before.shape[:2]
+    x, y = target
+    # The grade occupies the upper-right corner of the card, outside the selection glyph.
+    left, right = round((x + 0.0105) * w), round((x + 0.0265) * w)
+    top, bottom = round((y - 0.048) * h), round((y - 0.0315) * h)
+    if not (0 <= left < right <= w and 0 <= top < bottom <= h):
+        return False
+    badge = before[top:bottom, left:right]
+    if badge.std(axis=(0, 1)).max() < 5:
+        return False
+    travel = round(0.065 * h)
+    start = max(0, top - travel)
+    strip = after[start:min(h, bottom + travel), left:right]
+    scores = cv2.matchTemplate(strip, badge, cv2.TM_CCOEFF_NORMED)
+    _, similarity, _, (_, offset) = cv2.minMaxLoc(scores)
+    matched_y = y + (start + offset - top) / h
+    return similarity >= 0.90 and dismantle_card_selected(after, (x, matched_y))
+
+
 def dismantle_card_selected(frame, point):
     """Verify the gold selection outline on the card clicked by the scanner."""
     scaled = cv2.resize(frame, (1920, 1080), interpolation=cv2.INTER_AREA)
@@ -514,9 +537,7 @@ def dismantle_card_selected(frame, point):
     )
     if not (left_ok and right_ok):
         return False
-    if y < 235 or y > 860:
-        return bool(top_ok or bottom_ok)
-    return bool(top_ok and bottom_ok)
+    return bool((top_ok or point[1] < 235 / 1080) and (bottom_ok or point[1] > 860 / 1080))
 
 
 def dismantle_check_point(frame):

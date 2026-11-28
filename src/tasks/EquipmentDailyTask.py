@@ -32,9 +32,9 @@ from src.tasks.equipment_daily import (
     SELECTION_BACK_POINT,
     EquipmentScreen,
     RefinementConflict,
-    dismantle_card_selected,
     dismantle_check_point,
     dismantle_grade_points,
+    dismantle_selection_matches,
     equipment_daily_cycle,
     grid_blank_rows,
     refinement_value,
@@ -221,7 +221,7 @@ class EquipmentDailyTask(TaskVisionMixin, BaseBD2Task):
                     previous = current
                     if settled_now:
                         return screen
-                return screen
+                return None
             self.scroll_client((0.70, 0.62), -4, count=4, after_sleep=0.5)
             scrolled = True
             screen = self._read_equipment()
@@ -253,19 +253,17 @@ class EquipmentDailyTask(TaskVisionMixin, BaseBD2Task):
         stable_scrolls = 0
         saw_equipment = False
         for scrolls in range(max_scrolls + 1):
-            grid = self._grid_sample(screen.frame)
-            saw_equipment = saw_equipment or not all(grid_blank_rows(screen.frame))
-            for target in self._grade_points(screen.frame):
+            candidate_frame = screen.frame
+            grid = self._grid_sample(candidate_frame)
+            saw_equipment = saw_equipment or not all(grid_blank_rows(candidate_frame))
+            for target in self._grade_points(candidate_frame):
                 self.operate_click(*target, name="选择一件非 UR 装备", after_sleep=0.45)
                 selected = self._wait_equipment(
                     lambda view: view.inventory == inventory and view.selection_count == 1,
                     timeout=2.5,
                 )
                 if selected is not None:
-                    if any(
-                        dismantle_card_selected(selected.frame, (target[0], target[1] + dy))
-                        for dy in (0.0, 0.03, 0.06)
-                    ):
+                    if dismantle_selection_matches(candidate_frame, selected.frame, target):
                         return selected
                     return None
                 screen = self._read_equipment()

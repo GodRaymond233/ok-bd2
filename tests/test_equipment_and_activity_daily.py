@@ -216,7 +216,8 @@ class EquipmentFlowTest(unittest.TestCase):
                 task._record_step = Mock()
                 with (
                     patch(
-                        "src.tasks.EquipmentDailyTask.dismantle_card_selected", return_value=True
+                        "src.tasks.EquipmentDailyTask.dismantle_selection_matches",
+                        return_value=True,
                     ),
                     patch(
                         "src.tasks.EquipmentDailyTask.dismantle_check_point",
@@ -906,6 +907,9 @@ class DismantleScrollBounceAndClipTest(unittest.TestCase):
             dismantle_card_selected(draw_gold_edges(cx, cy, top=False), clipped_top)
         )
         self.assertFalse(
+            dismantle_card_selected(draw_gold_edges(cx, cy, bottom=False), clipped_top)
+        )
+        self.assertFalse(
             dismantle_card_selected(draw_gold_edges(cx, cy, top=False, left=False), clipped_top)
         )
 
@@ -936,19 +940,34 @@ class DismantleScrollBounceAndClipTest(unittest.TestCase):
         self.assertIs(snapped_2, result)
         self.assertEqual(2, task.sleep.call_count)
 
-        selecting = SimpleNamespace(inventory=(100, 500), selection_count=0, frame=full_page.frame)
-        selected = SimpleNamespace(inventory=(100, 500), selection_count=1, frame=full_page.frame)
-        scan_task = EquipmentDailyTask.__new__(EquipmentDailyTask)
-        scan_task.operate_click = Mock()
-        scan_task.scroll_client = Mock()
-        scan_task._scroll_to_bottom = Mock(return_value=selecting)
-        scan_task._grade_points = Mock(return_value=[(0.735, 0.199)])
-        scan_task._wait_equipment = Mock(return_value=selected)
-        with patch(
-            "src.tasks.EquipmentDailyTask.dismantle_card_selected",
-            side_effect=lambda _f, pt: abs(pt[1] - 0.259) < 0.005,
-        ):
-            self.assertIs(selected, scan_task._scan_selection_tab(selecting, (100, 500)))
+        moving = [grid_frame([y]) for y in (152, 188, 224, 260, 296)]
+        task._read_equipment = Mock(side_effect=moving)
+        self.assertIsNone(task._scroll_to_bottom(full_page, lambda view: view.selection_count == 0))
+
+        task._grade_templates = {
+            grade: read_template_image(path) for grade, path in DISMANTLE_GRADE_FILES.items()
+        }
+        badge = task._grade_templates["N"]
+        h, w = badge.shape[:2]
+        before = grid_frame([])
+        before.frame[485:485 + h, 811:811 + w] = badge
+        target, = task._grade_points(before.frame)
+        x, y = round(target[0] * 1920), round(target[1] * 1080) + 32
+        task.operate_click = Mock()
+        for shift, valid in ((32, True), (-98, False)):
+            with self.subTest(shift=shift):
+                after = grid_frame([])
+                after.selection_count = 1
+                top = 485 + shift
+                after.frame[top:top + h, 811:811 + w] = badge // 2
+                gold = (30, 170, 210)
+                after.frame[y - 58:y - 54, x - 45:x + 45] = gold
+                after.frame[y + 54:y + 58, x - 45:x + 45] = gold
+                after.frame[y - 45:y + 45, x - 58:x - 54] = gold
+                after.frame[y - 45:y + 45, x + 54:x + 58] = gold
+                task._wait_equipment = Mock(return_value=after)
+                selected = task._scan_selection_tab(before, before.inventory)
+                self.assertIs(selected, after if valid else None)
 
 
 class ActivityBannerFallbackTest(unittest.TestCase):
