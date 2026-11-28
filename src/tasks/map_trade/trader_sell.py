@@ -61,8 +61,9 @@ from src.tasks.map_trade.trader_constants import (
     SHOP_MODE_TIMEOUT,
     SHOP_MODE_TITLE_REGION,
     SaleItemCandidate,
+    split_items,
 )
-from src.tasks.map_trade.trader_pricing import parse_sale_reserves
+from src.tasks.map_trade.trader_pricing import parse_sale_reserves, sale_item_identity
 from src.tasks.map_trade.vision import normalize_text
 from src.utils.calibration import FHD_1080
 from src.utils.image_utils import relative_roi_frame, to_gray
@@ -233,27 +234,8 @@ class SellFlowMixin:
             return True
         return self._sell_resolved_entries(entries)
 
-    def _sale_reserve_overrides(self, entries, reserves):
-        if not reserves or not entries:
-            return {}
-        catalog = self._sale_title_catalog(entries[0])
-        overrides = {}
-        for name, quantity in reserves.items():
-            owners = catalog.get(name, set())
-            if len(owners) > 1:
-                raise ValueError(f"商品保留量名称存在歧义：{name}")
-            for entry in entries:
-                identities = catalog.get(self._normal(entry.item), set())
-                if owners.isdisjoint(identities):
-                    continue
-                if len(identities) != 1 or overrides.get(entry.item, quantity) != quantity:
-                    raise ValueError(f"商品保留量冲突：{entry.item}")
-                overrides[entry.item] = quantity
-        return overrides
-
     def _resolve_sale_entries(self) -> list[CalendarEntry] | None:
         try:
-            reserves = parse_sale_reserves(str(self.task.config.get("商品保留量", "")))
             market_now = self._current_market_time()
             calendar_date = sale_price_calendar_date(market_now)
             calendar = self.calendar_client.load(
@@ -275,58 +257,44 @@ class SellFlowMixin:
             entries = list(calendar.entries_for(calendar_date.day))
             self._sale_title_entries = tuple(entries)
             self._sale_title_catalog_cache = None
-            reserves = self._sale_reserve_overrides(entries, reserves)
+            return self._filter_sale_entries(entries)
         except Exception as exc:
             self._sale_summary_reason = f"未出售：价表加载失败（{exc}）"
             self.task.log_warning(f"价表加载失败，为避免误卖已停止出售：{exc}")
             return None
 
+    def _filter_sale_entries(self, entries: list[CalendarEntry]) -> list[CalendarEntry]:
+        if not entries:
+            return []
+        catalog = self._sale_title_catalog(entries[0])
+        config = self.task.config
+        reserves = parse_sale_reserves(str(config.get("商品保留量", "")), catalog)
+        whitelist = self._sale_whitelist(catalog) if config.get("使用出售白名单", True) else None
+        use_blacklist = bool(config.get("使用出售黑名单", False))
+        blacklist_names = split_items(config.get("出售黑名单", "")) if use_blacklist else ()
+        blacklist = {sale_item_identity(name, catalog) for name in blacklist_names}
+        self._status("出售白名单", "关闭" if whitelist is None else "开启")
+        self._status("出售黑名单", "开启" if use_blacklist else "关闭")
         sellable = []
         for entry in entries:
             if not entry.sell:
                 self._record_not_sold(entry, "未出售：价表标记为不出售")
                 self.task.log_info(f"卖：{entry.item}标记为不出售，跳过。")
                 continue
-            reserve = reserves.get(entry.item, entry.reserve)
+            identity = sale_item_identity(entry.item, catalog)
+            reserve = reserves.get(identity, entry.reserve)
             if reserve == -1:
                 self._record_not_sold(entry, "未出售：商品保留量设置为全部保留")
                 continue
+            if identity in blacklist:
+                self._record_not_sold(entry, "未出售：命中出售黑名单")
+                self.task.log_info(f"卖：{entry.item}命中出售黑名单，跳过。")
+                continue
+            if whitelist is not None and identity not in whitelist:
+                self._record_not_sold(entry, "未出售：不在出售白名单")
+                continue
             sellable.append(replace(entry, reserve=reserve))
-
-        use_whitelist = bool(self.task.config.get("使用出售白名单", True))
-        self._status("出售白名单", "开启" if use_whitelist else "关闭")
-        if use_whitelist:
-            whitelist = self._sale_whitelist()
-            entries = [entry for entry in sellable if self._entry_allowed(entry, whitelist)]
-            for entry in sellable:
-                if entry not in entries:
-                    self._record_not_sold(entry, "未出售：不在出售白名单")
-        else:
-            entries = sellable
-            self.task.log_info("卖：出售白名单已关闭，执行价表中全部允许出售的商品。")
-
-        use_blacklist = bool(self.task.config.get("使用出售黑名单", False))
-        self._status("出售黑名单", "开启" if use_blacklist else "关闭")
-        if use_blacklist:
-            blacklist = self._sale_blacklist()
-            allowed_entries = []
-            for entry in entries:
-                if self._entry_allowed(entry, blacklist):
-                    self._record_not_sold(entry, "未出售：命中出售黑名单")
-                    self.task.log_info(f"卖：{entry.item}命中出售黑名单，跳过。")
-                    continue
-                allowed_entries.append(entry)
-            entries = allowed_entries
-        if not entries:
-            if use_blacklist:
-                self.task.log_info("跑商：筛选后没有可出售的最高价物品。")
-            elif use_whitelist:
-                self.task.log_info("跑商：今天没有白名单内的最高价物品。")
-            else:
-                self.task.log_info("跑商：今天没有允许出售的最高价物品。")
-            return []
-
-        return entries
+        return sellable
 
     @staticmethod
     def _sell_entry_cartridge_order(entry: CalendarEntry) -> int:
@@ -427,6 +395,32 @@ class SellFlowMixin:
             or sale_price_calendar_date(self._current_market_time()) == active_date
         )
 
+    def _sale_checkpoint(self, entry: CalendarEntry) -> str | None:
+        from src.tasks import run_history
+
+        prefix = f"出售:{entry.shop}:"
+        catalog = self._sale_title_catalog(entry)
+        store = run_history.default_store()
+        pending = store.pending_stages(run_history.stage_owner(self.task), prefix)
+        try:
+            identity = sale_item_identity(entry.item, catalog)
+            matches = []
+            for key in pending:
+                # Old releases keyed the record by the literal calendar spelling.
+                old_name = key.removeprefix(prefix)
+                if self._normal(old_name) not in catalog:
+                    raise ValueError(f"同店未决商品已无法从价表识别：{old_name}")
+                if sale_item_identity(old_name, catalog) == identity:
+                    matches.append(key)
+            if len(matches) > 1:
+                raise ValueError(f"同店商品存在多笔未决出售：{entry.item}")
+        except ValueError as exc:
+            self._last_sale_unavailable = False
+            self._last_sale_reason = f"未出售：{exc}，请核对交易记录"
+            self.task.log_warning(self._last_sale_reason)
+            return None
+        return matches[0] if matches else prefix + identity
+
     def _sell_selected_entry(self, entry: CalendarEntry) -> bool:
         self._last_sale_unavailable = False
         self._last_sale_reason = ""
@@ -437,7 +431,9 @@ class SellFlowMixin:
             located = self._wait_sale_item_candidates(entry)
             if located is None:
                 from src.tasks import run_history
-                checkpoint = f"出售:{entry.shop}:{entry.item}"
+                checkpoint = self._sale_checkpoint(entry)
+                if checkpoint is None:
+                    return False
                 pending = run_history.read_stage(self.task, checkpoint).get("state") == "pending"
                 if self._last_sale_page_empty and pending:
                     run_history.save_stage(self.task, checkpoint, "done",
@@ -510,7 +506,9 @@ class SellFlowMixin:
 
         from src.tasks import run_history
 
-        checkpoint = f"出售:{entry.shop}:{entry.item}"
+        checkpoint = self._sale_checkpoint(entry)
+        if checkpoint is None:
+            return None
         record = run_history.read_stage(self.task, checkpoint)
         self._last_sale_cleared = False
         before_signature = self._sale_name_signature(entry, frame)
@@ -1383,12 +1381,13 @@ class SellFlowMixin:
                     catalog.setdefault(normalized, set()).add(identity)
         known_identities = {name: set(identities) for name, identities in catalog.items()}
         for item in (*self._sale_title_entries, entry):
-            identity = self._normal(item.item)
-            identities = known_identities.get(identity, {identity})
-            for name in (item.item, *item.aliases, *ITEM_ALIASES.get(item.item, ())):
-                normalized = self._normal(name)
-                if normalized:
-                    catalog.setdefault(normalized, set()).update(identities)
+            names = {self._normal(name) for name in (item.item, *item.aliases)}
+            names.discard("")
+            identities = set().union(*(known_identities.get(name, ()) for name in names))
+            if not identities:
+                identities = {self._normal(item.item)}
+            for name in names:
+                catalog.setdefault(name, set()).update(identities)
         self._sale_title_catalog_cache = catalog
         return catalog
 

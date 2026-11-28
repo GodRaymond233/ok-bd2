@@ -441,6 +441,56 @@ class SaleLedgerTest(StageHistoryTestCase):
             1, [c.args for c in trader.task.operate_click.call_args_list].count(SALE_CONFIRM_POINT)
         )
 
+    def test_sale_checkpoint_follows_item_identity_across_calendar_spellings(self):
+        trader = sale_harness()
+        trader.task.config["出售保险"] = True
+        frame = np.zeros((30, 30, 3), np.uint8)
+        candidate = SimpleNamespace(center=(10, 10), percent_box=None)
+        trader._wait_sale_item_candidates = Mock(return_value=([candidate], frame))
+        trader._wait_owned_quantity = Mock(return_value=100)
+        trader._wait_available_quantity = Mock(return_value=100)
+        trader._choose_sale_quantity = Mock(return_value=True)
+        trader._wait_selected_sale_quantity = Mock(return_value=(1, 25))
+        trader._wait_sale_completion = Mock(return_value=False)
+        entry = CalendarEntry("蜂蜜黃油杏仁", "S9:铁假面")
+        prefix = "出售:S9:铁假面:"
+        canonical = prefix + "蜂蜜黄油杏仁"
+        legacy = prefix + "Honey Butter Almond"
+        owner = run_history.stage_owner(trader.task)
+        evidence = {"owned": 100, "selected": 1}
+        self.assertFalse(trader._sell_selected_entry(entry))
+        self.assertEqual({canonical}, set(self.history.pending_stages(owner, prefix)))
+        self.history_mock.return_value = run_history.RunHistoryStore(self.history.path)
+        self.assertFalse(trader._sell_selected_entry(CalendarEntry("蜂蜜奶油杏仁", entry.shop)))
+        trader.task.operate_click.assert_called_once_with(*SALE_CONFIRM_POINT, after_sleep=0.5)
+
+        self.reset_stage_history()
+        run_history.save_stage(trader.task, legacy, "pending", evidence=evidence)
+        run_history.save_stage(trader.task, "出售:S1:蜂蜜黄油杏仁", "pending", evidence=evidence)
+        trader._wait_owned_quantity.return_value = 99
+        trader.task.operate_click.reset_mock()
+        self.assertTrue(trader._sell_selected_entry(entry))
+        self.assertEqual("done", self.history.stage(owner, legacy)["state"])
+        self.assertEqual({}, self.history.stage(owner, canonical))
+        trader.task.operate_click.assert_called_once_with(*SALE_CLOSE_POINT, after_sleep=0.5)
+
+        for key in (canonical, legacy):
+            run_history.save_stage(trader.task, key, "pending", evidence=evidence)
+        trader.task.operate_click.reset_mock()
+        trader.vision.click_client.reset_mock()
+        self.assertFalse(trader._sell_selected_entry(entry))
+        trader.vision.click_client.assert_not_called()
+        def missing(_entry):
+            trader._last_sale_page_empty = True
+            trader._last_sale_unavailable = True
+            return None
+
+        trader._wait_sale_item_candidates.side_effect = missing
+        self.assertFalse(trader._sell_selected_entry(entry))
+        self.assertFalse(trader._last_sale_unavailable)
+        self.assertEqual({legacy, canonical}, set(self.history.pending_stages(owner, prefix)))
+        trader.task.operate_click.assert_not_called()
+
     def test_sale_confirmation_checks_reserve_and_current_group_limit(self):
         cases = (
             (False, "苹果", 5500, 8400, 8400, 8400, False),
@@ -1182,8 +1232,10 @@ class CookingFlowTest(StageHistoryTestCase):
             template = COOKING_TEMPLATE_DIR / COOKING_IDENTITY_SPECS[recipe].file_name
             self.assertTrue(template.is_file(), recipe)
         trader.task.config["青框料理（吐司）"] = ["巧克力面包"]
-        self.assertNotIn("三明治便当", trader._sale_whitelist())
-        self.assertIn("巧克力面包", trader._sale_whitelist())
+        catalog = trader._sale_title_catalog(CalendarEntry("巧克力面包", "E1"))
+        whitelist = trader._sale_whitelist(catalog)
+        self.assertNotIn("三明治便当", whitelist)
+        self.assertIn("巧克力面包", whitelist)
 
     def test_max_quantity_gate_on_recorded_min_and_max_slider_at_client_sizes(self):
         fixtures = Path(__file__).parent / "fixtures/map_trade/cooking_quantity"

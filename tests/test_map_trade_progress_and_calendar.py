@@ -829,6 +829,7 @@ class CalendarTest(unittest.TestCase):
             ("秃鹫羽毛=-1", []),
             ("秃鹫羽毛=25", [25]),
             ("Vulture Feather=30", [30]),
+            ("禿鷲羽毛=25\n秃鹫羽毛=25\nVulture Feather=25", [25]),
             ("禿鷲羽毛=25\n秃鹫羽毛=-1", None),
             ("Vulture Feather=25\n秃鹫羽毛=-1", None),
         ):
@@ -837,6 +838,19 @@ class CalendarTest(unittest.TestCase):
                 result = trader._resolve_sale_entries()
                 actual = None if result is None else [entry.reserve for entry in result]
                 self.assertEqual(expected, actual)
+
+        entries = (CalendarEntry("蜂蜜黃油杏仁", "S9"),)
+        trader.task.config["商品保留量"] = ""
+        for blocked in ("蜂蜜奶油杏仁", "Honey Butter Almond", "蜂蜜黄油杏仁", "豆子"):
+            with self.subTest(blocked=blocked):
+                trader.task.config["出售黑名单"] = blocked
+                actual = trader._resolve_sale_entries()
+                self.assertEqual(list(entries) if blocked == "豆子" else [], actual)
+        entries = (CalendarEntry("本地杏仁别称", "S9", aliases=("蜂蜜奶油杏仁",)),)
+        trader.task.config["出售黑名单"] = "Honey Butter Almond"
+        self.assertEqual([], trader._resolve_sale_entries())
+        trader.task.config["出售黑名单"] = ""
+        self.assertEqual(list(entries), trader._resolve_sale_entries())
 
     def test_business_dates_use_the_current_beijing_refresh_for_each_operation(self):
         self.assertEqual((23, 8), (SALE_PRICE_REFRESH_HOUR, PURCHASE_STOCK_REFRESH_HOUR))
@@ -901,7 +915,8 @@ class CalendarTest(unittest.TestCase):
         trader = create_trader()
         trader.task = SimpleNamespace(config={})
         trader.vision = SimpleNamespace(simplify=lambda value: value)
-        whitelist = trader._sale_whitelist()
+        catalog = trader._sale_title_catalog(calendar.entries_for(17)[0])
+        whitelist = trader._sale_whitelist(catalog)
         additions = (
             ("水果冰沙", 17, "S5"),
             ("凯洛养生汤", 17, "E1"),
@@ -920,7 +935,8 @@ class CalendarTest(unittest.TestCase):
                 ]
                 self.assertEqual([(day, shop)], [(d, e.shop.split(":")[0]) for d, e in matches])
                 entry = matches[0][1]
-                self.assertTrue(entry.sell and trader._entry_allowed(entry, whitelist))
+                self.assertTrue(entry.sell)
+                self.assertLessEqual(catalog[entry.item], whitelist)
                 new_entries.add((day, entry.item))
         removed = {
             (22, "凯洛药材"),
@@ -961,7 +977,8 @@ class CalendarTest(unittest.TestCase):
         for entries in latest.days.values():
             for entry in entries:
                 if entry.item in targets:
-                    self.assertTrue(entry.sell and trader._entry_allowed(entry, whitelist), entry)
+                    self.assertTrue(entry.sell)
+                    self.assertIn(entry.item, whitelist)
                     self.assertEqual({entry.item}, trader._sale_title_catalog(entry)[entry.item])
                     targets.remove(entry.item)
         self.assertFalse(targets)
