@@ -37,8 +37,10 @@ from src.utils.home_confirmation import (
     SCENE_HOME_BUTTON_STABILITY_RATIO,
     home_gacha_ocr_matches,
     home_temporary_announcement_detected,
+    modal_backdrop_point,
     modal_cancel_point,
     modal_close_point,
+    modal_dismiss_text_point,
     modal_overlay_dimmed,
     modal_overlay_p95,
     modal_panel_bbox,
@@ -60,6 +62,7 @@ from src.utils.image_utils import (
     to_gray,
 )
 from src.utils.ocr_utils import normalize_ocr_text
+from src.utils.repeated_action import RepeatedAction
 from src.utils.template_resolution import offline_template_scale
 
 logger = Logger.get_logger(__name__)
@@ -836,71 +839,65 @@ class BaseBD2Task(BaseTask):
         *,
         context: str = "自动返回主页",
     ) -> bool:
-        """主页被模态弹窗遮挡时，点它右上角的关闭 X。
-
-        调用方已确认主页文字，并发现遮罩或明确的居中弹窗。
-        关闭点由面板右上角的叉号字形定位（见 ``modal_close_glyph``），
-        找不到就绝不点击：这类弹窗的内容就是公告条目，猜偏一点就会把公告
-        打开，退出后又回到同一个弹窗，形成「点开公告 → 退出 → 再点开」的
-        死循环。连续多帧同一个面板仍关不掉时停止点击，交给调用方处理。
-        """
+        """Dismiss a verified home overlay and reconcile each dispatched click."""
         if frame is None:
             return False
         now = monotonic()
-        last_click_at = float(getattr(self, "_last_home_modal_close_at", 0.0))
-        bbox = modal_panel_bbox(frame)
-        previous_bbox = getattr(self, "_home_modal_panel_bbox", None)
-        if previous_bbox != bbox:
-            self._home_modal_panel_repeats = 0
-        repeats = getattr(self, "_home_modal_panel_repeats", 0)
-        self._home_modal_panel_bbox = bbox
-        if bbox is None:
-            self._home_modal_unlocated = False
-            self.info_set("主页弹窗", f"{context}：未检测到居中亮面板")
-            return False
-        if repeats >= 4:
-            self._home_modal_unlocated = True
-            self.info_set(
-                "主页弹窗",
-                f"{context}：面板连续 {repeats} 次未关闭，停止点击以免误触内容。",
-            )
-            return False
-
         frame_h, frame_w = frame.shape[:2]
+        bbox = modal_panel_bbox(frame)
         point = modal_close_point(bbox, frame_w, frame_h, frame=frame)
+        action = "右上角关闭"
         if point is None:
-            self._home_modal_unlocated = True
-            self.info_set(
-                "主页弹窗",
-                f"{context}：面板 {bbox}，未定位到关闭叉号，不点击。",
-            )
-            self.log_info(
-                f"{context}：检测到弹窗面板 {bbox} 但找不到关闭叉号，"
-                "为避免点到公告条目，本次不点击。"
-            )
+            boxes = self._bd2_ocr_boxes(frame, "主页弹窗关闭文字")
+            point = modal_dismiss_text_point(boxes, frame_w, frame_h, bbox)
+            action = "关闭文字"
+        if point is None and bbox is not None:
+            point = modal_backdrop_point(frame, bbox)
+            action = "最左侧空白遮罩"
+        if point is None:
+            self._home_modal_unlocated = bbox is not None
+            self.info_set("主页弹窗", f"{context}：面板 {bbox}，未定位到关闭叉号或安全关闭位置。")
             return False
         self._home_modal_unlocated = False
 
-        if now - last_click_at < 1.0:
+        # Compare the panel rather than animated home artwork.
+        if bbox is None:
+            region = frame
+        else:
+            x, y, width, height = bbox
+            region = frame[y:y + height, x:x + width]
+        sample = cv2.resize(to_gray(region), (48, 32), interpolation=cv2.INTER_AREA)
+        retry = getattr(self, "_home_modal_retry", None)
+        previous = getattr(self, "_home_modal_before_click", None)
+        if retry is None:
+            retry = self._home_modal_retry = RepeatedAction()
+        if previous is not None:
+            difference = cv2.absdiff(sample, previous)
+            if float(np.mean(difference)) > 3 or float(np.mean(difference > 20)) > .03:
+                retry.reset()
+        panel_key = tuple(round(v / frame_h, 2) for v in bbox) if bbox else None
+        key = (action, round(point[0], 2), round(point[1], 2), panel_key)
+        if retry.observe(key):
+            message = f"{context}：同一关闭操作已发送 5 次，弹窗仍未变化。"
+            self.info_set("主页弹窗", message)
+            self._save_flow_diagnostic("home_modal_stuck")
+            raise RuntimeError(message)
+        if now - float(getattr(self, "_last_home_modal_close_at", 0.0)) < 1.0:
             return True
-        self.info_set(
-            "主页弹窗",
-            f"{context}：面板 {bbox}，点击关闭 "
-            f"({point[0]:.3f},{point[1]:.3f})",
-        )
-        self.log_info(
-            f"{context}：主页被弹窗遮挡（面板 {bbox}），"
-            f"点击右上角关闭 x={point[0]:.2%}, y={point[1]:.2%}。"
-        )
+        self.info_set("主页弹窗", f"{context}：面板 {bbox}，点击{action} {point}")
+        self.log_info(f"{context}：点击{action} {point}，等待下一帧确认弹窗关闭。")
         try:
-            self.operate_click(
+            dispatched = self.operate_click(
                 *point, name="主页弹窗关闭", after_sleep=0.6, require_fresh_target=True,
             )
         except InputTargetChanged:
             self.sleep(0.2)
             return True
-        self._last_home_modal_close_at = now
-        self._home_modal_panel_repeats = repeats + 1
+        if dispatched is False:
+            return False
+        self._last_home_modal_close_at = monotonic()
+        self._home_modal_before_click = sample
+        retry.dispatched(key)
         return True
 
     def dismiss_blocking_modal(
@@ -1114,6 +1111,9 @@ class BaseBD2Task(BaseTask):
         )
         if signals[0]:
             self._home_modal_panel_bbox = None
+            self._home_modal_backdrop_bbox = None
+            self._home_modal_retry = None
+            self._home_modal_before_click = None
             self._update_notice_clicks = 0
         return signals
 

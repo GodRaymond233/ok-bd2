@@ -1082,3 +1082,47 @@ def modal_cancel_point(
             best_key = key
             best = (center_x, center_y)
     return best
+
+
+def modal_dismiss_text_point(boxes, frame_w, frame_h, bbox=None):
+    """Accept explicit dismiss labels, never announcement links or checkbox text."""
+    for box in boxes:
+        label = normalize_ocr_text(getattr(box, "name", ""), alnum_only=True)
+        if label not in ("关闭", "返回", "点击画面即可返回", "点击屏幕即可返回"):
+            continue
+        geometry = _box_geometry(box)
+        if geometry is None or float(getattr(box, "confidence", 1.0)) < .8:
+            continue
+        x, y, w, h = geometry
+        if w <= 0 or h <= 0:
+            continue
+        cx, cy = x + w / 2, y + h / 2
+        if bbox is not None:
+            left, top, width, height = bbox
+            if not (left <= cx <= left + width and top <= cy <= top + height):
+                continue
+        elif not (label.startswith("点击") and .2 <= cx / frame_w <= .8
+                  and .75 <= cy / frame_h <= .98):
+            continue
+        if 0 <= cx < frame_w and 0 <= cy < frame_h:
+            return cx / frame_w, cy / frame_h
+    return None
+
+
+def modal_backdrop_point(
+    frame: np.ndarray,
+    bbox: tuple[int, int, int, int],
+) -> tuple[float, float] | None:
+    """Find an empty spot in the dark margin to the left of a home popup."""
+    height, width = frame.shape[:2]
+    if bbox[0] < width * .05:
+        return None
+    margin = frame[round(height * .48):round(height * .52),
+                   round(width * .005):round(width * .015)]
+    if margin.size == 0:
+        return None
+    gray = to_gray(margin)
+    # Dim background artwork can be textured; bright controls still veto this point.
+    if np.max(gray) <= 64:
+        return .01, .50
+    return None
