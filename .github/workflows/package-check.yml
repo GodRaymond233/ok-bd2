@@ -57,7 +57,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $version = (Get-Content desktop/shell/package.json -Raw | ConvertFrom-Json).version
+          $package = git show "refs/tags/${env:APPLICATION_TAG}:desktop/shell/package.json"
+          if ($LASTEXITCODE -ne 0) { throw "Cannot read the shell package from $env:APPLICATION_TAG." }
+          $version = ($package -join "`n" | ConvertFrom-Json).version
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid shell version in $env:APPLICATION_TAG." }
           $archive = "ok-bd2-shell-$version-win-x64.zip"
           gh release download $env:APPLICATION_TAG --repo $env:GITHUB_REPOSITORY `
             --pattern $archive --dir desktop-release
