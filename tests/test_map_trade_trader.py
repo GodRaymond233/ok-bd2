@@ -233,7 +233,9 @@ class SaleRecognitionTest(unittest.TestCase):
                 for word in ("秃鹫羽毛", "秃鷲羽毛", "禿鹫羽毛", "禿鷲羽毛")
             ],
             ("穿山甲鳞片", ["穿山甲鱗片", "穿山甲鱗片"], 2, True, False),
-            ("黑啤酒炖锅", ["黑啤酒燉鍋", "黑啤酒燉鍋"], 2, True, False),
+            ("黑啤酒炖锅", ["黑啤酒燉锅", "黑啤酒燉锅"], 2, True, False),
+            ("苹果", ["蘋果", "蘋果"], 2, True, False),
+            ("三角美乃滋饭团", ["三角美乃滋飯團", "三角美乃滋飯團"], 2, True, False),
             *[("姜黄", [word], 0, False, False) for word in ("", "姜", "黄", "姜黄油")],
             ("白糖", ["白糖"], 0, False, False),
             ("姜黄", ["豆子"], 2, False, True),
@@ -273,43 +275,62 @@ class SaleRecognitionTest(unittest.TestCase):
                     )
 
     def test_variant_char_folding_has_no_cross_item_collisions(self):
+        from src.tasks.map_trade.calendar import BUNDLED_CALENDAR_HISTORY, parse_calendar_payload
+        from src.tasks.map_trade.trader_constants import CALENDAR_DIR
+
         trader = create_trader()
         catalog = trader._sale_title_catalog(CalendarEntry("秃鹫羽毛", "S9"))
         collisions = {key: ids for key, ids in catalog.items() if len(ids) > 1}
         self.assertEqual({}, collisions)
+        canonical: set[str] = set()
+        for filename in ("price_calendar.v1.json", *(name for _, name in BUNDLED_CALENDAR_HISTORY)):
+            bundled = parse_calendar_payload((CALENDAR_DIR / filename).read_bytes())
+            canonical.update(item.item for items in bundled.days.values() for item in items)
+        self.assertEqual(len(canonical), len({trader._normal(name) for name in canonical}))
         for variant in ("秃鹫羽毛", "秃鷲羽毛", "禿鹫羽毛", "禿鷲羽毛"):
             self.assertEqual({"秃鹫羽毛"}, catalog.get(trader._normal(variant)))
 
-    def test_retry_after_unconfirmed_dialog_title_reports_dialog_ocr_not_marker(self):
+    def test_retry_after_unconfirmed_dialog_title_stops_batch_and_reports_dialog_ocr(self):
         trader = create_trader()
         frame = np.full((1080, 1920, 3), (20, 70, 150), np.uint8)
         trader.vision.capture = Mock(return_value=frame)
         trader.vision.click_client = Mock()
         trader._sale_name_signature = Mock(return_value=None)
         trader._sale_toast_id = Mock(return_value=None)
-        trader._locate_sale_items = Mock(return_value=[])
+        trader.select_shop_tab = Mock(return_value=True)
+        trader._ensure_cartridge_goods_loaded = Mock(return_value=True)
+        trader._sale_date_current = Mock(return_value=True)
         trader.task.log_info = Mock()
-
-        def fake_wait(_entry):
-            trader._last_sale_dialog_title_texts = ("未知异体商品名",)
-            return False
-
-        trader._wait_sale_dialog_item = Mock(side_effect=fake_wait)
+        trader.task.log_warning = Mock()
         candidate = SaleItemCandidate(
             center=(639, 782),
             name_box=SimpleNamespace(x=600, y=770, width=80, height=24),
             percent_box=SimpleNamespace(x=540, y=770, width=50, height=24),
         )
-        outcome = trader._sell_one_candidate(
-            CalendarEntry("秃鹫羽毛", "S9"),
-            candidate,
-            frame,
-            previous_owned=None,
-        )
-        self.assertIsNone(outcome)
+        trader._wait_sale_item_candidates = Mock(return_value=([candidate], frame))
+
+        def fake_wait(_entry):
+            trader._last_sale_dialog_title_texts = ("未知异体商品名",)
+            return False
+
+        def fake_locate(_entry, _frame):
+            # 模拟补点前在弹窗遮罩画面上未识出商品名，导致 _last_sale_unavailable 被置 True。
+            trader._last_sale_unavailable = True
+            return []
+
+        trader._wait_sale_dialog_item = Mock(side_effect=fake_wait)
+        trader._locate_sale_items = Mock(side_effect=fake_locate)
+
+        first = CalendarEntry("秃鹫羽毛", "S9")
+        second = CalendarEntry("松露油", "C1")
+        self.assertFalse(trader._sell_resolved_entries([first, second]))
         self.assertEqual(1, trader.vision.click_client.call_count)
-        self.assertIn("出售弹窗标题未确认", trader._last_sale_reason)
+        self.assertEqual(1, trader.select_shop_tab.call_count)
+        self.assertFalse(trader._last_sale_unavailable)
+        self.assertIn("弹窗标题区 OCR 未确认", trader._last_sale_reason)
         self.assertIn("未知异体商品名", trader._last_sale_reason)
+        self.assertNotIn("未出售：未出售：", trader._sale_not_sold[first])
+        self.assertEqual("未出售：前序商品出售失败，未执行", trader._sale_not_sold[second])
 
 
 class SaleLedgerTest(StageHistoryTestCase):

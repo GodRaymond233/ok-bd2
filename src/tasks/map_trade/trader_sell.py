@@ -514,10 +514,13 @@ class SellFlowMixin:
                           if abs(item.center[0] - candidate.center[0]) <= fresh.shape[1] * 0.004
                           and abs(item.center[1] - candidate.center[1]) <= fresh.shape[0] * 0.004]
                 if len(nearby) != 1:
+                    if click_number > 1:
+                        # 已对确认候选发起点击，此时复核失败属界面状态异常，而非库存无此商品。
+                        self._last_sale_unavailable = False
                     if click_number > 1 and self._last_sale_dialog_title_texts:
                         seen = " / ".join(self._last_sale_dialog_title_texts)
                         self._last_sale_reason = (
-                            f"未出售：出售弹窗标题未确认（OCR：{seen}），补点前无法复核商品标志"
+                            f"未出售：弹窗标题区 OCR 未确认（{seen}），补点前无法复核商品标志"
                         )
                     else:
                         self._last_sale_reason = "未出售：点击前商品或120%标志未稳定确认"
