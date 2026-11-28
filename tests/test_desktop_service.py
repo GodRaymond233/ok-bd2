@@ -441,7 +441,7 @@ class ShellContractTest(unittest.TestCase):
         lock = json.loads((SHELL / "package-lock.json").read_text("utf-8"))
         self.assertEqual(package["version"], bootstrap.REQUIRED_SHELL_VERSION)
         self.assertEqual(package["build"]["executableName"] + ".exe", "ok-bd2-desktop.exe")
-        self.assertEqual(package["devDependencies"]["electron"], "44.9.1")
+        self.assertEqual(package["devDependencies"]["electron"], "44.11.3")
         self.assertEqual(
             lock["packages"]["node_modules/electron"]["version"],
             package["devDependencies"]["electron"],
