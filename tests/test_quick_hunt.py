@@ -395,6 +395,12 @@ class QuickHuntTest(StageHistoryTestCase):
             ("bad_grouping", [box("1,23")] + baseline[1:]),
             ("unknown_text", [box("库存100")] + baseline[1:]),
             ("fraction", [box("1/2")] + baseline[1:]),
+            ("split_fraction", [
+                box("1", width=9), box("/", x=110, width=9), box("2", x=120, width=9),
+                *baseline[1:],
+            ]),
+            ("unknown_unit", [box("1", width=9), box("萬", x=110), *baseline[1:]]),
+            ("unread_digit", [box("12", width=18), box("O", x=119), *baseline[1:]]),
             ("fractional_item", [box("0.0001K")] + baseline[1:]),
             ("invalid_geometry", [box("1", width=0)] + baseline[1:]),
         ):
